@@ -28,6 +28,7 @@ import json
 import pathlib
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -175,11 +176,14 @@ def test_registry_refuses_an_empty_entry(runner_bin, model, registry):
     # watched until it exits (the refusal) or answers /health (the defect). A
     # fixed 3 s wait stood in for the second and failed on a slow hosted runner
     # under the sanitizers, where the refusal itself took longer (2026-11-15).
+    # Its output goes to a file, not a pipe: nothing reads a pipe while the
+    # loop polls, and a child that filled one would block before it could exit.
     port = _free_port()
+    log = tempfile.TemporaryFile()
     proc = subprocess.Popen(
         [str(runner_bin), "--gpu", "off", "--no-tray", "-m",
          registry.format(model=model), "--serve", "--port", str(port)],
-        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        cwd=ROOT, stdout=subprocess.DEVNULL, stderr=log)
     try:
         deadline = time.time() + 120
         while proc.poll() is None:
@@ -192,7 +196,8 @@ def test_registry_refuses_an_empty_entry(runner_bin, model, registry):
                 pytest.fail("the server neither refused the registry nor served within 120 s")
             time.sleep(0.05)
         assert proc.returncode != 0
-        assert "empty" in proc.stderr.read().decode(errors="replace")
+        log.seek(0)
+        assert "empty" in log.read().decode(errors="replace")
     finally:
         if proc.poll() is None:
             proc.terminate()
@@ -201,3 +206,4 @@ def test_registry_refuses_an_empty_entry(runner_bin, model, registry):
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=10)
+        log.close()
