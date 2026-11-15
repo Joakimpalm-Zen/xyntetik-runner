@@ -3685,8 +3685,19 @@ $ runner -m granite-4.2-8b-Q4_K_M.gguf --info fit -c 16384
   available RAM 9.43 GiB right now
   gpu           NVIDIA GeForce RTX 3070, offload budget 6.95 GiB right now (0.64 GiB of it for scratch and headroom)
   split         f16: 36 of 40 layers on the GPU, 3.50 GiB in RAM  | --kv q8: 40 of 40 layers on the GPU, 1.55 GiB in RAM  | --kv k8v4: 40 of 40 ...
+  full offload  --kv q8 puts all 40 layers on the GPU at ctx 16384; the default cache holds 36. ...
   verdict       FITS — 36 of 40 layers on the GPU, 5.92 GiB of RAM to spare at ctx 16384
 ```
+
+The `full offload` line appears when the default cache leaves layers on the CPU and a smaller cache format holds
+them all; it names the first that does. It is there because a split costs speed even when it is small. Measured on
+a 31B dense model on a 24 GB CUDA card (one file, one prompt, the split made by reserving part of the card): with
+every layer on the card 275 tokens a second reading a prompt and 16.7 generating; one layer of 60 on the CPU 172 and
+13.3 (1.6x and 1.26x slower); three layers 136 and 12.0; 25 layers 29 and 5.5 (9.3x and 3.0x). Most of a near miss is
+the fixed cost of being split at all. The compressed formats are not free either: [`--kv`](#cli-kv) gives their
+measured cost. From the headers of the support list's files at 8 and 12 GB budgets, six reach full offload this way,
+all at contexts of 8,192 tokens or more, and none by a shorter context alone. The line is not printed under
+`--gpu-layers`, where the split is yours.
 
 The answer is "right now": a server already holding the GPU or the RAM is
 counted against the budget, so ask before starting one. `-c N` sizes the KV estimate for the context you

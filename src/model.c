@@ -1634,6 +1634,20 @@ const char *model_fit_verdict(const model_fit *f) {
     return "PAGES";
 }
 
+// R3.63. A split is slower even one layer short of full offload (measured
+// on a 31B dense model on CUDA: 1.6x on prompt reading and 1.26x on
+// generation one layer short, 9x to 13x and 3x to 4x with half the layers on
+// the CPU), and a compressed cache is often what the last layers lack. Six
+// files of the support list miss an 8 or 12 GB card by less than q8 saves.
+int model_fit_full_offload(const model_fit *f) {
+    if (!f->gpu || f->n_layer <= 0) return -1;
+    int g0 = f->gpu_layers[FIT_KV_F16];
+    if (g0 < 0 || g0 >= f->n_layer) return -1;      // no split, or already whole
+    for (int k = FIT_KV_Q8; k <= FIT_KV_FP4; k++)
+        if (f->gpu_layers[k] == f->n_layer) return k;
+    return -1;
+}
+
 uint64_t model_hot_set_bytes(const model_t *m) {
     if (m->n_expert <= 0 || m->n_expert_used <= 0 ||
         m->n_expert_used >= m->n_expert) return 0;      // dense, or not sparse
