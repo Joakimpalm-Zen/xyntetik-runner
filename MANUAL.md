@@ -3703,6 +3703,10 @@ the file size, because only the routed experts a token selects are touched -
 which is why a 3.53 GiB file can be a comfortable fit in 3.25 GiB. Its split
 marks the RAM figure `hot set` for the same reason.
 
+A model published in several parts (`NAME-00001-of-0000N.gguf`) is answered as one model: give any part's path and
+keep the parts side by side. The report reads every part's header, says `parts N files`, and its sizes are the whole
+set's. A part that is missing is named, and no verdict is given without it.
+
 `--info fit` does not download anything. Fetch a header yourself with a ranged read - 16 MiB covers a large
 vocabulary; smaller models need far less:
 
