@@ -2502,9 +2502,13 @@ static bool num_below_normal(const char *s, double x) {
     uint64_t mag = fp_bits_f64(x) & 0x7fffffffffffffffull;
     if (mag > MIN_NORMAL) return false;
     if (mag && mag < MIN_NORMAL) return true;
+    if (!mag) {                                    // a nonzero digit before any exponent
+        for (const char *c = s; *c && *c != 'e' && *c != 'E'; c++)
+            if (*c >= '1' && *c <= '9') return true;
+        return false;
+    }
     numshape p;
     num_shape_of(s, &p);
-    if (!mag) return p.nsig > 0;
     long e = num_exp_abs(&p) * (p.exp_sign < 0 ? -1 : 1);
     unsigned long w = witness_work;
     bool below = nd_cmp(p.sig, num_sig_len(&p), p.p0 + e, num_dmin_get()) < 0;
@@ -2537,9 +2541,31 @@ static bool number_text_in_bounds(const snode *n, const char *s) {
     return k >= lo && k <= hi;
 }
 
+// The terminator's verdict on the last spelling, kept like number_prefix_viable's
+// (below): a constrained step asks it again for every token that starts with
+// a byte ending the number, most of the vocabulary.
+static _Thread_local struct {
+    bool valid, ok;
+    int64_t klo, khi;
+    int len;
+    char t[NUM_ROOM + 1];
+} num_end_memo;
+
 static bool number_in_bounds(const sval *v, const snode *n, const sframe *f) {
     if (!num_complete(f->sub) || !v->num_len) return false;
-    return number_text_in_bounds(n, v->num_text);
+    int64_t klo, khi;
+    num_key_bounds(n, &klo, &khi);
+    int len = v->num_len;
+    if (num_end_memo.valid && num_end_memo.klo == klo && num_end_memo.khi == khi &&
+        num_end_memo.len == len && !memcmp(num_end_memo.t, v->num_text, (size_t)len))
+        return num_end_memo.ok;
+    bool ok = number_text_in_bounds(n, v->num_text);
+    if (len <= NUM_ROOM) {
+        num_end_memo.valid = true; num_end_memo.ok = ok;
+        num_end_memo.klo = klo; num_end_memo.khi = khi; num_end_memo.len = len;
+        memcpy(num_end_memo.t, v->num_text, (size_t)len);
+    }
+    return ok;
 }
 
 // R2.19: can the number spelling `t` (in num_byte state `st`) still become a
@@ -3016,12 +3042,39 @@ static bool number_witness(const snode *n, const char *t, uint8_t st, char *out,
     return num_decide(n, t, st, out, cap);
 }
 
+// The last decision on this thread. A constrained step asks the filter about
+// every vocabulary entry, so one prefix is asked again for each token that
+// starts with the same byte (thousands start with e). The answer depends on
+// the bounds, the state and the spelling alone, so it is kept under those,
+// the bounds as their keys: never a node's address, which a freed and
+// reallocated node could share.
+static _Thread_local struct {
+    bool valid, ok;
+    uint8_t st;
+    int64_t klo, khi;
+    int len;
+    char t[NUM_ROOM + 1];
+} num_memo;
+
 static bool number_prefix_viable(const snode *n, const char *t, uint8_t st) {
     int len = (int)strlen(t);
     // unbounded, json_number_text_ok decides alone, once the spelling can
     // still end: an incomplete one needs one more byte where number_put keeps it
     if (!n->has_real_min && !n->has_real_max) return num_complete(st) || len < NUM_ROOM;
-    return num_decide(n, t, st, NULL, 0);
+    int64_t klo, khi;
+    num_key_bounds(n, &klo, &khi);
+    if (num_memo.valid && num_memo.st == st && num_memo.klo == klo && num_memo.khi == khi &&
+        num_memo.len == len && !memcmp(num_memo.t, t, (size_t)len)) {
+        witness_work = 0;
+        return num_memo.ok;
+    }
+    bool ok = num_decide(n, t, st, NULL, 0);
+    if (len <= NUM_ROOM) {
+        num_memo.valid = true; num_memo.ok = ok; num_memo.st = st;
+        num_memo.klo = klo; num_memo.khi = khi; num_memo.len = len;
+        memcpy(num_memo.t, t, (size_t)len);
+    }
+    return ok;
 }
 
 static bool integer_value(const sframe *f, int64_t *out) {
