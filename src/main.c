@@ -1826,6 +1826,15 @@ static int run_fit_check(const char *path, int n_ctx_want,
             first = 0;
         }
         printf("\n");
+        // R3.63: the default cache leaves layers on the CPU and a smaller one
+        // holds them all: say which, since a split is slower even one layer
+        // short. Not under --gpu-layers, where the user set the split.
+        int full = mp->gpu_layers_override > 0 ? -1 : model_fit_full_offload(&f);
+        if (full > 0)
+            printf("  full offload  %s puts all %d layers on the GPU at ctx %d; the default "
+                   "cache holds %d. A split is slower even one layer short, and %s is a "
+                   "compressed cache with a measured cost (MANUAL, --kv)\n",
+                   kvname[full], f.n_layer, f.n_ctx, f.gpu_layers[0], kvname[full] + 5);
         // a --cpu-moe N or auto load keeps only some banks on the host (the
         // deepest N, or those the budget leaves out), which the split above
         // does not model: it sizes a full offload for them, as before R3.58
