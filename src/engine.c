@@ -1578,19 +1578,27 @@ static void rope_reach(engine *e, int upto) {
 // the first differing byte), not megabytes. Read-only, announced once. The
 // rows are read from the host: on the CPU and on Metal that is where they are
 // stored; CUDA copies device rows back lazily, so there it refuses by name.
-static int kv_dump_pos = -2, kv_dump_layer = -1;
+// Read once, by whichever slot's feed comes first: every slot may call
+// engine_feed at the same time, so the switch is parsed into locals and
+// published with one compare-and-swap, which also makes one announcement.
+static _Atomic int kv_dump_pos = -2, kv_dump_layer = -1;
 static void kv_dump_config(void) {
-    if (kv_dump_pos != -2) return;
-    kv_dump_pos = -1;
+    if (atomic_load(&kv_dump_pos) != -2) return;
+    int pos = -1, layer = -1;
     const char *v = getenv("RUNNER_TEST_KV_DUMP");
-    if (!v || !*v) return;
-    char *end = NULL;
-    long p = strtol(v, &end, 10);
-    if (end == v || p < 0 || p > INT_MAX) return;
-    kv_dump_pos = (int)p;
-    if (*end == ',') kv_dump_layer = atoi(end + 1);
-    fprintf(stderr, "test seam: RUNNER_TEST_KV_DUMP=%s prints the KV rows stored at position %d "
-            "after the feed that writes it\n", v, kv_dump_pos);
+    if (v && *v) {
+        char *end = NULL;
+        long p = strtol(v, &end, 10);
+        if (end != v && p >= 0 && p <= INT_MAX) {
+            pos = (int)p;
+            if (*end == ',') layer = atoi(end + 1);
+        }
+    }
+    atomic_store(&kv_dump_layer, layer);
+    int unread = -2;
+    if (atomic_compare_exchange_strong(&kv_dump_pos, &unread, pos) && pos >= 0)
+        fprintf(stderr, "test seam: RUNNER_TEST_KV_DUMP=%s prints the KV rows stored at position %d "
+                "after the feed that writes it\n", v, pos);
 }
 static uint64_t kv_dump_hash(const uint8_t *b, size_t n) {
     uint64_t h = 0xcbf29ce484222325ull;
@@ -1604,7 +1612,7 @@ static void kv_dump_row(int pos, int l, const char *kind, const uint8_t *b, size
 }
 static void kv_dump(const engine *e, int lo, int hi) {
     const model_t *m = e->m;
-    int p = kv_dump_pos;
+    int p = atomic_load(&kv_dump_pos), named = atomic_load(&kv_dump_layer);
     if (p < lo || p >= hi) return;
     if (m->gpu && m->kv_owner != KV_OWNER_GPU_BACKEND) {
         fprintf(stderr, "kvdump: pos %d not read: the host rows are a lazy copy of the device's here\n", p);
@@ -1622,7 +1630,7 @@ static void kv_dump(const engine *e, int lo, int hi) {
         if (k) snprintf(kh, sizeof(kh), "%016llx", (unsigned long long)kv_dump_hash(k, kn));
         if (v) snprintf(vh, sizeof(vh), "%016llx", (unsigned long long)kv_dump_hash(v, vn));
         fprintf(stderr, "kvdump: pos %d layer %d k %s v %s\n", p, l, kh, vh);
-        if (l == kv_dump_layer) {
+        if (l == named) {
             if (k) kv_dump_row(p, l, "k", k, kn);
             if (v) kv_dump_row(p, l, "v", v, vn);
         }
@@ -1667,7 +1675,7 @@ float *engine_feed(engine *e, const int32_t *toks, int n) {
         if (!last && e->stop && e->stop(e->stop_ud)) return NULL;
         if (!last && e->prefill_yield) e->prefill_yield(e->prefill_ud);
     }
-    if (kv_dump_pos >= 0) kv_dump(e, fed_from, e->pos);
+    if (atomic_load(&kv_dump_pos) >= 0) kv_dump(e, fed_from, e->pos);
     return logits;
 }
 
