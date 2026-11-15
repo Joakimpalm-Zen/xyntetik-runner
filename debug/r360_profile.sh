@@ -79,15 +79,15 @@ rows = {}
 for f in sorted(glob.glob("p-*-r*.err")):
     arm, b = re.match(r"p-(\w+)-b(\d+)-r\d+\.err", f.split("/")[-1]).groups()
     r = read(f); rows.setdefault((arm, int(b)), []).append(r)
-    print("%-22s tokens %d, %.1f tok/s; %d profiled passes: total %.0f ms, expert runs (bit 60) %.0f ms, "
-          "expert loop wall %.0f ms, other runs %.0f ms" % (f, r["tokens"], r["tps"], r["steps"], r["total"],
+    print("%-22s tokens %d, %.1f tok/s; %d profiled passes: total %.1f ms, expert runs (bit 60) %.1f ms, "
+          "expert loop wall %.1f ms, other runs %.1f ms" % (f, r["tokens"], r["tps"], r["steps"], r["total"],
           r["experts"], r["loop"], r["other"]))
 med = {k: {f: statistics.median(r[f] for r in v) for f in ("tps", "total", "experts", "loop", "other")}
        for k, v in rows.items()}
 print("\nMEDIANS of 3 (ms over the profiled passes of one prefill; the 1-row tail at -b 64 is a one-token pass, not profiled)")
 for k in sorted(med):
     m = med[k]
-    print("  %-4s -b %-3d  %.1f tok/s  total %.0f  expert runs %.0f  expert loop wall %.0f  other runs %.0f"
+    print("  %-4s -b %-3d  %.1f tok/s  total %.1f  expert runs %.1f  expert loop wall %.1f  other runs %.1f"
           % (k[0], k[1], m["tps"], m["total"], m["experts"], m["loop"], m["other"]))
 b, v = med[("base", 64)], med[("var", 64)]
 extra = v["total"] - b["total"]
@@ -96,7 +96,7 @@ oth = abs(v["other"] - b["other"]) / b["other"]
 b5, v5 = med[("base", 512)], med[("var", 512)]
 e512 = abs(v5["experts"] - b5["experts"]) / b5["experts"]
 print("\nPREDICTION (written on R3.60 before the profile):")
-print("  (1) -b 64: the variant's extra time %.0f ms; the expert runs carry %.0f%% of it (predicted 80%% or more): %s"
+print("  (1) -b 64: the variant's extra time %.1f ms; the expert runs carry %.0f%% of it (predicted 80%% or more): %s"
       % (extra, 100 * share, "HOLDS" if share >= 0.8 else "FAILS"))
 print("  (2) -b 64: the other runs differ by %.1f%% (predicted under 5%%): %s" % (100 * oth, "HOLDS" if oth < 0.05 else "FAILS"))
 print("  (3) -b 512: the expert runs of the two arms differ by %.1f%% (predicted within 5%%): %s"
