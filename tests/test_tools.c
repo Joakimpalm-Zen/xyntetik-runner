@@ -684,10 +684,15 @@ static void tools_flush_to_zero(bool on) {
 #endif
 }
 static void test_atem_truncated_number_reads_back_inside_an_exclusive_bound(void) {
-    const char *bounds[] = { "\"exclusiveMinimum\":0", "\"exclusiveMaximum\":0" };
+    // the last two: a narrow interval next to zero, whose readable values lie
+    // under the 1e-307 the first fix fell back to
+    const char *bounds[] = { "\"exclusiveMinimum\":0", "\"exclusiveMaximum\":0",
+                             "\"exclusiveMinimum\":0,\"maximum\":5e-308",
+                             "\"exclusiveMaximum\":0,\"minimum\":-5e-308" };
+    const double lo[] = { 0, -1e308, 0, -5e-308 }, hi[] = { 1e308, 0, 5e-308, 0 };
     for (int mode = 0; mode < 2; mode++) {
         tools_flush_to_zero(mode == 1);
-        for (int b = 0; b < 2; b++) {
+        for (int b = 0; b < 4; b++) {
             char src[512];
             snprintf(src, sizeof(src),
                 "[{\"type\":\"function\",\"function\":{\"name\":\"set_rate\","
@@ -710,7 +715,8 @@ static void test_atem_truncated_number_reads_back_inside_an_exclusive_bound(void
             num[k] = 0;
             double v = 0;
             bool reads = json_number_text_ok(num, &v);
-            if (!reads || (b == 0 ? !(v > 0) : !(v < 0))) {
+            // strictly off zero on the bound's side, and inside the far bound
+            if (!reads || !(lo[b] == 0 ? v > 0 : v >= lo[b]) || !(hi[b] == 0 ? v < 0 : v <= hi[b])) {
                 fprintf(stderr, "R2.20 (flush-to-zero %s): %s recovered %s (reads back %d)\n",
                         mode ? "on" : "off", bounds[b], num, reads);
                 assert(0);

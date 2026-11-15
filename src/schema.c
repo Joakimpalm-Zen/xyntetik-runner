@@ -900,6 +900,16 @@ bad:
     return false;
 }
 
+// A finite double's place in the order of all doubles: consecutive doubles
+// differ by one, and -0 and +0 are the same place. Integer arithmetic on the
+// bits, so it reads the same with subnormals flushed or not.
+static int64_t dbl_order(double x) {
+    uint64_t u;
+    memcpy(&u, &x, sizeof u);
+    int64_t mag = (int64_t)(u & 0x7fffffffffffffffULL);
+    return (u >> 63) ? -mag : mag;
+}
+
 static bool compile_number_bounds(jv *s, snode *n, char *err, int errcap) {
     double x;
     enum numeric_keyword_state state = numeric_keyword(s, "minimum", &x);
@@ -939,11 +949,23 @@ static bool compile_number_bounds(jv *s, snode *n, char *err, int errcap) {
         }
         n->has_real_max = true;
     }
-    if (n->has_real_min && n->has_real_max &&
-        (n->real_min > n->real_max ||
-         (n->real_min == n->real_max && (n->real_min_strict || n->real_max_strict)))) {
-        snprintf(err, errcap, "empty number bounds");
-        return false;
+    if (n->has_real_min && n->has_real_max) {
+        // Empty when no double satisfies both bounds. Read from the doubles'
+        // own order (dbl_order), so the answer does not depend on the float
+        // mode: an inverted interval, equal bounds of which one is exclusive,
+        // and two exclusive bounds on ADJACENT doubles, between which nothing
+        // lies. The first R2.20 fix dropped the last case, which 1.19.0 had
+        // caught through its one-step-inside bounds. Adjacency is asked as
+        // lo + 1 == hi, reached only when lo < hi, so nothing overflows: the
+        // difference hi - lo does not fit an int64_t for bounds on both sides
+        // of zero (-2 and 2 are 2^63 places apart).
+        int64_t lo = dbl_order(n->real_min), hi = dbl_order(n->real_max);
+        bool strict_any = n->real_min_strict || n->real_max_strict;
+        bool strict_both = n->real_min_strict && n->real_max_strict;
+        if (lo > hi || (lo == hi && strict_any) || (strict_both && lo + 1 == hi)) {
+            snprintf(err, errcap, "empty number bounds");
+            return false;
+        }
     }
     return true;
 bad:
@@ -3299,15 +3321,32 @@ static void emit_min_number(emitq *q, const snode *n) {
     char b[40];
     snprintf(b, sizeof(b), "%.17g", v);
     if (!number_text_in_bounds(n, b)) {
+        char cand[40];
         for (int mag = -307; mag <= 308; mag++) {
             for (int sign = 1; sign >= -1; sign -= 2) {
-                char cand[40];
                 snprintf(cand, sizeof(cand), "%s1e%d",
                          sign < 0 ? "-" : "", mag);
                 if (number_text_in_bounds(n, cand)) {
                     eq_put(q, cand);
                     return;
                 }
+            }
+        }
+        // An interval too narrow for a power of ten, next to zero: under
+        // (0, 5e-308] the readable values lie between the smallest normal
+        // number and the far bound. Try the far edge (one step inside when
+        // exclusive), then every one-digit decimal from the smallest scale up.
+        if (up ? n->has_real_max : n->has_real_min) {
+            double far = up ? n->real_max : n->real_min;
+            if (up ? n->real_max_strict : n->real_min_strict)
+                far = nextafter(far, up ? -DBL_MAX : DBL_MAX);
+            snprintf(cand, sizeof(cand), "%.17g", far);
+            if (number_text_in_bounds(n, cand)) { eq_put(q, cand); return; }
+        }
+        for (int mag = -308; mag <= 308; mag++) {
+            for (int m = 2; m <= 9; m++) {
+                snprintf(cand, sizeof(cand), "%s%de%d", up ? "" : "-", m, mag);
+                if (number_text_in_bounds(n, cand)) { eq_put(q, cand); return; }
             }
         }
     }
