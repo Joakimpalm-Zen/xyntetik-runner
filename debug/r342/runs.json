@@ -1,0 +1,298 @@
+{
+ "1.2b|p129|metal": [
+  {
+   "ptok": 130,
+   "pps": 188.29,
+   "gtok": 128,
+   "gps": 57.97,
+   "threads": 4
+  },
+  {
+   "ptok": 130,
+   "pps": 119.02,
+   "gtok": 128,
+   "gps": 57.26,
+   "threads": 4
+  },
+  {
+   "ptok": 130,
+   "pps": 38.37,
+   "gtok": 128,
+   "gps": 58.35,
+   "threads": 4
+  },
+  {
+   "ptok": 130,
+   "pps": 178.69,
+   "gtok": 128,
+   "gps": 57.55,
+   "threads": 4
+  },
+  {
+   "ptok": 130,
+   "pps": 39.04,
+   "gtok": 128,
+   "gps": 57.76,
+   "threads": 4
+  }
+ ],
+ "1.2b|p129|cpu": [
+  {
+   "ptok": 130,
+   "pps": 73.31,
+   "gtok": 128,
+   "gps": 25.18,
+   "threads": 4
+  },
+  {
+   "ptok": 130,
+   "pps": 94.48,
+   "gtok": 128,
+   "gps": 24.83,
+   "threads": 4
+  },
+  {
+   "ptok": 130,
+   "pps": 25.03,
+   "gtok": 128,
+   "gps": 24.99,
+   "threads": 4
+  },
+  {
+   "ptok": 130,
+   "pps": 64.46,
+   "gtok": 128,
+   "gps": 24.05,
+   "threads": 4
+  },
+  {
+   "ptok": 130,
+   "pps": 30.04,
+   "gtok": 128,
+   "gps": 24.86,
+   "threads": 4
+  }
+ ],
+ "1.2b|p1025|metal": [
+  {
+   "ptok": 1026,
+   "pps": 291.17,
+   "gtok": 128,
+   "gps": 54.65,
+   "threads": 4
+  },
+  {
+   "ptok": 1026,
+   "pps": 273.6,
+   "gtok": 128,
+   "gps": 54.04,
+   "threads": 4
+  },
+  {
+   "ptok": 1026,
+   "pps": 284.32,
+   "gtok": 128,
+   "gps": 53.88,
+   "threads": 4
+  },
+  {
+   "ptok": 1026,
+   "pps": 277.93,
+   "gtok": 128,
+   "gps": 54.61,
+   "threads": 4
+  },
+  {
+   "ptok": 1026,
+   "pps": 282.15,
+   "gtok": 128,
+   "gps": 53.94,
+   "threads": 4
+  }
+ ],
+ "1.2b|p1025|cpu": [
+  {
+   "ptok": 1026,
+   "pps": 94.24,
+   "gtok": 128,
+   "gps": 24.17,
+   "threads": 4
+  },
+  {
+   "ptok": 1026,
+   "pps": 88.19,
+   "gtok": 128,
+   "gps": 23.43,
+   "threads": 4
+  },
+  {
+   "ptok": 1026,
+   "pps": 89.95,
+   "gtok": 128,
+   "gps": 23.49,
+   "threads": 4
+  },
+  {
+   "ptok": 1026,
+   "pps": 86.59,
+   "gtok": 128,
+   "gps": 23.4,
+   "threads": 4
+  },
+  {
+   "ptok": 1026,
+   "pps": 90.72,
+   "gtok": 128,
+   "gps": 23.15,
+   "threads": 4
+  }
+ ],
+ "350m|p129|metal": [
+  {
+   "ptok": 130,
+   "pps": 78.41,
+   "gtok": 128,
+   "gps": 82.94,
+   "threads": 4
+  },
+  {
+   "ptok": 130,
+   "pps": 736.58,
+   "gtok": 128,
+   "gps": 83.26,
+   "threads": 4
+  },
+  {
+   "ptok": 130,
+   "pps": 77.82,
+   "gtok": 128,
+   "gps": 83.27,
+   "threads": 4
+  },
+  {
+   "ptok": 130,
+   "pps": 729.81,
+   "gtok": 128,
+   "gps": 82.67,
+   "threads": 4
+  },
+  {
+   "ptok": 130,
+   "pps": 78.23,
+   "gtok": 128,
+   "gps": 83.12,
+   "threads": 4
+  }
+ ],
+ "350m|p129|cpu": [
+  {
+   "ptok": 130,
+   "pps": 350.27,
+   "gtok": 128,
+   "gps": 72.64,
+   "threads": 4
+  },
+  {
+   "ptok": 130,
+   "pps": 67.08,
+   "gtok": 128,
+   "gps": 72.27,
+   "threads": 4
+  },
+  {
+   "ptok": 130,
+   "pps": 343.78,
+   "gtok": 128,
+   "gps": 72.63,
+   "threads": 4
+  },
+  {
+   "ptok": 130,
+   "pps": 67.45,
+   "gtok": 128,
+   "gps": 71.87,
+   "threads": 4
+  },
+  {
+   "ptok": 130,
+   "pps": 336.67,
+   "gtok": 128,
+   "gps": 72.7,
+   "threads": 4
+  }
+ ],
+ "350m|p1025|metal": [
+  {
+   "ptok": 1026,
+   "pps": 893.56,
+   "gtok": 128,
+   "gps": 79.58,
+   "threads": 4
+  },
+  {
+   "ptok": 1026,
+   "pps": 906.64,
+   "gtok": 128,
+   "gps": 79.05,
+   "threads": 4
+  },
+  {
+   "ptok": 1026,
+   "pps": 873.37,
+   "gtok": 128,
+   "gps": 78.95,
+   "threads": 4
+  },
+  {
+   "ptok": 1026,
+   "pps": 901.2,
+   "gtok": 128,
+   "gps": 79.18,
+   "threads": 4
+  },
+  {
+   "ptok": 1026,
+   "pps": 907.96,
+   "gtok": 128,
+   "gps": 79.36,
+   "threads": 4
+  }
+ ],
+ "350m|p1025|cpu": [
+  {
+   "ptok": 1026,
+   "pps": 343.18,
+   "gtok": 128,
+   "gps": 70.27,
+   "threads": 4
+  },
+  {
+   "ptok": 1026,
+   "pps": 337.28,
+   "gtok": 128,
+   "gps": 70.14,
+   "threads": 4
+  },
+  {
+   "ptok": 1026,
+   "pps": 333.79,
+   "gtok": 128,
+   "gps": 70.84,
+   "threads": 4
+  },
+  {
+   "ptok": 1026,
+   "pps": 304.1,
+   "gtok": 128,
+   "gps": 70.72,
+   "threads": 4
+  },
+  {
+   "ptok": 1026,
+   "pps": 328.91,
+   "gtok": 128,
+   "gps": 69.61,
+   "threads": 4
+  }
+ ]
+}
