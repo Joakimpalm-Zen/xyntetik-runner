@@ -599,6 +599,10 @@ jobs:
         run: python3 scripts/check-sanitizers.py
       - name: sanitized sharing and load cleanup
         run: make test-shared-asan
+      - name: the pattern automaton and the schema validator under sanitizers
+        # R2.18: an overflow at the largest maxLength, or a stray read in the
+        # automaton's cache, only fails loudly with UBSan and ASan
+        run: make test-schema-san
       - name: CLI leak gate
         # The GPU smokes keep leak detection off because a loaded driver owns
         # process-lifetime allocations; the CPU path has no such noise and is

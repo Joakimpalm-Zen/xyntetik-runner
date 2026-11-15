@@ -13,9 +13,11 @@
 //   4. The pool keeps its budget.
 //   5. A long pattern compiles on a small stack.
 //   6. The kept limit fails by name, also when a trial reached the state first.
+//   7. Lengths at INT_MAX, the largest maxLength.
 #include "jsre.h"
 #include "jsre_cases.h"
 
+#include <limits.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -391,9 +393,36 @@ static void test_kept_limit(void) {
     printf("kept limit: a step past it fails by name, fed alone and after a trial\n");
 }
 
+
+// 7 --------------------------------------------------------------- huge bounds
+// maxLength reaches INT_MAX (compile_bound takes it): the length sequence, the
+// asks and the witness hold there without an overflow (UBSan: test-schema-san).
+static void test_huge_bounds(void) {
+    char err[256];
+    jsre *re = jsre_compile("^(a|b)+$", err, sizeof err);
+    CHECK(re && jsre_lengths(re, INT_MAX, err, sizeof err), "lengths at INT_MAX: %s", err);
+    if (!re) return;
+    uint64_t *set = malloc(jsre_words(re) * 8);
+    jsre_start(re, set);
+    CHECK(jsre_len_ok(re, set, 0, INT_MAX) && jsre_len_ok(re, set, INT_MAX - 3, INT_MAX) &&
+          jsre_len_ok(re, set, INT_MAX, INT_MAX) && jsre_len_ok(re, set, INT_MAX, -1) &&
+          !jsre_len_ok(re, set, 0, 0), "lengths near INT_MAX");
+    char out[64];
+    CHECK(jsre_witness(re, set, 3, INT_MAX, out, sizeof out) == 3, "a witness of 3");
+    CHECK(jsre_witness(re, set, INT_MAX - 1, INT_MAX, out, sizeof out) == (int)sizeof out, "a witness too long stops at cap");
+    jsre_pool *p = jsre_pool_new(BUDGETS[0]);
+    jsre_dfa *d = jsre_dfa_new(re, p);
+    jsre_st st = jsre_dfa_start(d);
+    CHECK(jsre_dfa_len_ok(d, st, INT_MAX - 3, INT_MAX) && jsre_dfa_len_ok(d, st, 1, INT_MAX), "DFA lengths near INT_MAX");
+    jsre_dfa_free(d); jsre_pool_free(p);
+    free(set); jsre_free(re);
+    printf("huge bounds: lengths, asks and witnesses at INT_MAX\n");
+}
+
 int main(void) {
     test_stack();
     test_kept_limit();
+    test_huge_bounds();
     test_cases();
     test_cache();
     test_lengths();

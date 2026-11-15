@@ -576,6 +576,18 @@ $(TEST_JSON_SCHEMA): tests/test_json_schema.c $(OBJDIR)/json.o $(OBJDIR)/jsonmod
 $(TEST_SVAL_WALK): tests/test_sval_walk.c $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(HDR)
 	$(CC) $(CFLAGS) -I src tests/test_sval_walk.c $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) -o $@ -lm
 
+# R2.18: the pattern automaton and the schema validator under ASan and UBSan:
+# an overflow (a maxLength of INT_MAX) or a stray read in the automaton only
+# fails loudly here. CI runs it in the sanitized conformance job.
+test-schema-san: tests/test_jsre.c tests/jsre_cases.h tests/test_json_schema.c $(HDR)
+	$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer \
+	    -fno-fast-math -std=gnu11 -Wall -I src tests/test_jsre.c src/jsre.c -o test-jsre-san $(LDFLAGS)
+	$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer \
+	    -fno-fast-math -std=gnu11 -Wall -I src tests/test_json_schema.c src/json.c src/jsonmode.c $(SCHEMA_SRC) \
+	    -o test-json-schema-san -lm
+	./test-jsre-san
+	./test-json-schema-san
+
 # R2.18: the pattern automaton against ECMA-262's verdicts (tests/jsre_cases.h,
 # from scripts/gen-jsre-cases.py), its DFA cache under three pool budgets, its
 # lengths against a forward search; pthread for the second-thread fill check

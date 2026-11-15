@@ -3765,6 +3765,98 @@ static void test_schema_pattern_automaton(void) {
     printf("ok: pattern automaton strings (R2.18): searched, code points, exact lengths, closes, limits by name\n");
 }
 
+
+// R2.18 (codex on #875): a pattern the segment compiler keeps must mean what
+// ECMA-262 means. It read \s and \S as ASCII white space, so ^\S+$ admitted
+// U+00A0 and ^[\s]+$ refused it; it read [\.-_] as three characters where
+// ECMA has a range; [] opening a set the POSIX way; and strtol let {2, 3},
+// { 2} and {+2} count where ECMA reads text. Each now goes to the automaton,
+// which reads it as ECMA does; what stays on the segment path is exact.
+static void test_schema_segment_classes_mean_what_ecma_means(void) {
+    struct { const char *pat, *doc; bool ok; } cases[] = {
+        { "^\\\\S+$", "\"ab\"", true },
+        { "^\\\\S+$", "\"\xc2\xa0\"", false },            // U+00A0 is ECMA white space
+        { "^\\\\S+$", "\"\xe3\x80\x80\"", false },        // U+3000
+        { "^\\\\S+$", "\"\xc3\xa9\"", true },             // é is not
+        { "^[^\\\\s]+$", "\"\xe2\x80\xa8\"", false },     // U+2028 is a line terminator
+        { "^[^\\\\s]+$", "\"\xc3\xa9\"", true },
+        { "^[\\\\s]+$", "\"\xc2\xa0\"", true },
+        { "^[0-9\\\\s]+$", "\"1\xe3\x80\x80\"", true },
+        { "^[\\\\w\\\\.-_]+$", "\":\"", true },             // . to _ is a range
+        { "^[\\\\w\\\\.-_]+$", "\"-\"", false },             // and - is below it
+        { "^[\\\\w\\\\.-_]+$", "\"a.b\"", true },
+        { "^a[b]{ 2}$", "\"ab{ 2}\"", true },              // text, as legacy ECMA reads it
+        { "^a[b]{ 2}$", "\"abb\"", false },
+        { "^a[b]{2, 3}$", "\"ab{2, 3}\"", true },
+        { "^a[b]{2, 3}$", "\"abb\"", false },
+        { "^a[b]{+2}$", "\"ab{+2}\"", true },
+        { "^a[b]{+2}$", "\"abb\"", false },
+        { "^[^\\\\n\\\\r]*$", "\"\xe2\x80\xa8\"", true },  // [^\n\r] holds U+2028
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+        char src[256];
+        snprintf(src, sizeof(src), "{\"type\":\"string\",\"pattern\":\"%s\"}", cases[i].pat);
+        jv *j = json_parse(src, strlen(src));
+        assert(j != NULL);
+        char err[256];
+        snode *s = schema_compile(j, err, sizeof(err));
+        jv_free(j);
+        assert(s != NULL);
+        sval v; sval_init(&v, s);
+        bool got = sval_feed(&v, cases[i].doc, (int)strlen(cases[i].doc)) && v.done;
+        if (got != cases[i].ok) {
+            fprintf(stderr, "segment class: %s on %s: got %d want %d\n", cases[i].pat, cases[i].doc, got, cases[i].ok);
+            assert(got == cases[i].ok);
+        }
+        schema_free(s);
+    }
+    // [] is ECMA's empty class: a pattern that matches nothing is refused
+    {
+        const char *src = "{\"type\":\"string\",\"pattern\":\"^[]a]+$\"}";
+        jv *j = json_parse(src, strlen(src));
+        char err[256];
+        assert(schema_compile(j, err, sizeof(err)) == NULL);
+        jv_free(j);
+    }
+    // the shapes the segments express exactly stay on their path
+    const char *kept[] = { "^wf_[a-z0-9-]{6,}$", "^\\\\d{5}$", "^[A-Z]{3}[0-9]{4}$", "^[^\\\\n\\\\r]*$", "^[\\\\w-]+$" };
+    for (size_t i = 0; i < sizeof(kept) / sizeof(*kept); i++) {
+        char src[256];
+        snprintf(src, sizeof(src), "{\"type\":\"string\",\"pattern\":\"%s\"}", kept[i]);
+        jv *j = json_parse(src, strlen(src));
+        char err[256];
+        snode *s = schema_compile(j, err, sizeof(err));
+        jv_free(j);
+        assert(s && s->n_pats == 1 && !s->re);
+        schema_free(s);
+    }
+    // R2.18 (codex on #875): the largest maxLength compile_bound takes,
+    // 2147483647, without an overflow (test-schema-san runs this under UBSan)
+    {
+        const char *src = "{\"type\":\"string\",\"pattern\":\"^(a|b)+$\",\"maxLength\":2147483647}";
+        jv *j = json_parse(src, strlen(src));
+        char err[256];
+        snode *s = schema_compile(j, err, sizeof(err));
+        jv_free(j);
+        assert(s && s->re);
+        assert(pat_whole(s, "\"abab\""));
+        pat_closes(s, "\"a");
+        schema_free(s);
+        src = "{\"type\":\"string\",\"pattern\":\"^(a|b)+$\",\"minLength\":2147483646,\"maxLength\":2147483647}";
+        j = json_parse(src, strlen(src));
+        s = schema_compile(j, err, sizeof(err));
+        jv_free(j);
+        assert(s && s->re);
+        assert(pat_prefix(s, "\"abab"));
+        sval c; sval_init(&c, s);
+        assert(sval_feed(&c, "\"ab", 3));
+        char tail[64];
+        (void)sval_close(&c, tail, sizeof(tail));   // too long to finish: stops short, without overflow
+        schema_free(s);
+    }
+    printf("ok: segment patterns mean what ECMA means; the largest maxLength compiles and closes\n");
+}
+
 int main(void) {
     test_schema_sibling_constraints_are_not_dropped();
     test_strict_bounded_numbers();
@@ -3798,6 +3890,7 @@ int main(void) {
     test_schema_pattern_shorthand_classes();
     test_schema_pattern_regex_syntax_is_rejected_not_reinterpreted();
     test_schema_pattern_automaton();
+    test_schema_segment_classes_mean_what_ecma_means();
     test_schema_allof_of_string_patterns();
     test_schema_negated_and_escaped_classes();
     test_schema_number_bounds_reject_dead_minus_and_close_in_bounds();
