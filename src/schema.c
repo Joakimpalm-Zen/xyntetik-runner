@@ -4645,21 +4645,31 @@ char *sval_close_alloc(sval *v, int *len, int max) {
 // (template.c), so the two closers write one fill (R2.19.1). The schema is
 // read as schema_compile reads it, local $refs inlined and a one-member allOf
 // collapsed, so a number behind either is the number it wraps, and a const or
-// an enum writes its first member. 1 when the whole spelling and its NUL fit
-// in out. 0 when there is no compiled decision: no schema, or one the compiler
-// refuses. -1 when the fill could not be written: an allocation failed, the
-// buffer is NULL or its capacity under 1, or the fill does not fit (one of a
-// MiB or more never does). A caller reads 0 as "no constraint to honour" and
-// -1 as a failure, never as a fallback (codex on #897: an allocation failure
-// read as 0 let the atem recovery write 0 under minimum 10). out is empty
-// unless 1 is returned, wherever it has room for the NUL.
+// an enum writes its first member. 1 only with a value the compiled schema's
+// own validator accepts, whole with its NUL in out. 0 only when there is no
+// schema. -1 when there is no checked value to give: the compiler refused the
+// schema, an allocation failed anywhere inside (the compile, the emitter, the
+// check), the buffer is NULL or its capacity under 1, or the fill does not fit
+// (one of a MiB or more never does). A refusal and an allocation failure are
+// not told apart, because the compiler's own words cannot be trusted for it:
+// the pattern compiler reports an allocation failure as "more than 4096
+// automaton states" (codex on #897). out is empty unless 1 is returned,
+// wherever it has room for the NUL.
+static bool fill_accepted(const snode *n, const char *s, int len) {
+    sval v;
+    sval_init(&v, n);
+    bool ok = sval_feed(&v, s, len);
+    if (ok && !v.done) (void)sval_feed(&v, " ", 1);   // a bare number ends here
+    return ok && v.done;
+}
+
 int schema_fill(struct jv *schema, char *out, int cap) {
     if (!out || cap <= 0) return -1;
     out[0] = 0;
     if (!schema) return 0;
     char err[200];
     snode *n = schema_compile(schema, err, (int)sizeof(err));
-    if (!n) return schema_err_oom(err) ? -1 : 0;
+    if (!n) return -1;
     // one byte past the caller's room: a fill that reaches it does not fit
     int room = cap < (1 << 20) ? cap : (1 << 20);
     char *buf = malloc((size_t)room + 1);
@@ -4667,7 +4677,14 @@ int schema_fill(struct jv *schema, char *out, int cap) {
     if (buf) {
         emitq q = { buf, room + 1, 0, 0, false, room + 1 };
         emit_min_choice(&q, n, 0, 0);
-        if (q.n < room) { memcpy(out, buf, (size_t)q.n); out[q.n] = 0; rc = 1; }
+        buf[q.n] = 0;
+        // an emitter that lost an allocation (a pattern's witness) writes a
+        // value short of the schema, "" under ^(a|b)$: the validator is the
+        // judge, not the length
+        if (q.n < room && fill_accepted(n, buf, q.n)) {
+            memcpy(out, buf, (size_t)q.n + 1);
+            rc = 1;
+        }
         free(buf);
     }
     schema_free(n);

@@ -162,8 +162,77 @@ static int sweep(const char *param, const char *defs, const char *want_args) {
     return wrong;
 }
 
+// schema_fill's own contract (codex's second look at #897): -1 on any
+// allocation failure inside it, in the compile or the emit; 1 only with a value
+// the compiled schema accepts. Every allocation of one fill is failed in turn,
+// and each outcome is judged by the schema's own validator (built once, with
+// nothing failed). A pattern's witness that lost its buffer came back as 1 with
+// "", and the pattern compiler reports some allocation failures as refusals.
+static bool value_accepted(const snode *n, const char *s) {
+    sval v;
+    sval_init(&v, n);
+    bool ok = sval_feed(&v, s, (int)strlen(s));
+    if (ok && !v.done) (void)sval_feed(&v, " ", 1);   // a bare number ends here
+    return ok && v.done;
+}
+
+static int fill_sweep(const char *src) {
+    fail_at = -1;
+    jv *j = json_parse(src, strlen(src));
+    assert(j);
+    char err[256], out[512];
+    snode *check = schema_compile(j, err, sizeof(err));
+    if (!check) { fprintf(stderr, "fill sweep: %s does not compile: %s\n", src, err); assert(0); }
+    alloc_calls = 0;
+    int rc = schema_fill(j, out, (int)sizeof(out));
+    long total = alloc_calls;
+    if (rc != 1 || !value_accepted(check, out)) {
+        fprintf(stderr, "fill sweep: %s fills %s (rc %d) with nothing failed\n", src, out, rc);
+        assert(0);
+    }
+    long baseline = alloc_live;
+    int wrong = 0;
+    for (long k = 0; k < total; k++) {
+        alloc_calls = 0;
+        fail_at = k;
+        rc = schema_fill(j, out, (int)sizeof(out));
+        fail_at = -1;
+        if (rc == -1 ? out[0] != 0 : rc != 1 || !value_accepted(check, out)) {
+            if (wrong < 4)
+                fprintf(stderr, "fill sweep: %s, allocation %ld of %ld failed: rc %d, out \"%s\"\n",
+                        src, k, total, rc, out);
+            wrong++;
+        }
+        if (alloc_live != baseline) {
+            fprintf(stderr, "fill sweep: %s, allocation %ld failed: %ld blocks leaked\n",
+                    src, k, alloc_live - baseline);
+            wrong++;
+            alloc_live = baseline;
+        }
+    }
+    printf("fill sweep: %s: %ld allocations failed in turn, %d wrong\n", src, total, wrong);
+    schema_free(check);
+    jv_free(j);
+    return wrong;
+}
+
 int main(void) {
     int bad = 0;
+    static const char *const FILLS[] = {
+        "{\"type\":\"number\",\"minimum\":10}",
+        "{\"type\":\"number\",\"exclusiveMinimum\":0,\"maximum\":5e-308}",
+        "{\"type\":\"integer\",\"minimum\":5,\"maximum\":9}",
+        "{\"type\":\"string\",\"pattern\":\"^(a|b)$\"}",
+        "{\"type\":\"string\",\"minLength\":3}",
+        "{\"type\":\"number\",\"const\":5}",
+        "{\"enum\":[3,\"x\"]}",
+        "{\"type\":\"boolean\"}",
+        "{\"$ref\":\"#/$defs/n\",\"$defs\":{\"n\":{\"type\":\"number\",\"minimum\":10}}}",
+        "{\"allOf\":[{\"type\":\"string\",\"pattern\":\"^(a|b)$\"}]}",
+        "{\"type\":\"object\",\"properties\":{\"k\":{\"type\":\"integer\",\"minimum\":2}},\"required\":[\"k\"]}",
+        "{\"type\":\"array\",\"items\":{\"type\":\"number\",\"maximum\":-1},\"minItems\":2}",
+    };
+    for (size_t i = 0; i < sizeof(FILLS) / sizeof(FILLS[0]); i++) bad += fill_sweep(FILLS[i]);
     bad += sweep("{\"type\":\"number\",\"minimum\":10}", "", "{\\\"x\\\":10}");
     bad += sweep("{\"$ref\":\"#/$defs/N\"}", ",\"$defs\":{\"N\":{\"type\":\"number\",\"minimum\":10}}",
                  "{\\\"x\\\":10}");

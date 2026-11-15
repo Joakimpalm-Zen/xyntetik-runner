@@ -1849,7 +1849,9 @@ static void test_schema_number_prefix_fits_the_buffer(void) {
 // $ref or a one-member allOf as no bound at all (0 for minimum 10). A fill
 // is written whole with its NUL or not at all (1), a buffer that cannot take
 // it is a failure (-1), not "no constraint" (0), and the schema is read as
-// the compiler reads it.
+// the compiler reads it. A schema the compiler refuses gives no checked value
+// either: -1, as an allocation failure does (the pattern compiler reports
+// some of those as refusals, so the two cannot be told apart from outside).
 static void test_schema_fill_whole_or_nothing(void) {
     const char *src = "{\"type\":\"number\",\"minimum\":10}";
     jv *j = json_parse(src, strlen(src));
@@ -1866,11 +1868,11 @@ static void test_schema_fill_whole_or_nothing(void) {
     assert(schema_fill(j, out, 0) == -1);
     assert(schema_fill(NULL, out, 8) == 0 && out[0] == 0);
     jv_free(j);
-    // a schema the compiler refuses has no compiled decision: 0, not -1
+    // a schema the compiler refuses has no checked value: -1, never 0
     const char *refused = "{\"type\":\"number\",\"minimum\":\"ten\"}";
     j = json_parse(refused, strlen(refused));
     assert(j);
-    assert(schema_fill(j, out, (int)sizeof(out)) == 0 && out[0] == 0);
+    assert(schema_fill(j, out, (int)sizeof(out)) == -1 && out[0] == 0);
     jv_free(j);
     const char *wrapped[] = {
         "{\"allOf\":[{\"type\":\"number\",\"minimum\":10}]}",

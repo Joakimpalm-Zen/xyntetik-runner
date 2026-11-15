@@ -88,11 +88,11 @@ snode *schema_compile(struct jv *schema, char *err, int errcap);
 // (R2.19.1): for a bounded number 0 when its bounds allow it, else the edge
 // nearest 0, else the exact witness's shortest completion; for a const or an
 // enum its first member. The schema is read as schema_compile reads it ($refs
-// inlined, a one-member allOf collapsed). 1: the whole spelling and its NUL
-// are in out. 0: no compiled decision (no schema, or one the compiler
-// refuses). -1: it could not be written (an allocation failed, a NULL buffer,
-// cap under 1, or a fill that does not fit), a failure, not "no constraint".
-// out is empty unless 1 is returned.
+// inlined, a one-member allOf collapsed). 1: a value the compiled schema's
+// own validator accepts, whole with its NUL, is in out. 0: no schema. -1: no
+// checked value (the compiler refused the schema, an allocation failed in the
+// compile, the emit or the check, a NULL buffer, cap under 1, or a fill that
+// does not fit). out is empty unless 1 is returned.
 int schema_fill(struct jv *schema, char *out, int cap);
 // True when err, from schema_compile or schema_resolve_refs, reports an
 // allocation failure rather than a schema the entry refuses (R2.19.1).

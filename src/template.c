@@ -6783,27 +6783,15 @@ static const char *atem_enum_recovery(jv *choices, const char *raw,
 // close writes for the same parameter (schema_fill, R2.19.1: 0 when the
 // bounds allow it, else the edge nearest 0, else the exact witness; a const's
 // or an enum's first member), read from the parameter as the compiler reads
-// it, so the recovery and the validator read one decision. A parameter the
-// compiler refuses keeps the old best effort: 0 for a number, 0 clamped into
-// the declared bounds for an integer. False when the fill could not be
-// written (an allocation failed): the call then fails, as it does on every
-// other error, and no value is guessed in its place.
-static bool atem_number_recovery(sbuf *out, jv *schema, bool integer) {
+// it, so the recovery and the validator read one decision. False when there
+// is no value the parameter's compiled schema accepts: an allocation failed,
+// or the compiler refuses the schema. The call then fails, as it does on
+// every other error, and no value is guessed in its place (the old best
+// effort for a refused schema, 0 or 0 clamped into the raw bounds, was a value
+// nothing had checked).
+static bool atem_number_recovery(sbuf *out, jv *schema) {
     char b[512];
-    int filled = schema_fill(schema, b, (int)sizeof(b));
-    if (filled < 0) return false;
-    if (filled > 0) { sb_fmt(out, "%s", b); return true; }
-    if (!integer) { sb_lit(out, "0"); return true; }
-    double value = 0.0;
-    jv *bound = jv_get(schema, "minimum");
-    if (bound && bound->type == J_NUM && value < bound->num) value = ceil(bound->num);
-    bound = jv_get(schema, "exclusiveMinimum");
-    if (bound && bound->type == J_NUM && value <= bound->num) value = floor(bound->num) + 1.0;
-    bound = jv_get(schema, "maximum");
-    if (bound && bound->type == J_NUM && value > bound->num) value = floor(bound->num);
-    bound = jv_get(schema, "exclusiveMaximum");
-    if (bound && bound->type == J_NUM && value >= bound->num) value = ceil(bound->num) - 1.0;
-    snprintf(b, sizeof(b), "%.0f", value);
+    if (schema_fill(schema, b, (int)sizeof(b)) != 1) return false;
     sb_fmt(out, "%s", b);
     return true;
 }
@@ -6874,7 +6862,7 @@ static int atem_map(const tool_envelope *e, const char *doc, size_t n,
                 else if (!strcmp(pt, "null")) sb_lit(&args, "null");
                 else if (!strcmp(pt, "object")) sb_lit(&args, "{}");
                 else if (!strcmp(pt, "array")) sb_lit(&args, "[]");
-                else if (!atem_number_recovery(&args, ps, !strcmp(pt, "integer"))) goto fail;
+                else if (!atem_number_recovery(&args, ps)) goto fail;
             } else {
                 const char *sv = val;
                 size_t sn = vn;
