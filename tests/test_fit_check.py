@@ -531,3 +531,47 @@ def test_a_router_picking_past_the_host_selection_is_refused_not_run(runner_bin,
     ok = run(runner_bin, "-m", str(edge), "-p", "hi", "-n", "1", "--gpu", "off",
              "-t", "1", "-c", "64")
     assert ok.returncode == 0, ok
+
+
+def test_fit_reads_every_part_of_a_split_model(runner_bin, tmp_path):
+    """A model published in several parts (<prefix>-00001-of-0000N.gguf) keeps
+    each part's tensors in that part's own table. The fit check opened the
+    first part alone, so the loader's plan looked for a tensor that lives in
+    a later part and the answer was "WILL NOT LOAD ... missing tensor" for a
+    file the loader takes (found 2026-11-15 on both split trunks of the
+    support list, on a complete 2-part file). The header read now covers the
+    whole set, as the load does."""
+    if not FIXTURE.exists():
+        pytest.skip("test.gguf not generated")
+    prefix = tmp_path / "shards"
+    subprocess.run([sys.executable, ROOT / "scripts/gguf-split.py", str(FIXTURE), str(prefix), "2"],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    parts = sorted(tmp_path.glob("shards-0000?-of-00002.gguf"))
+    assert len(parts) == 2
+
+    def report(path):
+        p = run(runner_bin, "--fit", str(path), "--gpu", "off", "-c", "512")
+        return p, [l for l in p.stdout.decode().splitlines()
+                   if not l.startswith(("fit:", "  available RAM", "  verdict", "  parts"))]
+
+    whole, whole_lines = report(FIXTURE)
+    assert whole.returncode == 0 and len(whole_lines) >= 3, whole.stdout
+    # the premise: the first part alone is not the model. Its own table must
+    # lack tensors, or this test would pass on a reader of one part.
+    first_alone = tmp_path / "alone.gguf"
+    first_alone.write_bytes(parts[0].read_bytes())
+    alone = run(runner_bin, "--fit", str(first_alone), "--gpu", "off", "-c", "512")
+    assert alone.returncode != 0, "the first part alone must not read as a whole model"
+
+    for path in parts:                       # either part names the set
+        p, lines = report(path)
+        assert p.returncode == 0, (p.stdout, p.stderr)
+        assert b"WILL NOT LOAD" not in p.stdout
+        assert lines == whole_lines          # the model, weights and cache lines of the whole file
+        assert b"  parts         2 files; the sizes below are the whole set's" in p.stdout
+
+    # a missing part is named; the answer is never given from the parts at hand
+    parts[1].unlink()
+    p = run(runner_bin, "--fit", str(parts[0]), "--gpu", "off", "-c", "512")
+    assert p.returncode != 0 and b"part 2/2" in p.stderr, (p.stdout, p.stderr)
+    assert b"verdict" not in p.stdout or b"WILL NOT LOAD" not in p.stdout
