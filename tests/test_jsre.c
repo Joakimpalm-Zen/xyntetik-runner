@@ -498,6 +498,7 @@ static void test_heap_bound(void) {
     jsre_dfa *d[ND];
     for (int i = 0; i < ND; i++) d[i] = jsre_dfa_new(re[i], p);
     long walked = 0;
+    jsre_pool_stat s;
     for (int i = 0; i < ND; i++) {
         jsre_st s0 = jsre_dfa_start(d[i]);
         for (unsigned w = 0; w < (1u << 16); w++) {
@@ -505,10 +506,18 @@ static void test_heap_bound(void) {
             for (int k = 0; k < 16 && st != JSRE_DEAD && st != JSRE_FAIL; k++, walked++)
                 st = jsre_dfa_step(d[i], st, (w >> k & 1) ? 'b' : 'a', false);
             CHECK(st != JSRE_FAIL, "a walk failed");
+            // a flush must make room: these walks need a few, never one per
+            // fill (a flush that left the books at their high water flushed
+            // at every fill from then on); checked as it goes, so it fails fast
+            if ((w & 1023) == 0) {
+                jsre_pool_stats(p, &s);
+                if (s.flushes > 64) { CHECK(0, "%llu flushes by window %u of DFA %d", (unsigned long long)s.flushes, w, i); goto walked_out; }
+            }
         }
     }
-    jsre_pool_stat s;
+walked_out:
     jsre_pool_stats(p, &s);
+    CHECK(s.flushes <= 64, "%llu flushes for walks that need a few", (unsigned long long)s.flushes);
     size_t held = heap_high - base;
     // one step's need past the budget: a set, a table, a hash table's growth
     size_t slack = 256 * 1024;

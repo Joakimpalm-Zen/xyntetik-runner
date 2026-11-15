@@ -25,29 +25,40 @@
 static long alloc_calls;   // allocations attempted since the last reset
 static long alloc_live;    // outstanding blocks; must return to its baseline
 static long fail_at = -1;  // index of the allocation to fail, -1 for none
+// and the bytes asked for, now and at the most, from a size header on every
+// block (R2.18: the per-schema cap on compiled automata is checked in bytes)
+static size_t bytes_live, bytes_high;
 
 static void *t_malloc(size_t n) {
     if (fail_at >= 0 && alloc_calls++ == fail_at) return NULL;
     if (fail_at < 0) alloc_calls++;
-    void *p = malloc(n);
-    if (p) alloc_live++;
-    return p;
+    size_t *p = malloc(n + 16);
+    if (!p) return NULL;
+    *p = n;
+    alloc_live++;
+    bytes_live += n;
+    if (bytes_live > bytes_high) bytes_high = bytes_live;
+    return (char *)p + 16;
 }
 
 static void *t_calloc(size_t a, size_t b) {
-    if (fail_at >= 0 && alloc_calls++ == fail_at) return NULL;
-    if (fail_at < 0) alloc_calls++;
-    void *p = calloc(a, b);
-    if (p) alloc_live++;
+    if (b && a > ((size_t)-1 - 16) / b) return NULL;
+    void *p = t_malloc(a * b);
+    if (p) memset(p, 0, a * b);
     return p;
 }
 
 static void *t_realloc(void *p, size_t n) {
+    if (!p) return t_malloc(n);   // realloc(NULL, n) behaves as malloc
     if (fail_at >= 0 && alloc_calls++ == fail_at) return NULL;
     if (fail_at < 0) alloc_calls++;
-    void *q = realloc(p, n);
-    if (q && !p) alloc_live++;   // realloc(NULL, n) behaves as malloc
-    return q;
+    size_t *h = (size_t *)((char *)p - 16), old = *h;
+    size_t *q = realloc(h, n + 16);
+    if (!q) return NULL;
+    *q = n;
+    bytes_live = bytes_live - old + n;
+    if (bytes_live > bytes_high) bytes_high = bytes_live;
+    return (char *)q + 16;
 }
 
 // strdup must be instrumented too, not merely for the failure injection: its
@@ -69,8 +80,11 @@ static char *t_strndup(const char *s, size_t cap) {
 }
 
 static void t_free(void *p) {
-    if (p) alloc_live--;
-    free(p);
+    if (!p) return;
+    size_t *h = (size_t *)((char *)p - 16);
+    alloc_live--;
+    bytes_live -= *h;
+    free(h);
 }
 
 #define malloc  t_malloc
@@ -142,6 +156,62 @@ static const char *const schemas[] = {
 // cp_producible) left its block behind when an allocation part-way through
 // failed. Multi-range Unicode classes build several of them; every one of
 // their allocations is failed once, and nothing may be stranded.
+
+// R2.18: the bytes a schema's compiled pattern automata may hold, 64 MiB
+// (JSRE_SCHEMA_BYTES), counted as the schema compiles and refused by name past
+// it, so a request's schema cannot make the server hold more however many
+// patterns it carries. Each property here is ^(a|b){0,2000}$ with maxLength
+// 2000, about 1 MiB of automaton (its length sequence most of it): a schema of
+// as many as fit compiles, one more is refused, and the heap, counted by the
+// allocator, never holds much past the cap while either compiles.
+static char *cap_schema(int k) {
+    size_t cap = (size_t)k * 96 + 64;
+    char *s = malloc(cap);
+    int n = snprintf(s, cap, "{\"type\":\"object\",\"properties\":{");
+    for (int i = 0; i < k; i++)
+        n += snprintf(s + n, cap - (size_t)n, "%s\"p%d\":{\"type\":\"string\",\"pattern\":\"^(a|b){0,2000}$\",\"maxLength\":2000}",
+                      i ? "," : "", i);
+    snprintf(s + n, cap - (size_t)n, "}}");
+    return s;
+}
+
+static void test_schema_automata_cap(void) {
+    char err[256];
+    fail_at = -1;
+    // one pattern's automaton, as jsre counts it
+    char *one = cap_schema(1);
+    jv *j = json_parse(one, strlen(one));
+    snode *n = schema_compile(j, err, sizeof(err));
+    assert(n && n->n_props == 1 && n->props[0]->re);
+    size_t b = jsre_bytes(n->props[0]->re);
+    schema_free(n); jv_free(j); free(one);
+    assert(b > 512 * 1024 && b < 4 << 20);
+    int fit = (int)(JSRE_SCHEMA_BYTES / b);
+    // as many as fit: compiles, and holds about what it counts
+    char *under = cap_schema(fit);
+    j = json_parse(under, strlen(under));
+    size_t base = bytes_live;
+    bytes_high = bytes_live;
+    n = schema_compile(j, err, sizeof(err));
+    if (!n) fprintf(stderr, "automata cap: %d patterns refused: %s\n", fit, err);
+    assert(n != NULL);
+    size_t held = bytes_live - base;
+    assert(held >= (size_t)fit * b && held <= JSRE_SCHEMA_BYTES + (size_t)fit * 4096);
+    schema_free(n);
+    jv_free(j); free(under);
+    // one more: refused by name, the compile stopping near the cap
+    char *over = cap_schema(fit + 1);
+    j = json_parse(over, strlen(over));
+    base = bytes_live;
+    bytes_high = bytes_live;
+    n = schema_compile(j, err, sizeof(err));
+    assert(n == NULL && strstr(err, "pattern automata") && strstr(err, "64 MiB"));
+    assert(bytes_high - base <= JSRE_SCHEMA_BYTES + 2 * b + (size_t)(fit + 1) * 4096);
+    assert(bytes_live == base);   // the refused compile left nothing behind
+    jv_free(j); free(over);
+    printf("ok: the compiled automata cap: %d patterns of %zu bytes compile, %d are refused by name\n", fit, b, fit + 1);
+}
+
 static void test_pattern_classes_survive_allocation_failure(void) {
     const char *pats[] = { "\\s", "\\S+", "[^\\s\\d]{2}", "[a-z\\u00e9\\u4e00-\\u9fff]{2,3}",
                            "(\\w|\\s)*\\u00e9", ".[^a-c\\u2028]", "[\\s\\S]x" };
@@ -462,6 +532,7 @@ static void test_native_compilers_survive_allocation_failure(void) {
 }
 
 int main(void) {
+    test_schema_automata_cap();
     test_pattern_classes_survive_allocation_failure();
     test_pattern_feed_survives_allocation_failure();
     test_compile_survives_allocation_failure();
