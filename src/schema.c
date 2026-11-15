@@ -4144,6 +4144,7 @@ static int refx_lex_cmp(const void *a, const void *b) {
 
 static refx_lex *refx_lex_find(refx_lexmap *mp, const jv *node) {
     refx_lex key = { node, {0}, false };
+    if (!mp->n) return NULL;   // an empty map has no array: bsearch takes no null base
     return bsearch(&key, mp->v, (size_t)mp->n, sizeof *mp->v, refx_lex_cmp);
 }
 
@@ -4202,7 +4203,10 @@ static bool refx_nested_base(jv *root, char *err, int errcap) {
         snprintf(err, errcap, "out of memory checking the schema's reference bases");
         return false;
     }
-    qsort(mp.v, (size_t)mp.n, sizeof *mp.v, refx_lex_cmp);
+    // a root that is not an object adds nothing to the map, so its array is
+    // NULL: qsort and bsearch are declared to take no null pointer, whatever
+    // the count (found by the schema_compile fuzz target, 2026-11-15)
+    if (mp.n > 1) qsort(mp.v, (size_t)mp.n, sizeof *mp.v, refx_lex_cmp);
     refx_lex *r = refx_lex_find(&mp, root);
     if (r) r->seen = true;
     bool ok = refx_reach(root, &mp, root, (refx_base){0}, 0, err, errcap);
