@@ -1,6 +1,7 @@
 // JSON Schema `pattern` as a byte automaton (R2.18); see jsre.h.
 #include "jsre.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -821,7 +822,8 @@ static uint64_t words_hash(const uint64_t *s, size_t w) {
 bool jsre_lengths(jsre *re, int upto, char *err, size_t errcap) {
     int n = re->n;
     size_t w = re->words;
-    int cap = upto >= 0 && upto + 1 < JSRE_LEN_MAX ? upto + 1 : JSRE_LEN_MAX;
+    // upto + 1 in long: a maxLength reaches INT_MAX (R2.18, codex on #875)
+    int cap = upto >= 0 && (long)upto + 1 < JSRE_LEN_MAX ? upto + 1 : JSRE_LEN_MAX;
     int *off0 = calloc((size_t)n + 1, sizeof *off0), *off1 = calloc((size_t)n + 1, sizeof *off1);
     int *src0 = NULL, *src1 = NULL, *queue = malloc(sizeof *queue * (size_t)n);
     uint64_t *lv = malloc(sizeof *lv * w * (size_t)cap), *y = malloc(sizeof *y * w);
@@ -886,7 +888,7 @@ bool jsre_lengths(jsre *re, int upto, char *err, size_t errcap) {
             if (bit(v, t)) for (int e = off1[t]; e < off1[t + 1]; e++) setb(y, src1[e]);
     }
     free(off0); free(off1); free(src0); free(src1); free(queue); free(y); free(hidx);
-    if (tail < 0 && (upto < 0 || upto + 1 > count)) {
+    if (tail < 0 && (upto < 0 || (long)upto + 1 > count)) {
         free(lv);
         snprintf(err, errcap, "unsupported pattern with a length bound: the lengths it allows do not "
                  "settle within %d code points", JSRE_LEN_MAX);
@@ -938,8 +940,11 @@ int jsre_witness(const jsre *re, const uint64_t *set, int lo, int hi, char *out,
     if (!cur || !nx) { free(cur); free(nx); return -1; }
     if (set) memcpy(cur, set, w * sizeof *cur);
     else jsre_start(re, cur);
-    int a = lo > 0 ? lo : 0, top = hi >= 0 ? hi : a + re->lv_n + re->lv_period, r = -1;
-    for (int l = a; l <= top && r < 0; l++) if (jsre_len_ok(re, cur, l, l)) r = l;
+    // in long, and only as far as a new answer can come: past one cycle beyond
+    // the kept lengths every length repeats one already asked
+    long a = lo > 0 ? lo : 0, top = (long)a + re->lv_n + re->lv_period, r = -1;
+    if (hi >= 0 && hi < top) top = hi;
+    for (long l = a; l <= top && r < 0; l++) if (jsre_len_ok(re, cur, (int)(l > INT_MAX ? INT_MAX : l), (int)(l > INT_MAX ? INT_MAX : l))) r = l;
     static const char order[] = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-_. ";
     int n = 0;
     while (r >= 0) {
@@ -951,7 +956,7 @@ int jsre_witness(const jsre *re, const uint64_t *set, int lo, int hi, char *out,
             memcpy(nx, cur, w * sizeof *nx);
             if (!jsre_step(re, nx, (uint8_t)x)) continue;
             int c = x < 0x80 || x >= 0xC0;
-            if (r - c < 0 || !jsre_len_ok(re, nx, r - c, r - c)) continue;
+            if (r - c < 0 || !jsre_len_ok(re, nx, (int)(r - c), (int)(r - c))) continue;
             took = x;
             r -= c;
             memcpy(cur, nx, w * sizeof *cur);

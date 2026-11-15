@@ -3789,7 +3789,9 @@ static void test_schema_segment_classes_mean_what_ecma_means(void) {
         { "^a[b]{ 2}$", "\"abb\"", false },
         { "^a[b]{2, 3}$", "\"ab{2, 3}\"", true },
         { "^a[b]{2, 3}$", "\"abb\"", false },
-        { "^a[b]{+2}$", "\"ab{+2}\"", true },
+        { "^a[b]{+2}$", "\"ab{2}\"", true },               // legacy: a { repeated by +, then 2}
+        { "^a[b]{+2}$", "\"ab{{2}\"", true },
+        { "^a[b]{+2}$", "\"ab{+2}\"", false },
         { "^a[b]{+2}$", "\"abb\"", false },
         { "^[^\\\\n\\\\r]*$", "\"\xe2\x80\xa8\"", true },  // [^\n\r] holds U+2028
     };

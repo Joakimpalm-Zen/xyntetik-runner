@@ -372,9 +372,10 @@ static bool pattern_prefix_char_ok(unsigned char c) {
    producible member -- which is the restriction every class here has always
    carried (a `"` in a set was never producible either): the enforced language
    is the declared one restricted to what a JSON string spells literally.
-   \S, \D and \W are the complements, and admit every non-ASCII character.
+   \D and \W are the complements, and admit every non-ASCII character; \s and
+   \S each admit only part of them, see below.
    Adds to `ascii`/`*non_ascii`; the caller starts from an empty set. */
-static bool pattern_shorthand_class(char c, bool *ascii, bool *non_ascii) {
+static bool pattern_shorthand_class(char c, bool *ascii, bool *non_ascii, int *ws) {
     bool set[128] = {0};
     switch (c) {
         case 'd': case 'D':
@@ -388,11 +389,19 @@ static bool pattern_shorthand_class(char c, bool *ascii, bool *non_ascii) {
             break;
         case 's': case 'S':
             set[' '] = set['\t'] = set['\n'] = set['\r'] = set['\f'] = set['\v'] = true;
-            break;
+            // ECMA's white space reaches past ASCII (U+00A0, U+1680,
+            // U+2000-U+200A, the line separators, U+202F, U+205F, U+3000,
+            // U+FEFF), so \s holds part of the non-ASCII code points and \S
+            // the rest (R2.18, codex on #875). A class admits non-ASCII whole
+            // or not at all, so only the two together are its: the caller
+            // checks *ws (1: \s seen, 2: \S seen) when the class is done.
+            *ws |= c == 's' ? 1 : 2;
+            for (unsigned x = 0; x < 128; x++) if (set[x] != (c == 'S')) ascii[x] = true;
+            return true;
         default:
             return false;
     }
-    bool negate = c == 'D' || c == 'W' || c == 'S';
+    bool negate = c == 'D' || c == 'W';
     for (unsigned x = 0; x < 128; x++) if (set[x] != negate) ascii[x] = true;
     if (negate) *non_ascii = true;
     return true;
@@ -525,12 +534,16 @@ static const char *parse_quantifier(const char *q, long *min, long *max) {
     if (*q == '+') { *min = 1; *max = -1; return q + 1; }
     if (*q == '*') { *min = 0; *max = -1; return q + 1; }
     if (*q != '{') return NULL;
+    // digits at once: strtol would skip white space and a sign, and count
+    // {2, 3}, { 2} and {+2}, which ECMA reads as text (R2.18, codex on #875)
+    if (q[1] < '0' || q[1] > '9') return NULL;
     char *end = NULL;
     *min = strtol(q + 1, &end, 10);
     if (*min < 0 || *min > INT_MAX || !end || end == q + 1) return NULL;
     if (*end == '}') { *max = *min; return end + 1; }            /* {n}   */
     if (*end != ',') return NULL;
     if (end[1] == '}') { *max = -1; return end + 2; }            /* {n,}  */
+    if (end[1] < '0' || end[1] > '9') return NULL;
     char *end2 = NULL;                                           /* {n,m} */
     *max = strtol(end + 1, &end2, 10);
     if (*max < 0 || *max > INT_MAX || !end2 || end2 == end + 1 || *end2 != '}')
@@ -552,12 +565,16 @@ static const char *parse_quantifier(const char *q, long *min, long *max) {
    `ascii`/`*non_ascii` and returns the byte after the member, or NULL for
    syntax this compiler cannot enforce exactly. */
 static const char *class_member(const char *q, const char *rb, bool *ascii,
-                                bool *non_ascii) {
+                                bool *non_ascii, int *ws) {
     unsigned char lo, hi;
     if (*q == '\\') {
         if (q + 1 >= rb) return NULL;
         unsigned char e = (unsigned char)q[1];
-        if (pattern_shorthand_class((char)e, ascii, non_ascii)) return q + 2;
+        // [\.-_] is ECMA's range from . to _, not three characters (R2.18,
+        // codex on #875): an escape that starts a range is not this
+        // compiler's, and the automaton reads it as ECMA does
+        if (q + 3 < rb && q[2] == '-') return NULL;
+        if (pattern_shorthand_class((char)e, ascii, non_ascii, ws)) return q + 2;
         switch (e) {
             case 'n': lo = '\n'; break;
             case 'r': lo = '\r'; break;
@@ -653,23 +670,34 @@ static bool compile_segments(jv *pv, snode *n, bool *shape, char *err, int errca
 
         const char *quant;
         if (shorthand) {
-            if (!pattern_shorthand_class(esc[1], g->ascii, &g->non_ascii)) goto bad;
+            int ws = 0;
+            if (!pattern_shorthand_class(esc[1], g->ascii, &g->non_ascii, &ws)) goto bad;
+            if (ws) goto bad;   // \s or \S alone: part of non-ASCII, the automaton's
             quant = esc + 2;
         } else {
             /* the set's closing bracket: the first `]` not escaped, and not
-               the one a set may open with (`[]a]` means `]` and `a`) */
+               a set opening with one is the automaton's, see below */
             const char *q = lb + 1;
             bool negate = *q == '^';
             if (negate) q++;
+            // a ] first is not a member: ECMA reads [] as the empty class and
+            // []a] as it then `a]` (R2.18, codex on #875), and the automaton
+            // reads it that way; the POSIX reading this had was wider
+            if (*q == ']') goto bad;
             const char *rb = q;
-            if (*rb == ']') rb++;
             for (; *rb && *rb != ']'; rb++) if (*rb == '\\' && rb[1]) rb++;
             if (*rb != ']') goto bad;
             if (rb == q) goto bad;        /* an empty set matches nothing: unsatisfiable */
+            int ws = 0;
             while (q < rb) {
-                q = class_member(q, rb, g->ascii, &g->non_ascii);
+                q = class_member(q, rb, g->ascii, &g->non_ascii, &ws);
                 if (!q) goto bad;
             }
+            // \s with \S (the [\s\S] of "any character") is every non-ASCII
+            // code point; either alone is part of them, unless \D or \W
+            // already holds them all: then the class is not this compiler's
+            if (ws == 3) g->non_ascii = true;
+            else if (ws && !g->non_ascii) goto bad;
             if (negate) {
                 /* the complement: every ASCII character not named, and
                    every non-ASCII one */
