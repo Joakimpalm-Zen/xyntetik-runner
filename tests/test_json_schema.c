@@ -1712,6 +1712,36 @@ static void test_schema_number_prefix_fits_the_buffer(void) {
            sizeof(runs) / sizeof(*runs));
 }
 
+// R2.19: a completion that lands exactly on a bound is admitted on every
+// platform. The witness builds its target windows with pow and log10, which
+// gcc's -ffast-math x86 build computes a few ulp off: a window whose edge fell
+// one ulp past the bound came out empty, and the Linux and Windows builds
+// refused "9" under [1e15, 9e15] (9e15 is the maximum) and long runs after it.
+static void test_schema_number_completions_on_a_bound(void) {
+    struct { const char *schema, *prefix; } cases[] = {
+        { "{\"type\":\"number\",\"minimum\":1e15,\"maximum\":9e15}", "9" },
+        { "{\"type\":\"number\",\"minimum\":1e15,\"maximum\":9e15}", "0.9" },
+        { "{\"type\":\"number\",\"minimum\":1e15,\"maximum\":9e15}", "0.000009" },
+        { "{\"type\":\"number\",\"minimum\":1e15,\"maximum\":9e15}", "1000000000000000000" },
+        { "{\"type\":\"number\",\"minimum\":-9e15,\"maximum\":-1e15}", "-9" },
+        { "{\"type\":\"number\",\"minimum\":-9e15,\"maximum\":-1e15}", "-0.9" },
+        { "{\"type\":\"number\",\"maximum\":1e-300}", "1000000000" },
+        { "{\"type\":\"number\",\"maximum\":1e-300}", "10000000000000000000000000" },
+        { "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}", "6" },
+        { "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}", "0.6" },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+        snode *s = num_schema(cases[i].schema);
+        if (!num_admits(s, cases[i].prefix) || !num_closes_valid(s, cases[i].prefix)) {
+            fprintf(stderr, "R2.19 on a bound: %s refuses %s (or closes it outside), whose completion is the bound\n",
+                    cases[i].schema, cases[i].prefix);
+            assert(0);
+        }
+        schema_free(s);
+    }
+    printf("ok: completions that land exactly on a bound are admitted (%zu cases)\n", sizeof(cases) / sizeof(*cases));
+}
+
 // R2.19: the witness's work per byte is bounded, as WORK (num_try calls,
 // each one candidate spelling read back), so the check cannot flake on a
 // loaded host. A long fraction of zeros under a large minimum ran away: the
@@ -4408,6 +4438,7 @@ int main(void) {
     test_schema_number_prefix_stays_completable();
     test_schema_number_prefix_fits_the_buffer();
     test_schema_number_witness_work_is_bounded();
+    test_schema_number_completions_on_a_bound();
     test_schema_merges_enum_and_const_anyof();
     test_dump_keeps_integer_literals();
     test_schema_enum_keeps_a_large_integer();
