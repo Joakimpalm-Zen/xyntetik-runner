@@ -1,12 +1,12 @@
 {
-    "version": "1.19.0",
+    "version": "1.19.1",
     "description": "Local LLM inference engine for GGUF models, with signed, replayable records of what ran.",
     "homepage": "https://github.com/Joakimpalm-Zen/xyntetik-runner",
     "license": "Apache-2.0",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/download/v1.19.0/runner-windows-x86_64.exe",
-            "hash": "f1b5d7e4d1360e709e09f25182c99e6ef0f66e02c8e7b82ddffeb5d3d963a46a"
+            "url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/download/v1.19.1/runner-windows-x86_64.exe",
+            "hash": "c73029ff13760707be48194cee48796dcfcdfb12c2c8dfa3de970dd14da6ff27"
         }
     },
     "bin": [
