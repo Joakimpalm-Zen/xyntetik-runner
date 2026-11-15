@@ -1004,8 +1004,20 @@ Runner provides two sampler-level guarantees:
 
 The supported schema subset covers objects, arrays, strings, numbers,
 integers, booleans, null, enums, const, type unions, numeric bounds on both
-`integer` and `number` (`minimum`/`maximum` and their exclusive forms, with a
-forced close completing the value inside the declared range), string
+`integer` and `number` (`minimum`/`maximum` and their exclusive forms; a
+number's prefix is admitted only while some completion of it lies inside the
+range, so an exponent that leaves it unreachable, `1e+3` under `maximum: 1`, is
+refused where it is written, and a forced close completes the value inside the
+declared range; a number is spelled in at most 95 characters, so a prefix is
+admitted only while its completion still fits in them; under a bound, a value
+below the smallest normal double, 0 < |x| < 2^-1022 (about 2.2e-308), is
+refused, because parsers and float modes disagree about those values and the
+answer must be the same on every platform; bounds that leave only such values
+are refused as empty; a bounded number is checked against its bounds exactly,
+by its digits, with no floating-point arithmetic, and reads back through the
+JSON parser when the reader rounds to nearest, as the engine does; an unbounded
+one is checked by the JSON parser, as before),
+string
 lengths and `pattern`s (below), array item/count constraints,
 scalar-const `oneOf`/`anyOf`, const-discriminated object unions (below), and
 the tool-discriminated object union used by agent clients. Required

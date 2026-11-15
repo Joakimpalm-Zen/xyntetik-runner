@@ -910,6 +910,8 @@ static int64_t dbl_order(double x) {
     return (u >> 63) ? -mag : mag;
 }
 
+static int64_t num_key(double x);
+static void num_key_bounds(const snode *n, int64_t *lo, int64_t *hi);
 static bool compile_number_bounds(jv *s, snode *n, char *err, int errcap) {
     double x;
     enum numeric_keyword_state state = numeric_keyword(s, "minimum", &x);
@@ -964,6 +966,20 @@ static bool compile_number_bounds(jv *s, snode *n, char *err, int errcap) {
         bool strict_both = n->real_min_strict && n->real_max_strict;
         if (lo > hi || (lo == hi && strict_any) || (strict_both && lo + 1 == hi)) {
             snprintf(err, errcap, "empty number bounds");
+            return false;
+        }
+    }
+    // R2.19: empty as well when 0 is outside and every double inside lies
+    // below the smallest normal one (0 < |x| < 2^-1022), the band a bounded
+    // number never takes (number_text_in_bounds)
+    if (n->has_real_min || n->has_real_max) {
+        int64_t lo, hi, k = num_key(DBL_MIN);
+        num_key_bounds(n, &lo, &hi);
+        bool zero = lo <= 0 && hi >= 0;
+        bool pos = (lo > k ? lo : k) <= hi, neg = lo <= (hi < -k ? hi : -k);
+        if (!zero && !pos && !neg) {
+            snprintf(err, errcap, "empty number bounds (only values below the smallest normal "
+                                  "double, 2.2250738585072014e-308, are left)");
             return false;
         }
     }
@@ -2317,23 +2333,774 @@ static bool number_put(sval *v, uint8_t c) {
     return true;
 }
 
+// The most bytes of a number the validator keeps (number_put).
+enum { NUM_ROOM = (int)sizeof(((sval *)0)->num_text) - 1 };
+
+// R2.19: the work of the last number_prefix_viable or number_witness call on
+// this thread, counted: every digit pair the decimal comparisons below read,
+// every spelling family member and exponent width they try. Tests hold it
+// under the bound the code gives (tests/test_json_schema.c). The bounds'
+// exact expansions are built once per bounds and cached, so they are counted
+// apart (schema_number_expansions).
+static _Thread_local unsigned long witness_work;
+static _Thread_local unsigned long num_expansions;
+unsigned long schema_witness_work(void) { return witness_work; }
+unsigned long schema_number_expansions(void) { return num_expansions; }
+
+// An exact positive decimal 0.d[0]d[1]..d[n-1] x 10^x: d[0] is not 0 and the
+// last digit is not 0. The midpoint between two adjacent doubles is an odd
+// integer times a power of two, so it has a finite expansion: at most 768
+// significant digits (near the smallest normal), 309 near the largest.
+enum { ND_CAP = 800 };
+typedef struct { long x; int n; char d[ND_CAP]; } numdec;
+
+// odd * 2^f exactly, f in [-1075, 971], by base-10^9 limbs
+static void nd_from_binary(uint64_t odd, int f, numdec *r) {
+    uint32_t limb[100];
+    int nl = 0;
+    for (uint64_t v = odd; v; v /= 1000000000u) limb[nl++] = (uint32_t)(v % 1000000000u);
+    for (int k = f < 0 ? -f : f; k > 0;) {
+        int step = f < 0 ? (k < 13 ? k : 13) : (k < 29 ? k : 29);
+        uint64_t m = 1;
+        for (int i = 0; i < step; i++) m *= f < 0 ? 5u : 2u;
+        k -= step;
+        uint64_t carry = 0;
+        for (int i = 0; i < nl; i++) {
+            uint64_t prod = (uint64_t)limb[i] * m + carry;
+            limb[i] = (uint32_t)(prod % 1000000000u);
+            carry = prod / 1000000000u;
+        }
+        while (carry && nl < 100) { limb[nl++] = (uint32_t)(carry % 1000000000u); carry /= 1000000000u; }
+    }
+    char buf[ND_CAP + 20];
+    int nd = 0;
+    for (int i = nl - 1; i >= 0; i--) {
+        char g[9];
+        uint32_t v = limb[i];
+        for (int c = 8; c >= 0; c--) { g[c] = (char)('0' + v % 10); v /= 10; }
+        int c0 = 0;
+        if (i == nl - 1) while (c0 < 8 && g[c0] == '0') c0++;
+        for (int c = c0; c < 9 && nd < (int)sizeof(buf); c++) buf[nd++] = g[c];
+    }
+    // the integer times 10^f when f < 0 (odd * 5^-f * 10^f), else itself
+    r->x = nd + (f < 0 ? f : 0);
+    while (nd > 1 && buf[nd - 1] == '0') nd--;
+    if (nd > ND_CAP) nd = ND_CAP;      // never: 768 at most (above)
+    memcpy(r->d, buf, (size_t)nd);
+    r->n = nd;
+    num_expansions++;
+}
+
+// 0.a against 0.b, both without trailing zeros: by digits, then length
+static int nd_digits_cmp(const char *a, int na, const char *b, int nb) {
+    int m = na < nb ? na : nb;
+    for (int i = 0; i < m; i++) {
+        witness_work++;
+        if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
+    }
+    return na == nb ? 0 : na < nb ? -1 : 1;
+}
+static int nd_cmp(const char *a, int na, long xa, const numdec *b) {
+    if (xa != b->x) return xa < b->x ? -1 : 1;
+    return nd_digits_cmp(a, na, b->d, b->n);
+}
+// w-digit decimal strings
+static int nd_wcmp(const char *a, const char *b, int w) {
+    for (int i = 0; i < w; i++) {
+        witness_work++;
+        if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
+    }
+    return 0;
+}
+static bool nd_inc(char *s, int w) {     // false when it carries out
+    for (int i = w - 1; i >= 0; i--) {
+        if (s[i] != '9') { s[i]++; return true; }
+        s[i] = '0';
+    }
+    return false;
+}
+static void nd_dec(char *s, int w) {     // s is not all zeros
+    for (int i = w - 1; i >= 0; i--) {
+        if (s[i] != '0') { s[i]--; return; }
+        s[i] = '9';
+    }
+}
+
+// A double's place in the order of doubles, from its bits: adjacent doubles
+// differ by one and both zeros are 0. Comparing these is comparing the
+// values, with no floating-point operation a float mode could change.
+static int64_t num_key(double x) {
+    uint64_t b = fp_bits_f64(x);
+    int64_t m = (int64_t)(b & 0x7fffffffffffffffull);
+    return (b >> 63) ? -m : m;
+}
+// json_number_text_ok keeps |d| < 1.7e308; the same literal, so the same double
+static const double NUM_PARSE_LIMIT = 1.7e308;
+// The node's interval as inclusive keys: an exclusive bound moves one double
+// inside, the parser's limit applies where no bound is written.
+static void num_key_bounds(const snode *n, int64_t *lo, int64_t *hi) {
+    int64_t cap = num_key(NUM_PARSE_LIMIT) - 1;
+    *lo = -cap;
+    *hi = cap;
+    if (n->has_real_min) {
+        int64_t k = num_key(n->real_min) + (n->real_min_strict ? 1 : 0);
+        if (k > *lo) *lo = k;
+    }
+    if (n->has_real_max) {
+        int64_t k = num_key(n->real_max) - (n->real_max_strict ? 1 : 0);
+        if (k < *hi) *hi = k;
+    }
+}
+
+// A number spelling, or a prefix of one, read as decimal parts
+typedef struct {
+    bool neg, dot;
+    int ni, nf;              // digits before the point and after it
+    char sig[NUM_ROOM + 1];  // the significant digits (leading zeros gone, trailing kept)
+    int nsig;
+    int p0;                  // the mantissa is 0.sig x 10^p0
+    int exp_sign;            // +1, -1, or 0 when no sign is written
+    const char *exp_digits;  // the exponent's digits written so far
+    int nexp;
+} numshape;
+
+static void num_shape_of(const char *t, numshape *p) {
+    memset(p, 0, sizeof(*p));
+    const char *q = t;
+    if (*q == '-') { p->neg = true; q++; }
+    bool int_zero = *q == '0';
+    int zf = 0;                              // zeros after the point before sig[0]
+    for (; *q && *q != 'e' && *q != 'E'; q++) {
+        if (*q == '.') { p->dot = true; continue; }
+        if (*q < '0' || *q > '9') continue;
+        if (p->dot) p->nf++; else p->ni++;
+        if (!p->nsig && *q == '0') { if (p->dot) zf++; continue; }
+        if (p->nsig < NUM_ROOM) p->sig[p->nsig++] = *q;
+    }
+    p->sig[p->nsig] = 0;
+    p->p0 = p->ni && !int_zero ? p->ni : -zf;
+    if (*q == 'e' || *q == 'E') {
+        q++;
+        if (*q == '+') { p->exp_sign = 1; q++; }
+        else if (*q == '-') { p->exp_sign = -1; q++; }
+        p->exp_digits = q;
+        p->nexp = (int)strlen(q);
+    }
+}
+// the exponent's magnitude, held at 10^8 (past every double)
+static long num_exp_abs(const numshape *p) {
+    long v = 0;
+    for (int i = 0; i < p->nexp; i++) {
+        v = v * 10 + (p->exp_digits[i] - '0');
+        if (v > 100000000L) return 100000000L;
+    }
+    return v;
+}
+static int num_sig_len(const numshape *p) {        // without trailing zeros
+    int n = p->nsig;
+    while (n > 0 && p->sig[n - 1] == '0') n--;
+    return n;
+}
+
+static _Thread_local numdec num_dmin;              // 2^-1022, the smallest normal double
+static _Thread_local bool num_dmin_built;
+static const numdec *num_dmin_get(void) {
+    if (!num_dmin_built) { nd_from_binary(1, -1022, &num_dmin); num_dmin_built = true; }
+    return &num_dmin;
+}
+
 // Does this complete number SPELLING satisfy the node's interval? Taken as
 // text rather than as an accumulated value so the closer can ask the same
-// question about a spelling it is only considering. Parseability comes from
-// json_number_text_ok — the parser's own acceptance, ERANGE included — so a
-// spelling json_parse refuses (overflow OR underflow) never satisfies any
-// bound. The old isfinite() check here was dead code in the shipped build
-// (-ffast-math folds it away) and never caught underflow at all.
+// question about a spelling it is only considering.
+//
+// Without a bound the parser decides alone (json_number_text_ok, ERANGE
+// included), as admission and the close do: a spelling json_parse refuses
+// never ends a number. Its verdict on subnormal values is the platform's.
+//
+// R2.19: under a bound the answer is exact, the same comparison the prefix
+// decision makes (below): the spelling's digits against the bounds' decimal
+// interval, with no strtod and no floating-point operation, so it is the
+// same on every platform, with subnormals flushed or not and in any
+// rounding mode, and the decision and the terminator cannot disagree. A
+// value in 0 < |x| < 2^-1022 is outside every bounded interval: glibc
+// reports ERANGE for most of that range (where it stops depends on the
+// architecture's tininess rule), macOS's parser rounds its top up to
+// 2^-1022 and accepts it, and a flushing mode compares a subnormal as 0.
+// Every spelling inside reads back through json_parse when the reader rounds
+// to nearest: its value is 0 or at least 2^-1022, and below the parser's
+// 1.7e308. json_parse reads through strtod, which follows the process's
+// rounding mode, and the engine never sets a directed one: rounding upward,
+// 1.6999999999999998e308 (inside under minimum 0) reads as the refused
+// 1.7e308, and its negative mirror downward (a known limit, R2.19).
+struct numset;
+static const struct numset *num_set_for(const snode *n);
+static bool num_exact_in(const struct numset *ns, const char *s);
 static bool number_text_in_bounds(const snode *n, const char *s) {
-    double x;
-    if (!json_number_text_ok(s, &x)) return false;
-    return (!n->has_real_min || (n->real_min_strict ? x > n->real_min : x >= n->real_min)) &&
-           (!n->has_real_max || (n->real_max_strict ? x < n->real_max : x <= n->real_max));
+    if (!n->has_real_min && !n->has_real_max) return json_number_text_ok(s, NULL);
+    uint8_t st = N_START;
+    size_t len = strlen(s);
+    if (!len || len > (size_t)NUM_ROOM) return false;
+    for (size_t i = 0; i < len; i++)
+        if (num_byte((uint8_t)s[i], &st, false) != 0) return false;
+    if (!num_complete(st)) return false;
+    unsigned long w = witness_work;
+    bool in = num_exact_in(num_set_for(n), s);
+    witness_work = w;                              // the terminator's, not a decision's
+    return in;
 }
+
+// The terminator's verdict on the last spelling under a bound, kept like
+// number_prefix_viable's (below): a constrained step asks it again for every
+// token that starts with a byte ending the number, most of the vocabulary.
+// The verdict is exact, so it holds in any float mode.
+static _Thread_local struct {
+    bool valid, ok;
+    int64_t klo, khi;
+    int len;
+    char t[NUM_ROOM + 1];
+} num_end_memo;
 
 static bool number_in_bounds(const sval *v, const snode *n, const sframe *f) {
     if (!num_complete(f->sub) || !v->num_len) return false;
-    return number_text_in_bounds(n, v->num_text);
+    // unbounded: main's path, the parser asked every time (its verdict
+    // follows the rounding mode, so no answer of it is kept)
+    if (!n->has_real_min && !n->has_real_max) return json_number_text_ok(v->num_text, NULL);
+    int64_t klo, khi;
+    num_key_bounds(n, &klo, &khi);
+    int len = v->num_len;
+    if (num_end_memo.valid && num_end_memo.klo == klo && num_end_memo.khi == khi &&
+        num_end_memo.len == len && !memcmp(num_end_memo.t, v->num_text, (size_t)len))
+        return num_end_memo.ok;
+    bool ok = number_text_in_bounds(n, v->num_text);
+    if (len <= NUM_ROOM) {
+        num_end_memo.valid = true; num_end_memo.ok = ok;
+        num_end_memo.klo = klo; num_end_memo.khi = khi; num_end_memo.len = len;
+        memcpy(num_end_memo.t, v->num_text, (size_t)len);
+    }
+    return ok;
+}
+
+// R2.19: can the number spelling `t` (in num_byte state `st`) still become a
+// number inside the node's interval? A bound is enforced at the terminator,
+// so a prefix with no completion inside it (1e+36 under maximum 1, a mantissa
+// whose first digits no scale brings inside [0.5, 0.6]) left every byte
+// illegal: the request stalled with each token masked, and the closer wrote
+// the out-of-bounds value. Now the byte that leaves no completion is refused
+// where it is written, as an ERANGE exponent digit already was.
+//
+// The question is decided exactly, in decimal, with no floating-point
+// arithmetic (an earlier witness built candidates from doubles and refused
+// prefixes that had completions, differently on each platform). The values a
+// spelling may have are the x with x == 0 or |x| >= 2^-1022 whose double lies
+// in the interval: the reals between the midpoints that separate the bounds'
+// doubles from their outer neighbours, each midpoint included when the
+// bound's double is the even one (round to nearest, ties to even). Those
+// midpoints are exact decimals, built once per bounds. A prefix fixes its
+// significant digits S; at the scale p of its first digit, with j more
+// digits, it can still become any N x 10^(p - |S| - j) with N from S then j
+// digits, and how many digits fit at each scale follows from the spelling
+// rules and the 95 bytes number_put keeps. A scale whose whole window
+// [0.S, 0.S + one in S's last place) x 10^p lies inside needs no more digits;
+// at the two edge scales the integers N inside are counted from the
+// midpoints' digit strings. Inside an exponent the mantissa is fixed and the
+// exponents the written digits still allow are compared with the ones that
+// land it inside. The closer's completion (number_witness) is read off the
+// same decision, the shortest found, and checked by number_text_in_bounds.
+
+// The magnitudes one sign may take besides 0, for one node's bounds
+typedef struct numset {
+    bool built, zero_ok;           // zero_ok: 0 (and -0) is inside
+    int64_t klo, khi;              // the keys these were built from
+    bool empty[2];                 // [0] positive magnitudes, [1] negative ones
+    const numdec *lo[2], *hi[2];
+    bool lo_closed[2], hi_closed[2];
+    numdec L, U;                   // |the interval's ends|
+} numset;
+static _Thread_local numset num_sets[2];
+static _Thread_local unsigned num_set_turn;
+
+// the midpoint between magnitudes m and m + 1 (as keys): (2 sig + 1) * ulp / 2
+static void nd_mid(uint64_t m, numdec *r) {
+    uint64_t ef = m >> 52, frac = m & ((1ull << 52) - 1);
+    uint64_t sig = ef ? frac | (1ull << 52) : frac;
+    nd_from_binary(2 * sig + 1, (int)(ef ? ef : 1) - 1076, r);
+}
+static void num_side_set(numset *s, int sg, const numdec *lo, bool loc, const numdec *hi, bool hic) {
+    int c = nd_cmp(lo->d, lo->n, lo->x, hi);
+    s->lo[sg] = lo; s->lo_closed[sg] = loc;
+    s->hi[sg] = hi; s->hi_closed[sg] = hic;
+    s->empty[sg] = c > 0 || (c == 0 && !(loc && hic));
+}
+static const numset *num_set_for(const snode *n) {
+    int64_t klo, khi;
+    num_key_bounds(n, &klo, &khi);
+    for (int i = 0; i < 2; i++)
+        if (num_sets[i].built && num_sets[i].klo == klo && num_sets[i].khi == khi) return &num_sets[i];
+    unsigned long w = witness_work;
+    numset *s = &num_sets[num_set_turn++ & 1u];
+    s->built = true;
+    s->klo = klo; s->khi = khi;
+    s->empty[0] = s->empty[1] = true;
+    s->zero_ok = klo <= 0 && khi >= 0;
+    if (klo > khi) { s->zero_ok = false; return s; }
+    // the lower end sits between keys klo - 1 and klo, the upper between khi and khi + 1
+    bool lneg = klo <= 0, uneg = khi < 0;
+    nd_mid(lneg ? (uint64_t)-klo : (uint64_t)(klo - 1), &s->L);
+    nd_mid(uneg ? (uint64_t)(-khi - 1) : (uint64_t)khi, &s->U);
+    bool lc = (((klo < 0) ? -klo : klo) & 1) == 0, uc = (((khi < 0) ? -khi : khi) & 1) == 0;
+    const numdec *dm = num_dmin_get();
+    if (!uneg) {       // positive: the part of [L, U] from 2^-1022 up
+        bool use_l = !lneg && nd_cmp(s->L.d, s->L.n, s->L.x, dm) > 0;
+        num_side_set(s, 0, use_l ? &s->L : dm, use_l ? lc : true, &s->U, uc);
+    }
+    if (lneg) {        // negative: the magnitudes of the part of [L, U] up to -2^-1022
+        bool use_u = uneg && nd_cmp(s->U.d, s->U.n, s->U.x, dm) > 0;
+        num_side_set(s, 1, use_u ? &s->U : dm, use_u ? uc : true, &s->L, lc);
+    }
+    witness_work = w;  // built once per bounds, counted apart
+    return s;
+}
+
+// Is the complete spelling's exact value inside? Its significant digits and
+// scale against the side's magnitudes, or 0 against zero_ok.
+static bool num_exact_in(const numset *ns, const char *s) {
+    numshape sh;
+    num_shape_of(s, &sh);
+    if (!sh.nsig) return ns->zero_ok;              // every digit 0: the value is 0 (or -0)
+    int sg = sh.neg;
+    if (ns->empty[sg]) return false;
+    long x = sh.p0 + num_exp_abs(&sh) * (sh.exp_sign < 0 ? -1 : 1);
+    int n = num_sig_len(&sh);
+    int cl = nd_cmp(sh.sig, n, x, ns->lo[sg]), ch = nd_cmp(sh.sig, n, x, ns->hi[sg]);
+    return (cl > 0 || (cl == 0 && ns->lo_closed[sg])) && (ch < 0 || (ch == 0 && ns->hi_closed[sg]));
+}
+
+static bool num_try(const snode *n, const char *t, const char *suffix, char *out, size_t cap) {
+    // the whole spelling must fit where the validator keeps it (number_put):
+    // the lengths are checked first and the copy is exact, so nothing is ever
+    // cut and no compiler has to prove that a formatted write fits (gcc's
+    // -Werror=format-truncation refused the snprintf this replaces)
+    char full[sizeof(((sval *)0)->num_text)];
+    size_t tl = strlen(t), sl = strlen(suffix);
+    if (tl + sl >= sizeof(full)) return false;
+    memcpy(full, t, tl);
+    memcpy(full + tl, suffix, sl + 1);
+    if (!number_text_in_bounds(n, full)) return false;
+    if (out) snprintf(out, cap, "%s", suffix);
+    return true;
+}
+
+// The bytes an exponent e takes after its e: a sign when negative, its digits
+static int num_explen(long e) {
+    int n = 1;
+    if (e < 0) { n++; e = -e; }
+    while (e >= 10) { e /= 10; n++; }
+    return n;
+}
+// The exponents that fit in b bytes after the e (held at 7 bytes: past every double)
+static bool num_erange(int b, long *lo, long *hi) {
+    if (b <= 0) return false;
+    if (b > 7) b = 7;
+    long t = 1;
+    for (int i = 1; i < b; i++) t *= 10;
+    *lo = -(t - 1);
+    *hi = t * 10 - 1;
+    return true;
+}
+static int num_put_long(char *o, long v) {
+    char g[24];
+    int n = 0, k = 0;
+    unsigned long a = v < 0 ? (unsigned long)(-v) : (unsigned long)v;
+    do { g[n++] = (char)('0' + a % 10); a /= 10; } while (a);
+    if (v < 0) o[k++] = '-';
+    while (n) o[k++] = g[--n];
+    return k;
+}
+
+// How a prefix's digits may continue, as a spelling family:
+//   NF_INT   more digits before the point (ip written, at least kmin more),
+//            then a point and digits, then an exponent, each optional
+//   NF_FIXED the scale is p0 without an exponent: digits after the point
+//            (at least fmin: 1 after a bare point), then an exponent
+//   NF_ZEROS no significant digit yet: pre bytes ("", ".", "0."), zeros
+//            after the point (z0 written), a nonzero digit and more, then
+//            an exponent
+enum { NF_INT, NF_FIXED, NF_ZEROS };
+typedef struct { int kind, ip, kmin, p0, fmin, pre, z0; } numfam;
+
+// The most digits after S a family can hold with its first digit at scale p
+// in r more bytes, or -1 when it cannot reach p
+static int fam_jmax(const numfam *fm, long p, int r) {
+    int best = -1;
+    if (fm->kind == NF_INT) {
+        for (int k = fm->kmin; k <= r; k++) {
+            witness_work++;
+            if (p == fm->ip + k) {                       // no exponent
+                if (k > best) best = k;
+                if (r - 1 >= k + 1 && r - 1 > best) best = r - 1;
+            }
+            int el = num_explen(p - fm->ip - k);
+            if (k + 1 + el <= r && k > best) best = k;
+            if (r - 2 - el >= k + 1 && r - 2 - el > best) best = r - 2 - el;
+        }
+    } else if (fm->kind == NF_FIXED) {
+        witness_work++;
+        if (p == fm->p0 && r >= fm->fmin) best = r;
+        int el = num_explen(p - fm->p0);
+        if (r - 1 - el >= fm->fmin && r - 1 - el > best) best = r - 1 - el;
+    } else {
+        for (int z = 0; z <= r; z++) {
+            witness_work++;
+            long pz = -(long)(fm->z0 + z);
+            if (p == pz && r - fm->pre - z >= 1 && r - fm->pre - z > best) best = r - fm->pre - z;
+            int el = num_explen(p - pz);
+            int j = r - fm->pre - z - 1 - el;
+            if (j >= 1 && j > best) best = j;
+        }
+    }
+    return best;
+}
+
+// Does [a, b] meet [plo, phi]? The met scale nearest pref goes to *best
+static void num_meet(long a, long b, long plo, long phi, long pref, bool *found, long *best) {
+    long lo = a > plo ? a : plo, hi = b < phi ? b : phi;
+    if (lo > hi) return;
+    long c = pref < lo ? lo : pref > hi ? hi : pref;
+    long dc = c > pref ? c - pref : pref - c, db = *best > pref ? *best - pref : pref - *best;
+    if (!*found || dc < db) *best = c;
+    *found = true;
+}
+// Can the family put its first digit at some scale in [plo, phi] at all?
+static bool fam_reach(const numfam *fm, int r, long plo, long phi, long *pf) {
+    bool found = false;
+    long elo, ehi;
+    if (fm->kind == NF_INT) {
+        for (int k = fm->kmin; k <= r; k++) {
+            witness_work++;
+            long base = fm->ip + k;
+            num_meet(base, base, plo, phi, fm->ip, &found, pf);
+            if (num_erange(r - k - 1, &elo, &ehi)) num_meet(base + elo, base + ehi, plo, phi, fm->ip, &found, pf);
+        }
+    } else if (fm->kind == NF_FIXED) {
+        witness_work++;
+        if (r >= fm->fmin) num_meet(fm->p0, fm->p0, plo, phi, fm->p0, &found, pf);
+        if (num_erange(r - fm->fmin - 1, &elo, &ehi)) num_meet(fm->p0 + elo, fm->p0 + ehi, plo, phi, fm->p0, &found, pf);
+    } else {
+        for (int z = 0; z <= r; z++) {
+            witness_work++;
+            long pz = -(long)(fm->z0 + z);
+            if (r - fm->pre - z >= 1) num_meet(pz, pz, plo, phi, -(long)fm->z0, &found, pf);
+            if (num_erange(r - fm->pre - z - 2, &elo, &ehi)) num_meet(pz + elo, pz + ehi, plo, phi, -(long)fm->z0, &found, pf);
+        }
+    }
+    return found;
+}
+
+// The shortest suffix a family spells with the digits T (j of them, after S)
+// and its first digit at scale p, in at most r bytes; its length, or -1
+static int fam_spell(const numfam *fm, long p, const char *T, int j, int r, char *out) {
+    static const char *const pres[] = { "", ".", "0." };
+    int best = -1;
+    char b[NUM_ROOM + 32];
+    if (fm->kind == NF_INT) {
+        for (int k = fm->kmin; k <= r; k++) {
+            long e = p - fm->ip - k;
+            int len = k + (j > k ? 1 + (j - k) : 0) + (e ? 1 + num_explen(e) : 0);
+            if (len > r || (best >= 0 && len >= best)) continue;
+            int o = 0;
+            for (int i = 0; i < k; i++) b[o++] = i < j ? T[i] : '0';
+            if (j > k) { b[o++] = '.'; for (int i = k; i < j; i++) b[o++] = T[i]; }
+            if (e) { b[o++] = 'e'; o += num_put_long(b + o, e); }
+            b[o] = 0;
+            memcpy(out, b, (size_t)o + 1);
+            best = len;
+        }
+    } else if (fm->kind == NF_FIXED) {
+        long e = p - fm->p0;
+        int nd = j > fm->fmin ? j : fm->fmin;
+        int len = nd + (e ? 1 + num_explen(e) : 0);
+        if (len <= r) {
+            int o = 0;
+            for (int i = 0; i < nd; i++) b[o++] = i < j ? T[i] : '0';
+            if (e) { b[o++] = 'e'; o += num_put_long(b + o, e); }
+            b[o] = 0;
+            memcpy(out, b, (size_t)o + 1);
+            best = len;
+        }
+    } else if (j >= 1) {
+        for (int z = 0; z <= r; z++) {
+            long e = p + fm->z0 + z;
+            int len = fm->pre + z + j + (e ? 1 + num_explen(e) : 0);
+            if (len > r || (best >= 0 && len >= best)) continue;
+            int o = 0;
+            for (const char *c = pres[fm->pre]; *c; c++) b[o++] = *c;
+            for (int i = 0; i < z; i++) b[o++] = '0';
+            for (int i = 0; i < j; i++) b[o++] = T[i];
+            if (e) { b[o++] = 'e'; o += num_put_long(b + o, e); }
+            b[o] = 0;
+            memcpy(out, b, (size_t)o + 1);
+            best = len;
+        }
+    }
+    return best;
+}
+
+// The w-digit integers N in [nlo, nhi] with N x 10^u among the side's
+// magnitudes: is there one? The smallest goes to best (w digits).
+static bool num_grid(const numset *ns, int sg, const char *nlo, const char *nhi, int w, long u, char *best) {
+    char mn[NUM_ROOM + 2], mx[NUM_ROOM + 2];
+    const numdec *lo = ns->lo[sg], *hi = ns->hi[sg];
+    // the smallest integer N with N x 10^u at or past lo (past it when lo is open)
+    long s = lo->x - u;                        // lo / 10^u has s digits before its point
+    if (s > w) return false;
+    if (s <= 0) { memset(mn, '0', (size_t)w); mn[w - 1] = '1'; }
+    else {
+        int pad = w - (int)s;
+        memset(mn, '0', (size_t)pad);
+        for (int i = 0; i < s; i++) mn[pad + i] = i < lo->n ? lo->d[i] : '0';
+        if ((lo->n > s || !ns->lo_closed[sg]) && !nd_inc(mn, w)) return false;
+    }
+    // the largest with N x 10^u at or before hi (before it when hi is open)
+    long t = hi->x - u;
+    if (t <= 0) return false;                  // below 1: N would be 0
+    if (t > w) memset(mx, '9', (size_t)w);
+    else {
+        int pad = w - (int)t;
+        memset(mx, '0', (size_t)pad);
+        for (int i = 0; i < t; i++) mx[pad + i] = i < hi->n ? hi->d[i] : '0';
+        if (hi->n <= t && !ns->hi_closed[sg]) nd_dec(mx, w);   // hi's first digit is not 0
+    }
+    const char *a = nd_wcmp(nlo, mn, w) >= 0 ? nlo : mn;
+    const char *b = nd_wcmp(nhi, mx, w) <= 0 ? nhi : mx;
+    if (nd_wcmp(a, b, w) > 0) return false;
+    memcpy(best, a, (size_t)w);
+    best[w] = 0;
+    return true;
+}
+
+// At scale p: the most digits the families hold there, whether some
+// N inside fits them, and with want the shortest such completion's suffix
+static int num_at_scale(const numset *ns, int sg, const numshape *sh, const numfam *fm, int nf,
+                        long p, int r, bool want, char *suf) {
+    int jmax = -1, jneed = sh->nsig ? 0 : 1;
+    for (int i = 0; i < nf; i++) {
+        int j = fam_jmax(&fm[i], p, r);
+        if (j > jmax) jmax = j;
+    }
+    if (jmax < jneed) return -1;
+    for (int j = want ? jneed : jmax; j <= jmax; j++) {
+        int w = sh->nsig + j;
+        if (w > NUM_ROOM) return -1;
+        char nlo[NUM_ROOM + 2], nhi[NUM_ROOM + 2], n_best[NUM_ROOM + 2];
+        if (sh->nsig) {
+            memcpy(nlo, sh->sig, (size_t)sh->nsig); memset(nlo + sh->nsig, '0', (size_t)j);
+            memcpy(nhi, sh->sig, (size_t)sh->nsig); memset(nhi + sh->nsig, '9', (size_t)j);
+        } else {
+            memset(nlo, '0', (size_t)w); nlo[0] = '1';
+            memset(nhi, '9', (size_t)w);
+        }
+        if (!num_grid(ns, sg, nlo, nhi, w, p - w, n_best)) continue;
+        if (!want) return 0;
+        int bestlen = -1;
+        char cand[NUM_ROOM + 32];
+        for (int i = 0; i < nf; i++) {
+            int len = fam_spell(&fm[i], p, n_best + sh->nsig, j, r, cand);
+            if (len >= 0 && (bestlen < 0 || len < bestlen)) { bestlen = len; memcpy(suf, cand, (size_t)len + 1); }
+        }
+        return bestlen;
+    }
+    return -1;
+}
+
+// One sign, before any exponent
+static bool num_mant_side(const numset *ns, int sg, const numshape *sh, const numfam *fm, int nf,
+                          int r, const char *zero, bool want, char *suf) {
+    if (zero && ns->zero_ok && (int)strlen(zero) <= r) {
+        if (want) memcpy(suf, zero, strlen(zero) + 1);
+        return true;
+    }
+    if (ns->empty[sg]) return false;
+    const numdec *lo = ns->lo[sg], *hi = ns->hi[sg];
+    // S's window [0.S, 0.S+): with no digit yet, [0.1, 1)
+    char sn[NUM_ROOM + 2], sp[NUM_ROOM + 2];
+    int nsn = 1, nsp = 1, cp = 1;
+    sn[0] = sp[0] = '1';
+    if (sh->nsig) {
+        memcpy(sn, sh->sig, (size_t)sh->nsig);
+        memcpy(sp, sh->sig, (size_t)sh->nsig);
+        nsn = nsp = sh->nsig;
+        cp = 0;
+        if (!nd_inc(sp, nsp)) { sp[0] = '1'; nsp = 1; cp = 1; }   // 0.99.. + = 0.1 x 10^1
+        while (nsn > 1 && sn[nsn - 1] == '0') nsn--;
+        while (nsp > 1 && sp[nsp - 1] == '0') nsp--;
+    }
+    // the scales whose window meets [lo, hi]: the window's top past lo, its bottom at or before hi
+    long pmin = nd_digits_cmp(sp, nsp, lo->d, lo->n) > 0 ? lo->x - cp : lo->x - cp + 1;
+    long pmax = nd_digits_cmp(sn, nsn, hi->d, hi->n) <= 0 ? hi->x : hi->x - 1;
+    if (pmin > pmax) return false;
+    long pin = 0;
+    bool inner = false;
+    // a scale strictly between them has its whole window inside: S as written is a completion there
+    for (int i = 0; i < nf && !inner; i++)
+        if (pmin + 1 <= pmax - 1) inner = fam_reach(&fm[i], r, pmin + 1, pmax - 1, &pin);
+    if (!want) {
+        if (inner) return true;
+        return num_at_scale(ns, sg, sh, fm, nf, pmin, r, false, NULL) >= 0 ||
+               (pmax != pmin && num_at_scale(ns, sg, sh, fm, nf, pmax, r, false, NULL) >= 0);
+    }
+    // the closer's completion: the shortest from the inner scale and the two edges
+    long cands[3];
+    int nc = 0, bestlen = -1;
+    if (inner) cands[nc++] = pin;
+    cands[nc++] = pmin;
+    if (pmax != pmin) cands[nc++] = pmax;
+    for (int c = 0; c < nc; c++) {
+        char cand[NUM_ROOM + 32];
+        int len = num_at_scale(ns, sg, sh, fm, nf, cands[c], r, true, cand);
+        if (len >= 0 && (bestlen < 0 || len < bestlen)) { bestlen = len; memcpy(suf, cand, (size_t)len + 1); }
+    }
+    return bestlen >= 0;
+}
+
+static bool num_mant(const numset *ns, int sg, const numshape *sh, uint8_t st, int r, bool want, char *suf) {
+    numfam fm[2];
+    memset(fm, 0, sizeof(fm));
+    int nf = 0;
+    const char *zero = NULL;                       // the completion to 0, where one is
+    switch (st) {
+        case N_START: case N_MINUS:
+            fm[nf].kind = NF_INT; fm[nf].ip = 0; fm[nf++].kmin = 1;
+            fm[nf].kind = NF_ZEROS; fm[nf++].pre = 2;
+            zero = "0";
+            break;
+        case N_ZERO:
+            fm[nf].kind = NF_ZEROS; fm[nf++].pre = 1;
+            zero = "";
+            break;
+        case N_INT:
+            fm[nf].kind = NF_INT; fm[nf].ip = sh->ni; fm[nf++].kmin = 0;
+            break;
+        case N_FRAC0:
+            if (sh->nsig) { fm[nf].kind = NF_FIXED; fm[nf].p0 = sh->p0; fm[nf++].fmin = 1; }
+            else { fm[nf].kind = NF_ZEROS; fm[nf++].pre = 0; zero = "0"; }
+            break;
+        case N_FRAC:
+            if (sh->nsig) { fm[nf].kind = NF_FIXED; fm[nf].p0 = sh->p0; fm[nf++].fmin = 0; }
+            else { fm[nf].kind = NF_ZEROS; fm[nf].pre = 0; fm[nf++].z0 = sh->nf; zero = ""; }
+            break;
+        default:
+            return false;
+    }
+    return num_mant_side(ns, sg, sh, fm, nf, r, zero, want, suf);
+}
+
+// One sign, inside the exponent: the mantissa is fixed
+static bool num_exp_side(const numset *ns, int sg, const numshape *sh, uint8_t st, int r, bool want, char *suf) {
+    if (!sh->nsig) {                               // every exponent gives 0
+        const char *z = st == N_EXP ? "" : "0";
+        if (!ns->zero_ok || (int)strlen(z) > r) return false;
+        if (want) memcpy(suf, z, strlen(z) + 1);
+        return true;
+    }
+    if (ns->empty[sg]) return false;
+    const numdec *lo = ns->lo[sg], *hi = ns->hi[sg];
+    int n = num_sig_len(sh);
+    int cl = nd_digits_cmp(sh->sig, n, lo->d, lo->n), ch = nd_digits_cmp(sh->sig, n, hi->d, hi->n);
+    // the scales p with 0.S x 10^p inside, as exponents
+    long pa = (cl > 0 || (cl == 0 && ns->lo_closed[sg])) ? lo->x : lo->x + 1;
+    long pb = (ch < 0 || (ch == 0 && ns->hi_closed[sg])) ? hi->x : hi->x - 1;
+    if (pa > pb) return false;
+    long elo = pa - sh->p0, ehi = pb - sh->p0, xv = num_exp_abs(sh);
+    int sgn[2], cost[2], no = 0;
+    if (sh->exp_sign < 0) { sgn[no] = -1; cost[no++] = 0; }
+    else if (sh->exp_sign > 0 || st == N_EXP) { sgn[no] = 1; cost[no++] = 0; }
+    else { sgn[no] = 1; cost[no++] = 0; sgn[no] = -1; cost[no++] = 1; }   // the sign is still free
+    for (int o = 0; o < no; o++) {
+        long need_lo = sgn[o] > 0 ? (elo > 0 ? elo : 0) : (-ehi > 0 ? -ehi : 0);
+        long need_hi = sgn[o] > 0 ? ehi : -elo;
+        if (need_lo > need_hi) continue;
+        long base = xv, span = 1;
+        for (int m = 0; m <= r - cost[o]; m++) {
+            if (m) { base *= 10; span *= 10; }
+            if (!m && !sh->nexp) continue;         // an exponent needs a digit
+            witness_work++;
+            if (base > 100000000L || span > 100000000L) break;
+            long a = base > need_lo ? base : need_lo;
+            long b = base + span - 1 < need_hi ? base + span - 1 : need_hi;
+            if (a > b) continue;
+            if (want) {
+                int k = 0;
+                if (cost[o]) suf[k++] = '-';
+                long d = a - base;
+                for (int i = m - 1; i >= 0; i--) { suf[k + i] = (char)('0' + d % 10); d /= 10; }
+                suf[k + m] = 0;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool num_decide(const snode *n, const char *t, uint8_t st, char *out, size_t cap) {
+    witness_work = 0;
+    int r = NUM_ROOM - (int)strlen(t);
+    if (r < 0) return false;
+    const numset *ns = num_set_for(n);
+    numshape sh;
+    num_shape_of(t, &sh);
+    bool want = out != NULL, ok;
+    char suf[NUM_ROOM + 34];
+    if (st == N_EXP0 || st == N_EXP1 || st == N_EXP) ok = num_exp_side(ns, sh.neg, &sh, st, r, want, suf);
+    else if (st == N_START) {
+        ok = num_mant(ns, 0, &sh, N_START, r, want, suf);
+        if (!ok && r >= 1) {
+            ok = num_mant(ns, 1, &sh, N_MINUS, r - 1, want, suf + 1);
+            if (ok) suf[0] = '-';
+        }
+    } else ok = num_mant(ns, sh.neg, &sh, st, r, want, suf);
+    if (!ok || !want) return ok;
+    return num_try(n, t, suf, out, cap);
+}
+
+// The closer's completion of `t`: a suffix whose whole spelling the
+// terminator accepts, the shortest the decision finds
+static bool number_witness(const snode *n, const char *t, uint8_t st, char *out, size_t cap) {
+    return num_decide(n, t, st, out, cap);
+}
+
+// The last decision on this thread. A constrained step asks the filter about
+// every vocabulary entry, so one prefix is asked again for each token that
+// starts with the same byte (thousands start with e). The answer depends on
+// the bounds, the state and the spelling alone, so it is kept under those,
+// the bounds as their keys: never a node's address, which a freed and
+// reallocated node could share.
+static _Thread_local struct {
+    bool valid, ok;
+    uint8_t st;
+    int64_t klo, khi;
+    int len;
+    char t[NUM_ROOM + 1];
+} num_memo;
+
+static bool number_prefix_viable(const snode *n, const char *t, uint8_t st) {
+    int len = (int)strlen(t);
+    // unbounded, json_number_text_ok decides alone, once the spelling can
+    // still end: an incomplete one needs one more byte where number_put keeps it
+    if (!n->has_real_min && !n->has_real_max) return num_complete(st) || len < NUM_ROOM;
+    int64_t klo, khi;
+    num_key_bounds(n, &klo, &khi);
+    if (num_memo.valid && num_memo.st == st && num_memo.klo == klo && num_memo.khi == khi &&
+        num_memo.len == len && !memcmp(num_memo.t, t, (size_t)len)) {
+        witness_work = 0;
+        return num_memo.ok;
+    }
+    bool ok = num_decide(n, t, st, NULL, 0);
+    if (len <= NUM_ROOM) {
+        num_memo.valid = true; num_memo.ok = ok; num_memo.st = st;
+        num_memo.klo = klo; num_memo.khi = khi; num_memo.len = len;
+        memcpy(num_memo.t, t, (size_t)len);
+    }
+    return ok;
 }
 
 static bool integer_value(const sframe *f, int64_t *out) {
@@ -2580,12 +3347,12 @@ static int feed_byte(sval *v, uint8_t c) {
             // opening byte: num_byte cannot report completion out of N_START,
             // so this is only ever "accepted" or "rejected"
             if (n->kind == SN_INT) return integer_take_byte(n, f, c) < 0 ? -1 : 0;
-            // a minus under a non-negative minimum is a dead prefix: no
-            // suffix can ever satisfy the bound, and the only exit would be
-            // an all-tokens-masked stall — reject it up front (the integer
-            // path already does)
-            if (c == '-' && n->has_real_min && n->real_min >= 0) return -1;
             if (num_byte(c, &f->sub, false) != 0 || !number_put(v, c)) return -1;
+            // R2.19: a first byte no completion brings inside the bounds,
+            // decided exactly: a minus under a positive or an exclusive 0
+            // minimum, which an earlier rule refused for every minimum of 0
+            // or more (but -0 is 0, inside an inclusive one)
+            if (!number_prefix_viable(n, v->num_text, f->sub)) return -1;
             return 0;
         case SN_OBJ:
         case SN_MAP:
@@ -2764,7 +3531,11 @@ static int feed_byte(sval *v, uint8_t c) {
         // commits, so terminating the number always stays legal. Every
         // spelling that survives this can therefore be read back, which is
         // also what makes the closer's keep-the-prefix fallback sound.
-        if (f->sub == N_EXP && c >= '0' && c <= '9') {
+        // R2.19: only without a bound. Under one the exact decision below
+        // decides the digit, the parser's 1.7e308 limit included (folded into
+        // its keys), with no strtod, which follows the rounding mode: upward,
+        // 1.6999999999999998e308 reads as the excluded 1.7e308.
+        if (f->sub == N_EXP && c >= '0' && c <= '9' && !n->has_real_min && !n->has_real_max) {
             char cand[sizeof(v->num_text) + 1];
             memcpy(cand, v->num_text, v->num_len);
             cand[v->num_len] = (char)c;
@@ -2772,6 +3543,8 @@ static int feed_byte(sval *v, uint8_t c) {
             if (!json_number_text_ok(cand, NULL)) return -1;
         }
         if (!number_put(v, c)) return -1;
+        // R2.19: and a byte that leaves no completion inside the bounds
+        if (!number_prefix_viable(n, v->num_text, f->sub)) return -1;
         return 0;
     }
 
@@ -3427,6 +4200,13 @@ static void close_number(emitq *q, const sval *v, const snode *n,
         // back (an exclusive bound's clamped edge can be subnormal)
         emit_min_number(q, n);
         return;
+    }
+    // R2.19: every admitted prefix has a completion inside the bounds; write
+    // the one number_witness finds (the checks below remain for a prefix
+    // admitted before this rule, which only a hand-built sval can hold)
+    if (n->has_real_min || n->has_real_max) {
+        char w[sizeof(v->num_text) + 16];
+        if (number_witness(n, spell, f->sub, w, sizeof(w))) { eq_put(q, w); return; }
     }
     int len = emitted;
     if (!num_complete(f->sub)) {   // `-`, `1.`, `1e`, `1e+`: one digit finishes it
