@@ -1643,6 +1643,70 @@ static void test_schema_number_prefix_stays_completable(void) {
            sizeof(cases) / sizeof(*cases), walks, in_exp);
 }
 
+// R2.19, fable's read: the room. The validator keeps at most 95 bytes of a
+// number (number_put), so a completion must fit in what is left. A run of
+// digits the wide-interval shortcut admitted to the end left no room for the
+// exponent that brings it inside: every byte refused, the terminator out of
+// bounds, every token masked. Each run below must stop exactly where the
+// shortest completion stops fitting (never later, which stalls; never
+// earlier, which is narrower), and every prefix it admits must close inside.
+static void test_schema_number_prefix_fits_the_buffer(void) {
+    struct { const char *schema, *lead; char digit; int refused_at; } runs[] = {
+        // toward zero: 91 nines still take e-91 (95 bytes); 92 would need 96
+        { "{\"type\":\"number\",\"maximum\":1}", "", '9', 92 },
+        { "{\"type\":\"number\",\"minimum\":-1}", "-", '9', 92 },
+        // toward the largest: 0.111... takes e31, so 92 bytes are the most
+        { "{\"type\":\"number\",\"minimum\":1e+30}", "0.", '1', 93 },
+        // two decades: 91 nines take e-89 (99.9...)
+        { "{\"type\":\"number\",\"minimum\":1,\"maximum\":100}", "", '9', 92 },
+        // unbounded: a complete spelling fills the buffer, number_put stops it
+        { "{\"type\":\"number\"}", "", '1', 96 },
+    };
+    for (size_t r = 0; r < sizeof(runs) / sizeof(*runs); r++) {
+        snode *s = num_schema(runs[r].schema);
+        char p[128];
+        snprintf(p, sizeof(p), "%s", runs[r].lead);
+        int len = (int)strlen(p), refused = 0;
+        while (len < 120) {
+            p[len] = runs[r].digit; p[len + 1] = 0;
+            if (!num_admits(s, p)) { refused = len + 1; break; }
+            len++;
+            if (!num_closes_valid(s, p)) {
+                fprintf(stderr, "R2.19 room: %s admitted a %d-byte prefix that closes invalid\n",
+                        runs[r].schema, len);
+                assert(0);
+            }
+        }
+        if (refused != runs[r].refused_at) {
+            fprintf(stderr, "R2.19 room: %s refused the run at byte %d, want %d\n",
+                    runs[r].schema, refused, runs[r].refused_at);
+            assert(refused == runs[r].refused_at);
+        }
+        schema_free(s);
+    }
+    // an incomplete spelling needs one more byte: a point or an exponent mark
+    // at the 95th byte has no room for its digit, bounded or not
+    const char *ends[] = { ".", "e", "E" };
+    const char *open_schemas[] = { "{\"type\":\"number\"}", "{\"type\":\"number\",\"maximum\":1e300}" };
+    for (size_t o = 0; o < sizeof(open_schemas) / sizeof(*open_schemas); o++) {
+        snode *s = num_schema(open_schemas[o]);
+        for (size_t e = 0; e < sizeof(ends) / sizeof(*ends); e++) {
+            char p[128];
+            memset(p, '1', 94);
+            snprintf(p + 94, sizeof(p) - 94, "%s", ends[e]);
+            if (num_admits(s, p)) {
+                fprintf(stderr, "R2.19 room: %s admitted a 95-byte prefix ending in %s\n", open_schemas[o], ends[e]);
+                assert(0);
+            }
+            snprintf(p + 93, sizeof(p) - 93, "%s", ends[e]);   // 94 bytes: its digit fits
+            assert(num_admits(s, p) && num_closes_valid(s, p));
+        }
+        schema_free(s);
+    }
+    printf("ok: a number's prefix leaves room for its completion (%zu runs to the buffer's end)\n",
+           sizeof(runs) / sizeof(*runs));
+}
+
 static void test_schema_merges_enum_and_const_anyof(void) {
     const char *src = "{\"anyOf\":["
         "{\"type\":\"string\",\"enum\":[\"pending\",\"completed\"]},"
@@ -4272,6 +4336,7 @@ int main(void) {
     test_schema_number_bounds_reject_dead_minus_and_close_in_bounds();
     test_schema_exclusive_bounds_survive_flush_to_zero();
     test_schema_number_prefix_stays_completable();
+    test_schema_number_prefix_fits_the_buffer();
     test_schema_merges_enum_and_const_anyof();
     test_dump_keeps_integer_literals();
     test_schema_enum_keeps_a_large_integer();
