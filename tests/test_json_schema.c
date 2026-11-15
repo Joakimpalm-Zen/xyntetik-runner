@@ -2,6 +2,7 @@
 #include "json.h"
 #include "schema_int.h"
 #include "jsre_cases.h"
+#include "fpenv.h"
 
 #include <assert.h>
 #include <stdint.h>
@@ -1274,6 +1275,132 @@ static void test_schema_negated_and_escaped_classes(void) {
             assert(suffix[k] >= 0x20 && suffix[k] != '"' && suffix[k] != '\\');
         schema_free(schema); jv_free(j);
     }
+}
+
+// R2.20: an exclusive bound held as one ULP inside it was a subnormal at 0
+// (nextafter(0, DBL_MAX)), and gcc's -ffast-math links crtfastmath, which
+// sets flush-to-zero and denormals-are-zero at startup on x86: there the
+// subnormal compared as 0 and `exclusiveMinimum: 0` accepted 0 (Linux and
+// Windows builds of 1.19.0). The verdicts below must hold in both float
+// modes; the flushed one is set here by hand (MXCSR FTZ|DAZ, FPCR.FZ), so
+// a Mac or a clang build checks what a gcc x86 build runs in.
+static void fp_flush_to_zero(bool on) {
+#if defined(__x86_64__) || defined(__i386__)
+    fpenv_set(on ? (fpenv_get() | 0x8040u) : (fpenv_get() & ~0x8040u));
+#elif defined(__aarch64__)
+    fpenv_set(on ? (fpenv_get() | (1ull << 24)) : (fpenv_get() & ~(1ull << 24)));
+#else
+    (void)on;
+#endif
+}
+static bool fp_flushes(void) {
+    volatile double tiny = 2.2250738585072014e-308, q = 4.0;
+    volatile double h = tiny / q;   // a subnormal unless the mode flushes it
+    return h == 0.0;
+}
+static bool bounds_doc_ok(const snode *s, const char *doc) {
+    sval v; sval_init(&v, s);
+    if (!sval_feed(&v, doc, (int)strlen(doc))) return false;
+    if (!v.done) (void)sval_feed(&v, " ", 1);
+    return v.done;
+}
+static void test_schema_exclusive_bounds_survive_flush_to_zero(void) {
+    struct { const char *schema, *doc; bool ok; } cases[] = {
+        { "{\"type\":\"number\",\"exclusiveMinimum\":0}", "0", false },
+        { "{\"type\":\"number\",\"exclusiveMinimum\":0}", "0.0", false },
+        { "{\"type\":\"number\",\"exclusiveMinimum\":0}", "0e5", false },
+        { "{\"type\":\"number\",\"exclusiveMinimum\":0}", "-0", false },
+        { "{\"type\":\"number\",\"exclusiveMinimum\":0}", "0.5", true },
+        { "{\"type\":\"number\",\"exclusiveMinimum\":0}", "1e-300", true },
+        { "{\"type\":\"number\",\"exclusiveMaximum\":0}", "0", false },
+        { "{\"type\":\"number\",\"exclusiveMaximum\":0}", "-0", false },   // -0 is 0
+        { "{\"type\":\"number\",\"exclusiveMaximum\":0}", "-0.0", false },
+        { "{\"type\":\"number\",\"exclusiveMaximum\":0}", "-0.5", true },
+        // both keywords: the tighter one, at an equal value the exclusive one
+        { "{\"type\":\"number\",\"minimum\":0,\"exclusiveMinimum\":0}", "0", false },
+        { "{\"type\":\"number\",\"exclusiveMinimum\":0,\"minimum\":0}", "0", false },
+        { "{\"type\":\"number\",\"minimum\":0}", "0", true },
+        { "{\"type\":\"number\",\"minimum\":10,\"exclusiveMinimum\":5}", "7", false },
+        { "{\"type\":\"number\",\"minimum\":5,\"exclusiveMinimum\":10}", "10", false },
+        { "{\"type\":\"number\",\"exclusiveMinimum\":5}", "5", false },
+        { "{\"type\":\"number\",\"exclusiveMinimum\":5}", "5.000000000000001", true },
+        { "{\"type\":\"number\",\"exclusiveMaximum\":-3,\"minimum\":-10}", "-3", false },
+        { "{\"type\":\"number\",\"exclusiveMaximum\":-3,\"minimum\":-10}", "-3.5", true },
+        { "{\"type\":\"number\",\"exclusiveMinimum\":0,\"exclusiveMaximum\":1}", "1", false },
+        { "{\"type\":\"number\",\"exclusiveMinimum\":0,\"exclusiveMaximum\":1}", "0.25", true },
+        // inside an object, where a brace ends the number
+        { "{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\",\"exclusiveMinimum\":0}},\"required\":[\"x\"]}", "{\"x\":0}", false },
+        { "{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\",\"exclusiveMinimum\":0}},\"required\":[\"x\"]}", "{\"x\":0.5}", true },
+    };
+    // an exclusive bound that leaves nothing between is empty in both modes
+    const char *empty[] = {
+        "{\"type\":\"number\",\"minimum\":0,\"exclusiveMaximum\":0}",
+        "{\"type\":\"number\",\"exclusiveMinimum\":2,\"maximum\":2}",
+    };
+    int flushed_runs = 0;
+    for (int mode = 0; mode < 2; mode++) {
+        fp_flush_to_zero(mode == 1);
+        if (mode == 1) {
+#if defined(__x86_64__) || defined(__i386__) || defined(__aarch64__)
+            // live: the hand-set mode really flushes, or this half checks nothing
+            assert(fp_flushes());
+            flushed_runs++;
+#endif
+        }
+        for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+            jv *j = json_parse(cases[i].schema, strlen(cases[i].schema));
+            char err[256];
+            snode *s = schema_compile(j, err, sizeof(err));
+            assert(s != NULL);
+            bool got = bounds_doc_ok(s, cases[i].doc);
+            if (got != cases[i].ok) {
+                fprintf(stderr, "R2.20 (flush-to-zero %s): %s accepts %s: %d, want %d\n",
+                        mode ? "on" : "off", cases[i].schema, cases[i].doc, got, cases[i].ok);
+                assert(got == cases[i].ok);
+            }
+            schema_free(s); jv_free(j);
+        }
+        for (size_t i = 0; i < sizeof(empty) / sizeof(*empty); i++) {
+            jv *j = json_parse(empty[i], strlen(empty[i]));
+            char err[256];
+            snode *s = schema_compile(j, err, sizeof(err));
+            if (s) fprintf(stderr, "R2.20 (flush-to-zero %s): %s compiled\n", mode ? "on" : "off", empty[i]);
+            assert(s == NULL && strstr(err, "empty number bounds"));
+            jv_free(j);
+        }
+        // a forced close with no number byte written lands inside the bound,
+        // as a spelling json_parse reads back
+        const char *closes[] = {
+            "{\"type\":\"number\",\"exclusiveMinimum\":0}",
+            "{\"type\":\"number\",\"exclusiveMaximum\":0}",
+            "{\"type\":\"number\",\"exclusiveMinimum\":5}",
+            "{\"type\":\"number\",\"exclusiveMaximum\":-3}",
+        };
+        for (size_t i = 0; i < sizeof(closes) / sizeof(*closes); i++) {
+            char src[256];
+            snprintf(src, sizeof(src), "{\"type\":\"object\",\"properties\":{\"x\":%s},\"required\":[\"x\"]}", closes[i]);
+            jv *j = json_parse(src, strlen(src));
+            char err[256];
+            snode *s = schema_compile(j, err, sizeof(err));
+            assert(s != NULL);
+            sval v; sval_init(&v, s);
+            assert(sval_feed(&v, "{\"x\":", 5));
+            char suffix[128];
+            int k = sval_close(&v, suffix, sizeof(suffix));
+            assert(k > 0);
+            char full[160];
+            snprintf(full, sizeof(full), "{\"x\":%.*s", k, suffix);
+            if (!bounds_doc_ok(s, full)) {
+                fprintf(stderr, "R2.20 (flush-to-zero %s): %s closes to %s, out of bounds\n",
+                        mode ? "on" : "off", closes[i], full);
+                assert(0);
+            }
+            schema_free(s); jv_free(j);
+        }
+    }
+    fp_flush_to_zero(false);
+    printf("ok: exclusive number bounds hold with flush-to-zero off and on (%zu cases, %d flushed runs)\n",
+           sizeof(cases) / sizeof(*cases), flushed_runs);
 }
 
 static void test_schema_number_bounds_reject_dead_minus_and_close_in_bounds(void) {
@@ -3945,6 +4072,7 @@ int main(void) {
     test_schema_allof_of_string_patterns();
     test_schema_negated_and_escaped_classes();
     test_schema_number_bounds_reject_dead_minus_and_close_in_bounds();
+    test_schema_exclusive_bounds_survive_flush_to_zero();
     test_schema_merges_enum_and_const_anyof();
     test_dump_keeps_integer_literals();
     test_schema_enum_keeps_a_large_integer();
