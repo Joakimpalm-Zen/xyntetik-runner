@@ -559,3 +559,38 @@ def test_large_disagreements_are_counted_per_side_with_a_one_sided_sign_test():
     # the 6.c reading of A1 against A0: six large disagreements, all A1's
     assert math.isclose(gold.sign_test_one_sided(6, 6), 1 / 64)
     assert gold.large_disagreement([row(0.1, 0.2)])["p_b_worse"] == 1.0
+
+
+def test_a_position_is_not_dropped_for_a_text_prefix_nobody_is_sent():
+    """Every side a score file (what runner derive runs): the reference and
+    the files are compared row by row on token ids, and no prefix is sent to
+    anyone. The text path's re-tokenize check still ran, and a position whose
+    decoded prefix does not tokenize back to the same ids was dropped without
+    a line and without being counted (measured 2026-11-15 on SmolLM2: 5 of
+    150 positions, four with a prefix ending inside a multi-byte character,
+    one ending in a double line break; the summary said 145 positions and 0
+    skipped). With no endpoint side the prefix is not asked for."""
+    body = [1, 2]                       # the fake re-tokenizes every text to [0]: this prefix fails the check
+    assert gold.endpoint_prompt(BPE, [0], body, 1, False) is None          # the control: the check does fail
+    sides_files = [("a", "a.score.json", "score file"), ("b", "b.score.json", "score file")]
+    files = {"a": object(), "b": object()}
+    prefix, why = gold.position_prefix(BPE, [0], body, 1, False, sides_files, files)
+    assert prefix is None and why is None                                   # kept: nothing to send, nothing to check
+    # one endpoint among the sides: the prefix is needed, and its failure has a reason
+    sides_mixed = [("a", "a.score.json", "score file"), ("b", "http://127.0.0.1:1", "model")]
+    prefix, why = gold.position_prefix(BPE, [0], body, 1, False, sides_mixed, {"a": object()})
+    assert prefix is None and "does not tokenize back" in why
+    # and a prefix that passes is returned as before
+    prefix, why = gold.position_prefix(BPE, [0], [0, 1], 1, False, sides_mixed, {"a": object()})
+    assert prefix == "a" and why is None
+    # ids never fail the check
+    prefix, why = gold.position_prefix(BPE, [0], body, 1, True, sides_mixed, {"a": object()})
+    assert prefix == [0, 1] and why is None
+
+
+def test_the_summary_counts_positions_dropped_for_their_prefix():
+    """A dropped position is counted and named, never silent: the summary's
+    positions_skipped_prefix, beside positions_skipped_no_logprobs."""
+    src = (ROOT / "scripts" / "gold-logits.py").read_text(encoding="utf-8")
+    assert '"positions_skipped_prefix": skipped_prefix' in src
+    assert 'print(f"pos {pos:4d} skipped: {why}", file=sys.stderr)' in src
