@@ -2526,8 +2526,12 @@ static const numdec *num_dmin_get(void) {
 // reports ERANGE for most of that range (where it stops depends on the
 // architecture's tininess rule), macOS's parser rounds its top up to
 // 2^-1022 and accepts it, and a flushing mode compares a subnormal as 0.
-// Every spelling inside reads back through json_parse: its value is 0 or at
-// least 2^-1022, and below the parser's 1.7e308.
+// Every spelling inside reads back through json_parse when the reader rounds
+// to nearest: its value is 0 or at least 2^-1022, and below the parser's
+// 1.7e308. json_parse reads through strtod, which follows the process's
+// rounding mode, and the engine never sets a directed one: rounding upward,
+// 1.6999999999999998e308 (inside under minimum 0) reads as the refused
+// 1.7e308, and its negative mirror downward (a known limit, R2.19).
 struct numset;
 static const struct numset *num_set_for(const snode *n);
 static bool num_exact_in(const struct numset *ns, const char *s);
