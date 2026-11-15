@@ -1311,7 +1311,10 @@ static void test_schema_exclusive_bounds_survive_flush_to_zero(void) {
         { "{\"type\":\"number\",\"exclusiveMinimum\":-2,\"exclusiveMaximum\":2}", "0", true },
         { "{\"type\":\"number\",\"exclusiveMinimum\":-2,\"exclusiveMaximum\":2}", "-1.5", true },
         { "{\"type\":\"number\",\"exclusiveMinimum\":-2,\"exclusiveMaximum\":2}", "2", false },
-        { "{\"type\":\"number\",\"exclusiveMinimum\":-1.7976931348623157e308,\"exclusiveMaximum\":1.7976931348623157e308}", "1e308", true },
+        // the widest bounds a schema may carry (a bound past the largest safe
+        // integer is refused at compile)
+        { "{\"type\":\"number\",\"exclusiveMinimum\":-9007199254740991,\"exclusiveMaximum\":9007199254740991}", "1e15", true },
+        { "{\"type\":\"number\",\"exclusiveMinimum\":-9007199254740991,\"exclusiveMaximum\":9007199254740991}", "9007199254740991", false },
         // the two smallest numbers around zero: zero lies between them
         { "{\"type\":\"number\",\"exclusiveMinimum\":-2.2250738585072014e-308,\"exclusiveMaximum\":2.2250738585072014e-308}", "0", true },
         // a narrow interval next to zero: its normal values are in, zero is not
@@ -1345,6 +1348,10 @@ static void test_schema_exclusive_bounds_survive_flush_to_zero(void) {
         }
         for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
             jv *j = json_parse(cases[i].schema, strlen(cases[i].schema));
+            // a schema the reader refuses compiles as "anything" and would
+            // pass every "true" row without a bound being read
+            if (!j) fprintf(stderr, "R2.20: the reader refuses %s\n", cases[i].schema);
+            assert(j != NULL);
             char err[256];
             snode *s = schema_compile(j, err, sizeof(err));
             assert(s != NULL);
@@ -1358,6 +1365,7 @@ static void test_schema_exclusive_bounds_survive_flush_to_zero(void) {
         }
         for (size_t i = 0; i < sizeof(empty) / sizeof(*empty); i++) {
             jv *j = json_parse(empty[i], strlen(empty[i]));
+            assert(j != NULL);
             char err[256];
             snode *s = schema_compile(j, err, sizeof(err));
             if (s) fprintf(stderr, "R2.20 (flush-to-zero %s): %s compiled\n", mode ? "on" : "off", empty[i]);
@@ -1383,6 +1391,7 @@ static void test_schema_exclusive_bounds_survive_flush_to_zero(void) {
             char src[256];
             snprintf(src, sizeof(src), "{\"type\":\"object\",\"properties\":{\"x\":%s},\"required\":[\"x\"]}", closes[i]);
             jv *j = json_parse(src, strlen(src));
+            assert(j != NULL);
             char err[256];
             snode *s = schema_compile(j, err, sizeof(err));
             assert(s != NULL);
