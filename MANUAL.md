@@ -1058,9 +1058,13 @@ restricted to what a JSON string spells unescaped (a control character or a
 quote inside a class was never producible). Every class before the last
 carries a fixed count, so which class a byte belongs to follows from its
 offset. An `allOf` of string constraints on a string is enforced as their
-conjunction, every pattern and the tightest bounds together; that is the one
-`allOf` shape accepted (Claude Code 2.1.272 declares
-`SendMessage.to` with two patterns), every other `allOf` is refused by name.
+conjunction, every pattern and the tightest bounds together (Claude Code
+2.1.272 declares `SendMessage.to` with two patterns). An `allOf` that wraps one
+schema, with only annotations beside it and every other member constraining
+nothing (`true`, or annotations only), is that schema, whatever its type:
+pydantic 1.10 writes every field that references a model or an enum and has a
+title, a description or a default that way. Every other `allOf` is refused by
+name, among them two object members to merge (zod's `.and()`).
 
 Every other pattern compiles to an automaton, as ECMA-262 reads it with the
 `u` flag, the dialect JSON Schema names:

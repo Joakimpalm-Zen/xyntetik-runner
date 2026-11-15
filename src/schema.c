@@ -224,7 +224,7 @@ static bool allof_is_string_conjunction(jv *s, char *err, int errcap) {
     }
     if (!declares_type(s, "string")) {
         snprintf(err, errcap, "unsupported schema keyword 'allOf' (only string "
-                              "constraints can be conjoined)");
+                              "constraints on a string, or one schema with annotations)");
         return false;
     }
     for (int i = 0; i < all->n; i++) {
@@ -3984,6 +3984,67 @@ static jv *refx_target(jv *root, const char *ref) {
 
 static bool refx_schema(refx *x, jv *s, sbuf *o);
 
+// R2.18.1: an allOf that wraps one schema is that schema. pydantic 1.10
+// writes every field that references a model or an enum, and has a title, a
+// description or a default, as {"title": .., "allOf": [{"$ref": "#/.."}]}. A
+// node whose keys beside allOf only annotate, and whose allOf members, once
+// true and annotation-only ones are dropped, are one schema, means exactly
+// that schema, so it becomes it, whatever its type (with none left it is {},
+// any value; a lone false stays false, which compile_node refuses). It
+// happens here, in the copy every compile makes while inlining $refs, so
+// compile_node and the native tool grammars that read a tool's properties
+// from the JSON see the same schema. Any other allOf (two members that each
+// constrain, or a sibling that does, whose maxLength would be lost) is copied
+// as written, for check_keywords to name.
+static bool collapse_annotation(const char *k) {
+    return kw_in(k, KW_ANNOTATION) || kw_in(k, KW_VENDOR_ANNOTATION) ||
+           !strcmp(k, "$defs") || !strcmp(k, "definitions");
+}
+// a member that constrains nothing: true, or annotations only, through its
+// $refs (a $ref with anything but annotations beside it constrains, or is
+// refused where refx_ref reaches it)
+static bool collapse_trivial(jv *root, jv *m) {
+    for (int hop = 0; m && m->type == J_OBJ && hop < REFX_DEPTH; hop++) {
+        jv *ref = jv_get(m, "$ref");
+        if (!ref) break;
+        if (ref->type != J_STR || ref->str[0] != '#') return false;
+        for (int i = 0; i < m->n; i++)
+            if (strcmp(m->keys[i], "$ref") && !kw_in(m->keys[i], REFX_ANNOT)) return false;
+        m = refx_target(root, ref->str);
+    }
+    if (!m) return false;
+    if (m->type == J_BOOL) return m->b;
+    if (m->type != J_OBJ || jv_get(m, "$ref")) return false;
+    for (int i = 0; i < m->n; i++)
+        if (!kw_in(m->keys[i], KW_ANNOTATION) && !kw_in(m->keys[i], KW_VENDOR_ANNOTATION)) return false;
+    return true;
+}
+// 1 when the node is one schema in a wrapper (*one is it), 2 when every
+// member constrains nothing, 0 otherwise
+static int collapse_one(jv *root, jv *s, jv **one) {
+    jv *all = jv_get(s, "allOf");
+    *one = NULL;
+    if (!all || all->type != J_ARR || all->n < 1) return 0;
+    for (int i = 0; i < s->n; i++)
+        if (strcmp(s->keys[i], "allOf") && !collapse_annotation(s->keys[i])) return 0;
+    for (int i = 0; i < all->n; i++) {
+        if (collapse_trivial(root, all->items[i])) continue;
+        if (*one) return 0;
+        *one = all->items[i];
+    }
+    return *one ? 1 : 2;
+}
+// true when an allOf key appears anywhere in v (as conservative as refx_needed)
+static bool collapse_needed(const jv *v) {
+    if (!v) return false;
+    if (v->type == J_OBJ)
+        for (int i = 0; i < v->n; i++)
+            if (!strcmp(v->keys[i], "allOf") || collapse_needed(v->items[i])) return true;
+    if (v->type == J_ARR)
+        for (int i = 0; i < v->n; i++) if (collapse_needed(v->items[i])) return true;
+    return false;
+}
+
 static bool refx_ref(refx *x, jv *s, jv *ref, sbuf *o) {
     if (ref->type != J_STR) {
         snprintf(x->err, x->errcap, "$ref must be a string");
@@ -4039,6 +4100,10 @@ static bool refx_schema(refx *x, jv *s, sbuf *o) {
     }
     jv *ref = jv_get(s, "$ref");
     if (ref) return refx_ref(x, s, ref, o);
+    jv *one;
+    int collapsed = collapse_one(x->root, s, &one);
+    if (collapsed == 1) return refx_schema(x, one, o);
+    if (collapsed == 2) { sb_lit(o, "{}"); return true; }
     sb_lit(o, "{");
     bool first = true;
     for (int i = 0; i < s->n; i++) {
@@ -4268,7 +4333,7 @@ static bool refx_nested_base(jv *root, char *err, int errcap) {
 
 jv *schema_resolve_refs(jv *s, jv **owned, char *err, int errcap) {
     *owned = NULL;
-    if (!refx_needed(s)) return s;
+    if (!refx_needed(s) && !collapse_needed(s)) return s;
     if (!refx_nested_base(s, err, errcap)) return NULL;
     refx x = { .root = s, .err = err, .errcap = errcap };
     x.stack[x.depth++] = "#";   // the root itself: a "#" inside it recurses
@@ -4283,7 +4348,7 @@ jv *schema_resolve_refs(jv *s, jv **owned, char *err, int errcap) {
 
 jv *schema_resolve_tool_refs(jv *tools, jv **owned, char *err, int errcap) {
     *owned = NULL;
-    if (!tools || tools->type != J_ARR || !refx_needed(tools)) return tools;
+    if (!tools || tools->type != J_ARR || (!refx_needed(tools) && !collapse_needed(tools))) return tools;
     sbuf o = { 0 };
     jv_dump(tools, &o);
     jv *copy = !o.failed && o.s ? json_parse(o.s, o.n) : NULL;
@@ -4296,10 +4361,16 @@ jv *schema_resolve_tool_refs(jv *tools, jv **owned, char *err, int errcap) {
         jv *t = copy->items[i];
         jv *fn = jv_get(t, "function") ? jv_get(t, "function") : t;
         jv *params = jv_get(fn, "parameters");
-        if (!params || !refx_needed(params)) continue;
+        if (!params || (!refx_needed(params) && !collapse_needed(params))) continue;
         char why[128];
         jv *own;
         jv *r = schema_resolve_refs(params, &own, why, sizeof why);
+        // parameters that resolve to false admit no call: the native grammars
+        // read parameters.properties and would see a tool without parameters
+        if (r && r->type == J_BOOL && !r->b) {
+            snprintf(why, sizeof why, "its parameters admit no value (they resolve to false)");
+            r = NULL;
+        }
         if (!r || !jv_set(fn, "parameters", own)) {
             if (r) snprintf(why, sizeof why, "out of memory");
             snprintf(err, errcap, "tool \"%.40s\": %s",

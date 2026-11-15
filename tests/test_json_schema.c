@@ -628,7 +628,8 @@ static void test_schema_rejects_escaped_keys(void) {
 static void test_schema_rejects_unenforceable_keywords(void) {
     static const char *const bad[] = {
         "{\"type\":\"integer\",\"multipleOf\":2}",
-        "{\"allOf\":[{\"type\":\"string\"}]}",
+        // two members that each constrain (one member is that schema, R2.18.1)
+        "{\"allOf\":[{\"type\":\"string\"},{\"maxLength\":2}]}",
         "{\"not\":{\"type\":\"string\"}}",
         "{\"type\":\"array\",\"uniqueItems\":true}",
         "{\"type\":\"array\",\"prefixItems\":[{\"type\":\"string\"}]}",
@@ -1236,6 +1237,126 @@ static void test_schema_allof_of_string_patterns(void) {
         assert(schema_compile(j, err, sizeof(err)) == NULL);
         jv_free(j);
     }
+}
+
+// R2.18.1: an allOf that wraps one schema is that schema. pydantic 1.10 writes
+// every field that references a model or an enum, and has a title, a
+// description or a default, as {"title":..,"allOf":[{"$ref":..}]}; both
+// fixtures are pydantic 1.10.27's own expectations (tests/test_schema.py on
+// 1.10.X-fixes). The node becomes its one member only when everything beside
+// the allOf annotates and every other member constrains nothing: a maxLength
+// beside it (the mutant m5 would drop it) keeps the node refused, and two
+// members that each constrain (zod-to-json-schema 3.25.2's .and()) stay
+// refused by name, with words that say what is supported.
+static bool allof_doc(const snode *s, const char *doc) {
+    sval v; sval_init(&v, s);
+    if (!sval_feed(&v, doc, (int)strlen(doc))) return false;
+    if (!v.done) (void)sval_feed(&v, " ", 1);
+    return v.done;
+}
+static snode *allof_compile(const char *src, char *err, int errcap) {
+    jv *j = json_parse(src, strlen(src));
+    assert(j != NULL);
+    snode *s = schema_compile(j, err, errcap);
+    jv_free(j);
+    return s;
+}
+static void test_schema_allof_one_member_collapse(void) {
+    char err[256];
+    // pydantic 1.10.27: an enum field with a title, a description and a default
+    const char *pyd_enum =
+        "{\"title\":\"Model\",\"type\":\"object\","
+        "\"definitions\":{\"FooBarEnum\":{\"description\":\"An enumeration.\",\"enum\":[\"foo\",\"bar\"],"
+        "\"title\":\"FooBarEnum\",\"type\":\"string\"}},"
+        "\"properties\":{"
+        "\"pikalias\":{\"allOf\":[{\"$ref\":\"#/definitions/FooBarEnum\"}],"
+        "\"description\":\"Pika is definitely the best!\",\"title\":\"Pikapika!\"},"
+        "\"bulbialias\":{\"allOf\":[{\"$ref\":\"#/definitions/FooBarEnum\"}],"
+        "\"description\":\"Bulbi is not...\",\"title\":\"Bulbibulbi!\",\"default\":\"foo\"},"
+        "\"cara\":{\"$ref\":\"#/definitions/FooBarEnum\"}},"
+        "\"required\":[\"pikalias\",\"cara\"]}";
+    snode *s = allof_compile(pyd_enum, err, sizeof(err));
+    if (!s) { fprintf(stderr, "R2.18.1 pydantic enum field: %s\n", err); assert(0); }
+    assert(allof_doc(s, "{\"pikalias\":\"foo\",\"cara\":\"bar\"}"));
+    assert(allof_doc(s, "{\"pikalias\":\"bar\",\"bulbialias\":\"foo\",\"cara\":\"foo\"}"));
+    assert(!allof_doc(s, "{\"pikalias\":\"baz\",\"cara\":\"foo\"}"));     // the enum holds
+    assert(!allof_doc(s, "{\"cara\":\"foo\"}"));                          // required holds
+    schema_free(s);
+
+    // pydantic 1.10.27: a nested model whose field has a default
+    const char *pyd_model =
+        "{\"title\":\"Model\",\"type\":\"object\",\"definitions\":{"
+        "\"Foo\":{\"title\":\"Foo\",\"type\":\"object\",\"properties\":{\"a\":{\"title\":\"A\",\"type\":\"string\"}},"
+        "\"required\":[\"a\"]},"
+        "\"Bar\":{\"title\":\"Bar\",\"type\":\"object\",\"properties\":{\"b\":{\"title\":\"B\","
+        "\"default\":{\"a\":\"foo\"},\"allOf\":[{\"$ref\":\"#/definitions/Foo\"}]}}},"
+        "\"Baz\":{\"title\":\"Baz\",\"type\":\"object\",\"properties\":{\"c\":{\"$ref\":\"#/definitions/Bar\"}}}},"
+        "\"properties\":{\"d\":{\"$ref\":\"#/definitions/Baz\"}},\"required\":[\"d\"]}";
+    s = allof_compile(pyd_model, err, sizeof(err));
+    if (!s) { fprintf(stderr, "R2.18.1 pydantic nested model: %s\n", err); assert(0); }
+    assert(allof_doc(s, "{\"d\":{\"c\":{\"b\":{\"a\":\"x\"}}}}"));
+    assert(allof_doc(s, "{\"d\":{}}"));
+    assert(!allof_doc(s, "{\"d\":{\"c\":{\"b\":{}}}}"));                  // Foo's required a holds
+    assert(!allof_doc(s, "{\"d\":{\"c\":{\"b\":{\"a\":1}}}}"));
+    schema_free(s);
+
+    // m5: a sibling that validates keeps the node as written, and refused
+    s = allof_compile("{\"type\":\"object\",\"properties\":{\"x\":{\"maxLength\":3,"
+                      "\"allOf\":[{\"type\":\"string\"}]}}}", err, sizeof(err));
+    if (s) {
+        fprintf(stderr, "R2.18.1 m5: a maxLength beside a one-member allOf compiled; \"abcd\" %s\n",
+                allof_doc(s, "{\"x\":\"abcd\"}") ? "admitted" : "refused");
+        assert(0);
+    }
+    assert(strstr(err, "allOf"));
+
+    // zod-to-json-schema 3.25.2's .and() (two members that each constrain): refused by
+    // name, and the words say what is supported
+    s = allof_compile("{\"allOf\":[{\"properties\":{\"foo\":{\"type\":\"string\"}},\"required\":[\"foo\"],"
+                      "\"type\":\"object\"},{\"properties\":{\"bar\":{\"type\":\"string\"}},\"required\":[\"bar\"],"
+                      "\"type\":\"object\"}],\"unevaluatedProperties\":false}", err, sizeof(err));
+    assert(s == NULL);
+    if (!strstr(err, "allOf") || !strstr(err, "string") || !strstr(err, "annotations")) {
+        fprintf(stderr, "R2.18.1 .and(): the refusal does not say what is supported: %s\n", err);
+        assert(0);
+    }
+
+    // members that constrain nothing are dropped: true, annotations only, a $ref to annotations
+    s = allof_compile("{\"description\":\"d\",\"definitions\":{\"N\":{\"title\":\"n\"}},"
+                      "\"allOf\":[true,{\"title\":\"t\"},{\"$ref\":\"#/definitions/N\"},"
+                      "{\"type\":\"integer\",\"maximum\":3}]}", err, sizeof(err));
+    if (!s) { fprintf(stderr, "R2.18.1 trivial members: %s\n", err); assert(0); }
+    assert(allof_doc(s, "3") && !allof_doc(s, "4") && !allof_doc(s, "\"x\""));
+    schema_free(s);
+    // none left: any value
+    s = allof_compile("{\"title\":\"t\",\"allOf\":[true,{\"description\":\"x\"}]}", err, sizeof(err));
+    assert(s != NULL);
+    assert(allof_doc(s, "\"s\"") && allof_doc(s, "1"));
+    schema_free(s);
+    // one member that is false: the node is false, which admits nothing
+    s = allof_compile("{\"title\":\"t\",\"allOf\":[false]}", err, sizeof(err));
+    assert(s == NULL && strstr(err, "false"));
+    // nested, and any type: a string member keeps its own bounds
+    s = allof_compile("{\"allOf\":[{\"allOf\":[{\"type\":\"string\",\"maxLength\":2}],\"title\":\"in\"}]}",
+                      err, sizeof(err));
+    if (!s) { fprintf(stderr, "R2.18.1 nested: %s\n", err); assert(0); }
+    assert(allof_doc(s, "\"ab\"") && !allof_doc(s, "\"abc\""));
+    schema_free(s);
+
+    // the tool path sees the same schema (refd_init resolves tools before every native grammar)
+    const char *tools_src =
+        "[{\"type\":\"function\",\"function\":{\"name\":\"pick\",\"parameters\":{\"type\":\"object\","
+        "\"definitions\":{\"E\":{\"type\":\"string\",\"enum\":[\"a\",\"b\"]}},"
+        "\"properties\":{\"k\":{\"title\":\"K\",\"description\":\"which\","
+        "\"allOf\":[{\"$ref\":\"#/definitions/E\"}]}},\"required\":[\"k\"]}}}]";
+    jv *tools = json_parse(tools_src, strlen(tools_src));
+    assert(tools != NULL);
+    snode *t = schema_compile_atem_tools(tools, err, sizeof(err));
+    if (!t) { fprintf(stderr, "R2.18.1 tool path: %s\n", err); assert(0); }
+    schema_free(t);
+    jv_free(tools);
+    printf("ok: an allOf that wraps one schema compiles as that schema (pydantic 1.10.27's two "
+           "shapes, the tool path); a validating sibling and two constraining members stay refused\n");
 }
 
 // Negated classes and escapes inside a set: the enforced set is exactly the
@@ -4108,6 +4229,7 @@ int main(void) {
     test_schema_segment_classes_mean_what_ecma_means();
     test_schema_ecma_cases_through_the_validator();
     test_schema_allof_of_string_patterns();
+    test_schema_allof_one_member_collapse();
     test_schema_negated_and_escaped_classes();
     test_schema_number_bounds_reject_dead_minus_and_close_in_bounds();
     test_schema_exclusive_bounds_survive_flush_to_zero();
