@@ -14,14 +14,64 @@
 //   5. A long pattern compiles on a small stack.
 //   6. The kept limit fails by name, also when a trial reached the state first.
 //   7. Lengths at INT_MAX, the largest maxLength.
+//   8. The heap a pool really holds, counted by the allocator.
+//   9. A second thread promoting a cached state is refused.
 #include "jsre.h"
 #include "jsre_cases.h"
 
 #include <limits.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+// The automaton is compiled into this test with its allocations counted in
+// bytes, so a memory bound is checked against what the heap holds (test 8),
+// never against the pool's own figure. JSRE_SOURCE lets a mutant stand in.
+static size_t heap_live, heap_high;
+static void *h_malloc(size_t n) {
+    size_t *p = malloc(n + 16);
+    if (!p) return NULL;
+    *p = n;
+    heap_live += n;
+    if (heap_live > heap_high) heap_high = heap_live;
+    return (char *)p + 16;
+}
+static void *h_calloc(size_t a, size_t b) {
+    if (b && a > SIZE_MAX / b - 16) return NULL;
+    void *q = h_malloc(a * b);
+    if (q) memset(q, 0, a * b);
+    return q;
+}
+static void h_free(void *q) {
+    if (!q) return;
+    size_t *p = (size_t *)((char *)q - 16);
+    heap_live -= *p;
+    free(p);
+}
+static void *h_realloc(void *q, size_t n) {
+    if (!q) return h_malloc(n);
+    size_t *p = (size_t *)((char *)q - 16), old = *p;
+    size_t *r = realloc(p, n + 16);
+    if (!r) return NULL;
+    *r = n;
+    heap_live = heap_live - old + n;
+    if (heap_live > heap_high) heap_high = heap_live;
+    return (char *)r + 16;
+}
+#define malloc  h_malloc
+#define calloc  h_calloc
+#define realloc h_realloc
+#define free    h_free
+#ifndef JSRE_SOURCE
+#define JSRE_SOURCE "../src/jsre.c"
+#endif
+#include JSRE_SOURCE
+#undef malloc
+#undef calloc
+#undef realloc
+#undef free
 
 static int fails;
 #define CHECK(c, ...) do { if (!(c)) { fails++; if (fails < 20) { fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } } } while (0)
@@ -419,10 +469,94 @@ static void test_huge_bounds(void) {
     printf("huge bounds: lengths, asks and witnesses at INT_MAX\n");
 }
 
+
+// 8 --------------------------------------------------------------- the heap
+// Codex on #875: a flush freed states and tables but kept each DFA's slot
+// array, hash table and free list at their high water, outside the budget
+// the pool reported. Six DFAs for ^(a|b)*a(a|b){15}$ in one 8 MiB pool, trial
+// walks over every binary 16-character window: what the heap holds for the
+// cache stays within the budget, plus the kept states and one step, and the
+// pool's own figure does not under-count it.
+static void test_heap_bound(void) {
+    enum { ND = 6 };
+    char err[256];
+    jsre *re[ND];
+    for (int i = 0; i < ND; i++) {
+        re[i] = jsre_compile("^(a|b)*a(a|b){15}$", err, sizeof err);
+        CHECK(re[i] != NULL, "compile: %s", err);
+        if (!re[i]) return;
+    }
+    size_t budget = (size_t)8 << 20, base = heap_live;
+    heap_high = heap_live;
+    jsre_pool *p = jsre_pool_new(budget);
+    jsre_dfa *d[ND];
+    for (int i = 0; i < ND; i++) d[i] = jsre_dfa_new(re[i], p);
+    long walked = 0;
+    for (int i = 0; i < ND; i++) {
+        jsre_st s0 = jsre_dfa_start(d[i]);
+        for (unsigned w = 0; w < (1u << 16); w++) {
+            jsre_st st = s0;
+            for (int k = 0; k < 16 && st != JSRE_DEAD && st != JSRE_FAIL; k++, walked++)
+                st = jsre_dfa_step(d[i], st, (w >> k & 1) ? 'b' : 'a', false);
+            CHECK(st != JSRE_FAIL, "a walk failed");
+        }
+    }
+    jsre_pool_stat s;
+    jsre_pool_stats(p, &s);
+    size_t held = heap_high - base;
+    // one step's need past the budget: a set, a table, a hash table's growth
+    size_t slack = 256 * 1024;
+    CHECK(held <= budget + s.kept + slack, "the heap held %zu bytes for an %zu-byte pool (pool says %zu)", held, budget, s.high);
+    CHECK(held <= s.high + slack, "the pool reported %zu bytes where the heap held %zu", s.high, held);
+    CHECK(s.flushes > 0, "the walks never filled the pool (%llu flushes)", (unsigned long long)s.flushes);
+    for (int i = 0; i < ND; i++) jsre_dfa_free(d[i]);
+    jsre_pool_free(p);
+    for (int i = 0; i < ND; i++) jsre_free(re[i]);
+    printf("heap: %ld steps over six DFAs, %llu flushes; the heap held %zu bytes, the pool said %zu, budget %zu\n",
+           walked, (unsigned long long)s.flushes, held, s.high, budget);
+}
+
+// 9 --------------------------------------------------------------- warm second thread
+// Codex on #875: a cached transition promoted an unkept state for a second
+// thread without the owner check. The main thread fills ^(a|b)+$ on 'a' as a
+// trial; another thread then takes the same transition keeping it.
+typedef struct { jsre_dfa *d; jsre_st st; jsre_st got; } warm_arg;
+static void *warm_thread(void *v) {
+    warm_arg *w = v;
+    w->got = jsre_dfa_step(w->d, w->st, 'a', true);
+    return NULL;
+}
+static void test_warm_second_thread(void) {
+    char err[256];
+    jsre *re = jsre_compile("^(a|b)+$", err, sizeof err);
+    CHECK(re != NULL, "%s", err);
+    if (!re) return;
+    jsre_pool *p = jsre_pool_new(BUDGETS[0]);
+    jsre_dfa *d = jsre_dfa_new(re, p);
+    jsre_st st = jsre_dfa_start(d);
+    jsre_st nx = jsre_dfa_step(d, st, 'a', false);   // the fill, on this thread
+    CHECK(nx != JSRE_FAIL && nx != JSRE_DEAD && !jsre_dfa_kept(d, nx), "the trial step");
+    jsre_pool_stat before, after;
+    jsre_pool_stats(p, &before);
+    warm_arg w = { d, st, 0 };
+    pthread_t th;
+    CHECK(pthread_create(&th, NULL, warm_thread, &w) == 0, "pthread_create");
+    pthread_join(th, NULL);
+    jsre_pool_stats(p, &after);
+    CHECK(w.got == JSRE_FAIL && after.failed && strstr(after.failed, "second thread") &&
+          after.kept_states == before.kept_states,
+          "a second thread promoted a cached state: got %s, kept %d -> %d",
+          w.got == JSRE_FAIL ? "FAIL" : "a handle", before.kept_states, after.kept_states);
+    jsre_dfa_free(d); jsre_pool_free(p); jsre_free(re);
+    printf("warm second thread: a cached promotion from another thread is refused\n");
+}
+
 int main(void) {
     test_stack();
     test_kept_limit();
     test_huge_bounds();
+    test_heap_bound();
+    test_warm_second_thread();
     test_cases();
     test_cache();
     test_lengths();

@@ -137,6 +137,39 @@ static const char *const schemas[] = {
 // tables, the length caches, the pool), so every allocation a constrained
 // feed makes is failed in turn. A failed one refuses the byte and records why
 // (sval_pattern_fault), never crashes, and schema_free leaves nothing behind.
+
+// R2.18 (codex on #875): a temporary code-point set (cp_norm, cp_not,
+// cp_producible) left its block behind when an allocation part-way through
+// failed. Multi-range Unicode classes build several of them; every one of
+// their allocations is failed once, and nothing may be stranded.
+static void test_pattern_classes_survive_allocation_failure(void) {
+    const char *pats[] = { "\\s", "\\S+", "[^\\s\\d]{2}", "[a-z\\u00e9\\u4e00-\\u9fff]{2,3}",
+                           "(\\w|\\s)*\\u00e9", ".[^a-c\\u2028]", "[\\s\\S]x" };
+    for (size_t i = 0; i < sizeof(pats) / sizeof(*pats); i++) {
+        char err[256];
+        fail_at = -1; alloc_calls = 0; alloc_live = 0;
+        jsre *re = jsre_compile(pats[i], err, sizeof(err));
+        assert(re && jsre_lengths(re, -1, err, sizeof(err)));
+        long total = alloc_calls;
+        jsre_free(re);
+        assert(alloc_live == 0 && total > 3);
+        for (long k = 0; k < total; k++) {
+            fail_at = k; alloc_calls = 0; err[0] = 0;
+            jsre *r = jsre_compile(pats[i], err, sizeof(err));
+            if (r && !jsre_lengths(r, -1, err, sizeof(err))) assert(err[0]);
+            if (!r) assert(err[0]);
+            jsre_free(r);
+            if (alloc_live != 0) {
+                fprintf(stderr, "pattern %s, failing allocation %ld of %ld: %ld block(s) leaked\n",
+                        pats[i], k, total, alloc_live);
+                abort();
+            }
+        }
+        fail_at = -1;
+    }
+    printf("ok: pattern classes survive each of their allocations failing\n");
+}
+
 static void test_pattern_feed_survives_allocation_failure(void) {
     const char *src = "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\","
                       "\"pattern\":\"^(ab|cd){1,4}-[0-9]{2}$\",\"minLength\":4}},\"required\":[\"id\"]}";
@@ -429,6 +462,7 @@ static void test_native_compilers_survive_allocation_failure(void) {
 }
 
 int main(void) {
+    test_pattern_classes_survive_allocation_failure();
     test_pattern_feed_survives_allocation_failure();
     test_compile_survives_allocation_failure();
     test_native_compilers_survive_allocation_failure();

@@ -570,7 +570,7 @@ debug: $(SAN_SRC) $(HDR) $(OBJDIR)/build-commit.stamp
 # $(CFLAGS), not a hand-rolled flag list: schema bounds compile in the same
 # -ffast-math configuration as the shipped binary. Building this test without
 # those flags once gated behavior in a configuration that does not ship.
-$(TEST_JSON_SCHEMA): tests/test_json_schema.c $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(HDR)
+$(TEST_JSON_SCHEMA): tests/test_json_schema.c tests/jsre_cases.h $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(HDR)
 	$(CC) $(CFLAGS) -I src tests/test_json_schema.c $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) -o $@ -lm
 
 $(TEST_SVAL_WALK): tests/test_sval_walk.c $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(HDR)
@@ -579,9 +579,9 @@ $(TEST_SVAL_WALK): tests/test_sval_walk.c $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o 
 # R2.18: the pattern automaton and the schema validator under ASan and UBSan:
 # an overflow (a maxLength of INT_MAX) or a stray read in the automaton only
 # fails loudly here. CI runs it in the sanitized conformance job.
-test-schema-san: tests/test_jsre.c tests/jsre_cases.h tests/test_json_schema.c $(HDR)
+test-schema-san: tests/test_jsre.c tests/jsre_cases.h tests/test_json_schema.c src/jsre.c $(SCHEMA_SRC) $(HDR)
 	$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer \
-	    -fno-fast-math -std=gnu11 -Wall -I src tests/test_jsre.c src/jsre.c -o test-jsre-san $(LDFLAGS)
+	    -fno-fast-math -std=gnu11 -Wall -I src tests/test_jsre.c -o test-jsre-san $(LDFLAGS)
 	$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer \
 	    -fno-fast-math -std=gnu11 -Wall -I src tests/test_json_schema.c src/json.c src/jsonmode.c $(SCHEMA_SRC) \
 	    -o test-json-schema-san -lm
@@ -590,9 +590,10 @@ test-schema-san: tests/test_jsre.c tests/jsre_cases.h tests/test_json_schema.c $
 
 # R2.18: the pattern automaton against ECMA-262's verdicts (tests/jsre_cases.h,
 # from scripts/gen-jsre-cases.py), its DFA cache under three pool budgets, its
-# lengths against a forward search; pthread for the second-thread fill check
-$(TEST_JSRE): tests/test_jsre.c tests/jsre_cases.h $(OBJDIR)/jsre.o $(HDR)
-	$(CC) $(CFLAGS) -I src tests/test_jsre.c $(OBJDIR)/jsre.o -o $@ $(LDFLAGS)
+# lengths against a forward search; pthread for the second-thread fill check.
+# src/jsre.c is compiled into the test, under an allocator that counts bytes.
+$(TEST_JSRE): tests/test_jsre.c tests/jsre_cases.h src/jsre.c $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_jsre.c -o $@ $(LDFLAGS)
 
 # quants.c is needed for the ggml_type_* helpers gguf.c links against; CFLAGS
 # (not the plainer flags above) so the AVX2 paths match a real build

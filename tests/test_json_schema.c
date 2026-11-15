@@ -1,6 +1,7 @@
 #include "runner.h"
 #include "json.h"
 #include "schema_int.h"
+#include "jsre_cases.h"
 
 #include <assert.h>
 #include <stdint.h>
@@ -3772,6 +3773,53 @@ static void test_schema_pattern_automaton(void) {
 // ECMA has a range; [] opening a set the POSIX way; and strtol let {2, 3},
 // { 2} and {+2} count where ECMA reads text. Each now goes to the automaton,
 // which reads it as ECMA does; what stays on the segment path is exact.
+
+// R2.18 (codex on #875, point 5): ECMA's verdicts (tests/jsre_cases.h) on the
+// path a schema actually takes, through schema_compile and sval_feed, so a
+// pattern the segment compiler keeps is held to ECMA as the automaton is.
+// A string JSON cannot spell without an escape is refused under a pattern.
+static void test_schema_ecma_cases_through_the_validator(void) {
+    int n = (int)(sizeof JSRE_CASES / sizeof *JSRE_CASES), on_seg = 0, on_auto = 0, wrong = 0;
+    const char *cur = NULL;
+    snode *s = NULL;
+    char src[4096];
+    for (int i = 0; i < n; i++) {
+        const jsre_case *c = &JSRE_CASES[i];
+        if (!cur || strcmp(cur, c->pat)) {
+            schema_free(s);
+            cur = c->pat;
+            int k = snprintf(src, sizeof(src), "{\"type\":\"string\",\"pattern\":\"");
+            for (const unsigned char *q = (const unsigned char *)c->pat; *q && k < (int)sizeof(src) - 8; q++) {
+                if (*q == '"' || *q == '\\') { src[k++] = '\\'; src[k++] = (char)*q; }
+                else if (*q < 0x20) k += snprintf(src + k, sizeof(src) - (size_t)k, "\\u%04x", *q);
+                else src[k++] = (char)*q;
+            }
+            snprintf(src + k, sizeof(src) - (size_t)k, "\"}");
+            jv *j = json_parse(src, strlen(src));
+            char err[256];
+            s = j ? schema_compile(j, err, sizeof(err)) : NULL;
+            jv_free(j);
+            if (!s) { fprintf(stderr, "ECMA case: %s refused by the schema compiler: %s\n", c->pat, err); wrong++; continue; }
+        }
+        if (!s) continue;
+        bool spellable = true;
+        for (int b = 0; b < c->n; b++) if ((unsigned char)c->s[b] < 0x20 || c->s[b] == '"' || c->s[b] == '\\') spellable = false;
+        sval v; sval_init(&v, s);
+        bool got = spellable && sval_feed(&v, "\"", 1) && sval_feed(&v, c->s, c->n) && sval_feed(&v, "\"", 1) && v.done;
+        if (got != (bool)c->want) {
+            wrong++;
+            if (wrong < 8) fprintf(stderr, "ECMA case: %s on string #%d: the validator says %d, ECMA %d (%s path)\n",
+                                   c->pat, i, got, c->want, s->n_pats ? "segment" : "automaton");
+        }
+        if (s->n_pats) on_seg++; else on_auto++;
+    }
+    schema_free(s);
+    assert(wrong == 0);
+    assert(on_seg > 20 && on_auto > 200);   // both paths answered
+    printf("ok: %d ECMA verdicts through the validator (%d on the segment path, %d on the automaton)\n",
+           on_seg + on_auto, on_seg, on_auto);
+}
+
 static void test_schema_segment_classes_mean_what_ecma_means(void) {
     struct { const char *pat, *doc; bool ok; } cases[] = {
         { "^\\\\S+$", "\"ab\"", true },
@@ -3893,6 +3941,7 @@ int main(void) {
     test_schema_pattern_regex_syntax_is_rejected_not_reinterpreted();
     test_schema_pattern_automaton();
     test_schema_segment_classes_mean_what_ecma_means();
+    test_schema_ecma_cases_through_the_validator();
     test_schema_allof_of_string_patterns();
     test_schema_negated_and_escaped_classes();
     test_schema_number_bounds_reject_dead_minus_and_close_in_bounds();

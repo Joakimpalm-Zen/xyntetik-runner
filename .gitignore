@@ -54,6 +54,7 @@ test-jsre
 test-jsre.exe
 test-jsre-san
 test-json-schema-san
+*.dSYM/
 test-tokenizer
 test-tokenizer.exe
 test-template
