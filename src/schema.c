@@ -74,6 +74,15 @@ bool enum_index(snode *n) {
     return true;
 }
 
+// R2.18: the bytes the pattern automata of the schema now compiling hold, and
+// how deep public compile entries are nested (schema_automata_begin, from
+// refd_init): the count starts over only when an outermost compile begins.
+static _Thread_local size_t automata_bytes;
+static _Thread_local int automata_depth;
+
+void schema_automata_begin(void) { if (automata_depth++ == 0) automata_bytes = 0; }
+void schema_automata_end(void) { if (automata_depth > 0) automata_depth--; }
+
 // R2.18: whether the pattern automaton's test seams have named themselves
 // (str_dfa); a pool the budget seam lowered also reports, as it goes, what
 // the seam did.
@@ -1174,6 +1183,16 @@ static snode *compile_string(jv *s, char *err, int errcap) {
     // a pattern with none inside them is refused here, not met mid-request
     if (n->re) {
         if (!jsre_lengths(n->re, n->max_items, err, (size_t)errcap)) { schema_free(n); return NULL; }
+        // the schema's automata together: refused past the cap, a pattern
+        // at a time, so the compile itself stops near it
+        automata_bytes += jsre_bytes(n->re);
+        if (automata_bytes > JSRE_SCHEMA_BYTES) {
+            snprintf(err, errcap, "unsupported schema: its pattern automata need more than %zu MiB "
+                     "(the cap per schema); %zu bytes by this pattern",
+                     JSRE_SCHEMA_BYTES >> 20, automata_bytes);
+            schema_free(n);
+            return NULL;
+        }
         uint64_t *start = malloc(jsre_words(n->re) * sizeof *start);
         if (!start) { snprintf(err, errcap, "out of memory compiling a pattern"); schema_free(n); return NULL; }
         jsre_start(n->re, start);

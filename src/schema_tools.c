@@ -2212,16 +2212,19 @@ static snode *schema_compile_gemma4_parallel_raw(jv *tools, const char *only_too
 
 typedef struct { jv *tools, *final, *own_tools, *own_final; } refd;
 
+// Every entry is also one compile for the per-schema cap on compiled pattern
+// automata (R2.18): refd_init begins it, refd_free (or a failed init) ends it.
 static bool refd_init(refd *r, jv *tools, jv *final, char *err, int errcap) {
     r->own_tools = r->own_final = NULL;
+    schema_automata_begin();
     r->tools = schema_resolve_tool_refs(tools, &r->own_tools, err, errcap);
-    if (tools && !r->tools) return false;
+    if (tools && !r->tools) { schema_automata_end(); return false; }
     r->final = final ? schema_resolve_refs(final, &r->own_final, err, errcap) : NULL;
-    if (final && !r->final) { jv_free(r->own_tools); return false; }
+    if (final && !r->final) { jv_free(r->own_tools); schema_automata_end(); return false; }
     return true;
 }
 
-static void refd_free(refd *r) { jv_free(r->own_tools); jv_free(r->own_final); }
+static void refd_free(refd *r) { jv_free(r->own_tools); jv_free(r->own_final); schema_automata_end(); }
 
 snode *schema_compile(struct jv *schema, char *err, int errcap) {
     refd r;

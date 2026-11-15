@@ -29,6 +29,12 @@ typedef struct jsre jsre;
 jsre  *jsre_compile(const char *pattern, char *err, size_t errcap);
 void   jsre_free(jsre *re);
 int    jsre_states(const jsre *re);
+// The bytes a compiled pattern holds, as asked of the allocator: its states
+// at capacity, its bitsets, its length sequence. JSRE_SCHEMA_BYTES caps their
+// sum over one schema (schema.c), so a request's schema bounds what it can
+// make the server hold however many patterns it carries.
+size_t jsre_bytes(const jsre *re);
+#define JSRE_SCHEMA_BYTES ((size_t)64 << 20)
 // A state set is jsre_words() uint64_t words, caller-owned.
 size_t jsre_words(const jsre *re);
 void   jsre_start(const jsre *re, uint64_t *set);

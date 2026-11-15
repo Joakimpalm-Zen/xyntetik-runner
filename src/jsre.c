@@ -971,6 +971,11 @@ int jsre_witness(const jsre *re, const uint64_t *set, int lo, int hi, char *out,
 }
 
 int jsre_states(const jsre *re) { return re->n; }
+
+size_t jsre_bytes(const jsre *re) {
+    return sizeof *re + (size_t)re->cap * sizeof *re->s + 2 * re->words * sizeof(uint64_t) +
+           (size_t)re->lv_n * re->words * sizeof(uint64_t);
+}
 size_t jsre_words(const jsre *re) { return re->words; }
 
 void jsre_start(const jsre *re, uint64_t *set) {

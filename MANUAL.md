@@ -1104,6 +1104,12 @@ Its limits, in one place:
 - **4,096 automaton states per pattern**, refused when the schema compiles.
   A count is built by unrolling it, so a class with many UTF-8 ranges under a
   large count reaches it: `[^\s@]{1,64}@[^\s@]{1,255}` is refused.
+- **64 MiB of compiled automata per schema**: the states, bitsets and length
+  sequences of all its patterns together, counted as the schema compiles and
+  refused by name past the cap, so what a request's schema can make the server
+  hold is bounded however many patterns it carries. A pattern holds at most
+  about 2 MiB; the largest in the JSONSchemaBench corpus holds 15.5 KB of
+  lengths.
 - **8 MiB per compiled schema** for the automata's cache (the transitions,
   states and length bits built so far) and their bookkeeping (slot arrays,
   hash tables), counted as asked of the allocator. Past it the cache is

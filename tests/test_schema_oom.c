@@ -160,17 +160,23 @@ static const char *const schemas[] = {
 // R2.18: the bytes a schema's compiled pattern automata may hold, 64 MiB
 // (JSRE_SCHEMA_BYTES), counted as the schema compiles and refused by name past
 // it, so a request's schema cannot make the server hold more however many
-// patterns it carries. Each property here is ^(a|b){0,2000}$ with maxLength
-// 2000, about 1 MiB of automaton (its length sequence most of it): a schema of
+// patterns it carries. Each property here is ^(a|b){0,1000}$ with maxLength
+// 1000, about half a MiB of automaton (4,083 states, 1,001 lengths): a schema of
 // as many as fit compiles, one more is refused, and the heap, counted by the
 // allocator, never holds much past the cap while either compiles.
+// k string properties in groups of 50 (an object holds at most 60), one
+// group an object of the outer one
 static char *cap_schema(int k) {
-    size_t cap = (size_t)k * 96 + 64;
+    size_t cap = (size_t)k * 96 + (size_t)(k / 50 + 1) * 64 + 64;
     char *s = malloc(cap);
     int n = snprintf(s, cap, "{\"type\":\"object\",\"properties\":{");
-    for (int i = 0; i < k; i++)
-        n += snprintf(s + n, cap - (size_t)n, "%s\"p%d\":{\"type\":\"string\",\"pattern\":\"^(a|b){0,2000}$\",\"maxLength\":2000}",
-                      i ? "," : "", i);
+    for (int g = 0; g * 50 < k; g++) {
+        n += snprintf(s + n, cap - (size_t)n, "%s\"g%d\":{\"type\":\"object\",\"properties\":{", g ? "," : "", g);
+        for (int i = g * 50; i < k && i < g * 50 + 50; i++)
+            n += snprintf(s + n, cap - (size_t)n, "%s\"p%d\":{\"type\":\"string\",\"pattern\":\"^(a|b){0,1000}$\",\"maxLength\":1000}",
+                          i > g * 50 ? "," : "", i);
+        n += snprintf(s + n, cap - (size_t)n, "}}");
+    }
     snprintf(s + n, cap - (size_t)n, "}}");
     return s;
 }
@@ -182,10 +188,10 @@ static void test_schema_automata_cap(void) {
     char *one = cap_schema(1);
     jv *j = json_parse(one, strlen(one));
     snode *n = schema_compile(j, err, sizeof(err));
-    assert(n && n->n_props == 1 && n->props[0]->re);
-    size_t b = jsre_bytes(n->props[0]->re);
+    assert(n && n->n_props == 1 && n->props[0]->n_props == 1 && n->props[0]->props[0]->re);
+    size_t b = jsre_bytes(n->props[0]->props[0]->re);
     schema_free(n); jv_free(j); free(one);
-    assert(b > 512 * 1024 && b < 4 << 20);
+    assert(b > 256 * 1024 && b < 4 << 20);
     int fit = (int)(JSRE_SCHEMA_BYTES / b);
     // as many as fit: compiles, and holds about what it counts
     char *under = cap_schema(fit);
