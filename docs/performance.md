@@ -102,6 +102,10 @@ Compare baseline and candidate on the same machine with the same prompt,
 model, context, threads, seed, and route. Separate cold model/page caches,
 warm loads, prefix hits, and uncached prefill. Alternate repeated runs and
 investigate reproducible differences beyond the measured baseline spread.
+A fresh process reads any part of the model file the page cache has dropped
+during its first forward pass, so the cost lands in the prompt time, not the
+load line: check the file's residency or read it once (`cat FILE >
+/dev/null`) before each timed cell, and report a cold start as its own row.
 
 ## Drafting and batching
 

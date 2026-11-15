@@ -140,7 +140,7 @@ $response.choices[0].message.content
 
 </details>
 
-> **Version `1.19.0`.** The command line, the HTTP API, the record formats and
+> **Version `1.19.1`.** The command line, the HTTP API, the record formats and
 > the model files that load stay compatible across 1.x; speed, generated
 > tokens across releases and the support matrix move with the evidence. The
 > [versioning policy](docs/versioning.md) lists exactly what is kept. CI builds
@@ -1739,7 +1739,7 @@ for Linux, macOS, or Windows, or build from source:
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 1.19.0
+./runner --version   # -> runner 1.19.1
 ```
 
 CUDA builds and releases need only an NVIDIA driver at runtime. The CUDA
@@ -1858,7 +1858,7 @@ The independently built container has a separate Debian build baseline.
 
 Each release publishes a CPU image - the same binary on a distroless glibc base,
 nothing else - to `ghcr.io/joakimpalm-zen/xyntetik-runner:v<version>` (the
-tag carries the `v`, e.g. `:v1.19.0`) and `:latest`. Build it yourself with `docker build -t runner .`.
+tag carries the `v`, e.g. `:v1.19.1`) and `:latest`. Build it yourself with `docker build -t runner .`.
 
 The server binds **loopback only** by design (there is no `--host`/`0.0.0.0`
 flag), so it never exposes itself to a network, even in a container - which
@@ -2706,7 +2706,7 @@ prefill GEMM tiles once 6 or more slots decode together. It is not bit-identical
 sequential decode: the tiles sum in another order, so a slot's tokens can differ from what
 it would decode alone. On an Apple M1 with K2-Horizon-1B it raised aggregate decode at 8
 slots from 45.2 to 63.2 tok/s (Q4_K_M) and from 58.2 to 69.9 tok/s (Q8_0); below 6 slots
-the tiles were slower, so the identity route keeps those widths. Against the publisher's float32 model over 2,000 positions it read 1.006x the identity route's mean KLD on the Q8_0 (0.003625 against 0.003604) and 0.9996x on the Q4_K_M, not distinguishable on either, and margin-qualified top-1 of 95.84% against 95.98% on the Q4_K_M. The route line and the `--score` and `--bench-json` route records name it (`micro=tiles` in the backend detail). Receipts name actual tiled generation in `profile.route.micro` as `tiles`, including a later CPU fallback; merely enabling the switch does not mark an identity-only receipt. Until decode schedules can be replayed, `--verify` reports these records as `UNVERIFIABLE` before model loading instead of attempting solo replay. This route remains opt-in.
+the tiles were slower, so the identity route keeps those widths. The gain depends on the weight type and width: on SmolLM2-1.7B at 8 slots the Q4_K_M was slower (45.2 to 42.5 tok/s) and the Q8_0 faster (34.5 to 46.8 tok/s, no further from the publisher than the identity route). Against the publisher's float32 model over 2,000 positions it read 1.006x the identity route's mean KLD on the Q8_0 (0.003625 against 0.003604) and 0.9996x on the Q4_K_M, not distinguishable on either, and margin-qualified top-1 of 95.84% against 95.98% on the Q4_K_M. The route line and the `--score` and `--bench-json` route records name it (`micro=tiles` in the backend detail). Receipts name actual tiled generation in `profile.route.micro` as `tiles`, including a later CPU fallback; merely enabling the switch does not mark an identity-only receipt. Until decode schedules can be replayed, `--verify` reports these records as `UNVERIFIABLE` before model loading instead of attempting solo replay. This route remains opt-in.
 
 ### Generation and context
 

@@ -72,7 +72,7 @@ These stay off unless a narrower scope gets its own passing row.
 
 | Switch | What it needs |
 |---|---|
-| `RUNNER_METAL_BATCH_TILES` | Its float32 rows pass (+40% at 8 slots); receipts must carry the route before it turns on. |
+| `RUNNER_METAL_BATCH_TILES` | Slower on SmolLM2-1.7B Q4_K_M (0.941x at 8 slots), so a default would be per file shape, and a slot's tokens depend on which slots decode beside it. Its float32 rows pass on K2-Horizon-1B (+40% at 8 slots) and on SmolLM2-1.7B Q8_0 (1.356x; mean KLD 0.00454 against the identity route's 0.00460, not further on the paired test). Receipts must carry the route before it turns on; whether it becomes a default per file shape is the owner's pick (R3.61). |
 | `RUNNER_CUDA_Q8X` | Rows of its own. |
 | `RUNNER_GRAMMAR_FF` | Its class established (speculation under a grammar). |
 
