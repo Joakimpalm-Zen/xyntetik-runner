@@ -74,9 +74,9 @@ It takes about a minute to try: [quick start](#quick-start).
   <a href="docs/community-results.md">Community results</a>
 </p>
 
-> **Published release: 1.19.0.** The [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) is for agent loops and small machines. A server keeps an agent's system prompt across processes (`--kv-snapshots-auto`), a turn on a Qwen3.5-class hybrid no longer re-reads the whole conversation, the Apple GPU maps only the context rows in use (Phi-3.5-mini at `-c 8192` runs on the GPU of an 8 GB Mac, where it ran on the CPU), and a run no longer starts with a pass over every possible descriptor number. Six families join the support list against their publishers' checkpoints evaluated in float32 (SmolLM2, Qwen2.5, StableLM 2, Phi-3.5, Granite 4.0 H Micro, Mistral 7B v0.3), Apertus trains adapters and runs on the Apple GPU, and four retired A/B switches no longer do anything. The preamble snapshot does not pay on a GPU that prefills faster than a file loads, the Apple GPU change is measured on one 8 GB Mac, and no speed claim is made for the release as a whole.
+> **Published release: 1.19.1.** The [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) is a one-fix patch: on Linux and Windows a JSON Schema number bound of `exclusiveMinimum: 0` or `exclusiveMaximum: 0` was treated as inclusive, so constrained output could be `0` where the schema excludes it; it is exclusive again, and macOS was not affected. Nothing else changes from its 1.19.0 release, which is for agent loops and small machines. A server keeps an agent's system prompt across processes (`--kv-snapshots-auto`), a turn on a Qwen3.5-class hybrid no longer re-reads the whole conversation, the Apple GPU maps only the context rows in use (Phi-3.5-mini at `-c 8192` runs on the GPU of an 8 GB Mac, where it ran on the CPU), and a run no longer starts with a pass over every possible descriptor number. Six families join the support list against their publishers' checkpoints evaluated in float32 (SmolLM2, Qwen2.5, StableLM 2, Phi-3.5, Granite 4.0 H Micro, Mistral 7B v0.3), Apertus trains adapters and runs on the Apple GPU, and four retired A/B switches no longer do anything. The preamble snapshot does not pay on a GPU that prefills faster than a file loads, the Apple GPU change is measured on one 8 GB Mac, and no speed claim is made for the release as a whole.
 
-> **Version `1.19.0`.** The command line, the HTTP API, the record formats and
+> **Version `1.19.1`.** The command line, the HTTP API, the record formats and
 > the model files that load stay compatible across 1.x
 > ([versioning policy](docs/versioning.md)). This page is the short version;
 > every flag, endpoint, limit and measurement is in the [manual](MANUAL.md).
@@ -511,7 +511,7 @@ passing evaluation made for those exact bytes.
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 1.19.0
+./runner --version   # -> runner 1.19.1
 ```
 
 Linux, macOS and Windows. NVIDIA GPUs need a driver with CUDA 13.0 support
