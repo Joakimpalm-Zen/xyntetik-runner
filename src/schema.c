@@ -910,6 +910,8 @@ static int64_t dbl_order(double x) {
     return (u >> 63) ? -mag : mag;
 }
 
+static int64_t num_key(double x);
+static void num_key_bounds(const snode *n, int64_t *lo, int64_t *hi);
 static bool compile_number_bounds(jv *s, snode *n, char *err, int errcap) {
     double x;
     enum numeric_keyword_state state = numeric_keyword(s, "minimum", &x);
@@ -964,6 +966,20 @@ static bool compile_number_bounds(jv *s, snode *n, char *err, int errcap) {
         bool strict_both = n->real_min_strict && n->real_max_strict;
         if (lo > hi || (lo == hi && strict_any) || (strict_both && lo + 1 == hi)) {
             snprintf(err, errcap, "empty number bounds");
+            return false;
+        }
+    }
+    // R2.19: empty as well when 0 is outside and every double inside lies
+    // below the smallest normal one (0 < |x| < 2^-1022), the band a bounded
+    // number never takes (number_text_in_bounds)
+    if (n->has_real_min || n->has_real_max) {
+        int64_t lo, hi, k = num_key(DBL_MIN);
+        num_key_bounds(n, &lo, &hi);
+        bool zero = lo <= 0 && hi >= 0;
+        bool pos = (lo > k ? lo : k) <= hi, neg = lo <= (hi < -k ? hi : -k);
+        if (!zero && !pos && !neg) {
+            snprintf(err, errcap, "empty number bounds (only values below the smallest normal "
+                                  "double, 2.2250738585072014e-308, are left)");
             return false;
         }
     }
@@ -2493,52 +2509,40 @@ static const numdec *num_dmin_get(void) {
     return &num_dmin;
 }
 
-// Does the spelling's exact value lie in 0 < |x| < 2^-1022? From the
-// parse's bits (a subnormal; a zero from a spelling with a nonzero digit)
-// and, at the one double such a value may also round to, 2^-1022 itself,
-// from the digits against its exact expansion.
-static bool num_below_normal(const char *s, double x) {
-    const uint64_t MIN_NORMAL = 0x0010000000000000ull;
-    uint64_t mag = fp_bits_f64(x) & 0x7fffffffffffffffull;
-    if (mag > MIN_NORMAL) return false;
-    if (mag && mag < MIN_NORMAL) return true;
-    if (!mag) {                                    // a nonzero digit before any exponent
-        for (const char *c = s; *c && *c != 'e' && *c != 'E'; c++)
-            if (*c >= '1' && *c <= '9') return true;
-        return false;
-    }
-    numshape p;
-    num_shape_of(s, &p);
-    long e = num_exp_abs(&p) * (p.exp_sign < 0 ? -1 : 1);
-    unsigned long w = witness_work;
-    bool below = nd_cmp(p.sig, num_sig_len(&p), p.p0 + e, num_dmin_get()) < 0;
-    witness_work = w;                              // the validator's, not a decision's
-    return below;
-}
-
 // Does this complete number SPELLING satisfy the node's interval? Taken as
 // text rather than as an accumulated value so the closer can ask the same
-// question about a spelling it is only considering. Parseability comes from
-// json_number_text_ok — the parser's own acceptance, ERANGE included — so a
-// spelling json_parse refuses (overflow OR underflow) never satisfies any
-// bound. The old isfinite() check here was dead code in the shipped build
-// (-ffast-math folds it away) and never caught underflow at all.
+// question about a spelling it is only considering.
 //
-// R2.19: one answer on every platform and in every float mode. The bounds
-// are compared as keys (above), never as doubles, since a flushing mode
-// reads a subnormal as 0; and a spelling whose exact value lies in
-// 0 < |x| < 2^-1022 is refused whatever the parser made of it: glibc
+// Without a bound the parser decides alone (json_number_text_ok, ERANGE
+// included), as admission and the close do: a spelling json_parse refuses
+// never ends a number. Its verdict on subnormal values is the platform's.
+//
+// R2.19: under a bound the answer is exact, the same comparison the prefix
+// decision makes (below): the spelling's digits against the bounds' decimal
+// interval, with no strtod and no floating-point operation, so it is the
+// same on every platform, with subnormals flushed or not and in any
+// rounding mode, and the decision and the terminator cannot disagree. A
+// value in 0 < |x| < 2^-1022 is outside every bounded interval: glibc
 // reports ERANGE for most of that range (where it stops depends on the
-// architecture's tininess rule), macOS's parser for all of it below its
-// top, and a flushing mode compares a subnormal as 0. number_prefix_viable
-// decides exactly this set.
+// architecture's tininess rule), macOS's parser rounds its top up to
+// 2^-1022 and accepts it, and a flushing mode compares a subnormal as 0.
+// Every spelling inside reads back through json_parse: its value is 0 or at
+// least 2^-1022, and below the parser's 1.7e308.
+struct numset;
+static const struct numset *num_set_for(const snode *n);
+static bool num_exact_in(const struct numset *ns, const char *s);
 static bool number_text_in_bounds(const snode *n, const char *s) {
-    double x;
-    if (!json_number_text_ok(s, &x)) return false;
-    if (num_below_normal(s, x)) return false;
-    int64_t k = num_key(x), lo, hi;
-    num_key_bounds(n, &lo, &hi);
-    return k >= lo && k <= hi;
+    if (!n->has_real_min && !n->has_real_max) return json_number_text_ok(s, NULL);
+    uint8_t st = N_START;
+    size_t len = strlen(s);
+    if (!len || len > (size_t)NUM_ROOM) return false;
+    for (size_t i = 0; i < len; i++)
+        if (num_byte((uint8_t)s[i], &st, false) != 0) return false;
+    if (!num_complete(st)) return false;
+    unsigned long w = witness_work;
+    bool in = num_exact_in(num_set_for(n), s);
+    witness_work = w;                              // the terminator's, not a decision's
+    return in;
 }
 
 // The terminator's verdict on the last spelling, kept like number_prefix_viable's
@@ -2596,7 +2600,7 @@ static bool number_in_bounds(const sval *v, const snode *n, const sframe *f) {
 // same decision, the shortest found, and checked by number_text_in_bounds.
 
 // The magnitudes one sign may take besides 0, for one node's bounds
-typedef struct {
+typedef struct numset {
     bool built, zero_ok;           // zero_ok: 0 (and -0) is inside
     int64_t klo, khi;              // the keys these were built from
     bool empty[2];                 // [0] positive magnitudes, [1] negative ones
@@ -2647,6 +2651,20 @@ static const numset *num_set_for(const snode *n) {
     }
     witness_work = w;  // built once per bounds, counted apart
     return s;
+}
+
+// Is the complete spelling's exact value inside? Its significant digits and
+// scale against the side's magnitudes, or 0 against zero_ok.
+static bool num_exact_in(const numset *ns, const char *s) {
+    numshape sh;
+    num_shape_of(s, &sh);
+    if (!sh.nsig) return ns->zero_ok;              // every digit 0: the value is 0 (or -0)
+    int sg = sh.neg;
+    if (ns->empty[sg]) return false;
+    long x = sh.p0 + num_exp_abs(&sh) * (sh.exp_sign < 0 ? -1 : 1);
+    int n = num_sig_len(&sh);
+    int cl = nd_cmp(sh.sig, n, x, ns->lo[sg]), ch = nd_cmp(sh.sig, n, x, ns->hi[sg]);
+    return (cl > 0 || (cl == 0 && ns->lo_closed[sg])) && (ch < 0 || (ch == 0 && ns->hi_closed[sg]));
 }
 
 static bool num_try(const snode *n, const char *t, const char *suffix, char *out, size_t cap) {
