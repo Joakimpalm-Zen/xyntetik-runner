@@ -6739,21 +6739,25 @@ static const char *atem_invoke_close(const char *inv, const char *end) {
     return NULL;
 }
 
-static jv *atem_param_schema(jv *tools,
-                             const char *tool, size_t tool_n,
-                             const char *param, size_t param_n) {
+// The invoked tool's declared parameters, as sent.
+static jv *atem_tool_params(jv *tools, const char *tool, size_t tool_n) {
     if (!tools || tools->type != J_ARR) return NULL;
     for (int i = 0; i < tools->n; i++) {
         jv *fn = jv_get(tools->items[i], "function");
         if (!fn) fn = tools->items[i];
         const char *name = jv_str(jv_get(fn, "name"), "");
-        if (strlen(name) != tool_n || memcmp(name, tool, tool_n)) continue;
-        jv *props = jv_get(jv_get(fn, "parameters"), "properties");
-        if (!props || props->type != J_OBJ) return NULL;
-        for (int k = 0; k < props->n; k++)
-            if (strlen(props->keys[k]) == param_n &&
-                !memcmp(props->keys[k], param, param_n)) return props->items[k];
+        if (strlen(name) == tool_n && !memcmp(name, tool, tool_n))
+            return jv_get(fn, "parameters");
     }
+    return NULL;
+}
+
+static jv *atem_param_schema(jv *params, const char *param, size_t param_n) {
+    jv *props = jv_get(params, "properties");
+    if (!props || props->type != J_OBJ) return NULL;
+    for (int k = 0; k < props->n; k++)
+        if (strlen(props->keys[k]) == param_n &&
+            !memcmp(props->keys[k], param, param_n)) return props->items[k];
     return NULL;
 }
 
@@ -6781,11 +6785,15 @@ static const char *atem_enum_recovery(jv *choices, const char *raw,
 // or an enum's first member), read from the parameter as the compiler reads
 // it, so the recovery and the validator read one decision. A parameter the
 // compiler refuses keeps the old best effort: 0 for a number, 0 clamped into
-// the declared bounds for an integer.
-static void atem_number_recovery(sbuf *out, jv *schema, bool integer) {
+// the declared bounds for an integer. False when the fill could not be
+// written (an allocation failed): the call then fails, as it does on every
+// other error, and no value is guessed in its place.
+static bool atem_number_recovery(sbuf *out, jv *schema, bool integer) {
     char b[512];
-    if (schema_fill(schema, b, (int)sizeof(b))) { sb_fmt(out, "%s", b); return; }
-    if (!integer) { sb_lit(out, "0"); return; }
+    int filled = schema_fill(schema, b, (int)sizeof(b));
+    if (filled < 0) return false;
+    if (filled > 0) { sb_fmt(out, "%s", b); return true; }
+    if (!integer) { sb_lit(out, "0"); return true; }
     double value = 0.0;
     jv *bound = jv_get(schema, "minimum");
     if (bound && bound->type == J_NUM && value < bound->num) value = ceil(bound->num);
@@ -6797,12 +6805,16 @@ static void atem_number_recovery(sbuf *out, jv *schema, bool integer) {
     if (bound && bound->type == J_NUM && value >= bound->num) value = ceil(bound->num) - 1.0;
     snprintf(b, sizeof(b), "%.0f", value);
     sb_fmt(out, "%s", b);
+    return true;
 }
 
-static int atem_map_in(jv *tools, const char *doc, size_t n,
-                       sbuf *content, sbuf *tc) {
+static int atem_map(const tool_envelope *e, const char *doc, size_t n,
+                    sbuf *content, sbuf *tc) {
+    jv *tools = e ? e->tools : NULL;
     const char *p = doc, *end = doc + n;
     int calls = 0;
+    sbuf args = {0};
+    jv *own = NULL;
     while (p < end) {
         const char *inv = atem_find(p, end, "<atem:invoke name=\"");
         if (!inv || inv >= end) break;
@@ -6813,7 +6825,21 @@ static int atem_map_in(jv *tools, const char *doc, size_t n,
         const char *inv_end = open_end ? atem_invoke_close(inv, end) : NULL;
         if (!open_end || !inv_end || inv_end > end) return -1;
 
-        sbuf args = {0};
+        // The invoked tool's parameters as the compiler reads them (R2.19.1):
+        // local $refs inlined and a one-member allOf collapsed, the resolution
+        // the atem grammar compiles from, so a parameter behind a $ref or a
+        // wrapper is typed and recovered as the schema it resolves to.
+        // Parameters that do not resolve (a remote or recursive reference)
+        // are read as sent; an allocation failure fails the call instead, or
+        // a $ref'd number would be read as an untyped string.
+        jv *decl = atem_tool_params(tools, name, (size_t)(name_end - name));
+        if (decl) {
+            char why[160];
+            jv *r = schema_resolve_refs(decl, &own, why, (int)sizeof(why));
+            if (r) decl = r;
+            else if (schema_err_oom(why)) goto fail;
+        }
+        args = (sbuf){0};
         sb_lit(&args, "{");
         int params = 0;
         const char *q = open_end + 1;
@@ -6824,16 +6850,15 @@ static int atem_map_in(jv *tools, const char *doc, size_t n,
             const char *pn_end = NULL;
             const char *pn = atem_attr(par, inv_end, "name=", &pn_end);
             const char *val = pn_end ? atem_find(pn_end, inv_end, ">") : NULL;
-            if (!pn || !val || val >= inv_end) { free(args.s); return -1; }
+            if (!pn || !val || val >= inv_end) goto fail;
             val++;
             const char *close = atem_find(val, inv_end, "</atem:parameter>");
-            if (!close || close > inv_end) { free(args.s); return -1; }
+            if (!close || close > inv_end) goto fail;
             if (params++) sb_lit(&args, ",");
             sb_lit(&args, "\""); sb_esc(&args, pn, (size_t)(pn_end - pn));
             sb_lit(&args, "\":");
             size_t vn = (size_t)(close - val);
-            jv *ps = atem_param_schema(tools, name, (size_t)(name_end - name),
-                                      pn, (size_t)(pn_end - pn));
+            jv *ps = atem_param_schema(decl, pn, (size_t)(pn_end - pn));
             const char *pt = jv_str(jv_get(ps, "type"), "string");
             bool json_value = !strcmp(pt, "object") || !strcmp(pt, "array") ||
                               !strcmp(pt, "integer") || !strcmp(pt, "number") ||
@@ -6849,7 +6874,7 @@ static int atem_map_in(jv *tools, const char *doc, size_t n,
                 else if (!strcmp(pt, "null")) sb_lit(&args, "null");
                 else if (!strcmp(pt, "object")) sb_lit(&args, "{}");
                 else if (!strcmp(pt, "array")) sb_lit(&args, "[]");
-                else atem_number_recovery(&args, ps, !strcmp(pt, "integer"));
+                else if (!atem_number_recovery(&args, ps, !strcmp(pt, "integer"))) goto fail;
             } else {
                 const char *sv = val;
                 size_t sn = vn;
@@ -6873,7 +6898,7 @@ static int atem_map_in(jv *tools, const char *doc, size_t n,
             q = close + strlen("</atem:parameter>");
         }
         sb_lit(&args, "}");
-        if (args.failed) { free(args.s); return -1; }
+        if (args.failed) goto fail;
         if (calls) sb_lit(tc, ",");
         sb_fmt(tc, "{\"id\":\"call_%d\",\"type\":\"function\","
                    "\"function\":{\"name\":\"", calls);
@@ -6882,31 +6907,19 @@ static int atem_map_in(jv *tools, const char *doc, size_t n,
         sb_esc(tc, args.s, args.n);
         sb_lit(tc, "\"}}");
         free(args.s);
+        args = (sbuf){0};
+        jv_free(own);
+        own = NULL;
         calls++;
         p = inv_end + strlen("</atem:invoke>");
     }
     // No invoke block: not a call. The direct answer (` to=user<|message|>`)
     // is the demultiplexer's to forward, the one reader of the turn's framing.
     return calls ? calls : -1;
-}
-
-// The declarations are read as the compiler reads them (R2.19.1): each tool's
-// local $refs inlined against its own parameters and a one-member allOf
-// collapsed, the resolution schema_compile_atem_tools compiles the grammar
-// from. A parameter behind a $ref or a wrapper is then typed and recovered as
-// the schema it resolves to, not as an untyped string. Declarations that do
-// not resolve are read as sent.
-static int atem_map(const tool_envelope *e, const char *doc, size_t n,
-                    sbuf *content, sbuf *tc) {
-    jv *tools = e ? e->tools : NULL, *own = NULL;
-    if (tools) {
-        char why[160];
-        jv *r = schema_resolve_tool_refs(tools, &own, why, (int)sizeof(why));
-        if (r) tools = r;
-    }
-    int rc = atem_map_in(tools, doc, n, content, tc);
+fail:
+    free(args.s);
     jv_free(own);
-    return rc;
+    return -1;
 }
 
 bool muse_user_payload_strip(sbuf *payload) {
@@ -8251,8 +8264,10 @@ static void head_put(tool_stream *s, const char *b, size_t n) {
     if (s->head_n + n + 1 > s->head_cap) {
         size_t cap = s->head_cap ? s->head_cap * 2 : 128;
         while (cap < s->head_n + n + 1) cap *= 2;
+        // a failed growth faults the turn: ending it as a clean one read an
+        // allocation failure as a turn with no call (codex on #897)
         char *tmp = realloc(s->head, cap);
-        if (!tmp) { s->state = TS_DONE; return; }
+        if (!tmp) { s->fault = true; s->state = TS_DONE; return; }
         s->head = tmp;
         s->head_cap = cap;
     }
@@ -9505,6 +9520,9 @@ static int map_call_args(void *ud, const char *b, int n) {
 }
 static int map_call_end(void *ud) {
     map_sink *m = ud;
+    // arguments whose buffer failed are not the call's: the mapping fails
+    // (tc's failure is what its callers read), never "arguments":""
+    if (m->args.failed) m->tc->failed = true;
     sb_esc(m->tc, m->args.s ? m->args.s : "", (int)m->args.n);
     sb_lit(m->tc, "\"}}");
     m->n++;

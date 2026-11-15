@@ -4645,28 +4645,41 @@ char *sval_close_alloc(sval *v, int *len, int max) {
 // (template.c), so the two closers write one fill (R2.19.1). The schema is
 // read as schema_compile reads it, local $refs inlined and a one-member allOf
 // collapsed, so a number behind either is the number it wraps, and a const or
-// an enum writes its first member. True only when the whole spelling and its
-// NUL fit in out. False for a NULL buffer, a capacity under 1, a schema the
-// compiler refuses, or a fill that does not fit (one of a MiB or more never
-// does); out is then empty wherever it has room for the NUL.
-bool schema_fill(struct jv *schema, char *out, int cap) {
-    if (!out || cap <= 0) return false;
+// an enum writes its first member. 1 when the whole spelling and its NUL fit
+// in out. 0 when there is no compiled decision: no schema, or one the compiler
+// refuses. -1 when the fill could not be written: an allocation failed, the
+// buffer is NULL or its capacity under 1, or the fill does not fit (one of a
+// MiB or more never does). A caller reads 0 as "no constraint to honour" and
+// -1 as a failure, never as a fallback (codex on #897: an allocation failure
+// read as 0 let the atem recovery write 0 under minimum 10). out is empty
+// unless 1 is returned, wherever it has room for the NUL.
+int schema_fill(struct jv *schema, char *out, int cap) {
+    if (!out || cap <= 0) return -1;
     out[0] = 0;
+    if (!schema) return 0;
     char err[200];
-    snode *n = schema ? schema_compile(schema, err, (int)sizeof(err)) : NULL;
-    if (!n) return false;
+    snode *n = schema_compile(schema, err, (int)sizeof(err));
+    if (!n) return schema_err_oom(err) ? -1 : 0;
     // one byte past the caller's room: a fill that reaches it does not fit
     int room = cap < (1 << 20) ? cap : (1 << 20);
     char *buf = malloc((size_t)room + 1);
-    bool ok = false;
+    int rc = -1;
     if (buf) {
         emitq q = { buf, room + 1, 0, 0, false, room + 1 };
         emit_min_choice(&q, n, 0, 0);
-        if (q.n < room) { memcpy(out, buf, (size_t)q.n); out[q.n] = 0; ok = true; }
+        if (q.n < room) { memcpy(out, buf, (size_t)q.n); out[q.n] = 0; rc = 1; }
         free(buf);
     }
     schema_free(n);
-    return ok;
+    return rc;
+}
+
+// Every allocation failure in the compiler and in the local $ref resolution
+// reports itself as "out of memory ..." (schema_compile_raw names one that
+// unwound as a bare NULL), and no refusal does; the tools form puts the
+// tool's name in front, so this reads the single-schema entries' err.
+bool schema_err_oom(const char *err) {
+    return err && !strncmp(err, "out of memory", 13);
 }
 
 // ------------------------------------------------ local $ref inlining (R2.9.2)

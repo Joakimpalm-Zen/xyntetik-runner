@@ -94,6 +94,7 @@ TEST_JSON_OOM = test-json-oom.exe
 TEST_TOKENIZER_OOM = test-tokenizer-oom.exe
 TEST_TOK_CLASSES = test-tokenizer-classes.exe
 TEST_TEMPLATE_OOM = test-template-oom.exe
+TEST_ATEM_OOM = test-atem-oom.exe
 TEST_TEMPLATE_FAMILIES = test-template-families.exe
 TEST_SCHEMA_OOM = test-schema-oom.exe
 TEST_SAMPLER = test-sampler.exe
@@ -128,6 +129,7 @@ TEST_JSON_OOM = test-json-oom
 TEST_TOKENIZER_OOM = test-tokenizer-oom
 TEST_TOK_CLASSES = test-tokenizer-classes
 TEST_TEMPLATE_OOM = test-template-oom
+TEST_ATEM_OOM = test-atem-oom
 TEST_TEMPLATE_FAMILIES = test-template-families
 TEST_SCHEMA_OOM = test-schema-oom
 TEST_SAMPLER = test-sampler
@@ -154,6 +156,7 @@ TEST_JSON_OOM = test-json-oom
 TEST_TOKENIZER_OOM = test-tokenizer-oom
 TEST_TOK_CLASSES = test-tokenizer-classes
 TEST_TEMPLATE_OOM = test-template-oom
+TEST_ATEM_OOM = test-atem-oom
 TEST_TEMPLATE_FAMILIES = test-template-families
 TEST_SCHEMA_OOM = test-schema-oom
 TEST_SAMPLER = test-sampler
@@ -661,6 +664,14 @@ TEST_TMPL_OOM_SRC = tests/test_template_oom.c $(OBJDIR)/tokenizer.o $(OBJDIR)/gg
                     $(SCHEMA_OBJ) $(OBJDIR)/jsonmode.o $(OBJDIR)/compat.o $(QUANTS_OBJ)
 $(TEST_TEMPLATE_OOM): $(TEST_TMPL_OOM_SRC) src/template.c src/json.c $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_TMPL_OOM_SRC) -o $@ -lm
+
+# the atem tool-call mapper (R2.19.1): json.c, the schema units and template.c
+# compiled into the test with instrumented allocators, so a failure anywhere in
+# a mapping (the resolution, the compile, the fill, the stream) is injected
+TEST_ATEM_OOM_SRC = tests/test_atem_oom.c $(OBJDIR)/tokenizer.o $(OBJDIR)/gguf.o \
+                    $(OBJDIR)/jsonmode.o $(OBJDIR)/compat.o $(QUANTS_OBJ)
+$(TEST_ATEM_OOM): $(TEST_ATEM_OOM_SRC) src/template.c src/json.c $(SCHEMA_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_ATEM_OOM_SRC) -o $@ -lm
 
 # Every family's render contract at once: empty conversations, tools and
 # thinking reach, the tool protocol, and capacity at every buffer size.
@@ -3485,7 +3496,7 @@ endif
 
 test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
-      $(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
+      $(TEST_TEMPLATE_OOM) $(TEST_ATEM_OOM) $(TEST_TEMPLATE_FAMILIES) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_MLOCK) test-es-mlock.gguf $(TEST_WILLNEED) $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
       $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_TRAY_MAC_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
@@ -3643,6 +3654,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	./$(TEST_TEMPLATE)
 	./$(TEST_PROMPT_MARKS) test.gguf
 	./$(TEST_TEMPLATE_OOM)
+	./$(TEST_ATEM_OOM)
 	./$(TEST_TEMPLATE_FAMILIES)
 	./$(TEST_TOOLS)
 	./$(TEST_BUDGET)
@@ -4199,7 +4211,7 @@ fuzz:
 
 clean:
 	rm -f test-moe-fixture.*.gguf test-q8.gguf test-bf16.gguf runner runner-debug runner-no-manifest.exe $(TEST_UTF8_CONSOLE) $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) \
-		$(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
+		$(TEST_TEMPLATE_OOM) $(TEST_ATEM_OOM) $(TEST_TEMPLATE_FAMILIES) \
 	      $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_TOKENIZER) \
 	      $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) $(TEST_SHARED) $(TEST_MLOCK) $(TEST_WILLNEED) \
 	      $(TEST_BATCH) $(TEST_BIND) $(TEST_HOST_HEADER) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_TRAIN_GPU) test-shared-asan-bin \

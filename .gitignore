@@ -71,6 +71,8 @@ test-tokenizer-classes
 test-tokenizer-classes.exe
 test-template-oom
 test-template-oom.exe
+test-atem-oom
+test-atem-oom.exe
 test-template-families
 test-template-families.exe
 test-sampler
@@ -310,6 +312,7 @@ test-sha256
 test-sha256.exe
 test-template.dSYM/
 test-template-oom.dSYM/
+test-atem-oom.dSYM/
 test-template-families.dSYM/
 test-lora.*
 test-lora-grad

@@ -1847,8 +1847,9 @@ static void test_schema_number_prefix_fits_the_buffer(void) {
 // R2.19.1 (codex on #897): schema_fill reported a fill cut by a small buffer
 // as written ("1" for 10 in two bytes, "" in one), and read a bound behind a
 // $ref or a one-member allOf as no bound at all (0 for minimum 10). A fill
-// is written whole with its NUL or not at all, and the schema is read as the
-// compiler reads it.
+// is written whole with its NUL or not at all (1), a buffer that cannot take
+// it is a failure (-1), not "no constraint" (0), and the schema is read as
+// the compiler reads it.
 static void test_schema_fill_whole_or_nothing(void) {
     const char *src = "{\"type\":\"number\",\"minimum\":10}";
     jv *j = json_parse(src, strlen(src));
@@ -1856,13 +1857,20 @@ static void test_schema_fill_whole_or_nothing(void) {
     char out[8];
     for (int cap = 1; cap <= 2; cap++) {
         memset(out, 'x', sizeof(out));
-        assert(!schema_fill(j, out, cap));
+        assert(schema_fill(j, out, cap) == -1);
         assert(out[0] == 0);
     }
     memset(out, 'x', sizeof(out));
-    assert(schema_fill(j, out, 3) && !strcmp(out, "10"));
-    assert(!schema_fill(j, NULL, 8));
-    assert(!schema_fill(j, out, 0));
+    assert(schema_fill(j, out, 3) == 1 && !strcmp(out, "10"));
+    assert(schema_fill(j, NULL, 8) == -1);
+    assert(schema_fill(j, out, 0) == -1);
+    assert(schema_fill(NULL, out, 8) == 0 && out[0] == 0);
+    jv_free(j);
+    // a schema the compiler refuses has no compiled decision: 0, not -1
+    const char *refused = "{\"type\":\"number\",\"minimum\":\"ten\"}";
+    j = json_parse(refused, strlen(refused));
+    assert(j);
+    assert(schema_fill(j, out, (int)sizeof(out)) == 0 && out[0] == 0);
     jv_free(j);
     const char *wrapped[] = {
         "{\"allOf\":[{\"type\":\"number\",\"minimum\":10}]}",
@@ -1872,7 +1880,7 @@ static void test_schema_fill_whole_or_nothing(void) {
         j = json_parse(wrapped[i], strlen(wrapped[i]));
         assert(j);
         char b[32];
-        if (!schema_fill(j, b, (int)sizeof(b)) || strcmp(b, "10")) {
+        if (schema_fill(j, b, (int)sizeof(b)) != 1 || strcmp(b, "10")) {
             fprintf(stderr, "R2.19.1: schema_fill(%s) wrote %s\n", wrapped[i], b);
             assert(0);
         }

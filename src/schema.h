@@ -88,10 +88,15 @@ snode *schema_compile(struct jv *schema, char *err, int errcap);
 // (R2.19.1): for a bounded number 0 when its bounds allow it, else the edge
 // nearest 0, else the exact witness's shortest completion; for a const or an
 // enum its first member. The schema is read as schema_compile reads it ($refs
-// inlined, a one-member allOf collapsed). True only when the whole spelling
-// and its NUL fit in out; false for a NULL buffer, cap under 1, a schema the
-// compiler refuses or a fill that does not fit (out then empty).
-bool schema_fill(struct jv *schema, char *out, int cap);
+// inlined, a one-member allOf collapsed). 1: the whole spelling and its NUL
+// are in out. 0: no compiled decision (no schema, or one the compiler
+// refuses). -1: it could not be written (an allocation failed, a NULL buffer,
+// cap under 1, or a fill that does not fit), a failure, not "no constraint".
+// out is empty unless 1 is returned.
+int schema_fill(struct jv *schema, char *out, int cap);
+// True when err, from schema_compile or schema_resolve_refs, reports an
+// allocation failure rather than a schema the entry refuses (R2.19.1).
+bool schema_err_oom(const char *err);
 // Compile OpenAI tools[] to Muse's native atem call block. JSON-spelled values
 // use the ordinary schema compiler; free strings use ATEM's raw sentinel form.
 snode *schema_compile_atem_tools(struct jv *tools, char *err, int errcap);
