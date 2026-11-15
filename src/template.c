@@ -6811,6 +6811,32 @@ static void atem_number_recovery(sbuf *out, jv *schema, bool integer) {
     if (!integer && !atem_number_fits(schema, b)) {
         if (atem_number_fits(schema, "1e-307")) snprintf(b, sizeof(b), "1e-307");
         else if (atem_number_fits(schema, "-1e-307")) snprintf(b, sizeof(b), "-1e-307");
+        else {
+            // An interval too narrow for 1e-307, next to zero: under
+            // (0, 5e-308] the readable values lie between the smallest normal
+            // number and the far bound. Try each bound as written (one step
+            // inside an exclusive one), then one-digit decimals from the
+            // smallest scale up, on either side.
+            static const char *const keys[4] = { "maximum", "minimum", "exclusiveMaximum", "exclusiveMinimum" };
+            char cand[40];
+            bool found = false;
+            for (int k = 0; k < 4 && !found; k++) {
+                jv *bd = jv_get(schema, keys[k]);
+                if (!bd || bd->type != J_NUM) continue;
+                double e = bd->num;
+                if (k == 2) e = nextafter(e, -HUGE_VAL);
+                if (k == 3) e = nextafter(e, HUGE_VAL);
+                snprintf(cand, sizeof(cand), "%.17g", e);
+                found = atem_number_fits(schema, cand);
+            }
+            for (int mag = -308; mag <= 308 && !found; mag++)
+                for (int m = 1; m <= 9 && !found; m++)
+                    for (int sign = 1; sign >= -1 && !found; sign -= 2) {
+                        snprintf(cand, sizeof(cand), "%s%de%d", sign < 0 ? "-" : "", m, mag);
+                        found = atem_number_fits(schema, cand);
+                    }
+            if (found) snprintf(b, sizeof(b), "%s", cand);
+        }
     }
     sb_fmt(out, "%s", b);
 }
