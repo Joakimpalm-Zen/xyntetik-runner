@@ -1,0 +1,25 @@
+# NVFP4 prefill, runner 1.19.0 (release/1.19.0 pin 27b778c6), a CUDA MIG slice, 1g.24gb, sm_120, driver 610.43.02
+# binary: built at 27b778c6 with the pinned PTX by the release recipe, conda-forge gcc 16.2.0-5 with -O3 -ffast-math
+#   -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=x86-64-v3 (STRICT: -Werror -Wshadow), 0 warnings,
+#   sha256 b05c4b813e60dc5e..., ./runner --version = runner 1.19.0. This host has no gcc 13.3.0, which 1.18.0's read
+#   used; the shipped binary is the hosted release workflow's, not this one.
+# Not the card alone in the strict sense: the CUDA gate and the MoE replay had ended (22:58:35Z), and nothing else of
+#   this lane was on the slice. The host's CPUs carried a disk copy (O_DIRECT, I/O-bound) and outside tenants
+#   (1-min load 4.2 to 4.7, below). A speed read comparable with 1.18.0's on the same prompt (1,711.36 against
+#   84.99 tok/s), with that caveat.
+# qwen3.5-4b-nvfp4.gguf, FreedomAISVR/Qwen3.5-4B-NVFP4-GGUF at fb9f8b9ec432e38872ec9d9707183642cf885ad6,
+#   sha256 317ef79785a9380ac72d23ab33af9376afd926b4c0781fae246f033daf91a05f; -f tests/fixtures/nvfp4-prefill-prompt.txt,
+#   -n 32 --temp 0 -c 4096, every layer on the device
+# The prompt's sha256, as release-cuda-gate printed it:
+#   a25ab76dfd7ba46f22a8e2c94a7ee0ad91dcf997336bc77786ae23a825136f3d (1,971 tokens), the same prompt as 1.15.0's to 1.18.0's reads.
+== RUNNER_CUDA_TC_NVFP4=default
+exit 0
+gpu-split: budget=25.13GB fixed=0.93GB G=32/32 full=1 used=3.07GB
+prompt: 1971 tok, 1707.12 tok/s | gen: 32 tok, 64.20 tok/s
+== RUNNER_CUDA_TC_NVFP4=0
+exit 0
+gpu-split: budget=25.13GB fixed=0.93GB G=32/32 full=1 used=3.07GB
+prompt: 1971 tok, 85.08 tok/s | gen: 32 tok, 64.30 tok/s
+start 2026-11-14T22:59:17Z, load 4.16 5.58 12.87; end 2026-11-14T22:59:20Z, load 4.55 5.64 12.84
+start 2026-11-14T22:59:20Z, load 4.55 5.64 12.84; end 2026-11-14T22:59:44Z, load 4.65 5.58 12.63
+output sha256: default b9b8c69d2349fac84ee54e0d09967532b2e0a2c07d459b88afdd20a9c9461c79, =0 b9b8c69d2349fac84ee54e0d09967532b2e0a2c07d459b88afdd20a9c9461c79 (the same 32 tokens as 1.18.0's read)
