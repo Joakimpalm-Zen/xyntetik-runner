@@ -98,7 +98,6 @@ def test_container_limits_size_the_run_and_are_reported(model, tmp_path):
     (root / "cpu.max").write_text("150000 100000\n")
     (root / "memory.max").write_text("536870912\n")
     (root / "memory.current").write_text("268435456\n")
-    rc, plain, _ = _doctor(exe, m, "--doctor", "--chat-template", "chatml")
     rc, d, _ = _doctor(exe, m, "--doctor", "--chat-template", "chatml", cgroup_root=root)
     assert d["memory"]["ram_total_bytes"] == 536870912
     assert 0 < d["memory"]["ram_available_bytes"] <= 268435456
@@ -109,8 +108,15 @@ def test_container_limits_size_the_run_and_are_reported(model, tmp_path):
     assert infos[0]["detail"] == (
         f"container limits apply: 2 of {host['cpu_cores']} CPUs, 0.5 GiB of "
         f"{host['ram_bytes'] / 2**30:.1f} GiB RAM")
-    # an info finding is not a degradation
-    assert d["verdict"] == plain["verdict"]
+    # An info finding is not a degradation: the verdict is the worst of the
+    # report's OTHER findings. Read from this one report. It used to be
+    # compared with a second run's verdict, and two runs can differ for
+    # reasons of their own: on a loaded hosted runner under the sanitizers the
+    # run without the limits read "degraded" and this one "ok" (2026-11-15;
+    # very_slow_decode and file_larger_than_available_ram depend on the moment).
+    rank = {"info": 0, "degraded": 1, "broken": 2}
+    worst = max((rank[f["severity"]] for f in d["findings"] if f["code"] != "container_limits"), default=0)
+    assert d["verdict"] == ("ok", "degraded", "broken")[worst]
 
 
 def _host(exe):
