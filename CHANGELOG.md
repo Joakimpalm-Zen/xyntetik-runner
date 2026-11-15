@@ -11,6 +11,21 @@ file each, until the release folds them in below. Add a new entry there, not her
 
 ## Unreleased
 
+## v1.19.1 - 2026-11-15
+
+- **An exclusive number bound at 0 is exclusive again on Linux and Windows** (R2.20).
+  - In 1.19.0's Linux and Windows builds, `{"type": "number", "exclusiveMinimum": 0}` accepted `0`, `0.0` and `0e5`, and `exclusiveMaximum: 0` accepted `0` and `-0`, so constrained output could be the excluded value. A forced close that had to write the whole number wrote `0`. macOS builds were right.
+  - The cause: an exclusive bound was kept as one step inside it, and at 0 that step is a subnormal number. gcc's `-ffast-math` makes the x86 builds treat subnormals as 0, so the bound behaved as inclusive. Exclusive bounds are now kept as written and compared strictly, which does not depend on the float mode. A forced close checks its spelling against the bounds rather than comparing numbers with 0.
+  - Native tool calls (atem) that recover a cut-off number argument under an exclusive bound at 0 wrote `4.9406564584124654e-324`, a spelling Runner's own JSON reader refuses. They now write `1e-307` (or `-1e-307`).
+  - A second read of the fix before this tag found more shapes of number bounds, fixed here:
+    - Two exclusive bounds on adjacent doubles (`exclusiveMinimum: 1` with `exclusiveMaximum: 1.0000000000000002`) leave no number between them. 1.19.0 refused that interval as empty; the first fix compiled it, and a forced close wrote the excluded upper bound. It is refused as empty again. The check reads the two doubles' places in the order of all doubles, so it does not depend on the float mode.
+    - A narrow interval next to zero, such as `exclusiveMinimum: 0` with `maximum: 5e-308`, has readable values (`3e-308`), and a forced close and the native tool-call recovery missed them: they wrote `4.9406564584124654e-324`, which the JSON reader refuses, or `0` on Linux and Windows. Both now try the far bound and then one-digit decimals from the smallest scale up, each judged by reading it back.
+    - The adjacent-doubles check is asked without a subtraction: for two exclusive bounds on both sides of zero (`exclusiveMinimum: -2` with `exclusiveMaximum: 2`) the difference of their places overflowed a signed integer. The built releases gave the right answer; a sanitized build stopped there. A committed fuzz seed holds it.
+  - Checked in both float modes on every platform: the tests set the flushing mode by hand, as the gcc x86 builds run, and the server is checked end to end with scripted replies.
+- **A schema whose root is not an object and holds a `$ref` no longer reaches a sort of an empty list through a null pointer** (R2.17).
+  - Found by the schema fuzz target while this release was gated, and present in 1.19.0: for such a document the map of reference bases is empty, and it was sorted and searched anyway. The C library declares that pointer never null, so it is undefined behaviour by the letter, and a sanitized build stopped there. No wrong output is known from it: a sort of no elements touches nothing in glibc, musl, the Apple or the Windows runtime.
+  - The sort is skipped under two entries and the search returns no entry for an empty map. What such a document compiles to does not change. Two fuzz seeds hold it.
+
 ## v1.19.0 - 2026-11-15
 
 - **The November deprecation review: switches retired, tested or documented** (R18.8; docs/deprecation-review-2026-11.md).
