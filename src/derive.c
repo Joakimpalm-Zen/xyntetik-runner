@@ -558,6 +558,15 @@ static bool bar_bootstrap(const double *kld, const unsigned char *qual, const un
                           int n, bar_ci *ci) {
     memset(ci, 0, sizeof *ci);
     if (n < 1) return false;
+    // A test seam for the one way this can fail on rows that exist: memory.
+    // The callers must then give no verdict; the point estimate is the
+    // fallback for a result WITHOUT rows only (found by a second read: a
+    // failed allocation left ci->have false, and "not decided" read "pass").
+    if (getenv("RUNNER_TEST_DERIVE_INTERVAL_FAIL")) {
+        fprintf(stderr, "test seam: RUNNER_TEST_DERIVE_INTERVAL_FAIL stands in for an allocation "
+                "failure in the bar's interval\n");
+        return false;
+    }
     double *means = malloc(sizeof(double) * BOOT_RESAMPLES);
     double *mqs = malloc(sizeof(double) * BOOT_RESAMPLES);
     if (!means || !mqs) { free(means); free(mqs); return false; }
@@ -672,9 +681,28 @@ static bool gold_measure(const derive_opts *o, const char *script, const char *f
         }
         m->have_qualified = true;
         // the interval, over the rows in the order they were scored (before
-        // the sort for the median below)
-        if (kl && ql && ht && nk) bar_bootstrap(kl, ql, ht, nk, &m->ci);
+        // the sort for the median below). Rows exist, so an interval must:
+        // without one there is no verdict, never the point estimate's
+        bool rows_ok = kl && ql && ht;
+        // every row must carry its KLD: rows that cannot be resampled are
+        // not "a result without rows" (40 rows without one, beside a passing
+        // summary, read as a pass with no interval)
+        if (rows_ok && nk != rows->n) {
+            fprintf(stderr, "error: %s has %d rows and %d of them carry a KLD for the file; "
+                    "no verdict is given from incomplete rows\n", gold_out, rows->n, nk);
+            free(kl); free(ql); free(ht);
+            jv_free(g);
+            return false;
+        }
+        if (rows_ok && !bar_bootstrap(kl, ql, ht, nk, &m->ci)) rows_ok = false;
         free(ql); free(ht);
+        if (!rows_ok) {
+            fprintf(stderr, "error: out of memory computing the bar's interval over %d positions; "
+                    "no verdict is given without it\n", rows->n);
+            free(kl);
+            jv_free(g);
+            return false;
+        }
         if (kl && nk) {
             qsort(kl, (size_t)nk, sizeof(double), cmp_double);
             m->median_kld = nk % 2 ? kl[nk / 2] : 0.5 * (kl[nk / 2 - 1] + kl[nk / 2]);
@@ -1432,7 +1460,12 @@ static bool compare_json(const char *ours_gold, const char *spec, sbuf *out) {
     // the other file's verdict, from its own interval over the same positions
     // (before tk is sorted for the median)
     bar_ci tci = {0};
-    if (n > 0) bar_bootstrap(tk, tq, th, n, &tci);
+    if (n > 0 && !bar_bootstrap(tk, tq, th, n, &tci)) {
+        fprintf(stderr, "error: --compare %s: out of memory computing the bar's interval over %d "
+                "positions; no verdict is given without it\n", label, n);
+        free(diffs); free(tk); free(tq); free(th); jv_free(og); jv_free(tg);
+        return false;
+    }
     double med = 0;
     if (n) {
         qsort(tk, (size_t)n, sizeof(double), cmp_double);
