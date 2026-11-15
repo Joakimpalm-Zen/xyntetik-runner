@@ -63,10 +63,14 @@ def _reply(srv, bound, script):
 ])
 def test_zero_is_refused_at_the_byte_that_ends_it(server, bound, script):
     content, closure = _reply(server, bound, script)
-    # the closing brace after the zero was refused: the reply was cut there and
-    # the closer wrote that brace (the number's own close is R2.19's)
+    # the zero is refused by the byte that commits to it: the closing brace,
+    # or (R2.19) the zero itself where no number starting with it can be
+    # inside, as under exclusiveMaximum 0. The reply is cut there, and the
+    # closer finishes the number inside the bound (R2.19's witness).
     assert closure is not None, (bound, script, content)
-    assert closure["model_bytes"] == len(script) - 1 and closure["closer_bytes"] >= 1, (bound, script, closure)
+    assert len('{"x":') <= closure["model_bytes"] <= len(script) - 1, (bound, script, closure)
+    x = json.loads(content)["x"]
+    assert (x > 0) if bound == "exclusiveMinimum" else (x < 0), (bound, script, content)
 
 
 @pytest.mark.parametrize("script", ['{"x":-0.5}', '{"x":-7}'])
