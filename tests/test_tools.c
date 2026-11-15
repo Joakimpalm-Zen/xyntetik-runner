@@ -159,6 +159,75 @@ static void test_atem_structured_tool_automaton(void) {
     jv_free(tools);
 }
 
+// R2.18.1, codex's read of #892: parameters that resolve to false admit no
+// call. A one-member allOf of false (R2.18.1's collapse) and a root $ref to
+// false (on main before it) are objects as sent, so the envelope builder's
+// "must be an object" check passes them; the resolved false was then
+// replaced by {"type":"object"}, and the native grammars, which read
+// parameters.properties, saw a tool without parameters. Either the tool is
+// refused or no call to it is admitted, on both paths.
+static void test_tool_parameters_resolving_to_false_admit_no_call(void) {
+    const char *params[] = {
+        "{\"allOf\":[false]}",
+        "{\"title\":\"p\",\"allOf\":[{\"$ref\":\"#/$defs/F\"}],\"$defs\":{\"F\":false}}",
+        "{\"$ref\":\"#/$defs/F\",\"$defs\":{\"F\":false}}",
+    };
+    for (size_t i = 0; i < sizeof(params) / sizeof(*params); i++) {
+        char src[512];
+        snprintf(src, sizeof(src), "[{\"type\":\"function\",\"function\":{\"name\":\"pick\","
+                 "\"parameters\":%s}}]", params[i]);
+        jv *tools = parse(src);
+        char err[192];
+        tool_envelope e = {0};
+        if (tool_envelope_build(tools, NULL, NULL, &e, err, sizeof(err)) == 1) {
+            jv *j = parse(e.schema_src);
+            snode *root = schema_compile(j, err, sizeof(err));
+            jv_free(j);
+            if (root && accepts(root, "{\"tool\":\"pick\",\"args\":{}}")) {
+                fprintf(stderr, "R2.18.1: parameters %s: the envelope admits a call with {} (%s)\n",
+                        params[i], e.schema_src);
+                assert(0);
+            }
+            schema_free(root);
+            tool_envelope_free(&e);
+        }
+        snode *atem = schema_compile_atem_tools(tools, err, sizeof(err));
+        if (atem && accepts(atem, "<atem:function_calls>\n<atem:invoke name=\"pick\">\n"
+                                  "</atem:invoke>\n</atem:function_calls>")) {
+            fprintf(stderr, "R2.18.1: parameters %s: the atem grammar admits an empty call\n", params[i]);
+            assert(0);
+        }
+        schema_free(atem);
+        jv_free(tools);
+    }
+}
+
+// R2.18.1, codex's read of #892: the tool path normalises a wrapped schema
+// with no $ref too (the resolver's copy is made for an allOf alone). The
+// atem grammar reads parameters.properties from the JSON, so without the
+// collapse a wrapped object read as a tool without parameters and an empty
+// call was admitted although x is required.
+static void test_atem_wrapped_parameters_without_ref(void) {
+    jv *tools = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"set\",\"parameters\":{"
+        "\"title\":\"Set\",\"allOf\":[{\"type\":\"object\",\"properties\":{"
+        "\"x\":{\"type\":\"integer\"}},\"required\":[\"x\"]}]}}}]");
+    char err[192];
+    snode *root = schema_compile_atem_tools(tools, err, sizeof(err));
+    if (!root) fprintf(stderr, "R2.18.1: wrapped atem parameters did not compile: %s\n", err);
+    assert(root != NULL);
+    assert(accepts(root, "<atem:function_calls>\n<atem:invoke name=\"set\">\n"
+                         "<atem:parameter name=\"x\">2</atem:parameter>\n"
+                         "</atem:invoke>\n</atem:function_calls>"));
+    assert(!accepts(root, "<atem:function_calls>\n<atem:invoke name=\"set\">\n"
+                          "</atem:invoke>\n</atem:function_calls>"));
+    assert(!accepts(root, "<atem:function_calls>\n<atem:invoke name=\"set\">\n"
+                          "<atem:parameter name=\"x\">\"two\"</atem:parameter>\n"
+                          "</atem:invoke>\n</atem:function_calls>"));
+    schema_free(root);
+    jv_free(tools);
+}
+
 static void test_atem_scalar_is_raw_until_parameter_close(void) {
     jv *tools = parse(
         "[{\"type\":\"function\",\"function\":{\"name\":\"notes.save\","
@@ -4657,6 +4726,8 @@ int main(void) {
     test_a_nul_in_the_turn_does_not_hide_a_call();
     test_buffered_mapper_rejects_invalid_arguments();
     test_atem_structured_tool_automaton();
+    test_tool_parameters_resolving_to_false_admit_no_call();
+    test_atem_wrapped_parameters_without_ref();
     test_atem_scalar_is_raw_until_parameter_close();
     test_atem_json_scalar_schemas_are_enforced();
     test_atem_unrepresentable_string_schema_uses_generic_envelope();
