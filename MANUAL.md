@@ -1013,8 +1013,9 @@ admitted only while its completion still fits in them; under a bound, a value
 below the smallest normal double, 0 < |x| < 2^-1022 (about 2.2e-308), is
 refused, because parsers and float modes disagree about those values and the
 answer must be the same on every platform; bounds that leave only such values
-are refused as empty, and a bounded number is checked against its bounds
-exactly, by its digits, so the answer does not depend on the float mode),
+are refused as empty; a bounded number is checked against its bounds exactly,
+by its digits, with no floating-point arithmetic; an unbounded one is checked by
+the JSON parser, as before),
 string
 lengths and `pattern`s (below), array item/count constraints,
 scalar-const `oneOf`/`anyOf`, const-discriminated object unions (below), and

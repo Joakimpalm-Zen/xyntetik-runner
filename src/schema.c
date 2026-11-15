@@ -2545,9 +2545,10 @@ static bool number_text_in_bounds(const snode *n, const char *s) {
     return in;
 }
 
-// The terminator's verdict on the last spelling, kept like number_prefix_viable's
-// (below): a constrained step asks it again for every token that starts with
-// a byte ending the number, most of the vocabulary.
+// The terminator's verdict on the last spelling under a bound, kept like
+// number_prefix_viable's (below): a constrained step asks it again for every
+// token that starts with a byte ending the number, most of the vocabulary.
+// The verdict is exact, so it holds in any float mode.
 static _Thread_local struct {
     bool valid, ok;
     int64_t klo, khi;
@@ -2557,6 +2558,9 @@ static _Thread_local struct {
 
 static bool number_in_bounds(const sval *v, const snode *n, const sframe *f) {
     if (!num_complete(f->sub) || !v->num_len) return false;
+    // unbounded: main's path, the parser asked every time (its verdict
+    // follows the rounding mode, so no answer of it is kept)
+    if (!n->has_real_min && !n->has_real_max) return json_number_text_ok(v->num_text, NULL);
     int64_t klo, khi;
     num_key_bounds(n, &klo, &khi);
     int len = v->num_len;
@@ -3523,7 +3527,11 @@ static int feed_byte(sval *v, uint8_t c) {
         // commits, so terminating the number always stays legal. Every
         // spelling that survives this can therefore be read back, which is
         // also what makes the closer's keep-the-prefix fallback sound.
-        if (f->sub == N_EXP && c >= '0' && c <= '9') {
+        // R2.19: only without a bound. Under one the exact decision below
+        // decides the digit, the parser's 1.7e308 limit included (folded into
+        // its keys), with no strtod, which follows the rounding mode: upward,
+        // 1.6999999999999998e308 reads as the excluded 1.7e308.
+        if (f->sub == N_EXP && c >= '0' && c <= '9' && !n->has_real_min && !n->has_real_max) {
             char cand[sizeof(v->num_text) + 1];
             memcpy(cand, v->num_text, v->num_len);
             cand[v->num_len] = (char)c;
