@@ -963,6 +963,9 @@ typedef struct {
     // Set when the OpenAI wire value was widened to a standard one (see
     // openai_finish): carries the reason we would otherwise have emitted.
     const char *finish_detail;
+    // R2.18: a constraint fault's own words (engine.constraint_fault), beside
+    // finish_detail "pattern_limit": which pattern, how many states.
+    const char *fault;
     // Major page faults taken while serving this request. Nonzero means the
     // time went to disk, not to arithmetic.
     uint64_t    major_faults;
@@ -1397,6 +1400,11 @@ static void telemetry_json(sbuf *r, const resp_doc *d) {
     // Only present when the standard finish_reason lost a distinction, so
     // ordinary turns are byte-for-byte what they were before.
     if (d->finish_detail) sb_fmt(r, ",\"finish_detail\":\"%s\"", d->finish_detail);
+    if (d->fault && *d->fault) {
+        sb_lit(r, ",\"fault\":\"");
+        sb_esc(r, d->fault, strlen(d->fault));
+        sb_lit(r, "\"");
+    }
     // Reasoning budget: present only when one was in force. `forced` says the
     // cap actually closed a turn, which is the fact a caller needs to read a
     // short reasoning trace correctly -- the model did not choose to stop.
@@ -1946,6 +1954,7 @@ static const char *openai_finish(const char *finish) {
     if (!strcmp(finish, "loop"))            return "length";
     if (!strcmp(finish, "envelope_error"))  return "error";
     if (!strcmp(finish, "client_too_slow")) return "error";
+    if (!strcmp(finish, "constraint_error")) return "error";
     return finish;
 }
 
@@ -1955,6 +1964,7 @@ static const char *finish_detail_of(const char *finish) {
     if (!strcmp(finish, "loop"))            return "loop";
     if (!strcmp(finish, "envelope_error"))  return "envelope_unmapped";
     if (!strcmp(finish, "client_too_slow")) return "client_too_slow";
+    if (!strcmp(finish, "constraint_error")) return "pattern_limit";
     return NULL;
 }
 
@@ -1964,7 +1974,7 @@ static const char *finish_detail_of(const char *finish) {
 // Unlike "length" or "stop", no usable turn is behind it.
 static bool generation_faulted(const char *finish) {
     return !strcmp(finish, "error") || !strcmp(finish, "envelope_error") ||
-           !strcmp(finish, "client_too_slow");
+           !strcmp(finish, "client_too_slow") || !strcmp(finish, "constraint_error");
 }
 
 // Why a Responses turn did not complete, or NULL when it did: the one
@@ -1977,6 +1987,7 @@ static bool generation_faulted(const char *finish) {
 static const char *responses_incomplete_reason(const char *finish) {
     if (!strcmp(finish, "envelope_error")) return "envelope_unmapped";
     if (!strcmp(finish, "client_too_slow")) return "client_too_slow";
+    if (!strcmp(finish, "constraint_error")) return "pattern_limit";
     if (!strcmp(finish, "error"))          return "out_of_memory";
     if (!strcmp(finish, "length") || !strcmp(finish, "reasoning_limit") ||
         !strcmp(finish, "loop"))
@@ -2001,7 +2012,15 @@ static const char *anth_stop_reason(const char *finish, bool stop_hit) {
 // streamed `error` event. `api_error` (500): both faults are internal and a
 // retry can clear them, which SDKs do with backoff on a 500; which fault it was
 // stays in runner_telemetry. The other types: docs/api-surfaces.md.
-static void anth_error_json(sbuf *r, const char *finish) {
+static void anth_error_json(sbuf *r, const char *finish, const char *fault) {
+    if (!strcmp(finish, "constraint_error")) {
+        // R2.18: which pattern and how many states, from the engine
+        sb_lit(r, "\"error\":{\"type\":\"api_error\",\"message\":\"");
+        sb_esc(r, fault, strlen(fault));
+        sb_lit(r, ". The request was valid; this schema's pattern needs more than one request may hold.\"}");
+        sb_lit(r, ",\"runner_telemetry\":{\"finish_detail\":\"pattern_limit\"}");
+        return;
+    }
     const char *msg = !strcmp(finish, "envelope_error")
         ? "the model's constrained tool-call document could not be mapped "
           "back to a response, so this turn produced no readable content. "
@@ -3930,12 +3949,12 @@ static bool creq_schema(const creq_ctx *c, completion_req *q, creq_err *err) {
     bool constrain = env && !env->parse_only;
     jv *sch = constrain ? NULL : request_schema(req);
     if (constrain) {
-        char serr[128] = "envelope did not parse";
+        char serr[320] = "envelope did not parse";
         schema = tool_schema_compile(env, request_schema(req),
                                      think_mode != THINK_OFF, reasoning_open,
                                      serr, sizeof serr);
         if (!schema) {
-            char msg[256];
+            char msg[384];
             // a reference the envelope could not inline is the real reason
             snprintf(msg, sizeof(msg), "unsupported tool schema: %s",
                      env->ref_err ? env->ref_err : serr);
@@ -3943,12 +3962,12 @@ static bool creq_schema(const creq_ctx *c, completion_req *q, creq_err *err) {
             return false;
         }
     } else if (sch) {
-        char serr[128];
+        char serr[320];   // a pattern's refusal names its construct (R2.18)
         schema = chat && s->tmpl == TMPL_MUSE
                    ? schema_compile_muse_user_payload(sch, serr, sizeof(serr))
                    : schema_compile(sch, serr, sizeof(serr));
         if (!schema) {
-            char msg[192];
+            char msg[384];
             snprintf(msg, sizeof(msg), "unsupported json schema: %s", serr);
             creq_set(err, 400, msg);
             return false;
@@ -3956,6 +3975,12 @@ static bool creq_schema(const creq_ctx *c, completion_req *q, creq_err *err) {
     }
     q->constrain = constrain;
     q->sch = sch;
+    // Compiled per request and freed with it (completion_cleanup): no compiled
+    // schema is shared between requests, slots or threads. That is what lets
+    // a pattern automaton's DFA cache (R2.18, src/jsre.h) fill without a lock
+    // on this request's slot thread. A schema cache added later would have to
+    // give each request its own pool; the pool refuses a fill from a second
+    // thread, in release builds too, so such a change cannot pass silently.
     q->schema = schema;
     return true;
 }
@@ -4633,7 +4658,7 @@ static void respond_stream_responses(const turn_result *t) {
                        .output_n = g->out_items.n,
                        .output_text = g->out_text.s,
                        .output_text_n = g->out_text.n,
-                       .with_usage = true,
+                       .with_usage = true, .fault = e->constraint_fault,
                        .n_prompt = prep->n_prompt, .n_gen = n_gen, .cached = keep,
                        .forked = reuse.forked, .saved_s = reuse.saved_s,
                        .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
@@ -4664,7 +4689,7 @@ static void respond_stream_messages_fault(const turn_result *t) {
     if (!g->dead) {
         sbuf f = {0};
         sb_lit(&f, ",");
-        anth_error_json(&f, finish);
+        anth_error_json(&f, finish, t->e->constraint_fault);
         anth_send(g, "error", &f);
     }
 }
@@ -4760,6 +4785,11 @@ static void respond_stream_openai(const turn_result *t) {
         if (chat) g->repeat_json = repeated_calls_streamed(g, req, api);
         sb_fmt(&c, ",\"runner_telemetry\":{\"prompt_cached_tokens\":%d", keep);
         if (sdet) sb_fmt(&c, ",\"finish_detail\":\"%s\"", sdet);
+        if (e->constraint_fault[0]) {
+            sb_lit(&c, ",\"fault\":\"");
+            sb_esc(&c, e->constraint_fault, strlen(e->constraint_fault));
+            sb_lit(&c, "\"");
+        }
         if (g->repeat_json)
             sb_fmt(&c, ",\"repeated_tool_calls\":%s", g->repeat_json);
         diag_json(&c, &prep->diag);
@@ -4813,7 +4843,7 @@ static void respond_buffered_messages(const turn_result *t, sbuf *tc, int n_tc) 
     if (generation_faulted(finish)) {
         sbuf r = {0};
         sb_lit(&r, "{\"type\":\"error\",");
-        anth_error_json(&r, finish);
+        anth_error_json(&r, finish, e->constraint_fault);
         sb_lit(&r, "}");
         if (r.failed) send_error(fd, 500, "out of memory building "
                                           "response");
@@ -4835,7 +4865,7 @@ static void respond_buffered_messages(const turn_result *t, sbuf *tc, int n_tc) 
                    .text = g->out.s, .text_n = g->out.n,
                    .reason = g->reason.s, .reason_n = g->reason.n,
                    .reason_tokens = g->reason_tokens,
-                   .with_usage = true,
+                   .with_usage = true, .fault = e->constraint_fault,
                    .n_prompt = prep->n_prompt, .n_gen = n_gen, .cached = keep,
                    .forked = reuse.forked, .saved_s = reuse.saved_s,
                    .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
@@ -4888,7 +4918,7 @@ static void respond_buffered_responses(const turn_result *t, sbuf *tc, int n_tc)
                    .text = g->out.s, .text_n = g->out.n,
                    .reason = g->reason.s, .reason_n = g->reason.n,
                    .reason_tokens = g->reason_tokens,
-                   .with_usage = true,
+                   .with_usage = true, .fault = e->constraint_fault,
                    .n_prompt = prep->n_prompt, .n_gen = n_gen, .cached = keep,
                    .forked = reuse.forked, .saved_s = reuse.saved_s,
                    .gtime = gtime, .major_faults = plat_major_faults() - faults_at_start,
@@ -5039,6 +5069,7 @@ static void respond_buffered_openai(const turn_result *t, sbuf *tc, int n_tc) {
                        .schema = q->schema != NULL,
                     .finish_detail = finish_detail_of(finish)
                                    ? finish_detail_of(finish) : cut_detail,
+                    .fault = e->constraint_fault,
                     .json_mode = e->json_mode, .spec = spec_used,
                     SPEC_DOC_FIELDS(e), .diag = &prep->diag,
                     .repeated_calls = g->repeat_json };
@@ -5545,6 +5576,7 @@ static void turn_reason(turn_result *t) {
     // can read, and reporting "stop" over an empty message would tell the
     // caller the model chose to say nothing.
     t->finish = e->oom ? "error"
+                       : e->constraint_fault[0] ? "constraint_error"
                        : g->too_slow ? "client_too_slow"
                        : t->unmapped ? "envelope_error"
                        // the reasoning cap is the reason only while it left
