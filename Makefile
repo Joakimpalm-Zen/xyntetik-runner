@@ -203,6 +203,21 @@ override CFLAGS := $(filter-out -ffast-math,$(CFLAGS)) -fno-fast-math -ffp-contr
                    -DRUNNER_PORTABLE_MATH -DRUNNER_CANON_KERNELS -DRUNNER_T3_BUILD
 endif
 
+# R6.86: pmath.h redirects expf, logf, sinf, cosf, tanhf and powf by macro,
+# so it reaches only the code the compiler reads after it. Included source by
+# source, it came after act.h and model.h in model.c, and cuda.c and clef.c
+# never took it, so their sigmoid, SiLU, softplus, attention temperature and
+# softmax kept the C library's functions (make T3=1 test-portable-imports).
+# A portable build, T3=1 or the define given by hand, now has the compiler
+# read it first in every unit. The system headers it includes then come
+# before a source's own feature macros, so the two compat.c sets
+# (sched_getaffinity on Linux, rand_s on Windows) are given here too.
+ifneq ($(filter -DRUNNER_PORTABLE_MATH,$(CFLAGS)),)
+PMATH_FEATURES_Linux = -D_GNU_SOURCE
+PMATH_FEATURES_Windows = -D_CRT_RAND_S=
+override CFLAGS += -include src/pmath.h $(PMATH_FEATURES_$(BUILD_OS))
+endif
+
 # Objects are keyed by the exact compiler command prefix (see the object
 # layer below). Defined here, right after CFLAGS is final and BEFORE any rule
 # names $(OBJDIR): a target line expands immediately, and an empty BUILD_ID
@@ -483,7 +498,8 @@ SRC = src/gguf.c src/compat.c $(QUANTS_OBJ) src/instances.c src/tokenizer.c src/
 ZIG ?= zig
 CROSS_TARGET ?= riscv64-linux-musl
 CROSS_CFLAGS = -O3 -fno-fast-math -ffp-contract=off -std=gnu11 -Wno-unused-parameter \
-               -DRUNNER_GPU_CUDA -DRUNNER_PORTABLE_MATH -DRUNNER_CANON_KERNELS
+               -DRUNNER_GPU_CUDA -DRUNNER_PORTABLE_MATH -DRUNNER_CANON_KERNELS \
+               -include src/pmath.h -D_GNU_SOURCE
 CROSS_SRC = $(filter-out $(GPU_SRC) $(TRAY_SRC),$(filter %.c,$(SRC))) \
             src/quants.c src/quantize.c src/cuda.c src/tray.c src/tray_stub.c
 cross-riscv64:
@@ -4427,6 +4443,7 @@ test-makefile-sane:
 	case "$$tline" in *" -ffast-math "*) echo "FAIL: T3=1 left -ffast-math in the engine build"; exit 1;; esac; \
 	for f in -fno-fast-math -ffp-contract=off -DRUNNER_PORTABLE_MATH -DRUNNER_CANON_KERNELS -DRUNNER_T3_BUILD; do \
 	  echo "$$tline" | grep -q -- " $$f " || { echo "FAIL: T3=1 build lacks $$f"; exit 1; }; done; \
+	echo "$$tline" | grep -q -- " -include src/pmath.h " || { echo "FAIL: T3=1 build does not read pmath.h first in every unit (R6.86)"; exit 1; }; \
 	echo "makefile ok (no discarded recipes; T3 switch reaches the engine)"
 
 
