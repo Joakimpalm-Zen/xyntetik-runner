@@ -206,6 +206,12 @@ def test_receipt_names_actual_tiles_and_refuses_missing_schedule(runner_bin, mod
         # and a recorded run the turn never reached is a step where the tiles did not run
         off = verify(tiled[0], {"RUNNER_METAL_BATCH_TILES": "0"})
         assert off.returncode == 3 and "did not take the recorded route" in off.stderr, off.stderr
+        # memory, before the stand-ins load: a machine that cannot hold the turn's whole KV
+        # cache beside them is told so with the numbers, not swapped or failed mid-load
+        low = verify(tiled[0], {"RUNNER_TEST_RAM_AVAILABLE_MB": "1"})
+        assert low.returncode == 3, low.stdout + low.stderr
+        assert "maps the turn's whole" in low.stderr and "of RAM is available" in low.stderr, low.stderr
+        assert "stand-ins" in low.stderr and "tiled run" not in low.stderr, low.stderr
         record = json.loads(tiled[0].read_bytes())
         assert "signature" not in record, "an unsigned server's receipt is re-hashed below"
         steps = record["profile"]["route"]["micro_steps"]

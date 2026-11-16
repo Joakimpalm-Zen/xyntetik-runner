@@ -6683,6 +6683,33 @@ static bool replay_micro_open(replay_micro *r, const micro_sched *s, cli_run *rt
         if (s->run[i].width > w) w = s->run[i].width;
     r->sched = s;
     r->tok0 = rt->toks[0];
+    // Memory, before anything loads. Creating the microbatch maps the turn's
+    // whole KV cache at its context (measured on an Apple M1, SmolLM2-1.7B Q8_0
+    // at -c 4096: +772 MB at width 2, +794 MB at width 8; the KV formula gives
+    // 805 MB), and each stand-in adds a few MB (16 MB budgeted). A machine that
+    // cannot hold that is told so with the numbers, under the headroom Metal's
+    // own KV growth keeps (a sixteenth), rather than swapping or failing
+    // mid-load. RUNNER_TEST_RAM_AVAILABLE_MB lowers the figure for a test.
+    uint64_t kv = 0;
+    for (int l = 0; l < rt->m.n_layer; l++)
+        kv += (uint64_t)model_kv_row_bytes_sum(&rt->m, l) * (uint64_t)model_kv_rows(&rt->m, l);
+    uint64_t need = kv + (uint64_t)(w - 1) * (16ull << 20);
+    uint64_t have = plat_ram_available_bytes();
+    const char *seam = getenv("RUNNER_TEST_RAM_AVAILABLE_MB");
+    if (seam && *seam) {
+        uint64_t v = (uint64_t)strtoull(seam, NULL, 10) << 20;
+        if (v < have) {
+            fprintf(stderr, "test seam: RUNNER_TEST_RAM_AVAILABLE_MB=%s in place of the measured "
+                    "available RAM (%llu MB)\n", seam, (unsigned long long)(have >> 20));
+            have = v;
+        }
+    }
+    if (have && need + have / 16 > have) {
+        snprintf(why, cap, "the %d-wide microbatch maps the turn's whole %d-token KV cache: %.2f GB "
+                 "with its %d stand-ins, and %.2f GB of RAM is available", w, rt->m.n_ctx,
+                 need / 1e9, w - 1, have / 1e9);
+        return false;
+    }
     r->sx = calloc((size_t)w - 1, sizeof(model_t));
     if (!r->sx) {
         snprintf(why, cap, "out of memory for %d stand-ins", w - 1);
