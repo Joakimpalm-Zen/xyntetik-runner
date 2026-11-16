@@ -3,22 +3,26 @@
 `make test` is the aggregate engine gate, and CI runs it on Linux for every
 pull request. The hosted Mac and Windows runners take twenty to thirty
 minutes for the whole suite, so on a pull request they run what is specific
-to them: macOS runs only what needs a Mac, the Metal gates of `make test`
-as the one named target `make test-metal` and the server conformance suite
-on the Metal path; Windows runs the build, its platform-only steps, the
-client tests and the server conformance suite, plus the suite's Metal pytest
-files (`tests/test_metal_*.py`). The whole suite runs on Windows on every
+to them. macOS runs only what needs a Mac, in two jobs side by side: `macos`
+runs the Metal gates of `make test` as the one named target `make test-metal`
+and the server conformance suite on the Metal path, and
+`macos-suite-metal-pytest` runs the suite's Metal pytest files
+(`tests/test_metal_*.py`) in one process. They were one job until R6.89,
+which took 20 to 32 minutes on the hosted runners against a limit of 45.
+Windows runs the build, its platform-only steps, the client tests and the
+server conformance suite. The whole suite runs on Windows on every
 engine push to main, and on both platforms on the daily schedule and on
 dispatch, as three parallel jobs per platform (`macos-suite-gates-core`,
 `macos-suite-gates-batch`, `macos-suite-python`, and the `windows-suite-`
-three). Since 2026-11-12 a pull request that is not prose alone also runs
+three), with `macos-suite-metal-pytest` beside the macOS three, as on a
+pull request. Since 2026-11-12 a pull request that is not prose alone also runs
 `windows-suite-python`, so a test's Windows behaviour is seen before its
 merge. The macOS suite left the push trigger on 2026-11-04: GitHub's hosted
 macOS arm64 pool is capacity-limited, and four macOS jobs a push, queued
 behind the pull request's own, were cancelled by the pool often enough to
 keep main red for hours (28 cancellations against 4 real failures on main
-over the previous two weeks, all four in the Metal pytest files that the
-pull-request job now runs). Here `make test` is the union of the targets `test-gates-core` (the C
+over the previous two weeks, all four in the Metal pytest files that a
+pull request now runs). Here `make test` is the union of the targets `test-gates-core` (the C
 self-checks), `test-gates-batch` (the microbatch identity family and the
 attention split, the longest gates) and `test-python` (the client tests and
 the root pytest, which the jobs run under pytest-xdist with
