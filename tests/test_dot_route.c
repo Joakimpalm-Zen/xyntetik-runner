@@ -14,10 +14,13 @@
 //     route is slow every time, a busy neighbour is not.
 //  3. the same kind of canary for a weight decode (R3.73): on an x86 AVX2
 //     build, dequant_row's MXFP4 rows (every expert row a batched prefill
-//     of gpt-oss decodes) must cost at most 1.5x Q4_K's per weight, a
+//     of gpt-oss decodes) must cost at most 1.3x Q4_K's per weight, a
 //     decode with an AVX2 kernel of long standing (a ratio of two library
-//     routes on one machine, steadier than a hand-written scalar loop). The
-//     C decode reads 3x to 6x there. Its bytes are checked too, over all
+//     routes on one machine, steadier than a hand-written scalar loop).
+//     Measured on hosted x86, 2026-11-16: the SIMD decode 1.05x on a Xeon
+//     6975P-C and 0.63x on an EPYC 9V74; the C decode it replaced 1.58x on
+//     the Xeon (and about 6x on the EPYC, four workers, the R3.60 bench).
+//     Its bytes are checked too, over all
 //     256 exponents: this binary is built with the runner's own flags
 //     (-ffast-math, so flush-to-zero and denormals-are-zero are on), which
 //     test-quants-simd's are not.
@@ -151,7 +154,7 @@ static void decode_ratio_mxfp4(void) {
             if (tm < best_m) best_m = tm;
             if (tk < best_k) best_k = tk;
         }
-        if (best_m <= 1.5 * best_k) break;
+        if (best_m <= 1.3 * best_k) break;
         if (attempt == 0)
             fprintf(stderr, "re-measuring: MXFP4 row decode at %.2fx Q4_K's in 5 rounds\n",
                     best_m / best_k);
@@ -159,8 +162,8 @@ static void decode_ratio_mxfp4(void) {
     double per = 1e9 / ((double)n * rows);
     char msg[220];
     snprintf(msg, sizeof msg, "MXFP4 row decode %.3f ns a weight, Q4_K's (an AVX2 decode) %.3f "
-             "(%.2fx, at most 1.50x)", best_m * per, best_k * per, best_m / best_k);
-    ck(best_m <= 1.5 * best_k, msg);
+             "(%.2fx, at most 1.30x)", best_m * per, best_k * per, best_m / best_k);
+    ck(best_m <= 1.3 * best_k, msg);
     // the C decode's bytes under this binary's float environment, every
     // exponent (0 is the subnormal scale denormals-are-zero flushes, 255 the
     // infinite one)
