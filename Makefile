@@ -1770,6 +1770,32 @@ $(TEST_ACT): tests/test_act.c src/act.h src/fpclass.h
 $(TEST_PMATH): tests/test_pmath.c src/pmath.h
 	$(CC) -O2 -fno-fast-math -ffp-contract=off -std=gnu11 -Wall -I src tests/test_pmath.c -o $@ -lm
 
+# R6.86: a portable build (T3=1, or -DRUNNER_PORTABLE_MATH in CFLAGS) calls
+# none of the C library's expf, logf, sinf, cosf, tanhf and powf, whose last
+# bits differ by platform. Every object `runner` links is read with nm -u.
+# sincosf and __sincosf_stret are the names a compiler gives a sinf and a cosf
+# of one angle that it fuses, and __imp_ is how a Windows object names a DLL
+# import. The live control: some object must import malloc, or nm listed
+# nothing and the check would pass on nothing. The ci t3 job runs it after
+# its T3 build.
+NM ?= nm
+PMATH_LIBM_RE = ^_*(imp_)?_*(expf|logf|sinf|cosf|tanhf|powf|sincosf|sincosf_stret)$$
+.PHONY: test-portable-imports
+test-portable-imports: $(RUNNER_OBJ)
+	@case " $(CFLAGS) " in *" -DRUNNER_PORTABLE_MATH "*) ;; \
+	  *) echo "FAIL: not a portable build; run make T3=1 test-portable-imports"; exit 1;; esac; \
+	syms=$$(for o in $(RUNNER_OBJ); do \
+	  out=$$($(NM) -u "$$o") || exit 1; \
+	  printf '%s\n' "$$out" | awk -v o="$$o" 'NF {print o, $$NF}'; done) \
+	  || { echo "FAIL: $(NM) could not read the objects"; exit 1; }; \
+	printf '%s\n' "$$syms" | awk '$$2 ~ /^_*(imp_)?_*malloc$$/ {n++} END {exit !(n > 0)}' \
+	  || { echo "FAIL: nm listed no import of malloc in $(words $(RUNNER_OBJ)) objects: the scan read nothing"; exit 1; }; \
+	bad=$$(printf '%s\n' "$$syms" | awk '$$2 ~ /$(PMATH_LIBM_RE)/'); \
+	if [ -n "$$bad" ]; then \
+	  echo "FAIL: a portable build imports the C library's transcendental functions:"; \
+	  printf '%s\n' "$$bad" | sed 's/^/  /'; exit 1; fi; \
+	echo "portable imports ok: $(words $(RUNNER_OBJ)) objects, none imports expf, logf, sinf, cosf, tanhf or powf"
+
 # ML-DSA-44: NIST ACVP FIPS 204 known answers (key generation from a seed,
 # deterministic signature), then sign/verify/tamper on the wrapper
 $(TEST_MLDSA): tests/test_mldsa.c tests/mldsa_kat.h $(MLDSA_OBJ) src/mldsa.h
