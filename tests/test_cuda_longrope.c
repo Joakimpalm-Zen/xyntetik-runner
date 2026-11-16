@@ -25,7 +25,9 @@
 //       gives the eager path's bits on both sides of the crossing; a short
 //       prompt after a long sequence decodes as at the original context;
 //   G5  two slots on one weight set, one on each set, decoding in turn: each
-//       computes its own set's answer.
+//       computes its own set's answer;
+//   G6  slots on both sets decode as one device microbatch (R4.40.3), and each
+//       column decodes what its sequence decodes alone.
 // Live controls:
 //   L1  on this fixture the two sets give different logits on the device, so
 //       G2 and G3 can tell them apart;
@@ -277,6 +279,44 @@ int main(int argc, char **argv) {
         ck(dw == 0, "G5: the short slot decodes, in turn with a long one, what the original-context load decodes");
         ck(dc == 0, "G5: the long slot decodes, in turn with a short one, what the long set alone decodes");
         steps_free(ws_, STEPS); steps_free(cs_, STEPS); steps_free(wr, STEPS); steps_free(cr, STEPS);
+    }
+
+    // ---- G6: one device microbatch with a column on each set (R4.40.3). Three
+    // slots of the two-set load, listed long, short, long, so the columns are
+    // reordered and split; each column must be the bits of that sequence
+    // decoded alone (model_batch_decode's guarantee), and the batch must engage.
+    {
+        model_t *trio[3] = { &cold.m, &wide.m, &one.m };
+        model_batch *mb = model_batch_create(trio, 3);
+        ck(mb && model_batch_engaged(mb), "G6: slots on both sets of a two-set load decode as one device microbatch");
+        float *bt[3][STEPS] = {{0}}, *so[3][STEPS] = {{0}};
+        slot *sl[3] = { &cold, &wide, &one };
+        int plen[3] = { LONG, 20, LONG };
+        bool ok = mb != NULL;
+        for (int j = 0; j < 3; j++) free(whole(sl[j], t, plen[j]));
+        ck(cold.m.rope_long && !wide.m.rope_long && device_table_is(&one.m, one.m.rope_freq_long, half),
+           "G6: the batch holds a slot on the short set between two on the long one");
+        for (int k = 0; k < STEPS && ok; k++) {
+            int idx[3] = { 0, 1, 2 }, ps[3];
+            int32_t tk[3] = { y[k], x[k], y[k] };
+            float *out[3] = { NULL, NULL, NULL };
+            for (int j = 0; j < 3; j++) ps[j] = plen[j] + k;
+            ok = model_batch_decode(mb, idx, tk, ps, 3, out);
+            for (int j = 0; j < 3 && ok; j++) ok = (bt[j][k] = snap(&sl[j]->m, out[j])) != NULL;
+        }
+        // each alone, on the same slot, from the same prompt
+        for (int j = 0; j < 3 && ok; j++) {
+            free(whole(sl[j], t, plen[j]));
+            for (int k = 0; k < STEPS && ok; k++) ok = (so[j][k] = step(sl[j], j == 1 ? x[k] : y[k])) != NULL;
+        }
+        int d6[3] = { -1, -1, -1 };
+        for (int j = 0; j < 3 && ok; j++) d6[j] = steps_differ(&sl[j]->m, bt[j], so[j], STEPS);
+        fprintf(stderr, "G6: batch against alone, steps that differ: long %d, short %d, long (one set) %d of %d\n",
+                d6[0], d6[1], d6[2], STEPS);
+        ck(ok && d6[0] == 0 && d6[1] == 0 && d6[2] == 0,
+           "G6: every column decodes in the batch what its sequence decodes alone");
+        for (int j = 0; j < 3; j++) { steps_free(bt[j], STEPS); steps_free(so[j], STEPS); }
+        if (mb) model_batch_free(mb);
     }
 
     // ---- L2: the recapture mutant must turn G4's replay check red
