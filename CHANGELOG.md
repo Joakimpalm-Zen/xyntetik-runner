@@ -11,6 +11,140 @@ file each, until the release folds them in below. Add a new entry there, not her
 
 ## Unreleased
 
+## v1.20.0 - 2026-11-16
+
+- **LFM2 runs on the Apple GPU where its layer weights are mostly Q4_K** (R3.42).
+  - The short convolution and its window's slide now run on Metal. A tall Q6_K matrix (the tied output head) takes the narrow-slice matvec below 1,536 wide too.
+  - Measured on an Apple M1 against the CPU, LFM2.5-350M and 1.2B Q4_K_M: prompt 2.73x to 3.00x, decode 1.59x to 2.61x. The 350M's Q6_K head took its decode from 1.13x to 1.59x to 1.74x.
+  - Not moved: on the Q8_0 files the Metal decode was only 1.17x to 1.23x faster, under the 1.3x line, because the CPU's Q8_0 dot runs near the memory bandwidth the GPU decode also runs at. Every type other than Q4_K stays on the CPU, unmeasured or measured to fail, and the route line says why. CUDA and `lfm2moe` stay on the CPU.
+
+- **On CUDA, a phi3 LongRoPE model's factor set follows each sequence, as on the CPU and the Apple GPU, and slots past the original context still share one device microbatch** (R4.40.2, R4.40.3).
+  - Fidelity first: on an RTX 5070 host, bartowski's Phi-3.5-mini-instruct Q4_K_M served at `-c 8192` reads a 3,938-token text inside the original context at 0.0434 mean KLD [0.0362, 0.0520] against the publisher's float32 model, where the build before read 0.2364 [0.2079, 0.2655] (margin-qualified top-1 98.9% against 90.2%). It now scores that text byte for byte as a load at `-c 4096` does. A 5,992-token text reads 0.0308 on both builds, byte-identical. One 4-bit file, two texts, one card.
+  - What changes: with `-c` over the original context (4,096 tokens on Phi-3.5) CUDA kept the long factors for every sequence and warned so at load, because the rope table belonged to the weight set every slot shares. The weight set now holds both sets' tables and each slot reads its own: a sequence within the original context computes what a load at it computes, a longer one takes the long set from its first token, and a sequence that grows past it is computed again under the long set, once. A served prompt of 4,044 tokens that grows to 4,120 is computed again once, after which the same prompt keeps nothing (`prompt_reuse` `rope_set`) and answers as a fresh request.
+  - Several slots still decode as one device microbatch: each step's columns are ordered by factor set and the unchanged rope kernel runs once for each set present, over its own columns with its own table. Four short requests at once (`--parallel 4 -c 8192 --kv q8`, 256 tokens each) decode at 348.6 tok/s aggregate, where the build before read 350.0 (351.5 in the same session; medians of three rounds). A batch on one set issues the single launch it always did, so no other model's microbatch changes; the kernels and the PTX headers are untouched.
+  - The decode graph, and a batch graph's split between the sets, hold what they were captured with, so they are captured again when a slot changes set: once at the crossing, once on the way back.
+  - Rows an earlier CUDA build saved for such a load (the prefix cache, KV snapshots) are refused: on CUDA too the cache key of a two-set load now carries the per-sequence token R4.40.1 gave it on the CPU and Metal.
+  - Gated by two `scripts/cuda-gate.sh` steps, each with live controls:
+    - `make test-cuda-longrope`: every comparison CUDA against CUDA to the bit. The two sets differ on the device; a decode graph kept across a set change is caught; a batch with columns on both sets, and a member crossing the original context mid-batch, give each column the bits of its sequence alone, and the batch runs on the device at every step.
+    - `make test-cuda-batch-columns`: a batch on one set in reversed column order gives every sequence the same bits, at widths 2 to 8 on five fixtures (F32, Q8_0, the phi3 one, and the wide fixture's Q4_K and Q6_K files).
+    - `tests/test_phi3_rope.py` serves the crossing on CUDA and joins the CUDA lane.
+  - The Apple GPU still decodes such slots one by one.
+
+- **On x86, MXFP4 weight rows decode with AVX2 and AVX-512, to the same bits** (R3.73).
+  - The batched prompt pass decodes every MXFP4 weight row (the gpt-oss experts) to f32 before its matrix tile. On x86 that decode was C: a table lookup per weight behind a switch per 32 weights.
+  - It is now a SIMD kernel. Each value is the same multiply on the same two operands as the C decode, so the output bytes are unchanged. Tests compare it byte for byte with the C decode, kept by name as a reference: on random blocks at all 256 exponents, at x86-64-v3 and v4, and under the runner's own `-ffast-math` flags. A mutant kernel with one lane's scale one exponent off fails that test.
+  - On the lab's Threadripper 9980X (26 threads, the R3.60 bench) the decode of a 2,880 x 2,880 expert is 4.3x faster per weight (0.126 to 0.029 ms). The 64-column tile product is 20% faster (0.417 to 0.332 ms); at 128 columns it is unchanged (0.75 ms). On hosted runners (4 vCPU) the decode gain was 3.3x on a Xeon 6975P-C and 7.7x on an EPYC 9V45.
+
+- **A turn on the Apple GPU's tiled decode microbatch records its decode schedule, and `--verify` replays it** (R3.72; `RUNNER_METAL_BATCH_TILES=1`, opt-in).
+  - The receipt records which decode positions ran the GEMM tiles and at what microbatch width (`profile.route.micro_steps`, runs of `[first position, count, width]`), beside `micro: "tiles"`. A position the list does not hold was decoded on the identity route.
+  - `--verify` replays it: each listed position decodes as column 0 of a microbatch of its recorded width beside stand-ins (the prompt's first token at position 0), and the other positions decode solo. The verifier then checks that the tiles ran at exactly the recorded steps.
+  - It rests on a measured fact (SmolLM2-1.7B Q8_0): under the tiles a column's result is the same at widths 6 to 8, in columns 0, 3 and 7, and whatever the other columns hold.
+  - Refused by name, never replayed solo: no schedule, a truncated or malformed one (a tiled step under 6 columns included), a build without Metal or a record naming another backend, a verifier whose route differs from the record's, and a machine whose available RAM cannot hold the replay.
+  - Cost: one microbatch step per listed position plus the stand-ins' load. On SmolLM2-1.7B Q8_0, a 256-position score with the same stand-ins, every position tiled, took 33.9 s against 12.4 s solo.
+  - Memory: the microbatch maps the turn's whole KV cache at the record's context, and each stand-in adds a few MB. Measured peak footprint of a `--verify` on an Apple M1: SmolLM2-1.7B Q8_0 820 MB at `-c 4096` (28 MB solo) and 1,592 MB at `-c 8192`; Phi-3.5-mini Q4_K_M 1,587 MB at `-c 4096`. The verifier estimates this before anything loads and refuses by name, with both figures, when the available RAM cannot hold it.
+
+- **Muse's native (atem) tool calls recover a cut-off argument of every JSON-spelled type as the forced close writes it** (R2.21).
+  - Numbers already did (R2.19.1). Now an object, array or boolean parameter gets its fill too. A boolean with `const: true` comes back `true`, where it came back `false`. An array with `minItems` comes back with that many items, each its items' fill, where it came back `[]`. An object comes back with its required properties, where it came back `{}`.
+  - When an allocation fails while a whole argument is parsed, the call now fails. Before, the argument was read as cut off and replaced by the recovered value (`10` in place of a valid `12`).
+
+- **A bounded number written by a forced close or a tool-call recovery reads the exact decision** (R2.19.1).
+  - Under an exclusive bound at 0 (`exclusiveMinimum: 0` or `exclusiveMaximum: 0`), a forced close and the recovery of a cut-off number argument in Muse's native (atem) tool calls now write the shortest number inside the bounds, such as `1`, `0.1` or `1e-9`, where they wrote `1e-307`. Every other bound gets the same number as before: 0 when the bounds allow it, else the bound nearest 0 (one step inside an exclusive one).
+  - Both now read one decision, R2.19's exact witness, in place of their own lists of fixed candidates (`1e-307`, the far bound, one-digit decimals). Over 10,000 random bound sets, with flush-to-zero off and on, neither the old lists nor the new fill ever wrote a number outside its bounds or none at all; the 253 sets with an exclusive bound at 0 are the only ones whose number changed.
+  - In Muse's native (atem) tool calls, a parameter whose number or integer schema sits behind a `$ref` or a one-member `allOf` is now read as the number the compiler reads. A whole argument comes back as a number, where it came back as a quoted string. A cut-off one comes back as the forced close's value (`10` under `minimum: 10`), where it came back as the cut text in quotes. A cut-off argument under `const` or a numeric `enum` now comes back as its first member, where it came back as `0`. These are older than R2.19 and were on main too.
+  - When an allocation fails while Muse's native tool calls are mapped, the call now fails. Before, the mapper could write a value it had not checked (`0` under `minimum: 10`, a `$ref`'d number as a string, empty arguments), or end the turn as one with no call.
+
+- **pydantic 1.10 schemas with titled or defaulted model and enum fields compile** (R2.18.1).
+  - pydantic 1.10 writes a field that references a model or an enum, and has a title, a description or a default, as `{"title": ..., "allOf": [{"$ref": "#/definitions/X"}]}`. Runner refused every such schema: `allOf` was accepted only as string constraints on a string.
+  - An `allOf` that wraps one schema now compiles as that schema, whatever its type, when everything beside it is an annotation and every other member constrains nothing (`true`, or annotations only). That is exactly what the schema means. It is applied while `$ref`s are inlined, so response formats and every tool-call grammar read the same schema.
+  - Every other `allOf` is still refused by name, and the refusal now says what is supported. A sibling that constrains (a `maxLength` beside the `allOf`) keeps the node refused, and so do two object members to merge, as zod's `.and()` writes them.
+  - A tool whose parameters resolve to `false` (a root `$ref` to `false`, or `{"allOf": [false]}`) is now refused, with the tool's name. The `tool_choice` envelope put `{"type": "object"}` in its place and admitted any arguments, and the atem, Qwen3-Coder and Gemma 4 grammars saw a tool without parameters and admitted an empty call.
+  - Checked against the JSONSchemaBench corpus (8,108 schemas): 4 more compile, none that compiled before is refused, and the 80 documents generated from the 4 (20 each) all validate against their original schemas.
+
+- **A bounded number is never led past its bound** (R2.19).
+  - Under `{"type": "number", "maximum": 1}` the validator admitted `1e+36`. After it no byte was legal, so a constrained request stalled with every token masked, and a forced close wrote `1e+36`, out of bounds. A real output showed it: `2.74e+57` under a maximum of 10, in the JSONSchemaBench corpus.
+  - Now a number's prefix is admitted only while some completion of it lies inside the bounds, so the byte that would leave none is refused where it is written: the `3` of `1e+3` under maximum 1, or a first digit no scale brings inside a narrow interval (under `[0.5, 0.6]` a number cannot start with `1`). The question is decided exactly, in decimal: the bounds become the exact interval of the spellings that read inside them (the midpoints to the neighbouring doubles, built once per schema), and a prefix is compared with it digit by digit, with no floating-point arithmetic. Under a bound the terminator makes the same comparison. Neither uses a floating-point operation, so by construction neither depends on the platform's float mode (tested to nearest with flush-to-zero off and on, and in the three directed rounding modes), completions that read as exactly a bound count (`4.9999999999999999e-1` under `[0.5, 0.5]`), and a forced close writes the shortest completion inside, which reads back through the JSON parser when the reader rounds to nearest, as the engine does.
+  - A number is spelled in at most 95 characters, the most the validator keeps, so a completion must fit in what is left: under `maximum: 1`, 91 nines are the most it admits (`e-91` completes them), and a point or an exponent mark is refused at the 95th byte, where its digit has no room.
+  - Under a bound, a number whose value lies below the smallest normal double (0 < |x| < 2^-1022, about 2.2e-308) is now refused, at both signs. The parsers disagree there: glibc reports a range error for most of that range, macOS's parser rounds the top of it up to 2^-1022 and accepts it, Windows' accepts subnormal values, and a flush-to-zero float mode compares a subnormal as 0. Refusing it gives one answer on every platform. Bounds that leave only such values (`exclusiveMinimum: 0` with `exclusiveMaximum: 2.2250738585072014e-308`) no longer compile: `empty number bounds`. Unbounded numbers are unchanged: the parser decides, as before.
+  - Under an inclusive `minimum: 0` a number may now start with a minus sign, since `-0` is 0. The minus used to be refused under every minimum of 0 or more; under an exclusive 0, or a positive minimum, it still is.
+  - Checked against an independent exact reference on macOS, Linux and Windows. Bounds are drawn at random (narrow, points, next to 2^-1022, one-sided up to the parser's 1.7e308 limit, across zero, strict and inclusive, both signs, and none), each run to nearest with flush-to-zero off and on and in the three directed rounding modes. Over 10,000 random bound sets: 111,097 admitted prefixes completed inside, 110,507 refused bytes had no completion, 94,030 whole numbers were judged as the definition does, and in 76,010 rows a rounding-mode change between two validators changed no answer. Under a bound, every platform and mode tested gave the same answers.
+
+- **`--info fit` names the cache format that puts every layer on the GPU** (R3.63). When the default cache leaves
+  layers on the CPU and a smaller format (`--kv q8`, `k8v4` or `fp4`) holds them all, the report adds a `full offload`
+  line naming the first that does and how many layers the default holds.
+  - Why: a split costs speed even when it is small. On a 31B dense model on a 24 GB CUDA card, with every layer on the
+    card: 275 tokens a second reading a prompt, 16.7 generating. One layer of 60 on the CPU: 172 and 13.3 (1.6x and
+    1.26x slower). 25 layers on the CPU: 29 and 5.5 (9.3x and 3.0x).
+  - How often: from the headers of the support list's 94 models at 8 and 12 GB budgets, six files reach full offload
+    with `--kv q8` where the default cache misses it, four of them by one layer, all at contexts of 8,192 tokens or
+    more. No file is helped by a shorter context alone.
+  - Limits: one model and one prompt stand behind the speed figures, and the split was made by reserving part of a
+    larger card. The compressed cache has its own measured cost (MANUAL, `--kv`); the line says so. `runner recommend`
+    does not name the setting: it plans from file sizes and has no layer geometry. Nothing changes at load: the line
+    is advice, and the load takes the cache it is given.
+
+- **`--info fit` answers for a model in several parts.** A model published as `<prefix>-00001-of-0000N.gguf` keeps each
+  part's tensors in that part's own table. The fit check read the first part alone, so it answered "WILL NOT LOAD: the
+  loader refuses this file: missing tensor ..." for a set the loader takes. Found on both split files of the support
+  list, on a complete 2-part download.
+  - The header read now covers every part of the set, from any part's path, and reads the data of none, so partial
+    downloads still work as long as each part has its header.
+  - A part that is missing is named ("missing or unreadable split GGUF part 2/2") and no verdict is given from the
+    parts at hand.
+  - The same read serves the other header-only callers (derive's parent metadata, the draft-head check).
+
+- **The reference script no longer drops scored positions that it never needed text for.**
+  `scripts/gold-logits.py` checks that a position's decoded text prefix tokenizes back to the same ids before it sends
+  that text to an endpoint. The check also ran when every side was a score file, which is what `runner derive` and the
+  compat reports use, and where nothing is sent to anyone. A position that failed it was dropped without a line and
+  without being counted.
+  - Measured on SmolLM2-1.7B: 5 of 150 positions dropped (four with a prefix ending inside a multi-byte character, one
+    ending in a double line break), in a run whose summary said 0 skipped.
+  - With score files on every side no prefix is built and no position is dropped for it. With an endpoint side the
+    check stands; a dropped position is printed with its reason and counted in the summary's new
+    `positions_skipped_prefix`.
+  - Earlier records state the number of positions they scored, so their figures stand for the positions they name;
+    the dropped positions were not a random sample (they follow multi-byte characters and paragraph breaks), so a
+    re-measured file can read slightly differently.
+
+- **A JSON Schema `pattern` is enforced for any regular ECMA-262 pattern, not only simple anchored shapes** (R2.18).
+  - A pattern outside literal runs and repeated classes used to refuse the schema ("pattern only supports an anchored sequence..."). It now compiles to an automaton that reads it as ECMA-262 with the `u` flag: searched (an unanchored pattern matches anywhere), in code points, with `\d` and `\w` ASCII and `\s` ECMA's set. Alternation, groups, counts on groups, `.` and full classes all compile. On the JSONSchemaBench corpus 297 more of its 8,108 schemas compile (3,072 against 2,775), and none that compiled before is refused; of its 1,414 distinct patterns 1,394 compile, and the 233 the segment compiler took before keep that path.
+  - `minLength` and `maxLength` beside such a pattern are exact. A prefix is admitted only while some completion the pattern accepts still fits, so `^(ab)+$` between 3 and 5 code points admits only `"abab"`, and between 3 and 3 is refused at compile time. A forced close writes the shortest completion the pattern accepts.
+  - Checked against ECMA-262 itself, with node's `RegExp` as the oracle: 56,154 strings over every compiled corpus pattern, 0 disagreements. Documents generated under every corpus schema both builds compile are accepted by both (11,026 each way), and under the 297 new ones all 1,182 such documents pass a reference JSON Schema validator with ECMA's `pattern`. Also 1,148 hand cases, 927 of them where Python's `re` parts from ECMA (`\d` and `٣`, `\s` and NEL, the dot and line separators). The committed test carries those verdicts; twelve deliberate breaks of the compiler each fail it.
+  - Cost: on the 20 heaviest corpus patterns a constrained mask over Qwen3-4B's 151,936 tokens takes 10.06 to 12.09 ms against 9.82 to 9.94 ms for a plain string (1.02x to 1.23x). Compiling a pattern takes 8 to 545 us.
+  - Limits, in MANUAL.md:
+    - Refused by name: backreferences, lookaround, `\b`, `\p{...}`, named groups, inline flags, a malformed count such as `{,3}`, more than 4,096 automaton states (11 corpus patterns), and a second pattern beside one of these on the same string.
+    - Memory: the compiled automata of one request (a schema, or a request's tools together) are capped at 64 MiB, refused by name past it, and their DFA cache (with its bookkeeping) at 8 MiB per compiled schema. A request that would keep more than 16,384 automaton states ends as a fault, `finish_detail: "pattern_limit"`, naming the pattern; it is never served as a narrower document.
+    - Legacy spellings: a pattern the `u` flag rejects only for an identity escape such as `\-`, a lone brace or a lone bracket (25 corpus patterns) is read as without the flag.
+
+- **`runner derive` no longer calls the fidelity bar on a number that could sit on either side of it by chance.**
+  The verdict against the publisher's float32 model was read from two point estimates over 300 positions. Per-position
+  KLD has a heavy tail, so those estimates move: on Gemma 4 31B two 4-bit files read over 97% margin-qualified top-1
+  at 300 positions and under it at 3,600.
+  - The record and the card now carry a 95% interval for mean KLD and for margin-qualified top-1, and the verdict is
+    read from it: **pass** only when both intervals are inside the bar, **fail** only when one is wholly outside it,
+    otherwise **not decided at N positions**, with the way to narrow it (`--window`). `measurement.bar` gains
+    `verdict`, `mean_kld_ci95`, `margin_qualified_top1_ci95` and `bootstrap`; `bar.passes` is true for a pass alone,
+    so a reader of the older field never takes "not decided" for a pass. A file that an earlier runner called a pass
+    can read "not decided" now, with the same numbers.
+  - The interval is a circular block bootstrap over the scored positions in order (10,000 resamples from one fixed
+    stream), because neighbouring positions of one text are not independent draws. On the rows of six Gemma 4 31B
+    files it is 1.15 to 1.63 times wider for mean KLD than resampling positions one by one at every position, 1.19
+    to 1.51 times at every third, and within 6% of it at every fifteenth.
+  - The default window is `8:3:1500`, where it was `8:15:300`: every third position of the same 4,510 tokens, so no
+    forward more, and an interval about 2.2 times narrower. Every position (`--window 8:1:4500`) is left to the
+    flag: the reference run then holds 4,500 rows of the whole vocabulary. A `--compare` against a record made at
+    the old default needs `--window 8:15:300`.
+  - `--compare` gives the other file its own verdict from its own interval, and the paired Wilcoxon test's variance
+    is corrected for ties, in `runner derive` and in `scripts/gold-logits.py` (equal differences read less
+    significant than they are without it).
+  - No verdict is given without its interval. When the interval cannot be computed for rows that exist, `derive` stops
+    with "no verdict is given without it", for the file and for a `--compare` file alike, and every row must carry its
+    KLD. The point estimate is the fallback only for a reference result that has no per-position rows.
+  - Limits: the interval is made from the positions that were scored, so a rare, very bad position the window did
+    not reach is not in it. On Gemma 4 31B one file's mean KLD over every third position read 0.0563 (interval
+    0.0415 to 0.0735, not decided) and over every position 0.0806 (0.0626 to 0.1024, fail). It says nothing about
+    another text. A reference result without per-position rows keeps the point verdict, and the card says so.
+
 ## v1.19.1 - 2026-11-15
 
 - **An exclusive number bound at 0 is exclusive again on Linux and Windows** (R2.20).
