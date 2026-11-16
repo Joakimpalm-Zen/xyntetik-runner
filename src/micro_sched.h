@@ -22,6 +22,9 @@
 
 // past this many runs the list is marked truncated and the record refused
 #define MICRO_SCHED_MAX_RUNS 1024
+// the narrowest microbatch whose weight products take the tiles (metal.m's
+// MB_TILES_MIN is this value): a tiled step recorded narrower cannot be one
+#define MICRO_SCHED_TILES_MIN 6
 
 typedef struct { int first_pos, count, width; } micro_run;
 typedef struct micro_sched {
@@ -125,6 +128,41 @@ static inline bool micro_sched_parse(const jv *route, int width_max, micro_sched
         s->run[s->n++] = (micro_run){ p, c, w };
         end = p + c;
     }
+    return true;
+}
+
+// The width a recorded run gives position `pos`, or 0 when no run holds it
+// (that step decoded on the identity route, its solo bits). `*at` is a cursor
+// for a walk in increasing positions; start it at 0.
+static inline int micro_sched_width_at(const micro_sched *s, int pos, int *at) {
+    if (*at < 0 || *at > s->n) *at = 0;
+    // walked back below the end of the run before the cursor: search again
+    if (*at > 0 && pos < s->run[*at - 1].first_pos + s->run[*at - 1].count) *at = 0;
+    while (*at < s->n && pos >= s->run[*at].first_pos + s->run[*at].count) (*at)++;
+    if (*at < s->n && pos >= s->run[*at].first_pos) return s->run[*at].width;
+    return 0;
+}
+
+// A tiled turn's schedule as the replay needs it: every run at least
+// MICRO_SCHED_TILES_MIN wide. False with the run named in why.
+static inline bool micro_sched_tiled_ok(const micro_sched *s, char *why, int cap) {
+    for (int i = 0; i < s->n; i++)
+        if (s->run[i].width < MICRO_SCHED_TILES_MIN) {
+            snprintf(why, (size_t)cap, "micro_steps run %d: width %d, under the %d columns "
+                     "where the tiles start, so it cannot be a tiled step", i, s->run[i].width,
+                     MICRO_SCHED_TILES_MIN);
+            return false;
+        }
+    return true;
+}
+
+// Two schedules name the same steps at the same widths (NULL is the empty one).
+static inline bool micro_sched_equal(const micro_sched *a, const micro_sched *b) {
+    int na = a ? a->n : 0, nb = b ? b->n : 0;
+    if (na != nb || (a && a->truncated) || (b && b->truncated)) return false;
+    for (int i = 0; i < na; i++)
+        if (a->run[i].first_pos != b->run[i].first_pos || a->run[i].count != b->run[i].count ||
+            a->run[i].width != b->run[i].width) return false;
     return true;
 }
 

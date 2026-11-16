@@ -90,10 +90,58 @@ static void test_parse_refusals(void) {
     }
 }
 
+// The replay's walk (micro_sched_width_at): each position gets its run's width,
+// 0 outside every run (a solo step), in increasing order and after a step back
+static void test_width_at(void) {
+    micro_sched s;
+    micro_sched_reset(&s);
+    for (int p = 10; p < 13; p++) micro_sched_add(&s, p, 8);
+    for (int p = 13; p < 15; p++) micro_sched_add(&s, p, 6);
+    micro_sched_add(&s, 20, 7);
+    int want[] = { [9] = 0, [10] = 8, [11] = 8, [12] = 8, [13] = 6, [14] = 6, [15] = 0, [19] = 0, [20] = 7, [21] = 0 };
+    int at = 0;
+    for (int p = 9; p <= 21; p++) {
+        int w = micro_sched_width_at(&s, p, &at);
+        CHECK(w == want[p], "width_at(%d) %d, want %d", p, w, want[p]);
+    }
+    CHECK(micro_sched_width_at(&s, 11, &at) == 8, "width_at after a step back");
+    CHECK(micro_sched_width_at(&s, 0, &at) == 0, "width_at before the first run");
+}
+
+// The replay's checks: every run at least MICRO_SCHED_TILES_MIN wide, and its
+// own schedule equal to the record's, run for run
+static void test_tiled_ok_and_equal(void) {
+    micro_sched a, b;
+    char why[200];
+    micro_sched_reset(&a);
+    micro_sched_add(&a, 10, 8);
+    micro_sched_add(&a, 11, 8);
+    CHECK(micro_sched_tiled_ok(&a, why, (int)sizeof why), "8 wide refused: %s", why);
+    micro_sched_add(&a, 12, MICRO_SCHED_TILES_MIN - 1);
+    CHECK(!micro_sched_tiled_ok(&a, why, (int)sizeof why) && strstr(why, "run 1"), "a run under the floor passed: '%s'", why);
+    micro_sched_reset(&a);
+    micro_sched_reset(&b);
+    for (int p = 10; p < 14; p++) { micro_sched_add(&a, p, 8); micro_sched_add(&b, p, 8); }
+    CHECK(micro_sched_equal(&a, &b), "equal schedules differ");
+    micro_sched_add(&b, 14, 8);
+    CHECK(!micro_sched_equal(&a, &b), "a longer run is equal");
+    micro_sched_reset(&b);
+    for (int p = 10; p < 14; p++) micro_sched_add(&b, p, 7);
+    CHECK(!micro_sched_equal(&a, &b), "another width is equal");
+    CHECK(!micro_sched_equal(&a, NULL), "a schedule equals none");
+    micro_sched_reset(&b);
+    CHECK(micro_sched_equal(&b, NULL), "the empty schedule differs from none");
+    for (int p = 10; p < 14; p++) micro_sched_add(&b, p, 8);
+    micro_sched_add(&b, 11, 8);   // a re-decoded position: truncated
+    CHECK(!micro_sched_equal(&a, &b), "a truncated schedule is equal");
+}
+
 int main(void) {
     test_recorder_runs();
     test_json_round_trip();
     test_parse_refusals();
+    test_width_at();
+    test_tiled_ok_and_equal();
     if (bad) { fprintf(stderr, "micro sched: %d wrong\n", bad); return 1; }
     puts("micro sched tests ok");
     return 0;

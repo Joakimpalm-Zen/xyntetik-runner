@@ -121,6 +121,17 @@ def test_a_declined_microbatch_is_refused(runner_bin, model):
     assert "set one" in r.stderr
 
 
+def _rehash(path, record):
+    """The record written again with its public chain hash recomputed (tests/test_transcript.py's
+    _forge_record): the hash covers the bytes before ',"chain":'."""
+    import hashlib
+    body_record = dict(record)
+    chain = dict(body_record.pop("chain"))
+    body = json.dumps(body_record, separators=(",", ":"), ensure_ascii=False).encode()[:-1]
+    chain["hash"] = hashlib.sha256(body).hexdigest()
+    path.write_bytes(body + b',"chain":' + json.dumps(chain, separators=(",", ":")).encode() + b"}\n")
+
+
 @pytest.mark.parametrize("parallel", [1, 8])
 def test_receipt_names_actual_tiles_and_refuses_missing_schedule(runner_bin, model, tmp_path,
                                                                parallel):
@@ -177,10 +188,31 @@ def test_receipt_names_actual_tiles_and_refuses_missing_schedule(runner_bin, mod
         assert not tiled, "an enabled switch is not an actual tiled forward"
     else:
         assert tiled, "concurrent generation never took a tiled step"
-        replay = subprocess.run([runner_bin, "-m", str(model), "--verify", str(tiled[0]),
-                                 "--ignore-eos", "--no-tray"], capture_output=True,
-                                text=True, timeout=15)
-        assert replay.returncode == 3, replay.stdout + replay.stderr
-        assert "tiled microbatch" in replay.stderr and "decode schedule" in replay.stderr
-        # the schedule is read and named, not yet replayed (R3.72)
-        assert "not replayable yet" in replay.stderr, replay.stderr
+        # R3.72: every tiled turn replays, its listed steps as column 0 of a microbatch of the
+        # recorded width beside stand-ins, the others solo; main before this refused each as
+        # "not replayable yet"
+        env = {k: v for k, v in os.environ.items() if k != "RUNNER_METAL_BATCH_TILES"}
+
+        def verify(path, extra_env=None):
+            return subprocess.run([runner_bin, "-m", str(model), "--verify", str(path),
+                                   "--ignore-eos", "--no-tray"], capture_output=True, text=True,
+                                  timeout=120, env=dict(env, **(extra_env or {})))
+        for path in tiled:
+            replay = verify(path)
+            assert replay.returncode == 0, replay.stdout + replay.stderr
+            assert json.loads(replay.stdout)["verdict"] == "VERIFIED", replay.stdout
+            assert "tiled run" in replay.stderr and "stand-ins" in replay.stderr, replay.stderr
+        # live controls: the tiles switched off in the verifier is a route the replay did not take,
+        # and a recorded run the turn never reached is a step where the tiles did not run
+        off = verify(tiled[0], {"RUNNER_METAL_BATCH_TILES": "0"})
+        assert off.returncode == 3 and "did not take the recorded route" in off.stderr, off.stderr
+        record = json.loads(tiled[0].read_bytes())
+        assert "signature" not in record, "an unsigned server's receipt is re-hashed below"
+        steps = record["profile"]["route"]["micro_steps"]
+        end = steps[-1][0] + steps[-1][1]
+        record["profile"]["route"]["micro_steps"] = steps + [[end + 1000, 1, 8]]
+        forged = tmp_path / "forged.json"
+        _rehash(forged, record)
+        bad = verify(forged)
+        assert bad.returncode == 3, bad.stdout + bad.stderr
+        assert "did not run at the recorded steps" in bad.stderr, bad.stderr

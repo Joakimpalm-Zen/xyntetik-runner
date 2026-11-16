@@ -170,12 +170,52 @@ def test_tiled_receipt_without_decode_schedule_is_unverifiable(runner_bin, tmp_p
     assert "tiled microbatch" in p.stderr and "decode schedule" in p.stderr, p.stderr
 
 
+def _forge_tiled(rec, route):
+    _forge_record(rec, {
+        "schema_version": "xyntetik.runner.transcript.v2",
+        "profile": {"device": "test", "gpu": True, "gpu_layers": 1,
+                    "threads": 1, "ctx": 64, "kv": "f16", "batch": 32, "route": route},
+        "model": {"name": "absent.gguf", "sha256": "0" * 64},
+        "adapter": None,
+        "config": {"seed_u64": "7", "temp": 0, "top_k": 0, "top_p": 1,
+                   "min_p": 0, "repeat_penalty": 1, "n_predict": 1},
+        "chain": {"hash": "", "prev": ""},
+    })
+
+
+def _backend(runner_bin):
+    caps = json.loads(subprocess.run([runner_bin, "--caps"], capture_output=True, text=True,
+                                     timeout=30).stdout)
+    return (caps.get("gpu") or {}).get("backend")
+
+
+@pytest.mark.parametrize("backend", ["metal", "cuda"])
+def test_a_valid_tiled_schedule_replays_only_on_a_metal_build(runner_bin, tmp_path, backend):
+    """R3.72: a valid schedule passes the preflight on a Metal build, which replays its tiled steps
+    beside stand-ins (the model-backed case is tests/test_metal_batch_tiles.py); any other build, or a
+    record that names another backend, refuses it by name before loading."""
+    rec = tmp_path / "micro.json"
+    model = tmp_path / "model.gguf"
+    model.touch()  # deliberately not a model: a refusal must precede loading
+    _forge_tiled(rec, {"backend": backend, "cpu_act": "f32", "backend_detail": "fusion=on micro=tiles",
+                       "micro": "tiles", "micro_steps": [[12, 40, 8], [60, 3, 6]]})
+    p = subprocess.run([runner_bin, "-m", str(model), "--verify", str(rec), "--no-tray"], cwd=tmp_path,
+                       capture_output=True, text=True, timeout=10)
+    if _backend(runner_bin) != "metal":
+        assert p.returncode == 3, p.stdout + p.stderr
+        assert "replays only on a Metal build" in p.stderr, p.stderr
+    elif backend != "metal":
+        assert p.returncode == 3, p.stdout + p.stderr
+        assert "the record's backend is 'cuda'" in p.stderr, p.stderr
+    else:
+        # past the preflight: the empty file then fails to load, a refusal that is not the schedule's
+        assert p.returncode != 0 and "tiled microbatch" not in p.stderr, p.stdout + p.stderr
+
+
 @pytest.mark.parametrize("steps,want", [
-    # R3.72: the schedule a tiled turn records is read before the model loads;
-    # a valid one is recorded but its replay (tiled steps in a stand-in
-    # microbatch of the recorded width) is not built yet, and each defect is
-    # refused by name
-    ({"micro_steps": [[12, 40, 8], [60, 3, 6]]}, "not replayable yet"),
+    # R3.72: the schedule a tiled turn records is read before the model loads,
+    # and each defect is refused by name
+    ({"micro_steps": [[12, 4, 5]]}, "width 5, under the 6 columns where the tiles start"),
     ({"micro_steps": [[12, 4, 8], [14, 1, 8]]}, "overlap"),
     ({"micro_steps": [[12, 4, 1]]}, "width 1 outside 2 to 8"),
     ({"micro_steps": [[12, 4]]}, "malformed micro_steps run 0"),
@@ -187,16 +227,7 @@ def test_tiled_receipt_schedule_is_read_before_loading(runner_bin, tmp_path, ste
     model.touch()  # deliberately not a model: the schedule is read before loading
     route = {"backend": "metal", "cpu_act": "f32", "backend_detail": "fusion=on micro=tiles", "micro": "tiles"}
     route.update(steps)
-    _forge_record(rec, {
-        "schema_version": "xyntetik.runner.transcript.v2",
-        "profile": {"device": "test", "gpu": True, "gpu_layers": 1,
-                    "threads": 1, "ctx": 64, "kv": "f16", "batch": 32, "route": route},
-        "model": {"name": "absent.gguf", "sha256": "0" * 64},
-        "adapter": None,
-        "config": {"seed_u64": "7", "temp": 0, "top_k": 0, "top_p": 1,
-                   "min_p": 0, "repeat_penalty": 1, "n_predict": 1},
-        "chain": {"hash": "", "prev": ""},
-    })
+    _forge_tiled(rec, route)
     p = subprocess.run([runner_bin, "-m", str(model), "--verify", str(rec), "--no-tray"], cwd=tmp_path,
                        capture_output=True, text=True, timeout=10)
     assert p.returncode == 3, p.stdout + p.stderr
