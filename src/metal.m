@@ -1693,10 +1693,12 @@ void gpu_rope_changed(model_t *m) {
     }
 }
 bool gpu_rope_table_in_use(const model_t *m, float *out, int n) {
+    @autoreleasepool {
     gpu_t *g = m ? m->gpu : NULL;
     if (!g || !g->inv_freq || !out || n != m->rope_dim / 2) return false;
     memcpy(out, [g->inv_freq contents], sizeof(float) * (size_t)n);
     return true;
+    }
 }
 // the Metal router's limits (metal_moe_supported refuses past them)
 bool gpu_moe_route_caps(int *max_experts, int *max_used) {
