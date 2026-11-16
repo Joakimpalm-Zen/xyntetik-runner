@@ -6,7 +6,9 @@ behind it: stopping would cost that client its place in the VRAM queue.
 
 The wait runs on CUDA hosts only, so RUNNER_TEST_VRAM_FREE_MB stands in for the
 device and the real vram_claim runs on any host, against a real ledger with a
-made-up holder in it. How a queued socket is judged is the point of several
+made-up holder in it. On a host with a card that ledger is the card's own
+(xyntetik-vram-<GPU id>.reg), so its name comes from a probe load, never from
+the test (R6.84). How a queued socket is judged is the point of several
 cases here: only one that closed having sent nothing is gone. Its request is
 unread, so a close behind it cannot be seen, and that counts as live.
 """
@@ -87,17 +89,18 @@ def _edit_ledger(path, edit):
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests" / "conformance"))
+sys.path.insert(0, str(ROOT / "tests"))
 from _process import RunnerServer, find_runner  # noqa: E402
+from _vram_ledger import ledgers, probe_ledger_name  # noqa: E402
 
 FREE_MB, HELD_MB = 4096, 4000
-LEDGER = "xyntetik-vram-test-device.reg"
 
 
 class Rig:
-    def __init__(self, tmp_path):
+    def __init__(self, tmp_path, ledger_name):
         self.dir = tmp_path
         self.log = tmp_path / "server.log"
-        self.ledger = tmp_path / LEDGER
+        self.ledger = tmp_path / ledger_name
 
     # The ledger is the runner's too: every read and write here takes its lock (_ledger_lock).
     def hold(self):
@@ -155,9 +158,33 @@ def _health(srv):
         return json.load(r)
 
 
+@pytest.fixture(scope="module")
+def ledger_name(tmp_path_factory):
+    """The ledger this host's loads write (R6.84): the card's own on a CUDA host, test-device without
+    a device id. The rig writes its holder's claim before the load, so it learns the name first."""
+    model = ROOT / "test.gguf"
+    assert model.exists(), "build the generated fixture with make test.gguf"
+    return probe_ledger_name(find_runner(str(ROOT)), model, tmp_path_factory.mktemp("ledger-probe"),
+                             dict(os.environ, RUNNER_TEST_VRAM_FREE_MB=str(FREE_MB)), ROOT)
+
+
 @pytest.fixture()
-def rig(tmp_path):
-    return Rig(tmp_path)
+def rig(tmp_path, ledger_name):
+    return Rig(tmp_path, ledger_name)
+
+
+def test_a_claim_in_another_ledger_does_not_queue_the_load(tmp_path, ledger_name):
+    """The live control for the name (R6.84): the holder's claim written under a name that is not the
+    runner's ledger is not seen, so the load is admitted at once and its claim lands in the probed one.
+    This is what a fixed name did on a host with a card: 'never: the load joined the VRAM queue'."""
+    other = Rig(tmp_path, "xyntetik-vram-not-this-device.reg")
+    assert other.ledger.name != ledger_name
+    other.hold()
+    with _serve(other) as srv:
+        assert _status(_open(srv)) == 200
+        assert not other.waiting()
+        assert "holder.gguf" in _read_ledger(other.ledger), "the stray claim is left as it was written"
+        assert [p.name for p in ledgers(tmp_path)] == sorted([ledger_name, other.ledger.name])
 
 
 def _serve(rig, *, delay_ms=0):
