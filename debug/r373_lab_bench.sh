@@ -19,7 +19,7 @@ set -u
 T=${1:?usage: r373_lab_bench.sh THREADS [ROUNDS] [MB]}
 R=${2:-7}
 MB=${3:-512}
-C_SHA=1315c099c1fbe1a00a6bed8b04c4a4dbcbbabc09   # main: the C decode
+C_SHA=1315c099847e36bc4761e62ffc7e636a3973d979   # main: the C decode
 S_SHA=80078a3a28c17e9c87e50b75c27fd20af1e34efa   # r3.73-mxfp4-simd-decode
 BENCH=debug/r360_expert_bench.c
 [ -f "$BENCH" ] || { echo "run from a checkout of experiment/r3.60-expert-bench"; exit 2; }
