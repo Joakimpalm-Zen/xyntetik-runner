@@ -1793,7 +1793,9 @@ bits of the logits. `make T3=1` removes the three causes of that
 difference: it compiles without fast-math or fused-multiply-add
 contraction, replaces libm's `expf`, `logf`, `sinf`, `cosf`, `tanhf` and
 `powf` with implementations over IEEE add, multiply and divide only
-(`src/pmath.h`), and dispatches the F32, F16, Q8_0, Q4_0, Q4_K, Q5_K and
+(`src/pmath.h`, which the compiler reads first in every unit, so that no
+object imports the six; `make T3=1 test-portable-imports` checks it), and
+dispatches the F32, F16, Q8_0, Q4_0, Q4_K, Q5_K and
 Q6_K dot products to kernels that compute one fixed reduction tree on every
 target (`RUNNER_CANON_KERNELS`, gated bit for bit in
 `tests/test_canon_kernels.c`; the k-quants and Q4_0 since R12.1b).
