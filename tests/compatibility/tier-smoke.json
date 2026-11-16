@@ -1726,7 +1726,7 @@
         },
         "windows-x86_64-cuda/cpu": {
           "path": "tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.windows-x86_64-cuda.cpu.txt",
-          "sha256": "4ed9b06a2b3a14c9ddadca6bd1e3f16b9b5d582060a860bf3a72db043ec67e0a",
+          "sha256": "16ee8166ecb8972e7308b12c4ac90ba6ea15b074e94182b3db73887942b67359",
           "bytes": 196,
           "finish_reason": "length",
           "completion_tokens": 48,
@@ -1750,7 +1750,7 @@
         },
         "windows-x86_64-cuda/cuda": {
           "path": "tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.windows-x86_64-cuda.cuda.txt",
-          "sha256": "16ee8166ecb8972e7308b12c4ac90ba6ea15b074e94182b3db73887942b67359",
+          "sha256": "4ed9b06a2b3a14c9ddadca6bd1e3f16b9b5d582060a860bf3a72db043ec67e0a",
           "bytes": 196,
           "finish_reason": "length",
           "completion_tokens": 48,
