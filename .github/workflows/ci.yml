@@ -1015,6 +1015,9 @@ jobs:
         run: |
           make T3=1 test.gguf runner test-q8.gguf test-q4k.gguf test-bf16.gguf
           ./runner --version | grep -F "(t3)"
+          # no object of the T3 build imports the C library's expf, logf,
+          # sinf, cosf, tanhf or powf (R6.86)
+          make T3=1 test-portable-imports
       - name: install pytest
         run: |
           python3 -m venv .venv
