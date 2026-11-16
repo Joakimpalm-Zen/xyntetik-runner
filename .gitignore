@@ -156,6 +156,8 @@ test-longrope-sequence
 test-longrope-sequence.exe
 test-longrope-cuda
 test-longrope-cuda.exe
+test-batch-columns-cuda
+test-batch-columns-cuda.exe
 test-attn-scale
 test-attn-scale.exe
 test-hfhub.exe

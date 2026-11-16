@@ -85,6 +85,10 @@ bool   gpu_rope_sets_ok(void);
 // The instance's rope_inv_freq (and its sliding-layer copy) changed: copy it
 // to the device. Called between forwards, never during one.
 void   gpu_rope_changed(model_t *m);
+// R4.40.3: can one device microbatch hold columns on different LongRoPE
+// factor sets? CUDA's can (each set's columns rotate with that set's table);
+// elsewhere a two-set model's sequences decode one by one (model.c).
+bool   gpu_batch_rope_sets_ok(void);
 // test hook (R4.40.2): copy back the n = rope_dim/2 frequencies the
 // instance's next global-layer rope reads on the device; false where the
 // instance has no device or the backend cannot say (tests/test_cuda_longrope.c)

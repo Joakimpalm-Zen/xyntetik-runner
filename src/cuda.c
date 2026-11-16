@@ -1443,15 +1443,23 @@ void gpu_rope_changed(model_t *m) {
                 "its forwards run on the CPU\n");
 }
 
-// The table an instance's rope reads: its set's global table, or its local
-// one (the long set's where the sliding layers rope like the global ones,
-// else the local table, which no set changes).
-static CUdeviceptr rope_table(const gpu_t *g, bool local) {
-    const gpu_weights *w = g->sw;
-    if (g->rope_set == 1)
+// A factor set's table in the weight set: its global table, or its local one
+// (the long set's where the sliding layers rope like the global ones, else
+// the local table, which no set changes).
+static CUdeviceptr rope_table_of(const gpu_weights *w, int set, bool local) {
+    if (set == 1)
         return !local ? w->inv_freq_long : w->inv_freq_local_long ? w->inv_freq_local_long : w->inv_freq_local;
     return local ? w->inv_freq_local : w->inv_freq;
 }
+// The table an instance's rope reads: its own set's.
+static CUdeviceptr rope_table(const gpu_t *g, bool local) {
+    return rope_table_of(g->sw, g->rope_set, local);
+}
+
+// A device microbatch takes columns on both sets (R4.40.3): gpu_batch_decode
+// orders them by set and enc_rope_batch rotates each set's columns with its
+// own table, through the unchanged k_rope_seq.
+bool gpu_batch_rope_sets_ok(void) { return true; }
 
 bool gpu_rope_table_in_use(const model_t *m, float *out, int n) {
     gpu_t *g = m ? m->gpu : NULL;
@@ -8434,6 +8442,14 @@ struct gpu_batch {
     bool        graph_bad;
     const char *graph_why;      // why graph_bad was set by design (none: a failure set it)
     bool        graph_why_said;
+    // R4.40.3: this step's columns [0, rope_split) are on the short factor set
+    // (or a one-set model's only table), [rope_split, n) on the long one
+    // (gpu_batch_decode orders them so). enc_rope_batch launches once per set
+    // present, so the split is baked into a graph like its width: each width's
+    // graph records the split it was captured with and is captured again when
+    // a step's split differs. A one-set model's split is always its width.
+    int         rope_split;
+    int         graph_split[MVB + 1];
 };
 
 // enc_mv_batch reproduces the batch-1 result by launching the multi-column
@@ -8504,8 +8520,11 @@ static bool batch_eligible(model_t **seqs, int n, gpu_t **lead_out) {
         // declines the multi-sequence batch and decodes sequentially rather
         // than losing its adapter on the batched path.
         if (m->lora) return false;
-        // every column rotates from one table (enc_rope_batch, R4.40.2)
-        if (g->rope_set != ((const gpu_t *)seqs[0]->gpu)->rope_set || g->rope_set < 0) return false;
+        // Each column rotates from its own set's table (enc_rope_batch,
+        // R4.40.3). This runs once, when the batch is made: the members' sets
+        // can change after it, so gpu_batch_decode reads them on every step
+        // (the split, and a refusal of a table the device does not hold).
+        if (g->rope_set < 0) return false;
         if (!g->sw->f_rope_seq || !g->sw->f_store_seq || !g->sw->f_attn_dec_seq)
             return false;
         // every tensor fwd_batch hands to enc_mv_batch must have a real twin
@@ -9743,11 +9762,21 @@ static bool enc_rope_batch(gpu_batch *B, model_t *m, CUdeviceptr v, int n_heads,
     bool local = model_is_swa(m, l);
     rope_args a = { model_head_dim(m, l), n_heads, model_rope_dim(m, l) / 2,
                     m->rope_neox, model_rope_mscale(m, l) };
-    // one table for every column: batch_eligible holds the members to one
-    // factor set, and a two-set LongRoPE model has no microbatch (model.c)
-    CUdeviceptr fr = rope_table(g, local);
-    void *p[] = { &v, &fr, &a, &B->pos_d, &vs };
-    return launch(g, g->sw->f_rope_seq, (a.half_dim + 31) / 32, n_heads, batch, 32, p);
+    // R4.40.3: one launch per factor set present, each over its own columns
+    // (B->rope_split). k_rope_seq rotates each column in its own block from
+    // its own position, so a column's bits do not depend on the launch it is
+    // in; a batch on one set issues the single launch it always did.
+    int k = B->rope_split < batch ? B->rope_split : batch;
+    for (int set = 0; set < 2; set++) {
+        int c0 = set ? k : 0, nc = set ? batch - k : k;
+        if (nc <= 0) continue;
+        CUdeviceptr fr = rope_table_of(B->sw, set, local);
+        CUdeviceptr vc = v + (CUdeviceptr)((size_t)c0 * (size_t)vs * sizeof(float));
+        CUdeviceptr pc = B->pos_d + (CUdeviceptr)((size_t)c0 * sizeof(int));
+        void *p[] = { &vc, &fr, &a, &pc, &vs };
+        if (!launch(g, g->sw->f_rope_seq, (a.half_dim + 31) / 32, n_heads, nc, 32, p)) return false;
+    }
+    return true;
 }
 
 // The layer loop, structurally fwd_tile with tn = the microbatch width. Only
@@ -9871,8 +9900,48 @@ static bool stage_x_batch(gpu_batch *B, model_t *m, const int32_t *tok, int n) {
     return stage_ple(g, m, tok, n);
 }
 
+static bool batch_decode_cols(gpu_batch *b, const int *idx, const int32_t *tok,
+                              const int *pos, int n, float **out);
+
+// The step's columns in factor-set order (R4.40.3): the sequences on the short
+// set (or a one-set model's only table) first, then those on the long one,
+// each group in the caller's order; b->rope_split is where the long ones
+// start. Every other launch of the microbatch treats its columns alike, and
+// model_batch_decode promises each column the bits of its sequence alone, so
+// the order is the rope's business only. RUNNER_TEST_BATCH_REVERSE=1 reverses
+// the order of a batch on one set: the seam whose gate shows a column's place
+// moves no bits (tests/test_cuda_batch_columns.c).
 bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
                       const int *pos, int n, float **out) {
+    if (!b || n < 1 || n > BATCH_MAX_COLS) return false;
+    int set[BATCH_MAX_COLS], ord[BATCH_MAX_COLS], k = 0, c = 0;
+    for (int i = 0; i < n; i++) {
+        if (idx[i] < 0 || idx[i] >= b->n || !b->seqs[idx[i]]) return false;
+        const gpu_t *gi = b->seqs[idx[i]]->gpu;
+        set[i] = gi ? gi->rope_set : 0;
+        if (set[i] < 0) return false;
+        k += set[i] == 0;
+    }
+    for (int s = 0; s < 2; s++)
+        for (int i = 0; i < n; i++) if (set[i] == s) ord[c++] = i;
+    const char *rev = getenv("RUNNER_TEST_BATCH_REVERSE");
+    if (rev && !strcmp(rev, "1") && (k == 0 || k == n))
+        for (int i = 0; i < n / 2; i++) { int t = ord[i]; ord[i] = ord[n - 1 - i]; ord[n - 1 - i] = t; }
+    b->rope_split = k;
+    bool same = true;
+    for (int i = 0; i < n; i++) same = same && ord[i] == i;
+    if (same) return batch_decode_cols(b, idx, tok, pos, n, out);
+    int pidx[BATCH_MAX_COLS], ppos[BATCH_MAX_COLS];
+    int32_t ptok[BATCH_MAX_COLS];
+    float *pout[BATCH_MAX_COLS];
+    for (int i = 0; i < n; i++) { pidx[i] = idx[ord[i]]; ptok[i] = tok[ord[i]]; ppos[i] = pos[ord[i]]; }
+    if (!batch_decode_cols(b, pidx, ptok, ppos, n, pout)) return false;
+    for (int i = 0; i < n; i++) out[ord[i]] = pout[i];
+    return true;
+}
+
+static bool batch_decode_cols(gpu_batch *b, const int *idx, const int32_t *tok,
+                              const int *pos, int n, float **out) {
     if (!b || n < 1 || n > BATCH_MAX_COLS) return false;
     // idx[] is caller-supplied and selects members of b->seqs[0, b->n): a bogus
     // index would dereference a wild model_t* below. Reject the whole batch
@@ -9945,7 +10014,18 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
     bool ran = false;
     if (b->graph_bad) graph_eager_note("batch", b->graph_why, &b->graph_why_said);
     if (!b->graph_bad && !prof.on) {   // see the note on the solo path above
+        // the split between the sets is baked in like the width (R4.40.3);
+        // RUNNER_TEST_ROPE_GRAPH_STALE=1 keeps the old graph, the mutant G7
+        // of tests/test_cuda_longrope.c has to catch
+        if (b->gexec[n] && b->graph_split[n] != b->rope_split &&
+            !getenv("RUNNER_TEST_ROPE_GRAPH_STALE")) {
+            cu.GraphExecDestroy(b->gexec[n]);
+            cu.GraphDestroy(b->graph[n]);
+            b->gexec[n] = NULL;
+            b->graph[n] = NULL;
+        }
         if (!b->gexec[n]) {
+            b->graph_split[n] = b->rope_split;
             prof.capturing = 1;
             CUresult r = 0;
             const char *stage = NULL;
