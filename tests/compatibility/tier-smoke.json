@@ -1750,7 +1750,7 @@
         },
         "windows-x86_64-cuda/cuda": {
           "path": "tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.windows-x86_64-cuda.cuda.txt",
-          "sha256": "16ee8166ecb8972e7308b12c4ac90ba6ea15b074e94182b3db73887942b67359",
+          "sha256": "4ed9b06a2b3a14c9ddadca6bd1e3f16b9b5d582060a860bf3a72db043ec67e0a",
           "bytes": 196,
           "finish_reason": "length",
           "completion_tokens": 48,
@@ -1767,9 +1767,15 @@
             }
           },
           "pinned": {
-            "date": "2026-10-29",
-            "runner_version": "1.7.1",
-            "commit": "771924318c514db96ab780a93fc09b99a2c2fdbf"
+            "date": "2026-11-16",
+            "runner_version": "1.19.1",
+            "commit": "9029a805ea907612e7e3653bfc037773a99fbe60",
+            "build": {
+              "binary_sha256": "666452f8528ebfff50fbdf4f029e5cfa418fad672ffe076c8ac3cd236076d3e3",
+              "compiler": "16.2.0",
+              "commit": "9029a805ea907612e7e3653bfc037773a99fbe60",
+              "dirty": false
+            }
           }
         }
       }
