@@ -765,10 +765,15 @@ static const float kv_mxfp4_f[16] = {
      0.0f,  0.5f,  1.0f,  1.5f,  2.0f,  3.0f,  4.0f,  6.0f,
      0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f,
 };
+// The scale comes from a table, as in quants.c: `kv * ldexpf(1.0f, e - 127)`
+// is rewritten to ldexpf(kv, e - 127) under -ffast-math, another arithmetic.
 static void ref_exact_mxfp4(const uint8_t *row, float *y, int n) {
+    static float sc[256];
+    static int built;
+    if (!built) { for (int e = 0; e < 256; e++) sc[e] = ldexpf(1.0f, e - 127); built = 1; }
     for (int i = 0; i < n / QK; i++, y += QK) {
         const block_mxfp4 *b = (const block_mxfp4 *)(row + (size_t)i * sizeof(*b));
-        float d = ldexpf(1.0f, (int)b->e - 127);
+        float d = sc[b->e];
         for (int j = 0; j < 16; j++) {
             y[j]      = kv_mxfp4_f[b->qs[j] & 0xF] * d;
             y[j + 16] = kv_mxfp4_f[b->qs[j] >> 4]  * d;
