@@ -1875,6 +1875,36 @@
             "runner_version": "1.7.1",
             "commit": "64cdc0dc6bab6a100ae955b7c04107d3aa302259"
           }
+        },
+        "macos-arm64-metal/metal": {
+          "path": "tests/compatibility/tier-smoke/lfm2.5-1.2b-instruct-q4_k_m.macos-arm64-metal.metal.txt",
+          "sha256": "3bb0f080e0b57ed843c39e49de9d3c749fc75140afe68d73176767342bcafc56",
+          "bytes": 206,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-16",
+            "runner_version": "1.19.1",
+            "commit": "bd4d564041c57f99afb53e55852624625da1712e",
+            "build": {
+              "binary_sha256": "efe14f5e54f87fcc24d6c1746a3a5a324717f76ed3ed67ee1bdc74b65b65ecf0",
+              "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+              "commit": "bd4d564041c57f99afb53e55852624625da1712e",
+              "dirty": false
+            }
+          }
         }
       }
     },
@@ -2058,6 +2088,36 @@
             "date": "2026-10-30",
             "runner_version": "1.8.0",
             "commit": "9bb83e7e80b48d3686f2ad3e7f4c864e230e1d85"
+          }
+        },
+        "macos-arm64-metal/metal": {
+          "path": "tests/compatibility/tier-smoke/lfm2.5-350m-q4_k_m.macos-arm64-metal.metal.txt",
+          "sha256": "a3dd7b514a3e7cb8885a12451aa38a87e9bf3c662773efb2fba4f846b4e6bba0",
+          "bytes": 138,
+          "finish_reason": "stop",
+          "completion_tokens": 34,
+          "spec": {
+            "prompt": "Write a short paragraph about the eight planets of the Solar System, naming them in order from the Sun.",
+            "n_predict": 80,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-16",
+            "runner_version": "1.19.1",
+            "commit": "bd4d564041c57f99afb53e55852624625da1712e",
+            "build": {
+              "binary_sha256": "efe14f5e54f87fcc24d6c1746a3a5a324717f76ed3ed67ee1bdc74b65b65ecf0",
+              "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+              "commit": "bd4d564041c57f99afb53e55852624625da1712e",
+              "dirty": false
+            }
           }
         }
       }
