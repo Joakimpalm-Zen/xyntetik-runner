@@ -142,10 +142,14 @@ def test_receipt_names_actual_tiles_and_refuses_missing_schedule(runner_bin, mod
     env = dict(os.environ, RUNNER_METAL_BATCH_TILES="1", RUNNER_METAL_BATCH="1",
                RUNNER_METAL_TIMING="0")
     markers = [f"request_private_{i}" for i in range(parallel)]
+    # 32 decoded tokens a turn: enough for the eight to overlap at 6 or more columns, and a
+    # replay that costs a quarter of the 96 this used to take (283 s on the hosted runner's
+    # paravirtual GPU for this case, the most of a 30-minute job)
+    ntok = 32
     with RunnerServer(runner_bin, model, ctx=512, parallel=parallel, env=env,
                       extra_args=["-t", "2", "--receipts", str(directory)]) as srv:
-        def generate(i):
-            data = json.dumps({"prompt": markers[i], "max_tokens": 96,
+        def generate(i, n=ntok):
+            data = json.dumps({"prompt": markers[i], "max_tokens": n,
                                "temperature": 0, "ignore_eos": True}).encode()
             req = urllib.request.Request(srv.base_url + "/v1/completions", data=data,
                                          headers={"Content-Type": "application/json"})
@@ -156,7 +160,7 @@ def test_receipt_names_actual_tiles_and_refuses_missing_schedule(runner_bin, mod
             list(pool.map(generate, range(parallel)))
         if parallel > 1:
             markers.append("solo_after_tiled_requests")
-            generate(len(markers) - 1)
+            generate(len(markers) - 1, 8)
     records = [(p, json.loads(p.read_bytes())) for p in directory.glob("receipt-*.json")]
     assert len(records) == len(markers)
     tiled = []
@@ -174,34 +178,37 @@ def test_receipt_names_actual_tiles_and_refuses_missing_schedule(runner_bin, mod
             tiled.append(path)
             # R3.72: the turn's decode schedule, the tiled steps as runs of
             # [first position, count, width], widths from MB_TILES_MIN (6) to
-            # the microbatch's 8, increasing, within the 96 decoded tokens
+            # the microbatch's 8, increasing, within the turn's decoded tokens
             steps = route.get("micro_steps")
             assert steps and not route.get("micro_steps_truncated"), route
             end = -1
             for first, count, width in steps:
                 assert first >= end and count >= 1 and 6 <= width <= 8, steps
                 end = first + count
-            assert sum(c for _, c, _ in steps) <= 96, steps
+            assert sum(c for _, c, _ in steps) <= ntok, steps
         else:
             assert "micro_steps" not in route, route
     if parallel == 1:
         assert not tiled, "an enabled switch is not an actual tiled forward"
     else:
         assert tiled, "concurrent generation never took a tiled step"
-        # R3.72: every tiled turn replays, its listed steps as column 0 of a microbatch of the
-        # recorded width beside stand-ins, the others solo; main before this refused each as
-        # "not replayable yet"
+        # R3.72: a tiled turn replays, its listed steps as column 0 of a microbatch of the
+        # recorded width beside stand-ins, the others solo; main before this refused it as
+        # "not replayable yet". One turn is replayed, the one with the most tiled steps: each
+        # replay loads seven stand-ins, and the other turns' schedules are checked above.
         env = {k: v for k, v in os.environ.items() if k != "RUNNER_METAL_BATCH_TILES"}
 
         def verify(path, extra_env=None):
             return subprocess.run([runner_bin, "-m", str(model), "--verify", str(path),
                                    "--ignore-eos", "--no-tray"], capture_output=True, text=True,
                                   timeout=120, env=dict(env, **(extra_env or {})))
-        for path in tiled:
-            replay = verify(path)
-            assert replay.returncode == 0, replay.stdout + replay.stderr
-            assert json.loads(replay.stdout)["verdict"] == "VERIFIED", replay.stdout
-            assert "tiled run" in replay.stderr and "stand-ins" in replay.stderr, replay.stderr
+        def tiled_steps(path):
+            return sum(c for _, c, _ in json.loads(path.read_bytes())["profile"]["route"]["micro_steps"])
+        tiled.sort(key=tiled_steps, reverse=True)
+        replay = verify(tiled[0])
+        assert replay.returncode == 0, replay.stdout + replay.stderr
+        assert json.loads(replay.stdout)["verdict"] == "VERIFIED", replay.stdout
+        assert "tiled run" in replay.stderr and "stand-ins" in replay.stderr, replay.stderr
         # live controls: the tiles switched off in the verifier is a route the replay did not take,
         # and a recorded run the turn never reached is a step where the tiles did not run
         off = verify(tiled[0], {"RUNNER_METAL_BATCH_TILES": "0"})
