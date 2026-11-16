@@ -756,6 +756,26 @@ static void ref_exact_iq4_xs(const uint8_t *row, float *y, int n) {
     }
 }
 
+// MXFP4 is one multiply per value as well, kvalues_mxfp4[code] * 2^(e - 127)
+// (quants.c dq_mxfp4), so its SIMD decodes must give the scalar decode's bits:
+// the batched prefill decodes every MXFP4 expert row with dequant_row, and the
+// CPU route's bits rest on it. The table is the one quants.c carries, its
+// second +0.0 included (code 8 is a zero of the negative half, stored as +0.0).
+static const float kv_mxfp4_f[16] = {
+     0.0f,  0.5f,  1.0f,  1.5f,  2.0f,  3.0f,  4.0f,  6.0f,
+     0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f,
+};
+static void ref_exact_mxfp4(const uint8_t *row, float *y, int n) {
+    for (int i = 0; i < n / QK; i++, y += QK) {
+        const block_mxfp4 *b = (const block_mxfp4 *)(row + (size_t)i * sizeof(*b));
+        float d = ldexpf(1.0f, (int)b->e - 127);
+        for (int j = 0; j < 16; j++) {
+            y[j]      = kv_mxfp4_f[b->qs[j] & 0xF] * d;
+            y[j + 16] = kv_mxfp4_f[b->qs[j] >> 4]  * d;
+        }
+    }
+}
+
 static void test_dequant_exact(int type, int n) {
     size_t rowsz = ggml_row_size(type, n);
     uint8_t *row = malloc(rowsz);
@@ -768,6 +788,7 @@ static void test_dequant_exact(int type, int n) {
             case T_Q4_0:   ref_exact_q4_0(row, want, n); break;
             case T_IQ4_NL: ref_exact_iq4_nl(row, want, n); break;
             case T_IQ4_XS: ref_exact_iq4_xs(row, want, n); break;
+            case T_MXFP4:  ref_exact_mxfp4(row, want, n); break;
             default: CHECK(0, "no exact reference for %s", ggml_type_name(type)); return;
         }
         CHECK(memcmp(got, want, (size_t)n * sizeof(float)) == 0,
@@ -776,6 +797,53 @@ static void test_dequant_exact(int type, int n) {
         if (g_fail > 20) break;
     }
     free(row); free(got); free(want);
+}
+
+// Every MXFP4 code at every E8M0 exponent, both nibble halves: block k has
+// exponent k (0 to 255: subnormal, normal, overflowing and infinite scales) and
+// byte j holds codes j and 15 - j. The comparison is by bytes, so a +0.0 for a
+// -0.0 or one NaN for another counts. Its control: the same comparison must
+// reject two wrong decodes, the nibble halves swapped and code 8 decoded as
+// -0.0 (what a sign-bit-from-bit-3 decode gives), or it could not see a wrong
+// kernel either.
+static int mxfp4_bad_blocks(const uint8_t *row, const float *got, int nblk) {
+    float want[QK];
+    int bad = 0;
+    for (int k = 0; k < nblk; k++) {
+        ref_exact_mxfp4(row + (size_t)k * sizeof(block_mxfp4), want, QK);
+        if (memcmp(got + (size_t)k * QK, want, sizeof want)) bad++;
+    }
+    return bad;
+}
+static void test_mxfp4_every_code(void) {
+    enum { NB = 256 };
+    block_mxfp4 *row = malloc(sizeof(block_mxfp4) * NB);
+    float *got = malloc(sizeof(float) * QK * NB), *wrong = malloc(sizeof(float) * QK * NB);
+    for (int k = 0; k < NB; k++) {
+        row[k].e = (uint8_t)k;
+        for (int j = 0; j < 16; j++) row[k].qs[j] = (uint8_t)(j | ((15 - j) << 4));
+    }
+    dequant_row(T_MXFP4, row, got, QK * NB);
+    int bad = mxfp4_bad_blocks((const uint8_t *)row, got, NB);
+    CHECK(bad == 0, "dequant mxfp4: %d of %d blocks (every code at every exponent) are "
+          "not the scalar decode's bits", bad, NB);
+    for (int k = 0; k < NB; k++) {          // control 1: the nibble halves swapped
+        ref_exact_mxfp4((const uint8_t *)(row + k), wrong + (size_t)k * QK, QK);
+        for (int j = 0; j < 16; j++) {
+            float t = wrong[(size_t)k * QK + j];
+            wrong[(size_t)k * QK + j] = wrong[(size_t)k * QK + j + 16];
+            wrong[(size_t)k * QK + j + 16] = t;
+        }
+    }
+    CHECK(mxfp4_bad_blocks((const uint8_t *)row, wrong, NB) == NB,
+          "control: a decode with the nibble halves swapped is not rejected in every block");
+    for (int k = 0; k < NB; k++) {          // control 2: code 8 as -0.0
+        ref_exact_mxfp4((const uint8_t *)(row + k), wrong + (size_t)k * QK, QK);
+        wrong[(size_t)k * QK + 8] = -0.0f;  // byte 8's low nibble is code 8
+    }
+    CHECK(mxfp4_bad_blocks((const uint8_t *)row, wrong, NB) == NB,
+          "control: a decode giving -0.0 for code 8 is not rejected in every block");
+    free(row); free(got); free(wrong);
 }
 
 // A one-hot activation turns a "scale times code" dot into its weight: the
@@ -1383,6 +1451,8 @@ int main(void) {
     test_dequant_exact(T_Q4_0, 4096);
     test_dequant_exact(T_IQ4_NL, 4096);
     test_dequant_exact(T_IQ4_XS, 4096);
+    test_dequant_exact(T_MXFP4, 4096);
+    test_mxfp4_every_code();
     {
         static const int onehot[] = { T_Q8_0, T_Q4_0, T_IQ4_NL, T_MXFP4, T_IQ3_XXS, T_IQ3_S,
                                       T_IQ2_XXS, T_IQ2_XS, T_IQ2_S };

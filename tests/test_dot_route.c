@@ -12,13 +12,20 @@
 //     at ratio ~2 and ~1.0 on re-run), so a case over the limit is measured
 //     again with 25 rounds and fails only when that confirms it: a slow
 //     route is slow every time, a busy neighbour is not.
+//  3. the same kind of canary for a weight decode (R3.73): on an x86 AVX2
+//     build, dequant_row's MXFP4 rows (every expert row a batched prefill
+//     of gpt-oss decodes) must cost at most 1 / 1.5 of a scalar decode of
+//     the same rows. The scalar decode is the C formula with its table read
+//     through a volatile pointer, so no compiler can vectorize it.
 #include "model.h"
 #include "quants.h"
+#include "fp16.h"
 #include "runner.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 
 static int g_fail = 0;
 static void ck(int cond, const char *what) {
@@ -88,12 +95,64 @@ static void ratio(int type, const char *name) {
     free(w); free(x);
 }
 
+#if defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)
+static const float kv_mxfp4_f[16] = {
+     0.0f,  0.5f,  1.0f,  1.5f,  2.0f,  3.0f,  4.0f,  6.0f,
+     0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f,
+};
+static void scalar_mxfp4_rows(const unsigned char *w, float *y, int nblk) {
+    const volatile float *kv = kv_mxfp4_f;
+    for (int i = 0; i < nblk; i++, w += 17, y += 32) {   // block: e, then 16 bytes
+        float d = ldexpf(1.0f, (int)w[0] - 127);
+        for (int j = 0; j < 16; j++) {
+            y[j]      = kv[w[1 + j] & 0xF] * d;
+            y[j + 16] = kv[w[1 + j] >> 4]  * d;
+        }
+    }
+}
+static void decode_ratio_mxfp4(void) {
+    const int n = 4096, rows = 256, nblk = n / 32 * rows;
+    f16_init();   // the E8M0 table (once; a loaded model built it already)
+    unsigned char *w = malloc((size_t)nblk * 17);
+    float *y = malloc(sizeof(float) * (size_t)n * rows);
+    unsigned s = 54321;
+    for (int i = 0; i < nblk * 17; i++) { s = s * 1103515245u + 12345u; w[i] = (unsigned char)(s >> 16); }
+    for (int i = 0; i < nblk; i++) w[(size_t)i * 17] = (unsigned char)(117 + i % 21);
+    double best_d = 1e9, best_s = 1e9;
+    for (int attempt = 0, rounds = 5; attempt < 2; attempt++, rounds = 25) {
+        best_d = 1e9; best_s = 1e9;
+        for (int rep = 0; rep < rounds; rep++) {
+            double t0 = route_now();
+            for (int r = 0; r < rows; r++)
+                dequant_row(T_MXFP4, w + (size_t)r * (n / 32) * 17, y + (size_t)r * n, n);
+            double t1 = route_now();
+            scalar_mxfp4_rows(w, y, nblk);
+            double t2 = route_now();
+            if (t1 - t0 < best_d) best_d = t1 - t0;
+            if (t2 - t1 < best_s) best_s = t2 - t1;
+        }
+        if (best_d * 1.5 <= best_s) break;
+        if (attempt == 0)
+            fprintf(stderr, "re-measuring: MXFP4 row decode at %.2fx a scalar decode in 5 rounds\n",
+                    best_s / best_d);
+    }
+    char msg[200];
+    snprintf(msg, sizeof msg, "MXFP4 row decode: dequant_row %.3f ms, a scalar decode %.3f ms "
+             "(%.2fx, at least 1.50x)", best_d * 1e3, best_s * 1e3, best_s / best_d);
+    ck(best_d * 1.5 <= best_s, msg);
+    free(w); free(y);
+}
+#endif
+
 int main(int argc, char **argv) {
     dispatch(argc > 1 ? argv[1] : "test-q8.gguf");
     ratio(T_Q8_0, "Q8_0");
     ratio(T_Q4_K, "Q4_K");
     ratio(T_IQ3_S, "IQ3_S");
     ratio(T_IQ4_XS, "IQ4_XS");
+#if defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)
+    decode_ratio_mxfp4();
+#endif
     if (!g_fail) puts("dot route gate ok");
     return g_fail;
 }
