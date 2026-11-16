@@ -15,7 +15,11 @@
 # from the lockfile with micromamba, mamba or conda, adds the nvvm link the
 # packages leave out (nvcc.profile looks for cicc under targets/), and runs
 # make ptx with it. The ptx-reproducible workflow runs it and fails on any
-# byte difference. ccbuild-conda-explicit.txt and ccbuild-pip-freeze.txt
+# byte difference, and uploads the headers it built as the artifact
+# ptx-headers, so a host without this toolchain (a Windows CUDA host) can
+# change kernels.cu, push, and commit the regenerated headers from that
+# artifact (gh run download RUN_ID -n ptx-headers -D src/) instead of
+# building PTX itself. ccbuild-conda-explicit.txt and ccbuild-pip-freeze.txt
 # record the environment the committed PTX was first built in.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)

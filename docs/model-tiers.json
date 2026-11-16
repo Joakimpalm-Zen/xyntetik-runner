@@ -4404,7 +4404,7 @@
       "model": "Phi-3.5-mini-instruct (Microsoft)",
       "family": "Phi-3",
       "tier": "tier2",
-      "claim": "bartowski's Q4_K_M of Microsoft's Phi-3.5-mini-instruct: against the publisher's BF16 checkpoint computed in float32 it reads 0.0423 ± 0.0025 mean KLD (bootstrap 95% interval 0.0375 to 0.0474) and 98.97% margin-qualified top-1 over 544 positions inside the original 4,096-token context (two windows of 272: 0.0424 and 0.0421; plain top-1 91.4%, CPU), against a bar of 0.05 and 97%. With every sequence on the long-context factors (llama.cpp, and CUDA before R4.40.2) a context above 4,096 tokens reads markedly worse (measured on the Q8_0); on the CPU, the Apple GPU and CUDA the factors follow the sequence and a text within 4,096 tokens reads as at -c 4096. The Q8_0 is the fidelity file.",
+      "claim": "bartowski's Q4_K_M of Microsoft's Phi-3.5-mini-instruct: against the publisher's BF16 checkpoint computed in float32 it reads 0.0423 ± 0.0025 mean KLD (bootstrap 95% interval 0.0375 to 0.0474) and 98.97% margin-qualified top-1 over 544 positions inside the original 4,096-token context (two windows of 272: 0.0424 and 0.0421; plain top-1 91.4%, CPU), against a bar of 0.05 and 97%. Answers changed against the unquantized file on GSM8K (660 items): 9.85% (lost 35, gained 30). That reading covers one task and two families of about 4B parameters (Phi-3.5-mini and Qwen3.5-4B), its reference is the same checkpoint as a BF16 file run by Runner (1.19.0, CUDA, temperature 0) rather than computed in float32, an answer counts as changed when it is right on one file and wrong on the other, and accuracy alone can point the other way, which is why lost and gained are both shown. With every sequence on the long-context factors (llama.cpp, and CUDA before R4.40.2) a context above 4,096 tokens reads markedly worse (measured on the Q8_0); on the CPU, the Apple GPU and CUDA the factors follow the sequence and a text within 4,096 tokens reads as at -c 4096. The Q8_0 is the fidelity file.",
       "architecture": "phi3",
       "upstream": {
         "checkpoint": "microsoft/Phi-3.5-mini-instruct",
@@ -7412,22 +7412,28 @@
         },
         "cuda": {
           "kind": "gate",
-          "runner_version": "1.7.1",
-          "date": "2026-10-29",
+          "runner_version": "1.19.1",
+          "date": "2026-11-16",
           "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "771924318c514db96ab780a93fc09b99a2c2fdbf",
+          "commit": "9029a805ea907612e7e3653bfc037773a99fbe60",
           "caps": {
-            "version": "1.7.1",
+            "version": "1.19.1",
             "os": "windows",
             "arch": "x86_64",
-            "cpu_cores": 8,
+            "cpu_cores": 16,
             "gpu_backend": "cuda",
-            "gpu_name": "NVIDIA GeForce RTX 3070"
+            "gpu_name": "NVIDIA GeForce RTX 5070"
           },
-          "output_sha256": "16ee8166ecb8972e7308b12c4ac90ba6ea15b074e94182b3db73887942b67359",
+          "output_sha256": "4ed9b06a2b3a14c9ddadca6bd1e3f16b9b5d582060a860bf3a72db043ec67e0a",
           "ran": "runner -m MiniCPM5-2B-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.windows-x86_64-cuda.cuda.txt"
+          "evidence": "tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.windows-x86_64-cuda.cuda.txt",
+          "build": {
+            "binary_sha256": "666452f8528ebfff50fbdf4f029e5cfa418fad672ffe076c8ac3cd236076d3e3",
+            "compiler": "16.2.0",
+            "commit": "9029a805ea907612e7e3653bfc037773a99fbe60",
+            "dirty": false
+          }
         },
         "metal": {
           "kind": "gate",
@@ -7458,8 +7464,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.7.1",
-        "date": "2026-10-29"
+        "runner_version": "1.19.1",
+        "date": "2026-11-16"
       },
       "transitions": [
         {
@@ -8345,7 +8351,31 @@
           "reason": "lfm2 (short-convolution layers interleaved with GQA attention) has no validated CUDA path; CUDA refuses it by name and the file runs on the CPU.",
           "matrix": "MANUAL.md#support-matrix"
         },
-        "metal": null
+        "metal": {
+          "kind": "gate",
+          "runner_version": "1.19.1",
+          "date": "2026-11-16",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "bd4d564041c57f99afb53e55852624625da1712e",
+          "caps": {
+            "version": "1.19.1",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "3bb0f080e0b57ed843c39e49de9d3c749fc75140afe68d73176767342bcafc56",
+          "ran": "runner -m LFM2.5-1.2B-Instruct-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/lfm2.5-1.2b-instruct-q4_k_m.macos-arm64-metal.metal.txt",
+          "build": {
+            "binary_sha256": "efe14f5e54f87fcc24d6c1746a3a5a324717f76ed3ed67ee1bdc74b65b65ecf0",
+            "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+            "commit": "bd4d564041c57f99afb53e55852624625da1712e",
+            "dirty": false
+          }
+        }
       },
       "transitions": [
         {
@@ -8370,8 +8400,8 @@
           "supported": false,
           "reason": "--lora does not cover the short-convolution hybrid yet (lfm2)"
         },
-        "runner_version": "1.7.1",
-        "date": "2026-10-30"
+        "runner_version": "1.19.1",
+        "date": "2026-11-16"
       }
     },
     {
@@ -8656,7 +8686,31 @@
           "reason": "lfm2 (short-convolution layers interleaved with GQA attention) has no validated CUDA path; CUDA refuses it by name and the file runs on the CPU.",
           "matrix": "MANUAL.md#support-matrix"
         },
-        "metal": null
+        "metal": {
+          "kind": "gate",
+          "runner_version": "1.19.1",
+          "date": "2026-11-16",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "bd4d564041c57f99afb53e55852624625da1712e",
+          "caps": {
+            "version": "1.19.1",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "a3dd7b514a3e7cb8885a12451aa38a87e9bf3c662773efb2fba4f846b4e6bba0",
+          "ran": "runner -m LFM2.5-350M-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=80 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/lfm2.5-350m-q4_k_m.macos-arm64-metal.metal.txt",
+          "build": {
+            "binary_sha256": "efe14f5e54f87fcc24d6c1746a3a5a324717f76ed3ed67ee1bdc74b65b65ecf0",
+            "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+            "commit": "bd4d564041c57f99afb53e55852624625da1712e",
+            "dirty": false
+          }
+        }
       },
       "transitions": [
         {
@@ -8681,8 +8735,8 @@
           "supported": false,
           "reason": "--lora does not cover the short-convolution hybrid yet (lfm2)"
         },
-        "runner_version": "1.8.0",
-        "date": "2026-10-30"
+        "runner_version": "1.19.1",
+        "date": "2026-11-16"
       }
     },
     {

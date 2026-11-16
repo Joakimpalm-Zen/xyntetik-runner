@@ -1190,10 +1190,43 @@ const char *model_gpu_cpu_only_why(const char *arch, int norm_groups) {
 #if !defined(RUNNER_GPU_CUDA)
     if (ad->cpu_only_noncuda) return ad->cpu_only_noncuda;
 #endif
+#if !defined(RUNNER_GPU_METAL)
+    if (ad->cpu_only_nonmetal) return ad->cpu_only_nonmetal;
+#endif
     if (norm_groups > 1)
         return "this model normalises in groups (k2-horizon) and the "
                "GPU backends implement full-width RMSNorm only";
     return NULL;
+}
+
+// R3.42: lfm2's Apple GPU path is its default only where the layer weights
+// are mostly Q4_K by bytes, the shape measured to pass its line (1.3x over
+// the CPU on prompt and decode; LFM2.5-350M and 1.2B Q4_K_M, lowest 1.586x).
+// On Q8_0 the Metal decode gained only 1.17x to 1.23x: the CPU's Q8_0 dot
+// runs near the memory bandwidth the GPU decode also runs at, while its
+// K-quant dequant holds it far below. Every other type is unmeasured and
+// stays on the CPU, as before. The tensors named blk.* are the layer weights;
+// the tied head and the embedding are not counted.
+const char *model_gpu_weights_why(const char *arch, const gguf_file *g, char *why, size_t cap) {
+#if defined(RUNNER_GPU_METAL)
+    if (!arch || !g || strcmp(arch, "lfm2")) return NULL;
+    uint64_t bytes[64] = {0};
+    for (uint64_t i = 0; i < g->n_tensors; i++) {
+        const gguf_tensor *t = &g->tensors[i];
+        if (t->n_dims < 2 || t->type >= 64 || strncmp(t->name, "blk.", 4)) continue;
+        bytes[t->type] += t->nbytes;
+    }
+    int best = -1;
+    for (int k = 0; k < 64; k++)
+        if (bytes[k] && (best < 0 || bytes[k] > bytes[best])) best = k;
+    if (best == T_Q4_K) return NULL;
+    snprintf(why, cap, "lfm2 takes the Apple GPU only where its layer weights are mostly Q4_K, "
+             "measured; this file's are %s", best >= 0 ? ggml_type_name(best) : "none");
+    return why;
+#else
+    (void)arch; (void)g; (void)why; (void)cap;
+    return NULL;
+#endif
 }
 
 // R6.68.112: k_attn (the prefill fallback), k_attn_dec with k_attn_merge, and
@@ -6762,6 +6795,7 @@ static bool runtime_gpu_admit(model_t *m, const model_params *p, size_t kv_claim
                       "(--remove-sublayer) yet";
         else
             cpu_why = model_gpu_cpu_only_why(m->arch, m->norm_groups);
+        if (!cpu_why) cpu_why = model_gpu_weights_why(m->arch, &m->gf, head_why, sizeof head_why);
         if (!cpu_why) cpu_why = model_gpu_odd_head_why(m, head_why, sizeof head_why);
     }
     if (cpu_why) {
