@@ -4191,7 +4191,8 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
             // R3.72: the recorded tiled steps replay on the tiles, the switch
             // the serving process ran with, unless the verifier set it: =0
             // then shows as a route the replay did not take
-            if (vr->micro) setenv("RUNNER_METAL_BATCH_TILES", "1", 0);
+            if (vr->micro && !getenv("RUNNER_METAL_BATCH_TILES"))
+                plat_setenv("RUNNER_METAL_BATCH_TILES", "1");
 #endif
         }
         jv *prof = jv_get(vr->rec, "profile"), *cfg = jv_get(vr->rec, "config");
