@@ -16,7 +16,10 @@
 //     build, dequant_row's MXFP4 rows (every expert row a batched prefill
 //     of gpt-oss decodes) must cost at most 1 / 1.5 of a scalar decode of
 //     the same rows. The scalar decode is the C formula with its table read
-//     through a volatile pointer, so no compiler can vectorize it.
+//     through a volatile pointer, so no compiler can vectorize it. Its bytes
+//     are checked too, over all 256 exponents: this binary is built with
+//     the runner's own flags (-ffast-math, so flush-to-zero and
+//     denormals-are-zero are on), which test-quants-simd's are not.
 #include "model.h"
 #include "quants.h"
 #include "fp16.h"
@@ -140,6 +143,20 @@ static void decode_ratio_mxfp4(void) {
     snprintf(msg, sizeof msg, "MXFP4 row decode: dequant_row %.3f ms, a scalar decode %.3f ms "
              "(%.2fx, at least 1.50x)", best_d * 1e3, best_s * 1e3, best_s / best_d);
     ck(best_d * 1.5 <= best_s, msg);
+    // the same bytes under this binary's float environment, every exponent
+    // (0 and 1 are where a flushed half scale would differ, 255 is infinite)
+    float *z = malloc(sizeof(float) * (size_t)n);
+    int bad = 0;
+    for (int e = 0; e < 256; e++) {
+        for (int k = 0; k < n / 32; k++) w[(size_t)k * 17] = (unsigned char)e;
+        dequant_row(T_MXFP4, w, y, n);
+        scalar_mxfp4_rows(w, z, n / 32);
+        if (memcmp(y, z, sizeof(float) * (size_t)n)) bad++;
+    }
+    snprintf(msg, sizeof msg, "MXFP4 row decode under the runner's float flags: the scalar "
+             "decode's bytes at %d of 256 exponents", 256 - bad);
+    ck(bad == 0, msg);
+    free(z);
     free(w); free(y);
 }
 #endif
