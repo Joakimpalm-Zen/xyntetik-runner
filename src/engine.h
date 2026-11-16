@@ -509,6 +509,10 @@ void   engine_set_request_stops(engine *e, const int *ids, int n);
 void   engine_refresh_identity(engine *e);
 // feed tokens (batched); returns last-token logits, or NULL on overflow/stop
 float *engine_feed(engine *e, const int32_t *toks, int n);
+// feed ONE token through the decode step's route, the solo forward the
+// sampler sees and `--score` uses: for a caller whose numbers must be those
+// (echo / prompt_logprobs, the decision scorer). Same returns as engine_feed.
+float *engine_feed_solo(engine *e, int32_t tok);
 
 // The log-softmax normalizer of one logits row: float max, a double sum of
 // expf(l - max), float result. EVERY logprob the runner reports divides by

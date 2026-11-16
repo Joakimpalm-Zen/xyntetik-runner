@@ -1680,6 +1680,12 @@ float *engine_feed(engine *e, const int32_t *toks, int n) {
     return logits;
 }
 
+// a one-token feed is the decode step's route today (model.c mv_rows: under
+// MV_SMALL_BATCH columns, the native dot)
+float *engine_feed_solo(engine *e, int32_t tok) {
+    return engine_feed(e, &tok, 1);
+}
+
 // noinline: one compiled copy is the whole point (engine.h)
 __attribute__((noinline))
 float engine_logsumexp(const float *logits, int n) {
@@ -1712,7 +1718,7 @@ float *engine_score_prompt(engine *e, const int32_t *toks, int n, int top_n,
     for (int i = 0; i < n; i++) {
         // the same between-chunk courtesies engine_feed extends, per token
         if (i && e->stop && e->stop(e->stop_ud)) logits = NULL;
-        else logits = engine_feed(e, toks + i, 1);
+        else logits = engine_feed_solo(e, toks[i]);
         if (!logits) { prompt_scores_free(ps); return NULL; }
         if (i + 1 == n) break;
         if (e->prefill_yield && (i & 63) == 63) e->prefill_yield(e->prefill_ud);
