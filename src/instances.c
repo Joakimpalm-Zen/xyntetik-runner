@@ -23,6 +23,7 @@
 #include <process.h>
 #else
 #include <dirent.h>
+#include <fcntl.h>      // fcntl, F_SETFD, FD_CLOEXEC: musl's sys/file.h does not bring it
 #include <limits.h>
 #include <signal.h>
 #include <sys/file.h>
