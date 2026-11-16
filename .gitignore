@@ -154,6 +154,8 @@ test-rope-yarn
 test-rope-yarn.exe
 test-longrope-sequence
 test-longrope-sequence.exe
+test-prefill-batch-identity
+test-prefill-batch-identity.exe
 test-longrope-cuda
 test-longrope-cuda.exe
 test-batch-columns-cuda

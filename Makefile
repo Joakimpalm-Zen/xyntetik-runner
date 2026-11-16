@@ -217,6 +217,7 @@ OBJDIR = .build/$(BUILD_ID)
 TEST_PREFIX = $(TEST_BATCH:test-batch%=test-prefix%)
 TEST_RECURRENT = $(TEST_BATCH:test-batch%=test-recurrent-rewind%)
 TEST_LONGROPE = $(TEST_BATCH:test-batch%=test-longrope-sequence%)
+TEST_PREFILL_BATCH = $(TEST_BATCH:test-batch%=test-prefill-batch-identity%)
 # the binary is not named as the target that runs it (test-cuda-longrope): with
 # TEST_BATCH's empty suffix outside Windows the two collide, make drops the
 # compile recipe and the binary is never built
@@ -940,6 +941,14 @@ $(TEST_RECURRENT): $(TEST_RECURRENT_SRC) $(HDR)
 TEST_LONGROPE_SRC = $(TEST_RECURRENT_SRC:tests/test_recurrent_rewind.c=tests/test_longrope_sequence.c)
 $(TEST_LONGROPE): $(TEST_LONGROPE_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_LONGROPE_SRC) -o $@ $(LDFLAGS)
+
+# R3.60: on a CPU-only run a prompt's KV rows and logits do not depend on -b
+# (tests/test_prefill_batch_identity.c). Its fixtures, made at run time: the
+# 256-wide dense file in Q4_K and Q6_K, a MoE of 32 experts with 2 used in
+# Q8_0, and gpt-oss with MXFP4 experts and sliding layers.
+TEST_PREFILL_BATCH_SRC = $(TEST_RECURRENT_SRC:tests/test_recurrent_rewind.c=tests/test_prefill_batch_identity.c)
+$(TEST_PREFILL_BATCH): $(TEST_PREFILL_BATCH_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_PREFILL_BATCH_SRC) -o $@ $(LDFLAGS)
 
 test-phi3-longrope.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py --arch phi3 --longrope-orig 32 test-phi3-longrope.gguf
@@ -3577,7 +3586,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
       $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) \
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_STREAM_OUT) $(TEST_RESIDENCY) $(TEST_CAPACITY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
-      $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_LONGROPE) test-phi3-longrope.gguf $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) $(TEST_REQUEST_STOP) \
+      $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_LONGROPE) $(TEST_PREFILL_BATCH) test-phi3-longrope.gguf $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) $(TEST_REQUEST_STOP) \
       runner test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-q5k.gguf test-q6k.gguf test-q40.gguf test-q3k-prefill.gguf $(PREFILL_IQ_FIXTURES) test-mxfp4-prefill.gguf $(PREFILL_PERCOL_FIXTURES) test-oddff.gguf test-oddff-f16.gguf test-ornith.gguf test-clef.gguf test-ornith-draft.gguf test-yarn.gguf test-rope-local.gguf \
       test-qk.gguf test-gemma3.gguf test-gemma4.gguf test-es.gguf test-muse.gguf test-granite.gguf \
       test-gemma3-62.gguf test-gemma3-26.gguf test-qwen4exp.gguf test-lfm2.gguf test-lfm2-moe.gguf
@@ -3585,6 +3594,16 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	RECURRENT_FIXTURE=test-lfm2.gguf ./$(TEST_RECURRENT)
 	RECURRENT_FIXTURE=test-lfm2-moe.gguf ./$(TEST_RECURRENT)
 	./$(TEST_LONGROPE)
+	@set -e; \
+	$(PYTHON) scripts/make-test-model.py --wide test-prefill-wide.gguf > /dev/null; \
+	for q in q4_k q6_k; do \
+	  ./$(RUNNER_EXE) -m test-prefill-wide.gguf --quantize test-prefill-wide-$$q.gguf --quant $$q > /dev/null 2>&1; \
+	done; \
+	MOE_TEST_WIDE=32 $(PYTHON) scripts/make-test-moe.py test-prefill-moe > /dev/null; \
+	./$(RUNNER_EXE) -m test-prefill-moe.wide.gguf --quantize test-prefill-moe-q8.gguf --quant q8_0 > /dev/null 2>&1; \
+	./$(TEST_PREFILL_BATCH) test-prefill-wide-q4_k.gguf test-prefill-wide-q6_k.gguf \
+	  test-prefill-moe-q8.gguf test-prefill-moe.gptoss-mxfp4.gguf; \
+	rm -f test-prefill-wide*.gguf test-prefill-moe*.gguf
 	@# qwen4exp: chunked prefill must equal the single-shot prefill (the PLE
 	@# conv history carries across batches; llama.cpp's does not), and a row
 	@# scored out of a batch (the per-row hyper-connection head) must equal
@@ -4293,7 +4312,7 @@ clean:
 	      $(TEST_QUANTIZE) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
 	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) \
 	      $(TEST_FILE_ID) test-file-identity.tmp \
-	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_LONGROPE) $(TEST_CUDA_LONGROPE) $(TEST_CUDA_BATCH_COLS) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
+	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_LONGROPE) $(TEST_PREFILL_BATCH) $(TEST_CUDA_LONGROPE) $(TEST_CUDA_BATCH_COLS) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
 	      $(TMPL_CONF_RENDER) \
 	      $(TEST_SPLIT_GUARD) split-guard.out test-swap-race-bin test-tokenizer-race-bin test-decide-race-bin test-decide-race-gpu-bin \
 	      runner-gpu-stub
