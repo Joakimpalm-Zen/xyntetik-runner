@@ -1586,6 +1586,16 @@ static void dequant_block(int type, const void *src, float *dst) {
     }
 }
 
+// The C decode of an MXFP4 row, kept by name as the reference the SIMD
+// decodes are tested against (tests/test_quants_simd.c, tests/test_dot_route.c):
+// dq_mxfp4 per block, never inlined into a caller and never dispatched, so a
+// test compares a kernel with the scalar decode itself rather than with a
+// transcription of it.
+__attribute__((noinline)) void dequant_row_mxfp4_ref(const void *src, float *dst, int n) {
+    const block_mxfp4 *b = src;
+    for (int i = 0; i < n / QK; i++) dq_mxfp4(b + i, dst + (size_t)i * QK);
+}
+
 void dequant_row(int type, const void *src, float *dst, int n) {
     if (type == T_F32) { memcpy(dst, src, (size_t)n * 4); return; }
     if (type == T_F16) {

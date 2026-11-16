@@ -32,7 +32,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <math.h>
 
 static int g_fail = 0;
 static void ck(int cond, const char *what) {
@@ -103,25 +102,6 @@ static void ratio(int type, const char *name) {
 }
 
 #if defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)
-static const float kv_mxfp4_f[16] = {
-     0.0f,  0.5f,  1.0f,  1.5f,  2.0f,  3.0f,  4.0f,  6.0f,
-     0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f,
-};
-static float g_e8m0_f[256];   // 2^(e - 127), the table quants.c's dq_mxfp4 reads
-// The C decode: a table value times a table scale, both loaded, as dq_mxfp4
-// does. Not `kv * ldexpf(1.0f, e - 127)`: under -ffast-math GCC rewrites that
-// to ldexpf(kv, e - 127), which neither flushes a subnormal scale nor makes
-// 0 * inf a NaN, so it is not the C decode's arithmetic (seen on hosted x86:
-// two exponents of 256 differed until the scale came from a table).
-static void scalar_mxfp4_rows(const unsigned char *w, float *y, int nblk) {
-    for (int i = 0; i < nblk; i++, w += 17, y += 32) {   // block: e, then 16 bytes
-        float d = g_e8m0_f[w[0]];
-        for (int j = 0; j < 16; j++) {
-            y[j]      = kv_mxfp4_f[w[1 + j] & 0xF] * d;
-            y[j + 16] = kv_mxfp4_f[w[1 + j] >> 4]  * d;
-        }
-    }
-}
 static void random_rows(int type, unsigned char *w, size_t bytes, unsigned s) {
     for (size_t i = 0; i < bytes; i++) { s = s * 1103515245u + 12345u; w[i] = (unsigned char)(s >> 16); }
     size_t bs = ggml_type_size(type);
@@ -139,7 +119,6 @@ static double decode_pass(int type, const unsigned char *w, float *y, int n, int
 static void decode_ratio_mxfp4(void) {
     const int n = 4096, rows = 256;
     f16_init();   // quants.c's tables (once; a loaded model built them already)
-    for (int e = 0; e < 256; e++) g_e8m0_f[e] = ldexpf(1.0f, e - 127);
     size_t rm = ggml_row_size(T_MXFP4, n) * rows, rk = ggml_row_size(T_Q4_K, n) * rows;
     unsigned char *wm = malloc(rm), *wk = malloc(rk);
     float *y = malloc(sizeof(float) * (size_t)n * rows);
@@ -164,15 +143,15 @@ static void decode_ratio_mxfp4(void) {
     snprintf(msg, sizeof msg, "MXFP4 row decode %.3f ns a weight, Q4_K's (an AVX2 decode) %.3f "
              "(%.2fx, at most 1.30x)", best_m * per, best_k * per, best_m / best_k);
     ck(best_m <= 1.3 * best_k, msg);
-    // the C decode's bytes under this binary's float environment, every
-    // exponent (0 is the subnormal scale denormals-are-zero flushes, 255 the
-    // infinite one)
+    // the C decode's bytes (quants.c's dequant_row_mxfp4_ref) under this
+    // binary's float environment, every exponent (0 is the subnormal scale
+    // denormals-are-zero flushes, 255 the infinite one)
     float *z = malloc(sizeof(float) * (size_t)n);
     int bad = 0;
     for (int e = 0; e < 256; e++) {
         for (int k = 0; k < n / 32; k++) wm[(size_t)k * 17] = (unsigned char)e;
         dequant_row(T_MXFP4, wm, y, n);
-        scalar_mxfp4_rows(wm, z, n / 32);
+        dequant_row_mxfp4_ref(wm, z, n);
         if (memcmp(y, z, sizeof(float) * (size_t)n)) bad++;
     }
     snprintf(msg, sizeof msg, "MXFP4 row decode under the runner's float flags: the C decode's "

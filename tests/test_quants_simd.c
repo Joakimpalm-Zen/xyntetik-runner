@@ -851,6 +851,63 @@ static void test_mxfp4_every_code(void) {
     free(row); free(got); free(wrong);
 }
 
+// dequant_row(T_MXFP4) against the C decode itself, quants.c's
+// dequant_row_mxfp4_ref (dq_mxfp4 per block, kept by name, never inlined or
+// dispatched), byte for byte. Rows: 16 random blocks at each of the 256
+// exponents, then every code at every exponent. Where dequant_row has a SIMD
+// decode (x86 AVX2 and AVX-512, arm64) this is a kernel against the scalar
+// code; where it has none, the two are the same code and agree trivially.
+// The control is a mutant that must be caught: the reference's output with
+// one lane per block (lane 5) decoded at its block's exponent plus one (minus
+// one at 255), the off-by-one scale a wrong index or broadcast gives. It
+// must be rejected in every block where that changes lane 5's bits: all but
+// the zero codes (0 and 8 decode to 0.0 at any scale) and the top exponents,
+// where both scales already overflow to inf. More than half the blocks must
+// be such blocks, or the mutant tests too little. This build keeps
+// subnormals (test-quants-simd is built without -ffast-math), so exponents
+// 0 and 1 count too.
+static int mxfp4_ref_bad_blocks(const block_mxfp4 *row, const float *got, int nblk) {
+    float want[QK];
+    int bad = 0;
+    for (int k = 0; k < nblk; k++) {
+        dequant_row_mxfp4_ref(row + k, want, QK);
+        if (memcmp(got + (size_t)k * QK, want, sizeof want)) bad++;
+    }
+    return bad;
+}
+static void test_mxfp4_vs_c_decode(void) {
+    enum { PER_E = 16, NB = 256 * PER_E + 256 };
+    block_mxfp4 *row = malloc(sizeof(block_mxfp4) * NB);
+    float *got = malloc(sizeof(float) * QK * NB), *mut = malloc(sizeof(float) * QK * NB);
+    for (int k = 0; k < 256 * PER_E; k++) {
+        row[k].e = (uint8_t)(k / PER_E);
+        for (int j = 0; j < 16; j++) row[k].qs[j] = (uint8_t)rnd32();
+    }
+    for (int k = 256 * PER_E; k < NB; k++) {
+        row[k].e = (uint8_t)(k - 256 * PER_E);
+        for (int j = 0; j < 16; j++) row[k].qs[j] = (uint8_t)(j | ((15 - j) << 4));
+    }
+    dequant_row(T_MXFP4, row, got, QK * NB);
+    int bad = mxfp4_ref_bad_blocks(row, got, NB);
+    CHECK(bad == 0, "dequant mxfp4 against the C decode (dequant_row_mxfp4_ref): %d of %d "
+          "blocks differ", bad, NB);
+    dequant_row_mxfp4_ref(row, mut, QK * NB);
+    int live = 0;
+    for (int k = 0; k < NB; k++) {
+        block_mxfp4 off = row[k];
+        off.e = (uint8_t)(row[k].e < 255 ? row[k].e + 1 : 254);
+        float t[QK];
+        dequant_row_mxfp4_ref(&off, t, QK);
+        if (memcmp(&mut[(size_t)k * QK + 5], &t[5], sizeof t[5])) live++;
+        mut[(size_t)k * QK + 5] = t[5];
+    }
+    int caught = mxfp4_ref_bad_blocks(row, mut, NB);
+    CHECK(caught == live && live > NB / 2,
+          "control: a mutant with lane 5's scale one exponent off is caught in %d blocks, "
+          "%d expected (of %d)", caught, live, NB);
+    free(row); free(got); free(mut);
+}
+
 // A one-hot activation turns a "scale times code" dot into its weight: the
 // fused kernels multiply the code by x (exact: x is 1 or 0), sum it with exact
 // zeros and round once at the scale, which is the one rounding the dequantizer
@@ -1458,6 +1515,7 @@ int main(void) {
     test_dequant_exact(T_IQ4_XS, 4096);
     test_dequant_exact(T_MXFP4, 4096);
     test_mxfp4_every_code();
+    test_mxfp4_vs_c_decode();
     {
         static const int onehot[] = { T_Q8_0, T_Q4_0, T_IQ4_NL, T_MXFP4, T_IQ3_XXS, T_IQ3_S,
                                       T_IQ2_XXS, T_IQ2_XS, T_IQ2_S };

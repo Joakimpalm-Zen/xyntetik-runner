@@ -40,6 +40,9 @@ static inline size_t ggml_row_size(int type, int64_t n) {
 
 // dequantize a full row of n elements
 void  dequant_row(int type, const void *src, float *dst, int n);
+// tests only: the C decode of an MXFP4 row (n a multiple of 32), the reference
+// dequant_row's SIMD decodes must match byte for byte
+void  dequant_row_mxfp4_ref(const void *src, float *dst, int n);
 // target == T_KEEP: every tensor keeps its own on-disk type (--prune-experts
 // with no --quant — geometry changes, precision doesn't).
 #define T_KEEP (-1)
