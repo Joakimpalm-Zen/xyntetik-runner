@@ -28,7 +28,9 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "tests"))
 from gguf_fixture import read_header  # noqa: E402
+from _vram_ledger import the_ledger  # noqa: E402
 
 # the switches these tests set: none leaks in from the host's environment
 SWITCHES = ("RUNNER_TPOOL_SPIN", "RUNNER_GRAMMAR_FF", "RUNNER_SPEC_STATS", "RUNNER_SCHEMA_ALLOW_WS",
@@ -192,11 +194,13 @@ def test_requant_only_scopes_the_conversion_to_matching_names(runner_bin, fx, tm
 # ---- the VRAM registry
 
 
-def _ledger_line(ledger, pid, timeout=20):
-    """The registry line of `pid`, read while the load holds its claim open. The runner takes a
-    mandatory lock over the file for its read-modify-write on Windows, so a read that lands inside one
-    fails with PermissionError and is retried."""
+def _ledger_line(registry, pid, timeout=20):
+    """The registry line of `pid`, read while the load holds its claim open, from the one ledger the load
+    created in its registry directory: the card's own on a host with one, never a name the test assumes
+    (R6.84). The runner takes a mandatory lock over the file for its read-modify-write on Windows, so a
+    read that lands inside one fails with PermissionError and is retried."""
     deadline = time.time() + timeout
+    ledger = the_ledger(registry, timeout)
     while time.time() < deadline:
         try:
             text = ledger.read_text(encoding="utf-8") if ledger.exists() else ""
@@ -224,7 +228,7 @@ def test_vram_priority_is_the_flags_baseline(runner_bin, fx, tmp_path, env_value
         args += ["--vram-priority", flag]
     p = subprocess.Popen(args, cwd=ROOT, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     try:
-        line = _ledger_line(tmp_path / "xyntetik-vram-test-device.reg", p.pid)
+        line = _ledger_line(tmp_path, p.pid)
     finally:
         _, err = p.communicate(timeout=120)
     assert p.returncode == 0, err.decode(errors="replace")[-800:]
