@@ -3362,6 +3362,7 @@ test-metal:
 	$(MAKE) --no-print-directory test-metal-qwen35 PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-metal-qwen35moe PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-metal-mamba2 PYTHON="$(PYTHON)"
+	$(MAKE) --no-print-directory test-metal-lfm2 PYTHON="$(PYTHON)"
 
 # qwen35 on Metal (R4.10): the Gated DeltaNet mixer and the gated attention on
 # the device, to the CPU's logits within reduction-order rounding at prefill
@@ -3370,6 +3371,30 @@ test-metal:
 # on the device, its rows byte-identical to solo steps across partial rounds
 # (the host rollback and re-fold). The anchor beyond the CPU is the CPU's own
 # gold against the publisher's float32 reference (docs/model-support.md).
+# LFM2 on Metal (R3.42): the short convolution (B*x through the
+# window, gated by C) and its window's slide on the device, to the CPU's
+# logits within the cross-backend bound, at l_cache 3 (the publisher's files),
+# 4 and 2 (other window lengths); then the verify walk on the device, its rows
+# byte-identical to solo steps across partial rounds (the ring's rollback).
+# The fixtures are the wide form stored as Q4_K: the Apple GPU path is lfm2's
+# default only where the layer weights are mostly Q4_K (model_gpu_weights_why),
+# so an F32 fixture now runs on the CPU (tests/test_lfm2.py holds that line).
+test-metal-lfm2: runner $(TEST_GPU_ID) $(TEST_SPEC_ID)
+ifeq ($(BUILD_OS),Darwin)
+	@set -e; for k in 3 4 2; do \
+	  f=test-lfm2-k$$k.gguf; \
+	  $(PYTHON) scripts/make-test-lfm2.py test-lfm2-k$$k-f32.gguf --wide --l-cache $$k > /dev/null; \
+	  ./$(RUNNER_EXE) -m test-lfm2-k$$k-f32.gguf --quantize $$f --quant q4_k > /dev/null 2>&1; \
+	  GPU_ID_LIMIT=1e-5 ./$(TEST_GPU_ID) $$f > test-metal-lfm2.out 2>&1 || { cat test-metal-lfm2.out; exit 1; }; \
+	  if grep -q 'skipped' test-metal-lfm2.out; then cat test-metal-lfm2.out; \
+	    echo "test-metal-lfm2: $$f did not run on the device"; exit 1; fi; \
+	  echo "$$f: $$(tail -1 test-metal-lfm2.out)"; \
+	  ./$(TEST_SPEC_ID) $$f | tail -1 | grep -q 'ok (gpu' || { ./$(TEST_SPEC_ID) $$f; exit 1; }; \
+	done
+else
+	@echo "test-metal-lfm2: skipped (not a Metal build)"
+endif
+
 # The Mamba-2 hybrids on Metal (R4.10, dense granitehybrid): the scan, the
 # conv and the gated norm on the device, to the CPU's logits. The default toy
 # barely moves its logits through the recurrent branch (range ~0.07), so the

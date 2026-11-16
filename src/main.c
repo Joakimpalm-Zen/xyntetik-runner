@@ -1734,6 +1734,8 @@ static int run_fit_check(const char *path, int n_ctx_want,
     const char *farch = gguf_get_str(&g, "general.architecture", "");
     snprintf(akey, sizeof akey, "%s.attention.group_norm_groups", farch);
     const char *cpu_why = model_gpu_cpu_only_why(farch, (int)gguf_get_u32(&g, akey, 1));
+    char wwhy[192];
+    if (!cpu_why) cpu_why = model_gpu_weights_why(farch, &g, wwhy, sizeof wwhy);
     const arch_id fid = arch_find(farch)->id;
     if (!cpu_why && fid == ARCH_NEMOTRON_H_MOE) cpu_why = fit_nh_moe_cpu_why(&g, farch);
     // a router past the device's caps keeps its experts off the device, in the
