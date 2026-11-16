@@ -16624,10 +16624,11 @@ model_batch *model_batch_create(model_t **seqs, int n) {
     b->n = n;
     // A NULL here is not a failure: it means this build, backend or model has
     // no microbatch, and every decode falls through to the sequential path.
-    // R4.40: a microbatch rotates every sequence's row from one device
-    // table, and two LongRoPE sequences can be on different factor sets.
-    // Such a model decodes its sequences one by one, the same bits.
-    b->gb = seqs[0]->rope_long_from > 0 ? NULL : gpu_batch_create(seqs, n);
+    // R4.40: two LongRoPE sequences can be on different factor sets. A
+    // backend whose microbatch rotates every column from one table decodes
+    // such a model's sequences one by one, the same bits; CUDA's rotates each
+    // column with its own set's table (R4.40.3, gpu_batch_rope_sets_ok).
+    b->gb = seqs[0]->rope_long_from > 0 && !gpu_batch_rope_sets_ok() ? NULL : gpu_batch_create(seqs, n);
     return b;
 }
 
