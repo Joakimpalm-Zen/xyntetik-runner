@@ -1,5 +1,6 @@
 // runner — CLI: one-shot completion, interactive chat, and server launcher.
 #include "completion.h"
+#include "micro_sched.h"   // R3.72: a tiled turn's decode schedule
 #include "decide.h"
 #include "clef.h"
 #include "fpclass.h"
@@ -256,7 +257,23 @@ static bool replay_constraints_ok(jv *rec, bool json_mode,
     jv *micro = jv_get(route, "micro");
     const char *detail = jv_str(jv_get(route, "backend_detail"), "");
     if (micro || strstr(detail, " micro=tiles")) {
-        snprintf(why, cap, "tiled microbatch arithmetic requires a recorded decode schedule");
+        // R3.72: the schedule a tiled turn records (micro_sched.h), read
+        // before any model loads. A valid one is recorded but not replayable
+        // yet: running its tiled steps in a stand-in microbatch of the
+        // recorded width waits for the measurement of whether a column's
+        // tiled result depends on the width. Each defect is refused by name.
+        micro_sched *ms = malloc(sizeof *ms);
+        char mwhy[200];
+        if (!ms) {
+            snprintf(why, cap, "tiled microbatch arithmetic: out of memory reading its decode schedule");
+            return false;
+        }
+        if (!micro_sched_parse(route, MODEL_BATCH_MAX, ms, mwhy, (int)sizeof mwhy))
+            snprintf(why, cap, "tiled microbatch arithmetic requires a recorded decode schedule: %s", mwhy);
+        else
+            snprintf(why, cap, "tiled microbatch arithmetic: the decode schedule is recorded (%d run%s) "
+                     "but not replayable yet (R3.72)", ms->n, ms->n == 1 ? "" : "s");
+        free(ms);
         return false;
     }
     jv *cons = jv_get(rec, "constraints");
@@ -7793,7 +7810,7 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
                      "\"context\":%d,\"marked_tokens\":%d}", WM_SCHEME,
                      wmk->id, WM_LAYERS, WM_CONTEXT, cli_wm->marked);
         char *transcript_exe = plat_executable_path();
-        char route_json[768];
+        char route_json[MODEL_ROUTE_RECEIPT_CAP];
         model_route_receipt_json(&rt->m, route_json, sizeof route_json);
         transcript_info ti = {
             .out_path = o->transcript_path,

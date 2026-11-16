@@ -63,6 +63,8 @@ test-template.exe
 test-tools.exe
 test-json-oom
 test-json-oom.exe
+test-micro-sched
+test-micro-sched.exe
 test-schema-oom
 test-schema-oom.exe
 test-tokenizer-oom

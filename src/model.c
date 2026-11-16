@@ -1,5 +1,6 @@
 // Llama-family transformer: weight wiring + batched forward pass.
 #include "model.h"
+#include "micro_sched.h"   // R3.72: a tiled turn's decode schedule
 
 #include <errno.h>
 #include "gpu.h"
@@ -6952,6 +6953,7 @@ static void runtime_free(model_t *m) {
 }
 
 void model_free(model_t *m) {
+    if (m) { free(m->micro_steps); m->micro_steps = NULL; }   // R3.72
     gpu_free(m); // nulls kcache/vcache if the GPU owned them
     gpu_train_free(m);
     model_full_free(m);
@@ -8308,9 +8310,17 @@ void model_route_receipt_json(const model_t *m, char *out, int cap) {
     }
     char gaps[160];
     route_canon_gaps(m, gaps, sizeof gaps);
-    snprintf(out, cap, "{\"backend\":\"%s\",\"cpu_act\":\"%s\",\"backend_detail\":\"%s\"%s%s%s}",
-             r.backend, r.cpu_act, detail, m->route_micro_tiles_seen ? ",\"micro\":\"tiles\"" : "", tct,
-             gaps);
+    // R3.72: a tiled turn's decode schedule, whole or marked truncated
+    char steps[16384] = "";
+    if (m->route_micro_tiles_seen && m->micro_steps &&
+        micro_sched_json(m->micro_steps, steps, (int)sizeof steps) < 0)
+        snprintf(steps, sizeof steps, ",\"micro_steps_truncated\":true");
+    int n = snprintf(out, cap, "{\"backend\":\"%s\",\"cpu_act\":\"%s\",\"backend_detail\":\"%s\"%s%s%s%s}",
+                     r.backend, r.cpu_act, detail, m->route_micro_tiles_seen ? ",\"micro\":\"tiles\"" : "",
+                     steps, tct, gaps);
+    if (steps[0] && (n < 0 || n >= cap))   // the list did not fit the caller's room
+        snprintf(out, cap, "{\"backend\":\"%s\",\"cpu_act\":\"%s\",\"backend_detail\":\"%s\",\"micro\":\"tiles\","
+                 "\"micro_steps_truncated\":true%s%s}", r.backend, r.cpu_act, detail, tct, gaps);
 }
 
 void model_route_json(const model_t *m, char *out, int cap) {
@@ -16663,7 +16673,15 @@ bool model_batch_decode(model_batch *b, const int *idx, const int32_t *tok,
             // step and a solo step cannot drift apart on them.
             for (int i = done; i < done + take; i++) {
                 model_t *m = b->seqs[idx[i]];
-                if (gpu_batch_tiles_used(b->gb)) m->route_micro_tiles_seen = true;
+                if (gpu_batch_tiles_used(b->gb)) {
+                    m->route_micro_tiles_seen = true;
+                    // R3.72: the step's position and width, for the receipt's
+                    // schedule. A failed allocation leaves the turn without
+                    // a schedule, which --verify refuses: never a wrong one.
+                    if (!m->micro_steps && (m->micro_steps = malloc(sizeof *m->micro_steps)))
+                        micro_sched_reset(m->micro_steps);
+                    if (m->micro_steps) micro_sched_add(m->micro_steps, pos[i], take);
+                }
                 apply_head_transforms(m, out[i]);
                 model_kv_ring_note(m, pos[i], 1);
                 route_ran(m, RP_MICRO, take);

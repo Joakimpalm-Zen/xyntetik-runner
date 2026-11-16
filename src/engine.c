@@ -1,6 +1,7 @@
 // Generation engine shared by the CLI and the server: prompt feeding,
 // stop-token handling, optional JSON-constrained sampling.
 #include "engine.h"
+#include "micro_sched.h"   // R3.72: a tiled turn's decode schedule
 #include "fpclass.h"   // cl_capture: a probed row that is not finite
 #include "compat.h"
 
@@ -3061,6 +3062,7 @@ out:
 
 void engine_gen_begin(engine *e, int max_new) {
     if (e->m) e->m->route_micro_tiles_seen = false;
+    if (e->m && e->m->micro_steps) micro_sched_reset(e->m->micro_steps);   // R3.72
     e->hit_stop  = false; e->stop_id = -1;
     e->oom       = false;
     e->constraint_fault[0] = 0;

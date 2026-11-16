@@ -161,6 +161,18 @@ def test_receipt_names_actual_tiles_and_refuses_missing_schedule(runner_bin, mod
             assert not has_tiles, "a previous request's marker leaked into a solo generation"
         if has_tiles:
             tiled.append(path)
+            # R3.72: the turn's decode schedule, the tiled steps as runs of
+            # [first position, count, width], widths from MB_TILES_MIN (6) to
+            # the microbatch's 8, increasing, within the 96 decoded tokens
+            steps = route.get("micro_steps")
+            assert steps and not route.get("micro_steps_truncated"), route
+            end = -1
+            for first, count, width in steps:
+                assert first >= end and count >= 1 and 6 <= width <= 8, steps
+                end = first + count
+            assert sum(c for _, c, _ in steps) <= 96, steps
+        else:
+            assert "micro_steps" not in route, route
     if parallel == 1:
         assert not tiled, "an enabled switch is not an actual tiled forward"
     else:
@@ -170,3 +182,5 @@ def test_receipt_names_actual_tiles_and_refuses_missing_schedule(runner_bin, mod
                                 text=True, timeout=15)
         assert replay.returncode == 3, replay.stdout + replay.stderr
         assert "tiled microbatch" in replay.stderr and "decode schedule" in replay.stderr
+        # the schedule is read and named, not yet replayed (R3.72)
+        assert "not replayable yet" in replay.stderr, replay.stderr
