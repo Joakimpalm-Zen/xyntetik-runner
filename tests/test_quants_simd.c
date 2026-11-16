@@ -756,6 +756,31 @@ static void ref_exact_iq4_xs(const uint8_t *row, float *y, int n) {
     }
 }
 
+// MXFP4 is one multiply per value as well, kvalues_mxfp4[code] * 2^(e - 127)
+// (quants.c dq_mxfp4), so its SIMD decodes must give the scalar decode's bits:
+// the batched prefill decodes every MXFP4 expert row with dequant_row, and the
+// CPU route's bits rest on it. The table is the one quants.c carries, its
+// second +0.0 included (code 8 is a zero of the negative half, stored as +0.0).
+static const float kv_mxfp4_f[16] = {
+     0.0f,  0.5f,  1.0f,  1.5f,  2.0f,  3.0f,  4.0f,  6.0f,
+     0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f,
+};
+// The scale comes from a table, as in quants.c: `kv * ldexpf(1.0f, e - 127)`
+// is rewritten to ldexpf(kv, e - 127) under -ffast-math, another arithmetic.
+static void ref_exact_mxfp4(const uint8_t *row, float *y, int n) {
+    static float sc[256];
+    static int built;
+    if (!built) { for (int e = 0; e < 256; e++) sc[e] = ldexpf(1.0f, e - 127); built = 1; }
+    for (int i = 0; i < n / QK; i++, y += QK) {
+        const block_mxfp4 *b = (const block_mxfp4 *)(row + (size_t)i * sizeof(*b));
+        float d = sc[b->e];
+        for (int j = 0; j < 16; j++) {
+            y[j]      = kv_mxfp4_f[b->qs[j] & 0xF] * d;
+            y[j + 16] = kv_mxfp4_f[b->qs[j] >> 4]  * d;
+        }
+    }
+}
+
 static void test_dequant_exact(int type, int n) {
     size_t rowsz = ggml_row_size(type, n);
     uint8_t *row = malloc(rowsz);
@@ -768,6 +793,7 @@ static void test_dequant_exact(int type, int n) {
             case T_Q4_0:   ref_exact_q4_0(row, want, n); break;
             case T_IQ4_NL: ref_exact_iq4_nl(row, want, n); break;
             case T_IQ4_XS: ref_exact_iq4_xs(row, want, n); break;
+            case T_MXFP4:  ref_exact_mxfp4(row, want, n); break;
             default: CHECK(0, "no exact reference for %s", ggml_type_name(type)); return;
         }
         CHECK(memcmp(got, want, (size_t)n * sizeof(float)) == 0,
@@ -776,6 +802,110 @@ static void test_dequant_exact(int type, int n) {
         if (g_fail > 20) break;
     }
     free(row); free(got); free(want);
+}
+
+// Every MXFP4 code at every E8M0 exponent, both nibble halves: block k has
+// exponent k (0 to 255: subnormal, normal, overflowing and infinite scales) and
+// byte j holds codes j and 15 - j. The comparison is by bytes, so a +0.0 for a
+// -0.0 or one NaN for another counts. Its control: the same comparison must
+// reject two wrong decodes, the nibble halves swapped and code 8 decoded as
+// -0.0 (what a sign-bit-from-bit-3 decode gives), or it could not see a wrong
+// kernel either.
+static int mxfp4_bad_blocks(const uint8_t *row, const float *got, int nblk) {
+    float want[QK];
+    int bad = 0;
+    for (int k = 0; k < nblk; k++) {
+        ref_exact_mxfp4(row + (size_t)k * sizeof(block_mxfp4), want, QK);
+        if (memcmp(got + (size_t)k * QK, want, sizeof want)) bad++;
+    }
+    return bad;
+}
+static void test_mxfp4_every_code(void) {
+    enum { NB = 256 };
+    block_mxfp4 *row = malloc(sizeof(block_mxfp4) * NB);
+    float *got = malloc(sizeof(float) * QK * NB), *wrong = malloc(sizeof(float) * QK * NB);
+    for (int k = 0; k < NB; k++) {
+        row[k].e = (uint8_t)k;
+        for (int j = 0; j < 16; j++) row[k].qs[j] = (uint8_t)(j | ((15 - j) << 4));
+    }
+    dequant_row(T_MXFP4, row, got, QK * NB);
+    int bad = mxfp4_bad_blocks((const uint8_t *)row, got, NB);
+    CHECK(bad == 0, "dequant mxfp4: %d of %d blocks (every code at every exponent) are "
+          "not the scalar decode's bits", bad, NB);
+    for (int k = 0; k < NB; k++) {          // control 1: the nibble halves swapped
+        ref_exact_mxfp4((const uint8_t *)(row + k), wrong + (size_t)k * QK, QK);
+        for (int j = 0; j < 16; j++) {
+            float t = wrong[(size_t)k * QK + j];
+            wrong[(size_t)k * QK + j] = wrong[(size_t)k * QK + j + 16];
+            wrong[(size_t)k * QK + j + 16] = t;
+        }
+    }
+    CHECK(mxfp4_bad_blocks((const uint8_t *)row, wrong, NB) == NB,
+          "control: a decode with the nibble halves swapped is not rejected in every block");
+    for (int k = 0; k < NB; k++) {          // control 2: code 8 as -0.0
+        ref_exact_mxfp4((const uint8_t *)(row + k), wrong + (size_t)k * QK, QK);
+        wrong[(size_t)k * QK + 8] = -0.0f;  // byte 8's low nibble is code 8
+    }
+    CHECK(mxfp4_bad_blocks((const uint8_t *)row, wrong, NB) == NB,
+          "control: a decode giving -0.0 for code 8 is not rejected in every block");
+    free(row); free(got); free(wrong);
+}
+
+// dequant_row(T_MXFP4) against the C decode itself, quants.c's
+// dequant_row_mxfp4_ref (dq_mxfp4 per block, kept by name, never inlined or
+// dispatched), byte for byte. Rows: 16 random blocks at each of the 256
+// exponents, then every code at every exponent. Where dequant_row has a SIMD
+// decode (x86 AVX2 and AVX-512, arm64) this is a kernel against the scalar
+// code; where it has none, the two are the same code and agree trivially.
+// The control is a mutant that must be caught: the reference's output with
+// one lane per block (lane 5) decoded at its block's exponent plus one (minus
+// one at 255), the off-by-one scale a wrong index or broadcast gives. It
+// must be rejected in every block where that changes lane 5's bits: all but
+// the zero codes (0 and 8 decode to 0.0 at any scale) and the top exponents,
+// where both scales already overflow to inf. More than half the blocks must
+// be such blocks, or the mutant tests too little. This build keeps
+// subnormals (test-quants-simd is built without -ffast-math), so exponents
+// 0 and 1 count too.
+static int mxfp4_ref_bad_blocks(const block_mxfp4 *row, const float *got, int nblk) {
+    float want[QK];
+    int bad = 0;
+    for (int k = 0; k < nblk; k++) {
+        dequant_row_mxfp4_ref(row + k, want, QK);
+        if (memcmp(got + (size_t)k * QK, want, sizeof want)) bad++;
+    }
+    return bad;
+}
+static void test_mxfp4_vs_c_decode(void) {
+    enum { PER_E = 16, NB = 256 * PER_E + 256 };
+    block_mxfp4 *row = malloc(sizeof(block_mxfp4) * NB);
+    float *got = malloc(sizeof(float) * QK * NB), *mut = malloc(sizeof(float) * QK * NB);
+    for (int k = 0; k < 256 * PER_E; k++) {
+        row[k].e = (uint8_t)(k / PER_E);
+        for (int j = 0; j < 16; j++) row[k].qs[j] = (uint8_t)rnd32();
+    }
+    for (int k = 256 * PER_E; k < NB; k++) {
+        row[k].e = (uint8_t)(k - 256 * PER_E);
+        for (int j = 0; j < 16; j++) row[k].qs[j] = (uint8_t)(j | ((15 - j) << 4));
+    }
+    dequant_row(T_MXFP4, row, got, QK * NB);
+    int bad = mxfp4_ref_bad_blocks(row, got, NB);
+    CHECK(bad == 0, "dequant mxfp4 against the C decode (dequant_row_mxfp4_ref): %d of %d "
+          "blocks differ", bad, NB);
+    dequant_row_mxfp4_ref(row, mut, QK * NB);
+    int live = 0;
+    for (int k = 0; k < NB; k++) {
+        block_mxfp4 off = row[k];
+        off.e = (uint8_t)(row[k].e < 255 ? row[k].e + 1 : 254);
+        float t[QK];
+        dequant_row_mxfp4_ref(&off, t, QK);
+        if (memcmp(&mut[(size_t)k * QK + 5], &t[5], sizeof t[5])) live++;
+        mut[(size_t)k * QK + 5] = t[5];
+    }
+    int caught = mxfp4_ref_bad_blocks(row, mut, NB);
+    CHECK(caught == live && live > NB / 2,
+          "control: a mutant with lane 5's scale one exponent off is caught in %d blocks, "
+          "%d expected (of %d)", caught, live, NB);
+    free(row); free(got); free(mut);
 }
 
 // A one-hot activation turns a "scale times code" dot into its weight: the
@@ -1383,6 +1513,9 @@ int main(void) {
     test_dequant_exact(T_Q4_0, 4096);
     test_dequant_exact(T_IQ4_NL, 4096);
     test_dequant_exact(T_IQ4_XS, 4096);
+    test_dequant_exact(T_MXFP4, 4096);
+    test_mxfp4_every_code();
+    test_mxfp4_vs_c_decode();
     {
         static const int onehot[] = { T_Q8_0, T_Q4_0, T_IQ4_NL, T_MXFP4, T_IQ3_XXS, T_IQ3_S,
                                       T_IQ2_XXS, T_IQ2_XS, T_IQ2_S };

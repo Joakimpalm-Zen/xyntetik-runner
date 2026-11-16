@@ -936,6 +936,42 @@ static void dq_q2_0_avx2(const block_q2_0 *b, float *y) {
     }
 }
 
+// MXFP4 on x86 (R3.73). Each value is the scalar decode's one multiply,
+// kvalues_mxfp4[code] * g_e8m0[e], with the same two operands, so the bits
+// are dq_mxfp4's under any MXCSR (tests/test_quants_simd.c checks every code
+// at every exponent). The table value is looked up whole, never rebuilt: code
+// 8 is +0.0 in the table, so a sign taken from bit 3 would give -0.0 there,
+// and the half scale the int8 kernels fold in is not the full one once
+// denormals-are-zero flushes it (exponent 1). AVX-512 permutes all sixteen
+// entries at once; AVX2 permutes each half of eight and blends on bit 3.
+// It replaced the C decode, a table lookup per weight behind a switch per
+// 32 weights, in the batched prefill's weight decode: about 1 ns a weight
+// per worker on a Zen 4, six times Q4_K's SIMD decode (the R3.60 bench).
+static inline void dq_mxfp4_avx2(const block_mxfp4 *b, float *y) {
+    const __m128i mF = _mm_set1_epi8(0xF);
+    const __m128i q  = _mm_loadu_si128((const __m128i *)b->qs);
+    const __m128i lo = _mm_and_si128(q, mF);                       // codes of y[0..15]
+    const __m128i hi = _mm_and_si128(_mm_srli_epi16(q, 4), mF);    // codes of y[16..31]
+#if defined(__AVX512F__)
+    const __m512 tbl = _mm512_loadu_ps(kvalues_mxfp4);
+    const __m512 d = _mm512_set1_ps(g_e8m0[b->e]);
+    _mm512_storeu_ps(y,      _mm512_mul_ps(_mm512_permutexvar_ps(_mm512_cvtepu8_epi32(lo), tbl), d));
+    _mm512_storeu_ps(y + 16, _mm512_mul_ps(_mm512_permutexvar_ps(_mm512_cvtepu8_epi32(hi), tbl), d));
+#else
+    const __m256 t0 = _mm256_loadu_ps(kvalues_mxfp4), t1 = _mm256_loadu_ps(kvalues_mxfp4 + 8);
+    const __m256 d = _mm256_set1_ps(g_e8m0[b->e]);
+    const __m128i part[4] = { lo, _mm_srli_si128(lo, 8), hi, _mm_srli_si128(hi, 8) };
+    for (int k = 0; k < 4; k++) {
+        __m256i idx = _mm256_cvtepu8_epi32(part[k]);
+        // bit 3 of the code picks the table's second half (blendv reads bit 31)
+        __m256 v = _mm256_blendv_ps(_mm256_permutevar8x32_ps(t0, idx),
+                                    _mm256_permutevar8x32_ps(t1, idx),
+                                    _mm256_castsi256_ps(_mm256_slli_epi32(idx, 28)));
+        _mm256_storeu_ps(y + 8 * k, _mm256_mul_ps(v, d));
+    }
+#endif
+}
+
 static void dq_iq1_m_avx2(const block_iq1_m *b, float *y) {
     const uint16_t *sc = (const uint16_t *)b->scales;
     f16_t sd = (f16_t)((sc[0] >> 12) | ((sc[1] >> 8) & 0x00f0) |
@@ -1501,6 +1537,7 @@ static void dequant_block(int type, const void *src, float *dst) {
         case T_IQ1_S: dq_iq1_s_avx2(src, dst); return;
         case T_IQ1_M: dq_iq1_m_avx2(src, dst); return;
         case T_Q2_0:  dq_q2_0_avx2(src, dst); return;
+        case T_MXFP4: dq_mxfp4_avx2(src, dst); return;
     }
 #elif RUNNER_NEON
     switch (type) {
@@ -1549,6 +1586,16 @@ static void dequant_block(int type, const void *src, float *dst) {
     }
 }
 
+// The C decode of an MXFP4 row, kept by name as the reference the SIMD
+// decodes are tested against (tests/test_quants_simd.c, tests/test_dot_route.c):
+// dq_mxfp4 per block, never inlined into a caller and never dispatched, so a
+// test compares a kernel with the scalar decode itself rather than with a
+// transcription of it.
+__attribute__((noinline)) void dequant_row_mxfp4_ref(const void *src, float *dst, int n) {
+    const block_mxfp4 *b = src;
+    for (int i = 0; i < n / QK; i++) dq_mxfp4(b + i, dst + (size_t)i * QK);
+}
+
 void dequant_row(int type, const void *src, float *dst, int n) {
     if (type == T_F32) { memcpy(dst, src, (size_t)n * 4); return; }
     if (type == T_F16) {
@@ -1568,6 +1615,13 @@ void dequant_row(int type, const void *src, float *dst, int n) {
         for (int i = 0; i < n; i++) dst[i] = bf16_to_f32(h[i]);
         return;
     }
+#if defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)
+    if (type == T_MXFP4) {   // the kernel per block, without a switch per 32 weights
+        const block_mxfp4 *b = src;
+        for (int i = 0; i < n / QK; i++) dq_mxfp4_avx2(b + i, dst + (size_t)i * QK);
+        return;
+    }
+#endif
     int bs = ggml_block_size(type);
     size_t ts = ggml_type_size(type);
     const uint8_t *p = src;
