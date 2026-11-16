@@ -7345,8 +7345,15 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
         int k = n_prompt - 1 - pos;
         int cap = rt->m.spec_batch < rt->m.n_batch ? rt->m.spec_batch : rt->m.n_batch;
         if (k > cap) k = cap;
-        if (!solo && k > 1 &&
-            model_forward_batch_keep(&rt->m, rt->toks + pos, k, pos)) {
+        // EXPERIMENT R3.60 fidelity read (not for merge): the chunked score's
+        // layers take the prompt's prefill route, as engine_feed's do
+        static int fid = -1;
+        if (fid < 0) { const char *fe = getenv("RUNNER_EXP_SCORE_PREFILL"); fid = fe && *fe == '1'; }
+        if (fid) rt->m.prefill_pass = rt->m.gpu == NULL;
+        bool kept = !solo && k > 1 &&
+            model_forward_batch_keep(&rt->m, rt->toks + pos, k, pos);
+        rt->m.prefill_pass = false;
+        if (kept) {
             for (int b = 0; b < k; b++) {
                 float *lg = model_spec_row_logits(&rt->m, b);
                 // raw-logit log-softmax through the one normalizer every
