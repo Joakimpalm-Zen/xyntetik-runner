@@ -493,6 +493,9 @@ typedef struct {
     uint32_t route_runs[MODEL_ROUTE_PATHS];
     int      route_rows[MODEL_ROUTE_PATHS];
     bool     route_micro_tiles_seen; // actual tiled decode since generation began
+    // R3.72: which decode positions ran the tiles, at what width (micro_sched.h);
+    // allocated at the first tiled step, cleared with route_micro_tiles_seen
+    struct micro_sched *micro_steps;
     f16_t *kcache, *vcache;  // [n_layer][n_ctx][kv_dim], fp16 (or q8_0 blocks
                              // when kv_q8 — treated as raw bytes then)
     kv_owner_t kv_owner;     // malloc on CPU/CUDA; backend-owned on Metal
@@ -1865,6 +1868,9 @@ typedef struct model_batch model_batch;
 // many columns wide and the multi-column matvec kernels unroll over it, so a
 // microbatch of this size reuses machinery that exists rather than adding any.
 #define MODEL_BATCH_MAX 8
+// room for model_route_receipt_json: the route's fields and a tiled turn's
+// decode schedule (R3.72); a schedule past it is marked truncated, not cut
+#define MODEL_ROUTE_RECEIPT_CAP (768 + 16384)
 int model_batch_max(void);
 
 // Group sequences loaded from the same file with the same parameters into a

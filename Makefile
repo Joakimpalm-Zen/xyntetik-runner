@@ -91,6 +91,7 @@ TEST_TEMPLATE = test-template.exe
 TEST_PROMPT_MARKS = test-prompt-marks.exe
 TEST_TOOLS = test-tools.exe
 TEST_JSON_OOM = test-json-oom.exe
+TEST_MICRO_SCHED = test-micro-sched.exe
 TEST_TOKENIZER_OOM = test-tokenizer-oom.exe
 TEST_TOK_CLASSES = test-tokenizer-classes.exe
 TEST_TEMPLATE_OOM = test-template-oom.exe
@@ -126,6 +127,7 @@ TEST_TEMPLATE = test-template
 TEST_PROMPT_MARKS = test-prompt-marks
 TEST_TOOLS = test-tools
 TEST_JSON_OOM = test-json-oom
+TEST_MICRO_SCHED = test-micro-sched
 TEST_TOKENIZER_OOM = test-tokenizer-oom
 TEST_TOK_CLASSES = test-tokenizer-classes
 TEST_TEMPLATE_OOM = test-template-oom
@@ -153,6 +155,7 @@ TEST_TEMPLATE = test-template
 TEST_PROMPT_MARKS = test-prompt-marks
 TEST_TOOLS = test-tools
 TEST_JSON_OOM = test-json-oom
+TEST_MICRO_SCHED = test-micro-sched
 TEST_TOKENIZER_OOM = test-tokenizer-oom
 TEST_TOK_CLASSES = test-tokenizer-classes
 TEST_TEMPLATE_OOM = test-template-oom
@@ -646,6 +649,11 @@ $(TEST_SAMPLER): tests/test_sampler.c $(OBJDIR)/sample.o $(HDR)
 # compiles src/json.c directly into the test with instrumented allocators
 $(TEST_JSON_OOM): tests/test_json_oom.c src/json.c src/json.h
 	$(CC) $(CFLAGS) -I src tests/test_json_oom.c -o $@ -lm
+
+# R3.72: a tiled turn's decode schedule (src/micro_sched.h, header-only): the
+# recorder, the receipt's JSON and the --verify read, without a model
+$(TEST_MICRO_SCHED): tests/test_micro_sched.c src/micro_sched.h src/json.c src/json.h
+	$(CC) $(CFLAGS) -I src tests/test_micro_sched.c src/json.c -o $@ -lm
 
 # compiles src/tokenizer.c into the test with instrumented allocators; gguf.c
 # and friends link normally so their allocations stay outside the failure window
@@ -3494,7 +3502,7 @@ else
 	@echo "test-metal-kv-grow: NOT RUN, the Metal backend's growing KV cache (this host has no Metal)"
 endif
 
-test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
+test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) $(TEST_MICRO_SCHED) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) $(TEST_ATEM_OOM) $(TEST_TEMPLATE_FAMILIES) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_MLOCK) test-es-mlock.gguf $(TEST_WILLNEED) $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
@@ -3645,6 +3653,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	./$(TEST_SVAL_WALK)
 	./$(TEST_JSRE)
 	./$(TEST_JSON_OOM)
+	./$(TEST_MICRO_SCHED)
 	./$(TEST_SCHEMA_OOM)
 	./$(TEST_SAMPLER)
 	./$(TEST_TOKENIZER)
@@ -4210,7 +4219,7 @@ fuzz:
 	fi
 
 clean:
-	rm -f test-moe-fixture.*.gguf test-q8.gguf test-bf16.gguf runner runner-debug runner-no-manifest.exe $(TEST_UTF8_CONSOLE) $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) \
+	rm -f test-moe-fixture.*.gguf test-q8.gguf test-bf16.gguf runner runner-debug runner-no-manifest.exe $(TEST_UTF8_CONSOLE) $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) $(TEST_MICRO_SCHED) \
 		$(TEST_TEMPLATE_OOM) $(TEST_ATEM_OOM) $(TEST_TEMPLATE_FAMILIES) \
 	      $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_TOKENIZER) \
 	      $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) $(TEST_SHARED) $(TEST_MLOCK) $(TEST_WILLNEED) \
