@@ -176,7 +176,11 @@ jobs:
   # Linux stayed green). Everything platform-neutral (the root pytest, the
   # client tests, the type check) runs in make-test; the hosted Mac is about
   # three times slower per test, so the whole suite runs there only in
-  # macos-suite on the merge.
+  # macos-suite on the merge. The suite's Metal pytest files run beside this
+  # job, as macos-suite-metal-pytest (R6.89): with them here the job took 20
+  # to 32 minutes on the six pull-request runs of 2026-11-16, on hosted
+  # runners whose speed varies a lot, against a limit of 45; the rest of its
+  # steps took 11 to 17.
   #
   # Not on the push to main (R6.15, owner 2026-11-10): the pull request ran
   # this job on the merge result, so the run on main repeated it, and a
@@ -186,7 +190,7 @@ jobs:
     needs: changes
     if: github.event_name != 'push' && needs.changes.outputs.engine == 'true' && needs.changes.outputs.tested != 'true'
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       # PEP 668: the macOS runner's Homebrew python is externally managed and
@@ -219,11 +223,6 @@ jobs:
         run: make test-stream-out && ./test-stream-out
       - name: Metal gates (make test-metal)
         run: .venv/bin/python scripts/ci-run.py --timeout 1500 metal -- make test-metal PYTHON=.venv/bin/python
-      # the suite's Metal pytest files, kept on every pull request now that the
-      # whole suite runs on macOS only daily: these are what macos-suite-python
-      # caught alone (test_metal_mv_default, 2026-10-31 and 2026-11-02)
-      - name: Metal pytest files
-        run: .venv/bin/python scripts/ci-run.py --timeout 1200 metal-pytest -- .venv/bin/python -m pytest -q -ra --junitxml=.build/ci/metal-pytest.xml tests/test_metal_*.py
       - name: agent-protocol conformance harness on the Metal path
         run: PYTHON=.venv/bin/python ./scripts/conformance.sh --junitxml=.build/ci/conformance.xml
 
@@ -1044,22 +1043,31 @@ jobs:
   # the batch gates and the python target, the three parts of `make test`.
   # The python part runs the root pytest under pytest-xdist, one worker per
   # core, whole files per worker.
+  #
+  # A fourth part, metal-pytest, is the suite's Metal pytest files
+  # (tests/test_metal_*.py) in one process, as the `macos` job ran them until
+  # R6.89; it runs on every pull request the `macos` job runs on, and is the
+  # only part a pull request runs. They are what macos-suite-python caught
+  # alone (test_metal_mv_default, 2026-10-31 and 2026-11-02), so a pull
+  # request keeps them; the python part runs the same files again daily,
+  # under xdist.
   macos-suite:
     name: macos-suite-${{ matrix.part }}
     needs: changes
-    # Daily and on dispatch, not on every push: GitHub's hosted macOS arm64
-    # pool is capacity-limited ("jobs targeting macOS arm64 runners may
-    # experience longer queue times"; a job "not acquired by Runner of type
-    # hosted even after multiple attempts" is cancelled), and four macOS jobs
-    # a push kept main red for hours on 2026-11-04. The `macos` job above
-    # keeps the Metal gates and the Metal pytest files on every pull request.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # The whole suite daily and on dispatch, not on every push: GitHub's
+    # hosted macOS arm64 pool is capacity-limited ("jobs targeting macOS
+    # arm64 runners may experience longer queue times"; a job "not acquired
+    # by Runner of type hosted even after multiple attempts" is cancelled),
+    # and four macOS jobs a push kept main red for hours on 2026-11-04. The
+    # `macos` job above keeps the Metal gates on every pull request, and the
+    # metal-pytest part keeps the Metal pytest files there.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && needs.changes.outputs.engine == 'true' && needs.changes.outputs.tested != 'true')
     runs-on: macos-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        part: [gates-core, gates-batch, python]
+        part: ${{ fromJSON(github.event_name == 'pull_request' && '["metal-pytest"]' || '["gates-core","gates-batch","python","metal-pytest"]') }}
     steps:
       - uses: actions/checkout@v7
       - name: install pytest
@@ -1067,7 +1075,18 @@ jobs:
           python3 -m venv .venv
           .venv/bin/pip install -r tests/ci/requirements.txt
       - name: make test-${{ matrix.part }}
+        if: matrix.part != 'metal-pytest'
         run: .venv/bin/python scripts/ci-run.py --timeout 3300 macos-suite-${{ matrix.part }} -- make -j3 test-${{ matrix.part }} PYTHON=.venv/bin/python PYTEST_WORKERS=auto
+      # what the Metal pytest files read from the tree: the runner binary and
+      # test.gguf (every other fixture they build in a temporary directory)
+      - name: build and test model
+        if: matrix.part == 'metal-pytest'
+        run: |
+          make
+          python3 scripts/make-test-model.py test.gguf
+      - name: Metal pytest files
+        if: matrix.part == 'metal-pytest'
+        run: .venv/bin/python scripts/ci-run.py --timeout 1200 metal-pytest -- .venv/bin/python -m pytest -q -ra --junitxml=.build/ci/metal-pytest.xml tests/test_metal_*.py
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -1080,12 +1099,13 @@ jobs:
   # it. Requiring the matrix jobs themselves does not work: a skipped
   # matrix job reports under its unexpanded name ("fuzz-${{ matrix.group }}"),
   # so the required fuzz-parsers and fuzz-files checks never appear and a
-  # docs-only pull request can never merge.
+  # docs-only pull request can never merge. macos-suite is here for its
+  # metal-pytest part, the one a pull request runs (R6.89).
   pr-gate:
     name: pr-gate
     needs: [changes, make-test, macos, simd-isa-levels, fuzz, windows, conformance,
             conformance-sanitized, consumer-compatibility, template-conformance,
-            anchors, thread-sanitizer, t3, windows-suite, reverse-proxy]
+            anchors, thread-sanitizer, t3, windows-suite, macos-suite, reverse-proxy]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
