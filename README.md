@@ -74,9 +74,9 @@ It takes about a minute to try: [quick start](#quick-start).
   <a href="docs/community-results.md">Community results</a>
 </p>
 
-> **Published release: 1.19.1.** The [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) is a patch with two fixes in JSON Schema handling: on Linux and Windows a number bound of `exclusiveMinimum: 0` or `exclusiveMaximum: 0` was treated as inclusive, so constrained output could be `0` where the schema excludes it; it is exclusive again, and macOS was not affected. And a schema whose root is not an object no longer reaches undefined behaviour while its references are read (no wrong output is known from it). Nothing else changes from its 1.19.0 release, which is for agent loops and small machines. A server keeps an agent's system prompt across processes (`--kv-snapshots-auto`), a turn on a Qwen3.5-class hybrid no longer re-reads the whole conversation, the Apple GPU maps only the context rows in use (Phi-3.5-mini at `-c 8192` runs on the GPU of an 8 GB Mac, where it ran on the CPU), and a run no longer starts with a pass over every possible descriptor number. Six families join the support list against their publishers' checkpoints evaluated in float32 (SmolLM2, Qwen2.5, StableLM 2, Phi-3.5, Granite 4.0 H Micro, Mistral 7B v0.3), Apertus trains adapters and runs on the Apple GPU, and four retired A/B switches no longer do anything. The preamble snapshot does not pay on a GPU that prefills faster than a file loads, the Apple GPU change is measured on one 8 GB Mac, and no speed claim is made for the release as a whole.
+> **Published release: 1.20.0.** The [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) is for constrained output and for the GPUs. A JSON Schema `pattern` is enforced for any regular ECMA-262 pattern, a bounded number is never led past its bound, and pydantic 1.10's titled or defaulted fields compile. LFM2.5's Q4_K_M files run on the Apple GPU, measured on an Apple M1 at 2.7x to 3.0x the CPU's prompt speed and 1.6x to 2.6x its decode, and no further from the publisher's float32 model than the CPU. On CUDA a Phi-3.5 LongRoPE model's factor set follows each sequence past its original context, and several such sequences still share one device microbatch. A turn on the Apple GPU's opt-in tiled microbatch now replays under `--verify`. `runner derive` gives a fidelity verdict only with the interval it rests on, and on x86 the gpt-oss experts' MXFP4 decode is SIMD, to the same bits. LFM2's Q8_0 files and every other type stay on the CPU (their Metal decode gained 1.17x to 1.23x), the tiled microbatch stays opt-in (it was slower on a small file at every width measured), and no speed claim is made for the release as a whole.
 
-> **Version `1.19.1`.** The command line, the HTTP API, the record formats and
+> **Version `1.20.0`.** The command line, the HTTP API, the record formats and
 > the model files that load stay compatible across 1.x
 > ([versioning policy](docs/versioning.md)). This page is the short version;
 > every flag, endpoint, limit and measurement is in the [manual](MANUAL.md).
@@ -511,7 +511,7 @@ passing evaluation made for those exact bytes.
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 1.19.1
+./runner --version   # -> runner 1.20.0
 ```
 
 Linux, macOS and Windows. NVIDIA GPUs need a driver with CUDA 13.0 support
