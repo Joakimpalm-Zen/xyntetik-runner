@@ -217,6 +217,7 @@ OBJDIR = .build/$(BUILD_ID)
 TEST_PREFIX = $(TEST_BATCH:test-batch%=test-prefix%)
 TEST_RECURRENT = $(TEST_BATCH:test-batch%=test-recurrent-rewind%)
 TEST_LONGROPE = $(TEST_BATCH:test-batch%=test-longrope-sequence%)
+TEST_CUDA_LONGROPE = $(TEST_BATCH:test-batch%=test-cuda-longrope%)
 TEST_PENALTY_WINDOW = $(TEST_BATCH:test-batch%=test-penalty-window%)
 TEST_ROPE_YARN = $(TEST_BATCH:test-batch%=test-rope-yarn%)
 TEST_ATTN_SCALE = $(TEST_BATCH:test-batch%=test-attn-scale%)
@@ -938,6 +939,17 @@ $(TEST_LONGROPE): $(TEST_LONGROPE_SRC) $(HDR)
 
 test-phi3-longrope.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py --arch phi3 --longrope-orig 32 test-phi3-longrope.gguf
+
+# Its device arm (R4.40.2), every comparison CUDA against CUDA on the same
+# fixture: G1 to G5 and the live controls L1 and L2 (tests/test_cuda_longrope.c),
+# under RUNNER_REQUIRE_GRAPH_CAPTURE=1 so a decode graph that did not capture
+# fails instead of passing eagerly. Without a CUDA device it fails as skipped.
+TEST_CUDA_LONGROPE_SRC = $(TEST_RECURRENT_SRC:tests/test_recurrent_rewind.c=tests/test_cuda_longrope.c)
+$(TEST_CUDA_LONGROPE): $(TEST_CUDA_LONGROPE_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_CUDA_LONGROPE_SRC) -o $@ $(LDFLAGS)
+
+test-cuda-longrope: runner $(TEST_CUDA_LONGROPE) test-phi3-longrope.gguf
+	RUNNER_REQUIRE_GRAPH_CAPTURE=1 ./$(TEST_CUDA_LONGROPE) test-phi3-longrope.gguf
 
 # Request cancellation at the engine's prefill/decode poll boundaries.  The
 # scheduler is included so its private batched loop is exercised without
@@ -4229,7 +4241,7 @@ clean:
 	      $(TEST_QUANTIZE) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
 	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) \
 	      $(TEST_FILE_ID) test-file-identity.tmp \
-	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_LONGROPE) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
+	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_LONGROPE) $(TEST_CUDA_LONGROPE) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
 	      $(TMPL_CONF_RENDER) \
 	      $(TEST_SPLIT_GUARD) split-guard.out test-swap-race-bin test-tokenizer-race-bin test-decide-race-bin test-decide-race-gpu-bin \
 	      runner-gpu-stub
@@ -4352,7 +4364,10 @@ CUDA_GATED_TESTS = tests/test_apertus.py tests/test_gpu_declines.py tests/test_a
                    tests/test_remove_sublayer.py tests/test_lora_qwen35.py \
                    tests/test_transcript.py tests/test_spec_gpu.py \
                    tests/test_server_sessions.py tests/test_draft_k_defaults.py \
-                   tests/test_draft_defaults.py tests/test_tc_spark_promotion.py tests/test_tc_clef_promotion.py tests/test_tc_route_label.py tests/test_verify_tc_compat.py tests/test_cuda_plan_runs.py tests/test_cuda_fit_hybrid.py tests/test_cuda_fit_ring.py tests/test_cuda_fit_full_offload.py tests/test_cuda_rec_slots.py tests/test_attn_dec_repeat.py tests/test_qwen35_kv_rows.py
+                   tests/test_draft_defaults.py tests/test_tc_spark_promotion.py tests/test_tc_clef_promotion.py tests/test_tc_route_label.py tests/test_verify_tc_compat.py tests/test_cuda_plan_runs.py tests/test_cuda_fit_hybrid.py tests/test_cuda_fit_ring.py tests/test_cuda_fit_full_offload.py tests/test_cuda_rec_slots.py tests/test_attn_dec_repeat.py tests/test_qwen35_kv_rows.py \
+                   tests/test_phi3_rope.py
+# test_phi3_rope.py serves a phi3 LongRoPE sequence across its original
+# context on the device (R4.40.2); its GPU case must not skip on a CUDA host.
 # test_qwen35_kv_rows.py holds every partial CUDA split of the hybrid fixtures
 # (R3.54): until it ran here, no gate but two make targets split a hybrid.
 # test_attn_dec_repeat.py holds k_attn_dec_mla's rescale: only its long case
@@ -4389,7 +4404,7 @@ test-anchors: runner test.gguf $(TEST_LORA_GRAD) $(DIFFTOK)
 	    --allow-skip 'this OS refuses a deliberate self-connect' .build/ci/anchors.xml
 
 .PHONY: test-anchors
-.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-hybrids test-cuda-qwen4exp test-cuda-qwen35moe test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity
+.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-hybrids test-cuda-qwen4exp test-cuda-qwen35moe test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity test-cuda-longrope
 .PHONY: test-gates test-gates-core test-gates-batch test-python
 .PHONY: test-deepseek2 test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 

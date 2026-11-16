@@ -1408,6 +1408,13 @@ bool gpu_removed_sublayers_ok(void) { return true; }
 bool gpu_rope_sets_ok(void) { return false; }
 void gpu_rope_changed(model_t *m) { (void)m; }
 
+bool gpu_rope_table_in_use(const model_t *m, float *out, int n) {
+    gpu_t *g = m ? m->gpu : NULL;
+    if (!g || !out || n != m->rope_dim / 2) return false;
+    if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
+    return cu.MemcpyDtoH(out, g->sw->inv_freq, sizeof(float) * (size_t)n) == 0;
+}
+
 bool gpu_moe_route_caps(int *max_experts, int *max_used) {
     *max_experts = MOE_ROUTE_MAX;
     *max_used = MOE_MAX_USED;
