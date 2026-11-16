@@ -455,6 +455,10 @@ typedef struct gpu_weights {
     int         n_ctx, rope_dim, rope_dim_local, kv_q8, v_rmsnorm;
     float       rope_base, rope_mscale;
     float      *rope_inv_freq, *rope_inv_freq_local;  // owned copies, compared
+    // phi3 LongRoPE past the original context (R4.40.2): the long set's
+    // table, owned and compared like the two above; rope_inv_freq then holds
+    // the short set. NULL for every other load.
+    float      *rope_freq_long;
     // --- device state (immutable once built) ---
     CUcontext   ctx;
     CUdevice    dev;
@@ -531,6 +535,11 @@ typedef struct gpu_weights {
     bool        no_id;                  // identity unavailable: listed so the
                                         // split guard can see it, never matched
     CUdeviceptr inv_freq, inv_freq_local, out_norm, dummy;
+    // the long set's tables beside them (R4.40.2), uploaded once like every
+    // other weight and never written after: an instance picks a set
+    // (gpu_t.rope_set), it does not copy one in. inv_freq_local_long only
+    // where the sliding layers rope like the global ones (swa_rope_global).
+    CUdeviceptr inv_freq_long, inv_freq_local_long;
     CUdeviceptr ones;                   // weightless V RMS norm (gemma4)
     CUdeviceptr *attn_norm, *ffn_norm;  // per layer
     CUdeviceptr *hc_an, *hc_fn;         // qwen4exp per-stream mixer gammas [hc*n_embd]
@@ -711,6 +720,11 @@ typedef struct {
     CUgraph      graph[2];
     CUgraphExec  gexec[2];
     float        graph_temp[2];         // the attention temperature each graph holds
+    // R4.40.2: the factor set this instance's rope reads (0: the short set or
+    // the only one, 1: the long set; -1: its host table is none the device
+    // holds, and its forwards refuse), and the set each graph was captured on
+    int          rope_set;
+    int          graph_set[2];
     // the window's first position, then one per later ATT_COLS-column
     // attention sub-tile (set_pos): k_attn finds its sub-tile's start
     // through the pointer it is handed
@@ -1403,16 +1417,47 @@ bool gpu_moe_ok(void) {
 // microbatch declines such a model (batch_eligible wants every layer's
 // attention weights), so its sequences decode one at a time.
 bool gpu_removed_sublayers_ok(void) { return true; }
-// The rope tables are part of the shared weight set (shared_weights), one
-// copy for every sequence on the device, so a sequence cannot change its own.
-bool gpu_rope_sets_ok(void) { return false; }
-void gpu_rope_changed(model_t *m) { (void)m; }
+// The rope tables are part of the shared weight set, one copy for every
+// sequence on the device. For a phi3 LongRoPE load past the original context
+// the weight set holds both factor sets' tables (R4.40.2), and each instance
+// reads the one its sequence is on: a sequence changes its set by changing an
+// index, never a table another sequence reads.
+bool gpu_rope_sets_ok(void) { return true; }
+
+// Which of the weight set's tables the instance's host table is, byte for
+// byte: 0 the short set (or the only one), 1 the long set, -1 neither.
+static int rope_set_of(const gpu_t *g, const model_t *m) {
+    const gpu_weights *w = g->sw;
+    size_t nb = sizeof(float) * (size_t)(m->rope_dim / 2);
+    if (!memcmp(m->rope_inv_freq, w->rope_inv_freq, nb)) return 0;
+    if (w->rope_freq_long && !memcmp(m->rope_inv_freq, w->rope_freq_long, nb)) return 1;
+    return -1;
+}
+
+void gpu_rope_changed(model_t *m) {
+    gpu_t *g = m->gpu;
+    if (!g) return;
+    g->rope_set = rope_set_of(g, m);
+    if (g->rope_set < 0)
+        fprintf(stderr, "gpu: the instance's rope table is neither factor set the device holds; "
+                "its forwards run on the CPU\n");
+}
+
+// The table an instance's rope reads: its set's global table, or its local
+// one (the long set's where the sliding layers rope like the global ones,
+// else the local table, which no set changes).
+static CUdeviceptr rope_table(const gpu_t *g, bool local) {
+    const gpu_weights *w = g->sw;
+    if (g->rope_set == 1)
+        return !local ? w->inv_freq_long : w->inv_freq_local_long ? w->inv_freq_local_long : w->inv_freq_local;
+    return local ? w->inv_freq_local : w->inv_freq;
+}
 
 bool gpu_rope_table_in_use(const model_t *m, float *out, int n) {
     gpu_t *g = m ? m->gpu : NULL;
-    if (!g || !out || n != m->rope_dim / 2) return false;
+    if (!g || !out || n != m->rope_dim / 2 || g->rope_set < 0) return false;
     if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
-    return cu.MemcpyDtoH(out, g->sw->inv_freq, sizeof(float) * (size_t)n) == 0;
+    return cu.MemcpyDtoH(out, rope_table(g, false), sizeof(float) * (size_t)n) == 0;
 }
 
 bool gpu_moe_route_caps(int *max_experts, int *max_used) {
@@ -1447,6 +1492,23 @@ static bool file_id(const char *path, uint64_t *size, uint64_t *ino,
     return model_file_identity(path, "device weights", size, ino, mtime, NULL);
 }
 
+// A phi3 LongRoPE load past its original context (R4.40): two factor sets,
+// the short one in rope_freq_short and the long one in rope_freq_long, and
+// rope_inv_freq holding whichever the instance is on. The weight set keeps
+// both; these name the short set's tables whichever that is.
+static bool rope_two_sets(const model_t *m) {
+    return m->rope_long_from > 0 && m->rope_freq_short && m->rope_freq_long;
+}
+static bool rope_local_follows(const model_t *m) {
+    return m->swa_window > 0 && m->swa_rope_global && m->rope_inv_freq_local;
+}
+static const float *rope_short_table(const model_t *m) {
+    return rope_two_sets(m) ? m->rope_freq_short : m->rope_inv_freq;
+}
+static const float *rope_short_local(const model_t *m) {
+    return rope_two_sets(m) && rope_local_follows(m) ? m->rope_freq_short : m->rope_inv_freq_local;
+}
+
 // Everything the shared buffers derive from, compared, not assumed from the
 // path. The rope tables are not a property of the file alone (YaRN and phi3's
 // LongRoPE key off the requested context; --rope-base/--rope-scale override),
@@ -1465,11 +1527,18 @@ static bool shared_config_matches(const gpu_weights *w, const model_t *m) {
         return false;
     if ((w->rope_inv_freq_local != NULL) != (m->rope_inv_freq_local != NULL))
         return false;
-    if (memcmp(w->rope_inv_freq, m->rope_inv_freq,
+    // a two-set load is compared on both sets, whichever one its instance is
+    // on now: the device holds both (R4.40.2)
+    bool two = rope_two_sets(m);
+    if ((w->rope_freq_long != NULL) != two) return false;
+    if (memcmp(w->rope_inv_freq, rope_short_table(m),
                sizeof(float) * (size_t)(m->rope_dim / 2)) != 0)
         return false;
+    if (two && memcmp(w->rope_freq_long, m->rope_freq_long,
+                      sizeof(float) * (size_t)(m->rope_dim / 2)) != 0)
+        return false;
     if (m->rope_inv_freq_local &&
-        memcmp(w->rope_inv_freq_local, m->rope_inv_freq_local,
+        memcmp(w->rope_inv_freq_local, rope_short_local(m),
                sizeof(float) * (size_t)(m->rope_dim_local / 2)) != 0)
         return false;
     return true;
@@ -1608,6 +1677,7 @@ static void shared_destroy(gpu_weights *w) {
     // until 2026-10-20, like the per-layer tables above: each load of such a
     // file left them in the context every model on the device shares
     CUdeviceptr bufs[] = { w->weights, w->inv_freq, w->inv_freq_local,
+                           w->inv_freq_long, w->inv_freq_local_long,
                            w->out_norm, w->dummy, w->ones, w->moe_ones,
                            w->hc_head_norm, w->mtp_enorm, w->mtp_hnorm,
                            w->mtp_head_norm };
@@ -1616,7 +1686,7 @@ static void shared_destroy(gpu_weights *w) {
     if (w->mod80) cu.ModuleUnload(w->mod80);
     if (w->mod) cu.ModuleUnload(w->mod);
     if (w->ctx) cu.PrimaryCtxRelease(w->dev);
-    free(w->rope_inv_freq); free(w->rope_inv_freq_local);
+    free(w->rope_inv_freq); free(w->rope_inv_freq_local); free(w->rope_freq_long);
     free(w->path);
     free(w);
 }
@@ -1978,7 +2048,16 @@ static bool shared_record_identity(gpu_weights *w, model_t *m, uint64_t fsize,
                     "using CPU\n");
             return false;
         }
-        memcpy(w->rope_inv_freq, m->rope_inv_freq, nb);
+        memcpy(w->rope_inv_freq, rope_short_table(m), nb);
+        if (rope_two_sets(m)) {
+            w->rope_freq_long = malloc(nb);
+            if (!w->rope_freq_long) {
+                fprintf(stderr, "gpu: CUDA shared long-factor rope-table allocation failed; "
+                        "using CPU\n");
+                return false;
+            }
+            memcpy(w->rope_freq_long, m->rope_freq_long, nb);
+        }
         if (m->rope_inv_freq_local) {
             size_t lb = sizeof(float) * (size_t)(m->rope_dim_local / 2);
             w->rope_inv_freq_local = malloc(lb);
@@ -1987,7 +2066,7 @@ static bool shared_record_identity(gpu_weights *w, model_t *m, uint64_t fsize,
                         "failed — using CPU\n");
                 return false;
             }
-            memcpy(w->rope_inv_freq_local, m->rope_inv_freq_local, lb);
+            memcpy(w->rope_inv_freq_local, rope_short_local(m), lb);
         }
     }
     return true;
@@ -2954,11 +3033,21 @@ fail:
 static bool shared_upload_constants(gpu_weights *w, model_t *m, int max_hd) {
     CK(cu.MemAlloc(&w->dummy, 4));
 
-    w->inv_freq = f32_dbuf(m->rope_inv_freq, m->rope_dim / 2,
+    w->inv_freq = f32_dbuf(rope_short_table(m), m->rope_dim / 2,
                            "global rope table", -1);
-    w->inv_freq_local = f32_dbuf(m->rope_inv_freq_local,
+    w->inv_freq_local = f32_dbuf(m->rope_inv_freq_local ? rope_short_local(m) : NULL,
                                  m->rope_dim_local / 2,
                                  "local rope table", -1);
+    if (rope_two_sets(m)) {     // R4.40.2: the long set beside the short one
+        w->inv_freq_long = f32_dbuf(m->rope_freq_long, m->rope_dim / 2,
+                                    "global rope table, long factors", -1);
+        if (!w->inv_freq_long) goto fail;
+        if (rope_local_follows(m)) {
+            w->inv_freq_local_long = f32_dbuf(m->rope_freq_long, m->rope_dim_local / 2,
+                                              "local rope table, long factors", -1);
+            if (!w->inv_freq_local_long) goto fail;
+        }
+    }
     w->out_norm = f32_dbuf(m->out_norm_w, m->n_embd,
                            "output norm", -1);
     if (m->hyper_conn)
@@ -4108,6 +4197,8 @@ bool gpu_init(model_t *m) {
     // a second instance of the same file reuses the first one's upload
     g->sw = shared_acquire(m, D.act_bytes, D.act_per_col, D.tc2_per_col, D.max_hd);
     if (!g->sw) goto fail;
+    g->rope_set = rope_set_of(g, m);    // a load starts on the short set (R4.40)
+    if (g->rope_set < 0) goto fail;
     m->gpu_layers = g->sw->gpu_layers;
     g->win = g->sw->win;
     CK(cu.CtxSetCurrent(g->sw->ctx));
@@ -5033,7 +5124,7 @@ static bool enc_rope(gpu_t *g, model_t *m, CUdeviceptr v, int n_heads,
     bool local = model_is_swa(m, l);
     rope_args a = { model_head_dim(m, l), n_heads, model_rope_dim(m, l) / 2,
                     m->rope_neox, model_rope_mscale(m, l) };
-    CUdeviceptr fr = local ? g->sw->inv_freq_local : g->sw->inv_freq;
+    CUdeviceptr fr = rope_table(g, local);   // the instance's factor set (R4.40.2)
     void *p[] = { &v, &fr, &a, &g->pos_dev, &vs };
     return launch(g, g->sw->f_rope, (a.half_dim + 31) / 32, n_heads, batch, 32, p);
 }
@@ -8413,6 +8504,8 @@ static bool batch_eligible(model_t **seqs, int n, gpu_t **lead_out) {
         // declines the multi-sequence batch and decodes sequentially rather
         // than losing its adapter on the batched path.
         if (m->lora) return false;
+        // every column rotates from one table (enc_rope_batch, R4.40.2)
+        if (g->rope_set != ((const gpu_t *)seqs[0]->gpu)->rope_set || g->rope_set < 0) return false;
         if (!g->sw->f_rope_seq || !g->sw->f_store_seq || !g->sw->f_attn_dec_seq)
             return false;
         // every tensor fwd_batch hands to enc_mv_batch must have a real twin
@@ -9650,7 +9743,9 @@ static bool enc_rope_batch(gpu_batch *B, model_t *m, CUdeviceptr v, int n_heads,
     bool local = model_is_swa(m, l);
     rope_args a = { model_head_dim(m, l), n_heads, model_rope_dim(m, l) / 2,
                     m->rope_neox, model_rope_mscale(m, l) };
-    CUdeviceptr fr = local ? g->sw->inv_freq_local : g->sw->inv_freq;
+    // one table for every column: batch_eligible holds the members to one
+    // factor set, and a two-set LongRoPE model has no microbatch (model.c)
+    CUdeviceptr fr = rope_table(g, local);
     void *p[] = { &v, &fr, &a, &B->pos_d, &vs };
     return launch(g, g->sw->f_rope_seq, (a.half_dim + 31) / 32, n_heads, batch, 32, p);
 }
@@ -10004,6 +10099,7 @@ static bool mamba_snap_ready(gpu_t *g, model_t *m, int n) {
 // forward (the rollback a failed or rejected forward restores), the
 // keep-forward's checkpoint flags.
 static bool cuda_fwd_prepare(gpu_t *g, model_t *m, int n, int pos) {
+    if (g->rope_set < 0) return false;   // a table the device does not hold (gpu_rope_changed)
     if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
     g->xh_src = 0;
     if (m->qwen35 && pos == 0) {
@@ -10072,7 +10168,13 @@ static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
     // steps every floor_scale positions, so a graph captured before a step
     // would replay the old factor: capture again when the factor moves.
     float temp = model_attn_temp(m, pos);
-    if (g->gexec[gi] && g->graph_temp[gi] != temp) {
+    // The rope table is a kernel argument the graph holds too (R4.40.2): a
+    // graph captured on one factor set would replay it on the other, so a
+    // set change captures again. RUNNER_TEST_ROPE_GRAPH_STALE=1 keeps the old
+    // graph: the mutant tests/test_cuda_longrope.c has to catch.
+    bool set_moved = g->gexec[gi] && g->graph_set[gi] != g->rope_set &&
+                     !getenv("RUNNER_TEST_ROPE_GRAPH_STALE");
+    if (g->gexec[gi] && (g->graph_temp[gi] != temp || set_moved)) {
         cu.GraphExecDestroy(g->gexec[gi]);
         cu.GraphDestroy(g->graph[gi]);
         g->gexec[gi] = NULL;
@@ -10080,6 +10182,7 @@ static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
     }
     if (!g->gexec[gi]) {
         g->graph_temp[gi] = temp;
+        g->graph_set[gi] = g->rope_set;
         prof.capturing = 1;
         // capture records the launch sequence without executing it; the
         // recorded graph is position-invariant because pos lives in device

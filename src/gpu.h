@@ -79,7 +79,8 @@ bool   gpu_eseries_ok(void);
 bool   gpu_removed_sublayers_ok(void);
 // R4.40: can an instance change its rope frequency table after init
 // (model_rope_for_len)? Metal keeps the table per instance and can; CUDA
-// shares it between the sequences of a weight set and cannot yet.
+// keeps both LongRoPE sets' tables in the shared weight set and each instance
+// reads its own set's (R4.40.2).
 bool   gpu_rope_sets_ok(void);
 // The instance's rope_inv_freq (and its sliding-layer copy) changed: copy it
 // to the device. Called between forwards, never during one.
