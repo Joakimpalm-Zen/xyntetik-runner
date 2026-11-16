@@ -318,6 +318,30 @@ static bool gguf_open_one_x(gguf_file *g, const char *path, bool header_only) {
             goto fail;
         }
         uint64_t off = (uint64_t)(uintptr_t)t->data;
+        // The GGUF spec puts every tensor's data at a multiple of
+        // general.alignment (32 without the key) from the data section's
+        // start, and a block's fields are read in place: an f16 scale needs 2
+        // bytes of alignment, an F32 value 4. An offset that breaks either
+        // made every decode of the tensor read misaligned, undefined
+        // behaviour: the fuzzer found a Q4_0 norm at offset 131,071 that the
+        // loader took and dq_q4_0 then read at an odd address (2026-11-16).
+        // Such a file is malformed; refused by name, in both modes. The
+        // mapping starts on a page, so data_start + off is the address's
+        // alignment.
+        if (off % align != 0) {
+            fprintf(stderr, "error: invalid tensor metadata for %s: its data offset %llu is "
+                    "not a multiple of the file's alignment, %llu (general.alignment, 32 "
+                    "without it), so its blocks would be read misaligned\n", t->name,
+                    (unsigned long long)off, (unsigned long long)align);
+            goto fail;
+        }
+        if ((data_start + off) % 4 != 0) {
+            fprintf(stderr, "error: invalid tensor metadata for %s: its data starts at byte "
+                    "%llu of the file, which leaves its blocks misaligned (general.alignment "
+                    "%llu is under the 4 bytes a block's fields need)\n", t->name,
+                    (unsigned long long)(data_start + off), (unsigned long long)align);
+            goto fail;
+        }
         if (header_only) {
             // The point of this mode: the bytes need not be here. Record what
             // the header claims the data section spans, and leave `data` NULL
