@@ -2,7 +2,7 @@
 """A tiny lfm2 GGUF for the architecture's fixture tests.
 
     scripts/make-test-lfm2.py OUT.gguf [--moe] [--conv-bias] [--all-attention]
-                                       [--l-cache N]
+                                       [--l-cache N] [--wide]
 
 Five blocks typed by the attention.head_count_kv array: blocks 2 and 4 are
 GQA attention with per-head QK norms, the other three short convolutions
@@ -13,7 +13,9 @@ experts, top 2, with a selection bias. The final norm is token_embd_norm
 and the output is tied. Weights are seeded pseudo-random F32.
 `--conv-bias` adds a convolution bias and `--all-attention` types every
 block as attention: both are files Runner refuses. `--l-cache N` changes
-the kernel length.
+the kernel length. `--wide` makes every matrix 256 wide (hidden 256, FFN
+512), so `runner --quantize --quant q4_k` can store the layer weights as
+Q4_K: the shape the Apple GPU path takes by default (R3.42).
 
 The arithmetic is checked elsewhere, against transformers' float32
 reference on the publisher's files
@@ -36,14 +38,17 @@ if "--l-cache" in argv:
 MOE = "--moe" in argv
 CONV_BIAS = "--conv-bias" in argv
 ALL_ATTN = "--all-attention" in argv
+WIDE = "--wide" in argv
 args = [a for a in argv if not a.startswith("--")]
 if len(args) != 1:
     sys.exit(f"usage: {sys.argv[0]} OUT.gguf [--moe] [--conv-bias] "
-             "[--all-attention] [--l-cache N]")
+             "[--all-attention] [--l-cache N] [--wide]")
 OUT = args[0]
 
 E, HEADS, KV, HD, LAYERS = 32, 4, 2, 8, 5
 FF, FF_EXP, N_EXP, USED, DENSE = 48, 16, 4, 2, 1
+if WIDE:   # every matrix's input a whole number of 256-element K-quant blocks
+    E, HD, FF = 256, 64, 512
 ATTN = [False, False, True, False, True]
 if ALL_ATTN:
     ATTN = [True] * LAYERS

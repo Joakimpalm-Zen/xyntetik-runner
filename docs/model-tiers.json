@@ -8345,7 +8345,31 @@
           "reason": "lfm2 (short-convolution layers interleaved with GQA attention) has no validated CUDA path; CUDA refuses it by name and the file runs on the CPU.",
           "matrix": "MANUAL.md#support-matrix"
         },
-        "metal": null
+        "metal": {
+          "kind": "gate",
+          "runner_version": "1.19.1",
+          "date": "2026-11-16",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "bd4d564041c57f99afb53e55852624625da1712e",
+          "caps": {
+            "version": "1.19.1",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "3bb0f080e0b57ed843c39e49de9d3c749fc75140afe68d73176767342bcafc56",
+          "ran": "runner -m LFM2.5-1.2B-Instruct-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/lfm2.5-1.2b-instruct-q4_k_m.macos-arm64-metal.metal.txt",
+          "build": {
+            "binary_sha256": "efe14f5e54f87fcc24d6c1746a3a5a324717f76ed3ed67ee1bdc74b65b65ecf0",
+            "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+            "commit": "bd4d564041c57f99afb53e55852624625da1712e",
+            "dirty": false
+          }
+        }
       },
       "transitions": [
         {
@@ -8370,8 +8394,8 @@
           "supported": false,
           "reason": "--lora does not cover the short-convolution hybrid yet (lfm2)"
         },
-        "runner_version": "1.7.1",
-        "date": "2026-10-30"
+        "runner_version": "1.19.1",
+        "date": "2026-11-16"
       }
     },
     {
@@ -8656,7 +8680,31 @@
           "reason": "lfm2 (short-convolution layers interleaved with GQA attention) has no validated CUDA path; CUDA refuses it by name and the file runs on the CPU.",
           "matrix": "MANUAL.md#support-matrix"
         },
-        "metal": null
+        "metal": {
+          "kind": "gate",
+          "runner_version": "1.19.1",
+          "date": "2026-11-16",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "bd4d564041c57f99afb53e55852624625da1712e",
+          "caps": {
+            "version": "1.19.1",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "a3dd7b514a3e7cb8885a12451aa38a87e9bf3c662773efb2fba4f846b4e6bba0",
+          "ran": "runner -m LFM2.5-350M-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=80 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/lfm2.5-350m-q4_k_m.macos-arm64-metal.metal.txt",
+          "build": {
+            "binary_sha256": "efe14f5e54f87fcc24d6c1746a3a5a324717f76ed3ed67ee1bdc74b65b65ecf0",
+            "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+            "commit": "bd4d564041c57f99afb53e55852624625da1712e",
+            "dirty": false
+          }
+        }
       },
       "transitions": [
         {
@@ -8681,8 +8729,8 @@
           "supported": false,
           "reason": "--lora does not cover the short-convolution hybrid yet (lfm2)"
         },
-        "runner_version": "1.8.0",
-        "date": "2026-10-30"
+        "runner_version": "1.19.1",
+        "date": "2026-11-16"
       }
     },
     {

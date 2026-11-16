@@ -61,17 +61,52 @@ def test_a_convolution_bias_and_an_all_attention_file_are_refused(runner_bin, tm
     assert b"needs both attention and short-convolution layers" in p.stderr
 
 
-def test_the_gpu_is_not_used_for_it_yet(runner_bin, tmp_path):
-    # Only a host with a usable device reaches the routing that refuses lfm2
-    # by name; a CUDA build without a driver stops at the probe with its own
-    # line, as tests/test_remove_sublayer.py's GPU checks skip there.
+def _backend(runner_bin):
     caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT,
                                      stdout=subprocess.PIPE, timeout=60).stdout)
-    if (caps.get("gpu") or {}).get("backend") not in ("cuda", "metal"):
-        pytest.skip("no CUDA or Metal GPU device in this build or host")
+    return (caps.get("gpu") or {}).get("backend")
+
+
+def _route(p):
+    """The route line's fields (RUNNER_DEBUG_ROUTE=1), as a dict of the first line."""
+    for line in p.stderr.decode(errors="replace").splitlines():
+        if line.startswith("route: "):
+            return dict(f.split("=", 1) for f in line[7:].split(" ") if "=" in f)
+    return {}
+
+
+def test_cuda_does_not_take_it_yet(runner_bin, tmp_path):
+    # Only a host with a usable device reaches the routing that keeps lfm2 on
+    # the CPU by name; a CUDA build without a driver stops at the probe with
+    # its own line, as tests/test_remove_sublayer.py's GPU checks skip there.
+    if _backend(runner_bin) != "cuda":
+        pytest.skip("no CUDA device in this build or host")
     p = _run(runner_bin, _make(tmp_path, "auto"))
     assert p.returncode == 0, p.stderr.decode(errors="replace")
-    assert b"lfm2 is validated on the CPU only" in p.stderr
+    assert b"lfm2 is validated on the CPU and the Apple GPU only" in p.stderr
+
+
+def test_the_apple_gpu_takes_it_where_the_layer_weights_are_q4_k(runner_bin, tmp_path):
+    """R3.42: lfm2's Apple GPU path is the default only where its layer weights are mostly Q4_K
+    by bytes, the shape measured to pass (LFM2.5-350M and 1.2B Q4_K_M); an F32 file, like the
+    measured Q8_0 ones, stays on the CPU and the route line says why."""
+    if _backend(runner_bin) != "metal":
+        pytest.skip("no Metal device in this build or host")
+    f32 = _make(tmp_path, "wide-f32", "--wide")
+    q4k = tmp_path / "wide-q4_k.gguf"
+    subprocess.run([runner_bin, "-m", f32, "--quantize", str(q4k), "--quant", "q4_k"], cwd=ROOT,
+                   check=True, capture_output=True, timeout=120)
+    env = {"RUNNER_DEBUG_ROUTE": "1"}
+    import os
+    for model, backend, said in ((f32, "cpu", True), (q4k, "metal", False)):
+        p = subprocess.run([runner_bin, "-m", str(model), "-p", "hello world, again and again", "-n", "4",
+                            "--temp", "0", "--no-tray"], cwd=ROOT, capture_output=True, timeout=60,
+                           env=dict(os.environ, **env))
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+        why = b"lfm2 takes the Apple GPU only where its layer weights are mostly Q4_K, measured"
+        assert (why in p.stderr) == said, (model, p.stderr.decode(errors="replace")[-600:])
+        assert _route(p).get("backend") == backend, (model, _route(p))
+    assert b"this file's are F32" in _run(runner_bin, f32).stderr
 
 
 def test_lora_and_training_are_refused_by_name(runner_bin, tmp_path):
