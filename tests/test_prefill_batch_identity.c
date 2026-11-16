@@ -1,0 +1,196 @@
+// R3.60: on a CPU-only run a prompt's bits do not depend on the batch size.
+//
+// A prompt is fed in chunks of -b rows. A projection narrower than
+// MV_SMALL_BATCH (8) columns used to take the native quantized dot and a wider
+// one the dequantized f32 tile, two arithmetics that agree only to the last
+// bits. So the rows a chunk's short tail left in the KV cache, and the rows of
+// a MoE expert that a chunk gave fewer than 8 rows, moved with -b, with where
+// the chunks fell, and with how much of a prompt a cache had kept. Now every
+// product of a prompt's feed takes the tile at every width (model.c mv_rows),
+// and only the decode step keeps the native dot.
+//
+// The gates, byte for byte, on an f16 cache:
+//
+//   1. -b 64 and -b 512 (the context, 256, at these fixtures) store the same
+//      K and V rows at every position of every layer, and give the same
+//      logits after the prompt and after 4 greedy steps. Prompts of 129, 67,
+//      200 and 250 tokens leave tails of 1, 3, 8 and 58 rows at -b 64 and are
+//      one chunk at 512. Fixtures:
+//        - dense Q4_K and Q6_K, 256-wide rows;
+//        - a MoE of 32 experts, 2 used, Q8_0: a 64-row chunk gives an expert
+//          about 4 rows, a whole prompt about 8 to 16, both sides of the
+//          switch (the 2- and 4-expert fixtures never get under 8);
+//        - gpt-oss with MXFP4 experts and sliding layers: at -b 64 a sliding
+//          layer keeps a ring of window + 64 rows, at 256 the flat cache, so
+//          the positions both still hold are compared there.
+//   2. A prompt fed as n - 1 tokens and then 1 (the prefix cache's re-feed of
+//      a repeated prompt) stores what the cold feed stores.
+//   3. The live control: the same prompt fed one token at a time through the
+//      decode step's route (engine_feed_solo) stores different rows on every
+//      fixture. So the fixture tells the two arithmetics apart, and a route
+//      chosen by width would show in gate 1.
+#include "runner.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+enum { CTX = 256, STEPS = 4, NLEN = 4 };
+static const int LENS[NLEN] = { 129, 67, 200, 250 };
+static int g_fail = 0;
+
+static void ck(int cond, const char *file, int n, const char *what) {
+    fprintf(stderr, "%s: %s at %d tokens, %s\n", cond ? "ok" : "FAIL", file, n, what);
+    if (!cond) g_fail = 1;
+}
+
+typedef struct { model_t m; tokenizer tok; sampler smp; engine e; } slot;
+
+static bool slot_open(slot *s, const char *path, int batch) {
+    model_params p;
+    memset(&p, 0, sizeof(p));
+    p.gpu_mode  = GPU_OFF;
+    p.n_threads = 2;
+    p.n_ctx     = CTX;
+    p.n_batch   = batch;
+    memset(s, 0, sizeof(*s));
+    if (!model_load(&s->m, path, &p)) return false;
+    if (!tokenizer_init(&s->tok, &s->m.gf)) { model_free(&s->m); return false; }
+    s->smp.temp = 0;
+    s->smp.repeat_penalty = 1.0f;
+    s->smp.rng = 1;
+    engine_init(&s->e, &s->m, &s->tok, &s->smp);
+    return true;
+}
+
+static void slot_close(slot *s) {
+    free(s->e.hist);
+    tokenizer_free(&s->tok);
+    model_free(&s->m);
+}
+
+static void prompt_tokens(const model_t *m, int32_t *t, int n) {
+    uint32_t x = 0x2545F491u;
+    for (int i = 0; i < n; i++) {
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        t[i] = 3 + (int32_t)(x % (uint32_t)(m->n_vocab - 3));
+    }
+}
+
+static const uint8_t *k_row(const model_t *m, int l, int p) {
+    size_t kn = model_kv_dim(m, l) > 0 && !model_layer_tied_v(m, l) ? model_k_row_bytes(m, l) : 0;
+    return kn ? (const uint8_t *)m->kcache + model_k_byte_off(m, l) +
+                (size_t)model_kv_row_at(m, l, p) * kn : NULL;
+}
+static const uint8_t *v_row(const model_t *m, int l, int p) {
+    size_t vn = model_kv_dim(m, l) > 0 ? model_v_row_bytes(m, l) : 0;
+    return vn ? (const uint8_t *)m->vcache + model_v_byte_off(m, l) +
+                (size_t)model_kv_row_at(m, l, p) * vn : NULL;
+}
+
+// The rows of positions [0, n) that BOTH caches still hold (a ring layer
+// keeps its last kv_ring positions), compared byte for byte. Returns the
+// number of (layer, position) pairs whose K or V row differs.
+static int kv_diff(const model_t *a, const model_t *b, int n) {
+    int diffs = 0;
+    for (int l = 0; l < a->n_layer; l++) {
+        int lo = 0;
+        if (model_kv_is_ring(a, l) && n - a->kv_ring > lo) lo = n - a->kv_ring;
+        if (model_kv_is_ring(b, l) && n - b->kv_ring > lo) lo = n - b->kv_ring;
+        for (int p = lo; p < n; p++) {
+            const uint8_t *ka = k_row(a, l, p), *kb = k_row(b, l, p);
+            const uint8_t *va = v_row(a, l, p), *vb = v_row(b, l, p);
+            bool same = true;
+            if (ka && kb) same = memcmp(ka, kb, model_k_row_bytes(a, l)) == 0;
+            if (same && va && vb) same = memcmp(va, vb, model_v_row_bytes(a, l)) == 0;
+            diffs += !same;
+        }
+    }
+    return diffs;
+}
+
+static int argmax(const float *lg, int n) {
+    int best = 0;
+    for (int i = 1; i < n; i++) if (lg[i] > lg[best]) best = i;
+    return best;
+}
+
+// Feed the prompt whole (engine_feed, the prefill pass), keep its logits,
+// then decode STEPS greedy tokens through the decode route, keeping each
+// step's logits: (STEPS + 1) rows of n_vocab.
+static float *feed_and_decode(slot *s, const int32_t *t, int n) {
+    int V = s->m.n_vocab;
+    float *out = malloc(sizeof(float) * (size_t)V * (STEPS + 1));
+    if (!out) return NULL;
+    engine_reset(&s->e);
+    const float *lg = engine_feed(&s->e, t, n);
+    for (int k = 0; lg && k <= STEPS; k++) {
+        memcpy(out + (size_t)k * V, lg, sizeof(float) * (size_t)V);
+        if (k < STEPS) lg = engine_feed_solo(&s->e, (int32_t)argmax(lg, V));
+    }
+    if (!lg) { free(out); return NULL; }
+    return out;
+}
+
+static void check_file(const char *path) {
+    slot s64, s512, ref;
+    if (!slot_open(&s64, path, 64) || !slot_open(&s512, path, 512) ||
+        !slot_open(&ref, path, 64)) {
+        fprintf(stderr, "FAIL: %s did not load\n", path);
+        g_fail = 1;
+        return;
+    }
+    int V = s64.m.n_vocab;
+    int32_t t[CTX];
+    prompt_tokens(&s64.m, t, CTX);
+    int control_live = 0;
+    for (int i = 0; i < NLEN; i++) {
+        int n = LENS[i];
+        // gate 1: the prompt's rows at -b 64 and -b 512, then the decode on top.
+        // The rows are read before the decode moves the ring.
+        engine_reset(&s64.e);
+        engine_reset(&s512.e);
+        ck(engine_feed(&s64.e, t, n) && engine_feed(&s512.e, t, n), path, n, "both batches fed");
+        int d = kv_diff(&s64.m, &s512.m, n);
+        if (d) fprintf(stderr, "  %d (layer, position) rows differ\n", d);
+        ck(d == 0, path, n, "-b 64 and -b 512 store the same K and V rows");
+        float *a = feed_and_decode(&s64, t, n), *b = feed_and_decode(&s512, t, n);
+        ck(a && b && memcmp(a, b, sizeof(float) * (size_t)V * (STEPS + 1)) == 0, path, n,
+           "-b 64 and -b 512 give the same logits after the prompt and 4 greedy steps");
+        free(a);
+        free(b);
+
+        // gate 2: n - 1 tokens, then the last one alone, as the prefix cache
+        // re-feeds a repeated prompt
+        engine_reset(&ref.e);
+        bool kept = engine_feed(&ref.e, t, n - 1) && engine_feed(&ref.e, t + n - 1, 1);
+        engine_reset(&s64.e);
+        kept = kept && engine_feed(&s64.e, t, n);
+        ck(kept && kv_diff(&ref.m, &s64.m, n) == 0, path, n,
+           "a kept prefix and a one-token re-feed store the cold feed's rows");
+
+        // gate 3, the control: one token at a time through the decode route
+        engine_reset(&ref.e);
+        bool solo = true;
+        for (int j = 0; j < n && solo; j++) solo = engine_feed_solo(&ref.e, t[j]) != NULL;
+        int dc = solo ? kv_diff(&ref.m, &s64.m, n) : 0;
+        fprintf(stderr, "  control: the decode route differs at %d (layer, position) rows\n", dc);
+        control_live += dc > 0;
+    }
+    ck(control_live == NLEN, path, CTX,
+       "live control: the decode route stores different rows at every prompt");
+    slot_close(&s64);
+    slot_close(&s512);
+    slot_close(&ref);
+}
+
+int main(int argc, char **argv) {
+    if (argc < 2) {
+        fprintf(stderr, "usage: %s <fixture.gguf>...\n", argv[0]);
+        return 2;
+    }
+    for (int i = 1; i < argc; i++) check_file(argv[i]);
+    if (g_fail) return 1;
+    printf("prefill batch identity: all gates pass\n");
+    return 0;
+}
