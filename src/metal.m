@@ -1692,6 +1692,9 @@ void gpu_rope_changed(model_t *m) {
                sizeof(float) * (size_t)(m->rope_dim_local / 2));
     }
 }
+// the Metal microbatch rotates every column from one table: a two-set model's
+// sequences decode one by one there (model.c)
+bool gpu_batch_rope_sets_ok(void) { return false; }
 bool gpu_rope_table_in_use(const model_t *m, float *out, int n) {
     gpu_t *g = m ? m->gpu : NULL;
     if (!g || !g->inv_freq || !out || n != m->rope_dim / 2) return false;
