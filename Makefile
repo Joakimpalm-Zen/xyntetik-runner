@@ -4536,6 +4536,8 @@ test-decide-race-gpu: test.gguf
 
 .PHONY: test-pool-race test-server-race-tsan test-decide-race test-decide-race-gpu
 
-fuzz-replay-%: tests/fuzz/fuzz_%.c tests/fuzz/replay.c tests/fuzz/fuzz_files.h $(HDR)
+# the sources it links, as fuzz-% has them: a replay binary older than a
+# changed src/*.c replayed the old code
+fuzz-replay-%: tests/fuzz/fuzz_%.c tests/fuzz/replay.c tests/fuzz/fuzz_files.h $(wildcard src/*.c) $(HDR)
 	$(FUZZ_CLANG) $(filter-out $(FUZZ_INSTRUMENTATION),$(FUZZ_FLAGS)) -fsanitize=address,undefined tests/fuzz/replay.c tests/fuzz/fuzz_$*.c $(FUZZ_SRC_$*) -o $@ -lm -lpthread
 
