@@ -507,7 +507,9 @@ void   engine_set_request_stops(engine *e, const int *ids, int n);
 // Recompute the engine's model identity (the prefix-cache key) after the
 // model's adapter changed (R8.6); cheap enough to do per adapter switch.
 void   engine_refresh_identity(engine *e);
-// feed tokens (batched); returns last-token logits, or NULL on overflow/stop
+// feed tokens (batched); returns last-token logits, or NULL on overflow/stop.
+// The prompt's prefill pass: on a CPU-only run its bits do not depend on the
+// batch size or the chunking (R3.60), and they are not the decode step's.
 float *engine_feed(engine *e, const int32_t *toks, int n);
 // feed ONE token through the decode step's route, the solo forward the
 // sampler sees and `--score` uses: for a caller whose numbers must be those

@@ -7110,10 +7110,16 @@ typedef struct {
     bool exact;       // a verify round's columns: the per-column route up to
                       // VEC_DOT_MULTI_MAX wide (matvec_b, t_mv_exact)
     const void *xk;   // one column in 256-element int8 blocks (RUNNER_CPU_I8K)
+    bool prefill;     // a CPU-only prompt's prefill (R3.60): the batch route at every width
 } mv_job;
 
 // Batches narrower than this take the per-column native dot (see mv_rows);
 // wider ones the dequantized f32 tile, whose row reuse only pays off there.
+// A CPU-only prompt's prefill takes the tile at every width instead (R3.60):
+// its short chunk tails and its experts given a few of a chunk's rows would
+// otherwise take the native dot, so the prompt's bits moved with -b. Measured
+// on gpt-oss-120b at 26 threads, the route read 1.146x the native dot's
+// prompt speed at -b 64 and 1.084x at -b 512 (with R3.73's SIMD MXFP4 decode).
 enum { MV_SMALL_BATCH = 8 };
 
 static void mv_rows(void *ctx, int i0, int i1) {
@@ -7125,7 +7131,8 @@ static void mv_rows(void *ctx, int i0, int i1) {
     // the weights, so dot(w * s, x) = s * dot(w, x), before the bias.
     const float sc = j->w->scale;
 
-    if (j->n_batch < MV_SMALL_BATCH || (j->exact && j->n_batch <= VEC_DOT_MULTI_MAX)) {
+    if (!j->prefill &&
+        (j->n_batch < MV_SMALL_BATCH || (j->exact && j->n_batch <= VEC_DOT_MULTI_MAX))) {
         // Solo step and small batches (the speculative verify, a few server
         // slots decoding together): every column takes the SAME native dot
         // the solo step takes, rows outer so a weight row is streamed from
@@ -7263,7 +7270,7 @@ static void mv_rows(void *ctx, int i0, int i1) {
     enum { TROWS = VEC_DOT_F32_TILE_ROWS };
     float *tbuf = NULL;
     const float *trow[TROWS];
-    if (j->n_batch >= 8 && i1 - i0 >= 4)
+    if ((j->n_batch >= 8 || j->prefill) && i1 - i0 >= 4)
         tbuf = malloc(sizeof(float) * (size_t)n_in * TROWS);
     if (tbuf) {
         int r = i0;
@@ -7362,8 +7369,13 @@ static void mv_rows(void *ctx, int i0, int i1) {
 // activation quant to save one dot.
 enum { I8_MIN_ROWS = 32 };
 
+// A CPU-only prompt's prefill on this thread (forward_batch_run, from
+// model_t.prefill_pass): every product of it takes the batch route, the int8
+// one included when RUNNER_CPU_I8_PREFILL pins it on (R3.60).
+static _Thread_local bool t_mv_prefill;
+
 static bool mv_takes_i8(const gguf_tensor *w, int n_in, int n_out, int n_batch) {
-    if (n_batch >= MV_SMALL_BATCH)
+    if (n_batch >= MV_SMALL_BATCH || t_mv_prefill)
         return i8_prefill_enabled() && i8_tile_ok(w->type, n_in);
     return n_out >= I8_MIN_ROWS && i8_dot_enabled() && i8_dot_ok(w->type, n_in);
 }
@@ -7431,12 +7443,12 @@ static void matvec_b(tpool *tp, float *y, int y_stride, const gguf_tensor *w,
         return;
     }
     mv_job j = { w, x, bias, y, n_in, n_batch, x_stride, y_stride,
-                 ggml_row_size(w->type, n_in), NULL, 0, NULL, t_mv_exact, NULL };
+                 ggml_row_size(w->type, n_in), NULL, 0, NULL, t_mv_exact, NULL, t_mv_prefill };
     void *xq = NULL;
     float xs_stack[MV_XS_STACK], *xs_heap = NULL;
     double tq = tprof_enabled() ? tprof_now() : 0;
     void *xk = NULL;
-    if (n_batch == 1 && i8k_dot_enabled() && i8k_dot_ok(w->type, n_in) &&
+    if (n_batch == 1 && !t_mv_prefill && i8k_dot_enabled() && i8k_dot_ok(w->type, n_in) &&
         (xk = malloc(i8k_act_size(n_in)))) {
         i8k_quant_act(x, xk, n_in);
         j.xk = xk;
@@ -7445,7 +7457,7 @@ static void matvec_b(tpool *tp, float *y, int y_stride, const gguf_tensor *w,
         j.xq = xq;
         j.xq_stride = i8_act_size(n_in);
     } else {
-        j.xs = mv_xsums(w, x, n_in, n_batch, xs_stack, &xs_heap);
+        j.xs = t_mv_prefill ? NULL : mv_xsums(w, x, n_in, n_batch, xs_stack, &xs_heap);
     }
     if (tq) {
         tprof_region(xq || xk ? "act-quant" : "xsums", tprof_now() - tq);
@@ -7548,8 +7560,8 @@ static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
         tag |= 1ull << (p[s].w->type < 60 ? p[s].w->type : 59);
         mv_job j = { p[s].w, x, p[s].bias, p[s].y, n_in, n_batch, x_stride,
                      p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0, NULL,
-                     t_mv_exact, NULL };
-        if (n_batch == 1 && i8k_dot_enabled() && i8k_dot_ok(p[s].w->type, n_in)) {
+                     t_mv_exact, NULL, t_mv_prefill };
+        if (n_batch == 1 && !t_mv_prefill && i8k_dot_enabled() && i8k_dot_ok(p[s].w->type, n_in)) {
             if (!xk_tried) {
                 xk_tried = true;
                 if ((xk = malloc(i8k_act_size(n_in)))) i8k_quant_act(x, xk, n_in);
@@ -7566,7 +7578,7 @@ static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
                 j.xq_stride = i8_act_size(n_in);
             }
         }
-        if (!j.xq && n_batch == 1 && vec_dot_xs_ok(p[s].w->type)) {
+        if (!j.xq && n_batch == 1 && !t_mv_prefill && vec_dot_xs_ok(p[s].w->type)) {
             if (!xs_tried) {
                 xsum = mv_xsums(p[s].w, x, n_in, n_batch, xs_stack, &xs_heap);
                 xs_tried = true;
@@ -7603,13 +7615,13 @@ static void matvec_b_parts_x(tpool *tp, const mv_part *p, const float *const *xs
     void *xq[MV_MAX_PARTS] = {0};
     // each part's own group sums (vec_dot_xs), one block for all parts
     float *xsum = NULL;
-    for (int s = 0; s < np && !xsum; s++)
+    for (int s = 0; s < np && !xsum && !t_mv_prefill; s++)
         if (vec_dot_xs_ok(p[s].w->type) && n_in % 32 == 0)
             xsum = malloc(sizeof(float) * (size_t)np * (size_t)(n_in / 32));
     for (int s = 0; s < np; s++) {
         mv_job j = { p[s].w, xs[s], p[s].bias, p[s].y, n_in, 1, n_in,
                      p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0, NULL,
-                     false, NULL };
+                     false, NULL, t_mv_prefill };
         if (mv_takes_i8(p[s].w, n_in, p[s].n_out, 1)) {
             xq[s] = mv_quant_act(xs[s], n_in, n_in, 1);
             if (xq[s]) { j.xq = xq[s]; j.xq_stride = i8_act_size(n_in); }
@@ -10246,7 +10258,8 @@ NUM_STAGE void moe_grouped_sum(model_t *m, const layer_t *ly, int n, int xdim,
 // and each token sums its experts in the ROUTER's order (moe_dall holds the
 // per-expert outputs until the whole layer has run), exactly the per-token
 // accumulation. Below MV_SMALL_BATCH rows per expert the dots are the
-// per-token dots too, so a speculation verify batch (K+1 rows) is byte-equal
+// per-token dots too (outside a CPU-only prompt's prefill, which takes the
+// batch route at every width, R3.60), so a speculation verify batch (K+1 rows) is byte-equal
 // to decoding its rows one at a time; the ascending-expert order this path
 // used before was not (Qwen3.8-Flash-Next --draft-lookup changed the greedy
 // text, 2026-10-07). Big prefill throughput win; decode is untouched.
@@ -15988,6 +16001,7 @@ static float *forward_batch_run(model_t *m, const int32_t *tokens, int n, int po
     m->fwd_tokens = tokens;   // the PLE block hashes the batch's own ids
 
     double dt_f0 = dbg_time_on() ? dt_now() : 0;
+    t_mv_prefill = m->prefill_pass;   // R3.60: the layers' products take the batch route
     for (int l = start; l < m->n_layer; l++)
         forward_layer(m, l, n, pos, dbg);
     if (dbg_time_on()) { int k = n > 1; dt_fwd_t[k] += dt_now() - dt_f0; dt_fwd_n[k]++; dt_fwd_rows[k] += n; }
@@ -15996,6 +16010,7 @@ static float *forward_batch_run(model_t *m, const int32_t *tokens, int n, int po
     for (int b = 0; m->tape && b < n && pos + b < m->tape_T; b++)
         memcpy(m->tape + ((size_t)m->n_layer * m->tape_T + pos + b) * m->n_embd,
                m->x + (size_t)b * m->n_embd, sizeof(float) * (size_t)m->n_embd);
+    t_mv_prefill = false;   // the head is one row, the decode step's own route
     if (!want_logits) return NULL;
     return forward_head(m, n, dbg);
 }
