@@ -36,5 +36,20 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: make ptx with the pinned toolchain
         run: MAMBA_ROOT_PREFIX="$RUNNER_TEMP/mamba" tools/ptx-toolchain/make-ptx.sh "$RUNNER_TEMP/ptx-toolchain"
+      - name: the regenerated headers' sha256
+        if: always()
+        run: sha256sum src/kernels_ptx.h src/kernels_ptx80.h
+      # A host without the pinned toolchain (the Windows CUDA host) writes the kernel change,
+      # lets this job regenerate the headers, and commits them from the artifact:
+      #   gh run download RUN_ID -n ptx-headers -D src/
+      - name: the regenerated headers, as an artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ptx-headers
+          path: |
+            src/kernels_ptx.h
+            src/kernels_ptx80.h
+          if-no-files-found: error
       - name: the committed headers, byte for byte
         run: git diff --exit-code --stat src/kernels_ptx.h src/kernels_ptx80.h

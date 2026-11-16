@@ -57,6 +57,9 @@ typedef struct {
     const char *cpu_only;
     // CUDA serves it and the other backends do not: the line elsewhere
     const char *cpu_only_noncuda;
+    // R3.42: the CPU only on a build other than Metal's (lfm2's short
+    // convolution has a Metal path, no CUDA one)
+    const char *cpu_only_nonmetal;
     const char *refused;        // non-NULL: the load refuses the family, saying why
 } arch_desc;
 
@@ -96,9 +99,9 @@ static inline const arch_desc *arch_rows(size_t *n) {
         { .name = "mellum", .id = ARCH_MELLUM, .family = ARCH_QWEN3, .rope_neox = true },
         { .name = "lfm2", .id = ARCH_LFM2, .rope_neox = true,
           .rec = ARCH_REC_SHORTCONV, .hybrid_typed = true,
-          .cpu_only = "lfm2 is validated on the CPU only; its GPU path (the "
-                      "short-convolution layers and their state) is not "
-                      "checked yet" },
+          .cpu_only_nonmetal = "lfm2 is validated on the CPU and the Apple GPU "
+                               "only; its CUDA path (the short-convolution "
+                               "layers and their state) is not checked yet" },
         { .name = "lfm2moe", .id = ARCH_LFM2MOE, .family = ARCH_LFM2, .rope_neox = true,
           .rec = ARCH_REC_SHORTCONV, .hybrid_typed = true,
           .cpu_only = "lfm2 is validated on the CPU only; its GPU path (the "

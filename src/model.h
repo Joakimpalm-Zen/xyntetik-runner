@@ -1697,6 +1697,10 @@ static inline const char *model_moe_route_why(int n_expert, int n_used,
     return buf;
 }
 const char *model_gpu_cpu_only_why(const char *arch, int norm_groups);
+// R3.42: why a family's GPU path is not this file's default by its weight
+// types (lfm2 on the Apple GPU: layer weights mostly Q4_K), or NULL;
+// written into why[cap]
+const char *model_gpu_weights_why(const char *arch, const gguf_file *g, char *why, size_t cap);
 // R6.68.112: why a CUDA load keeps a model whose attention heads are an odd
 // width on the CPU, written to buf; NULL when none is, or the build has no
 // CUDA. The loader, cuda_admit and --info fit ask it alike.

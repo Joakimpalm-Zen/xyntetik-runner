@@ -403,17 +403,17 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>LFM2.5</b>, 4 models: CPU ✅ · CUDA n/a · Metal - · Train n/a</summary>
+<summary><b>LFM2.5</b>, 4 models: CPU ✅ · CUDA n/a · Metal 🟨 2 of 6 · Train n/a</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td colspan="5"><b>LFM2.5-1.2B-Instruct (LiquidAI)</b></td></tr>
-<tr><td><a href="#lfm2.5-1.2b-instruct-q4_k_m"><code>LFM2.5-1.2B-Instruct-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td></td><td>no: recurrent architecture (short convolution)</td></tr>
+<tr><td><a href="#lfm2.5-1.2b-instruct-q4_k_m"><code>LFM2.5-1.2B-Instruct-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.19.1<br>2026-11-16</td><td>no: recurrent architecture (short convolution)</td></tr>
 <tr><td><a href="#lfm2.5-1.2b-instruct-q8_0"><code>LFM2.5-1.2B-Instruct-Q8_0.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td></td><td>no: recurrent architecture (short convolution)</td></tr>
 <tr><td colspan="5"><b>LFM2.5-24B-A2B (LiquidAI)</b></td></tr>
 <tr><td><a href="#lfm2.5-24b-a2b-q4_k_m"><code>LFM2.5-24B-A2B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.8.0<sup>b</sup><br>2026-10-30</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td></td><td>no: recurrent architecture (short convolution)</td></tr>
 <tr><td colspan="5"><b>LFM2.5-350M (LiquidAI)</b></td></tr>
-<tr><td><a href="#lfm2.5-350m-q4_k_m"><code>LFM2.5-350M-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.8.0<br>2026-10-30</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td></td><td>no: recurrent architecture (short convolution)</td></tr>
+<tr><td><a href="#lfm2.5-350m-q4_k_m"><code>LFM2.5-350M-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.8.0<br>2026-10-30</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.19.1<br>2026-11-16</td><td>no: recurrent architecture (short convolution)</td></tr>
 <tr><td><a href="#lfm2.5-350m-q8_0"><code>LFM2.5-350M-Q8_0.gguf</code></a></td><td nowrap>✅ 1.8.0<br>2026-10-30</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td></td><td>no: recurrent architecture (short convolution)</td></tr>
 <tr><td colspan="5"><b>LFM2.5-8B-A1B (LiquidAI)</b></td></tr>
 <tr><td><a href="#lfm2.5-8b-a1b-q4_k_m"><code>LFM2.5-8B-A1B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td></td><td>no: recurrent architecture (short convolution)</td></tr>
@@ -462,7 +462,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td colspan="5"><b>MiniCPM5-2B (openbmb)</b></td></tr>
-<tr><td><a href="#minicpm5-2b-q4_k_m"><code>MiniCPM5-2B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
+<tr><td><a href="#minicpm5-2b-q4_k_m"><code>MiniCPM5-2B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.19.1<br>2026-11-16</td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.19.1<br>2026-11-16</td></tr>
 <tr><td><a href="#minicpm5-2b-q8_0"><code>MiniCPM5-2B-Q8_0.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
 </tbody>
 </table>
@@ -1563,9 +1563,9 @@ Text path, LiquidAI's own Q4_K_M of LFM2.5-1.2B-Instruct, which fails the fideli
 - **Validation run:** on macos-arm64-metal, cpu backend; last run 1.7.1 on 2026-10-30.
 - **CPU:** ✅ v1.7.1 2026-10-30 on windows-x86_64-cuda at commit `64cdc0dc6bab`, output sha256 `3bb0f080e0b57ed8`, [pin](../tests/compatibility/tier-smoke/lfm2.5-1.2b-instruct-q4_k_m.windows-x86_64-cuda.cpu.txt)
 - **CUDA:** [n/a](../MANUAL.md#support-matrix): lfm2 (short-convolution layers interleaved with GQA attention) has no validated CUDA path; CUDA refuses it by name and the file runs on the CPU.
-- **Metal:** ☐ not run
-- **LoRA training:** no: recurrent architecture (short convolution) (runner 1.7.1, 2026-10-30).
-- **LoRA adapter serving:** no: --lora does not cover the short-convolution hybrid yet (lfm2) (runner 1.7.1, 2026-10-30).
+- **Metal:** ✅ v1.19.1 2026-11-16 on macos-arm64-metal at commit `bd4d564041c5`, output sha256 `3bb0f080e0b57ed8`, [pin](../tests/compatibility/tier-smoke/lfm2.5-1.2b-instruct-q4_k_m.macos-arm64-metal.metal.txt)
+- **LoRA training:** no: recurrent architecture (short convolution) (runner 1.19.1, 2026-11-16).
+- **LoRA adapter serving:** no: --lora does not cover the short-convolution hybrid yet (lfm2) (runner 1.19.1, 2026-11-16).
 
 <a id="lfm2.5-1.2b-instruct-q8_0"></a>
 ##### `LFM2.5-1.2B-Instruct-Q8_0.gguf`
@@ -1633,9 +1633,9 @@ Text path, LiquidAI's own Q4_K_M of LFM2.5-350M, which fails the fidelity bar: a
 - **Validation run:** on macos-arm64-metal, cpu backend; last run 1.8.0 on 2026-10-30.
 - **CPU:** ✅ v1.8.0 2026-10-30 on windows-x86_64-cuda at commit `9bb83e7e80b4`, output sha256 `a3dd7b514a3e7cb8`, [pin](../tests/compatibility/tier-smoke/lfm2.5-350m-q4_k_m.windows-x86_64-cuda.cpu.txt)
 - **CUDA:** [n/a](../MANUAL.md#support-matrix): lfm2 (short-convolution layers interleaved with GQA attention) has no validated CUDA path; CUDA refuses it by name and the file runs on the CPU.
-- **Metal:** ☐ not run
-- **LoRA training:** no: recurrent architecture (short convolution) (runner 1.8.0, 2026-10-30).
-- **LoRA adapter serving:** no: --lora does not cover the short-convolution hybrid yet (lfm2) (runner 1.8.0, 2026-10-30).
+- **Metal:** ✅ v1.19.1 2026-11-16 on macos-arm64-metal at commit `bd4d564041c5`, output sha256 `a3dd7b514a3e7cb8`, [pin](../tests/compatibility/tier-smoke/lfm2.5-350m-q4_k_m.macos-arm64-metal.metal.txt)
+- **LoRA training:** no: recurrent architecture (short convolution) (runner 1.19.1, 2026-11-16).
+- **LoRA adapter serving:** no: --lora does not cover the short-convolution hybrid yet (lfm2) (runner 1.19.1, 2026-11-16).
 
 <a id="lfm2.5-350m-q8_0"></a>
 ##### `LFM2.5-350M-Q8_0.gguf`
@@ -1827,10 +1827,10 @@ Text path, the publisher's Q4_K_M, which fails the fidelity bar: against the pub
 - **Evidence:** [docs/compat-reports/1.7.1-2026-10-29-macos-arm64-minicpm5-2b-q4_k_m.json](compat-reports/1.7.1-2026-10-29-macos-arm64-minicpm5-2b-q4_k_m.json), [docs/compat-reports/minicpm5-2b-reference-2026-10-29/README.md](compat-reports/minicpm5-2b-reference-2026-10-29/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
 - **Validation run:** on macos-arm64-metal, metal backend; last run 1.7.1 on 2026-10-29.
 - **CPU:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `771924318c51`, output sha256 `4ed9b06a2b3a14c9`, [pin](../tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.windows-x86_64-cuda.cpu.txt)
-- **CUDA:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `771924318c51`, output sha256 `16ee8166ecb8972e`, [pin](../tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.windows-x86_64-cuda.cuda.txt)
+- **CUDA:** ✅ v1.19.1 2026-11-16 on windows-x86_64-cuda at commit `9029a805ea90`, output sha256 `4ed9b06a2b3a14c9`, [pin](../tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.windows-x86_64-cuda.cuda.txt)
 - **Metal:** ✅ v1.7.1 2026-10-29 on macos-arm64-metal at commit `a83670a85fdc`, output sha256 `16ee8166ecb8972e`, [pin](../tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.macos-arm64-metal.metal.txt)
-- **LoRA training:** supported (runner 1.7.1, 2026-10-29).
-- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-29).
+- **LoRA training:** supported (runner 1.19.1, 2026-11-16).
+- **LoRA adapter serving:** supported (runner 1.19.1, 2026-11-16).
 
 <a id="minicpm5-2b-q8_0"></a>
 ##### `MiniCPM5-2B-Q8_0.gguf`
@@ -2205,7 +2205,7 @@ Text path only (the vision projector is not loaded): ornith-ai's own Q8_0 of Orn
 <a id="phi-3.5-mini-instruct-q4_k_m"></a>
 ##### `Phi-3.5-mini-instruct-Q4_K_M.gguf`
 
-bartowski's Q4_K_M of Microsoft's Phi-3.5-mini-instruct: against the publisher's BF16 checkpoint computed in float32 it reads 0.0423 ± 0.0025 mean KLD (bootstrap 95% interval 0.0375 to 0.0474) and 98.97% margin-qualified top-1 over 544 positions inside the original 4,096-token context (two windows of 272: 0.0424 and 0.0421; plain top-1 91.4%, CPU), against a bar of 0.05 and 97%. With every sequence on the long-context factors (llama.cpp, and CUDA before R4.40.2) a context above 4,096 tokens reads markedly worse (measured on the Q8_0); on the CPU, the Apple GPU and CUDA the factors follow the sequence and a text within 4,096 tokens reads as at -c 4096. The Q8_0 is the fidelity file.
+bartowski's Q4_K_M of Microsoft's Phi-3.5-mini-instruct: against the publisher's BF16 checkpoint computed in float32 it reads 0.0423 ± 0.0025 mean KLD (bootstrap 95% interval 0.0375 to 0.0474) and 98.97% margin-qualified top-1 over 544 positions inside the original 4,096-token context (two windows of 272: 0.0424 and 0.0421; plain top-1 91.4%, CPU), against a bar of 0.05 and 97%. Answers changed against the unquantized file on GSM8K (660 items): 9.85% (lost 35, gained 30). That reading covers one task and two families of about 4B parameters (Phi-3.5-mini and Qwen3.5-4B), its reference is the same checkpoint as a BF16 file run by Runner (1.19.0, CUDA, temperature 0) rather than computed in float32, an answer counts as changed when it is right on one file and wrong on the other, and accuracy alone can point the other way, which is why lost and gained are both shown. With every sequence on the long-context factors (llama.cpp, and CUDA before R4.40.2) a context above 4,096 tokens reads markedly worse (measured on the Q8_0); on the CPU, the Apple GPU and CUDA the factors follow the sequence and a text within 4,096 tokens reads as at -c 4096. The Q8_0 is the fidelity file.
 
 - **File:** `Phi-3.5-mini-instruct-Q4_K_M.gguf` (sha256 `e4165e3a71af97f1b4820da61079826d8752a2088e313af0c7d346796c38eff5`, 2,393,232,672 bytes, from [bartowski/Phi-3.5-mini-instruct-GGUF](https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF) at revision `6d70da17e749`).
 - **Upstream checkpoint:** microsoft/Phi-3.5-mini-instruct at revision `2fe192450127`.

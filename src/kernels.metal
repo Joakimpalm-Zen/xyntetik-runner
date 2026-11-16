@@ -5824,6 +5824,64 @@ kernel void k_m2_conv(device const float *proj [[buffer(0)]],
     out[(ulong)b * a.conv_dim + c] = sum / (1.0f + exp(-sum));
 }
 
+// R3.42: LFM2's short convolution (model.c lfm2_shortconv), a FIR over the
+// extended sequence [window, column 0 .. n-1] of B*x: no bias, no activation,
+// the result gated by C. The projection column is [B | C | x], E each.
+struct lf_args {
+    int n;            // columns in this forward
+    int E;            // channels (the hidden width)
+    int histn, K;     // window rows (conv_kernel - 1), taps
+    int stride;       // floats between projection columns (3E)
+};
+
+// thread (c, b): channel c of column b. The window's taps oldest to newest,
+// then the current input's, as the CPU sums them (from 0, in that order);
+// y = C * sum
+kernel void k_lfm2_conv(device const float *proj [[buffer(0)]],
+                        device const float *ring [[buffer(1)]],
+                        device const float *w    [[buffer(2)]],
+                        device float       *y    [[buffer(3)]],
+                        constant lf_args   &a    [[buffer(4)]],
+                        uint2 gid [[thread_position_in_grid]]) {
+    int c = (int)gid.x, b = (int)gid.y;
+    if (c >= a.E || b >= a.n) return;
+    device const float *wc = w + (ulong)c * a.K;
+    float sum = 0.0f;
+    for (int k = 0; k < a.histn; k++) {
+        int e = b + k;
+        float v;
+        if (e < a.histn) v = ring[(ulong)e * a.E + c];
+        else {
+            device const float *col = proj + (ulong)(e - a.histn) * a.stride;
+            v = col[c] * col[2 * a.E + c];
+        }
+        sum += wc[k] * v;
+    }
+    device const float *cur = proj + (ulong)b * a.stride;
+    sum += wc[a.histn] * (cur[c] * cur[2 * a.E + c]);
+    y[(ulong)b * a.E + c] = cur[a.E + c] * sum;
+}
+
+// thread c: the window after the n columns, the last histn rows of the
+// extended sequence of B*x; read whole before any row is written
+kernel void k_lfm2_ring(device const float *proj [[buffer(0)]],
+                        device float       *ring [[buffer(1)]],
+                        constant lf_args   &a    [[buffer(2)]],
+                        uint gid [[thread_position_in_grid]]) {
+    int c = (int)gid;
+    if (c >= a.E) return;
+    float keep[8];
+    for (int k = 0; k < a.histn; k++) {
+        int e = a.n + k;
+        if (e < a.histn) keep[k] = ring[(ulong)e * a.E + c];
+        else {
+            device const float *col = proj + (ulong)(e - a.histn) * a.stride;
+            keep[k] = col[c] * col[2 * a.E + c];
+        }
+    }
+    for (int k = 0; k < a.histn; k++) ring[(ulong)k * a.E + c] = keep[k];
+}
+
 // one simdgroup per (head row p, head h): the row's d_state entries across
 // the lanes (up to 8 a lane, so ds <= 256). Per column in order:
 // dt = softplus(dt_raw + dt_bias), the state decays by exp(dt * A) and takes
