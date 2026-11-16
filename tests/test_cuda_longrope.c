@@ -26,7 +26,8 @@
 //       prompt after a long sequence decodes as at the original context;
 //   G5  two slots on one weight set, one on each set, decoding in turn: each
 //       computes its own set's answer;
-//   G6  slots on both sets decode as one device microbatch (R4.40.3), and each
+//   G6  slots on both sets decode as one device microbatch at every step
+//       (R4.40.3), each column at its row of the batch's buffer, and each
 //       column decodes what its sequence decodes alone;
 //   G7  a batch member that crosses the original context between two steps of
 //       one width keeps, step for step, the bits of its loop alone.
@@ -343,14 +344,34 @@ int main(int argc, char **argv) {
         for (int j = 0; j < 3; j++) free(whole(sl[j], t, plen[j]));
         ck(cold.m.rope_long && !wide.m.rope_long && device_table_is(&one.m, one.m.rope_freq_long, half),
            "G6: the batch holds a slot on the short set between two on the long one");
+        // The batch must run on the device at every step, not only engage at creation:
+        // a step gpu_batch_decode refuses falls back to one-by-one decoding
+        // (model_batch_decode), which hands each sequence its alone bits and would pass
+        // the comparison below. gpu_batch_decode puts the short set first in the
+        // caller's order, then the long one: column 0 is slot 1 (short), columns 1 and
+        // 2 are slots 0 and 2. Column c's logits are row c of the batch's own buffer,
+        // at the same place every step (out[ord[c]] = h_logits + c * n_vocab), so
+        // out[1], out[0] and out[2] must be consecutive rows of one buffer. One-by-one
+        // decoding returns each slot's own logits instead.
+        const float *base6 = NULL;
+        int placed = 0;
+        size_t nv6 = (size_t)cold.m.n_vocab;
         for (int k = 0; k < STEPS && ok; k++) {
             int idx[3] = { 0, 1, 2 }, ps[3];
             int32_t tk[3] = { y[k], x[k], y[k] };
             float *out[3] = { NULL, NULL, NULL };
             for (int j = 0; j < 3; j++) ps[j] = plen[j] + k;
             ok = model_batch_decode(mb, idx, tk, ps, 3, out);
+            if (ok && out[1] && out[0] == out[1] + nv6 && out[2] == out[1] + 2 * nv6 &&
+                (!base6 || out[1] == base6))
+                placed++;
+            if (ok && !base6) base6 = out[1];
             for (int j = 0; j < 3 && ok; j++) ok = (bt[j][k] = snap(&sl[j]->m, out[j])) != NULL;
         }
+        fprintf(stderr, "G6: %d of %d steps' columns were rows 1, 0 and 2 of the batch's own buffer\n",
+                placed, STEPS);
+        ck(ok && placed == STEPS,
+           "G6: every step ran on the device, each column at its row of the batch's buffer (no one-by-one fall back)");
         // each alone, on the same slot, from the same prompt
         for (int j = 0; j < 3 && ok; j++) {
             free(whole(sl[j], t, plen[j]));

@@ -221,7 +221,7 @@ TEST_LONGROPE = $(TEST_BATCH:test-batch%=test-longrope-sequence%)
 # TEST_BATCH's empty suffix outside Windows the two collide, make drops the
 # compile recipe and the binary is never built
 TEST_CUDA_LONGROPE = $(TEST_BATCH:test-batch%=test-longrope-cuda%)
-TEST_CUDA_BATCH_COLS = $(TEST_BATCH:test-batch%=test-cuda-batch-columns%)
+TEST_CUDA_BATCH_COLS = $(TEST_BATCH:test-batch%=test-batch-columns-cuda%)
 TEST_PENALTY_WINDOW = $(TEST_BATCH:test-batch%=test-penalty-window%)
 TEST_ROPE_YARN = $(TEST_BATCH:test-batch%=test-rope-yarn%)
 TEST_ATTN_SCALE = $(TEST_BATCH:test-batch%=test-attn-scale%)
@@ -957,15 +957,25 @@ test-cuda-longrope: runner $(TEST_CUDA_LONGROPE) test-phi3-longrope.gguf
 
 # The premise the microbatch's column order rests on (R4.40.3): a batch on one
 # factor set decoded in reversed column order (RUNNER_TEST_BATCH_REVERSE=1)
-# gives every sequence the bits of the caller's order, at widths 2 to 4, on two
-# dense fixtures and the phi3 one at its original context
+# gives every sequence the bits of the caller's order, at widths 2 to 8, on two
+# dense fixtures, the phi3 one at its original context, and the wide fixture's
+# Q4_K and Q6_K files
 # (tests/test_cuda_batch_columns.c). Without a CUDA device it fails as skipped.
 TEST_CUDA_BATCH_COLS_SRC = $(TEST_RECURRENT_SRC:tests/test_recurrent_rewind.c=tests/test_cuda_batch_columns.c)
 $(TEST_CUDA_BATCH_COLS): $(TEST_CUDA_BATCH_COLS_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_CUDA_BATCH_COLS_SRC) -o $@ $(LDFLAGS)
 
+# The K-quant twins the measured Phi-3.5-mini Q4_K_M runs (GEMVB_KQ) are sampled
+# on the wide fixture's Q4_K and Q6_K files, made as test-cuda-batch-identity
+# makes them.
 test-cuda-batch-columns: runner $(TEST_CUDA_BATCH_COLS) test.gguf test-q8.gguf test-phi3-longrope.gguf
-	@set -e; for f in "test.gguf 64" "test-q8.gguf 64" "test-phi3-longrope.gguf 32"; do \
+	@set -e; \
+	$(PYTHON) scripts/make-test-model.py --wide test-batch-wide.gguf > /dev/null; \
+	for q in q4_k q6_k; do \
+	  ./$(RUNNER_EXE) -m test-batch-wide.gguf --quantize test-batch-wide-$$q.gguf --quant $$q > /dev/null 2>&1; \
+	done; \
+	for f in "test.gguf 64" "test-q8.gguf 64" "test-phi3-longrope.gguf 32" \
+	         "test-batch-wide-q4_k.gguf 64" "test-batch-wide-q6_k.gguf 64"; do \
 	  RUNNER_REQUIRE_GRAPH_CAPTURE=1 ./$(TEST_CUDA_BATCH_COLS) $$f; done
 
 # Request cancellation at the engine's prefill/decode poll boundaries.  The

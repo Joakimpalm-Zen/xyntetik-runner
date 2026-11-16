@@ -5,9 +5,9 @@
 // every batched matrix product, not only of the rope, so this gate checks the
 // premise the ordering rests on: on a batch whose columns are all on one set,
 // RUNNER_TEST_BATCH_REVERSE=1 reverses the column order, and every sequence
-// must decode the same bits as in the caller's order, at widths 2, 3 and 4.
+// must decode the same bits as in the caller's order, at widths 2 to 8.
 //
-//   test-cuda-batch-columns FILE CTX
+//   test-batch-columns-cuda FILE CTX   (make test-cuda-batch-columns)
 //
 // Anti-vacuity: the batch must engage on the device, and the reversed run,
 // on the same batch object, must hand sequence i the logits buffer the plain
@@ -27,7 +27,7 @@
 #define env_unset(k)  unsetenv(k)
 #endif
 
-enum { NS = 4, STEPS = 5 };
+enum { NS = 8, STEPS = 5 };   // widths 2 to 8: the exact twins at 5 to 7 and the class kernels at 8
 static int g_fail = 0;
 
 static void ck(int cond, const char *what) {
@@ -35,8 +35,9 @@ static void ck(int cond, const char *what) {
     else        fprintf(stderr, "ok: %s\n", what);
 }
 
-static const int32_t PROMPT[NS][6] = { { 5, 9, 12 }, { 7, 3, 20, 11, 6 }, { 4, 4, 8, 15 }, { 2, 30, 17, 9, 1, 13 } };
-static const int PLEN[NS] = { 3, 5, 4, 6 };
+static const int32_t PROMPT[NS][6] = { { 5, 9, 12 }, { 7, 3, 20, 11, 6 }, { 4, 4, 8, 15 }, { 2, 30, 17, 9, 1, 13 },
+                                        { 6, 14, 3, 22 }, { 9, 1, 27, 5, 18, 2 }, { 11, 23 }, { 16, 8, 4, 29, 7 } };
+static const int PLEN[NS] = { 3, 5, 4, 6, 4, 6, 2, 5 };
 
 static bool prefill(model_t *m, int nv) {
     for (int i = 0; i < NS; i++) {
@@ -70,7 +71,7 @@ static bool run(model_batch *mb, model_t *m, int w, int nv, float *cap, const fl
 }
 
 int main(int argc, char **argv) {
-    if (argc < 3) { fprintf(stderr, "usage: test-cuda-batch-columns FILE CTX\n"); return 2; }
+    if (argc < 3) { fprintf(stderr, "usage: test-batch-columns-cuda FILE CTX\n"); return 2; }
     const char *path = argv[1];
     int ctx = atoi(argv[2]);
     env_unset("RUNNER_TEST_BATCH_REVERSE");
