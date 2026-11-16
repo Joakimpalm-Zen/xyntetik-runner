@@ -1638,7 +1638,25 @@ static void kv_dump(const engine *e, int lo, int hi) {
     }
 }
 
+static float *engine_feed_inner(engine *e, const int32_t *toks, int n);
+// R3.60: a feed is the prompt's prefill pass whatever its width, so on a
+// CPU-only run every product of it takes the batch route (model.c mv_rows)
+// and the KV rows do not depend on -b, on where the chunks fall, or on how
+// much of the prompt a cache kept. A GPU run keeps its routes, its
+// CPU-resident layers and host experts included.
 float *engine_feed(engine *e, const int32_t *toks, int n) {
+    e->m->prefill_pass = e->m->gpu == NULL;
+    float *lg = engine_feed_inner(e, toks, n);
+    e->m->prefill_pass = false;
+    return lg;
+}
+
+// the decode step's route: prefill_pass stays false (engine.h)
+float *engine_feed_solo(engine *e, int32_t tok) {
+    return engine_feed_inner(e, &tok, 1);
+}
+
+static float *engine_feed_inner(engine *e, const int32_t *toks, int n) {
     float *logits = NULL;
     model_t *m = e->m;
     kv_dump_config();
@@ -1678,12 +1696,6 @@ float *engine_feed(engine *e, const int32_t *toks, int n) {
     }
     if (atomic_load(&kv_dump_pos) >= 0) kv_dump(e, fed_from, e->pos);
     return logits;
-}
-
-// a one-token feed is the decode step's route today (model.c mv_rows: under
-// MV_SMALL_BATCH columns, the native dot)
-float *engine_feed_solo(engine *e, int32_t tok) {
-    return engine_feed(e, &tok, 1);
 }
 
 // noinline: one compiled copy is the whole point (engine.h)
