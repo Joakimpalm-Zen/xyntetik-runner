@@ -37,8 +37,9 @@
 // number of products, best of the rounds per arm and width.
 // Exit: 0 done, 1 an identity failure, 2 a control not live, 3 no memory.
 //
-//   cc -O3 -ffast-math -std=gnu11 -march=native -I src \
+//   cc -O3 -ffast-math -std=gnu11 -march=native -I src
 //      debug/r360_expert_bench.c src/quants.c -o r360-bench -lm -lpthread
+//   (one command line)
 //   ./r360-bench [threads (0 = every CPU)] [rounds] [MB of weight copies]
 #include "quants.h"
 #include "fp16.h"
