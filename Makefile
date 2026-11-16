@@ -218,6 +218,7 @@ TEST_PREFIX = $(TEST_BATCH:test-batch%=test-prefix%)
 TEST_RECURRENT = $(TEST_BATCH:test-batch%=test-recurrent-rewind%)
 TEST_LONGROPE = $(TEST_BATCH:test-batch%=test-longrope-sequence%)
 TEST_CUDA_LONGROPE = $(TEST_BATCH:test-batch%=test-cuda-longrope%)
+TEST_CUDA_BATCH_COLS = $(TEST_BATCH:test-batch%=test-cuda-batch-columns%)
 TEST_PENALTY_WINDOW = $(TEST_BATCH:test-batch%=test-penalty-window%)
 TEST_ROPE_YARN = $(TEST_BATCH:test-batch%=test-rope-yarn%)
 TEST_ATTN_SCALE = $(TEST_BATCH:test-batch%=test-attn-scale%)
@@ -950,6 +951,19 @@ $(TEST_CUDA_LONGROPE): $(TEST_CUDA_LONGROPE_SRC) $(HDR)
 
 test-cuda-longrope: runner $(TEST_CUDA_LONGROPE) test-phi3-longrope.gguf
 	RUNNER_REQUIRE_GRAPH_CAPTURE=1 ./$(TEST_CUDA_LONGROPE) test-phi3-longrope.gguf
+
+# The premise the microbatch's column order rests on (R4.40.3): a batch on one
+# factor set decoded in reversed column order (RUNNER_TEST_BATCH_REVERSE=1)
+# gives every sequence the bits of the caller's order, at widths 2 to 4, on two
+# dense fixtures and the phi3 one at its original context
+# (tests/test_cuda_batch_columns.c). Without a CUDA device it fails as skipped.
+TEST_CUDA_BATCH_COLS_SRC = $(TEST_RECURRENT_SRC:tests/test_recurrent_rewind.c=tests/test_cuda_batch_columns.c)
+$(TEST_CUDA_BATCH_COLS): $(TEST_CUDA_BATCH_COLS_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_CUDA_BATCH_COLS_SRC) -o $@ $(LDFLAGS)
+
+test-cuda-batch-columns: runner $(TEST_CUDA_BATCH_COLS) test.gguf test-q8.gguf test-phi3-longrope.gguf
+	@set -e; for f in "test.gguf 64" "test-q8.gguf 64" "test-phi3-longrope.gguf 32"; do \
+	  RUNNER_REQUIRE_GRAPH_CAPTURE=1 ./$(TEST_CUDA_BATCH_COLS) $$f; done
 
 # Request cancellation at the engine's prefill/decode poll boundaries.  The
 # scheduler is included so its private batched loop is exercised without
@@ -4241,7 +4255,7 @@ clean:
 	      $(TEST_QUANTIZE) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
 	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) \
 	      $(TEST_FILE_ID) test-file-identity.tmp \
-	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_LONGROPE) $(TEST_CUDA_LONGROPE) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
+	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_LONGROPE) $(TEST_CUDA_LONGROPE) $(TEST_CUDA_BATCH_COLS) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
 	      $(TMPL_CONF_RENDER) \
 	      $(TEST_SPLIT_GUARD) split-guard.out test-swap-race-bin test-tokenizer-race-bin test-decide-race-bin test-decide-race-gpu-bin \
 	      runner-gpu-stub
@@ -4404,7 +4418,7 @@ test-anchors: runner test.gguf $(TEST_LORA_GRAD) $(DIFFTOK)
 	    --allow-skip 'this OS refuses a deliberate self-connect' .build/ci/anchors.xml
 
 .PHONY: test-anchors
-.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-hybrids test-cuda-qwen4exp test-cuda-qwen35moe test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity test-cuda-longrope
+.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-hybrids test-cuda-qwen4exp test-cuda-qwen35moe test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity test-cuda-longrope test-cuda-batch-columns
 .PHONY: test-gates test-gates-core test-gates-batch test-python
 .PHONY: test-deepseek2 test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 

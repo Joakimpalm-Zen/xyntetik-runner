@@ -27,12 +27,16 @@
 //   G5  two slots on one weight set, one on each set, decoding in turn: each
 //       computes its own set's answer;
 //   G6  slots on both sets decode as one device microbatch (R4.40.3), and each
-//       column decodes what its sequence decodes alone.
+//       column decodes what its sequence decodes alone;
+//   G7  a batch member that crosses the original context between two steps of
+//       one width keeps, step for step, the bits of its loop alone.
 // Live controls:
 //   L1  on this fixture the two sets give different logits on the device, so
 //       G2 and G3 can tell them apart;
 //   L2  with the decode graph's recapture at a set change skipped
-//       (RUNNER_TEST_ROPE_GRAPH_STALE=1) the replay check of G4 goes red.
+//       (RUNNER_TEST_ROPE_GRAPH_STALE=1) the replay check of G4 goes red, and
+//       with the batch graph's recapture at a change of the set mix skipped
+//       the same seam turns G7 red.
 #include "runner.h"
 #include "gpu.h"
 
@@ -107,6 +111,49 @@ static float *whole(slot *s, const int32_t *t, int n) {
 
 static float *step(slot *s, int32_t tok) {
     return snap(&s->m, engine_feed(&s->e, &tok, 1));
+}
+
+// The server's generation loop on two slots (R4.40.3, G7): each slot's prompt
+// fed whole, then G7N steps of engine_gen_step (which samples the step's token
+// and, at the crossing, moves the slot to the long set and computes its rows
+// again) and the forward of the two tokens, in one model_batch_decode (mb) or
+// each alone through model_forward (mb NULL). The logits of every forward in
+// lg[slot][step]; rebuilds[slot] the recomputes each slot made.
+enum { G7N = 8 };
+static bool gen_two(slot *s[2], const int *plen, const int32_t *t, model_batch *mb,
+                    float *lg[2][G7N], int *rebuilds) {
+    float *cur[2] = { NULL, NULL };
+    bool ok = true;
+    for (int j = 0; j < 2 && ok; j++) {
+        ok = (cur[j] = whole(s[j], t, plen[j])) != NULL;
+        s[j]->e.ignore_eos = true;
+        s[j]->e.rope_rebuilds = 0;
+        engine_gen_begin(&s[j]->e, G7N + 2);
+    }
+    for (int k = 0; k < G7N && ok; k++) {
+        int32_t tok[2];
+        int pos[2];
+        for (int j = 0; j < 2 && ok; j++)
+            ok = engine_gen_step(&s[j]->e, cur[j], NULL, NULL, &tok[j], &pos[j]) == ENGINE_STEP_MORE;
+        if (!ok) break;
+        if (mb) {
+            int idx[2] = { 0, 1 };
+            float *out[2] = { NULL, NULL };
+            ok = model_batch_decode(mb, idx, tok, pos, 2, out);
+            for (int j = 0; j < 2 && ok; j++) ok = (lg[j][k] = snap(&s[j]->m, out[j])) != NULL;
+        } else {
+            for (int j = 0; j < 2 && ok; j++)
+                ok = (lg[j][k] = snap(&s[j]->m, model_forward(&s[j]->m, tok[j], pos[j]))) != NULL;
+        }
+        for (int j = 0; j < 2 && ok; j++) { free(cur[j]); ok = (cur[j] = snap(&s[j]->m, lg[j][k])) != NULL; }
+    }
+    for (int j = 0; j < 2; j++) {
+        free(cur[j]);
+        engine_gen_end(&s[j]->e, NULL, NULL, NULL);
+        s[j]->e.ignore_eos = false;
+        rebuilds[j] = s[j]->e.rope_rebuilds;
+    }
+    return ok;
 }
 
 // a prompt of `from` tokens, then t[from..n) decoded one at a time; the
@@ -316,6 +363,42 @@ int main(int argc, char **argv) {
         ck(ok && d6[0] == 0 && d6[1] == 0 && d6[2] == 0,
            "G6: every column decodes in the batch what its sequence decodes alone");
         for (int j = 0; j < 3; j++) { steps_free(bt[j], STEPS); steps_free(so[j], STEPS); }
+        if (mb) model_batch_free(mb);
+    }
+
+    // ---- G7: a batch member crosses the original context between two steps
+    // of one width (R4.40.3). The batch's graph for width 2 was captured with
+    // one column on each set; after the crossing both are on the long set, and
+    // the graph must be captured again for the crossing slot to keep its bits.
+    // The same loop with RUNNER_TEST_ROPE_GRAPH_STALE=1 keeps that graph, and
+    // must be seen (the live control).
+    {
+        slot *pair[2] = { &wide, &cold };
+        model_t *pm[2] = { &wide.m, &cold.m };
+        int plen[2] = { GROW, LONG }, rb_b[2] = { 0, 0 }, rb_s[2] = { 0, 0 }, rb_m[2] = { 0, 0 };
+        float *bb[2][G7N] = {{0}}, *ss[2][G7N] = {{0}}, *mm[2][G7N] = {{0}};
+        model_batch *mb = model_batch_create(pm, 2);
+        bool ok_b = mb && model_batch_engaged(mb) && gen_two(pair, plen, t, mb, bb, rb_b);
+        bool ok_s = gen_two(pair, plen, t, NULL, ss, rb_s);
+        int dw = ok_b && ok_s ? steps_differ(&wide.m, bb[0], ss[0], G7N) : -1;
+        int dc = ok_b && ok_s ? steps_differ(&cold.m, bb[1], ss[1], G7N) : -1;
+        fprintf(stderr, "G7: batched against alone, steps that differ: the crossing slot %d, the long one %d of %d; "
+                "recomputes %d and %d batched, %d and %d alone\n", dw, dc, G7N, rb_b[0], rb_b[1], rb_s[0], rb_s[1]);
+        ck(ok_b && rb_b[0] == 1 && rb_b[1] == 0 && rb_s[0] == 1,
+           "G7: in the batch the short slot crosses once, mid-generation, and the long one never");
+        ck(dw == 0 && dc == 0, "G7: every step of both slots in the batch is the bits of the same loop alone");
+        // a fresh batch, so its width-2 graph is first captured with a column
+        // on each set and then kept across the crossing
+        if (mb) model_batch_free(mb);
+        mb = model_batch_create(pm, 2);
+        env_set("RUNNER_TEST_ROPE_GRAPH_STALE", "1");
+        bool ok_m = mb && gen_two(pair, plen, t, mb, mm, rb_m);
+        env_unset("RUNNER_TEST_ROPE_GRAPH_STALE");
+        int dm = ok_m && ok_s ? steps_differ(&wide.m, mm[0], ss[0], G7N) : -1;
+        fprintf(stderr, "L2: with the batch graph kept across the split change, %d of %d steps of the crossing slot differ\n",
+                dm, G7N);
+        ck(dm > 0, "L2: a batch graph kept across a change of the set mix is seen by G7");
+        for (int j = 0; j < 2; j++) { steps_free(bb[j], G7N); steps_free(ss[j], G7N); steps_free(mm[j], G7N); }
         if (mb) model_batch_free(mb);
     }
 
