@@ -232,6 +232,48 @@ static void test_unsupported_type_tensor_has_no_data(void) {
     printf("ok: an undecodable tensor type carries no data pointer\n");
 }
 
+// A tensor's data offset must be a multiple of general.alignment (the GGUF
+// spec; 32 when the key is absent) and leave its blocks 4-byte aligned: a
+// block's fields are read in place (an f16 scale, an F32 value), and an offset
+// that breaks either makes every decode read misaligned, undefined behaviour.
+// The fuzzer found a file with a Q4_0 norm at offset 131,071 that the loader
+// took and the decode then read at an odd address (2026-11-16). Refused by
+// name, in the full and in the header-only open; the same file at an aligned
+// offset loads (the control).
+static void write_two_tensors(const char *path, uint64_t q_off, int align_key) {
+    buf kv = {0}, ti = {0};
+    uint64_t nkv = 0;
+    if (align_key) { bkey(&kv, "general.alignment", 4); bu32(&kv, (uint32_t)align_key); nkv = 1; }
+    bstr(&ti, "a.weight"); bu32(&ti, 1); bu64(&ti, 8);  bu32(&ti, 0); bu64(&ti, 0);      // F32, 32 bytes
+    bstr(&ti, "b.weight"); bu32(&ti, 1); bu64(&ti, 32); bu32(&ti, 2); bu64(&ti, q_off);  // Q4_0, 18 bytes
+    write_gguf(path, &kv, nkv, &ti, 2);
+    free(kv.b); free(ti.b);
+    FILE *f = fopen(path, "ab"); assert(f);
+    unsigned char z[128] = {0};
+    assert(fwrite(z, 1, sizeof z, f) == sizeof z);
+    fclose(f);
+}
+
+static void test_misaligned_tensor_offset_refused(void) {
+    const char *path = "misaligned.gguf";
+    gguf_file g;
+    write_two_tensors(path, 32, 0);
+    assert(gguf_open(&g, path) && "the control: the same file with an aligned offset loads");
+    gguf_close(&g);
+    write_two_tensors(path, 33, 0);
+    assert(!gguf_open(&g, path) && "an offset off the default 32-byte alignment must be refused");
+    assert(!gguf_open_header(&g, path) && "and refused by the header-only open too");
+    write_two_tensors(path, 40, 0);
+    assert(!gguf_open(&g, path) && "a multiple of 8 but not of 32 breaks the default alignment");
+    write_two_tensors(path, 40, 8);
+    assert(gguf_open(&g, path) && "a multiple of the file's own general.alignment loads");
+    gguf_close(&g);
+    write_two_tensors(path, 33, 1);
+    assert(!gguf_open(&g, path) && "general.alignment 1 cannot leave a block misaligned");
+    remove(path);
+    printf("ok: a tensor offset that breaks the alignment is refused\n");
+}
+
 int main(void) {
     test_getter_validation();
     test_u32_idx_getter();
@@ -239,6 +281,7 @@ int main(void) {
     test_duplicate_tensor_names_rejected();
     test_embedded_nul_identities_rejected();
     test_unsupported_type_tensor_has_no_data();
+    test_misaligned_tensor_offset_refused();
     printf("all gguf getter tests passed\n");
     return 0;
 }
