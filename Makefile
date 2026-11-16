@@ -217,7 +217,10 @@ OBJDIR = .build/$(BUILD_ID)
 TEST_PREFIX = $(TEST_BATCH:test-batch%=test-prefix%)
 TEST_RECURRENT = $(TEST_BATCH:test-batch%=test-recurrent-rewind%)
 TEST_LONGROPE = $(TEST_BATCH:test-batch%=test-longrope-sequence%)
-TEST_CUDA_LONGROPE = $(TEST_BATCH:test-batch%=test-cuda-longrope%)
+# the binary is not named as the target that runs it (test-cuda-longrope): with
+# TEST_BATCH's empty suffix outside Windows the two collide, make drops the
+# compile recipe and the binary is never built
+TEST_CUDA_LONGROPE = $(TEST_BATCH:test-batch%=test-longrope-cuda%)
 TEST_CUDA_BATCH_COLS = $(TEST_BATCH:test-batch%=test-cuda-batch-columns%)
 TEST_PENALTY_WINDOW = $(TEST_BATCH:test-batch%=test-penalty-window%)
 TEST_ROPE_YARN = $(TEST_BATCH:test-batch%=test-rope-yarn%)
