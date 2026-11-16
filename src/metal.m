@@ -9,6 +9,7 @@
 #include "compat.h"   // plat_ram_available_bytes: the residency guard below
 #include "metal_admission.h"
 #include "dn_eps.h"
+#include "micro_sched.h"   // MICRO_SCHED_TILES_MIN: the tiles' floor, one value for the recorder and the replay
 
 #include <mach/mach.h>   // vm_allocate: the KV cache's host allocation (R3.68)
 #include <stdatomic.h>
@@ -5576,7 +5577,7 @@ void gpu_batch_free(gpu_batch *b) {
 // solo decode's bits), or under RUNNER_METAL_BATCH_TILES the GEMM tiles where
 // they take the weight. Tiles cost about the same up to 32 columns while the
 // matvec grows per column, so they start at MB_TILES_MIN (docs/metal-tuning-evidence.md).
-enum { MB_TILES_MIN = 6 };
+enum { MB_TILES_MIN = MICRO_SCHED_TILES_MIN };
 
 static bool enc_mb_mv(gpu_t *g, id<MTLComputeCommandEncoder> e,
                       gguf_tensor *w, id<MTLBuffer> x, NSUInteger x_off,

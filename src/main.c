@@ -252,29 +252,50 @@ static int32_t *json_token_ids(jv *arr, int *n_out) {
 // constraint the record does not name, is refused. False with `why` set.
 static bool replay_constraints_ok(jv *rec, bool json_mode,
                                   const char *schema_file, bool ignore_eos,
-                                  char *why, size_t cap) {
+                                  micro_sched **micro_out, char *why, size_t cap) {
     jv *route = jv_get(jv_get(rec, "profile"), "route");
     jv *micro = jv_get(route, "micro");
     const char *detail = jv_str(jv_get(route, "backend_detail"), "");
     if (micro || strstr(detail, " micro=tiles")) {
         // R3.72: the schedule a tiled turn records (micro_sched.h), read
-        // before any model loads. A valid one is recorded but not replayable
-        // yet: running its tiled steps in a stand-in microbatch of the
-        // recorded width waits for the measurement of whether a column's
-        // tiled result depends on the width. Each defect is refused by name.
+        // before any model loads, each defect refused by name. A valid one
+        // replays on a Metal build: each listed step decodes as column 0 of a
+        // microbatch of its recorded width beside stand-ins (replay_micro_fwd).
+        // That rests on two measured facts (R3.72's width and placement reads,
+        // SmolLM2-1.7B Q8_0): a column's tiled result does not depend on the
+        // width from 6 to 8, on its column, or on what the other columns hold.
         micro_sched *ms = malloc(sizeof *ms);
         char mwhy[200];
         if (!ms) {
             snprintf(why, cap, "tiled microbatch arithmetic: out of memory reading its decode schedule");
             return false;
         }
-        if (!micro_sched_parse(route, MODEL_BATCH_MAX, ms, mwhy, (int)sizeof mwhy))
+        if (!micro_sched_parse(route, MODEL_BATCH_MAX, ms, mwhy, (int)sizeof mwhy)) {
             snprintf(why, cap, "tiled microbatch arithmetic requires a recorded decode schedule: %s", mwhy);
-        else
-            snprintf(why, cap, "tiled microbatch arithmetic: the decode schedule is recorded (%d run%s) "
-                     "but not replayable yet (R3.72)", ms->n, ms->n == 1 ? "" : "s");
+            free(ms);
+            return false;
+        }
+        if (!micro_sched_tiled_ok(ms, mwhy, (int)sizeof mwhy)) {
+            snprintf(why, cap, "tiled microbatch arithmetic: %s", mwhy);
+            free(ms);
+            return false;
+        }
+#if !defined(RUNNER_GPU_METAL)
+        snprintf(why, cap, "tiled microbatch arithmetic: the decode schedule is recorded (%d run%s) "
+                 "and replays only on a Metal build, where the Apple GPU's tiles run; this build "
+                 "has no Metal backend", ms->n, ms->n == 1 ? "" : "s");
         free(ms);
         return false;
+#else
+        const char *rback = jv_str(jv_get(route, "backend"), "");
+        if (strcmp(rback, "metal")) {
+            snprintf(why, cap, "tiled microbatch arithmetic: the record's backend is '%s', and the "
+                     "tiles it names are the Apple GPU's", rback);
+            free(ms);
+            return false;
+        }
+        *micro_out = ms;   // the caller's from here, whatever the checks below say
+#endif
     }
     jv *cons = jv_get(rec, "constraints");
     jv *serve = jv_get(rec, "serve");
@@ -2491,6 +2512,8 @@ typedef struct {
     char rec_pub[SIGN_PUBHEX_CAP];
     char prev[65];
     int route;                // the CUDA arithmetic routes it pins (gpu.h GR_*)
+    // R3.72: a tiled turn's decode schedule, read before the load; NULL otherwise
+    micro_sched *micro;
 } cli_verify;
 
 // What a mode runs on once the model is loaded: the model and its tokenizer,
@@ -4158,12 +4181,21 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
         {
             char why[512];
             if (!replay_constraints_ok(vr->rec, o->json_mode, o->schema_file, o->ignore_eos,
-                                       why, sizeof why)) {
+                                       &vr->micro, why, sizeof why)) {
                 fprintf(stderr, "UNVERIFIABLE: %s\n", why);
+                free(vr->micro);
+                vr->micro = NULL;
                 jv_free(vr->rec);
                 *rc = 3;
                 return true;
             }
+#if defined(RUNNER_GPU_METAL)
+            // R3.72: the recorded tiled steps replay on the tiles, the switch
+            // the serving process ran with, unless the verifier set it: =0
+            // then shows as a route the replay did not take
+            if (vr->micro && !getenv("RUNNER_METAL_BATCH_TILES"))
+                plat_setenv("RUNNER_METAL_BATCH_TILES", "1");
+#endif
         }
         jv *prof = jv_get(vr->rec, "profile"), *cfg = jv_get(vr->rec, "config");
         jv *ctx_v = jv_get(prof, "ctx"), *batch_v = jv_get(prof, "batch");
@@ -6624,6 +6656,103 @@ static bool replay_think_read(jv *rec, engine *e, char *why, size_t cap) {
     return true;
 }
 
+// R3.72: the replay of a tiled turn's recorded decode steps. A listed position
+// decodes as column 0 of a microbatch of its recorded width, every other column
+// a stand-in instance of the same file decoding the prompt's first token at
+// position 0 (content-free, like padding: nothing of another client's turn is
+// in a receipt, and the placement read found a column's tiled result the same
+// whatever its neighbours hold). A position the schedule does not list decodes
+// solo, as the identity route gave it its solo bits.
+typedef struct {
+    const micro_sched *sched;
+    model_t *sx;   // the stand-ins
+    int n_sx;
+    model_batch *mb;
+    int32_t tok0;
+    int at;        // micro_sched_width_at's cursor
+} replay_micro;
+
+static void replay_micro_close(replay_micro *r) {
+    model_batch_free(r->mb);
+    for (int i = 0; i < r->n_sx; i++) model_free(&r->sx[i]);
+    free(r->sx);
+    memset(r, 0, sizeof *r);
+}
+
+static bool replay_micro_open(replay_micro *r, const micro_sched *s, cli_run *rt,
+                              const cli_opts *o, const char *load_path, char *why, size_t cap) {
+    int w = 0;
+    for (int i = 0; i < s->n; i++)
+        if (s->run[i].width > w) w = s->run[i].width;
+    r->sched = s;
+    r->tok0 = rt->toks[0];
+    // Memory, before anything loads. Creating the microbatch maps the turn's
+    // whole KV cache at its context (measured on an Apple M1, SmolLM2-1.7B Q8_0
+    // at -c 4096: +772 MB at width 2, +794 MB at width 8; the KV formula gives
+    // 805 MB), and each stand-in adds a few MB (16 MB budgeted). A machine that
+    // cannot hold that is told so with the numbers, under the headroom Metal's
+    // own KV growth keeps (a sixteenth), rather than swapping or failing
+    // mid-load. RUNNER_TEST_RAM_AVAILABLE_MB lowers the figure for a test.
+    uint64_t kv = 0;
+    for (int l = 0; l < rt->m.n_layer; l++)
+        kv += (uint64_t)model_kv_row_bytes_sum(&rt->m, l) * (uint64_t)model_kv_rows(&rt->m, l);
+    uint64_t need = kv + (uint64_t)(w - 1) * (16ull << 20);
+    uint64_t have = plat_ram_available_bytes();
+    const char *seam = getenv("RUNNER_TEST_RAM_AVAILABLE_MB");
+    if (seam && *seam) {
+        uint64_t v = (uint64_t)strtoull(seam, NULL, 10) << 20;
+        if (v < have) {
+            fprintf(stderr, "test seam: RUNNER_TEST_RAM_AVAILABLE_MB=%s in place of the measured "
+                    "available RAM (%llu MB)\n", seam, (unsigned long long)(have >> 20));
+            have = v;
+        }
+    }
+    if (have && need + have / 16 > have) {
+        snprintf(why, cap, "the %d-wide microbatch maps the turn's whole %d-token KV cache: %.2f GB "
+                 "with its %d stand-ins, and %.2f GB of RAM is available", w, rt->m.n_ctx,
+                 need / 1e9, w - 1, have / 1e9);
+        return false;
+    }
+    r->sx = calloc((size_t)w - 1, sizeof(model_t));
+    if (!r->sx) {
+        snprintf(why, cap, "out of memory for %d stand-ins", w - 1);
+        return false;
+    }
+    // the replay's own parameters: the backend batches only instances of one
+    // KV geometry (a smaller context is declined), so a stand-in holds the
+    // turn's context although it only ever decodes position 0
+    model_t *seqs[MODEL_BATCH_MAX] = { &rt->m };
+    for (int i = 0; i < w - 1; i++) {
+        if (!model_load(&r->sx[i], load_path, &o->mp)) {
+            snprintf(why, cap, "cannot load stand-in %d of %d for the %d-wide microbatch", i + 1, w - 1, w);
+            return false;
+        }
+        r->n_sx++;
+        seqs[1 + i] = &r->sx[i];
+    }
+    r->mb = model_batch_create(seqs, w);
+    if (!model_batch_engaged(r->mb)) {
+        snprintf(why, cap, "the backend declined a %d-wide microbatch for this model", w);
+        return false;
+    }
+    return true;
+}
+
+static float *replay_micro_fwd(void *ud, model_t *m, int32_t tok, int pos) {
+    replay_micro *r = ud;
+    int w = micro_sched_width_at(r->sched, pos, &r->at);
+    if (!w) return model_forward(m, tok, pos);
+    int idx[MODEL_BATCH_MAX], bpos[MODEL_BATCH_MAX];
+    int32_t btok[MODEL_BATCH_MAX];
+    float *out[MODEL_BATCH_MAX];
+    for (int c = 0; c < w; c++) {
+        idx[c] = c;
+        btok[c] = c ? r->tok0 : tok;
+        bpos[c] = c ? 0 : pos;
+    }
+    return model_batch_decode(r->mb, idx, btok, bpos, w, out) ? out[0] : NULL;
+}
+
 static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const char *load_path) {
     jv *vm = jv_get(vr->rec, "model"), *va = jv_get(vr->rec, "adapter");
     jv *vprof = jv_get(vr->rec, "profile");
@@ -6770,11 +6899,27 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
             return 3;
         }
     }
+    replay_micro rmx = {0};
+    if (vr->micro) {
+        char why[256];
+        if (!replay_micro_open(&rmx, vr->micro, rt, o, load_path, why, sizeof why)) {
+            fprintf(stderr, "UNVERIFIABLE: tiled microbatch arithmetic: %s\n", why);
+            replay_micro_close(&rmx);
+            jv_free(vr->rec);
+            return 3;
+        }
+        rt->e.step_fwd = replay_micro_fwd;
+        rt->e.step_fwd_ud = &rmx;
+        fprintf(stderr, "verify: %d tiled run%s replay beside %d stand-ins\n", vr->micro->n,
+                vr->micro->n == 1 ? "" : "s", rmx.n_sx);
+    }
     engine_reset(&rt->e);
     double vt0 = now_s();
     float *logits = engine_feed(&rt->e, rt->toks, jp->n);
     if (!logits) {
         fprintf(stderr, "UNVERIFIABLE: prompt exceeds context\n");
+        rt->e.step_fwd = NULL;
+        replay_micro_close(&rmx);
         jv_free(vr->rec);
         return 3;
     }
@@ -6826,6 +6971,14 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
               ? engine_generate(&rt->e, logits, o->n_predict, replay_stop_cb, &rs, &gt)
               : engine_generate(&rt->e, logits, o->n_predict, outcap_cb, &replay_out, &gt);
     engine_set_request_stops(&rt->e, NULL, 0);
+    // R3.72: the replay's own schedule (model_batch_decode records it as the
+    // served one was) against the record's: equal only if the tiles ran at
+    // every recorded step at its width, and nowhere else
+    bool micro_same = !vr->micro || micro_sched_equal(vr->micro, rt->m.micro_steps);
+    int micro_runs = rt->m.micro_steps ? rt->m.micro_steps->n : 0;
+    rt->e.step_fwd = NULL;
+    rt->e.step_fwd_ud = NULL;
+    replay_micro_close(&rmx);
     think_free(&rs.ts);
     free(rs.vis.buf);
     if (rs.vis.failed) replay_out.failed = true;
@@ -6882,6 +7035,13 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
                               : "matched";
         }
         jv_free(now);
+    }
+    if (!micro_same) {
+        fprintf(stderr, "UNVERIFIABLE: tiled microbatch arithmetic: the replay ran the tiles in "
+                "%d run%s where the record lists %d: the tiles did not run at the recorded steps "
+                "on this device\n", micro_runs, micro_runs == 1 ? "" : "s", vr->micro->n);
+        free(replay_out.buf); jv_free(vr->rec);
+        return 3;
     }
     // tier: same binary = T1 (bit-exact by the gated contract), else
     // T2 (token replay across builds; libm is the known bit blocker)
@@ -8170,7 +8330,11 @@ static int cli_main(int argc, char **argv, char **owned_prompt, session_image *s
     wm_state cli_wm = { .key = wm_on ? &wmk : NULL };
     if (!cli_engine_setup(o, rt, wm_on, &cli_wm)) rc = 1;
     else if (o->train_path || o->dpo_path) rc = run_train(o, rt, tmpl_override, load_path);
-    else if (o->verify_path) rc = run_verify_replay(o, rt, &vr, load_path);
+    else if (o->verify_path) {
+        rc = run_verify_replay(o, rt, &vr, load_path);
+        free(vr.micro);   // R3.72: the tiled schedule, on every exit of the replay
+        vr.micro = NULL;
+    }
     else if (detect_text) rc = run_detect_text(o, rt, &wmk, detect_text);
     else if (o->decide_path) rc = run_decide(o, rt);
     else if (o->systemone_path) rc = run_systemone(o, rt);

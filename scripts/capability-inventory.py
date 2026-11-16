@@ -123,7 +123,9 @@ ENV_NAME_RULES = [
                              r"TEST_NO_FILE_ID|TEST_NO_INODE|LORA_INSTALL_FAIL)$")),
     ("execution", re.compile(r"^(ACT_TRACE|ATTN_|CPU_MOE_DEFAULT$|DEBUG_(ACT|ROUTE|TIME|VRAM)$|GPU_FALLBACK$|"
                              r"KV_|LAYER_SIM$|MLA_|MOE_|MTP_|MV_FUSE$|SPEC_BATCH$|TIEDV|"
-                             r"TEST_VRAM_FREE_MB$)")),
+                             r"TEST_VRAM_FREE_MB$|"
+                             # read in metal.m and by --verify's tiled replay in main.c (R3.72)
+                             r"METAL_BATCH_TILES$|TEST_RAM_AVAILABLE_MB$)")),
 ]
 
 RECORD_RULES = {

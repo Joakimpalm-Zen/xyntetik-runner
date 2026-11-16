@@ -3372,7 +3372,8 @@ int engine_generate(engine *e, float *logits, int max_new,
     int32_t tok; int pos;
     while (engine_gen_step(e, logits, cb, ud, &tok, &pos) == ENGINE_STEP_MORE) {
         if (e->stop && e->stop(e->stop_ud)) break;
-        logits = model_forward(e->m, tok, pos);
+        logits = e->step_fwd ? e->step_fwd(e->step_fwd_ud, e->m, tok, pos)
+                             : model_forward(e->m, tok, pos);
     }
     return engine_gen_end(e, cb, ud, gen_time);
 }

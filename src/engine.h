@@ -339,6 +339,11 @@ typedef struct {
     // model_key for a model without recurrent layers. Only names why a saved
     // state is refused, never admits one.
     uint64_t model_key_prior;
+    // R3.72: the forward engine_generate's plain loop takes for each decode
+    // step, NULL for model_forward. --verify sets it to replay a tiled turn's
+    // recorded microbatch steps (main.c replay_micro_fwd).
+    float *(*step_fwd)(void *ud, model_t *m, int32_t tok, int pos);
+    void *step_fwd_ud;
 } engine;
 
 // Called between prefill chunks so a caller holding the device turn can drop
