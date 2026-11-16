@@ -32,6 +32,11 @@ struct jv {
 };
 
 jv         *json_parse(const char *s, size_t n); // NULL on error
+// json_parse that tells why it returned NULL: *oom is true when an allocation
+// failed while parsing (the text may be valid JSON), false when the text is not
+// one JSON value (R2.21). A caller that treats "not JSON" as recoverable reads
+// *oom as a failure instead.
+jv         *json_parse_ex(const char *s, size_t n, bool *oom);
 void        jv_free(jv *v);
 jv         *jv_get(jv *obj, const char *key);    // NULL if absent / not object
 // Replace the member `key` of obj with val (freeing the old value) or append

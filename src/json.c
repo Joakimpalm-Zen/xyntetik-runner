@@ -13,6 +13,13 @@
 
 typedef struct { const char *p, *end; int depth; } jcur;
 
+// R2.21: set by every allocation that fails while a document is parsed, so
+// json_parse_ex can tell a document it ran out of memory on from one that is
+// not JSON. json_parse's NULL alone cannot: a caller that read an allocation
+// failure as "not valid JSON" took a whole, valid argument for a cut-off one
+// and wrote a recovered value in its place.
+static _Thread_local bool parse_oom;
+
 static size_t utf8_seq(const char *s, size_t i, size_t n);
 
 static void skip_ws(jcur *c) {
@@ -22,7 +29,7 @@ static void skip_ws(jcur *c) {
 
 static jv *jv_new(jtype t) {
     jv *v = calloc(1, sizeof(jv));
-    if (!v) return NULL;
+    if (!v) { parse_oom = true; return NULL; }
     v->type = t;
     return v;
 }
@@ -125,13 +132,13 @@ static char *parse_string(jcur *c) {
     c->p++;
     size_t cap = 32, m = 0;
     char *out = malloc(cap);
-    if (!out) return NULL;
+    if (!out) { parse_oom = true; return NULL; }
     while (c->p < c->end) {
         if (m + 8 > cap) {
             // via a temporary: `out = realloc(out, cap)` strands the original
             // block on failure and then yields NULL for the next write
             char *tmp = realloc(out, cap * 2);
-            if (!tmp) goto fail;
+            if (!tmp) { parse_oom = true; goto fail; }
             out = tmp;
             cap *= 2;
         }
@@ -305,7 +312,7 @@ static jv *parse_number(jcur *c) {
     size_t n = (size_t)(p - start);
     char local[128];
     char *tmp = n < sizeof(local) ? local : malloc(n + 1);
-    if (!tmp) return NULL;
+    if (!tmp) { parse_oom = true; return NULL; }
     memcpy(tmp, start, n);
     tmp[n] = 0;
     double d = 0;
@@ -320,7 +327,7 @@ static jv *parse_number(jcur *c) {
     // fifteen digits always survive the double; past that only the text does
     if (is_int && n_int_digits > 15) {
         r->num_text = malloc(n + 1);
-        if (!r->num_text) { jv_free(r); return NULL; }
+        if (!r->num_text) { parse_oom = true; jv_free(r); return NULL; }
         memcpy(r->num_text, start, n);
         r->num_text[n] = 0;
     }
@@ -342,7 +349,9 @@ static jv *parse_container(jcur *c, char open) {
             skip_ws(c);
             key = parse_string(c);
             if (!key) goto fail;
-            if (keyset_insert(&keys, key) != 1) { free(key); goto fail; }
+            int ins = keyset_insert(&keys, key);
+            if (ins < 0) parse_oom = true;   // a duplicate (0) is not JSON; -1 is memory
+            if (ins != 1) { free(key); goto fail; }
             skip_ws(c);
             if (c->p >= c->end || *c->p != ':') { free(key); goto fail; }
             c->p++;
@@ -352,11 +361,11 @@ static jv *parse_container(jcur *c, char open) {
         // item and key are not owned by v until both arrays have grown, so a
         // failure here has to free them itself
         jv **grown = realloc(v->items, sizeof(jv *) * (v->n + 1));
-        if (!grown) { free(key); jv_free(item); goto fail; }
+        if (!grown) { parse_oom = true; free(key); jv_free(item); goto fail; }
         v->items = grown;
         if (v->type == J_OBJ) {
             char **kgrown = realloc(v->keys, sizeof(char *) * (v->n + 1));
-            if (!kgrown) { free(key); jv_free(item); goto fail; }
+            if (!kgrown) { parse_oom = true; free(key); jv_free(item); goto fail; }
             v->keys = kgrown;
         }
         v->items[v->n] = item;
@@ -404,6 +413,13 @@ static jv *parse_value(jcur *c) {
     }
     c->depth--;
     return r;
+}
+
+jv *json_parse_ex(const char *s, size_t n, bool *oom) {
+    parse_oom = false;
+    jv *v = json_parse(s, n);
+    if (oom) *oom = !v && parse_oom;
+    return v;
 }
 
 jv *json_parse(const char *s, size_t n) {

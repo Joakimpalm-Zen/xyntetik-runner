@@ -107,6 +107,48 @@ static void test_parse_survives_allocation_failure(void) {
     }
 }
 
+// R2.21: json_parse_ex tells an allocation failure from a document that is not
+// JSON. Every failed allocation while a valid input is parsed reports oom (and
+// NULL), or the parse succeeds; a text that is not one JSON value reports no
+// oom with nothing failed, and its own allocation failures still report oom.
+static void test_parse_ex_reports_allocation_failure(void) {
+    for (size_t i = 0; i < sizeof(inputs) / sizeof(*inputs); i++) {
+        const char *s = inputs[i];
+        size_t n = strlen(s);
+        fail_at = -1;
+        alloc_calls = 0;
+        bool oom = true;
+        jv *v = json_parse_ex(s, n, &oom);
+        assert(v && !oom);
+        long total = alloc_calls;
+        jv_free(v);
+        for (long k = 0; k < total; k++) {
+            fail_at = k;
+            alloc_calls = 0;
+            oom = false;
+            jv *r = json_parse_ex(s, n, &oom);
+            fail_at = -1;
+            if (r ? oom : !oom) {
+                fprintf(stderr, "R2.21: input %zu, failing allocation %ld of %ld: %s with oom %d\n",
+                        i, k, total, r ? "parsed" : "NULL", oom);
+                abort();
+            }
+            if (r) jv_free(r);
+        }
+    }
+    static const char *const not_json[] = { "", "-", "tru", "[1,", "{\"a\":1,\"a\":2}", "\"open", "1 2" };
+    for (size_t i = 0; i < sizeof(not_json) / sizeof(*not_json); i++) {
+        fail_at = -1;
+        bool oom = true;
+        jv *r = json_parse_ex(not_json[i], strlen(not_json[i]), &oom);
+        if (r || oom) {
+            fprintf(stderr, "R2.21: \"%s\" is not JSON, read as %s with oom %d\n",
+                    not_json[i], r ? "parsed" : "NULL", oom);
+            abort();
+        }
+    }
+}
+
 // The same for the builder that assembles every HTTP response body. sb_put
 // returns void, so a caller cannot see failure; at minimum it must not write
 // through a NULL buffer.
@@ -172,6 +214,7 @@ static void test_builder_does_not_truncate(void) {
 
 int main(void) {
     test_parse_survives_allocation_failure();
+    test_parse_ex_reports_allocation_failure();
     test_builder_survives_allocation_failure();
     test_builder_does_not_truncate();
     puts("json oom tests ok");
