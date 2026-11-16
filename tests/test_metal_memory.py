@@ -97,7 +97,7 @@ SEAM = "RUNNER_TEST_METAL_HELD_AFTER_FREE"
 # a helper. Exported functions that send none need no pool.
 ENTRY_POINTS = ["gpu_available", "gpu_max_working_set", "gpu_init", "gpu_lora_bind", "gpu_lora_unbind",
                 "gpu_free", "gpu_forward_batch", "gpu_batch_create", "gpu_batch_free", "gpu_batch_decode",
-                "gpu_rope_changed", "gpu_kv_reserve", "gpu_kv_rows"]
+                "gpu_rope_changed", "gpu_kv_reserve", "gpu_kv_rows", "gpu_rope_table_in_use"]
 
 
 def _body(source, name):

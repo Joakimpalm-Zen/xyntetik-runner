@@ -136,17 +136,20 @@ def _complete(srv, prompt, n, **fields):
 
 @pytest.mark.parametrize("gpu", ["off", "auto"])
 def test_phi3_served_sequence_changes_set_where_it_passes_the_original_context(runner_bin, tmp_path, gpu):
-    """Served, on the CPU and on the Apple GPU (which keeps a rope table per
-    slot): a completion that generates past the original context is computed
-    again once, the next shorter prompt keeps nothing of it and says why, and
-    each answer is the one a slot with no history gives."""
+    """Served, on the CPU and on a GPU that keeps a factor set per slot (the
+    Apple GPU's own table, CUDA's set index into the shared weights, R4.40.2):
+    a completion that generates past the original context is computed again
+    once, the next shorter prompt keeps nothing of it and says why, and each
+    answer is the one a slot with no history gives."""
     sys.path.insert(0, str(ROOT / "tests" / "conformance"))
     from harness import RunnerServer
+    backend = None
     if gpu == "auto":
         caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT, stdout=subprocess.PIPE,
                                          check=True).stdout)
-        if (caps.get("gpu") or {}).get("backend") != "metal":
-            pytest.skip("the Metal backend's per-slot rope table")
+        backend = (caps.get("gpu") or {}).get("backend")
+        if backend not in ("metal", "cuda"):
+            pytest.skip("a GPU backend (Metal or CUDA): this host has none")
     model = _make(tmp_path, "orig128", "--longrope-orig", "128")
     n_short, _, _ = _logprobs(runner_bin, model, 256, PROMPT)
     grow = 128 - n_short + 12          # generation ends 12 tokens past the original context
@@ -168,5 +171,6 @@ def test_phi3_served_sequence_changes_set_where_it_passes_the_original_context(r
         assert whole["usage"]["prompt_tokens"] == n_short + grow - 4, whole["usage"]
         assert whole["choices"][0]["text"] == grown["choices"][0]["text"][-4:]
     log = log_path.read_text(encoding="utf-8", errors="replace")
-    assert ("gpu: Metal backend" in log) == (gpu == "auto"), log[:2000]
+    engaged = {"metal": "gpu: Metal backend", "cuda": "gpu: CUDA backend"}
+    assert all((line in log) == (backend == b) for b, line in engaged.items()), log[:2000]
     assert log.count("positions are computed again with the long factors") == 1, log[-2000:]

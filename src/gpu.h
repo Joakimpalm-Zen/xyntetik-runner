@@ -79,11 +79,16 @@ bool   gpu_eseries_ok(void);
 bool   gpu_removed_sublayers_ok(void);
 // R4.40: can an instance change its rope frequency table after init
 // (model_rope_for_len)? Metal keeps the table per instance and can; CUDA
-// shares it between the sequences of a weight set and cannot yet.
+// keeps both LongRoPE sets' tables in the shared weight set and each instance
+// reads its own set's (R4.40.2).
 bool   gpu_rope_sets_ok(void);
 // The instance's rope_inv_freq (and its sliding-layer copy) changed: copy it
 // to the device. Called between forwards, never during one.
 void   gpu_rope_changed(model_t *m);
+// test hook (R4.40.2): copy back the n = rope_dim/2 frequencies the
+// instance's next global-layer rope reads on the device; false where the
+// instance has no device or the backend cannot say (tests/test_cuda_longrope.c)
+bool   gpu_rope_table_in_use(const model_t *m, float *out, int n);
 // The most experts and per-token picks a device bank's router takes (CUDA 512
 // and 256, Metal 256 and 256); false where no device routes experts. Past
 // them a bank is refused the device, by the words model_moe_route_why gives
