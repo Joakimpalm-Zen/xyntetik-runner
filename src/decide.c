@@ -162,7 +162,7 @@ static bool score_mode(engine *e, const char *prompt, tok_mode mode,
             !engine_feed(e, s->toks + e->pos, (start - 1) - e->pos)) {
             *err = "engine feed failed (context or memory)"; ok = false; break;
         }
-        const float *L = engine_feed(e, &s->toks[start - 1], 1);
+        const float *L = engine_feed_solo(e, s->toks[start - 1]);
         if (!L) { *err = "engine feed failed (context or memory)"; ok = false; break; }
         double total = 0;
         for (int d = s->common; d < start; d++) total += lp_at[d];
@@ -174,7 +174,7 @@ static bool score_mode(engine *e, const char *prompt, tok_mode mode,
             }
             double v = (double)L[s->toks[d]] - lse(L, m->n_vocab);
             lp_at[d] = v; has[d] = 1; total += v;
-            L = engine_feed(e, &s->toks[d], 1);   // also keeps hist == the path
+            L = engine_feed_solo(e, s->toks[d]);   // also keeps hist == the path
             if (!L) { *err = "engine feed failed (context or memory)"; ok = false; break; }
         }
         if (!ok) break;
