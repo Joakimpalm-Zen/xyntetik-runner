@@ -144,6 +144,10 @@ file each, until the release folds them in below. Add a new entry there, not her
     not reach is not in it. On Gemma 4 31B one file's mean KLD over every third position read 0.0563 (interval
     0.0415 to 0.0735, not decided) and over every position 0.0806 (0.0626 to 0.1024, fail). It says nothing about
     another text. A reference result without per-position rows keeps the point verdict, and the card says so.
+- **A GGUF whose tensor data breaks the file's alignment is refused by name before any decode.**
+  - The loader checked that a tensor's data lies inside the file, but not that its offset is a multiple of `general.alignment` (32 without the key), as the GGUF spec requires. A block's fields are read in place (an f16 scale needs 2 bytes of alignment, an F32 value 4), so such a file was decoded at misaligned addresses, which is undefined behaviour. The fuzzer found one: a Q4_0 tensor at offset 131,071, read misaligned by the Q4_0 decode.
+  - Such a file is malformed, and the load and `--info fit` now refuse it, naming the tensor and its offset. They also refuse a `general.alignment` under 4 that leaves a tensor's data off a 4-byte boundary. Files written by llama.cpp's converters and by Runner keep their offsets aligned, and every model on the support list that was checked loads as before.
+  - The same defect is in 1.19.1.
 
 ## v1.19.1 - 2026-11-15
 
