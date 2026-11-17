@@ -469,6 +469,116 @@ done:
     free(g); free(u); free(dh); free(h); free(dg); free(du);
 }
 
+// R8.24.1 B6 (G0): the device twins of one site's adapter (gpu_train_lora_check)
+// against the host's own code (model_lora_site_ref: lora_apply, then the four
+// lsb passes of lora_site_bw). Explicit fmaf chains and two products. In a T3
+// build that is exactly what the host runs, so memcmp on all four outputs,
+// subnormals included. In the default build -ffast-math lets gcc vectorize
+// lora_apply's chain over i (a reduction it may reassociate), so the forward
+// delta y is the written chain only in T3 and is held to the rounding bound
+// there; the backward's passes are laid out as independent chains the
+// compiler cannot reassociate, so ga, gb and dx stay memcmp (normal numbers:
+// the default build's process flushes subnormals). y, ga, gb and dx start
+// from random values (each chain runs from its stored value). Anchor: y
+// against a double reference within its chains' rounding, (n_in + r + 2)
+// 2^-23 of the sum of the terms' magnitudes.
+static void lora_case(model_t *m, int r, int n_in, int n_out, int nb, int edge) {
+    size_t na = (size_t)r * n_in, nbb = (size_t)n_out * r;
+    size_t nx = (size_t)nb * n_in, ny = (size_t)nb * n_out;
+    float *A = malloc(sizeof(float) * na), *B = malloc(sizeof(float) * nbb);
+    float *x = malloc(sizeof(float) * nx), *dy = malloc(sizeof(float) * ny);
+    float *y0 = malloc(sizeof(float) * ny), *ga0 = malloc(sizeof(float) * na);
+    float *gb0 = malloc(sizeof(float) * nbb), *dx0 = malloc(sizeof(float) * nx);
+    float *yh = malloc(sizeof(float) * ny), *gah = malloc(sizeof(float) * na);
+    float *gbh = malloc(sizeof(float) * nbb), *dxh = malloc(sizeof(float) * nx);
+    float *yd = malloc(sizeof(float) * ny), *gad = malloc(sizeof(float) * na);
+    float *gbd = malloc(sizeof(float) * nbb), *dxd = malloc(sizeof(float) * nx);
+    float sa = 1.0f / sqrtf((float)n_in);
+    for (size_t i = 0; i < na; i++) { A[i] = frnd() * sa; ga0[i] = frnd() * 0.01f; }
+    for (size_t i = 0; i < nbb; i++) { B[i] = frnd() * 0.1f; gb0[i] = frnd() * 0.01f; }
+    for (size_t i = 0; i < nx; i++) { x[i] = frnd(); dx0[i] = frnd(); }
+    for (size_t i = 0; i < ny; i++) { dy[i] = frnd(); y0[i] = frnd(); }
+    if (edge) {
+        // a zero row of x and of dy, both zeros, magnitudes far from 1
+        // (products stay normal), and in T3 subnormals
+        for (int i = 0; i < n_in; i++) x[i] = 0.0f;
+        for (int j = 0; j < n_out; j++) dy[(size_t)(nb - 1) * n_out + j] = 0.0f;
+        for (size_t i = 0; i < nx; i += 7) x[i] = i % 2 ? -0.0f : 0.0f;
+        for (size_t i = 3; i < nx; i += 11) x[i] *= i % 3 ? 1e15f : 1e-15f;
+        for (size_t i = 5; i < ny; i += 13) dy[i] *= i % 3 ? 1e12f : 1e-12f;
+        for (size_t i = 1; i < na; i += 17) A[i] = i % 2 ? -0.0f : 0.0f;
+#ifdef RUNNER_PORTABLE_MATH
+        for (size_t i = 2; i < nx; i += 19) x[i] = i % 2 ? 1e-40f : -1e-41f;
+        for (size_t i = 4; i < ny; i += 23) dy[i] = 3e-39f;
+#endif
+    }
+    memcpy(yh, y0, sizeof(float) * ny); memcpy(yd, y0, sizeof(float) * ny);
+    memcpy(gah, ga0, sizeof(float) * na); memcpy(gad, ga0, sizeof(float) * na);
+    memcpy(gbh, gb0, sizeof(float) * nbb); memcpy(gbd, gb0, sizeof(float) * nbb);
+    memcpy(dxh, dx0, sizeof(float) * nx); memcpy(dxd, dx0, sizeof(float) * nx);
+    float s = 16.0f / (float)r;
+    bool okh = model_lora_site_ref(r, n_in, n_out, nb, s, A, B, x, dy, yh, gah, gbh, dxh);
+    bool okd = gpu_train_lora_check(m, r, n_in, n_out, nb, s, A, B, x, dy, yd, gad, gbd, dxd);
+    CHECK(okh, "lora twin r %d %dx%d nb %d: the host reference failed", r, n_in, n_out, nb);
+    CHECK(okd, "lora twin r %d %dx%d nb %d: declined (no kernel in this PTX?)", r, n_in, n_out, nb);
+    if (okh && okd) {
+        const struct { const char *nm; const float *h, *d; size_t n; } C[4] = {
+            { "y", yh, yd, ny }, { "ga", gah, gad, na }, { "gb", gbh, gbd, nbb }, { "dx", dxh, dxd, nx } };
+#ifdef RUNNER_PORTABLE_MATH
+        int c0 = 0;
+#else
+        int c0 = 1;   // y: the bound below, against the host and the double
+#endif
+        for (int c = c0; c < 4; c++) {
+            size_t bad = 0, first = 0;
+            for (size_t i = 0; i < C[c].n; i++)
+                if (memcmp(&C[c].h[i], &C[c].d[i], 4) && !bad++) first = i;
+            CHECK(!bad, "lora twin r %d %dx%d nb %d%s: %s differs from the host at %zu of %zu "
+                  "(first [%zu]: host %.9g device %.9g)", r, n_in, n_out, nb, edge ? " edge" : "",
+                  C[c].nm, bad, C[c].n, first, C[c].h[first], C[c].d[first]);
+        }
+        // the anchor: y in double, and (default build) the host's y under
+        // the same bound
+        double worst = 0, hworst = 0;
+        double *tq = malloc(sizeof(double) * r), *ta = malloc(sizeof(double) * r);
+        for (int b = 0; b < nb; b++) {
+            for (int k = 0; k < r; k++) {
+                tq[k] = ta[k] = 0;
+                for (int i = 0; i < n_in; i++) {
+                    tq[k] += (double)A[(size_t)k * n_in + i] * x[(size_t)b * n_in + i];
+                    ta[k] += fabs((double)A[(size_t)k * n_in + i] * x[(size_t)b * n_in + i]);
+                }
+            }
+            for (int j = 0; j < n_out; j++) {
+                double v = y0[(size_t)b * n_out + j], mag = fabs(v);
+                double d = 0, dm = 0;
+                for (int k = 0; k < r; k++) {
+                    d += (double)B[(size_t)j * r + k] * tq[k];
+                    dm += fabs((double)B[(size_t)j * r + k]) * ta[k];
+                }
+                v += s * d;
+                mag += fabs(s) * dm;
+                double bound = (n_in + r + 2) * 0x1p-23 * mag + 0x1p-126;
+                double e = fabs(yd[(size_t)b * n_out + j] - v) / bound;
+                if (e > worst) worst = e;
+                double eh = fabs((double)yd[(size_t)b * n_out + j] - yh[(size_t)b * n_out + j]) /
+                            bound;
+                if (eh > hworst) hworst = eh;
+            }
+        }
+        CHECK(worst <= 1.0, "lora twin r %d %dx%d nb %d: y is not the delta (%.3g of the "
+              "rounding bound)", r, n_in, n_out, nb, worst);
+        CHECK(hworst <= 1.0, "lora twin r %d %dx%d nb %d: y is off the host's beyond the "
+              "rounding bound (%.3g of it)", r, n_in, n_out, nb, hworst);
+        printf("lora twin r %2d %5dx%-5d nb %3d%s: %s == host; y %.3g of its bound from the "
+               "double, %.3g from the host\n", r, n_in, n_out, nb, edge ? " edge" : "     ",
+               c0 ? "ga gb dx" : "y ga gb dx", worst, hworst);
+        free(tq); free(ta);
+    }
+    free(A); free(B); free(x); free(dy); free(y0); free(ga0); free(gb0); free(dx0);
+    free(yh); free(gah); free(gbh); free(dxh); free(yd); free(gad); free(gbd); free(dxd);
+}
+
 int main(void) {
     f16_init();
     model_t m;
@@ -748,6 +858,11 @@ int main(void) {
         free(bx); free(by);
     }
     ffn_check(&m);
+    lora_case(&m, 8, 2560, 1024, 104, 0);
+    lora_case(&m, 8, 9728, 2560, 104, 0);
+    lora_case(&m, 8, 37, 300, 7, 1);
+    lora_case(&m, 1, 64, 5, 1, 1);
+    lora_case(&m, 5, 129, 33, 17, 1);
     ab_check(&m, 77, 4, 2, 64, 0);
     ab_check(&m, 150, 8, 4, 64, 0);
     ab_check(&m, 90, 4, 1, 256, 24);

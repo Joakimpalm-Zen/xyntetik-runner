@@ -232,6 +232,13 @@ bool gpu_train_ffn_check(model_t *m, int act, const float *g, const float *u,
     (void)m; (void)act; (void)g; (void)u; (void)dh; (void)h; (void)dg; (void)du; (void)n;
     return false;
 }
+bool gpu_train_lora_check(model_t *m, int r, int n_in, int n_out, int nb, float s,
+                          const float *A, const float *B, const float *x,
+                          const float *dy, float *y, float *ga, float *gb, float *dx) {
+    (void)m; (void)r; (void)n_in; (void)n_out; (void)nb; (void)s; (void)A; (void)B;
+    (void)x; (void)dy; (void)y; (void)ga; (void)gb; (void)dx;
+    return false;
+}
 
 void gpu_train_prof(model_t *m, double *t_mm, long *n_mm, double *t_mvt,
                     long *n_mvt, double *k_mm, double *k_mvt) {

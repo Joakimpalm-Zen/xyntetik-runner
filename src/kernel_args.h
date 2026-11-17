@@ -145,6 +145,18 @@ typedef struct {
     int n, act;
 } tffn_args;
 
+// B6: the adapter at a projection site, rank r, scale s, over nb rows: x rows
+// x_stride floats apart (n_in wide), y / dy rows y_stride apart (n_out wide),
+// dx rows x_stride apart. Forward (model.c lora_apply): t = A x, y += s B t.
+// Backward (lora_site_bw's adapter half, lsb_*): tb = B^T dy, tf = A x,
+// ga[k][i] += s tb[t][k] x[t][i] and gb[j][k] += s dy[t][j] tf[t][k] (each a
+// chain over t ascending from its stored value), dx += s (A^T tb). A is
+// [r][n_in], B [n_out][r], t / tb / tf [nb][r], ga like A, gb like B.
+typedef struct {
+    int n_in, n_out, r, nb, x_stride, y_stride;
+    float s;
+} tlora_args;
+
 // B2: rmsnorm (model.c rmsnorm; qk_norm runs it per head) and its adjoint
 // (rmsnorm_bw), over `rows` rows of n floats. Forward y = x*r*w; adjoint
 // dx[i] += r*w[i]*dy[i] - c*x[i]. w is one n-vector for every row (qk_norm

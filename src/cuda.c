@@ -8808,6 +8808,8 @@ typedef struct {
     long        n_dn, n_dn_failed;   // the record: calls run, calls failed
     // R8.24.1 B1: a gated FFN's activation and its adjoint, host-chain twins
     CUfunction  f_tffn_fw, f_tffn_bw;
+    // R8.24.1 B6: the adapter at a site (k_tlora_t, _y, _tb, _ga, _gb, _dx)
+    CUfunction  f_tlora[6];
     // the attention backward (k_tab_p, k_tab_dq, k_tab_dkv) and its buffers
     CUfunction  f_tab_p, f_tab_dq, f_tab_dkv;
     CUdeviceptr ab[AB_NBUF];
@@ -8908,6 +8910,15 @@ bool gpu_train_init(model_t *m) {
     if (cu.ModuleGetFunction(&t->f_tffn_fw, t->mod, "k_tffn_fw") != 0 ||
         cu.ModuleGetFunction(&t->f_tffn_bw, t->mod, "k_tffn_bw") != 0)
         t->f_tffn_fw = t->f_tffn_bw = NULL;
+    {
+        static const char *const LN[6] = { "k_tlora_t", "k_tlora_y", "k_tlora_tb",
+                                           "k_tlora_ga", "k_tlora_gb", "k_tlora_dx" };
+        for (int i = 0; i < 6; i++)
+            if (cu.ModuleGetFunction(&t->f_tlora[i], t->mod, LN[i]) != 0) {
+                for (int k = 0; k < 6; k++) t->f_tlora[k] = NULL;
+                break;
+            }
+    }
     if (cu.ModuleGetFunction(&t->f_tdn_fw, t->mod, "k_tdn_fw") != 0 ||
         cu.ModuleGetFunction(&t->f_tdn_bw, t->mod, "k_tdn_bw") != 0)
         t->f_tdn_fw = t->f_tdn_bw = NULL;
@@ -9110,6 +9121,60 @@ static bool tffn_bw_launch(train_gpu_t *t, CUdeviceptr g, CUdeviceptr u,
     return t->f_tffn_bw &&
            cu.LaunchKernel(t->f_tffn_bw, (unsigned)((n + 255) / 256), 1, 1, 256,
                            1, 1, 0, NULL, p, NULL) == 0;
+}
+
+// R8.24.1 B6: one of the adapter kernels over its element count (no sync)
+enum { TL_T, TL_Y, TL_TB, TL_GA, TL_GB, TL_DX };
+static bool tlora_launch(train_gpu_t *t, int which, CUdeviceptr p0, CUdeviceptr p1,
+                         CUdeviceptr p2, const tlora_args *a) {
+    if (!t->f_tlora[which]) return false;
+    long n = which == TL_T || which == TL_TB ? (long)a->nb * a->r
+           : which == TL_Y  ? (long)a->nb * a->n_out
+           : which == TL_GA ? (long)a->r * a->n_in
+           : which == TL_GB ? (long)a->n_out * a->r : (long)a->nb * a->n_in;
+    tlora_args av = *a;
+    void *p[] = { &p0, &p1, &p2, &av };
+    return cu.LaunchKernel(t->f_tlora[which], (unsigned)((n + 127) / 128), 1, 1, 128,
+                           1, 1, 0, NULL, p, NULL) == 0;
+}
+
+// R8.24.1 B6, for the kernel gate: one site's adapter on host arrays (sent,
+// run, brought back), the host's order of passes: y += s B (A x); tb = B^T dy;
+// tf = A x; ga, gb accumulate; dx += s A^T tb. x and dx rows n_in apart, y and
+// dy rows n_out apart. false: no context or no kernel in this PTX.
+bool gpu_train_lora_check(model_t *m, int r, int n_in, int n_out, int nb, float s,
+                          const float *A, const float *B, const float *x,
+                          const float *dy, float *y, float *ga, float *gb, float *dx) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->f_tlora[0] || r < 1 || nb < 1 || cu.CtxSetCurrent(t->ctx) != 0)
+        return false;
+    size_t sz[10] = { (size_t)r * n_in, (size_t)n_out * r, (size_t)nb * n_in,
+                      (size_t)nb * n_out, (size_t)nb * n_out, (size_t)r * n_in,
+                      (size_t)n_out * r, (size_t)nb * n_in, (size_t)nb * r,
+                      (size_t)nb * r };
+    const float *src[8] = { A, B, x, dy, y, ga, gb, dx };
+    CUdeviceptr d[10] = {0};
+    bool ok = true;
+    for (int i = 0; i < 10 && ok; i++) ok = cu.MemAlloc(&d[i], sizeof(float) * sz[i]) == 0;
+    for (int i = 0; i < 8 && ok; i++)
+        ok = cu.MemcpyHtoD(d[i], src[i], sizeof(float) * sz[i]) == 0;
+    tlora_args a = { n_in, n_out, r, nb, n_in, n_out, s };
+    // d: 0 A, 1 B, 2 x, 3 dy, 4 y, 5 ga, 6 gb, 7 dx, 8 t (then tf), 9 tb
+    ok = ok && tlora_launch(t, TL_T, d[0], d[2], d[8], &a) &&
+         tlora_launch(t, TL_Y, d[1], d[8], d[4], &a) &&
+         tlora_launch(t, TL_TB, d[1], d[3], d[9], &a) &&
+         tlora_launch(t, TL_T, d[0], d[2], d[8], &a) &&
+         tlora_launch(t, TL_GA, d[9], d[2], d[5], &a) &&
+         tlora_launch(t, TL_GB, d[3], d[8], d[6], &a) &&
+         tlora_launch(t, TL_DX, d[0], d[9], d[7], &a) &&
+         cu.CtxSynchronize() == 0 &&
+         cu.MemcpyDtoH(y, d[4], sizeof(float) * sz[4]) == 0 &&
+         cu.MemcpyDtoH(ga, d[5], sizeof(float) * sz[5]) == 0 &&
+         cu.MemcpyDtoH(gb, d[6], sizeof(float) * sz[6]) == 0 &&
+         cu.MemcpyDtoH(dx, d[7], sizeof(float) * sz[7]) == 0;
+    for (int i = 0; i < 10; i++)
+        if (d[i]) cu.MemFree(d[i]);
+    return ok;
 }
 
 // R8.24.1 B1, for the kernel gate: the twins over n host floats (sent, run,

@@ -1123,3 +1123,89 @@ extern "C" __global__ void k_tffn_bw(const float *g, const float *u,
     dg[i] = __fmul_rn(__fmul_rn(d, u[i]), tw_silu_d(gi));
     du[i] = __fmul_rn(d, tw_silu(gi));
 }
+
+// ---- R8.24.1 B6: the adapter at a projection site, host-chain twins
+// (kernel_args.h tlora_args). Every element is one thread running the host's
+// chain: lora_apply's t[k] (fmaf over i ascending from 0) and y[j] (fmaf over
+// k ascending from 0, then fmaf(s, acc, y)); lsb_proj's tb (fmaf over j) and
+// tf (the same chain as t); lsb_ga's and lsb_gb's elements (fmaf over t
+// ascending from the stored value, the factor s*tb or s*dy rounded first);
+// lsb_dx's (fmaf over k from 0, then fmaf(s, acc, dx)). No arithmetic but
+// those fmafs and the two products, so the default build's host (explicit
+// fmaf there too) and this agree bit for bit on normal numbers.
+
+// t[b][k] = sum_i A[k][i] x[b][i]  (forward t, and the backward's tf)
+extern "C" __global__ void k_tlora_t(const float *A, const float *x, float *t,
+                                     tlora_args a) {
+    int e = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (e >= a.nb * a.r) return;
+    int b = e / a.r, k = e % a.r;
+    const float *ar = A + (ulong64)k * a.n_in, *xr = x + (ulong64)b * a.x_stride;
+    float acc = 0.0f;
+    for (int i = 0; i < a.n_in; i++) acc = __fmaf_rn(ar[i], xr[i], acc);
+    t[(ulong64)b * a.r + k] = acc;
+}
+
+// y[b][j] = fmaf(s, sum_k B[j][k] t[b][k], y[b][j])
+extern "C" __global__ void k_tlora_y(const float *B, const float *t, float *y,
+                                     tlora_args a) {
+    int e = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (e >= a.nb * a.n_out) return;
+    int b = e / a.n_out, j = e % a.n_out;
+    const float *br = B + (ulong64)j * a.r, *tr = t + (ulong64)b * a.r;
+    float acc = 0.0f;
+    for (int k = 0; k < a.r; k++) acc = __fmaf_rn(br[k], tr[k], acc);
+    float *yo = y + (ulong64)b * a.y_stride + j;
+    *yo = __fmaf_rn(a.s, acc, *yo);
+}
+
+// tb[b][k] = sum_j B[j][k] dy[b][j]  (lsb_proj's first chain)
+extern "C" __global__ void k_tlora_tb(const float *B, const float *dy, float *tb,
+                                      tlora_args a) {
+    int e = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (e >= a.nb * a.r) return;
+    int b = e / a.r, k = e % a.r;
+    const float *dr = dy + (ulong64)b * a.y_stride;
+    float acc = 0.0f;
+    for (int j = 0; j < a.n_out; j++) acc = __fmaf_rn(B[(ulong64)j * a.r + k], dr[j], acc);
+    tb[(ulong64)b * a.r + k] = acc;
+}
+
+// ga[k][i]: for t ascending, fmaf(s*tb[t][k], x[t][i], ga)  (lsb_ga)
+extern "C" __global__ void k_tlora_ga(const float *tb, const float *x, float *ga,
+                                      tlora_args a) {
+    int e = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (e >= a.r * a.n_in) return;
+    int k = e / a.n_in, i = e % a.n_in;
+    float acc = ga[e];
+    for (int t = 0; t < a.nb; t++)
+        acc = __fmaf_rn(__fmul_rn(a.s, tb[(ulong64)t * a.r + k]),
+                        x[(ulong64)t * a.x_stride + i], acc);
+    ga[e] = acc;
+}
+
+// gb[j][k]: for t ascending, fmaf(s*dy[t][j], tf[t][k], gb)  (lsb_gb)
+extern "C" __global__ void k_tlora_gb(const float *dy, const float *tf, float *gb,
+                                      tlora_args a) {
+    int e = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (e >= a.n_out * a.r) return;
+    int j = e / a.r, k = e % a.r;
+    float acc = gb[e];
+    for (int t = 0; t < a.nb; t++)
+        acc = __fmaf_rn(__fmul_rn(a.s, dy[(ulong64)t * a.y_stride + j]),
+                        tf[(ulong64)t * a.r + k], acc);
+    gb[e] = acc;
+}
+
+// dx[b][i] = fmaf(s, sum_k A[k][i] tb[b][k], dx[b][i])  (lsb_dx)
+extern "C" __global__ void k_tlora_dx(const float *A, const float *tb, float *dx,
+                                      tlora_args a) {
+    int e = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (e >= a.nb * a.n_in) return;
+    int b = e / a.n_in, i = e % a.n_in;
+    const float *tr = tb + (ulong64)b * a.r;
+    float acc = 0.0f;
+    for (int k = 0; k < a.r; k++) acc = __fmaf_rn(A[(ulong64)k * a.n_in + i], tr[k], acc);
+    float *xo = dx + (ulong64)b * a.x_stride + i;
+    *xo = __fmaf_rn(a.s, acc, *xo);
+}

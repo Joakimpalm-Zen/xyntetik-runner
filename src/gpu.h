@@ -347,6 +347,13 @@ void  *gpu_train_host_buf(model_t *m, int slot, size_t bytes);
 // kernel in this PTX, or an activation they do not cover (ACT_SILU only).
 bool   gpu_train_ffn_check(model_t *m, int act, const float *g, const float *u,
                            const float *dh, float *h, float *dg, float *du, int n);
+// R8.24.1 B6, the kernel gate's entry: the device twins of one site's adapter
+// on host arrays, in the host's order (lora_apply, then the backward's passes):
+// y += s B (A x); ga, gb accumulate; dx += s A^T (B^T dy). x, dx rows n_in
+// apart, y, dy rows n_out apart. false: no context or no kernel in this PTX.
+bool   gpu_train_lora_check(model_t *m, int r, int n_in, int n_out, int nb, float s,
+                            const float *A, const float *B, const float *x,
+                            const float *dy, float *y, float *ga, float *gb, float *dx);
 // RUNNER_TRAIN_PROF: seconds inside gpu_train_mm / gpu_train_mvt (transfers
 // and syncs included), their counts, and the kernels' share (the launch and
 // its sync) since the last call, which resets them

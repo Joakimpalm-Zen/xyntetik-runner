@@ -11621,6 +11621,35 @@ static bool lora_site_bw(model_t *m, int l, int slot, const gguf_tensor *w,
     return true;
 }
 
+// R8.24.1 B6, for the kernel gate: one site's adapter through the host's own
+// code on caller arrays, serially (the pool's chains do not depend on it):
+// lora_apply (y += s B (A x)), then lora_site_bw's adapter half, the four lsb
+// passes (ga and gb accumulate, dx += s A^T (B^T dy)). x and dx rows n_in
+// apart, y and dy rows n_out apart.
+bool model_lora_site_ref(int r, int n_in, int n_out, int nb, float s,
+                         const float *A, const float *B, const float *x,
+                         const float *dy, float *y, float *ga, float *gb,
+                         float *dx) {
+    if (r < 1 || r > LORA_R_MAX || n_in < 1 || n_out < 1 || nb < 1) return false;
+    struct lora_w lw = { (float *)A, (float *)B, ga, gb, NULL, NULL, NULL, NULL,
+                         r, s, s };
+    lora_apply(&lw, y, n_out, x, n_in, n_in, n_out, nb);
+    float *tbf = malloc(sizeof(float) * ((size_t)2 * nb + n_in) * r);
+    if (!tbf) return false;
+    float *at = tbf + (size_t)2 * nb * r;
+    for (int k = 0; k < r; k++)
+        for (int i = 0; i < n_in; i++)
+            at[(size_t)i * r + k] = A[(size_t)k * n_in + i];
+    lsb_job j = { &lw, x, dy, dx, tbf, tbf + (size_t)nb * r, at,
+                  n_in, n_out, nb, r, s };
+    tpool_run(NULL, lsb_proj, &j, nb);
+    tpool_run(NULL, lsb_ga, &j, n_in);
+    tpool_run(NULL, lsb_gb, &j, n_out);
+    tpool_run(NULL, lsb_dx, &j, nb);
+    free(tbf);
+    return true;
+}
+
 // R8.24.1: lora_site_bw for a dxin still at its allocated zeros, and
 // matvec_t likewise: under --train-gpu the base product starts from a
 // cleared device copy (the same values, so the same bits); elsewhere the

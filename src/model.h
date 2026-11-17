@@ -1284,6 +1284,12 @@ float  model_ffn_act_deriv(int act, float g);
 // R8.24.1 B1: dh*u*act'(g) and dh*act(g), the gate and up sites' expressions
 float  model_ffn_dg(int act, float dh, float u, float g);
 float  model_ffn_du(int act, float dh, float g);
+// R8.24.1 B6: one site's adapter through the host's code (lora_apply, then the
+// backward's four passes) on caller arrays, for the device twins' gate
+bool   model_lora_site_ref(int r, int n_in, int n_out, int nb, float s,
+                           const float *A, const float *B, const float *x,
+                           const float *dy, float *y, float *ga, float *gb,
+                           float *dx);
 // test hooks: the serving xIELU and the backward's derivative (R8.27)
 float  model_xielu(float x, float an, float ap, float b, float eps);
 float  model_xielu_deriv(float x, float an, float ap, float b, float eps);
