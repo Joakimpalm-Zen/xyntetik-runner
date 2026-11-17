@@ -618,6 +618,17 @@ static int b2_nan(float f) {   // by bits: -ffast-math may fold isnan away
     memcpy(&u, &f, 4);
     return (u & 0x7fffffffu) > 0x7f800000u;
 }
+// a subnormal read as zero, as an FTZ process reads it; by bits, so a NaN
+// stays a NaN under -ffast-math (a float compare there need not)
+#ifndef RUNNER_PORTABLE_MATH
+static float b2_ftz(float f) {
+    uint32_t u;
+    memcpy(&u, &f, 4);
+    if ((u & 0x7f800000u) == 0) u &= 0x80000000u;
+    memcpy(&f, &u, 4);
+    return f;
+}
+#endif
 static void b2_check(model_t *m, int n, int rows, int stride, bool weighted) {
     float eps = 1e-6f;
     size_t span = (size_t)(rows - 1) * stride + n;
@@ -670,7 +681,7 @@ static void b2_check(model_t *m, int n, int rows, int stride, bool weighted) {
                         "x %.9g: y %.9g/%.9g dx %.9g/%.9g\n", n, r, i, x[o + i], df, hf, db, hb);
 #else
             // this process flushes subnormals (FTZ and DAZ), as the default build's runner does
-            float vf = fabsf(df) < FLT_MIN ? 0.0f : df, vb = fabsf(db) < FLT_MIN ? 0.0f : db;
+            float vf = b2_ftz(df), vb = b2_ftz(db);
             if (kind != B2_SUBNORMAL) {
                 double ef = b2_nan(hf) || b2_nan(vf) ? (b2_nan(hf) && b2_nan(vf) ? 0 : 1e300)
                                                      : fabs((double)hf - vf) / (mf + 1e-300);
@@ -729,6 +740,148 @@ static void b2_checks(model_t *m) {
     b2_check(m, 128, 77 * 8, 128, false);        // the weightless V-norm form
     b2_check(m, 128, 40, 4096, true);            // heads read out of q rows
     b2_check(m, 100, 33, 103, false);            // strides past n
+}
+
+// R8.24.1 B3 (G0): the device twin of rope and its adjoint (gpu_train_rope_check:
+// k_trope) against the host's own functions (model_rope_ref: model.c
+// rope_apply, rope_unapply) on a model that carries only the rope fields.
+// Written before the kernel. A T3 build's host takes pmath's sinf and cosf,
+// which the twin ports, so memcmp (a NaN compares as a NaN). The default
+// build's host takes the C library's sinf and cosf and may contract, and its
+// process flushes subnormals (FTZ and DAZ): there each element within 2^-20 of
+// its pair's magnitude (|x0| + |x1|) |mscale|, the device's subnormal results
+// read as zero and the subnormal-input row left to T3, and only for angles up
+// to 1e5: past pmath's stated range it reduces by fmod against a rounded 2 pi,
+// the C library exactly, so there the two are different functions and T3's
+// memcmp is the gate. In both, the anchor: the rotation in double (the C
+// library's double sin and cos of the host's float angle) within 2^-20 of the
+// pair's magnitude, for angles up to 1e5; larger or NaN angles are compared
+// only to the host.
+enum { B3_KINDS = 7, B3_SUBNORMAL = 3 };
+static void b3_fill_row(float *x, int n, int kind) {
+    for (int i = 0; i < n; i++) {
+        float v = frnd();
+        switch (kind) {
+        case 1: v = 0.0f; break;
+        case 2: v = (i & 1) ? -0.0f : 0.0f; break;
+        case B3_SUBNORMAL: v = v * 1.0e-39f; break;
+        case 4: v = v * 1.0e30f; break;
+        case 5: if (i == n / 3) { uint32_t q = 0x7fc00001u; memcpy(&v, &q, 4); } break;
+        case 6: v = 0.6875f; break;
+        default: break;
+        }
+        x[i] = v;
+    }
+}
+static void b3_check(model_t *m, int hd, int rd, int neox, int n_heads, int T, int t0,
+                     int pad, float ms, int adjoint, int odd_freqs) {
+    int half = rd / 2, rowlen = n_heads * hd, stride = rowlen + pad;
+    size_t span = (size_t)(T - 1) * stride + rowlen;
+    float *fr = malloc(sizeof(float) * half);
+    for (int j = 0; j < half; j++) fr[j] = powf(10000.0f, -2.0f * j / (float)rd);
+    if (odd_freqs && half > 3) {      // the reduction's far edges: fmod, and NaN
+        fr[half - 1] = 1.0e13f;
+        fr[half - 2] = INFINITY;
+        fr[half - 3] = 1.0f;          // angle = position: up to 1.3e5
+    }
+    float *v0 = calloc(span, sizeof(float)), *vh = calloc(span, sizeof(float));
+    float *vd = calloc(span, sizeof(float));
+    for (int t = 0; t < T; t++) b3_fill_row(v0 + (size_t)t * stride, rowlen, t % B3_KINDS);
+    memcpy(vh, v0, sizeof(float) * span);
+    memcpy(vd, v0, sizeof(float) * span);
+    model_t rm;
+    memset(&rm, 0, sizeof(rm));
+    rm.n_layer = 1;
+    rm.head_dim = hd;
+    rm.rope_dim = rd;
+    rm.rope_neox = neox != 0;
+    rm.rope_mscale = ms;
+    rm.rope_inv_freq = fr;
+    for (int t = 0; t < T; t++)
+        model_rope_ref(&rm, vh + (size_t)t * stride, n_heads, t0 + t, 0, adjoint);
+    trope_args a = { n_heads, hd, half, neox, T, t0, stride, adjoint, ms };
+    bool ok = gpu_train_rope_check(m, &a, fr, vd);
+    CHECK(ok, "rope twin hd %d: declined (no kernel in this PTX?)", hd);
+    size_t bad = 0, hbad = 0, abad = 0;
+    double wh = 0, wa = 0;
+    for (int t = 0; ok && t < T; t++) {
+        int kind = t % B3_KINDS;
+        (void)kind;   // the default build's subnormal row
+        for (int h = 0; h < n_heads; h++)
+            for (int j = 0; j < half; j++) {
+                size_t o = (size_t)t * stride + (size_t)h * hd;
+                size_t i0 = o + (neox ? j : 2 * j), i1 = neox ? i0 + half : i0 + 1;
+                float x0 = v0[i0], x1 = v0[i1];
+                float h0 = vh[i0], h1 = vh[i1], d0 = vd[i0], d1 = vd[i1];
+                double mag = (fabs((double)x0) + fabs((double)x1)) * fabs((double)ms) + 1e-37;
+#ifdef RUNNER_PORTABLE_MATH
+                bool s0 = b2_nan(h0) || b2_nan(d0) ? b2_nan(h0) && b2_nan(d0) : !memcmp(&h0, &d0, 4);
+                bool s1 = b2_nan(h1) || b2_nan(d1) ? b2_nan(h1) && b2_nan(d1) : !memcmp(&h1, &d1, 4);
+                if ((!s0 || !s1) && !bad++)
+                    fprintf(stderr, "FAIL: rope twin differs from the T3 host at hd %d t %d h %d j %d: "
+                            "%.9g/%.9g %.9g/%.9g\n", hd, t, h, j, d0, h0, d1, h1);
+#else
+                float e0 = b2_ftz(d0), e1 = b2_ftz(d1);
+                float ang_h = (float)(t0 + t) * fr[j];
+                if (kind != B3_SUBNORMAL && !(fabsf(ang_h) > 1e5f)) {
+                    double q = b2_nan(h0) || b2_nan(e0) || b2_nan(h1) || b2_nan(e1)
+                        ? ((b2_nan(h0) == b2_nan(e0) && b2_nan(h1) == b2_nan(e1)) ? 0 : 1e300)
+                        : fmax(fabs((double)h0 - e0), fabs((double)h1 - e1)) / mag;
+                    if (q > wh && q < 1e300) wh = q;
+                    if (q > 0x1p-20 && !hbad++)
+                        fprintf(stderr, "FAIL: rope twin is off the default build's host at hd %d t %d "
+                                "h %d j %d: %.9g/%.9g %.9g/%.9g\n", hd, t, h, j, e0, h0, e1, h1);
+                }
+#endif
+                float ang = (float)(t0 + t) * fr[j];
+                if (!b2_nan(x0) && !b2_nan(x1) && fabsf(ang) <= 1e5f) {
+                    double c = cos((double)ang) * ms, s = sin((double)ang) * ms;
+                    double r0 = adjoint ? x0 * c + x1 * s : x0 * c - x1 * s;
+                    double r1 = adjoint ? -x0 * s + x1 * c : x0 * s + x1 * c;
+                    double q = fmax(fabs(d0 - r0), fabs(d1 - r1)) / mag;
+                    if (q > wa) wa = q;
+                    if (q > 0x1p-20 && !abad++)
+                        fprintf(stderr, "FAIL: rope twin is not the rotation at hd %d t %d h %d j %d "
+                                "(angle %.9g): %.9g (%.9g) %.9g (%.9g)\n", hd, t, h, j, ang, d0,
+                                r0, d1, r1);
+                }
+            }
+        // the elements past the rope dims stay as they were
+        for (int h = 0; h < n_heads && rd < hd; h++)
+            for (int i = rd; i < hd; i++) {
+                size_t o = (size_t)t * stride + (size_t)h * hd + i;
+                if (memcmp(&vd[o], &v0[o], 4) && !(b2_nan(vd[o]) && b2_nan(v0[o])) && !bad++)
+                    fprintf(stderr, "FAIL: rope twin touched element %d past rope_dim %d\n", i, rd);
+            }
+    }
+    const char *what = adjoint ? "adjoint" : "forward";
+    CHECK(!bad, "rope twin %s hd %d rd %d neox %d t0 %d: %zu pairs differ from the T3 host's bits",
+          what, hd, rd, neox, t0, bad);
+    CHECK(!hbad, "rope twin %s hd %d rd %d: %zu pairs off the default build's host (worst %.3g of "
+          "the pair's magnitude, bound 2^-20)", what, hd, rd, hbad, wh);
+    CHECK(!abad, "rope twin %s hd %d rd %d: %zu pairs off the double rotation (worst %.3g of the "
+          "pair's magnitude, bound 2^-20)", what, hd, rd, abad, wa);
+    if (ok)
+        printf("rope twin %-7s hd %3d rd %3d neox %d heads %2d T %3d t0 %6d ms %.4g%s: host %s; "
+               "against the double rotation %.3g of the pair's magnitude\n", what, hd, rd, neox,
+               n_heads, T, t0, ms, odd_freqs ? " odd-freqs" : "",
+#ifdef RUNNER_PORTABLE_MATH
+               "T3 (memcmp)",
+#else
+               "default (bound 2^-20, subnormals flushed)",
+#endif
+               wa);
+    free(fr); free(v0); free(vh); free(vd);
+}
+static void b3_checks(model_t *m) {
+    for (int adj = 0; adj < 2; adj++) {
+        b3_check(m, 128, 128, 1, 32, 77, 0, 0, 1.0f, adj, 0);        // the recipe's q (Qwen3)
+        b3_check(m, 128, 128, 1, 8, 77, 0, 0, 1.0f, adj, 0);         // its k
+        b3_check(m, 128, 64, 0, 4, 33, 1000, 5, 1.0f, adj, 0);       // partial rope, adjacent pairs
+        b3_check(m, 64, 64, 0, 3, 31, 32700, 0, 1.2345f, adj, 0);    // YaRN mscale, far positions
+        b3_check(m, 256, 256, 1, 2, 17, 131000, 3, 1.0f, adj, 1);    // fmod / NaN / 1e5 angles
+        b3_check(m, 128, 128, 1, 1, 128, 0, 0, 1.0f, adj, 0);        // T 128, one head
+    }
 }
 
 int main(void) {
@@ -1024,6 +1177,7 @@ int main(void) {
     dn_check(&m, 2, 1, 32, 9);
     dn_check(&m, 4, 2, 8, 26);
     b2_checks(&m);
+    b3_checks(&m);
     gpu_train_free(&m);
     free(keep_pinned);
     for (size_t k = 0; k < sizeof(keep) / sizeof(*keep); k++) free(keep[k]);

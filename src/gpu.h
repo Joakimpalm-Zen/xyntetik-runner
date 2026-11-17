@@ -353,6 +353,11 @@ void  *gpu_train_host_buf(model_t *m, int slot, size_t bytes);
 // no kernel in this PTX.
 bool   gpu_train_rmsnorm_check(model_t *m, const trn_args *a, const float *x,
                                const float *w, const float *dy, float *y, float *dx);
+// R8.24.1 B3, the kernel gate's entry: the device twin of rope_apply
+// (a->adjoint 0) or rope_unapply (1), k_trope, over a->T host rows of v
+// (a->stride floats apart) in place; fr: the layer's a->half_dim inverse
+// frequencies. false: no context or no kernel in this PTX.
+bool   gpu_train_rope_check(model_t *m, const trope_args *a, const float *fr, float *v);
 bool   gpu_train_ffn_check(model_t *m, int act, const float *g, const float *u,
                            const float *dh, float *h, float *dg, float *du, int n);
 // R8.24.1 B6, the kernel gate's entry: the device twins of one site's adapter

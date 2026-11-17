@@ -3784,6 +3784,10 @@ bool gpu_train_rmsnorm_check(model_t *mm, const trn_args *a, const float *x,
     (void)mm; (void)a; (void)x; (void)w; (void)dy; (void)y; (void)dx;
     return false;
 }
+bool gpu_train_rope_check(model_t *mm, const trope_args *a, const float *fr, float *v) {
+    (void)mm; (void)a; (void)fr; (void)v;
+    return false;
+}
 bool gpu_train_ffn_check(model_t *mm, int act, const float *g, const float *u,
                          const float *dh, float *h, float *dg, float *du, int n) {
     (void)mm; (void)act; (void)g; (void)u; (void)dh; (void)h; (void)dg; (void)du; (void)n;

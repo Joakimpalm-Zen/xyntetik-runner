@@ -1271,3 +1271,87 @@ k_trn_bw(const float *x, const float *w, const float *dy, float *dx, trn_args a)
         dxr[i] = __fadd_rn(dxr[i], __fsub_rn(__fmul_rn(rw, dyr[i]), __fmul_rn(c, xr[i])));
     }
 }
+
+// ---- R8.24.1 B3: rope and its adjoint, host-chain twins (kernel_args.h
+// trope_args; model.c rope_apply and rope_unapply). One thread a (position,
+// pair j): the angle pos * fr[j] in float, its sin and cos as src/pmath.h's
+// pm_sincos_d computes them (ported 1:1 below: double add, sub and mul, the
+// same reduction by pi/2 and the same Taylor polynomials, never contracted),
+// each rounded once to float and multiplied by mscale, then the pair rotated
+// in every head (forward x0*c - x1*s, x0*s + x1*c; adjoint x0*c + x1*s,
+// -x0*s + x1*c). A T3 host calls pmath's sinf and cosf, so the two agree bit
+// for bit; a default build's host calls the C library's. NaN in, NaN out.
+// RUNNER_TROPE_MUTANT (never set in the committed PTX) fuses the forward's
+// x0*c - x1*s into an fmaf: the gate's mutant.
+#define TROPE_THREADS 128
+
+static __device__ __forceinline__ void tw_sincos_d(double x, double *sn, double *cs) {
+    const double pio2_hi = 1.57079632679489655800e+00;
+    const double pio2_lo = 6.12323399573676603587e-17;
+    if (!(x < 1e15 && x > -1e15)) {
+        if (!(x == x) || x > 1.7976931348623157e308 || x < -1.7976931348623157e308) {
+            *sn = *cs = __longlong_as_double(0x7ff8000000000000LL);
+            return;
+        }
+        x = fmod(x, 6.28318530717958647693);   // exact in IEEE 754, as on the host
+    }
+    double kd = __dmul_rn(x, 6.36619772367581382433e-01);
+    long long k = (long long)(kd >= 0 ? __dadd_rn(kd, 0.5) : __dsub_rn(kd, 0.5));
+    double r = __dsub_rn(__dsub_rn(x, __dmul_rn((double)k, pio2_hi)),
+                         __dmul_rn((double)k, pio2_lo));
+    double r2 = __dmul_rn(r, r);
+    double s = -1.0 / 1307674368000.0;
+    s = __dadd_rn(__dmul_rn(s, r2), 1.0 / 6227020800.0);
+    s = __dsub_rn(__dmul_rn(s, r2), 1.0 / 39916800.0);
+    s = __dadd_rn(__dmul_rn(s, r2), 1.0 / 362880.0);
+    s = __dsub_rn(__dmul_rn(s, r2), 1.0 / 5040.0);
+    s = __dadd_rn(__dmul_rn(s, r2), 1.0 / 120.0);
+    s = __dsub_rn(__dmul_rn(s, r2), 1.0 / 6.0);
+    s = __dadd_rn(__dmul_rn(s, r2), 1.0);
+    s = __dmul_rn(s, r);
+    double c = 1.0 / 20922789888000.0;
+    c = __dsub_rn(__dmul_rn(c, r2), 1.0 / 87178291200.0);
+    c = __dadd_rn(__dmul_rn(c, r2), 1.0 / 479001600.0);
+    c = __dsub_rn(__dmul_rn(c, r2), 1.0 / 3628800.0);
+    c = __dadd_rn(__dmul_rn(c, r2), 1.0 / 40320.0);
+    c = __dsub_rn(__dmul_rn(c, r2), 1.0 / 720.0);
+    c = __dadd_rn(__dmul_rn(c, r2), 1.0 / 24.0);
+    c = __dsub_rn(__dmul_rn(c, r2), 0.5);
+    c = __dadd_rn(__dmul_rn(c, r2), 1.0);
+    switch (k & 3) {
+        case 0:  *sn = s;  *cs = c;  break;
+        case 1:  *sn = c;  *cs = -s; break;
+        case 2:  *sn = -s; *cs = -c; break;
+        default: *sn = -c; *cs = s;  break;
+    }
+}
+
+extern "C" __global__ void __launch_bounds__(TROPE_THREADS)
+k_trope(float *v, const float *fr, trope_args a) {
+    long long g = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (g >= (long long)a.T * a.half_dim) return;
+    int t = (int)(g / a.half_dim), j = (int)(g % a.half_dim);
+    float ang = __fmul_rn(__int2float_rn(a.t0 + t), fr[j]);
+    double sd, cd;
+    tw_sincos_d((double)ang, &sd, &cd);
+    float c = __fmul_rn(__double2float_rn(cd), a.mscale);
+    float s = __fmul_rn(__double2float_rn(sd), a.mscale);
+    float *row = v + (ulong64)t * a.stride;
+    for (int h = 0; h < a.n_heads; h++) {
+        float *p = row + (ulong64)h * a.head_dim;
+        float *p0 = a.neox ? p + j : p + 2 * j;
+        float *p1 = a.neox ? p + j + a.half_dim : p0 + 1;
+        float x0 = *p0, x1 = *p1;
+        if (a.adjoint) {
+            *p0 = __fadd_rn(__fmul_rn(x0, c), __fmul_rn(x1, s));
+            *p1 = __fadd_rn(__fmul_rn(-x0, s), __fmul_rn(x1, c));
+        } else {
+#ifdef RUNNER_TROPE_MUTANT
+            *p0 = __fmaf_rn(x0, c, -__fmul_rn(x1, s));
+#else
+            *p0 = __fsub_rn(__fmul_rn(x0, c), __fmul_rn(x1, s));
+#endif
+            *p1 = __fadd_rn(__fmul_rn(x0, s), __fmul_rn(x1, c));
+        }
+    }
+}
