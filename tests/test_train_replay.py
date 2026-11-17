@@ -126,14 +126,15 @@ def test_replay_verifies_relocated_dense_ce_and_requires_same_binary_on_default(
     shutil.copy(work / "corpus.txt", moved / "corpus.txt")
     shutil.copy(rec_path, moved / "ad.gguf.train.json")
 
-    if _flavor(runner_bin) == "default":
+    # R17.9: only a clean, stamped T3 build writes cpu-t3-exact; any other record replays as same-binary
+    if rec["determinism"] != "cpu-t3-exact":
         assert rec["determinism"] == "cpu-same-binary"
         refused = _run(runner_bin, ["attest", "replay", moved / "ad.gguf.train.json"])
         assert refused.returncode == 2
         assert "MISMATCH determinism" in refused.stdout
         verdict = _run(runner_bin, ["attest", "replay", moved / "ad.gguf.train.json", "--allow-same-binary", "-t", "1"])
     else:
-        assert rec["determinism"] == "cpu-t3-exact"
+        assert _flavor(runner_bin) == "t3", rec
         verdict = _run(runner_bin, ["attest", "replay", moved / "ad.gguf.train.json", "-t", "1"])
 
     assert verdict.returncode == 0, verdict.stdout + verdict.stderr
@@ -258,7 +259,7 @@ def test_replay_enforces_signatures_preflight_and_output_mismatch(runner_bin, fx
               [], "MISMATCH build.flavor")
     check_mut(lambda m: m.update({"determinism": "cpu-same-binary"}) or m["build"].update({"binary_sha256": "0" * 64}),
               ["--allow-same-binary"], "MISMATCH build.binary_sha256")
-    if _flavor(runner_bin) == "t3":
+    if raw["determinism"] == "cpu-t3-exact":   # a clean, stamped T3 build (R17.9)
         check_mut(lambda m: m["build"].update({"commit": "0" * 40}), flags, "MISMATCH build.commit")
     check_mut(lambda m: m["base"].update({"sha256": "f" * 64}), flags, "MISMATCH base.sha256")
     check_mut(lambda m: m["data"].update({"sha256": "f" * 64}), flags, "MISMATCH data.sha256")
@@ -288,7 +289,7 @@ def test_replay_enforces_signatures_preflight_and_output_mismatch(runner_bin, fx
     assert _run(runner_bin, ["-m", d / "base.gguf", "--train", d / "rows.jsonl", "--train-full",
                              "--train-steps", "1", "--lr", "1e-3", "--train-out", full, "--gpu", "off"]).returncode == 0
     full_mut = json.loads(pathlib.Path(f"{full}.train.json").read_text(encoding="utf-8"))
-    if _flavor(runner_bin) == "t3":
+    if raw["determinism"] == "cpu-t3-exact":   # a clean, stamped T3 build (R17.9)
         full_mut["determinism"] = "cpu-t3-exact"
         fm_path = d / "full-t3.train.json"
         fm_path.write_text(json.dumps(full_mut), encoding="utf-8")

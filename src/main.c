@@ -6812,11 +6812,24 @@ static bool replay_check_compat(const cli_opts *o, jv *rec, bool *want_t3_exact,
         if (strcmp(rec_flavor, "t3") != 0 || strcmp(cur_flavor, "t3") != 0)
             return !replay_fail(rc, "build.flavor", "t3",
                                 strcmp(rec_flavor, "t3") ? rec_flavor : cur_flavor);
+        // R17.9: exact means a clean stamped commit on both sides. A record
+        // that says otherwise beside the word, or names a switch or a reason,
+        // is not one a T3 run writes; a dirty or unstamped replaying binary
+        // is not the commit's.
         const char *rcm = jv_str(jv_get(bld, "commit"), NULL);
-        bool cdirty = false;
-        const char *ccm = provenance_build_commit(&cdirty);
-        if (rcm && ccm && strcmp(rcm, ccm) != 0)
+        const char *ccm = provenance_build_commit(NULL);
+        jv *rdirty = jv_get(bld, "dirty");
+        if (!rdirty || rdirty->type != J_BOOL || rdirty->b)
+            return !replay_fail(rc, "build.dirty", "false", rdirty && rdirty->type == J_BOOL ? "true" : "missing");
+        if (train_build_dirty())
+            return !replay_fail(rc, "build.dirty", "a clean replaying build", "this binary is dirty");
+        if (!rcm || !ccm)
+            return !replay_fail(rc, "build.commit", rcm ? rcm : "a commit", ccm ? ccm : "none");
+        if (strcmp(rcm, ccm) != 0)
             return !replay_fail(rc, "build.commit", rcm, ccm);
+        if (jv_get(rec, "environment") || jv_get(rec, "determinism_reasons"))
+            return !replay_fail(rc, "determinism", "cpu-t3-exact with no switch and no reason",
+                                "a record that names one");
     } else {
         if (!o->allow_same_binary)
             return !replay_fail(rc, "determinism", "cpu-t3-exact (or --allow-same-binary)", det);
@@ -6828,6 +6841,61 @@ static bool replay_check_compat(const cli_opts *o, jv *rec, bool *want_t3_exact,
         if (!xok || strcmp(cur_sha, want_sha) != 0)
             return !replay_fail(rc, "build.binary_sha256", want_sha, xok ? cur_sha : "unreadable");
     }
+    return true;
+}
+
+// R17.9: the replay runs with the record's RUNNER_ switches and no other: each
+// of the record's must be set here to its value ("(set)", a credential's, only
+// set), and none outside the inert set may be set here that the record lacks.
+static bool replay_check_environment(jv *rec, int *rc) {
+    jv *want = jv_get(rec, "environment");
+    if (want && want->type != J_OBJ) return !replay_fail(rc, "environment", "an object", "invalid");
+    char wb[600], gb[600];
+    for (int i = 0; want && i < want->n; i++) {
+        const char *v = jv_str(want->items[i], NULL), *here = getenv(want->keys[i]);
+        if (v && here && (!strcmp(v, here) || !strcmp(v, "(set)"))) continue;
+        snprintf(wb, sizeof wb, "%s=%s", want->keys[i], v ? v : "?");
+        snprintf(gb, sizeof gb, "%s %s", want->keys[i], here ? "set otherwise" : "unset");
+        return !replay_fail(rc, "environment", wb, gb);
+    }
+    for (char **e = TRAIN_ENVIRON; e && *e; e++) {
+        if (strncmp(*e, "RUNNER_", 7) != 0) continue;
+        const char *eq = strchr(*e, '=');
+        if (!eq || train_env_inert(*e, (size_t)(eq - *e))) continue;
+        snprintf(gb, sizeof gb, "%.*s set", (int)(eq - *e), *e);
+        snprintf(wb, sizeof wb, "%.*s", (int)(eq - *e), *e);
+        if (!want || !jv_get(want, wb)) return !replay_fail(rc, "environment", "no such switch", gb);
+    }
+    return true;
+}
+
+// R17.9: the model overrides the run took, applied from the record. One the
+// caller passes is refused unless it is the record's own.
+static bool replay_apply_overrides(cli_opts *o, jv *rec, int *rc) {
+    jv *mo = jv_get(rec, "model_overrides");
+    if (mo && mo->type != J_OBJ) return !replay_fail(rc, "model_overrides", "an object", "invalid");
+    static const char *const keys[] = { "rope_base", "rope_scale", "yarn_factor" };
+    float *fields[] = { &o->mp.rope_base, &o->mp.rope_scale, &o->mp.yarn_factor };
+    char wb[64], gb[64], field[64];
+    for (int i = 0; i < 3; i++) {
+        double want = 0;
+        jv *v = mo ? jv_get(mo, keys[i]) : NULL;
+        if (v && !record_num(mo, keys[i], 0, FLT_MAX, &want))
+            return !replay_fail(rc, "model_overrides", "numbers", "invalid");
+        float given = *fields[i];
+        if (given > 0 && given != (float)want) {
+            snprintf(field, sizeof field, "model_overrides.%s", keys[i]);
+            snprintf(wb, sizeof wb, v ? "%.9g" : "none", want);
+            snprintf(gb, sizeof gb, "%.9g", (double)given);
+            return !replay_fail(rc, field, wb, gb);
+        }
+        *fields[i] = (float)want;
+    }
+    jv *mtp = mo ? jv_get(mo, "mtp") : NULL;
+    bool want_mtp = mtp && mtp->type == J_BOOL && mtp->b;
+    if (o->mp.mtp && !want_mtp) return !replay_fail(rc, "model_overrides.mtp", "none", "true");
+    o->mp.mtp = want_mtp;
+    o->mtp_on = want_mtp;
     return true;
 }
 
@@ -6848,7 +6916,8 @@ static bool cli_prepare_replay_train(cli_opts *o, cli_replay *rp, int *rc) {
         *rc = 1;
         return true;
     }
-    bool ok = replay_check_compat(o, rec, &rp->want_t3_exact, rc);
+    bool ok = replay_check_compat(o, rec, &rp->want_t3_exact, rc) &&
+              replay_check_environment(rec, rc) && replay_apply_overrides(o, rec, rc);
     rp->is_full = jv_get(rec, "full_weight") != NULL;
     jv *out_v = ok ? jv_get(rec, rp->is_full ? "variant" : "adapter") : NULL;
     const char *out_name = jv_str(jv_get(out_v, "path"), NULL);
