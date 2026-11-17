@@ -18,6 +18,7 @@
 #include "act.h"     // sigmoid_f, silu_f: safe under fast math
 #include "pmath.h"
 #include "softmax.h"   // softmax, softmax_sink: one copy, tests/test_pmath_callers.c reads it too
+#include "pm_order.h"   // PM_IN_ORDER: sums a portable build keeps in order (R6.86)
 #include <float.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -9736,7 +9737,7 @@ static void moe_route(model_t *m, const layer_t *ly, const float *xin,
         float mx = probs[0];
         for (int e = 1; e < ne; e++) if (probs[e] > mx) mx = probs[e];
         float ssum = 0.0f;
-        for (int e = 0; e < ne; e++) { float p = expf(probs[e] - mx); probs[e] = p; ssum += p; }
+        for (int e = 0; e < ne; e++) { float p = expf(probs[e] - mx); probs[e] = p; ssum += p; PM_IN_ORDER(ssum); }
         for (int e = 0; e < ne; e++) probs[e] /= ssum;
         break;
     }
@@ -9797,7 +9798,7 @@ static void moe_route(model_t *m, const layer_t *ly, const float *xin,
         float mx = selw[0];
         for (int t = 1; t < used; t++) if (selw[t] > mx) mx = selw[t];
         float ssum = 0.0f;
-        for (int t = 0; t < used; t++) { selw[t] = expf(selw[t] - mx); ssum += selw[t]; }
+        for (int t = 0; t < used; t++) { selw[t] = expf(selw[t] - mx); ssum += selw[t]; PM_IN_ORDER(ssum); }
         for (int t = 0; t < used; t++) selw[t] /= ssum;
     } else if (m->expert_norm_w) {
         // Clamped exactly as the reference: the smallest normal fp16, so a
@@ -10316,7 +10317,7 @@ static void gemma_route(model_t *m, const layer_t *ly, const float *h,
     float mx = m->moe_logits[0];
     for (int e = 1; e < ne; e++) if (m->moe_logits[e] > mx) mx = m->moe_logits[e];
     float ssum = 0.0f;
-    for (int e = 0; e < ne; e++) { float p = expf(m->moe_logits[e] - mx); m->moe_logits[e] = p; ssum += p; }
+    for (int e = 0; e < ne; e++) { float p = expf(m->moe_logits[e] - mx); m->moe_logits[e] = p; ssum += p; PM_IN_ORDER(ssum); }
     for (int e = 0; e < ne; e++) m->moe_logits[e] /= ssum;
     float denom = 0.0f;
     for (int t = 0; t < used; t++) {
@@ -11933,7 +11934,7 @@ static double train_row_lse(const float *z, int V) {
     float mx = z[0];
     for (int i = 1; i < V; i++) if (z[i] > mx) mx = z[i];
     double sum = 0;
-    for (int i = 0; i < V; i++) sum += expf(z[i] - mx);
+    for (int i = 0; i < V; i++) { sum += expf(z[i] - mx); PM_IN_ORDER(sum); }
     return (double)(mx + logf((float)sum));
 }
 
@@ -12616,7 +12617,7 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
         if (m->expert_gating == EXPERT_GATE_SOFTMAX) {
             float mx = pr[0], ssum = 0.0f;
             for (int e = 1; e < ne_x; e++) if (pr[e] > mx) mx = pr[e];
-            for (int e = 0; e < ne_x; e++) { pr[e] = expf(pr[e] - mx); ssum += pr[e]; }
+            for (int e = 0; e < ne_x; e++) { pr[e] = expf(pr[e] - mx); ssum += pr[e]; PM_IN_ORDER(ssum); }
             for (int e = 0; e < ne_x; e++) pr[e] /= ssum;
         }
         for (int k = 0; k < used; k++) {
@@ -13940,8 +13941,19 @@ NUM_STAGE bool head_rows_bw(model_t *m, const int32_t *toks, int T,
             for (int i = 0; i < tch->k; i++) qk[i] = pr[ids[i]];
             if (at != 1.0f)
                 for (int i = 0; i < V; i++) pr[i] *= at;
-            for (int i = 0; i < tch->k; i++)
+            for (int i = 0; i < tch->k; i++) {
+#ifdef RUNNER_PORTABLE_MATH
+                // the double exp in a double first: under -ffast-math gcc
+                // narrows (float)exp((double)f) into a call of the C
+                // library's expf, which a portable build must not make
+                // (make test-portable-imports at the release's flags, R6.86).
+                // A T3 build computes exactly this either way.
+                double ex = exp((double)lp[i]);
+                pr[ids[i]] = qk[i] * a - (float)ex;
+#else
                 pr[ids[i]] = qk[i] * a - (float)exp((double)lp[i]);
+#endif
+            }
         } else {
             softmax(pr, V);
             pr[toks[t + 1]] -= 1.0f;
@@ -14879,6 +14891,7 @@ static void hc_mix(model_t *m, const float *w_norm, const gguf_tensor *w_down,
             float acc = 0.0f;
             for (int c = 0; c < hc; c++) {
                 acc += xb[(size_t)c * E + i] * sigmoid_f(gb[(size_t)c * E + i]);
+                PM_IN_ORDER(acc);
             }
             o[i] = acc * inv_hc;
         }

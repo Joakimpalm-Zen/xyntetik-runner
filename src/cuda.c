@@ -39,6 +39,7 @@ static void *dl_sym(dl_t h, const char *s) { return dlsym(h, s); }
 
 #include "kernels_ptx.h"
 #include "kernels_ptx80.h"   // the compute_80 TC2 kernels (kernels_sm80.cu, E1)
+#include "pm_order.h"   // PM_IN_ORDER: sums a portable build keeps in order (R6.86)
 
 // ------------------------------------------------- driver API (what we use)
 
@@ -6531,7 +6532,7 @@ static bool gpu_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int tn, i
         for (int e = 1; e < ne; e++)
             if (lg[e] > mx) mx = lg[e];
         float ssum = 0.0f;
-        for (int e = 0; e < ne; e++) { float p = expf(lg[e] - mx); lg[e] = p; ssum += p; }
+        for (int e = 0; e < ne; e++) { float p = expf(lg[e] - mx); lg[e] = p; ssum += p; PM_IN_ORDER(ssum); }
         for (int e = 0; e < ne; e++) lg[e] /= ssum;
         int sel[MOE_MAX_USED];
         float selw[MOE_MAX_USED], denom = 0.0f;
@@ -7073,7 +7074,7 @@ static bool gpu_gemma_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int
         float mx = lg[0];
         for (int e = 1; e < ne; e++) if (lg[e] > mx) mx = lg[e];
         float ssum = 0.0f;
-        for (int e = 0; e < ne; e++) { float p = expf(lg[e] - mx); lg[e] = p; ssum += p; }
+        for (int e = 0; e < ne; e++) { float p = expf(lg[e] - mx); lg[e] = p; ssum += p; PM_IN_ORDER(ssum); }
         for (int e = 0; e < ne; e++) lg[e] /= ssum;
         int sel[MOE_MAX_USED];
         float selw[MOE_MAX_USED], denom = 0.0f;

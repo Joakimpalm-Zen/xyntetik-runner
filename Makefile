@@ -1856,7 +1856,7 @@ test-pmath-callers: $(TEST_PMATH_CALLERS_D) $(TEST_PMATH_CALLERS_P)
 # main's expf), over every length to 300 and around the SIMD steps to 4096;
 # with a live control (the fused loop with the vector-friendly exp must
 # differ under -ffast-math). In make test (tests/test_pmath_softmax.c).
-$(TEST_PMATH_SOFTMAX): tests/test_pmath_softmax.c src/softmax.h src/pmath.h
+$(TEST_PMATH_SOFTMAX): tests/test_pmath_softmax.c src/softmax.h src/pm_order.h src/pmath.h
 	$(CC) $(PMATH_VEC_FLAGS) -I src tests/test_pmath_softmax.c -o $@ -lm
 
 # R6.86: the softmax and SwiGLU loops timed with the p_expf this change

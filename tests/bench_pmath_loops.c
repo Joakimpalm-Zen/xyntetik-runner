@@ -4,13 +4,16 @@
 // make bench-pmath-loops. It is built with test-pmath-vec's flags, the
 // engine's default flags in a portable build.
 //
-// The loops are src/model.c's softmax() and the SiLU branch of its
-// gated_act(), with the exp as a macro parameter. The sizes:
+// The loops: the engine's softmax (src/softmax.h: in a portable build the exp
+// in a loop of its own, the sum after it in order) against the softmax before
+// R6.86 (the fused loop with that build's expf), and the SiLU branch of
+// src/model.c's gated_act() with each exp. The sizes:
 //   - a softmax row of 512 keys, scores in [-12, 4]: an attention row of a 512-token prompt;
 //   - a SwiGLU row of 9,728: Qwen3-4B's FFN width.
 // Each round times both arms on the same inputs, a block of about 50 ms each, the order flipping each round. The
 // result is the median over the rounds of the ratio (old time over new time), with the lowest and highest round.
 #include "pmath.h"
+#include "softmax.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -29,7 +32,9 @@ static inline float old_expf(float x) { return (float)pm_exp_d((double)x); }
         for (int i = 0; i < n; i++) x[i] /= s;                                    \
     }
 SOFTMAX(softmax_old, old_expf)
-SOFTMAX(softmax_new, p_expf)
+static __attribute__((noinline)) void softmax_new(float *x, int n) { softmax(x, n); }
+// softmax.h's other function, unused here; referenced so -Werror's unused-function check passes
+static void (*const keep_sink)(float *, int, float) __attribute__((unused)) = softmax_sink;
 
 #define SWIGLU(NAME, EXP)                                                         \
     static __attribute__((noinline)) void NAME(float *h, const float *g, const float *u, int n) { \
@@ -108,14 +113,14 @@ int main(void) {
 #else
     printf("bench-pmath-loops: strict float, %s\n", __VERSION__);
 #endif
-    // the same answers? Each exp is the same bits (test-pmath-expf); a vectorized sum adds in another order
-    // under -ffast-math, so the softmax's quotients may move in their last bits. Reported, not judged.
+    // the same answers? Each exp is the same bits (test-pmath-expf), and the engine's softmax keeps its sum in
+    // order (test-pmath-softmax holds it). Reported here too.
     float a[NS], b[NS], ha[NF], hb[NF];
     memcpy(a, g_row, sizeof a); memcpy(b, g_row, sizeof b);
     softmax_old(a, NS); softmax_new(b, NS);
     swiglu_old(ha, g_g, g_u, NF); swiglu_new(hb, g_g, g_u, NF);
     printf("softmax outputs bit-identical: %s; SwiGLU outputs bit-identical: %s\n",
-           memcmp(a, b, sizeof a) ? "no (the sum's order)" : "yes", memcmp(ha, hb, sizeof ha) ? "no" : "yes");
+           memcmp(a, b, sizeof a) ? "NO" : "yes", memcmp(ha, hb, sizeof ha) ? "NO" : "yes");
     bench("softmax", block_softmax);
     bench("SwiGLU", block_swiglu);
     return 0;

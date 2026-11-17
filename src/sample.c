@@ -9,6 +9,7 @@
 #include <ctype.h>
 #include <math.h>
 #include "pmath.h"
+#include "pm_order.h"   // PM_IN_ORDER: sums a portable build keeps in order (R6.86)
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -128,7 +129,7 @@ static void top_sorted(const float *logits, float temp, int n, int m,
 static int pick_scaled(sampler *s, cand_t *c, int k, float norm_sum,
                        float r_pre, bool *fell_off) {
     float mx = c[0].p, sum = 0;
-    for (int i = 0; i < k; i++) { c[i].p = expf(c[i].p - mx); sum += c[i].p; }
+    for (int i = 0; i < k; i++) { c[i].p = expf(c[i].p - mx); sum += c[i].p; PM_IN_ORDER(sum); }
     if (norm_sum > 0) sum = norm_sum;
     for (int i = 0; i < k; i++) c[i].p /= sum;
     // top-p
@@ -408,8 +409,10 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
             if (v > mx) mx = v;
         }
         double total = 0;
-        for (int i = 0; i < n_vocab; i++)
+        for (int i = 0; i < n_vocab; i++) {
             total += expf(logits[i] / temp - mx);
+            PM_IN_ORDER(total);
+        }
         cand_t *h = malloc(sizeof(cand_t) * HEAD_CAP);
         if (h) {
             float t_log = logf(1.0f / 1024.0f);   // head: p >= p_max/1024
@@ -423,6 +426,7 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
                         if (m == HEAD_CAP) { overflow = true; break; }
                         h[m++] = (cand_t){ v, i };
                         head_mass += expf(v - mx);
+                        PM_IN_ORDER(head_mass);
                     }
                 }
                 if (overflow) { if (sample_stats()) fprintf(stderr, "[smp overflow m=%d]", m); break; }   // head too broad: full sort below
@@ -544,8 +548,10 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
             // the whole vocabulary's mass, relative to its best entry: what
             // bounds how much the unexamined entries can still carry
             top = c[0].p;
-            for (int i = 0; i < n_vocab; i++)
+            for (int i = 0; i < n_vocab; i++) {
                 total += expf(logits[i] / temp - c[0].p);
+                PM_IN_ORDER(total);
+            }
         }
         for (int i = checked; i < m && k < need; i++) {
             if (open_ended) seen += exp((double)c[i].p - top);
@@ -572,8 +578,10 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
         if (!open_ended && s->temp > 0 && k > 0) {
             if (!(total > 0)) {   // the vocabulary's mass, once per pick
                 top = c[0].p;
-                for (int i = 0; i < n_vocab; i++)
+                for (int i = 0; i < n_vocab; i++) {
                     total += expf(logits[i] / temp - c[0].p);
+                    PM_IN_ORDER(total);
+                }
             }
             double seen_k = 0;
             for (int i = 0; i < m; i++) seen_k += exp((double)c[i].p - top);

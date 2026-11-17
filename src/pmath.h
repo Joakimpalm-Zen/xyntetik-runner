@@ -148,16 +148,18 @@ static inline void pm_sincos_d(double x, double *sn, double *cs) {
 // expf, written with no branch and no loop so that a compiler can vectorize
 // the loops that call it: the attention softmax and SiLU (R6.86). Until then
 // p_expf called pm_exp_d, whose early returns and pm_ldexp2's loops kept
-// those loops scalar. What it gives, against that p_expf, (float)pm_exp_d(x)
-// (tests/test_pmath_expf.c; all 2^32 inputs in make test-pmath-expf-all and
-// make test-pmath-expf-all-default):
-// - under strict float (a T3 build): its bits for every float, NaNs included;
-// - under -ffast-math (a portable build of the default flags): its bits for
-//   every float that is not a NaN, and for a NaN the strict build's answer,
-//   the input NaN. That is the C library's answer for a quiet NaN, so at the
-//   callers a portable build answers a NaN as the default build does
-//   (tests/test_pmath_callers.c). The old p_expf had no defined answer
-//   there; on Apple clang 21 it gave +0.
+// those loops scalar. What it gives (tests/test_pmath_expf.c; all 2^32 inputs
+// in make test-pmath-expf-all and make test-pmath-expf-all-default):
+// - for every float that is not a NaN, the bits of the p_expf it replaced,
+//   (float)pm_exp_d((double)x), under strict float (a T3 build) and under
+//   -ffast-math (a portable build of the default flags) alike;
+// - for a NaN, in every build, the input NaN quieted: its sign and payload
+//   with the quiet bit set, as the C library returns it. So at the callers a
+//   portable build answers a NaN as the default build does
+//   (tests/test_pmath_callers.c). The old p_expf's NaN depended on the
+//   compiler: a quiet one came back as it was, a signaling one quieted or
+//   not as the compiler folded the float-double round trip, and under
+//   -ffast-math it had no defined answer (+0 on Apple clang 21).
 // For a float input pm_exp_d's guards decide nothing:
 // - below -104 its double is under 2^-150, half the smallest float
 //   subnormal, so the float is +0, and exp(-104) (6.8e-46) rounds to +0 too;
@@ -167,12 +169,12 @@ static inline void pm_sincos_d(double x, double *sn, double *cs) {
 //   2^k is the one exponent store below.
 // So x is clamped to [-104, 89], and the same operations as pm_exp_d's run
 // in the same order. A NaN takes 89 through the arithmetic (a NaN converted
-// to int is undefined), and the last select returns the NaN itself, the same
-// NaN pm_exp_d returns. That select tests x's BITS (an all-ones exponent and
-// a non-zero mantissa), not xd == xd: -ffast-math lets the compiler assume no
+// to int is undefined), and the last select returns the NaN, quieted, built
+// from x's bits. That select tests the BITS (an all-ones exponent and a
+// non-zero mantissa), not xd == xd: -ffast-math lets the compiler assume no
 // NaN and fold a float compare away, and it did, which made a quiet NaN +inf
-// there. The bit test is a vector compare and blend, so the loops still
-// vectorize. k's rounding adds a selected +0.5 or -0.5,
+// there. The bit test and the quieting are integer ops, a vector compare and
+// blend, so the loops still vectorize. k's rounding adds a selected +0.5 or -0.5,
 // the same value as pm_exp_d's two sums with no arithmetic under a condition
 // (gcc's default -ftrapping-math keeps a conditional add out of a vector
 // loop). Floating-point exception flags may differ from pm_exp_d's: the
@@ -207,7 +209,10 @@ static inline float p_expf(float x) {
     double e = p * s.d;
     uint32_t xb;
     memcpy(&xb, &x, sizeof xb);
-    return (xb & 0x7fffffffu) > 0x7f800000u ? (float)xd : (float)e;
+    uint32_t qb = xb | 0x00400000u;   // the NaN, quieted
+    float q;
+    memcpy(&q, &qb, sizeof q);
+    return (xb & 0x7fffffffu) > 0x7f800000u ? q : (float)e;
 }
 static inline float p_logf(float x)  { return (float)pm_log_d((double)x); }
 static inline float p_sinf(float x)  { double s, c; pm_sincos_d((double)x, &s, &c); return (float)s; }

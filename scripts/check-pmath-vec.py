@@ -26,13 +26,14 @@ import subprocess
 import sys
 
 # (what it is, its file, the loop's text as it stands on one line there, how many times it appears, required)
-# The softmax's exp loop is the one the portable exp kept scalar (R6.85, R6.86): required. The SwiGLU loop is
+# The softmax's exp loop is the one the portable exp kept scalar (R6.85, R6.86): required. In a portable build it is
+# a loop of its own, the sum after it kept in order (src/softmax.h). The SwiGLU loop is
 # reported: its body is gated_act's switch, whose GELU branches call tanhf and erff, and Apple clang keeps it scalar
 # in the default build and in a portable one alike (it does not unswitch the switch), so it says nothing about the
 # exp; on Windows gcc vectorized it in a portable build already on main (R6.85's compiler reports).
 LOOPS = [
     ("the attention softmax's exp loop (softmax_sink, softmax)", "src/softmax.h",
-     "for (int i = 0; i < n; i++) { x[i] = expf(x[i] - mx); s += x[i]; }", 2, True),
+     "for (int i = 0; i < n; i++) x[i] = expf(x[i] - mx);", 2, True),
     ("the prompt FFN's SwiGLU (lffn_hact)", "src/model.c",
      "for (int i = 0; i < J->nff; i++) ht[i] = gated_act(J->act, gt[i], ut[i]);", 1, False),
 ]

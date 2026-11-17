@@ -377,6 +377,13 @@ jobs:
       # macos job with Apple clang
       - name: the portable exp's loops vectorize
         run: make test-pmath-vec PYTHON=python3
+      # R6.86: a portable build at the release's own flags imports none of the
+      # C runtime's expf, logf, sinf, cosf, tanhf and powf. Under -ffast-math
+      # gcc narrows (float)exp((double)f) into a call of expf, which pmath.h's
+      # macros never see: the KD teacher's head did, found on Windows. The t3
+      # job checks a strict build, where gcc narrows nothing.
+      - name: a portable build at the release's flags imports no C-runtime math
+        run: make CFLAGS="-O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=x86-64-v3 -DRUNNER_PORTABLE_MATH" test-portable-imports PYTHON=python3
       - name: reject invalid CLI values
         run: |
           for args in '--port 70000' '--gpu typo' '--kv typo' '--reserve 101'; do
