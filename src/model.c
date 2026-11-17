@@ -11656,6 +11656,51 @@ float model_ffn_act_deriv(int act, float g) { return act_d(act, g); }
 float model_xielu(float x, float an, float ap, float b, float eps) { return xielu(x, an, ap, b, eps); }
 float model_xielu_deriv(float x, float an, float ap, float b, float eps) { return xielu_d(x, an, ap, b, eps); }
 
+// R8.24.1: under --train-gpu the window's three elementwise loops of a gated
+// FFN (the recompute's act(g)*u, the gate site's dh*u*act'(g), the up site's
+// dh*act(g)) run on the pool by whole positions; each position's loop is the
+// serial one's, so no value depends on the thread count. The CPU trainer
+// keeps the serial loops (a loop moved into a worker can compile differently
+// under -ffast-math, the NUM_STAGE note), so its bytes cannot move.
+enum { LFFN_HACT, LFFN_DG, LFFN_DU };
+typedef struct {
+    int act, nff;
+    const float *g, *u, *dh;
+    float *out;
+} lffn_job;
+static void lffn_hact(void *ctx, int t0, int t1) {
+    const lffn_job *J = ctx;
+    for (int t = t0; t < t1; t++) {
+        const float *gt = J->g + (size_t)t * J->nff, *ut = J->u + (size_t)t * J->nff;
+        float *ht = J->out + (size_t)t * J->nff;
+        for (int i = 0; i < J->nff; i++) ht[i] = gated_act(J->act, gt[i], ut[i]);
+    }
+}
+static void lffn_dg(void *ctx, int t0, int t1) {
+    const lffn_job *J = ctx;
+    for (int t = t0; t < t1; t++) {
+        const float *gt = J->g + (size_t)t * J->nff, *ut = J->u + (size_t)t * J->nff;
+        const float *dht = J->dh + (size_t)t * J->nff;
+        float *dgt = J->out + (size_t)t * J->nff;
+        for (int i = 0; i < J->nff; i++) dgt[i] = dht[i] * ut[i] * act_d(J->act, gt[i]);
+    }
+}
+static void lffn_du(void *ctx, int t0, int t1) {
+    const lffn_job *J = ctx;
+    for (int t = t0; t < t1; t++) {
+        const float *gt = J->g + (size_t)t * J->nff;
+        const float *dht = J->dh + (size_t)t * J->nff;
+        float *dgt = J->out + (size_t)t * J->nff;
+        for (int i = 0; i < J->nff; i++) dgt[i] = dht[i] * act_f(J->act, gt[i]);
+    }
+}
+static void lffn_pool(model_t *m, int kind, int T, int nff, const float *g,
+                      const float *u, const float *dh, float *out) {
+    lffn_job j = { m->ffn_act, nff, g, u, dh, out };
+    tpool_run(m->tp, kind == LFFN_HACT ? lffn_hact : kind == LFFN_DG ? lffn_dg : lffn_du,
+              &j, T);
+}
+
 static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
     const char *r = NULL;
     if (m->gpu) r = "GPU-resident model (run --gpu off)";
@@ -12521,6 +12566,9 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
     }
 
     if (lprof) lbw_tick(m, LBW_R, &lt, &s->dt);
+    if (ok && !moe && ly->w_gate && m->train_dev)
+        lffn_pool(m, LFFN_HACT, T, nff, g, u, NULL, hact);
+    else
     for (int t = 0; ok && !moe && t < T; t++) {
         const float *gt = g + (size_t)t * nff, *ut = u + (size_t)t * nff;
         float *ht = hact + (size_t)t * nff;
@@ -12755,6 +12803,9 @@ NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state
         ok = ok && lora_site_bw(m, l, LW_UP, ly->w_up, xn2, dgu, dxn2,
                                 E, nff, T);
     } else {
+    if (ok && m->train_dev)
+        lffn_pool(m, LFFN_DG, T, nff, g, u, dhact, dgu);
+    else
     for (int t = 0; ok && t < T; t++) {
         const float *gt = g + (size_t)t * nff, *ut = u + (size_t)t * nff;
         const float *dht = dhact + (size_t)t * nff;
@@ -12763,6 +12814,9 @@ NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state
     }
     ok = ok && lora_site_bw(m, l, LW_GATE, ly->w_gate, xn2, dgu, dxn2,
                             E, nff, T);
+    if (ok && m->train_dev)
+        lffn_pool(m, LFFN_DU, T, nff, g, NULL, dhact, dgu);
+    else
     for (int t = 0; ok && t < T; t++) {
         const float *gt = g + (size_t)t * nff;
         const float *dht = dhact + (size_t)t * nff;
