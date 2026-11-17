@@ -509,7 +509,8 @@ void   engine_set_request_stops(engine *e, const int *ids, int n);
 void   engine_refresh_identity(engine *e);
 // feed tokens (batched); returns last-token logits, or NULL on overflow/stop.
 // The prompt's prefill pass: on a CPU-only run its bits do not depend on the
-// batch size or the chunking (R3.60), and they are not the decode step's.
+// batch size (from 2 up) or the chunking (R3.60), and they are not the decode
+// step's. At -b 1 the prompt is read on the decode route, one token a forward.
 float *engine_feed(engine *e, const int32_t *toks, int n);
 // feed ONE token through the decode step's route, the solo forward the
 // sampler sees and `--score` uses: for a caller whose numbers must be those

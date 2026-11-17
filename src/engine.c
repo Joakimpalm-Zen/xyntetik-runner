@@ -1641,11 +1641,14 @@ static void kv_dump(const engine *e, int lo, int hi) {
 static float *engine_feed_inner(engine *e, const int32_t *toks, int n);
 // R3.60: a feed is the prompt's prefill pass whatever its width, so on a
 // CPU-only run every product of it takes the batch route (model.c mv_rows)
-// and the KV rows do not depend on -b, on where the chunks fall, or on how
-// much of the prompt a cache kept. A GPU run keeps its routes, its
-// CPU-resident layers and host experts included.
+// and the KV rows do not depend on -b (from 2 up), on where the chunks fall,
+// or on how much of the prompt a cache kept. A GPU run keeps its routes, its
+// CPU-resident layers and host experts included. -b 1 is not a prefill pass:
+// it reads the prompt one token per forward on the decode route, the
+// trainer's taped forward bit for bit, which the GRPO loop's -b 1 server is
+// held to (tests/test_rollout_identity.py, tests/test_kv_f32.py).
 float *engine_feed(engine *e, const int32_t *toks, int n) {
-    e->m->prefill_pass = e->m->gpu == NULL;
+    e->m->prefill_pass = e->m->gpu == NULL && e->m->n_batch > 1;
     float *lg = engine_feed_inner(e, toks, n);
     e->m->prefill_pass = false;
     return lg;
