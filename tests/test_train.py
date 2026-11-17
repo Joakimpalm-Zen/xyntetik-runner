@@ -743,7 +743,8 @@ def test_train_record_carries_build_flavor_commit_and_replay_options(runner_bin,
     assert r_plain["lora_scale"] == pytest.approx(1.0)
     assert r_plain["kv_cache"] == "f16" and r_kvf32["kv_cache"] == "f32"
     assert "resume_optim_sha256" not in r_plain
-    want_det = "cpu-t3-exact" if flavor == "t3" else "cpu-same-binary"
+    # R17.9: exact only from a clean, stamped T3 build (test_a_dirty_build_never_claims_t3_exact)
+    want_det = "cpu-t3-exact" if flavor == "t3" and b["commit"] and b["dirty"] is False else "cpu-same-binary"
     assert r_plain["determinism"] == want_det
     assert r_nobos["determinism"] == want_det and r_kvf32["determinism"] == want_det
 
@@ -828,7 +829,10 @@ def test_canon_gap_model_records_cpu_same_binary_while_q8_is_t3_exact(runner_bin
                            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
         assert p.returncode == 0, p.stderr.decode(errors="replace")
         rec = json.loads(pathlib.Path(f"{out}.train.json").read_text())
-        assert rec["determinism"] == expected, (fixture, t3, rec["determinism"])
+        # R17.9: a dirty or unstamped build is never exact (test_a_dirty_build_never_claims_t3_exact)
+        if expected == "cpu-t3-exact" and (rec["build"]["dirty"] is not False or not rec["build"]["commit"]):
+            expected = "cpu-same-binary"
+        assert rec["determinism"] == expected, (fixture, t3, rec["determinism"], rec.get("determinism_reasons"))
 
 
 # R17.9(a): what decides a training run's bytes is in its record, or the record does not claim cpu-t3-exact.
