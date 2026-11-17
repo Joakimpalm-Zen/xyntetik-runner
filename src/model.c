@@ -6504,6 +6504,35 @@ static bool runtime_kv_layout(model_t *m, const model_params *p, int n_ctx) {
     return true;
 }
 
+// hb/hb2's floats for B token columns (runtime_buffers says why)
+static size_t model_ff_scratch(const model_t *m, int B) {
+    size_t ff_scratch = (size_t)B * m->n_ff;
+    if (m->moe_gemma && 2 * (size_t)m->n_ff_exp > ff_scratch)
+        ff_scratch = 2 * (size_t)m->n_ff_exp;
+    return ff_scratch;
+}
+
+// R8.24.1 A4: under --train-gpu the forward's batch scratch, which every
+// device product of the forward reads from or writes into, is registered
+// with the training context for the run (its sizes are runtime_buffers'
+// for n_batch columns), so those copies run at pinned speed. A buffer the
+// driver will not register stays pageable; no value depends on it.
+void model_train_pin_scratch(model_t *m) {
+    int q_dim = 0, kv_dim = 0;
+    for (int l = 0; l < m->n_layer; l++) {
+        if (model_q_dim(m, l) > q_dim)   q_dim  = model_q_dim(m, l);
+        if (model_kv_dim(m, l) > kv_dim) kv_dim = model_kv_dim(m, l);
+    }
+    size_t B = (size_t)m->n_batch;
+    gpu_train_pin(m, m->xb, sizeof(float) * B * (size_t)m->xdim);
+    gpu_train_pin(m, m->xb2, sizeof(float) * B * (size_t)m->xdim);
+    gpu_train_pin(m, m->q, sizeof(float) * B * (size_t)q_dim);
+    gpu_train_pin(m, m->k_tmp, sizeof(float) * B * (size_t)kv_dim);
+    gpu_train_pin(m, m->v_tmp, sizeof(float) * B * (size_t)kv_dim);
+    gpu_train_pin(m, m->hb, sizeof(float) * model_ff_scratch(m, m->n_batch));
+    gpu_train_pin(m, m->hb2, sizeof(float) * model_ff_scratch(m, m->n_batch));
+}
+
 // This instance's buffers: the KV caches, the activations, every family's
 // scratch and recurrent state, the expert scratch; refused together.
 static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
@@ -6647,9 +6676,7 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
     // MoE also reuses hb to hold one token's fused gate_up of width 2*n_ff_exp,
     // so the buffer must cover both — otherwise --batch 1 with 2*n_ff_exp > n_ff
     // overflows the heap.
-    size_t ff_scratch = (size_t)B * m->n_ff;
-    if (m->moe_gemma && 2 * (size_t)m->n_ff_exp > ff_scratch)
-        ff_scratch = 2 * (size_t)m->n_ff_exp;
+    size_t ff_scratch = model_ff_scratch(m, B);
     m->hb     = malloc(sizeof(float) * ff_scratch);
     m->hb2    = malloc(sizeof(float) * ff_scratch);
     m->att    = malloc(sizeof(float) * (size_t)m->n_head * n_ctx);
@@ -12196,6 +12223,7 @@ typedef struct {
     // two gradients go back through it as one interleaved plane
     bool q35;
     float *dqg;
+    bool ffn_pinned;   // R8.24.1: g, u, dhact, dgu are the context's blocks
 } lbw_state;
 
 // The sweep's shapes and buffers, and the layer output scale applied to dx;
@@ -12259,8 +12287,20 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
     float *xn2 = malloc(szE);
     float *q   = malloc(sizeof(float) * (size_t)T * q_dim);
     float *ao  = malloc(sizeof(float) * (size_t)T * q_dim);
-    float *g   = malloc(sizeof(float) * (size_t)T * nff);
-    float *u   = malloc(sizeof(float) * (size_t)T * nff);
+    // R8.24.1 A4: under --train-gpu the four n_ff-wide planes the device
+    // products fill or read (g, u, dhact, dgu) are the training context's
+    // pinned blocks, the same four for every layer (dhact cleared, as calloc
+    // gives it); without all four, the allocations as before
+    size_t szF = sizeof(float) * (size_t)T * nff;
+    float *pin[4] = { NULL, NULL, NULL, NULL };
+    bool ffn_pinned = false;
+    if (m->train_dev) {
+        for (int i = 0; i < 4; i++) pin[i] = gpu_train_host_buf(m, i, szF);
+        ffn_pinned = pin[0] && pin[1] && pin[2] && pin[3];
+        if (ffn_pinned) memset(pin[2], 0, szF);
+    }
+    float *g   = ffn_pinned ? pin[0] : malloc(sizeof(float) * (size_t)T * nff);
+    float *u   = ffn_pinned ? pin[1] : malloc(sizeof(float) * (size_t)T * nff);
     // window-wide gradient buffers: slice 3 runs each projection site as
     // ONE batched transposed matvec over all T positions, so the per-site
     // dy/dx live as [T][dim] planes rather than single reused rows
@@ -12270,8 +12310,8 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
     float *dk   = calloc((size_t)T * kv_dim, sizeof(float));
     float *dv   = calloc((size_t)T * kv_dim, sizeof(float));
     float *hact = malloc(sizeof(float) * (size_t)T * nff);
-    float *dhact = calloc((size_t)T * nff, sizeof(float));
-    float *dgu  = malloc(sizeof(float) * (size_t)T * nff);
+    float *dhact = ffn_pinned ? pin[2] : calloc((size_t)T * nff, sizeof(float));
+    float *dgu  = ffn_pinned ? pin[3] : malloc(sizeof(float) * (size_t)T * nff);
     float *dxn2 = calloc((size_t)T * E, sizeof(float));
     float *dao  = calloc((size_t)T * q_dim, sizeof(float));
     float *tmpE = malloc(sizeof(float) * (size_t)E);
@@ -12405,6 +12445,7 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
     s->dyb = dyb;
     s->q35 = q35;
     s->dqg = dqg;
+    s->ffn_pinned = ffn_pinned;
     return ok;
 }
 
@@ -13141,6 +13182,8 @@ NUM_STAGE void lbw_input_grad(model_t *m, int l, int T, float *dx, lbw_state *s,
 
 // Every buffer lbw_state_init allocated.
 static void lbw_state_free(lbw_state *s) {
+    // R8.24.1: the pinned planes belong to the training context
+    if (s->ffn_pinned) s->g = s->u = s->dhact = s->dgu = NULL;
     float *qpre = s->qpre;
     float *kpre = s->kpre;
     float *vpre = s->vpre;

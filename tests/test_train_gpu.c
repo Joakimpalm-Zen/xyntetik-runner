@@ -371,6 +371,7 @@ int main(void) {
     // the run in a mapped file), so a freed buffer the next type's malloc
     // got back would be served the previous type's device copy
     void *keep[sizeof(TYPES) / sizeof(*TYPES) + 1] = {0};
+    void *keep_pinned = NULL;   // a buffer registered with the context (R8.24.1)
     for (size_t k = 0; k < sizeof(TYPES) / sizeof(*TYPES); k++) {
         gguf_tensor w;
         memset(&w, 0, sizeof(w));
@@ -528,6 +529,26 @@ int main(void) {
                   "parts: the part with a bias differs from its own call");
             free(pa); free(ra); free(pb); free(rb); free(pc);
         }
+        // R8.24.1 A4: a product read from a registered buffer and written into
+        // a pinned block is the pageable call's, memcmp; the block is handed
+        // out again while it is large enough
+        {
+            float *xr = malloc(sizeof(float) * 3 * N_IN), *yr = malloc(sizeof(float) * 3 * N_OUT);
+            memcpy(xr, x, sizeof(float) * 3 * N_IN);
+            bool pinned = gpu_train_pin(&m, xr, sizeof(float) * 3 * N_IN);
+            float *yp = gpu_train_host_buf(&m, 0, sizeof(float) * 3 * N_OUT);
+            CHECK(pinned && yp, "pinning: registered %d, block %p", (int)pinned, (void *)yp);
+            CHECK(!yp || gpu_train_host_buf(&m, 0, sizeof(float) * N_OUT) == yp,
+                  "pinning: a smaller request did not get the same block");
+            bool okp = yp && gpu_train_mm(&m, &w, xr, N_IN, yp, N_OUT, N_IN, N_OUT, bias, 3) &&
+                       gpu_train_mm(&m, &w, x, N_IN, yr, N_OUT, N_IN, N_OUT, bias, 3);
+            CHECK(!yp || okp, "pinning: a call declined");
+            CHECK(!okp || !memcmp(yp, yr, sizeof(float) * 3 * N_OUT),
+                  "pinning: the pinned call differs from the pageable one");
+            // xr stays registered until gpu_train_free, so it is freed after it
+            keep_pinned = xr;
+            free(yr);
+        }
         // a scaled tensor is the CPU's
         w.scale = 2.0f;
         CHECK(!gpu_train_mm(&m, &w, x, N_IN, y, N_OUT, N_IN, N_OUT, NULL, 1),
@@ -611,6 +632,7 @@ int main(void) {
     dn_check(&m, 2, 1, 32, 9);
     dn_check(&m, 4, 2, 8, 26);
     gpu_train_free(&m);
+    free(keep_pinned);
     for (size_t k = 0; k < sizeof(keep) / sizeof(*keep); k++) free(keep[k]);
     for (size_t k = 0; k < sizeof(bkeep) / sizeof(*bkeep); k++) free(bkeep[k]);
     printf("%s: %d types\n", g_fail ? "FAIL" : "PASS", tested);

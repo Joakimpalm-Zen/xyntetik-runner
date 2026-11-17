@@ -217,6 +217,16 @@ unsigned gpu_train_mm_parts(model_t *m, const gpu_mm_part *p, int np,
     return 0;
 }
 
+bool gpu_train_pin(model_t *m, void *p, size_t bytes) {
+    (void)m; (void)p; (void)bytes;
+    return false;
+}
+
+void *gpu_train_host_buf(model_t *m, int slot, size_t bytes) {
+    (void)m; (void)slot; (void)bytes;
+    return NULL;
+}
+
 void gpu_train_prof(model_t *m, double *t_mm, long *n_mm, double *t_mvt,
                     long *n_mvt, double *k_mm, double *k_mvt) {
     (void)m;

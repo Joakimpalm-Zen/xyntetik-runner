@@ -332,6 +332,15 @@ typedef struct {
 } gpu_mm_part;
 unsigned gpu_train_mm_parts(model_t *m, const gpu_mm_part *p, int np,
                             const float *x, int x_stride, int n_in, int nb);
+// R8.24.1: pinned host memory for the context's copies; only their speed
+// depends on it, never a value. gpu_train_pin registers [p, p + bytes) with
+// the driver until gpu_train_free (the range must outlive the context);
+// false leaves it pageable. gpu_train_host_buf hands out slot's pinned block
+// of at least bytes, owned by the context and the same block from call to
+// call (its contents are not kept when it grows); NULL when none can be had.
+enum { GPU_TRAIN_HBUF = 4 };
+bool   gpu_train_pin(model_t *m, void *p, size_t bytes);
+void  *gpu_train_host_buf(model_t *m, int slot, size_t bytes);
 // RUNNER_TRAIN_PROF: seconds inside gpu_train_mm / gpu_train_mvt (transfers
 // and syncs included), their counts, and the kernels' share (the launch and
 // its sync) since the last call, which resets them

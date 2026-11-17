@@ -93,6 +93,10 @@ static struct {
     // optional: page-locked host staging (X3's KV gather); absent, pageable
     CUresult (*MemAllocHost)(void **, size_t);
     CUresult (*MemFreeHost)(void *);
+    // optional (R8.24.1): --train-gpu's host buffers registered for the run;
+    // absent, they stay pageable
+    CUresult (*MemHostRegister)(void *, size_t, unsigned);
+    CUresult (*MemHostUnregister)(void *);
     // optional: CUDA graphs for the single-token decode path (Experiment A).
     // Not required for the backend to function — see cu_graphs_ok().
     CUresult (*StreamCreate)(CUstream *, unsigned);
@@ -202,6 +206,8 @@ static bool cu_load_now(void) {
     cu.FuncSetAttribute  = dl_sym(cu.lib, "cuFuncSetAttribute");
     cu.MemAllocHost      = sym2("cuMemAllocHost");
     cu.MemFreeHost       = dl_sym(cu.lib, "cuMemFreeHost");
+    cu.MemHostRegister   = sym2("cuMemHostRegister");
+    cu.MemHostUnregister = dl_sym(cu.lib, "cuMemHostUnregister");
     // optional graph entry points — absence just disables the graph path
     cu.StreamCreate       = dl_sym(cu.lib, "cuStreamCreate");
     cu.StreamDestroy      = sym2("cuStreamDestroy");
@@ -8817,6 +8823,13 @@ typedef struct {
     // R8.24.1: gpu_train_mm_parts' output rows, one buffer a part
     CUdeviceptr d_yp[GPU_MM_PARTS];
     size_t      cap_yp[GPU_MM_PARTS];
+    // R8.24.1 A4: host ranges registered for the run (gpu_train_pin), and
+    // the pinned blocks gpu_train_host_buf hands out, one a slot
+    void      **pin_p;
+    int         n_pin, cap_pin;
+    size_t      pin_bytes;
+    void       *hbuf[GPU_TRAIN_HBUF];
+    size_t      hbuf_cap[GPU_TRAIN_HBUF];
     float      *h_x, *h_y;        // the forward's packed host rows
     size_t      cap_hx, cap_hy;
     // RUNNER_TRAIN_PROF: wall time inside the two calls (transfers and the
@@ -8979,6 +8992,9 @@ void gpu_train_free(model_t *m) {
         if (t->d_dx) cu.MemFree(t->d_dx);
         for (int i = 0; i < GPU_MM_PARTS; i++)
             if (t->d_yp[i]) cu.MemFree(t->d_yp[i]);
+        for (int i = 0; i < t->n_pin; i++) cu.MemHostUnregister(t->pin_p[i]);
+        for (int i = 0; i < GPU_TRAIN_HBUF; i++)
+            if (t->hbuf[i]) cu.MemFreeHost(t->hbuf[i]);
         for (int i = 0; i < DN_NBUF; i++)
             if (t->dn[i]) cu.MemFree(t->dn[i]);
         for (int i = 0; i < t->n_dn_slot; i++) cu.MemFree(t->dn_slot[i].dev);
@@ -8988,6 +9004,7 @@ void gpu_train_free(model_t *m) {
         cu.ModuleUnload(t->mod);
     }
     cu.PrimaryCtxRelease(t->dev);
+    free(t->pin_p);
     free(t->cache);
     free(t->dn_slot);
     free(t->cpu_kept);
@@ -9022,6 +9039,52 @@ void gpu_train_placement(model_t *m, int *on_dev, size_t *dev_bytes,
     *cpu_bytes = t ? t->cpu_bytes : 0;
     *budget = t ? t->vram_budget : 0;
     *budget_set = t && t->budget_set;
+}
+
+// R8.24.1 A4: a host range the run's copies read or write, registered with
+// the driver once (steady copies at pinned speed: 23 to 28 GB/s against 11
+// to 14 pageable on an RTX 5070 host) and unregistered by gpu_train_free.
+// Registering per call costs more than it saves there, so this is for
+// buffers that outlive the context. false: it stays pageable.
+bool gpu_train_pin(model_t *m, void *p, size_t bytes) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !p || !bytes || !cu.MemHostRegister || !cu.MemHostUnregister)
+        return false;
+    if (t->n_pin == t->cap_pin) {
+        int cap = t->cap_pin ? t->cap_pin * 2 : 8;
+        void **np = realloc(t->pin_p, sizeof(*np) * (size_t)cap);
+        if (!np) return false;
+        t->pin_p = np;
+        t->cap_pin = cap;
+    }
+    if (cu.CtxSetCurrent(t->ctx) != 0 || cu.MemHostRegister(p, bytes, 0) != 0)
+        return false;
+    t->pin_p[t->n_pin++] = p;
+    t->pin_bytes += bytes;
+    return true;
+}
+
+// R8.24.1 A4: slot's pinned block of at least bytes, the context's own and
+// handed out again on the next call (what it held is not kept when it
+// grows); NULL when none can be had, and the caller allocates as before.
+void *gpu_train_host_buf(model_t *m, int slot, size_t bytes) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || slot < 0 || slot >= GPU_TRAIN_HBUF || !bytes ||
+        !cu.MemAllocHost || !cu.MemFreeHost)
+        return NULL;
+    if (t->hbuf_cap[slot] >= bytes) return t->hbuf[slot];
+    if (cu.CtxSetCurrent(t->ctx) != 0) return NULL;
+    if (t->hbuf[slot]) cu.MemFreeHost(t->hbuf[slot]);
+    t->hbuf[slot] = NULL;
+    t->hbuf_cap[slot] = 0;
+    // grown in whole MiB, so a slightly longer row does not allocate again
+    size_t cap = (bytes + ((size_t)1 << 20) - 1) & ~(((size_t)1 << 20) - 1);
+    if (cu.MemAllocHost(&t->hbuf[slot], cap) != 0) {
+        t->hbuf[slot] = NULL;
+        return NULL;
+    }
+    t->hbuf_cap[slot] = cap;
+    return t->hbuf[slot];
 }
 
 static bool tg_scratch(CUdeviceptr *buf, size_t *cap, size_t need) {
