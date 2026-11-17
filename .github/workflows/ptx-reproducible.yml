@@ -33,7 +33,12 @@ jobs:
       - uses: actions/checkout@v7
       - name: micromamba
         run: |
-          curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/1.5.10 | tar -xj -C "$RUNNER_TEMP" bin/micromamba
+          # To a file first, with retries: piped straight into tar, one failed answer from the server ended
+          # the job before any PTX was built (a 500 on 2026-11-17 left main red with nothing checked), and a
+          # retry could not start over once tar had read part of the stream.
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 --connect-timeout 20 \
+            -o "$RUNNER_TEMP/micromamba.tar.bz2" https://micro.mamba.pm/api/micromamba/linux-64/1.5.10
+          tar -xjf "$RUNNER_TEMP/micromamba.tar.bz2" -C "$RUNNER_TEMP" bin/micromamba
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: make ptx with the pinned toolchain
         run: MAMBA_ROOT_PREFIX="$RUNNER_TEMP/mamba" tools/ptx-toolchain/make-ptx.sh "$RUNNER_TEMP/ptx-toolchain"
