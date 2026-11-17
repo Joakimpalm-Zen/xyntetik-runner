@@ -8808,6 +8808,8 @@ typedef struct {
     long        n_dn, n_dn_failed;   // the record: calls run, calls failed
     // R8.24.1 B1: a gated FFN's activation and its adjoint, host-chain twins
     CUfunction  f_tffn_fw, f_tffn_bw;
+    CUfunction  f_trn_fw, f_trn_bw;     // R8.24.1 B2, rmsnorm and its adjoint
+    CUfunction  f_trope;                // R8.24.1 B3, rope and its adjoint
     // R8.24.1 B6: the adapter at a site (k_tlora_t, _y, _tb, _ga, _gb, _dx)
     CUfunction  f_tlora[6];
     // R8.24.1 B: the device-resident FFN. The FFN sites' adapters for a
@@ -8925,6 +8927,10 @@ bool gpu_train_init(model_t *m) {
     if (cu.ModuleGetFunction(&t->f_tffn_fw, t->mod, "k_tffn_fw") != 0 ||
         cu.ModuleGetFunction(&t->f_tffn_bw, t->mod, "k_tffn_bw") != 0)
         t->f_tffn_fw = t->f_tffn_bw = NULL;
+    if (cu.ModuleGetFunction(&t->f_trn_fw, t->mod, "k_trn_fw") != 0 ||
+        cu.ModuleGetFunction(&t->f_trn_bw, t->mod, "k_trn_bw") != 0)
+        t->f_trn_fw = t->f_trn_bw = NULL;
+    if (cu.ModuleGetFunction(&t->f_trope, t->mod, "k_trope") != 0) t->f_trope = NULL;
     {
         static const char *const LN[6] = { "k_tlora_t", "k_tlora_y", "k_tlora_tb",
                                            "k_tlora_ga", "k_tlora_gb", "k_tlora_dx" };
@@ -9199,6 +9205,91 @@ bool gpu_train_lora_check(model_t *m, int r, int n_in, int n_out, int nb, float 
          cu.MemcpyDtoH(dx, d[7], sizeof(float) * sz[7]) == 0;
     for (int i = 0; i < 10; i++)
         if (d[i]) cu.MemFree(d[i]);
+    return ok;
+}
+
+// R8.24.1 B2 (kernels_train.cuh k_trn_fw / k_trn_bw): a block a row, its
+// chains run by one thread in the host's order, then the row's elements by
+// the block. TRN_THREADS is the kernels' __launch_bounds__.
+#define TRN_THREADS 128
+static bool trn_fw_launch(train_gpu_t *t, CUdeviceptr x, CUdeviceptr w,
+                          CUdeviceptr y, const trn_args *a) {
+    trn_args aa = *a;
+    void *p[] = { &x, &w, &y, &aa };
+    return t->f_trn_fw && a->rows > 0 &&
+           cu.LaunchKernel(t->f_trn_fw, (unsigned)a->rows, 1, 1, TRN_THREADS, 1, 1, 0,
+                           NULL, p, NULL) == 0;
+}
+static bool trn_bw_launch(train_gpu_t *t, CUdeviceptr x, CUdeviceptr w,
+                          CUdeviceptr dy, CUdeviceptr dx, const trn_args *a) {
+    trn_args aa = *a;
+    void *p[] = { &x, &w, &dy, &dx, &aa };
+    return t->f_trn_bw && a->rows > 0 &&
+           cu.LaunchKernel(t->f_trn_bw, (unsigned)a->rows, 1, 1, TRN_THREADS, 1, 1, 0,
+                           NULL, p, NULL) == 0;
+}
+
+// R8.24.1 B2, for the kernel gate: the forward into y and the adjoint added
+// into dx, on host rows (sent, run, brought back). false: no context or no
+// kernel in this PTX.
+bool gpu_train_rmsnorm_check(model_t *m, const trn_args *a, const float *x,
+                             const float *w, const float *dy, float *y, float *dx) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->f_trn_fw || !t->f_trn_bw || a->n < 1 || a->rows < 1 ||
+        cu.CtxSetCurrent(t->ctx) != 0)
+        return false;
+    size_t last = (size_t)(a->rows - 1);
+    size_t nx = sizeof(float) * (last * a->x_stride + a->n);
+    size_t ny = sizeof(float) * (last * a->y_stride + a->n);
+    size_t ndy = sizeof(float) * (last * a->dy_stride + a->n);
+    size_t ndx = sizeof(float) * (last * a->dx_stride + a->n);
+    size_t nw = sizeof(float) * (size_t)a->n;
+    CUdeviceptr d[5] = {0};   // x, w, y, dy, dx
+    size_t sz[5] = { nx, nw, ny, ndy, ndx };
+    bool ok = true;
+    for (int i = 0; i < 5 && ok; i++)
+        if (i != 1 || w) ok = cu.MemAlloc(&d[i], sz[i]) == 0;
+    ok = ok && cu.MemcpyHtoD(d[0], x, nx) == 0 && (!w || cu.MemcpyHtoD(d[1], w, nw) == 0) &&
+         cu.MemsetD8(d[2], 0, ny) == 0 && cu.MemcpyHtoD(d[3], dy, ndy) == 0 &&
+         cu.MemcpyHtoD(d[4], dx, ndx) == 0 &&
+         trn_fw_launch(t, d[0], d[1], d[2], a) && trn_bw_launch(t, d[0], d[1], d[3], d[4], a) &&
+         cu.CtxSynchronize() == 0 && cu.MemcpyDtoH(y, d[2], ny) == 0 &&
+         cu.MemcpyDtoH(dx, d[4], ndx) == 0;
+    for (int i = 0; i < 5; i++)
+        if (d[i]) cu.MemFree(d[i]);
+    return ok;
+}
+
+// R8.24.1 B3 (kernels_train.cuh k_trope): a thread a (position, pair), its
+// angle's sin and cos once, then the pair in every head.
+#define TROPE_THREADS 128
+static bool trope_launch(train_gpu_t *t, CUdeviceptr v, CUdeviceptr fr,
+                         const trope_args *a) {
+    trope_args aa = *a;
+    void *p[] = { &v, &fr, &aa };
+    size_t n = (size_t)a->T * (size_t)a->half_dim;
+    return t->f_trope && n > 0 &&
+           cu.LaunchKernel(t->f_trope, (unsigned)((n + TROPE_THREADS - 1) / TROPE_THREADS),
+                           1, 1, TROPE_THREADS, 1, 1, 0, NULL, p, NULL) == 0;
+}
+
+// R8.24.1 B3, for the kernel gate: the rows sent, rotated in place, brought
+// back. false: no context or no kernel in this PTX.
+bool gpu_train_rope_check(model_t *m, const trope_args *a, const float *fr, float *v) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->f_trope || a->T < 1 || a->half_dim < 1 || a->n_heads < 1 ||
+        cu.CtxSetCurrent(t->ctx) != 0)
+        return false;
+    size_t nv = sizeof(float) * ((size_t)(a->T - 1) * a->stride +
+                                 (size_t)a->n_heads * a->head_dim);
+    size_t nf = sizeof(float) * (size_t)a->half_dim;
+    CUdeviceptr dv = 0, df = 0;
+    bool ok = cu.MemAlloc(&dv, nv) == 0 && cu.MemAlloc(&df, nf) == 0 &&
+              cu.MemcpyHtoD(dv, v, nv) == 0 && cu.MemcpyHtoD(df, fr, nf) == 0 &&
+              trope_launch(t, dv, df, a) && cu.CtxSynchronize() == 0 &&
+              cu.MemcpyDtoH(v, dv, nv) == 0;
+    if (dv) cu.MemFree(dv);
+    if (df) cu.MemFree(df);
     return ok;
 }
 
