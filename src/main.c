@@ -6220,6 +6220,15 @@ static bool train_env_inert(const char *name, size_t n) {
     return false;
 }
 
+// Whether the variable `name` (n bytes) is one a record names: a RUNNER_ one
+// outside the inert set, or one of the two the binary reads outside that
+// prefix that reach arithmetic (the recurrent scan's chunking, src/model.c).
+static bool train_env_counts(const char *name, size_t n) {
+    if (n == 12 && !strncmp(name, "XR_SSM_CHUNK", 12)) return true;
+    if (n == 13 && !strncmp(name, "XR_SSM_SERIAL", 13)) return true;
+    return n > 7 && !strncmp(name, "RUNNER_", 7) && !train_env_inert(name, n);
+}
+
 // The run's RUNNER_ variables outside the inert set, as JSON members
 // ("NAME":"value") into *json, and their names comma-joined into names. A value
 // whose name says it may be a credential is written as "(set)". Returns how many.
@@ -6228,9 +6237,8 @@ static int train_environment(sbuf *json, char *names, size_t cap) {
     size_t nn = 0;
     if (cap) names[0] = 0;
     for (char **e = TRAIN_ENVIRON; e && *e; e++) {
-        if (strncmp(*e, "RUNNER_", 7) != 0) continue;
         const char *eq = strchr(*e, '=');
-        if (!eq || train_env_inert(*e, (size_t)(eq - *e))) continue;
+        if (!eq || !train_env_counts(*e, (size_t)(eq - *e))) continue;
         bool secret = false;
         static const char *const words[] = { "KEY", "TOKEN", "SECRET", "PASS" };
         for (size_t w = 0; w < sizeof words / sizeof *words; w++) {
@@ -6394,15 +6402,15 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
     }
     free(why.s);
     // R17.9: what else decided the bytes. The model overrides the run took
-    // (--rope-base, --rope-scale, --yarn-factor, --mtp: each moves a forward),
-    // and its RUNNER_ switches outside the inert set (TRAIN_ENV_INERT).
-    if (o->mp.rope_base > 0 || o->mp.rope_scale > 0 || o->mp.yarn_factor > 0 || o->mp.mtp) {
+    // (--rope-base, --rope-scale, --yarn-factor: each moves a forward; --mtp
+    // does not, training never reads the predictor), and its switches
+    // (train_env_counts).
+    if (o->mp.rope_base > 0 || o->mp.rope_scale > 0 || o->mp.yarn_factor > 0) {
         bool first = true;
         sb_lit(&rec, ",\"model_overrides\":{");
         if (o->mp.rope_base > 0) { sb_fmt(&rec, "\"rope_base\":%.9g", (double)o->mp.rope_base); first = false; }
         if (o->mp.rope_scale > 0) { sb_fmt(&rec, "%s\"rope_scale\":%.9g", first ? "" : ",", (double)o->mp.rope_scale); first = false; }
-        if (o->mp.yarn_factor > 0) { sb_fmt(&rec, "%s\"yarn_factor\":%.9g", first ? "" : ",", (double)o->mp.yarn_factor); first = false; }
-        if (o->mp.mtp) sb_fmt(&rec, "%s\"mtp\":true", first ? "" : ",");
+        if (o->mp.yarn_factor > 0) sb_fmt(&rec, "%s\"yarn_factor\":%.9g", first ? "" : ",", (double)o->mp.yarn_factor);
         sb_lit(&rec, "}");
     }
     {
