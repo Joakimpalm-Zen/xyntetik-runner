@@ -3,7 +3,8 @@
 
 Usage: check-pmath-vec.py --cc CC --source src/model.c -- <the compile command's arguments>
 
-It compiles the source once with the compiler's vectorization remarks on:
+It compiles the source once with the compiler's vectorization remarks on (the loops it reads may sit in a header
+the source includes: each one names its file):
   - clang: -Rpass=loop-vectorize and -Rpass-missed=loop-vectorize;
   - gcc: -fopt-info-vec-optimized and -fopt-info-vec-missed.
 Each REQUIRED loop in LOOPS must have at least one "vectorized" remark at its line; a reported one is printed
@@ -24,15 +25,15 @@ import re
 import subprocess
 import sys
 
-# (what it is, the loop's text as it stands on one line of the source, how many times it appears, required)
+# (what it is, its file, the loop's text as it stands on one line there, how many times it appears, required)
 # The softmax's exp loop is the one the portable exp kept scalar (R6.85, R6.86): required. The SwiGLU loop is
 # reported: its body is gated_act's switch, whose GELU branches call tanhf and erff, and Apple clang keeps it scalar
 # in the default build and in a portable one alike (it does not unswitch the switch), so it says nothing about the
 # exp; on Windows gcc vectorized it in a portable build already on main (R6.85's compiler reports).
 LOOPS = [
-    ("the attention softmax's exp loop (softmax_sink, softmax)",
+    ("the attention softmax's exp loop (softmax_sink, softmax)", "src/softmax.h",
      "for (int i = 0; i < n; i++) { x[i] = expf(x[i] - mx); s += x[i]; }", 2, True),
-    ("the prompt FFN's SwiGLU (lffn_hact)",
+    ("the prompt FFN's SwiGLU (lffn_hact)", "src/model.c",
      "for (int i = 0; i < J->nff; i++) ht[i] = gated_act(J->act, gt[i], ut[i]);", 1, False),
 ]
 
@@ -67,39 +68,38 @@ def main(argv):
         return 1
     flags = (["-Rpass=loop-vectorize", "-Rpass-missed=loop-vectorize"] if fam == "clang"
              else ["-fopt-info-vec-optimized", "-fopt-info-vec-missed"])
-    text = open(source, encoding="utf-8").read().split("\n")
     want = {}
-    for what, loop, count, required in LOOPS:
+    for what, path, loop, count, required in LOOPS:
+        text = open(path, encoding="utf-8").read().split("\n")
         lines = [n for n, ln in enumerate(text, 1) if ln.strip() == loop]
         if len(lines) != count:
-            print("FAIL: %s: its loop is on %d line(s) of %s, not %d: %s" % (what, len(lines), source, count, loop))
+            print("FAIL: %s: its loop is on %d line(s) of %s, not %d: %s" % (what, len(lines), path, count, loop))
             return 1
-        want[what] = (lines, required)
+        want[what] = (path, lines, required)
     r = subprocess.run(cc.split() + args + flags, capture_output=True, text=True)
     if r.returncode != 0:
         print(r.stdout + r.stderr)
         print("FAIL: the compile with remarks failed")
         return 1
-    base = source.replace("\\", "/").rsplit("/", 1)[-1]
     at = {}
     for ln in (r.stdout + r.stderr).split("\n"):
         m = re.match(r"^(.*?):(\d+):\d+: (.*)$", ln.replace("\\", "/"))
-        if not m or not m.group(1).endswith(base):
-            continue
-        at.setdefault(int(m.group(2)), []).append(m.group(3).strip())
+        if m:
+            base = m.group(1).rsplit("/", 1)[-1]
+            at.setdefault((base, int(m.group(2))), []).append(m.group(3).strip())
     vec = (re.compile(r"remark: vectorized loop") if fam == "clang"
            else re.compile(r"optimized: +loop vectorized"))
     bad = []
-    for what, (lines, required) in want.items():
+    for what, (path, lines, required) in want.items():
         for n in lines:
-            said = at.get(n, [])
+            said = at.get((path.rsplit("/", 1)[-1], n), [])
             ok = any(vec.search(s) for s in said)
-            print("pmath-vec: %s, %s:%d (%s): %s%s" % (what, source, n, fam, "vectorized" if ok else "NOT vectorized",
+            print("pmath-vec: %s, %s:%d (%s): %s%s" % (what, path, n, fam, "vectorized" if ok else "NOT vectorized",
                                                        "" if required else " (reported, not required)"))
             for s in sorted(set(said)):
                 print("    " + s)
             if required and not ok:
-                bad.append("%s at %s:%d" % (what, source, n))
+                bad.append("%s at %s:%d" % (what, path, n))
     if bad:
         print("FAIL: in a portable build these loops are not vectorized, so the portable exp costs a prompt its "
               "vector loop (R6.86):")

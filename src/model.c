@@ -17,6 +17,7 @@
 #include <math.h>
 #include "act.h"     // sigmoid_f, silu_f: safe under fast math
 #include "pmath.h"
+#include "softmax.h"   // softmax, softmax_sink: one copy, tests/test_pmath_callers.c reads it too
 #include <float.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -7102,28 +7103,7 @@ static inline void xnorm(const model_t *m, float *o, const float *x,
     rmsnorm(o, x, w, n, eps);
 }
 
-// Attention softmax with a learned sink logit (gpt-oss). Transcribed from
-// llama.cpp's ggml_compute_forward_soft_max: the sink participates in the max
-// and in the denominator, and has NO output row — so the probabilities over
-// real positions sum to less than one and the head's output shrinks. Note the
-// sink is compared against ALREADY-SCALED scores; it is not itself scaled.
-static void softmax_sink(float *x, int n, float sink) {
-    float mx = x[0];
-    for (int i = 1; i < n; i++) if (x[i] > mx) mx = x[i];
-    if (sink > mx) mx = sink;
-    float s = 0;
-    for (int i = 0; i < n; i++) { x[i] = expf(x[i] - mx); s += x[i]; }
-    s += expf(sink - mx);
-    for (int i = 0; i < n; i++) x[i] /= s;
-}
-
-static void softmax(float *x, int n) {
-    float mx = x[0];
-    for (int i = 1; i < n; i++) if (x[i] > mx) mx = x[i];
-    float s = 0;
-    for (int i = 0; i < n; i++) { x[i] = expf(x[i] - mx); s += x[i]; }
-    for (int i = 0; i < n; i++) x[i] /= s;
-}
+// softmax_sink and softmax: src/softmax.h (R6.86)
 
 typedef struct {
     const gguf_tensor *w;
