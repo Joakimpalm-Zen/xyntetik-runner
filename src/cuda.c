@@ -90,6 +90,7 @@ static struct {
     // optional: a kernel asking for more than 48 KB of dynamic shared
     // memory (TC2) opts in through it; absent, that kernel stays unused
     CUresult (*FuncSetAttribute)(CUfunction, int, int);
+    CUresult (*FuncGetAttribute)(int *, int, CUfunction);   // optional (R8.24.1 B4)
     // optional: page-locked host staging (X3's KV gather); absent, pageable
     CUresult (*MemAllocHost)(void **, size_t);
     CUresult (*MemFreeHost)(void *);
@@ -204,6 +205,7 @@ static bool cu_load_now(void) {
     cu.CtxSynchronize    = dl_sym(cu.lib, "cuCtxSynchronize");
     cu.GetErrorString    = dl_sym(cu.lib, "cuGetErrorString");
     cu.FuncSetAttribute  = dl_sym(cu.lib, "cuFuncSetAttribute");
+    cu.FuncGetAttribute  = dl_sym(cu.lib, "cuFuncGetAttribute");
     cu.MemAllocHost      = sym2("cuMemAllocHost");
     cu.MemFreeHost       = dl_sym(cu.lib, "cuMemFreeHost");
     cu.MemHostRegister   = sym2("cuMemHostRegister");
@@ -793,6 +795,8 @@ enum { MD_THREADS = 512, MD_GMAX = 16, MD_NJ = 8, MD_TK = 32 };
 #define MD_SMEM_MAX (4 * (MD_GMAX * (640 + 4) + MD_TK * 321 + MD_GMAX * MD_TK + MD_GMAX))
 #define CU_DEV_ATTR_CC_MAJOR 75       // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR
 #define CU_DEV_ATTR_CC_MINOR 76       // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR
+#define CU_DEV_ATTR_SMEM_OPTIN 97     // CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN
+#define CU_FUNC_ATTR_STATIC_SMEM 1    // CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES
 #define TC_N    64   // tensor-core GEMM token tile (keep in sync)
 
 // flash-decoding KV split count — must match ATTN_SPLITS in kernels.cu; fixed
@@ -8812,6 +8816,7 @@ typedef struct {
     CUfunction  f_trope;                // R8.24.1 B3, rope and its adjoint
     CUfunction  f_tkv;                  // R8.24.1 B8, the training K/V store
     CUfunction  f_tattn;                // R8.24.1 B4, the forward's attention
+    int         tattn_dyn;              // the dynamic shared memory k_tattn may take, bytes
     // R8.24.1 B6: the adapter at a site (k_tlora_t, _y, _tb, _ga, _gb, _dx)
     CUfunction  f_tlora[6];
     // R8.24.1 B: the device-resident FFN. The FFN sites' adapters for a
@@ -8935,6 +8940,20 @@ bool gpu_train_init(model_t *m) {
     if (cu.ModuleGetFunction(&t->f_trope, t->mod, "k_trope") != 0) t->f_trope = NULL;
     if (cu.ModuleGetFunction(&t->f_tkv, t->mod, "k_tkv_store") != 0) t->f_tkv = NULL;
     if (cu.ModuleGetFunction(&t->f_tattn, t->mod, "k_tattn") != 0) t->f_tattn = NULL;
+    // k_tattn (the second reader's F1): its scores take 4 bytes a key of dynamic
+    // shared memory beside its own static arrays (qs and two scalars, about
+    // 2 KiB), and 12288 keys, the attention scope's largest span, are 48 KiB of
+    // scores: past a block's default 48 KiB together. Opt in to the device's
+    // per-block maximum less the kernel's static use (Turing's 64 KiB, the
+    // minimum, holds it); a span past what the device gives declines.
+    t->tattn_dyn = 48 * 1024 - 4096;   // without the attributes: under the default, with room
+    if (t->f_tattn && cu.FuncGetAttribute && cu.FuncSetAttribute && cu.DeviceGetAttribute) {
+        int st = 0, optin = 0;
+        if (cu.FuncGetAttribute(&st, CU_FUNC_ATTR_STATIC_SMEM, t->f_tattn) == 0 &&
+            cu.DeviceGetAttribute(&optin, CU_DEV_ATTR_SMEM_OPTIN, t->dev) == 0 && optin > st &&
+            cu.FuncSetAttribute(t->f_tattn, CU_FUNC_ATTR_MAX_DYN_SMEM, optin - st) == 0)
+            t->tattn_dyn = optin - st;
+    }
     {
         static const char *const LN[6] = { "k_tlora_t", "k_tlora_y", "k_tlora_tb",
                                            "k_tlora_ga", "k_tlora_gb", "k_tlora_dx" };
@@ -9339,10 +9358,14 @@ static bool tattn_launch(train_gpu_t *t, CUdeviceptr kc, CUdeviceptr vc, CUdevic
                          CUdeviceptr ao, const tattn_args *a) {
     tattn_args aa = *a;
     void *p[] = { &kc, &vc, &q, &ao, &aa };
-    return t->f_tattn &&
+    // the scores of the longest span a query of this launch reads: its
+    // window where one applies, else every row up to the chunk's last
+    size_t rows = (size_t)a->pos0 + (size_t)a->T;
+    size_t span = a->swa > 0 && (size_t)a->swa < rows ? (size_t)a->swa : rows;
+    size_t dyn = sizeof(float) * span;
+    return t->f_tattn && dyn <= (size_t)t->tattn_dyn &&
            cu.LaunchKernel(t->f_tattn, (unsigned)a->T, (unsigned)a->n_head, 1, TATTN_THREADS,
-                           1, 1, (unsigned)(sizeof(float) * (size_t)(a->pos0 + a->T)), NULL, p,
-                           NULL) == 0;
+                           1, 1, (unsigned)dyn, NULL, p, NULL) == 0;
 }
 
 // R8.24.1 B4, for the kernel gate: K, V and q sent, the attention run, ao

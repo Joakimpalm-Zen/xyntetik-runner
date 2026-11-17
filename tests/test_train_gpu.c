@@ -40,6 +40,21 @@ static uint32_t rnd32(void) {
     return (uint32_t)(rng >> 32);
 }
 static float frnd(void) { return (float)(int32_t)rnd32() / 2147483648.0f; }
+// R8.24.1 B (the second reader's F2): a NaN or an infinity, by bits. A
+// tolerance written e = |device - reference|, e > bound passes a NaN e (every
+// compare with a NaN is false), and -ffast-math may assume it away besides,
+// so every default-build bound and every double anchor checks its operands'
+// bits first: an output that is not finite where the reference is fails.
+static int b_nonfin(float f) {
+    uint32_t u;
+    memcpy(&u, &f, 4);
+    return (u & 0x7f800000u) == 0x7f800000u;
+}
+static int d_nonfin(double d) {
+    uint64_t u;
+    memcpy(&u, &d, 8);
+    return (u & 0x7ff0000000000000ull) == 0x7ff0000000000000ull;
+}
 
 // RUNNER_TRAIN_MM_KERNEL for the next products ("" unsets it); the engine
 // reads it at every call. MinGW's headers declare no setenv or unsetenv.
@@ -426,6 +441,8 @@ static void ffn_check(model_t *m) {
         if ((e = f_ulps(vh, rh)) > wh) wh = e;
         if ((e = f_ulps(vdu, rdu)) > wdu) wdu = e;
         double edg = fabs((double)vdg - (double)rdg) / cond;
+        // non-finite by bits (a NaN edg passes every compare): equal bits pass, else it fails
+        if (b_nonfin(vdg) || b_nonfin(rdg) || d_nonfin(edg)) edg = memcmp(&vdg, &rdg, 4) ? 1e300 : 0;
         if (edg > wdg) wdg = edg;
 #ifndef RUNNER_PORTABLE_MATH
         if ((f_ulps(vh, rh) > 4 || f_ulps(vdu, rdu) > 4 || edg > 1.0) && !hbad++)
@@ -444,6 +461,10 @@ static void ffn_check(model_t *m) {
 #endif
         int64_t a1 = f_ulps(vh, xh), a3 = f_ulps(vdu, xdu);
         double a2 = fabs((double)vdg - xdg) / cond;
+        if (b_nonfin(vdg) || d_nonfin(xdg) || d_nonfin(a2)) {
+            float xf = (float)xdg;
+            a2 = memcmp(&vdg, &xf, 4) ? 1e300 : 0;
+        }
         if (a1 > ah) ah = a1;
         if (a2 > adg) adg = a2;
         if (a3 > adu) adu = a3;
@@ -560,9 +581,12 @@ static void lora_case(model_t *m, int r, int n_in, int n_out, int nb, int edge) 
                 mag += fabs(s) * dm;
                 double bound = (n_in + r + 2) * 0x1p-23 * mag + 0x1p-126;
                 double e = fabs(yd[(size_t)b * n_out + j] - v) / bound;
-                if (e > worst) worst = e;
                 double eh = fabs((double)yd[(size_t)b * n_out + j] - yh[(size_t)b * n_out + j]) /
                             bound;
+                // by bits: the inputs are finite, so a non-finite y (or a NaN e) fails
+                if (b_nonfin(yd[(size_t)b * n_out + j]) || d_nonfin(e)) e = 1e300;
+                if (b_nonfin(yd[(size_t)b * n_out + j]) || d_nonfin(eh)) eh = 1e300;
+                if (e > worst) worst = e;
                 if (eh > hworst) hworst = eh;
             }
         }
@@ -701,6 +725,9 @@ static void b2_check(model_t *m, int n, int rows, int stride, bool weighted) {
                 double xf = x[o + i] * rr * wi;
                 double xb = dx0[o + i] + rr * wi * dy[o + i] - c * x[o + i];
                 double af = fabs(df - xf) / mf, ab = fabs(db - xb) / mb;
+                // by bits: an anchored row's formula is finite, so a non-finite output fails
+                if (b_nonfin(df) || d_nonfin(af)) af = 1e300;
+                if (b_nonfin(db) || d_nonfin(ab)) ab = 1e300;
                 if (af > waf) waf = af;
                 if (ab > wab) wab = ab;
                 double lim = n * 0x1p-24 + 0x1p-20;
@@ -839,6 +866,9 @@ static void b3_check(model_t *m, int hd, int rd, int neox, int n_heads, int T, i
                     double r0 = adjoint ? x0 * c + x1 * s : x0 * c - x1 * s;
                     double r1 = adjoint ? -x0 * s + x1 * c : x0 * s + x1 * c;
                     double q = fmax(fabs(d0 - r0), fabs(d1 - r1)) / mag;
+                    // by bits: fmax drops a NaN argument, and the rotation of finite inputs
+                    // is finite, so a non-finite output fails
+                    if (b_nonfin(d0) || b_nonfin(d1) || d_nonfin(q)) q = 1e300;
                     if (q > wa) wa = q;
                     if (q > 0x1p-20 && !abad++)
                         fprintf(stderr, "FAIL: rope twin is not the rotation at hd %d t %d h %d j %d "
@@ -1057,8 +1087,10 @@ static void b8_checks(model_t *m) {
 // to the host's rows for those positions (a position's attention reads only
 // its own q row and the rows before it, so the host's whole run is the
 // reference for any chunk).
+// plant: the control (the second reader's F2): a quiet NaN written into the
+// device's output, which every build's gate must catch.
 static void b4_check(model_t *m, int T, int H, int kv_mul, int hd, int swa, float scale_mul,
-                     int kind, int zero_q, int pos0) {
+                     int kind, int zero_q, int pos0, int plant) {
     ab_shape sh = ab_shape_of(T, H, kv_mul, hd, swa);
     size_t row16 = (size_t)sh.kv_dim * 2, nq = (size_t)T * sh.q_dim;
     uint8_t *k16 = malloc(row16 * T), *v16 = malloc(row16 * T);
@@ -1084,7 +1116,12 @@ static void b4_check(model_t *m, int T, int H, int kv_mul, int hd, int swa, floa
     tattn_args a = { nb, H, kv_mul, hd, sh.q_dim, sh.kv_dim, swa, rowb, rowb, scale, kind, kind,
                      pos0 };
     bool ok = okh && gpu_train_attn_fw_check(m, &a, kc, vc, q + qoff, aod);
-    CHECK(ok, "attn twin T %d hd %d: declined (no kernel in this PTX?)", T, hd);
+    CHECK(ok, "attn twin T %d hd %d rows %d..%d: declined (no kernel in this PTX, or a span the "
+          "launch could not hold)", T, hd, pos0, T - 1);
+    if (ok && plant) {
+        uint32_t qn = 0x7fc00000u;
+        memcpy(&aod[(size_t)(nb / 2) * sh.q_dim], &qn, 4);
+    }
     size_t bad = 0, hbad = 0, abad = 0;
     double wh = 0, wa = 0;
     double *sc = malloc(sizeof(double) * T), *pr = malloc(sizeof(double) * T);
@@ -1115,14 +1152,16 @@ static void b4_check(model_t *m, int T, int H, int kv_mul, int hd, int swa, floa
                 float hv = aoh[o], dv = aod[o - qoff];
 #ifdef RUNNER_PORTABLE_MATH
                 bool same = b2_nan(hv) || b2_nan(dv) ? b2_nan(hv) && b2_nan(dv) : !memcmp(&hv, &dv, 4);
-                if (!same && !bad++)
+                if (!same && !bad++ && !plant)
                     fprintf(stderr, "FAIL: attn twin differs from the T3 host at T %d t %d h %d i %d: "
                             "%.9g/%.9g\n", T, t, h, i, dv, hv);
 #else
                 float ev = b2_ftz(dv);
                 double e = fabs((double)ev - hv);
-                if (e / lim > wh) wh = e / lim;
-                if (e > 2 * lim && !hbad++)
+                // by bits first: a NaN e passes every compare below
+                bool nf = b_nonfin(ev) || b_nonfin(hv) || d_nonfin(e);
+                if (!nf && e / lim > wh) wh = e / lim;
+                if ((nf || e > 2 * lim) && !hbad++ && !plant)
                     fprintf(stderr, "FAIL: attn twin is off the default build's host at T %d t %d h %d "
                             "i %d: %.9g/%.9g\n", T, t, h, i, ev, hv);
 #endif
@@ -1132,12 +1171,22 @@ static void b4_check(model_t *m, int T, int H, int kv_mul, int hd, int swa, floa
                     x += pr[s] / sum * f16_to_f32(vb);
                 }
                 double ea = fabs((double)dv - x);
-                if (ea / lim > wa) wa = ea / lim;
-                if (ea > lim && !abad++)
+                bool anf = b_nonfin(dv) || d_nonfin(x) || d_nonfin(ea);
+                if (!anf && ea / lim > wa) wa = ea / lim;
+                if ((anf || ea > lim) && !abad++ && !plant)
                     fprintf(stderr, "FAIL: attn twin is not the attention at T %d t %d h %d i %d: "
                             "%.9g (double %.9g)\n", T, t, h, i, dv, x);
             }
         }
+    if (plant) {   // the control: the planted NaN must fail the host gate and the anchor
+        CHECK(!ok || ((bad || hbad) && abad), "attn twin control: a NaN planted in the device's "
+              "output passed the gate (host %zu, default %zu, anchor %zu)", bad, hbad, abad);
+        if (ok && (bad || hbad) && abad)
+            printf("attn twin control: a NaN planted in the device's output is caught (host gate %zu, "
+                   "anchor %zu element(s))\n", bad + hbad, abad);
+        bad = hbad = abad = 0;
+        ok = false;   // no summary line for the control
+    }
     CHECK(!bad, "attn twin T %d H %d kv_mul %d hd %d swa %d kind %d: %zu elements differ from "
           "the T3 host's bits", T, H, kv_mul, hd, swa, kind, bad);
     CHECK(!hbad, "attn twin T %d hd %d: %zu elements off the default build's host (worst %.3g of "
@@ -1158,18 +1207,25 @@ static void b4_check(model_t *m, int T, int H, int kv_mul, int hd, int swa, floa
     free(k16); free(v16); free(q); free(dao); free(aoh); free(aod); free(sc); free(pr);
 }
 static void b4_checks(model_t *m) {
-    b4_check(m, 128, 32, 4, 128, 0, 1.0f, 0, 0, 0);    // the recipe's Qwen3-4B shape, T 128
-    b4_check(m, 77, 4, 2, 64, 0, 1.0f, 0, 1, 0);       // grouped heads, a zero q row
-    b4_check(m, 90, 4, 1, 256, 24, 1.0f, 0, 0, 0);     // a sliding window, head 256
-    b4_check(m, 33, 2, 2, 128, 1, 1.0f, 0, 0, 0);      // a window of one key
-    b4_check(m, 64, 8, 4, 128, 0, 16.0f, 0, 0, 0);     // peaked probabilities
-    b4_check(m, 50, 4, 2, 96, 7, 1.0f, 3, 0, 0);       // f32 rows, a short window
-    b4_check(m, 300, 2, 1, 64, 0, 1.0f, 0, 0, 0);      // spans past a block of threads
+    b4_check(m, 128, 32, 4, 128, 0, 1.0f, 0, 0, 0, 0);    // the recipe's Qwen3-4B shape, T 128
+    b4_check(m, 77, 4, 2, 64, 0, 1.0f, 0, 1, 0, 0);       // grouped heads, a zero q row
+    b4_check(m, 90, 4, 1, 256, 24, 1.0f, 0, 0, 0, 0);     // a sliding window, head 256
+    b4_check(m, 33, 2, 2, 128, 1, 1.0f, 0, 0, 0, 0);      // a window of one key
+    b4_check(m, 64, 8, 4, 128, 0, 16.0f, 0, 0, 0, 0);     // peaked probabilities
+    b4_check(m, 50, 4, 2, 96, 7, 1.0f, 3, 0, 0, 0);       // f32 rows, a short window
+    b4_check(m, 300, 2, 1, 64, 0, 1.0f, 0, 0, 0, 0);      // spans past a block of threads
     // later chunks of the taped forward (a start that is not 0)
-    b4_check(m, 300, 32, 4, 128, 0, 1.0f, 0, 0, 128);  // the recipe's shape, its second chunk
-    b4_check(m, 150, 4, 2, 64, 40, 1.0f, 0, 0, 100);   // a window across the chunk's first row
-    b4_check(m, 205, 2, 1, 64, 0, 1.0f, 3, 0, 192);    // the last short chunk (13 rows), f32 rows
-    b4_check(m, 129, 4, 2, 128, 0, 1.0f, 0, 0, 128);   // a one-row chunk
+    b4_check(m, 300, 32, 4, 128, 0, 1.0f, 0, 0, 128, 0);  // the recipe's shape, its second chunk
+    b4_check(m, 150, 4, 2, 64, 40, 1.0f, 0, 0, 100, 0);   // a window across the chunk's first row
+    b4_check(m, 205, 2, 1, 64, 0, 1.0f, 3, 0, 192, 0);    // the last short chunk (13 rows), f32 rows
+    b4_check(m, 129, 4, 2, 128, 0, 1.0f, 0, 0, 128, 0);   // a one-row chunk
+    // the largest span the scope admits (12288 keys: 48 KiB of scores beside the
+    // kernel's static shared memory, past the default 48 KiB a block; the second
+    // reader's F1), whole and as the last chunk; and a window that bounds it
+    b4_check(m, 12288, 1, 1, 1, 0, 1.0f, 0, 0, 0, 0);
+    b4_check(m, 12288, 2, 1, 4, 0, 1.0f, 3, 0, 12000, 0);
+    b4_check(m, 12288, 1, 1, 8, 128, 1.0f, 0, 0, 11000, 0);
+    b4_check(m, 64, 4, 2, 64, 0, 1.0f, 0, 0, 0, 1);       // the control: a planted NaN is caught
 }
 
 // R8.24.1 B, the attention slots' scope (model_attn_dev_why), by shape and
