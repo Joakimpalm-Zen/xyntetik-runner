@@ -8811,6 +8811,7 @@ typedef struct {
     CUfunction  f_trn_fw, f_trn_bw;     // R8.24.1 B2, rmsnorm and its adjoint
     CUfunction  f_trope;                // R8.24.1 B3, rope and its adjoint
     CUfunction  f_tkv;                  // R8.24.1 B8, the training K/V store
+    CUfunction  f_tattn;                // R8.24.1 B4, the forward's attention
     // R8.24.1 B6: the adapter at a site (k_tlora_t, _y, _tb, _ga, _gb, _dx)
     CUfunction  f_tlora[6];
     // R8.24.1 B: the device-resident FFN. The FFN sites' adapters for a
@@ -8933,6 +8934,7 @@ bool gpu_train_init(model_t *m) {
         t->f_trn_fw = t->f_trn_bw = NULL;
     if (cu.ModuleGetFunction(&t->f_trope, t->mod, "k_trope") != 0) t->f_trope = NULL;
     if (cu.ModuleGetFunction(&t->f_tkv, t->mod, "k_tkv_store") != 0) t->f_tkv = NULL;
+    if (cu.ModuleGetFunction(&t->f_tattn, t->mod, "k_tattn") != 0) t->f_tattn = NULL;
     {
         static const char *const LN[6] = { "k_tlora_t", "k_tlora_y", "k_tlora_tb",
                                            "k_tlora_ga", "k_tlora_gb", "k_tlora_dx" };
@@ -9326,6 +9328,46 @@ bool gpu_train_kv_store_check(model_t *m, const tkv_args *a, const float *src,
               cu.MemcpyDtoH(dst, dd, nd) == 0;
     if (ds) cu.MemFree(ds);
     if (dd) cu.MemFree(dd);
+    return ok;
+}
+
+// R8.24.1 B4 (kernels_train.cuh k_tattn): a block a (position, head); the
+// span's probabilities in dynamic shared memory (T floats at most).
+#define TATTN_THREADS 128
+#define TATTN_MAX_HD 512
+static bool tattn_launch(train_gpu_t *t, CUdeviceptr kc, CUdeviceptr vc, CUdeviceptr q,
+                         CUdeviceptr ao, const tattn_args *a) {
+    tattn_args aa = *a;
+    void *p[] = { &kc, &vc, &q, &ao, &aa };
+    return t->f_tattn &&
+           cu.LaunchKernel(t->f_tattn, (unsigned)a->T, (unsigned)a->n_head, 1, TATTN_THREADS,
+                           1, 1, (unsigned)(sizeof(float) * (size_t)a->T), NULL, p, NULL) == 0;
+}
+
+// R8.24.1 B4, for the kernel gate: K, V and q sent, the attention run, ao
+// brought back. false: no context, no kernel in this PTX, or a shape or kind
+// the kernel does not take (f16 and f32 rows; head width and span within its
+// shared memory).
+bool gpu_train_attn_fw_check(model_t *m, const tattn_args *a, const void *kc,
+                             const void *vc, const float *q, float *ao) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->f_tattn || a->T < 1 || a->hd < 1 || a->hd > TATTN_MAX_HD ||
+        a->kv_mul < 1 || a->n_head % a->kv_mul || a->T > 12288 ||
+        (a->kind_k != 0 && a->kind_k != 3) || (a->kind_v != 0 && a->kind_v != 3) ||
+        cu.CtxSetCurrent(t->ctx) != 0)
+        return false;
+    size_t nk = (size_t)a->T * a->k_row_b, nv = (size_t)a->T * a->v_row_b;
+    size_t nq = sizeof(float) * (size_t)a->T * (size_t)a->q_dim;
+    CUdeviceptr d[4] = {0};   // K, V, q, ao
+    size_t sz[4] = { nk, nv, nq, nq };
+    bool ok = true;
+    for (int i = 0; i < 4 && ok; i++) ok = cu.MemAlloc(&d[i], sz[i]) == 0;
+    ok = ok && cu.MemcpyHtoD(d[0], kc, nk) == 0 && cu.MemcpyHtoD(d[1], vc, nv) == 0 &&
+         cu.MemcpyHtoD(d[2], q, nq) == 0 && cu.MemsetD8(d[3], 0, nq) == 0 &&
+         tattn_launch(t, d[0], d[1], d[2], d[3], a) && cu.CtxSynchronize() == 0 &&
+         cu.MemcpyDtoH(ao, d[3], nq) == 0;
+    for (int i = 0; i < 4; i++)
+        if (d[i]) cu.MemFree(d[i]);
     return ok;
 }
 

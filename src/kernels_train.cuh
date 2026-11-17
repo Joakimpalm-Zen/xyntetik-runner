@@ -1400,3 +1400,77 @@ extern "C" __global__ void k_tkv_store(const float *src, unsigned char *dst, tkv
     if (a.kind == 3) ((float *)row)[i] = v;
     else ((unsigned short *)row)[i] = tw_f32_to_f16(v);
 }
+// ---- R8.24.1 B4: the forward's attention over the training K/V rows, a
+// host-chain twin of model.c's attn_run as the recompute calls it (one
+// attn_job a position: attn_scores, softmax, attn_values; kernel_args.h
+// tattn_args). One block a (position t, head h), the span s = t0 .. t (t0
+// the window start, attn_window_start):
+// - scores, one thread a key s: q . k_s as the host's chain over the head's
+//   channels ascending from 0 (multiply, then add), then times scale;
+// - softmax over the span, as model.c softmax: the max by thread 0 in key
+//   order (x > mx, so a NaN keeps the host's answer), exp(x - mx) a key a
+//   thread (pmath's exp, tw_expf), their sum by thread 0 in key order, then
+//   each divided by it;
+// - values, one thread a channel i: the chain over the span ascending from
+//   0, p_s * v_s[i] added a key at a time.
+// Every chain is the host's, never contracted, so a T3 host and this agree
+// bit for bit. K and V rows are f16 (kind 0) or f32 (kind 3).
+// RUNNER_TATTN_MUTANT (never set in the committed PTX) fuses the value
+// chain's multiply-add into an fmaf: the gate's mutant.
+#define TATTN_THREADS 128
+#define TATTN_MAX_HD 512
+
+static __device__ __forceinline__ float tattn_kv(const uchar *row, int kind, int i) {
+    return kind == 3 ? ((const float *)row)[i]
+                     : __half2float(((const __half *)row)[i]);
+}
+
+extern "C" __global__ void __launch_bounds__(TATTN_THREADS)
+k_tattn(const uchar *kc, const uchar *vc, const float *q, float *ao, tattn_args a) {
+    extern __shared__ float att[];          // the span's scores, then probabilities
+    __shared__ float qs[TATTN_MAX_HD], mxs, sums;
+    int t = (int)blockIdx.x, h = (int)blockIdx.y, tid = (int)threadIdx.x, hd = a.hd;
+    int kvh = h / a.kv_mul;
+    if (t >= a.T || h >= a.n_head || (kvh + 1) * hd > a.kv_dim) return;
+    int t0 = a.swa > 0 && t - a.swa + 1 > 0 ? t - a.swa + 1 : 0, span = t - t0 + 1;
+    int ek = a.kind_k == 3 ? 4 : 2, ev = a.kind_v == 3 ? 4 : 2;
+    for (int i = tid; i < hd; i += TATTN_THREADS) qs[i] = q[(ulong64)t * a.q_dim + h * hd + i];
+    __syncthreads();
+    for (int k = tid; k < span; k += TATTN_THREADS) {
+        const uchar *kr = kc + (ulong64)(t0 + k) * a.k_row_b + (ulong64)kvh * hd * ek;
+        float s = 0.0f;
+        for (int i = 0; i < hd; i++) s = __fadd_rn(s, __fmul_rn(qs[i], tattn_kv(kr, a.kind_k, i)));
+        att[k] = __fmul_rn(s, a.scale);
+    }
+    __syncthreads();
+    if (tid == 0) {
+        float mx = att[0];
+        for (int k = 1; k < span; k++) if (att[k] > mx) mx = att[k];
+        mxs = mx;
+    }
+    __syncthreads();
+    float mx = mxs;
+    for (int k = tid; k < span; k += TATTN_THREADS) att[k] = tw_expf(__fsub_rn(att[k], mx));
+    __syncthreads();
+    if (tid == 0) {
+        float s = 0.0f;
+        for (int k = 0; k < span; k++) s = __fadd_rn(s, att[k]);
+        sums = s;
+    }
+    __syncthreads();
+    float sum = sums;
+    for (int k = tid; k < span; k += TATTN_THREADS) att[k] = __fdiv_rn(att[k], sum);
+    __syncthreads();
+    for (int i = tid; i < hd; i += TATTN_THREADS) {
+        float o = 0.0f;
+        for (int k = 0; k < span; k++) {
+            const uchar *vr = vc + (ulong64)(t0 + k) * a.v_row_b + (ulong64)kvh * hd * ev;
+#ifdef RUNNER_TATTN_MUTANT
+            o = __fmaf_rn(att[k], tattn_kv(vr, a.kind_v, i), o);
+#else
+            o = __fadd_rn(o, __fmul_rn(att[k], tattn_kv(vr, a.kind_v, i)));
+#endif
+        }
+        ao[(ulong64)t * a.q_dim + h * hd + i] = o;
+    }
+}
