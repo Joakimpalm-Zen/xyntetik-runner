@@ -6769,7 +6769,7 @@ static bool replay_resolve_evals(const cli_opts *o, cli_replay *rp, jv *rec, jv 
         if (ti || tl) {
             const char *inm = jv_str(jv_get(ti, "path"), NULL), *isha = jv_str(jv_get(ti, "sha256"), NULL);
             const char *lnm = jv_str(jv_get(tl, "path"), NULL), *lsha = jv_str(jv_get(tl, "sha256"), NULL);
-            char ibuf[4096], lbuf[8192];
+            char ibuf[8192], lbuf[8192];   // the same size: ibuf takes lbuf whole (gcc's -Wformat-truncation)
             const char *ip = inm ? lineage_relocate(inm, o->replay_train, ibuf, sizeof ibuf) : NULL;
             if (ip && !record_regular_file(ip)) {
                 char edir[4096];
