@@ -3788,6 +3788,9 @@ bool gpu_train_rope_check(model_t *mm, const trope_args *a, const float *fr, flo
     (void)mm; (void)a; (void)fr; (void)v;
     return false;
 }
+size_t gpu_train_res_avail(model_t *mm) { (void)mm; return 0; }
+bool gpu_train_res_begin(model_t *mm, int T) { (void)mm; (void)T; return false; }
+bool gpu_train_res_round(model_t *mm, int n, int pos) { (void)mm; (void)n; (void)pos; return false; }
 bool gpu_train_add_check(model_t *mm, const tadd_args *a, float *x, const float *y) {
     (void)mm; (void)a; (void)x; (void)y;
     return false;

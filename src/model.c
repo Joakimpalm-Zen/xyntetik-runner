@@ -14303,7 +14303,52 @@ static bool lbw_dev_ffn_begin(model_t *m) {
 }
 
 // ... and at its end the FFN sites' gradients back into the host's buffers
-static bool lbw_dev_ffn_end(model_t *m) {
+// R8.24.1 B R1, the resident step (out/r8241/B-resident-design.md): once a
+// run, why a device step's taped forward stays on the slot path
+static void lbw_res_why(const char *why) {
+    static _Atomic int said;
+    if (!said++) fprintf(stderr, "train-gpu: the step stays on the slot path: %s\n", why);
+}
+// Whether this step's taped forward runs resident (model_resident_why, with
+// the device's own budget), and if so the attention sites' adapters up (the
+// host's backward keeps its own copies and chains in R1) and the step's
+// planes. Within a device FFN step only (RUNNER_TRAIN_DEVICE_STEP=0 and the
+// FFN slot's scope keep the host's or the slot path); RUNNER_TRAIN_RESIDENT=0
+// keeps the slot path in a device step, for comparison.
+static bool lbw_resident_begin(model_t *m, int T) {
+    m->train_resident = false;
+    if (!m->train_dev_ffn) return false;
+    const char *e = getenv("RUNNER_TRAIN_RESIDENT");
+    if (e && e[0] == '0' && !e[1]) {
+        lbw_res_why("RUNNER_TRAIN_RESIDENT=0");
+        return false;
+    }
+    const char *why = model_resident_why(m, T, gpu_train_res_avail(m));
+    if (why) { lbw_res_why(why); return false; }
+    static const int slot[4] = { LW_Q, LW_K, LW_V, LW_O };
+    for (int l = 0; l < m->n_layer; l++)
+        for (int w = 0; w < 4; w++) {
+            struct lora_w *lw = &m->lora[(size_t)l * LW_SLOTS + slot[w]];
+            gguf_tensor *base = lora_slot_base(m, l, slot[w]);
+            int n_in = base ? (int)base->ne[0] : 0, n_out = base ? (int)base->ne[1] : 0;
+            if (lw->r) {
+                if (!lw->ga) lw->ga = calloc((size_t)lw->r * n_in, sizeof(float));
+                if (!lw->gb) lw->gb = calloc((size_t)n_out * lw->r, sizeof(float));
+                if (!lw->ga || !lw->gb) return false;
+            }
+            if (!gpu_train_site_push(m, l, 3 + w, lw->a, lw->b, lw->ga, lw->gb, lw->r, n_in,
+                                     n_out, lw->scale)) {
+                lbw_res_why("an attention site's adapter could not go up");
+                return false;
+            }
+        }
+    if (!gpu_train_res_begin(m, T)) {
+        lbw_res_why("the device could not hold the step's planes");
+        return false;
+    }
+    m->train_resident = true;
+    return true;
+}static bool lbw_dev_ffn_end(model_t *m) {
     m->train_dev_ffn = false;
     bool ok = true;
     for (int l = 0; l < m->n_layer; l++)
@@ -14333,6 +14378,7 @@ static bool lora_backward(model_t *m, const int32_t *toks, int T,
     model_t *dev = t_mv_dev;
     t_mv_dev = m->train_dev ? m : NULL;
     bool dffn = lbw_dev_ffn_begin(m);
+    if (dffn) lbw_resident_begin(m, T);
     float *dx = calloc((size_t)T * m->n_embd, sizeof(float));
     bool ok = dx && lora_taped_forward(m, toks, T, pos_w, tch, dx, &loss);
     if (ok && prof) { pt_fw = plat_now(); pd_fw = gpu_train_dev_wall(m); }
@@ -14367,6 +14413,7 @@ static bool lora_backward(model_t *m, const int32_t *toks, int T,
     free(dx);
     free(m->tape); m->tape = NULL; m->tape_T = 0;
     if (!lbw_dn_settle(m)) ok = false;
+    m->train_resident = false;
     if (dffn && !lbw_dev_ffn_end(m)) ok = false;
     t_mv_dev = dev;
     if (ok && loss_out) *loss_out = loss;
@@ -15797,6 +15844,13 @@ const char *model_resident_why(const model_t *m, int T, size_t avail) {
     for (int l = 0; l < m->n_layer; l++) {
         const char *why = model_resident_layer_why(m, l, T);
         if (why) return why;
+        // the round's planes take layer 0's widths (R1)
+        if (model_head_dim(m, l) != model_head_dim(m, 0) ||
+            model_n_head_kv(m, l) != model_n_head_kv(m, 0) ||
+            model_rope_dim(m, l) != model_rope_dim(m, 0))
+            return "layers of different head widths, KV heads or rope widths";
+        if (!m->layers[l].wq || !m->layers[l].wk || !m->layers[l].wv || !m->layers[l].wo)
+            return "a layer without its own Q, K, V or O projection";
         const layer_t *ly = &m->layers[l];
         int q_dim = model_q_dim(m, l), kv_dim = model_kv_dim(m, l), nff = ly->n_ff;
         if (q_dim > rs.q_dim) rs.q_dim = q_dim;
@@ -16511,7 +16565,17 @@ static float *forward_batch_run(model_t *m, const int32_t *tokens, int n, int po
     m->fwd_tokens = tokens;   // the PLE block hashes the batch's own ids
 
     double dt_f0 = dbg_time_on() ? dt_now() : 0;
-    for (int l = start; l < m->n_layer; l++)
+    // R8.24.1 B R1: a resident step's taped forward round runs every layer
+    // on the device (it writes the tape's and the K/V cache's rows as
+    // forward_layer does); a round that declines runs here, and so does the
+    // rest of the step (the device's K/V rows would miss its rows)
+    bool res = m->train_resident && t_mv_dev == m && !dbg && start == 0 && m->tape;
+    if (res && !gpu_train_res_round(m, n, pos)) {
+        m->train_resident = false;
+        res = false;
+        lbw_res_why("a round declined on the device; the rest of the step runs the slot path");
+    }
+    for (int l = start; !res && l < m->n_layer; l++)
         forward_layer(m, l, n, pos, dbg);
     if (dbg_time_on()) { int k = n > 1; dt_fwd_t[k] += dt_now() - dt_f0; dt_fwd_n[k]++; dt_fwd_rows[k] += n; }
 

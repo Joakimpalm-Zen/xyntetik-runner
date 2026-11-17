@@ -365,6 +365,15 @@ bool   gpu_train_rope_check(model_t *m, const trope_args *a, const float *fr, fl
 // unchanged. false: no context, no kernel in this PTX, or another kind.
 bool   gpu_train_kv_store_check(model_t *m, const tkv_args *a, const float *src,
                                 unsigned char *dst);
+// R8.24.1 B R1, the resident step (out/r8241/B-resident-design.md): the
+// device bytes its planes may take beside what is held now; its planes for a
+// step of T rows (the training K/V rows, the norm weights, the rope tables);
+// one taped forward round of n rows at pos on the device (m->x in, the final
+// hidden back in m->x, the host tape's and K/V cache's rows written as the
+// host's forward writes them). false: the caller runs the host's path.
+size_t gpu_train_res_avail(model_t *m);
+bool   gpu_train_res_begin(model_t *m, int T);
+bool   gpu_train_res_round(model_t *m, int n, int pos);
 // R8.24.1 B R0, the kernel gate's entry: the residual add's twin (k_tadd),
 // x (a->rows host rows, a->x_stride apart) += y (a->y_stride apart) in
 // place. false: no context or no kernel in this PTX.
