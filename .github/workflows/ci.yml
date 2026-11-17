@@ -201,6 +201,12 @@ jobs:
           .venv/bin/python -m pip install --quiet -r tests/ci/requirements.txt
       - name: build
         run: make
+      # R6.86: Apple clang's own report that the attention softmax's and
+      # SwiGLU's loops vectorize in a portable build of the default flags
+      # (scripts/check-pmath-vec.py); make test runs it with Linux gcc, the
+      # windows job with MinGW gcc
+      - name: the portable exp's loops vectorize
+        run: make test-pmath-vec PYTHON=python3
       - name: make test model
         run: python3 scripts/make-test-model.py test.gguf
       # the Makefile builds Apple Silicon for -mcpu=apple-m1, not the runner
@@ -364,6 +370,13 @@ jobs:
             mingw-w64-ucrt-x86_64-python-pytest
       - name: build
         run: make
+      # R6.86: MinGW gcc's own report that the attention softmax's and
+      # SwiGLU's loops vectorize in a portable build of the default flags, the
+      # build a Windows default with the runner's own math would be
+      # (scripts/check-pmath-vec.py); make test runs it with Linux gcc, the
+      # macos job with Apple clang
+      - name: the portable exp's loops vectorize
+        run: make test-pmath-vec PYTHON=python3
       - name: reject invalid CLI values
         run: |
           for args in '--port 70000' '--gpu typo' '--kv typo' '--reserve 101'; do

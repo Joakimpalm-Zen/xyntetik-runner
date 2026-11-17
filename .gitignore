@@ -358,6 +358,12 @@ test-canon-kernels.exe
 runner-riscv64
 test-pmath
 test-pmath.exe
+test-pmath-expf
+test-pmath-expf.exe
+test-pmath-expf-default
+test-pmath-expf-default.exe
+bench-pmath-loops-bin
+bench-pmath-loops-bin.exe
 test-fpclass
 test-fpclass.exe
 test-act
