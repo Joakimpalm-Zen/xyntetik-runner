@@ -6178,11 +6178,167 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
 // from_adapter: the record's input for the adapter a run continued from
 // (lineage_put_input JSON, taken before the first step), or NULL when the run
 // started a fresh one.
+#ifdef RUNNER_T3_BUILD
+static bool train_has_recurrent(const model_t *m) {
+    if (m->qwen35 || m->clef != NULL) return true;
+    for (int l = 0; l < m->n_layer; l++)
+        if (m->layers[l].recurrent) return true;
+    return false;
+}
+#endif
+
+#ifdef _WIN32
+#define TRAIN_ENVIRON _environ
+#else
+extern char **environ;
+#define TRAIN_ENVIRON environ
+#endif
+
+// R17.9: the RUNNER_ variables that cannot change a training run's bytes. Every
+// other one the run started with is in its record, and a run with one set is
+// not cpu-t3-exact. No list of the switches that move bytes is known to be
+// complete for every model (RUNNER_CPU_I8 and RUNNER_CPU_I8_PREFILL move a
+// default build's adapter on Q8_0), so the environment is read whole, as
+// route_tuning reads it, and only these are let through.
+static const char *const TRAIN_ENV_INERT[] = {
+    // read only by the test harness, never by this binary
+    "RUNNER_EXE", "RUNNER_CONFORMANCE_OUT", "RUNNER_TEST_GPU_OFF", "RUNNER_TEST_TIMEOUT_SCALE",
+    "RUNNER_REQUIRE_TURN_GUARD", "RUNNER_SWEEP_MODELS", "RUNNER_LLAMA_CPP_BIN",
+    // set by GitHub Actions' runner on every job, never read by this binary
+    "RUNNER_NAME", "RUNNER_OS", "RUNNER_ARCH", "RUNNER_TEMP", "RUNNER_TOOL_CACHE", "RUNNER_WORKSPACE",
+    "RUNNER_ENVIRONMENT", "RUNNER_TRACKING_ID", "RUNNER_DEBUG", "RUNNER_PERFLOG",
+    // read, and held not to move a training run's bytes
+    "RUNNER_TRAIN_ROWS",       // every width trains the same bytes (test_batched_taped_forward_is_the_solo_bytes)
+    "RUNNER_TPOOL_SPIN",       // how idle pool threads wait
+    "RUNNER_HF_CACHE", "RUNNER_CURL", "RUNNER_PREFIX_CACHE_MB",   // downloads, the server's prefix cache
+    "RUNNER_TEST_BUILD_DIRTY", // marks the build dirty: it can only take the claim down
+};
+
+static bool train_env_inert(const char *name, size_t n) {
+    for (size_t i = 0; i < sizeof TRAIN_ENV_INERT / sizeof *TRAIN_ENV_INERT; i++)
+        if (strlen(TRAIN_ENV_INERT[i]) == n && !strncmp(TRAIN_ENV_INERT[i], name, n)) return true;
+    return false;
+}
+
+// Whether the variable `name` (n bytes) is one a record names: a RUNNER_ one
+// outside the inert set, or one of the two the binary reads outside that
+// prefix that reach arithmetic (the recurrent scan's chunking, src/model.c).
+static bool train_env_counts(const char *name, size_t n) {
+    if (n == 12 && !strncmp(name, "XR_SSM_CHUNK", 12)) return true;
+    if (n == 13 && !strncmp(name, "XR_SSM_SERIAL", 13)) return true;
+    return n > 7 && !strncmp(name, "RUNNER_", 7) && !train_env_inert(name, n);
+}
+
+// The run's RUNNER_ variables outside the inert set, as JSON members
+// ("NAME":"value") into *json, and their names comma-joined into names. A value
+// whose name says it may be a credential is written as "(set)". Returns how many.
+static int train_environment(sbuf *json, char *names, size_t cap) {
+    int count = 0;
+    size_t nn = 0;
+    if (cap) names[0] = 0;
+    for (char **e = TRAIN_ENVIRON; e && *e; e++) {
+        const char *eq = strchr(*e, '=');
+        if (!eq || !train_env_counts(*e, (size_t)(eq - *e))) continue;
+        bool secret = false;
+        static const char *const words[] = { "KEY", "TOKEN", "SECRET", "PASS" };
+        for (size_t w = 0; w < sizeof words / sizeof *words; w++) {
+            const char *f = strstr(*e, words[w]);
+            if (f && f < eq) secret = true;
+        }
+        if (json) {
+            sb_lit(json, count ? ",\"" : "\"");
+            sb_esc(json, *e, (size_t)(eq - *e));
+            sb_lit(json, "\":\"");
+            if (secret) sb_lit(json, "(set)");
+            else sb_esc(json, eq + 1, strlen(eq + 1));
+            sb_lit(json, "\"");
+        }
+        int k = snprintf(names + nn, cap > nn ? cap - nn : 0, "%s%.*s", count ? "," : "", (int)(eq - *e), *e);
+        if (k > 0 && nn + (size_t)k < cap) nn += (size_t)k;
+        count++;
+    }
+    return count;
+}
+
+// R17.9: dirty when the Makefile stamped it so, or when a test marks it
+// (RUNNER_TEST_BUILD_DIRTY=1, which can add dirt and never take it away).
+static bool train_build_dirty(void) {
+    bool dirty = false;
+    provenance_build_commit(&dirty);
+    const char *t = getenv("RUNNER_TEST_BUILD_DIRTY");
+    return dirty || (t && !strcmp(t, "1"));
+}
+
+static void train_reason(sbuf *why, const char *text) {
+    if (!why) return;
+    sb_lit(why, why->n ? ",\"" : "\"");
+    sb_esc(why, text, strlen(text));
+    sb_lit(why, "\"");
+}
+
+// The reasons that hold for a run of any build, into *why: a RUNNER_ switch
+// outside the inert set, and a dirty build. False when there is one.
+static bool train_common_reasons(sbuf *why) {
+    char names[512], buf[700];
+    bool clean = true;
+    if (train_environment(NULL, names, sizeof names)) {
+        clean = false;
+        snprintf(buf, sizeof buf, "environment: %s set, a switch not known to be inert on every model", names);
+        train_reason(why, buf);
+    }
+    if (train_build_dirty()) {
+        clean = false;
+        train_reason(why, "build.dirty: the source is not a commit, so no other machine can build this binary");
+    }
+    return clean;
+}
+
+// The run's claim, and into *why (JSON strings, comma-joined) every reason it
+// is not cpu-t3-exact. R17.9: a T3 run is exact only when everything that
+// decides its bytes is in the record and is the same on every ISA: no RUNNER_
+// switch outside the inert set, and a build whose source is a clean commit.
+static const char *train_determinism(const cli_opts *o, const cli_run *rt,
+                                     const train_teacher *tt, sbuf *why) {
+    if (rt->m.train_dev) {
+        train_reason(why, "--train-gpu: products ran on the GPU");
+        return "gpu-within-tolerance";
+    }
+#ifdef RUNNER_T3_BUILD
+    // Cross-ISA byte exactness under T3=1 is verified only for dense LoRA
+    // cross-entropy whose weight formats all have canonical-order kernels; DPO
+    // and teacher call double libm, DeltaNet uses log1pf/erff outside pmath.h,
+    // and MoE/full-weight or canon-gap formats lack cross-ISA checks.
+    char gaps[128] = "", buf[700];
+    bool exact = true;
+    if (o->dpo_path) { exact = false; train_reason(why, "objective dpo: its loss calls the C library's double exp and log1p"); }
+    if (tt) { exact = false; train_reason(why, "objective kl-to-teacher: its loss calls the C library's double exp and log"); }
+    if (model_full_on(&rt->m)) { exact = false; train_reason(why, "--train-full: no cross-ISA check of full-weight training"); }
+    if (rt->m.n_expert) { exact = false; train_reason(why, "mixture of experts: no cross-ISA check"); }
+    if (train_has_recurrent(&rt->m)) { exact = false; train_reason(why, "recurrent layers: log1pf and erff outside pmath.h"); }
+    if (!model_canon_gaps(&rt->m, gaps, sizeof gaps) || gaps[0]) {
+        exact = false;
+        snprintf(buf, sizeof buf, "no canonical-order kernel for %s", gaps[0] ? gaps : "a weight type");
+        train_reason(why, buf);
+    }
+    if (!train_common_reasons(why)) exact = false;
+    if (!provenance_build_commit(NULL) && !train_build_dirty()) {
+        exact = false;
+        train_reason(why, "build.commit unknown: the source is not named, so no other machine can build this binary");
+    }
+    if (exact) return "cpu-t3-exact";
+#else
+    (void)o; (void)tt;
+    train_reason(why, "not a T3 build: the dot products run in the ISA-native order");
+    train_common_reasons(why);
+#endif
+    return "cpu-same-binary";
+}
+
 static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
                          const char *from_adapter, const train_teacher *tt,
                          const train_eval_set *ev, int resumed_at,
-                         int wctx, int eot_id, double first_loss,
-                         double last_loss) {
+                         const char *resume_optim_sha, int wctx, int eot_id,
+                         double first_loss, double last_loss) {
     char bsha[65] = "", dsha[65] = "", asha[65] = "", xsha[65] = "";
     const char *data_path = o->dpo_path ? o->dpo_path : o->train_path;
     bool hash_ok = envelope_file_sha256(load_path, bsha) &&
@@ -6222,7 +6378,52 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
     sb_lit(&rec, "\",\"arch\":\"");
     const char *build_arch = RUNNER_BUILD_ARCH;
     sb_lit(&rec, build_arch);
-    sb_lit(&rec, "\"},\"base\":");
+    sb_lit(&rec, "\",\"flavor\":\"");
+    sb_lit(&rec, RUNNER_BUILD_FLAVOR ? RUNNER_BUILD_FLAVOR : "default");
+    bool build_dirty = train_build_dirty();
+    const char *build_commit = provenance_build_commit(NULL);
+    sb_lit(&rec, "\",\"commit\":");
+    if (build_commit) {
+        sb_lit(&rec, "\"");
+        sb_esc(&rec, build_commit, strlen(build_commit));
+        sb_lit(&rec, build_dirty ? "\",\"dirty\":true" : "\",\"dirty\":false");
+    } else {
+        sb_lit(&rec, build_dirty ? "null,\"dirty\":true" : "null,\"dirty\":null");
+    }
+    sbuf why = {0};
+    sb_lit(&rec, "},\"determinism\":\"");
+    const char *word = train_determinism(o, rt, tt, &why);   // once: sb_lit reads its argument twice
+    sb_lit(&rec, word);
+    sb_lit(&rec, "\"");
+    if (why.n) {
+        sb_lit(&rec, ",\"determinism_reasons\":[");
+        sb_lit(&rec, why.s);
+        sb_lit(&rec, "]");
+    }
+    free(why.s);
+    // R17.9: what else decided the bytes. The model overrides the run took
+    // (--rope-base, --rope-scale, --yarn-factor: each moves a forward; --mtp
+    // does not, training never reads the predictor), and its switches
+    // (train_env_counts).
+    if (o->mp.rope_base > 0 || o->mp.rope_scale > 0 || o->mp.yarn_factor > 0) {
+        bool first = true;
+        sb_lit(&rec, ",\"model_overrides\":{");
+        if (o->mp.rope_base > 0) { sb_fmt(&rec, "\"rope_base\":%.9g", (double)o->mp.rope_base); first = false; }
+        if (o->mp.rope_scale > 0) { sb_fmt(&rec, "%s\"rope_scale\":%.9g", first ? "" : ",", (double)o->mp.rope_scale); first = false; }
+        if (o->mp.yarn_factor > 0) sb_fmt(&rec, "%s\"yarn_factor\":%.9g", first ? "" : ",", (double)o->mp.yarn_factor);
+        sb_lit(&rec, "}");
+    }
+    {
+        sbuf env = {0};
+        char names[512];
+        if (train_environment(&env, names, sizeof names)) {
+            sb_lit(&rec, ",\"environment\":{");
+            sb_lit(&rec, env.s);
+            sb_lit(&rec, "}");
+        }
+        free(env.s);
+    }
+    sb_lit(&rec, ",\"base\":");
     lineage_put_input(&rec, load_path, bsha);
     if (from_adapter) {
         sb_lit(&rec, ",\"from_adapter\":");
@@ -6249,7 +6450,7 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
     }
     sb_lit(&rec, ",\"data\":");
     lineage_put_input(&rec, data_path, dsha);
-    sb_lit(&rec, rt->m.kv_f32 ? ",\"kv_cache\":\"f32\"" : "");
+    sb_lit(&rec, rt->m.kv_f32 ? ",\"kv_cache\":\"f32\"" : ",\"kv_cache\":\"f16\"");
     if (model_full_on(&rt->m)) {
         // R8.25.2: what was trained, and through which type (the masters are
         // the base file's own f32 tensors, named under "base")
@@ -6259,9 +6460,9 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
                "\"slots\":\"attn q k v o, ffn gate up down\"}", fn, (unsigned long long)fp);
     }
     sb_fmt(&rec,
-            ",\"seed\":%llu,\"lora_rank\":%d,\"alpha\":%g,"
+            ",\"seed\":%llu,\"lora_rank\":%d,\"alpha\":%g,\"lora_scale\":%g,"
             "\"lr\":%g,\"steps\":%d,\"ctx\":%d,"
-            "\"end_of_turn\":%s,\"eot_id\":%d,"
+            "\"end_of_turn\":%s,\"eot_id\":%d,\"no_bos\":%s,"
             "\"adamw\":{\"beta1\":" TRAIN_STR(TRAIN_ADAM_BETA1)
             ",\"beta2\":" TRAIN_STR(TRAIN_ADAM_BETA2)
             ",\"eps\":" TRAIN_STR(TRAIN_ADAM_EPS)
@@ -6270,8 +6471,10 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
             "\"batch\":%d,\"loss\":\"%s\"},"
             "\"loss_first\":%.6f,\"loss_last\":%.6f,",
             (unsigned long long)(o->seed_given ? o->seed : 0),
-            model_lora_rank(&rt->m), (double)rt->m.lora_alpha, (double)o->train_lr,
-            o->train_steps, wctx, o->train_eot ? "true" : "false", eot_id,
+            model_lora_rank(&rt->m), (double)rt->m.lora_alpha,
+            from_adapter ? (double)o->lora_scale : 1.0,
+            (double)o->train_lr, o->train_steps, wctx,
+            o->train_eot ? "true" : "false", eot_id, o->no_bos ? "true" : "false",
             (double)o->weight_decay, o->lr_schedule == 1 ? "cosine" : "constant",
             o->lr_warmup, (double)o->lr_floor,
             o->train_batch > 0 ? o->train_batch : 1,
@@ -6332,7 +6535,11 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
         sb_esc(&rec, o->kill_metric, strlen(o->kill_metric));
         sb_fmt(&rec, "\",\"min_rel\":%g},", (double)o->kill_min_rel);
     }
-    if (o->train_resume) sb_fmt(&rec, "\"resumed_at_step\":%d,", resumed_at);
+    if (o->train_resume) {
+        sb_fmt(&rec, "\"resumed_at_step\":%d,", resumed_at);
+        if (resume_optim_sha && resume_optim_sha[0])
+            sb_fmt(&rec, "\"resume_optim_sha256\":\"%s\",", resume_optim_sha);
+    }
     if (!hash_ok) {
         fprintf(stderr, "error: cannot hash an eval set for the provenance record\n");
         free(rec.s);
@@ -6395,6 +6602,16 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
     train_state st = {0, 0};
     ok = ok && train_evals_open(o, rt, wctx, eot_id, ev) &&
          (!o->train_resume || train_optim_load(o->train_resume, rt, &st, ev, o->n_eval));
+    char resume_optim_sha[65] = "";
+    if (ok && o->train_resume) {
+        char ropt[4096];
+        if (snprintf(ropt, sizeof ropt, "%s.optim", o->train_resume) >= (int)sizeof ropt ||
+            !envelope_file_sha256(ropt, resume_optim_sha)) {
+            fprintf(stderr, "error: cannot hash %s.optim for the provenance record\n",
+                    o->train_resume);
+            ok = false;
+        }
+    }
     if (ok && o->train_resume)
         fprintf(stderr, "train: resuming %s at step %d (row %lld next)\n",
                 o->train_resume, st.step, st.cursor % (n_ex > 0 ? n_ex : 1));
@@ -6421,7 +6638,8 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
     if (!rc && !((model_full_on(&rt->m) || model_lora_save(&rt->m, o->train_out)) &&
                  (!sidecar || train_optim_save(o->train_out, rt, &st, ev, o->n_eval)) &&
                  train_record(o, rt, load_path, from.s, o->train_teacher ? &tt : NULL,
-                              ev, resumed_at, wctx, eot_id, first_loss, last_loss)))
+                              ev, resumed_at, resume_optim_sha, wctx, eot_id,
+                              first_loss, last_loss)))
         rc = 1;
     if (!rc)
         fprintf(stderr, "train: done — first-step loss %.4f, last-step "

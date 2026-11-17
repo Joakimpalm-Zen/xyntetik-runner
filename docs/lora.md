@@ -681,14 +681,20 @@ Every adapter is written with `ADAPTER.gguf.train.json`
 
 | Field | What it records |
 | --- | --- |
-| `runner`, `build` | Version, the binary's sha256, compiler, OS and architecture |
+| `runner`, `build` | Version, binary sha256, compiler, OS, architecture, `flavor` (`t3` or `default`), `commit`, `dirty` |
+| `determinism` | `cpu-t3-exact` (T3 CPU dense LoRA cross-entropy with empty `canon_gaps`, no `RUNNER_` switch outside the inert set, from a clean stamped commit), `cpu-same-binary`, or `gpu-within-tolerance` |
+| `determinism_reasons` | Every reason the run is not `cpu-t3-exact`, in words (absent when it is) |
+| `model_overrides` | The model overrides the run took, each of which moves a forward: `rope_base`, `rope_scale`, `yarn_factor` (absent when none; `--mtp` moves no training bytes, the predictor is never read by training) |
+| `environment` | The run's `RUNNER_` variables outside the inert set, and `XR_SSM_CHUNK` / `XR_SSM_SERIAL`, by name and value; a name that may be a credential shows `(set)` (absent when none) |
 | `base` | The base model's path and sha256, and its own record when it has one |
 | `from_adapter` | The adapter a continued run started from (absent for a fresh one) |
-| `objective` | `weighted-cross-entropy` or `dpo` (with `dpo_beta`) |
+| `objective` | `weighted-cross-entropy`, `kl-to-teacher` (`teacher`), or `dpo` (`dpo_beta`) |
 | `data` | The training file's path and sha256 |
-| `seed`, `lora_rank`, `alpha`, `lr`, `steps`, `ctx`, `end_of_turn`, `eot_id`, `adamw` | The full configuration |
+| `kv_cache` | `f16` (default) or `f32` (`--kv-f32`) |
+| `seed`, `lora_rank`, `alpha`, `lora_scale`, `lr`, `steps`, `ctx`, `end_of_turn`, `eot_id`, `no_bos`, `adamw`, `recipe` | The parsed training configuration (`lora_scale` is `1` for a fresh adapter; no host paths or raw argv) |
+| `resumed_at_step`, `resume_optim_sha256` | Checkpoint step and starting `.optim` sha256 on `--resume` |
 | `loss_first`, `loss_last` | The first and last step's loss |
-| `adapter` | The output's path and sha256 |
+| `adapter` (or `variant`) | The output's path and sha256 |
 
 A merge writes `MERGED.gguf.merge.json` the same way, with the survival
 measurement. The record is written only after the output is installed and
