@@ -1615,3 +1615,90 @@ k_thead(float *z, float *th, const int *targets, const float *pos_w, const int *
     }
 }
 
+// ---- R8.24.1 B7: AdamW and the step log's gradient norms, host-chain
+// twins. k_tadam (kernel_args.h tadam_args), one thread an element, as
+// model.c adam_buf writes it: m = b1*m + (1 - b1)*g; v = b2*v + (1 - b2)*g*g
+// (left to right); mh = m / bc1, vh = v / bc2; th -= lr * (mh / (sqrtf(vh) +
+// eps) + wd * th). k_tgnorm, model_lora_grad_norms: one block, a thread a
+// layer, its segments in order and their elements in order, the double sum of
+// g*g (each widened, then multiplied, then added), its square root; then one
+// thread takes the max (nrm > mx) and the sum over the layers that have a
+// segment, in layer order, and the mean as sum / layers; a non-finite
+// gradient anywhere clears out[2]. Never contracted, so a T3 host and these
+// agree bit for bit.
+// Mutants (never set in the committed PTX), one for each step a case can see:
+// RUNNER_TADAM_MUTANT fuses the first moment's update into an fmaf;
+// RUNNER_TADAM_MUTANT2 takes the bias corrections as a reciprocal times;
+// RUNNER_TADAM_MUTANT3 fuses the weight-decay term into an fmaf (seen only
+// where it cancels the moment term: the gate's cancellation case);
+// RUNNER_TGNORM_MUTANT sums each segment in reverse. (A fused g*g in the
+// norms cannot be seen: a float times a float is exact in double.)
+#define TADAM_THREADS 256
+
+extern "C" __global__ void __launch_bounds__(TADAM_THREADS)
+k_tadam(float *th, const float *g, float *mo, float *vo, tadam_args a) {
+    ulong64 i = (ulong64)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= a.n) return;
+    float gi = g[i];
+#ifdef RUNNER_TADAM_MUTANT
+    float m = __fmaf_rn(a.b1, mo[i], __fmul_rn(__fsub_rn(1.0f, a.b1), gi));
+#else
+    float m = __fadd_rn(__fmul_rn(a.b1, mo[i]), __fmul_rn(__fsub_rn(1.0f, a.b1), gi));
+#endif
+    float v = __fadd_rn(__fmul_rn(a.b2, vo[i]), __fmul_rn(__fmul_rn(__fsub_rn(1.0f, a.b2), gi), gi));
+    mo[i] = m;
+    vo[i] = v;
+#ifdef RUNNER_TADAM_MUTANT2
+    float mh = __fmul_rn(m, __frcp_rn(a.bc1)), vh = __fmul_rn(v, __frcp_rn(a.bc2)), t = th[i];
+#else
+    float mh = __fdiv_rn(m, a.bc1), vh = __fdiv_rn(v, a.bc2), t = th[i];
+#endif
+    float q = __fdiv_rn(mh, __fadd_rn(__fsqrt_rn(vh), a.eps));
+#ifdef RUNNER_TADAM_MUTANT3
+    th[i] = __fsub_rn(t, __fmul_rn(a.lr, __fmaf_rn(a.wd, t, q)));
+#else
+    th[i] = __fsub_rn(t, __fmul_rn(a.lr, __fadd_rn(q, __fmul_rn(a.wd, t))));
+#endif
+}
+
+extern "C" __global__ void
+k_tgnorm(const float *g, const ulong64 *seg_off, const ulong64 *seg_len, const int *layer_seg,
+         int n_layer, double *out) {
+    extern __shared__ double nrm[];               // n_layer norms, then n_layer flags
+    int *flag = (int *)(nrm + n_layer);
+    int l = (int)threadIdx.x;
+    if (l < n_layer) {
+        double ss = 0.0;
+        int any = 0, fin = 1;
+        for (int k = layer_seg[l]; k < layer_seg[l + 1]; k++) {
+            any = 1;
+            const float *gs = g + seg_off[k];
+            for (ulong64 i = 0; i < seg_len[k]; i++) {
+#ifdef RUNNER_TGNORM_MUTANT
+                float v = gs[seg_len[k] - 1 - i];
+#else
+                float v = gs[i];
+#endif
+                if (!(fabsf(v) <= 3.40282346638528859812e38f)) fin = 0;   // not finite
+                ss = __dadd_rn(ss, __dmul_rn((double)v, (double)v));
+            }
+        }
+        nrm[l] = __dsqrt_rn(ss);
+        flag[l] = any | (fin << 1);
+    }
+    __syncthreads();
+    if (l == 0) {
+        double mx = 0.0, sum = 0.0;
+        int layers = 0, fin = 1;
+        for (int k = 0; k < n_layer; k++) {
+            if (!(flag[k] & 2)) fin = 0;
+            if (!(flag[k] & 1)) continue;
+            if (nrm[k] > mx) mx = nrm[k];
+            sum = __dadd_rn(sum, nrm[k]);
+            layers++;
+        }
+        out[0] = mx;
+        out[1] = layers ? __ddiv_rn(sum, (double)layers) : 0.0;
+        out[2] = fin ? 1.0 : 0.0;
+    }
+}

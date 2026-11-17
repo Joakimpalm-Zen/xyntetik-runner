@@ -17274,3 +17274,50 @@ bool model_head_bw_ref(float *probs, int V, int rows, float logit_scale, float s
     return ok;
 }
 
+// R8.24.1 B7: AdamW and the step log's gradient norms through the host's own
+// code, for the device twins' gate. model_adam_ref: adam_buf over n
+// parameters. model_grad_norms_ref: model_lora_grad_norms on a model of
+// n_layer layers whose seven projection slots (attn_q .. ffn_down) carry an
+// adapter of rank r on a placeholder base of n_in[s] x n_out[s], with the
+// gradients ga[l*7+s] ([r][n_in]) and gb[l*7+s] ([n_out][r]); a NULL ga
+// leaves that slot without an adapter. false: a gradient is not finite.
+void model_adam_ref(float *th, const float *g, float *mo, float *vo, size_t n, float lr,
+                    float b1, float b2, float eps, float wd, float bc1, float bc2) {
+    adam_buf(th, g, mo, vo, n, lr, b1, b2, eps, wd, bc1, bc2);
+}
+bool model_grad_norms_ref(int n_layer, int r, const int *n_in, const int *n_out,
+                          float *const *ga, float *const *gb, double *max_out,
+                          double *mean_out) {
+    model_t mm;
+    memset(&mm, 0, sizeof(mm));
+    mm.n_layer = n_layer;
+    mm.layers = calloc((size_t)n_layer, sizeof(layer_t));
+    mm.lora = calloc((size_t)n_layer * LW_SLOTS, sizeof(struct lora_w));
+    gguf_tensor *base = calloc(7, sizeof(gguf_tensor));
+    if (!mm.layers || !mm.lora || !base) {
+        free(mm.layers); free(mm.lora); free(base);
+        return false;
+    }
+    for (int s = 0; s < 7; s++) {
+        base[s].type = T_F32;
+        base[s].n_dims = 2;
+        base[s].ne[0] = (uint64_t)n_in[s];
+        base[s].ne[1] = (uint64_t)n_out[s];
+    }
+    for (int l = 0; l < n_layer; l++) {
+        layer_t *ly = &mm.layers[l];
+        ly->wq = &base[LW_Q]; ly->wk = &base[LW_K]; ly->wv = &base[LW_V];
+        ly->wo = &base[LW_O]; ly->w_gate = &base[LW_GATE]; ly->w_up = &base[LW_UP];
+        ly->w_down = &base[LW_DOWN];
+        for (int s = 0; s < 7; s++) {
+            struct lora_w *lw = &mm.lora[(size_t)l * LW_SLOTS + s];
+            if (!ga[l * 7 + s]) continue;
+            lw->r = r;
+            lw->ga = ga[l * 7 + s];
+            lw->gb = gb[l * 7 + s];
+        }
+    }
+    bool ok = model_lora_grad_norms(&mm, max_out, mean_out);
+    free(mm.layers); free(mm.lora); free(base);
+    return ok;
+}
