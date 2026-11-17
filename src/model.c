@@ -7507,9 +7507,20 @@ static bool mv_fuse_enabled(void) {
 static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
                            int x_stride, int n_in, int n_batch) {
     if (t_mv_dev) {   // device mode: each part its own product
+        // R8.24.1: in one round trip (the input sent once, one sync), each
+        // part gpu_train_mm's bits; a part the device declines runs below
+        unsigned done = 0;
+        if (np <= GPU_MM_PARTS) {
+            gpu_mm_part gp[GPU_MM_PARTS] = { { 0 } };
+            for (int s = 0; s < np; s++)
+                gp[s] = (gpu_mm_part){ p[s].w, p[s].y, p[s].y_stride, p[s].n_out,
+                                       p[s].bias };
+            done = gpu_train_mm_parts(t_mv_dev, gp, np, x, x_stride, n_in, n_batch);
+        }
         for (int s = 0; s < np; s++)
-            matvec_b(tp, p[s].y, p[s].y_stride, p[s].w, x, x_stride, n_in,
-                     p[s].n_out, p[s].bias, n_batch);
+            if (!(done >> s & 1))
+                matvec_b(tp, p[s].y, p[s].y_stride, p[s].w, x, x_stride, n_in,
+                         p[s].n_out, p[s].bias, n_batch);
         return;
     }
     int ec = mv_exact_cols();
@@ -12459,6 +12470,23 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
               ly->attn_norm_b, E, m->rms_eps);
     bool ex = t_mv_exact;
     t_mv_exact = true;
+    if (ok && t_mv_dev == m) {
+        // R8.24.1: under --train-gpu the products of xn1 below in one round
+        // trip (matvec_b_parts' device mode), in the same order
+        mv_part xp[4];
+        int np = 0;
+        if (s->q35)
+            xp[np++] = (mv_part){ s->dqg, 2 * q_dim, ly->wq, 2 * q_dim, ly->bq };
+        else
+            xp[np++] = (mv_part){ q, q_dim, ly->wq, q_dim, ly->bq };
+        if (need_kpre)
+            xp[np++] = (mv_part){ kpre, kv_dim, ly->wk, kv_dim, ly->bk };
+        if (vnorm && ly->wv)
+            xp[np++] = (mv_part){ vpre, kv_dim, ly->wv, kv_dim, ly->bv };
+        if (gate && !s->q35)
+            xp[np++] = (mv_part){ gpre, q_dim, ly->wq_gate, q_dim, NULL };
+        matvec_b_parts(m->tp, xp, np, xn1, E, E, T);
+    } else
     if (ok) {
         // qwen35's fused Q/gate plane goes to dqg (scratch until B2)
         if (s->q35)
@@ -12582,6 +12610,16 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
     // a gate-less FFN (Apertus) is up -> xIELU -> down, as serving's
     // layer_dense_ffn takes it; any other gate-less activation is not covered
     if (ok && !moe && !ly->w_gate && m->ffn_act != ACT_XIELU) ok = false;
+    if (ok && !moe && ly->w_gate && t_mv_dev == m) {
+        // R8.24.1: gate and up of xn2 in one round trip under --train-gpu
+        mv_part gu[2] = { { g, nff, ly->w_gate, nff, NULL },
+                          { u, nff, ly->w_up,   nff, NULL } };
+        t_mv_exact = true;
+        matvec_b_parts(m->tp, gu, 2, xn2, E, E, T);
+        t_mv_exact = ex;
+        lora_site_fw(m, l, LW_GATE, g, xn2, E, nff, T);
+        lora_site_fw(m, l, LW_UP, u, xn2, E, nff, T);
+    } else
     if (ok && !moe) {
         t_mv_exact = true;
         if (ly->w_gate) matvec_b(m->tp, g, nff, ly->w_gate, xn2, E, E, nff, NULL, T);

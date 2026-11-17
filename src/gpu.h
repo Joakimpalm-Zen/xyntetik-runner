@@ -318,6 +318,20 @@ bool   gpu_train_mvt0(model_t *m, const gguf_tensor *w, const float *dy,
 bool   gpu_train_mm(model_t *m, const gguf_tensor *w, const float *x,
                     int x_stride, float *y, int y_stride, int n_in, int n_out,
                     const float *bias, int nb);
+// R8.24.1: up to GPU_MM_PARTS of those products of ONE input x in one round
+// trip (x sent once, one sync); each part is gpu_train_mm's product bit for
+// bit, the weights taken up in the parts' order. Returns the parts computed,
+// bit s for part s; the caller computes the others (0: none, as when
+// gpu_train_mm returns false).
+enum { GPU_MM_PARTS = 4 };
+typedef struct {
+    const gguf_tensor *w;
+    float *y;
+    int y_stride, n_out;
+    const float *bias;
+} gpu_mm_part;
+unsigned gpu_train_mm_parts(model_t *m, const gpu_mm_part *p, int np,
+                            const float *x, int x_stride, int n_in, int nb);
 // RUNNER_TRAIN_PROF: seconds inside gpu_train_mm / gpu_train_mvt (transfers
 // and syncs included), their counts, and the kernels' share (the launch and
 // its sync) since the last call, which resets them

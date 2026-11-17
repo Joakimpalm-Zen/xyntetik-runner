@@ -493,6 +493,41 @@ int main(void) {
                 CHECK(yb[(size_t)c * N_OUT + j] == ys[(size_t)c * YS + j],
                       "packed column %d row %d differs from the staged call", c, j);
         free(yb);
+        // R8.24.1: three products of one x in one round trip are their own
+        // calls' bits (a strided part, a part with a bias); a scaled part is
+        // left to the caller
+        {
+            enum { YS2 = N_OUT + 3 };
+            gguf_tensor pw[3];
+            for (int s = 0; s < 3; s++) {
+                memset(&pw[s], 0, sizeof pw[s]);
+                pw[s].type = (uint32_t)TYPES[s].type;
+                pw[s].scale = s == 2 ? 2.0f : 1.0f;
+                pw[s].ne[0] = N_IN; pw[s].ne[1] = N_OUT;
+                pw[s].data = keep[s];
+                pw[s].nbytes = ggml_row_size(pw[s].type, N_IN) * N_OUT;
+            }
+            float b2[N_OUT];
+            for (int j = 0; j < N_OUT; j++) b2[j] = frnd();
+            float *pa = malloc(sizeof(float) * 3 * YS2), *ra = malloc(sizeof(float) * 3 * YS2);
+            float *pb = malloc(sizeof(float) * 3 * N_OUT), *rb = malloc(sizeof(float) * 3 * N_OUT);
+            float *pc = malloc(sizeof(float) * 3 * N_OUT);
+            for (int i = 0; i < 3 * YS2; i++) pa[i] = ra[i] = -7.0f;
+            gpu_mm_part pp[3] = { { &pw[0], pa, YS2, N_OUT, NULL },
+                                  { &pw[1], pb, N_OUT, N_OUT, b2 },
+                                  { &pw[2], pc, N_OUT, N_OUT, NULL } };
+            unsigned done = gpu_train_mm_parts(&m, pp, 3, x, N_IN, N_IN, 3);
+            CHECK(done == 3u, "parts: computed %#x, want parts 0 and 1 (the scaled "
+                  "part 2 is the caller's)", done);
+            bool okr = gpu_train_mm(&m, &pw[0], x, N_IN, ra, YS2, N_IN, N_OUT, NULL, 3) &&
+                       gpu_train_mm(&m, &pw[1], x, N_IN, rb, N_OUT, N_IN, N_OUT, b2, 3);
+            CHECK(okr, "parts: a reference call declined");
+            CHECK(!okr || !memcmp(pa, ra, sizeof(float) * 3 * YS2),
+                  "parts: the strided part differs from its own call");
+            CHECK(!okr || !memcmp(pb, rb, sizeof(float) * 3 * N_OUT),
+                  "parts: the part with a bias differs from its own call");
+            free(pa); free(ra); free(pb); free(rb); free(pc);
+        }
         // a scaled tensor is the CPU's
         w.scale = 2.0f;
         CHECK(!gpu_train_mm(&m, &w, x, N_IN, y, N_OUT, N_IN, N_OUT, NULL, 1),

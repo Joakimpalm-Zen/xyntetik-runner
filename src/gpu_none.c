@@ -211,6 +211,12 @@ bool gpu_train_mm(model_t *m, const gguf_tensor *w, const float *x,
     return false;
 }
 
+unsigned gpu_train_mm_parts(model_t *m, const gpu_mm_part *p, int np,
+                            const float *x, int x_stride, int n_in, int nb) {
+    (void)m; (void)p; (void)np; (void)x; (void)x_stride; (void)n_in; (void)nb;
+    return 0;
+}
+
 void gpu_train_prof(model_t *m, double *t_mm, long *n_mm, double *t_mvt,
                     long *n_mvt, double *k_mm, double *k_mvt) {
     (void)m;
