@@ -885,3 +885,60 @@ def test_a_dirty_build_never_claims_t3_exact(runner_bin, base, tmp_path):
     assert rec["build"]["dirty"] is True, rec["build"]
     assert rec["determinism"] == "cpu-same-binary", rec["determinism"]
     assert any("build.dirty" in r for r in rec.get("determinism_reasons", [])), rec.get("determinism_reasons")
+
+
+def _fixture(tmp_path, name, *flags):
+    out = tmp_path / f"{name}.gguf"
+    subprocess.run([sys.executable, str(ROOT / "scripts" / "make-test-model.py"), *flags, str(out)], check=True,
+                   cwd=ROOT, stdout=subprocess.DEVNULL)
+    return out
+
+
+def _train_on(runner_bin, base, model, out, extra=(), env=None):
+    e = {k: v for k, v in os.environ.items() if not k.startswith("RUNNER_") and not k.startswith("XR_")}
+    e.update(env or {})
+    return subprocess.run([str(runner_bin), "-m", str(model), "--gpu", "off", "--train", str(base / "corpus.txt"),
+                           "--train-steps", "2", "--lr", "3e-3", "--train-out", str(out), "-t", "2", *extra],
+                          cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600, env=e)
+
+
+def test_mtp_moves_no_training_bytes_and_is_not_recorded(runner_bin, base, tmp_path):
+    """A predictor block (MTP) is a decode-time draft head: training never reads it. A run with --mtp on a model
+    that carries one trains the bytes of the run without it, so the record has nothing to cite for it. It wrote
+    "mtp": true before, with no file and no hash."""
+    model = _fixture(tmp_path, "mtp", "--mtp-layers", "1")
+    plain, mtp = tmp_path / "plain.gguf", tmp_path / "with-mtp.gguf"
+    assert _train_on(runner_bin, base, model, plain).returncode == 0
+    p = _train_on(runner_bin, base, model, mtp, extra=("--mtp",))
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    assert mtp.read_bytes() == plain.read_bytes(), "--mtp moved the training bytes"
+    rec = json.loads(pathlib.Path(f"{mtp}.train.json").read_text())
+    assert "mtp" not in rec.get("model_overrides", {}), rec.get("model_overrides")
+
+
+def test_the_ssm_switches_outside_the_runner_prefix_are_recorded(runner_bin, base, tmp_path):
+    """XR_SSM_CHUNK and XR_SSM_SERIAL (the recurrent scan's chunking) are the two variables the binary reads
+    outside the RUNNER_ prefix that reach arithmetic. A recurrent run is never cpu-t3-exact; recorded, a
+    same-binary replay can hold the replayer to them too."""
+    out = tmp_path / "ssm.gguf"
+    p = _train_on(runner_bin, base, ROOT / "test.gguf", out, env={"XR_SSM_SERIAL": "1"})
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    rec = json.loads(pathlib.Path(f"{out}.train.json").read_text())
+    assert rec.get("environment") == {"XR_SSM_SERIAL": "1"}, rec.get("environment")
+    assert rec["determinism"] == "cpu-same-binary", rec["determinism"]
+
+
+def test_batch_width_and_the_kv_ring_move_no_training_bytes(runner_bin, base, tmp_path):
+    """Measured for the record's table: on a model with sliding-window layers, -b 2 and -b 4 train the default
+    width's bytes (the rows a forward takes are capped by -b, and every width trains the same bytes), and
+    --kv-ring on is refused by training, so neither is recorded."""
+    model = _fixture(tmp_path, "swa", "--swa-window", "8")
+    ref = tmp_path / "ref.gguf"
+    assert _train_on(runner_bin, base, model, ref).returncode == 0
+    for flags in (("-b", "2"), ("-b", "4"), ("--kv-ring", "off")):
+        out = tmp_path / ("w%s.gguf" % "".join(flags).replace("-", ""))
+        p = _train_on(runner_bin, base, model, out, extra=flags)
+        assert p.returncode == 0, (flags, p.stderr.decode(errors="replace"))
+        assert out.read_bytes() == ref.read_bytes(), flags
+    ring = _train_on(runner_bin, base, model, tmp_path / "ring.gguf", extra=("--kv-ring", "on"))
+    assert ring.returncode != 0 and b"RUNNER_KV_RING" in ring.stderr, ring.stderr
