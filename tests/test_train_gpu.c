@@ -396,6 +396,30 @@ int main(void) {
                   B * N_IN, first, dxc[first], dxg[first]);
         }
         mvt_dev_check(&m, &w, dy, dx0, N_IN, N_OUT, B, TYPES[k].name);
+        // R8.24.1: a zero start cleared on the device (gpu_train_mvt0) is the
+        // zeros sent, bit for bit, in both kernel families, and reads nothing
+        // of the host dx (all-ones bytes going in); the assist's is the CPU
+        // chain from zero
+        for (int dev = 0; dev < 2; dev++) {
+            float *z0 = calloc((size_t)B * N_IN, sizeof(float));
+            float *zc = calloc((size_t)B * N_IN, sizeof(float));
+            float *zp = malloc(sizeof(float) * B * N_IN);
+            memset(zp, 0xFF, sizeof(float) * B * N_IN);
+            m.train_dev = dev;
+            bool a = gpu_train_mvt(&m, &w, dy, z0, N_IN, N_OUT, B);
+            bool b = gpu_train_mvt0(&m, &w, dy, zp, N_IN, N_OUT, B);
+            m.train_dev = false;
+            CHECK(a && b && !memcmp(z0, zp, sizeof(float) * B * N_IN),
+                  "%s: a zero start cleared on the device differs from the "
+                  "zeros sent (%s)", TYPES[k].name, dev ? "device mode" : "the assist");
+            if (!dev) {
+                cpu_mvt(&w, dy, zc, N_IN, N_OUT, B);
+                CHECK(!memcmp(zc, zp, sizeof(float) * B * N_IN),
+                      "%s: the assist's zero start is not the CPU chain from zero",
+                      TYPES[k].name);
+            }
+            free(z0); free(zc); free(zp);
+        }
         // forward: batch-invariant columns, and the product
         ok = gpu_train_mm(&m, &w, x, N_IN, y, N_OUT, N_IN, N_OUT, NULL, B);
         double t2 = clk();
@@ -459,6 +483,16 @@ int main(void) {
             for (int j = N_OUT; j < YS; j++)
                 CHECK(ys[(size_t)c * YS + j] == -7.0f, "stride gap %d,%d written", c, j);
         }
+        // R8.24.1: a packed call lands in place, and its bias is the same one
+        // add per element as the staged (strided) call's
+        float *yb = malloc(sizeof(float) * 3 * N_OUT);
+        bool okb = ok && gpu_train_mm(&m, &w, x, N_IN, yb, N_OUT, N_IN, N_OUT, bias, 3);
+        CHECK(!ok || okb, "packed call with a bias declined");
+        for (int c = 0; okb && c < 3; c++)
+            for (int j = 0; j < N_OUT; j++)
+                CHECK(yb[(size_t)c * N_OUT + j] == ys[(size_t)c * YS + j],
+                      "packed column %d row %d differs from the staged call", c, j);
+        free(yb);
         // a scaled tensor is the CPU's
         w.scale = 2.0f;
         CHECK(!gpu_train_mm(&m, &w, x, N_IN, y, N_OUT, N_IN, N_OUT, NULL, 1),

@@ -304,6 +304,11 @@ bool   gpu_train_init(model_t *m);
 void   gpu_train_free(model_t *m);
 bool   gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
                      float *dx, int n_in, int n_out, int nb);
+// R8.24.1: the same product for a dx the caller holds at zero (+0.0f, every
+// element): the device clears its copy instead of receiving the zeros, so
+// the result is gpu_train_mvt's bit for bit with one transfer fewer
+bool   gpu_train_mvt0(model_t *m, const gguf_tensor *w, const float *dy,
+                      float *dx, int n_in, int n_out, int nb);
 // R8.19: y[t][j] = sum_i W[j][i] x[t][i] (+ bias[j]) for t < nb on the same
 // context, rows x_stride / y_stride apart: a batch-invariant product (column
 // t's value does not depend on the other columns of the call), the training

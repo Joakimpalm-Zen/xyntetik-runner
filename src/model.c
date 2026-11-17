@@ -11290,11 +11290,19 @@ static void mvt_transpose_worker(void *ctx, int j0, int j1) {
                 jb->dy[(size_t)t * jb->n_out + j];
 }
 
+// R8.24.1: set (in device mode) by a caller whose dx is still the zeros it
+// was allocated as; the next matvec_t on this thread consumes it, and the
+// device clears its copy instead of receiving the zeros (gpu_train_mvt0)
+static _Thread_local bool t_mvt_dx_zero;
+
 static bool matvec_t(model_t *m, const gguf_tensor *w, const float *dy,
                      float *dx, int n_in, int n_out, int nb) {
+    bool dx_zero = t_mvt_dx_zero;
+    t_mvt_dx_zero = false;
     // the CUDA assist reads raw rows; a scaled tensor stays on the host path
     if (m->train_gpu && w->scale == 1.0f &&
-        gpu_train_mvt(m, w, dy, dx, n_in, n_out, nb))
+        (dx_zero ? gpu_train_mvt0(m, w, dy, dx, n_in, n_out, nb)
+                 : gpu_train_mvt(m, w, dy, dx, n_in, n_out, nb)))
         return true;
     float *dyT = NULL;
     if (nb > 1) {
@@ -11573,6 +11581,24 @@ static bool lora_site_bw(model_t *m, int l, int slot, const gguf_tensor *w,
     if (lbw_prof_on()) lbw_sub[2] += plat_now() - p0;
     free(tbf);
     return true;
+}
+
+// R8.24.1: lora_site_bw for a dxin still at its allocated zeros, and
+// matvec_t likewise: under --train-gpu the base product starts from a
+// cleared device copy (the same values, so the same bits); elsewhere the
+// plain call
+static bool lora_site_bw0(model_t *m, int l, int slot, const gguf_tensor *w,
+                          const float *xin, const float *dy, float *dxin,
+                          int n_in, int n_out, int nb) {
+    t_mvt_dx_zero = m->train_dev;
+    bool ok = lora_site_bw(m, l, slot, w, xin, dy, dxin, n_in, n_out, nb);
+    t_mvt_dx_zero = false;
+    return ok;
+}
+static bool matvec_t0(model_t *m, const gguf_tensor *w, const float *dy,
+                      float *dx, int n_in, int n_out, int nb) {
+    t_mvt_dx_zero = m->train_dev;
+    return matvec_t(m, w, dy, dx, n_in, n_out, nb);
 }
 
 // forward apply for the recompute passes (LORA_HOOK's math), nb rows packed
@@ -12783,7 +12809,7 @@ NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state
             ok = ok && matvec_t(m, ly->ffn_gate_inp, mdr, dx2, E, ne_x, 1);
         }
     } else {
-    ok = ok && lora_site_bw(m, l, LW_DOWN, ly->w_down, hact, dbr, dhact,
+    ok = ok && lora_site_bw0(m, l, LW_DOWN, ly->w_down, hact, dbr, dhact,
                             nff, E, T);
     if (!ly->w_gate) {
         // R8.27: a gate-less FFN, hact = xielu(u): d u = dhact * xielu'(u)
@@ -12812,7 +12838,7 @@ NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state
         float *dgt = dgu + (size_t)t * nff;
         for (int i = 0; i < nff; i++) dgt[i] = dht[i] * ut[i] * act_d(m->ffn_act, gt[i]);
     }
-    ok = ok && lora_site_bw(m, l, LW_GATE, ly->w_gate, xn2, dgu, dxn2,
+    ok = ok && lora_site_bw0(m, l, LW_GATE, ly->w_gate, xn2, dgu, dxn2,
                             E, nff, T);
     if (ok && m->train_dev)
         lffn_pool(m, LFFN_DU, T, nff, g, NULL, dhact, dgu);
@@ -12855,7 +12881,7 @@ NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state
             for (int i = 0; i < E; i++) dbt[i] = rs * dxat[i];
         }
     }
-    ok = ok && lora_site_bw(m, l, LW_O, ly->wo, ao, dbr, dao, q_dim, E, T);
+    ok = ok && lora_site_bw0(m, l, LW_O, ly->wo, ao, dbr, dao, q_dim, E, T);
     if (ok && gate) {
         // out = pre * sigmoid(g): d pre = dao * s; d g = dao * pre * s(1-s);
         // the gate projection is frozen, so its adjoint lands on the normed
@@ -13041,7 +13067,9 @@ NUM_STAGE void lbw_projections(model_t *m, int l, int T, float *dx, lbw_state *s
             }
         ok = ok && lora_site_bw(m, l, LW_Q, ly->wq, xn1, s->dqg, dxn1, E, 2 * q_dim, T);
     } else
-    ok = ok && lora_site_bw(m, l, LW_Q, ly->wq, xn1, dq, dxn1, E, q_dim, T);
+    // dxn1 is still zero here unless a frozen output gate added into it
+    ok = ok && (s->gate ? lora_site_bw : lora_site_bw0)(m, l, LW_Q, ly->wq, xn1,
+                                                        dq, dxn1, E, q_dim, T);
     if (owns) {
         ok = ok && lora_site_bw(m, l, LW_K, ly->wk, xn1, dk, dxn1, E, kv_dim, T);
         if (ly->wv)
@@ -13869,7 +13897,7 @@ NUM_STAGE bool head_rows_bw(model_t *m, const int32_t *toks, int T,
     }
     if (!ok) return false;
     memset(dhn, 0, sizeof(float) * (size_t)nc * E);
-    if (!matvec_t(m, m->output, probs, dhn, E, V, nc)) return false;
+    if (!matvec_t0(m, m->output, probs, dhn, E, V, nc)) return false;
     for (int c = 0; c < nc; c++) {
         const float *hc = m->tape + ((size_t)L * T + tmap[c]) * E;
         rmsnorm_bw(hc, m->out_norm_w, dhn + (size_t)c * E,

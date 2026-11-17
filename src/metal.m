@@ -3749,6 +3749,12 @@ bool gpu_train_mvt(model_t *mm, const gguf_tensor *w, const float *dy,
     return false;
 }
 
+bool gpu_train_mvt0(model_t *mm, const gguf_tensor *w, const float *dy,
+                    float *dx, int n_in, int n_out, int nb) {
+    (void)mm; (void)w; (void)dy; (void)dx; (void)n_in; (void)n_out; (void)nb;
+    return false;
+}
+
 bool gpu_train_mm(model_t *mm, const gguf_tensor *w, const float *x,
                   int x_stride, float *y, int y_stride, int n_in, int n_out,
                   const float *bias, int nb) {

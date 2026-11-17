@@ -9068,24 +9068,36 @@ static CUdeviceptr tg_weights(train_gpu_t *t, const gguf_tensor *w) {
 }
 
 static bool train_mvt(train_gpu_t *t, const gguf_tensor *w, const float *dy,
-                      float *dx, int n_in, int n_out, int nb, bool dev);
+                      float *dx, int n_in, int n_out, int nb, bool dev,
+                      bool zero);
 
-bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
-                   float *dx, int n_in, int n_out, int nb) {
+static bool train_mvt_call(model_t *m, const gguf_tensor *w, const float *dy,
+                           float *dx, int n_in, int n_out, int nb, bool zero) {
     train_gpu_t *t = m->train_gpu;
     // the kernel reads raw rows: a scaled tensor (stored * scale) is the
     // CPU chain's, which multiplies the decoded row first
     if (!t || !w || w->scale != 1.0f || w->type >= KT_N || !t->f_tmvt[w->type])
         return false;
     double t0 = plat_now();
-    bool ok = train_mvt(t, w, dy, dx, n_in, n_out, nb, m->train_dev);
+    bool ok = train_mvt(t, w, dy, dx, n_in, n_out, nb, m->train_dev, zero);
     t->t_mvt += plat_now() - t0;
     t->n_mvt += ok;
     return ok;
 }
 
+bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
+                   float *dx, int n_in, int n_out, int nb) {
+    return train_mvt_call(m, w, dy, dx, n_in, n_out, nb, false);
+}
+
+bool gpu_train_mvt0(model_t *m, const gguf_tensor *w, const float *dy,
+                    float *dx, int n_in, int n_out, int nb) {
+    return train_mvt_call(m, w, dy, dx, n_in, n_out, nb, true);
+}
+
 static bool train_mvt(train_gpu_t *t, const gguf_tensor *w, const float *dy,
-                      float *dx, int n_in, int n_out, int nb, bool dev) {
+                      float *dx, int n_in, int n_out, int nb, bool dev,
+                      bool zero) {
     if (cu.CtxSetCurrent(t->ctx) != 0) return false;
     CUdeviceptr weights = tg_weights(t, w);
     if (!weights) return false;
@@ -9094,8 +9106,10 @@ static bool train_mvt(train_gpu_t *t, const gguf_tensor *w, const float *dy,
     if (!tg_scratch(&t->d_dy, &t->cap_dy, ny) ||
         !tg_scratch(&t->d_dx, &t->cap_dx, nx))
         return false;
+    // a zero start is cleared on the device (all-zero bytes are +0.0f, what
+    // the caller holds), not sent
     if (cu.MemcpyHtoD(t->d_dy, dy, ny) != 0 ||
-        cu.MemcpyHtoD(t->d_dx, dx, nx) != 0)
+        (zero ? cu.MemsetD8(t->d_dx, 0, nx) : cu.MemcpyHtoD(t->d_dx, dx, nx)) != 0)
         return false;
     mv_args a = { n_in, n_out, 0, 0, nb, n_out, n_in };
     void *p[] = { &weights, &t->d_dy, &t->d_dx, &a, &t->dummy };
@@ -9528,6 +9542,18 @@ static bool train_mm(train_gpu_t *t, const gguf_tensor *w, const float *x,
         cu.CtxSynchronize() != 0)
         return false;
     t->k_mm += plat_now() - k0;
+    // R8.24.1: rows packed as the device wrote them land in place (y is
+    // overwritten, so a failed copy leaves nothing the CPU's retry reads);
+    // the bias is the same one add per element as the staged path's
+    if (y_stride == n_out) {
+        if (cu.MemcpyDtoH(y, t->d_dy, sizeof(float) * ny) != 0) return false;
+        if (bias)
+            for (int c = 0; c < nb; c++) {
+                float *dst = y + (size_t)c * n_out;
+                for (int j = 0; j < n_out; j++) dst[j] += bias[j];
+            }
+        return true;
+    }
     if (cu.MemcpyDtoH(t->h_y, t->d_dy, sizeof(float) * ny) != 0)
         return false;
     for (int c = 0; c < nb; c++) {
