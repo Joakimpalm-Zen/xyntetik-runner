@@ -6192,10 +6192,13 @@ static const char *train_determinism(const cli_opts *o, const cli_run *rt,
     if (rt->m.train_dev) return "gpu-within-tolerance";
 #ifdef RUNNER_T3_BUILD
     // Cross-ISA byte exactness under T3=1 is verified only for dense LoRA
-    // cross-entropy; DPO and teacher call double libm, DeltaNet uses
-    // log1pf/erff outside pmath.h, and MoE/full-weight lack cross-ISA checks.
+    // cross-entropy whose weight formats all have canonical-order kernels; DPO
+    // and teacher call double libm, DeltaNet uses log1pf/erff outside pmath.h,
+    // and MoE/full-weight or canon-gap formats lack cross-ISA checks.
+    char gaps[128] = "";
     if (!o->dpo_path && !tt && !model_full_on(&rt->m) &&
-        rt->m.n_expert == 0 && !train_has_recurrent(&rt->m))
+        rt->m.n_expert == 0 && !train_has_recurrent(&rt->m) &&
+        model_canon_gaps(&rt->m, gaps, sizeof gaps) && gaps[0] == '\0')
         return "cpu-t3-exact";
 #else
     (void)o; (void)tt;
@@ -6309,7 +6312,8 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
             "\"batch\":%d,\"loss\":\"%s\"},"
             "\"loss_first\":%.6f,\"loss_last\":%.6f,",
             (unsigned long long)(o->seed_given ? o->seed : 0),
-            model_lora_rank(&rt->m), (double)rt->m.lora_alpha, (double)o->lora_scale,
+            model_lora_rank(&rt->m), (double)rt->m.lora_alpha,
+            from_adapter ? (double)o->lora_scale : 1.0,
             (double)o->train_lr, o->train_steps, wctx,
             o->train_eot ? "true" : "false", eot_id, o->no_bos ? "true" : "false",
             (double)o->weight_decay, o->lr_schedule == 1 ? "cosine" : "constant",

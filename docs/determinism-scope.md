@@ -47,7 +47,8 @@ tile, the k-quant formats, MoE experts and the GPU backends are not
 canonical yet, and no CI job runs the cross-ISA comparison. A T3 receipt
 records `"flavor":"t3"` in its build object so a verifier can tell which
 binary wrote it; in `.train.json`, `"determinism"` is `"cpu-t3-exact"` only
-for CPU dense LoRA cross-entropy on a T3 build, and `"cpu-same-binary"` for
+for CPU dense LoRA cross-entropy on a T3 build with no canonical-kernel gaps
+(`canon_gaps` empty), and `"cpu-same-binary"` for canon-gap weight types,
 DPO, `--teacher`, `--train-full`, DeltaNet and MoE (or `"gpu-within-tolerance"`
 under `--train-gpu`). When the coverage and the gate exist, T3 joins T1 and T2
 above as "another machine, same bytes".

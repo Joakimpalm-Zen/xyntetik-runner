@@ -1803,7 +1803,7 @@ Measured on a 165-token scoring run of the same Q8_0 model: 0 of 165
 positions bit-identical between an Apple M1 and an x86-64 box in the
 default build, 165 of 165 in the T3 build, and the same on riscv64 under
 qemu. Cost: 7% decode on x86-64, 17% on the Apple M1, all of it the strict-float
-flags. A T3 receipt carries `"flavor":"t3"` in its `build` object (and `"default"` otherwise, beside `commit` and `dirty`; training records also set `"determinism"` to `"cpu-t3-exact"` for CPU dense LoRA cross-entropy on a T3 build, `"cpu-same-binary"` for other CPU modes, or `"gpu-within-tolerance"` under `--train-gpu`). This is
+flags. A T3 receipt carries `"flavor":"t3"` in its `build` object (and a training record carries `"default"` otherwise, beside `commit` and `dirty`; training records also set `"determinism"` to `"cpu-t3-exact"` for CPU dense LoRA cross-entropy on a T3 build when every weight format has a canonical kernel, `"cpu-same-binary"` for other CPU modes or canon gaps, or `"gpu-within-tolerance"` under `--train-gpu`). This is
 measured, not yet a claimed tier: the batched prefill tile, the other
 weight formats (Q2_K, Q3_K, Q4_1, Q5_0, Q5_1, BF16, the IQ and MXFP4 ones),
 MoE and the GPU backends are not canonical yet. A T3 run names the
@@ -3333,7 +3333,10 @@ the float file, then quantize the variant with `--rewrite --quant`. Not with `--
 yet, each refused by name: `--train-gpu`, DPO, a teacher, checkpoints (`--save-every`,
 `--resume`), kill rules, held-out evals, a stop file, `--logprobs`, recurrent (Gated
 DeltaNet) layers and MoE expert banks. `--kv-f32` (`--train-kv-f32`, CPU only) gives a
-training run an f32 KV cache: on the default the f16 KV rounding: the full-weight gradient matches PyTorch fp32 autograd to 2.7e-3 relative L2 on f16, and to 6.9e-6 over all 196 matrices of Qwen3-0.6B with the f32 cache, and the record writes `"kv_cache":"f32"` (`"f16"` otherwise). Training with `--kv q8`, `--kv k8v4` or `--kv fp4` is refused by name
+training run an f32 KV cache: on the default f16 cache the full-weight gradient matches
+PyTorch fp32 autograd to 2.7e-3 relative L2, because K and V are rounded to f16; with the
+f32 cache it matches to 6.9e-6 over all 196 matrices of Qwen3-0.6B, and the record
+writes `"kv_cache":"f32"` (`"f16"` otherwise). Training with `--kv q8`, `--kv k8v4` or `--kv fp4` is refused by name
 (`use --kv f16`): the backward reads K and V rows as f16, or f32 with `--kv-f32`.
 
 Design, gates and measured results:
