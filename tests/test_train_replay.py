@@ -9,6 +9,7 @@ and compares the resulting artifact sha256 byte for byte.
 import hashlib
 import json
 import math
+import os
 import pathlib
 import shutil
 import struct
@@ -304,3 +305,97 @@ def test_replay_enforces_signatures_preflight_and_output_mismatch(runner_bin, fx
             bf_path.write_text(json.dumps(bf_mut), encoding="utf-8")
             r_bf = _run(runner_bin, ["attest", "replay", bf_path, "-m", bf16])
             assert r_bf.returncode == 2 and "MISMATCH determinism" in r_bf.stdout
+
+
+# R17.9, the second read: the replay takes the recipe and every setting that decides the bytes from the record
+# alone. A model flag or RUNNER_ switch of the caller's that differs is a refusal before training, naming the field.
+def _clean_env(**extra):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("RUNNER_")}
+    env.update(extra)
+    return env
+
+
+def _run_env(exe, args, env):
+    return subprocess.run([str(exe), *map(str, args)], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          text=True, timeout=600, env=env)
+
+
+def _trained(runner_bin, fx, d, name, extra=(), env=None):
+    shutil.copy(fx / "base.gguf", d / "base.gguf")
+    shutil.copy(fx / "corpus.txt", d / "corpus.txt")
+    out = d / f"{name}.gguf"
+    p = _run_env(runner_bin, ["-m", d / "base.gguf", "--train", d / "corpus.txt", "--train-steps", "3", "--lr", "3e-3",
+                              "--train-out", out, "-t", "2", "--gpu", "off", *extra], env or _clean_env())
+    assert p.returncode == 0, p.stderr
+    return pathlib.Path(f"{out}.train.json"), _sha(out)
+
+
+def _same_binary(rec_file):
+    rec = json.loads(pathlib.Path(rec_file).read_text(encoding="utf-8"))
+    return [] if rec["determinism"] == "cpu-t3-exact" else ["--allow-same-binary"]
+
+
+def test_replay_takes_the_model_overrides_from_the_record_alone(runner_bin, fx, tmp_path):
+    """The P1 of the second read: a run trained with --rope-base 50000 replayed to MISMATCH from its record
+    alone, and to VERIFIED with --rope-base 50000 on the replay's command line, a recipe the record did not
+    hold. Now the record holds it, the replay applies it, and a caller's value that differs is refused."""
+    rec, sha = _trained(runner_bin, fx, tmp_path, "rope", extra=("--rope-base", "50000"))
+    alone = _run_env(runner_bin, ["attest", "replay", rec, "-t", "1", *_same_binary(rec)], _clean_env())
+    assert alone.returncode == 0 and f"VERIFIED rope.gguf sha256 {sha}" in alone.stdout, alone.stdout + alone.stderr
+    other = _run_env(runner_bin, ["attest", "replay", rec, "--rope-base", "40000", *_same_binary(rec)], _clean_env())
+    assert other.returncode == 2 and "MISMATCH model_overrides.rope_base" in other.stdout, other.stdout + other.stderr
+    assert "train:" not in other.stderr, "refused only after training"
+
+
+def test_replay_takes_the_environment_from_the_record_alone(runner_bin, fx, tmp_path):
+    """The P2: RUNNER_CPU_I8=1 changes a default build's adapter, and a same-binary replay verified only when the
+    replayer happened to set it too. Now the record names it, and a replay whose RUNNER_ switches differ from the
+    record's is refused before training, whichever side has one."""
+    rec, sha = _trained(runner_bin, fx, tmp_path, "i8", env=_clean_env(RUNNER_CPU_I8="1"))
+    flags = ["attest", "replay", rec, "--allow-same-binary", "-t", "1"]
+    missing = _run_env(runner_bin, flags, _clean_env())
+    assert missing.returncode == 2 and "MISMATCH environment" in missing.stdout, missing.stdout + missing.stderr
+    assert "train:" not in missing.stderr, "refused only after training"
+    same = _run_env(runner_bin, flags, _clean_env(RUNNER_CPU_I8="1"))
+    assert same.returncode == 0 and f"VERIFIED i8.gguf sha256 {sha}" in same.stdout, same.stdout + same.stderr
+    other_dir = tmp_path / "plain"
+    other_dir.mkdir()
+    plain, _ = _trained(runner_bin, fx, other_dir, "plain")
+    added = _run_env(runner_bin, ["attest", "replay", plain, "-t", "1", *_same_binary(plain)], _clean_env(RUNNER_CPU_I8="1"))
+    assert added.returncode == 2 and "MISMATCH environment" in added.stdout, added.stdout + added.stderr
+
+
+def test_replay_of_an_exact_record_refuses_a_dirty_build_on_either_side(runner_bin, fx, tmp_path):
+    """A dirty build's source is not a commit: a record that says cpu-t3-exact and build.dirty true is not one a
+    clean T3 run writes, and a dirty replaying binary is not the commit's. Both are refused before training."""
+    if _flavor(runner_bin) != "t3":
+        pytest.skip("a default build writes no cpu-t3-exact record")
+    rec, _ = _trained(runner_bin, fx, tmp_path, "exact")
+    raw = json.loads(rec.read_text(encoding="utf-8"))
+    if raw["determinism"] != "cpu-t3-exact":
+        pytest.skip("this T3 build is dirty or unstamped, so its records are not exact")
+    raw["build"]["dirty"] = True
+    edited = tmp_path / "dirty.train.json"
+    edited.write_text(json.dumps(raw), encoding="utf-8")
+    r = _run_env(runner_bin, ["attest", "replay", edited, "-m", tmp_path / "base.gguf", "--data", tmp_path / "corpus.txt"],
+                 _clean_env())
+    assert r.returncode == 2 and "MISMATCH build.dirty" in r.stdout, r.stdout + r.stderr
+    marked = _run_env(runner_bin, ["attest", "replay", rec], _clean_env(RUNNER_TEST_BUILD_DIRTY="1"))
+    assert marked.returncode == 2 and "MISMATCH build.dirty" in marked.stdout, marked.stdout + marked.stderr
+
+
+def test_a_changed_data_byte_that_passes_preflight_is_a_mismatch_after_training(runner_bin, fx, tmp_path):
+    """The trained live control: VERIFIED on the record as written; then one data byte flipped and the record's
+    data hash edited to match, so the pre-flight passes and only training can tell. MISMATCH adapter.sha256."""
+    rec, sha = _trained(runner_bin, fx, tmp_path, "live")
+    ok = _run_env(runner_bin, ["attest", "replay", rec, "-t", "1", *_same_binary(rec)], _clean_env())
+    assert ok.returncode == 0 and f"VERIFIED live.gguf sha256 {sha}" in ok.stdout, ok.stdout + ok.stderr
+    data = bytearray((tmp_path / "corpus.txt").read_bytes())
+    data[10] ^= 1
+    (tmp_path / "corpus.txt").write_bytes(bytes(data))
+    raw = json.loads(rec.read_text(encoding="utf-8"))
+    raw["data"]["sha256"] = hashlib.sha256(bytes(data)).hexdigest()
+    rec.write_text(json.dumps(raw), encoding="utf-8")
+    bad = _run_env(runner_bin, ["attest", "replay", rec, "-t", "1", *_same_binary(rec)], _clean_env())
+    assert bad.returncode == 2 and "MISMATCH adapter.sha256" in bad.stdout, bad.stdout + bad.stderr
+    assert "train:" in bad.stderr, "the mismatch must come from training"
