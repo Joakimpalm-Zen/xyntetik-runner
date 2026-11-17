@@ -50,9 +50,13 @@ canonical yet, and no CI job runs the cross-ISA comparison. A T3 receipt
 records `"flavor":"t3"` in its build object so a verifier can tell which
 binary wrote it; in `.train.json`, `"determinism"` is `"cpu-t3-exact"` only
 for CPU dense LoRA cross-entropy on a T3 build with no canonical-kernel gaps
-(`canon_gaps` empty), and `"cpu-same-binary"` for canon-gap weight types,
-DPO, `--teacher`, `--train-full`, DeltaNet and MoE (or `"gpu-within-tolerance"`
-under `--train-gpu`). When the coverage and the gate exist, T3 joins T1 and T2
+(`canon_gaps` empty), no `RUNNER_` switch outside the inert set and a clean,
+stamped commit, and `"cpu-same-binary"` for canon-gap weight types, DPO,
+`--teacher`, `--train-full`, DeltaNet, MoE, a run with such a switch set and a
+dirty or unstamped build (or `"gpu-within-tolerance"` under `--train-gpu`);
+`determinism_reasons` names each reason. The record also names the model
+overrides that move a forward (`model_overrides`) and the switches
+(`environment`). When the coverage and the gate exist, T3 joins T1 and T2
 above as "another machine, same bytes".
 
 ## Explicitly not claimed

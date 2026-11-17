@@ -743,7 +743,8 @@ def test_train_record_carries_build_flavor_commit_and_replay_options(runner_bin,
     assert r_plain["lora_scale"] == pytest.approx(1.0)
     assert r_plain["kv_cache"] == "f16" and r_kvf32["kv_cache"] == "f32"
     assert "resume_optim_sha256" not in r_plain
-    want_det = "cpu-t3-exact" if flavor == "t3" else "cpu-same-binary"
+    # R17.9: exact only from a clean, stamped T3 build (test_a_dirty_build_never_claims_t3_exact)
+    want_det = "cpu-t3-exact" if flavor == "t3" and b["commit"] and b["dirty"] is False else "cpu-same-binary"
     assert r_plain["determinism"] == want_det
     assert r_nobos["determinism"] == want_det and r_kvf32["determinism"] == want_det
 
@@ -828,4 +829,56 @@ def test_canon_gap_model_records_cpu_same_binary_while_q8_is_t3_exact(runner_bin
                            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
         assert p.returncode == 0, p.stderr.decode(errors="replace")
         rec = json.loads(pathlib.Path(f"{out}.train.json").read_text())
-        assert rec["determinism"] == expected, (fixture, t3, rec["determinism"])
+        # R17.9: a dirty or unstamped build is never exact (test_a_dirty_build_never_claims_t3_exact)
+        if expected == "cpu-t3-exact" and (rec["build"]["dirty"] is not False or not rec["build"]["commit"]):
+            expected = "cpu-same-binary"
+        assert rec["determinism"] == expected, (fixture, t3, rec["determinism"], rec.get("determinism_reasons"))
+
+
+# R17.9(a): what decides a training run's bytes is in its record, or the record does not claim cpu-t3-exact.
+def _train_record_with(runner_bin, base, tmp_path, name, extra=(), env=None):
+    model = ROOT / "test-q8.gguf"
+    if not model.exists():
+        pytest.skip("test-q8.gguf not generated")
+    out = tmp_path / f"{name}.gguf"
+    e = {k: v for k, v in os.environ.items() if not k.startswith("RUNNER_")}
+    e.update(env or {})
+    p = subprocess.run([str(runner_bin), "-m", str(model), "--gpu", "off", "--train", str(base / "corpus.txt"),
+                        "--train-steps", "2", "--lr", "3e-3", "--train-out", str(out), "-t", "2", *extra],
+                       cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600, env=e)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    return json.loads(pathlib.Path(f"{out}.train.json").read_text()), out
+
+
+def test_a_model_override_that_moves_the_bytes_is_in_the_record(runner_bin, base, tmp_path):
+    """--rope-base and --rope-scale change a run's adapter in a default and a T3 build. A record without them
+    replays to MISMATCH, and the replay with them on its command line read VERIFIED for a recipe the record did
+    not hold. The record names every model override the run took."""
+    plain, a = _train_record_with(runner_bin, base, tmp_path, "plain")
+    assert "model_overrides" not in plain, plain
+    rec, b = _train_record_with(runner_bin, base, tmp_path, "rope", extra=("--rope-base", "50000", "--rope-scale", "2"))
+    assert a.read_bytes() != b.read_bytes(), "live control: the overrides must move the bytes"
+    assert rec.get("model_overrides") == {"rope_base": 50000, "rope_scale": 2}, rec.get("model_overrides")
+
+
+def test_a_runner_switch_in_the_environment_is_recorded_and_not_exact(runner_bin, base, tmp_path):
+    """RUNNER_CPU_I8=1 (and RUNNER_CPU_I8_PREFILL=1) change a default build's adapter on test-q8.gguf. No list of
+    switches is known to be complete for every model, so every RUNNER_ variable outside a named inert set is in
+    the record, and a run with one set is never cpu-t3-exact. RUNNER_TRAIN_ROWS is in the inert set: every width
+    trains the same bytes (test_batched_taped_forward_is_the_solo_bytes)."""
+    rec, _ = _train_record_with(runner_bin, base, tmp_path, "i8", env={"RUNNER_CPU_I8": "1", "RUNNER_TRAIN_ROWS": "1"})
+    assert rec.get("environment") == {"RUNNER_CPU_I8": "1"}, rec.get("environment")
+    assert rec["determinism"] == "cpu-same-binary", rec["determinism"]
+    assert any("RUNNER_CPU_I8" in r for r in rec.get("determinism_reasons", [])), rec.get("determinism_reasons")
+    inert, _ = _train_record_with(runner_bin, base, tmp_path, "rows", env={"RUNNER_TRAIN_ROWS": "1"})
+    assert "environment" not in inert, inert.get("environment")
+
+
+def test_a_dirty_build_never_claims_t3_exact(runner_bin, base, tmp_path):
+    """A dirty build's source is not a commit, so no other machine can build its binary: it claims
+    cpu-same-binary at most, and says why. RUNNER_TEST_BUILD_DIRTY=1 marks the run's build dirty; it can add
+    dirt, never take it away."""
+    rec, _ = _train_record_with(runner_bin, base, tmp_path, "dirty", env={"RUNNER_TEST_BUILD_DIRTY": "1"})
+    assert rec["build"]["dirty"] is True, rec["build"]
+    assert rec["determinism"] == "cpu-same-binary", rec["determinism"]
+    assert any("build.dirty" in r for r in rec.get("determinism_reasons", [])), rec.get("determinism_reasons")

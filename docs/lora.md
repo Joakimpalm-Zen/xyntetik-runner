@@ -682,7 +682,10 @@ Every adapter is written with `ADAPTER.gguf.train.json`
 | Field | What it records |
 | --- | --- |
 | `runner`, `build` | Version, binary sha256, compiler, OS, architecture, `flavor` (`t3` or `default`), `commit`, `dirty` |
-| `determinism` | `cpu-t3-exact` (T3 CPU dense LoRA cross-entropy with empty `canon_gaps`), `cpu-same-binary`, or `gpu-within-tolerance` |
+| `determinism` | `cpu-t3-exact` (T3 CPU dense LoRA cross-entropy with empty `canon_gaps`, no `RUNNER_` switch outside the inert set, from a clean stamped commit), `cpu-same-binary`, or `gpu-within-tolerance` |
+| `determinism_reasons` | Every reason the run is not `cpu-t3-exact`, in words (absent when it is) |
+| `model_overrides` | The model overrides the run took, each of which moves a forward: `rope_base`, `rope_scale`, `yarn_factor`, `mtp` (absent when none) |
+| `environment` | The run's `RUNNER_` variables outside the inert set, by name and value; a name that may be a credential shows `(set)` (absent when none) |
 | `base` | The base model's path and sha256, and its own record when it has one |
 | `from_adapter` | The adapter a continued run started from (absent for a fresh one) |
 | `objective` | `weighted-cross-entropy`, `kl-to-teacher` (`teacher`), or `dpo` (`dpo_beta`) |

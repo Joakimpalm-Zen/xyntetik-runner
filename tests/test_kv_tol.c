@@ -60,6 +60,7 @@
 // Default model is test.gguf, whose head_dim is not a multiple of 32, so the
 // q8 half self-skips there and `make test` still exercises the harness.
 #include "runner.h"
+#include "gate_gpu.h"
 
 #include <float.h>
 #include <math.h>
@@ -242,6 +243,8 @@ static bool run_config(config *c, const char *path, const int32_t *toks,
 
     if (c->kv_q8 != got_q8 || c->kv_fp4 != got_fp4 || c->kv_split != got_split ||
         c->kv_f32 != got_f32 || (c->gpu_mode == GPU_AUTO) != got_gpu) {
+        if (c->gpu_mode == GPU_AUTO && !got_gpu && gate_no_device("kv-tol"))
+            ck(false, "a GPU config fell back to the CPU: its kernel module did not load");
         fprintf(stderr, "  %-12s skipped (asked kv_q8=%d kv_fp4=%d k8v4=%d f32=%d gpu=%d, got "
                 "kv_q8=%d kv_fp4=%d k8v4=%d f32=%d gpu=%d/%d layers)\n", c->name, (int)c->kv_q8,
                 (int)c->kv_fp4, (int)c->kv_split, (int)c->kv_f32, c->gpu_mode == GPU_AUTO,

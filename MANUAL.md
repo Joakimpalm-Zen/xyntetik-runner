@@ -2090,7 +2090,13 @@ that fails to capture or launch end the process with the failing stage, the CUDA
 error and the synchronous call that broke it, instead of falling back to plain
 launches with one line on stderr; a decode that is eager by design (experts on
 the host, eager MoE routing, a recurrent family not captured) prints why and
-runs. `./test-attn-tol MODEL.gguf` is the attention gate.
+runs. Under the same switch a kernel module the driver does not load, on a device
+that is up, ends the process with the driver's JIT log (R6.90); without it the
+runner prints that log and falls back as before, and a CUDA gate binary that
+finds no engaged device fails on it rather than skipping as if there were no
+device. A card below the build's minimum compute capability (7.5) is not that:
+the runner says so in one line, records nothing and runs on the CPU, and the
+gates skip. `./test-attn-tol MODEL.gguf` is the attention gate.
 Weights are wrapped zero-copy from the model mmap. A file larger than the
 device's `maxBufferLength` - 4.29 GB on an Apple M1, against a 5.73 GB working set -
 is wrapped in several buffers instead of being copied or forced into a
@@ -3316,7 +3322,7 @@ carry the optimizer state, and `--resume` continues such a run exactly (recordin
 B zero); checkpoints are adapter GGUFs that `--lora` loads back. `runner train` with `--lora`
 continues that adapter: it keeps its rank and alpha, AdamW starts fresh (`--lora` loads
 the weights only; `--resume` loads a checkpoint's optimizer state too), and the record names it as `from_adapter`, hashed before the
-first step, with `lora_scale`, `no_bos`, `kv_cache` (`"f16"` or `"f32"`), `build.flavor`, `build.commit`, `build.dirty`, and `determinism` (`"cpu-t3-exact"`, `"cpu-same-binary"`, or `"gpu-within-tolerance"`), so `runner attest lineage` walks back through every earlier run. Deterministic by
+first step, with `lora_scale`, `no_bos`, `kv_cache` (`"f16"` or `"f32"`), `build.flavor`, `build.commit`, `build.dirty`, `determinism` (`"cpu-t3-exact"`, `"cpu-same-binary"`, or `"gpu-within-tolerance"`) with `determinism_reasons` naming why it is not exact, and what else decided the bytes: `model_overrides` (`--rope-base`, `--rope-scale`, `--yarn-factor`, `--mtp`) and `environment` (every `RUNNER_` variable outside a short inert set). A dirty or unstamped build, or one such variable, keeps the word at `"cpu-same-binary"`, so `runner attest lineage` walks back through every earlier run. Deterministic by
 default: same data + same seed produce a byte-identical adapter file, gated in `make
 test`. One example per step, cycled in file order; before the first step `runner train`
 warns when the run is likely to memorize (more than three passes over fewer than 200

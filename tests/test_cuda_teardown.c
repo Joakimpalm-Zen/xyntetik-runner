@@ -17,6 +17,7 @@
 // the whole time, must return the count to where it was before the load.
 // Skips (prints so) where the backend does not count, or nothing engaged CUDA.
 #include "runner.h"
+#include "gate_gpu.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +42,7 @@ int main(int argc, char **argv) {
     model_t res;
     if (!load(&res, argv[1])) { fprintf(stderr, "cannot load %s\n", argv[1]); return 1; }
     if (!res.gpu || gpu_live_buffers() < 0) {
+        if (gate_no_device("test-cuda-teardown")) { model_free(&res); return 1; }
         printf("test-cuda-teardown: ok (skipped: no CUDA device engaged)\n");
         model_free(&res);
         return 0;

@@ -6216,21 +6216,138 @@ static bool train_has_recurrent(const model_t *m) {
     return false;
 }
 
+#ifdef _WIN32
+#define TRAIN_ENVIRON _environ
+#else
+extern char **environ;
+#define TRAIN_ENVIRON environ
+#endif
+
+// R17.9: the RUNNER_ variables that cannot change a training run's bytes. Every
+// other one the run started with is in its record, and a run with one set is
+// not cpu-t3-exact. No list of the switches that move bytes is known to be
+// complete for every model (RUNNER_CPU_I8 and RUNNER_CPU_I8_PREFILL move a
+// default build's adapter on Q8_0), so the environment is read whole, as
+// route_tuning reads it, and only these are let through.
+static const char *const TRAIN_ENV_INERT[] = {
+    // read only by the test harness, never by this binary
+    "RUNNER_EXE", "RUNNER_CONFORMANCE_OUT", "RUNNER_TEST_GPU_OFF", "RUNNER_TEST_TIMEOUT_SCALE",
+    "RUNNER_REQUIRE_TURN_GUARD", "RUNNER_SWEEP_MODELS", "RUNNER_LLAMA_CPP_BIN",
+    // read, and held not to move a training run's bytes
+    "RUNNER_TRAIN_ROWS",       // every width trains the same bytes (test_batched_taped_forward_is_the_solo_bytes)
+    "RUNNER_TPOOL_SPIN",       // how idle pool threads wait
+    "RUNNER_HF_CACHE", "RUNNER_CURL", "RUNNER_PREFIX_CACHE_MB",   // downloads, the server's prefix cache
+    "RUNNER_TEST_BUILD_DIRTY", // marks the build dirty: it can only take the claim down
+};
+
+static bool train_env_inert(const char *name, size_t n) {
+    for (size_t i = 0; i < sizeof TRAIN_ENV_INERT / sizeof *TRAIN_ENV_INERT; i++)
+        if (strlen(TRAIN_ENV_INERT[i]) == n && !strncmp(TRAIN_ENV_INERT[i], name, n)) return true;
+    return false;
+}
+
+// The run's RUNNER_ variables outside the inert set, as JSON members
+// ("NAME":"value") into *json, and their names comma-joined into names. A value
+// whose name says it may be a credential is written as "(set)". Returns how many.
+static int train_environment(sbuf *json, char *names, size_t cap) {
+    int count = 0;
+    size_t nn = 0;
+    if (cap) names[0] = 0;
+    for (char **e = TRAIN_ENVIRON; e && *e; e++) {
+        if (strncmp(*e, "RUNNER_", 7) != 0) continue;
+        const char *eq = strchr(*e, '=');
+        if (!eq || train_env_inert(*e, (size_t)(eq - *e))) continue;
+        bool secret = false;
+        static const char *const words[] = { "KEY", "TOKEN", "SECRET", "PASS" };
+        for (size_t w = 0; w < sizeof words / sizeof *words; w++) {
+            const char *f = strstr(*e, words[w]);
+            if (f && f < eq) secret = true;
+        }
+        if (json) {
+            sb_lit(json, count ? ",\"" : "\"");
+            sb_esc(json, *e, (size_t)(eq - *e));
+            sb_lit(json, "\":\"");
+            if (secret) sb_lit(json, "(set)");
+            else sb_esc(json, eq + 1, strlen(eq + 1));
+            sb_lit(json, "\"");
+        }
+        int k = snprintf(names + nn, cap > nn ? cap - nn : 0, "%s%.*s", count ? "," : "", (int)(eq - *e), *e);
+        if (k > 0 && nn + (size_t)k < cap) nn += (size_t)k;
+        count++;
+    }
+    return count;
+}
+
+// R17.9: dirty when the Makefile stamped it so, or when a test marks it
+// (RUNNER_TEST_BUILD_DIRTY=1, which can add dirt and never take it away).
+static bool train_build_dirty(void) {
+    bool dirty = false;
+    provenance_build_commit(&dirty);
+    const char *t = getenv("RUNNER_TEST_BUILD_DIRTY");
+    return dirty || (t && !strcmp(t, "1"));
+}
+
+static void train_reason(sbuf *why, const char *text) {
+    if (!why) return;
+    sb_lit(why, why->n ? ",\"" : "\"");
+    sb_esc(why, text, strlen(text));
+    sb_lit(why, "\"");
+}
+
+// The reasons that hold for a run of any build, into *why: a RUNNER_ switch
+// outside the inert set, and a dirty build. False when there is one.
+static bool train_common_reasons(sbuf *why) {
+    char names[512], buf[700];
+    bool clean = true;
+    if (train_environment(NULL, names, sizeof names)) {
+        clean = false;
+        snprintf(buf, sizeof buf, "environment: %s set, a switch not known to be inert on every model", names);
+        train_reason(why, buf);
+    }
+    if (train_build_dirty()) {
+        clean = false;
+        train_reason(why, "build.dirty: the source is not a commit, so no other machine can build this binary");
+    }
+    return clean;
+}
+
+// The run's claim, and into *why (JSON strings, comma-joined) every reason it
+// is not cpu-t3-exact. R17.9: a T3 run is exact only when everything that
+// decides its bytes is in the record and is the same on every ISA: no RUNNER_
+// switch outside the inert set, and a build whose source is a clean commit.
 static const char *train_determinism(const cli_opts *o, const cli_run *rt,
-                                     const train_teacher *tt) {
-    if (rt->m.train_dev) return "gpu-within-tolerance";
+                                     const train_teacher *tt, sbuf *why) {
+    if (rt->m.train_dev) {
+        train_reason(why, "--train-gpu: products ran on the GPU");
+        return "gpu-within-tolerance";
+    }
 #ifdef RUNNER_T3_BUILD
     // Cross-ISA byte exactness under T3=1 is verified only for dense LoRA
     // cross-entropy whose weight formats all have canonical-order kernels; DPO
     // and teacher call double libm, DeltaNet uses log1pf/erff outside pmath.h,
     // and MoE/full-weight or canon-gap formats lack cross-ISA checks.
-    char gaps[128] = "";
-    if (!o->dpo_path && !tt && !model_full_on(&rt->m) &&
-        rt->m.n_expert == 0 && !train_has_recurrent(&rt->m) &&
-        model_canon_gaps(&rt->m, gaps, sizeof gaps) && gaps[0] == '\0')
-        return "cpu-t3-exact";
+    char gaps[128] = "", buf[700];
+    bool exact = true;
+    if (o->dpo_path) { exact = false; train_reason(why, "objective dpo: its loss calls the C library's double exp and log1p"); }
+    if (tt) { exact = false; train_reason(why, "objective kl-to-teacher: its loss calls the C library's double exp and log"); }
+    if (model_full_on(&rt->m)) { exact = false; train_reason(why, "--train-full: no cross-ISA check of full-weight training"); }
+    if (rt->m.n_expert) { exact = false; train_reason(why, "mixture of experts: no cross-ISA check"); }
+    if (train_has_recurrent(&rt->m)) { exact = false; train_reason(why, "recurrent layers: log1pf and erff outside pmath.h"); }
+    if (!model_canon_gaps(&rt->m, gaps, sizeof gaps) || gaps[0]) {
+        exact = false;
+        snprintf(buf, sizeof buf, "no canonical-order kernel for %s", gaps[0] ? gaps : "a weight type");
+        train_reason(why, buf);
+    }
+    if (!train_common_reasons(why)) exact = false;
+    if (!provenance_build_commit(NULL) && !train_build_dirty()) {
+        exact = false;
+        train_reason(why, "build.commit unknown: the source is not named, so no other machine can build this binary");
+    }
+    if (exact) return "cpu-t3-exact";
 #else
     (void)o; (void)tt;
+    train_reason(why, "not a T3 build: the dot products run in the ISA-native order");
+    train_common_reasons(why);
 #endif
     return "cpu-same-binary";
 }
@@ -6281,19 +6398,50 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
     sb_lit(&rec, build_arch);
     sb_lit(&rec, "\",\"flavor\":\"");
     sb_lit(&rec, RUNNER_BUILD_FLAVOR ? RUNNER_BUILD_FLAVOR : "default");
-    bool build_dirty = false;
-    const char *build_commit = provenance_build_commit(&build_dirty);
+    bool build_dirty = train_build_dirty();
+    const char *build_commit = provenance_build_commit(NULL);
     sb_lit(&rec, "\",\"commit\":");
     if (build_commit) {
         sb_lit(&rec, "\"");
         sb_esc(&rec, build_commit, strlen(build_commit));
         sb_lit(&rec, build_dirty ? "\",\"dirty\":true" : "\",\"dirty\":false");
     } else {
-        sb_lit(&rec, "null,\"dirty\":null");
+        sb_lit(&rec, build_dirty ? "null,\"dirty\":true" : "null,\"dirty\":null");
     }
+    sbuf why = {0};
     sb_lit(&rec, "},\"determinism\":\"");
-    sb_lit(&rec, train_determinism(o, rt, tt));
-    sb_lit(&rec, "\",\"base\":");
+    const char *word = train_determinism(o, rt, tt, &why);   // once: sb_lit reads its argument twice
+    sb_lit(&rec, word);
+    sb_lit(&rec, "\"");
+    if (why.n) {
+        sb_lit(&rec, ",\"determinism_reasons\":[");
+        sb_lit(&rec, why.s);
+        sb_lit(&rec, "]");
+    }
+    free(why.s);
+    // R17.9: what else decided the bytes. The model overrides the run took
+    // (--rope-base, --rope-scale, --yarn-factor, --mtp: each moves a forward),
+    // and its RUNNER_ switches outside the inert set (TRAIN_ENV_INERT).
+    if (o->mp.rope_base > 0 || o->mp.rope_scale > 0 || o->mp.yarn_factor > 0 || o->mp.mtp) {
+        bool first = true;
+        sb_lit(&rec, ",\"model_overrides\":{");
+        if (o->mp.rope_base > 0) { sb_fmt(&rec, "\"rope_base\":%.9g", (double)o->mp.rope_base); first = false; }
+        if (o->mp.rope_scale > 0) { sb_fmt(&rec, "%s\"rope_scale\":%.9g", first ? "" : ",", (double)o->mp.rope_scale); first = false; }
+        if (o->mp.yarn_factor > 0) { sb_fmt(&rec, "%s\"yarn_factor\":%.9g", first ? "" : ",", (double)o->mp.yarn_factor); first = false; }
+        if (o->mp.mtp) sb_fmt(&rec, "%s\"mtp\":true", first ? "" : ",");
+        sb_lit(&rec, "}");
+    }
+    {
+        sbuf env = {0};
+        char names[512];
+        if (train_environment(&env, names, sizeof names)) {
+            sb_lit(&rec, ",\"environment\":{");
+            sb_lit(&rec, env.s);
+            sb_lit(&rec, "}");
+        }
+        free(env.s);
+    }
+    sb_lit(&rec, ",\"base\":");
     lineage_put_input(&rec, load_path, bsha);
     if (from_adapter) {
         sb_lit(&rec, ",\"from_adapter\":");

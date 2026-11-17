@@ -3646,6 +3646,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	./$(TEST_ATTN_SCALE) test-gemma3-62.gguf test-gemma3-26.gguf
 	./$(TEST_DOT_ROUTE) test-q8.gguf
 	$(PYTHON) scripts/check-ptx-roster.py src/cuda.c src/kernels_ptx.h
+	$(PYTHON) scripts/check-ptx-isa.py --self-test src/kernels_ptx.h src/kernels_ptx80.h
 	$(PYTHON) scripts/check-ci-roster.py
 	$(PYTHON) scripts/check-fpclass.py
 	$(PYTHON) scripts/template-conformance.py --cites-only
@@ -4367,6 +4368,8 @@ clean:
 # change kernels (R8.23). The ptx-reproducible workflow checks it.
 NVCC ?= nvcc
 NVCC_CCBIN ?=
+# the ptxas beside that nvcc (make ptx assembles the embedded strings with it)
+PTXAS ?= $(if $(findstring /,$(NVCC)),$(dir $(NVCC))ptxas,ptxas)
 ptx: src/kernels.cu src/kernels_sm80.cu src/kernels_tc2.cuh src/kernels_tc2_iq.cuh \
      src/kernels_iq4_table.cuh src/kernels_iq_grids.cuh src/kernels_iq_stage.cuh src/iq_decode.h \
      src/kernels_kq_stage.cuh src/kernels_tc2_kq.cuh src/kq_stage.h src/kernels_train.cuh src/kernel_args.h \
@@ -4376,6 +4379,11 @@ ptx: src/kernels.cu src/kernels_sm80.cu src/kernels_tc2.cuh src/kernels_tc2_iq.c
 	python3 scripts/embed-ptx.py || python scripts/embed-ptx.py
 	EMBED_IN=src/kernels_sm80.ptx EMBED_OUT=src/kernels_ptx80.h EMBED_NAME=k_ptx80_src python3 scripts/embed-ptx.py || \
 	EMBED_IN=src/kernels_sm80.ptx EMBED_OUT=src/kernels_ptx80.h EMBED_NAME=k_ptx80_src python scripts/embed-ptx.py
+	@# R6.90: nothing in the embedded strings above their pinned .version (the
+	@# driver's JIT rejects a module whole for one such line); ptxas, for the
+	@# target each names, decides, beside the scan of the features we know
+	python3 scripts/check-ptx-isa.py --ptxas "$(PTXAS)" src/kernels_ptx.h src/kernels_ptx80.h || \
+	python scripts/check-ptx-isa.py --ptxas "$(PTXAS)" src/kernels_ptx.h src/kernels_ptx80.h
 
 # A duplicate target name makes make DISCARD one recipe and say so — but only
 # as a warning, scrolling past in the build noise. That is exactly how
