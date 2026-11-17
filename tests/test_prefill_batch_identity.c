@@ -29,6 +29,11 @@
 //      decode step's route (engine_feed_solo) stores different rows on every
 //      fixture. So the fixture tells the two arithmetics apart, and a route
 //      chosen by width would show in gate 1.
+//   4. -b 1 reads the prompt one token per forward on the decode route, the
+//      rows gate 3 stores, byte for byte: the trainer's taped forward, which
+//      the GRPO loop's -b 1 server is held to (tests/test_rollout_identity.py,
+//      tests/test_kv_f32.py). From -b 2 up the identity of gate 1 holds: -b 2
+//      stores -b 64's rows.
 #include "runner.h"
 
 #include <stdio.h>
@@ -133,9 +138,9 @@ static float *feed_and_decode(slot *s, const int32_t *t, int n) {
 }
 
 static void check_file(const char *path) {
-    slot s64, s512, ref;
+    slot s64, s512, ref, s1, s2;
     if (!slot_open(&s64, path, 64) || !slot_open(&s512, path, 512) ||
-        !slot_open(&ref, path, 64)) {
+        !slot_open(&ref, path, 64) || !slot_open(&s1, path, 1) || !slot_open(&s2, path, 2)) {
         fprintf(stderr, "FAIL: %s did not load\n", path);
         g_fail = 1;
         return;
@@ -176,12 +181,25 @@ static void check_file(const char *path) {
         int dc = solo ? kv_diff(&ref.m, &s64.m, n) : 0;
         fprintf(stderr, "  control: the decode route differs at %d (layer, position) rows\n", dc);
         control_live += dc > 0;
+
+        // gate 4: -b 1 is the decode route's rows (ref holds them), -b 2 is -b 64's
+        engine_reset(&s1.e);
+        bool one = solo && engine_feed(&s1.e, t, n) != NULL;
+        int d1 = one ? kv_diff(&s1.m, &ref.m, n) : -1;
+        if (d1) fprintf(stderr, "  -b 1: %d (layer, position) rows differ from the decode route\n", d1);
+        ck(d1 == 0, path, n, "-b 1 stores the decode route's K and V rows");
+        engine_reset(&s2.e);
+        engine_reset(&s64.e);
+        bool two = engine_feed(&s2.e, t, n) && engine_feed(&s64.e, t, n);
+        ck(two && kv_diff(&s2.m, &s64.m, n) == 0, path, n, "-b 2 and -b 64 store the same K and V rows");
     }
     ck(control_live == NLEN, path, CTX,
        "live control: the decode route stores different rows at every prompt");
     slot_close(&s64);
     slot_close(&s512);
     slot_close(&ref);
+    slot_close(&s1);
+    slot_close(&s2);
 }
 
 int main(int argc, char **argv) {
