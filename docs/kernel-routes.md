@@ -34,9 +34,9 @@ produced are recorded beside the code that consults them.
 
 | Route | Taken when | Obligation | Gate |
 | --- | --- | --- | --- |
-| `vec_dot`, the native quantized dot | one column, f32 activations | the CPU reference | `test-quants-simd` against scalar code |
-| `vec_dot_multi` | 2 to 7 columns (`MV_SMALL_BATCH` is 8) | bit-exact to the per-column `vec_dot` loop | `test-batch` (logits), `test-dot-route` (dispatch and a same-process cost ratio) |
-| dequantized f32 tile, `vec_dot_f32_tile` | 8 or more columns | bit-exact per output to the f32 dot of the dequantized row, whatever the blocking (`fmaf` tails) | `test-quants-simd`, `test-batch` |
+| `vec_dot`, the native quantized dot | one column, f32 activations, outside a prompt's prefill pass (decode, the head, `-b 1`, echo and `--score`) | the CPU reference | `test-quants-simd` against scalar code |
+| `vec_dot_multi` | 2 to 7 columns (`MV_SMALL_BATCH` is 8), outside a prompt's prefill pass | bit-exact to the per-column `vec_dot` loop | `test-batch` (logits), `test-dot-route` (dispatch and a same-process cost ratio) |
+| dequantized f32 tile, `vec_dot_f32_tile` | 8 or more columns; and every width in a prompt's prefill pass on a CPU-only run at `-b` 2 or more (R3.60) | bit-exact per output to the f32 dot of the dequantized row, whatever the blocking (`fmaf` tails) | `test-quants-simd`, `test-batch` |
 | int8 prefill tiles, `i8_tile_dot` | `RUNNER_CPU_I8_PREFILL=1`, 8 or more columns, a type with a pack (`i8_tile_ok`: Q8_0, Q4_0, Q4_K, Q6_K); arm64 with the dot-product extension only. On every other build (x86 included) the flag is ignored with one notice and the f32 route runs: the scalar twin is a test oracle, not a route | tolerance; off by default: mean KL 1.22x the f32 route's against float32 on Qwen3-0.6B Q8_0 (p 5e-86), prefill +68% / +49% on an Apple M1 (Q8_0 / Q4_K_M). On SmolLM2-1.7B against the publisher's float32 model (2026-11-15, 1,500 positions): Q8_0 mean KLD 0.0053 with the route against 0.0040 without, prompt reading 1.79x; Q4_K_M 0.0509 against 0.0500, 1.45x. Further from the publisher on the paired test on both, so it stays opt-in | `test_quants_simd` (the kernel equals its scalar twin bit for bit, both the same-quantization dot), `tests/test_cpu_i8_prefill.py` |
 | fused int8 dot, `vec_dot_i8` | `RUNNER_CPU_I8=1`, fewer than 8 columns, at least 32 output rows, a supported type (`i8_dot_ok`) | tolerance; off by default because no format cleared 0/64 with a gain worth taking | `./test-i8-tol MODEL.gguf` |
 | canonical-order kernels | a `make T3=1` build | bit-exact to an independent C definition of the same reduction tree, on every target | `test-canon-kernels`, `test-pmath` |
@@ -51,10 +51,13 @@ arithmetic, so a prompt read in batches of 8 or more moves every logprob
 after it: 4.2e-3 at most over 165 positions of MiniCPM5-1B Q4_K_M
 (`RUNNER_SCORE_CHUNKED=1` against the solo default), and 1.45e-2 on the
 tokens of 384 rollouts sampled after prompts of 49 to 51 tokens
-([measured](train-serve-mismatch-2026-11.md)). Batches of 2 to 7 stay on
-`vec_dot_multi` and match solo exactly, at about a quarter of the tile's
-prefill speed (37 against 129 to 143 tok/s on that model, 422 tokens, 4
-threads). Training rollouts therefore read the prompt with `-b 1`
+([measured](train-serve-mismatch-2026-11.md)). Since R3.60 a prompt's feed on
+a CPU-only run (`engine_feed`, the prefill pass) takes the tile at every width
+once `-b` is 2 or more, so a prompt's bits no longer depend on `-b`, on where
+its chunks fall, or on how much of it a cache kept
+(`tests/test_prefill_batch_identity.c`). Only `-b 1` reads a prompt on the
+decode route, one token a forward, which matches the trainer's taped forward;
+training rollouts therefore read the prompt with `-b 1`
 (`scripts/train-grpo-lite.py`, gated by `tests/test_rollout_identity.py`).
 A server's prefix cache meets the same contract: a request that continues a
 cached prefix reads only its new tokens, so its logprobs can differ from the
@@ -62,6 +65,10 @@ same request on a fresh slot (measured with the 1.5.0 and 1.4.2 Linux builds:
 every repeat, rewind and one-token extension of a cached SmolLM2-135M Q8_0
 prompt moved the answer, by at most 4e-5, and a BF16 file's never did;
 `"cache_prompt": false` reproduces the fresh slot, and so does a restart).
+Since R3.60, on a CPU-only run at `-b` 2 or more the new tokens take the same
+route as a fresh slot's prompt, so a continued prefix that was prefilled gives
+the fresh slot's bits; tokens the model generated were decoded, one a forward,
+and a request that continues them can still differ from a fresh slot.
 
 ## CUDA: `enc_mv` in `src/cuda.c`
 
