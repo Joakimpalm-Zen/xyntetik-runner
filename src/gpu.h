@@ -3,6 +3,7 @@
 #define RUNNER_GPU_H
 
 #include "tdn_args.h"   // the training DeltaNet calls' shape
+#include "kernel_args.h" // trn_args (R8.24.1 B2)
 #include "model.h"
 #include <stdio.h>
 #include <string.h>
@@ -345,6 +346,13 @@ void  *gpu_train_host_buf(model_t *m, int slot, size_t bytes);
 // activation and adjoint over n host floats, h = act(g)*u, dg = dh*u*act'(g),
 // du = dh*act(g) (model.c gated_act, act_d, act_f). false: no context, no
 // kernel in this PTX, or an activation they do not cover (ACT_SILU only).
+// R8.24.1 B2, the kernel gate's entry: the device twins of rmsnorm and its
+// adjoint (k_trn_fw, k_trn_bw) over a->rows rows of n host floats: y = the
+// forward of x, dx += the adjoint of dy (rows at the strides a gives). w: one
+// n-vector for every row, or NULL (the weightless form). false: no context or
+// no kernel in this PTX.
+bool   gpu_train_rmsnorm_check(model_t *m, const trn_args *a, const float *x,
+                               const float *w, const float *dy, float *y, float *dx);
 bool   gpu_train_ffn_check(model_t *m, int act, const float *g, const float *u,
                            const float *dh, float *h, float *dg, float *du, int n);
 // R8.24.1 B6, the kernel gate's entry: the device twins of one site's adapter

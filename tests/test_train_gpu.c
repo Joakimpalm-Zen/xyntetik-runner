@@ -579,6 +579,158 @@ static void lora_case(model_t *m, int r, int n_in, int n_out, int nb, int edge) 
     free(yh); free(gah); free(gbh); free(dxh); free(yd); free(gad); free(gbd); free(dxd);
 }
 
+// R8.24.1 B2 (G0): the device twins of rmsnorm and its adjoint
+// (gpu_train_rmsnorm_check: k_trn_fw, k_trn_bw) against the host's own
+// functions (model_rmsnorm, model_rmsnorm_bw: model.c rmsnorm, rmsnorm_bw).
+// Written before the kernels. A T3 build's host does exactly the written
+// operations (the forward's ss a multiply and an add, the adjoint's ss and dot
+// fmaf chains, sqrtf correctly rounded), which the twins reproduce, so memcmp,
+// except that a NaN compares as a NaN: the device returns the canonical NaN
+// where x86 keeps the input's payload, and the host's answer there is "NaN".
+// The default build's host runs under -ffast-math: its ss loop may be
+// vectorized (reassociated) and the process runs with FTZ and DAZ
+// (crtfastmath). So there the bound is stated: every element within 2^-12 of
+// its row's largest magnitude, the device's subnormal results read as zero,
+// and the subnormal-input row is left to T3 (DAZ reads its inputs as zero on
+// the host). In both builds the anchor: the forward and the adjoint within
+// (n 2^-24 + 2^-20) of their row's magnitude of the row's formula in double:
+// the serial float chain's own error bound (gamma_n), which the host shares
+// (rows whose float ss overflows, or that hold the NaN, excluded).
+enum { B2_KINDS = 8, B2_SUBNORMAL = 3, B2_NAN = 6, B2_HUGE = 5 };
+static void b2_fill_row(float *x, int n, int kind) {
+    for (int i = 0; i < n; i++) {
+        float v = frnd();
+        switch (kind) {
+        case 1: v = 0.0f; break;                                        // a zero row
+        case 2: v = 0.37109375f; break;                                 // equal values
+        case B2_SUBNORMAL: v = v * 1.0e-39f; break;
+        case 4: v = (i & 1) ? -0.0f : 0.0f; break;                      // both zeros
+        case B2_HUGE: v = v * 1.8e19f; break;                           // x*x near FLT_MAX
+        case B2_NAN: if (i == n / 2) { uint32_t q = 0x7fc00001u; memcpy(&v, &q, 4); } break;
+        case 7: v = v * ((i % 5 == 0) ? 3.0e4f : 1.0e-3f); break;       // mixed scale
+        default: break;
+        }
+        x[i] = v;
+    }
+}
+static int b2_nan(float f) {   // by bits: -ffast-math may fold isnan away
+    uint32_t u;
+    memcpy(&u, &f, 4);
+    return (u & 0x7fffffffu) > 0x7f800000u;
+}
+static void b2_check(model_t *m, int n, int rows, int stride, bool weighted) {
+    float eps = 1e-6f;
+    size_t span = (size_t)(rows - 1) * stride + n;
+    float *x = calloc(span, sizeof(float)), *dy = calloc(span, sizeof(float));
+    float *w = weighted ? malloc(sizeof(float) * n) : NULL;
+    float *dx0 = calloc(span, sizeof(float));
+    float *yh = calloc(span, sizeof(float)), *yd = calloc(span, sizeof(float));
+    float *dxh = calloc(span, sizeof(float)), *dxd = calloc(span, sizeof(float));
+    if (w) for (int i = 0; i < n; i++) w[i] = 1.0f + 0.5f * frnd();
+    for (int r = 0; r < rows; r++) {
+        b2_fill_row(x + (size_t)r * stride, n, r % B2_KINDS);
+        b2_fill_row(dy + (size_t)r * stride, n, r % 3 == 0 ? 0 : 7);
+        b2_fill_row(dx0 + (size_t)r * stride, n, 0);
+    }
+    memcpy(dxh, dx0, sizeof(float) * span);
+    memcpy(dxd, dx0, sizeof(float) * span);
+    for (int r = 0; r < rows; r++) {
+        size_t o = (size_t)r * stride;
+        model_rmsnorm(yh + o, x + o, w, n, eps);
+        model_rmsnorm_bw(x + o, w, dy + o, dxh + o, n, eps);
+    }
+    trn_args a = { n, rows, stride, stride, stride, stride, eps };
+    bool ok = gpu_train_rmsnorm_check(m, &a, x, w, dy, yd, dxd);
+    CHECK(ok, "rmsnorm twin n %d: declined (no kernel in this PTX?)", n);
+    size_t bad = 0, hbad = 0, abad = 0;
+    double whf = 0, whb = 0, waf = 0, wab = 0;   // worst, as a fraction of the row's magnitude
+    for (int r = 0; ok && r < rows; r++) {
+        size_t o = (size_t)r * stride;
+        int kind = r % B2_KINDS;
+        double ss = 0, dot = 0;
+        for (int i = 0; i < n; i++) ss += (double)x[o + i] * x[o + i];
+        double rr = 1.0 / sqrt(ss / n + eps);
+        for (int i = 0; i < n; i++) dot += (w ? w[i] : 1.0) * dy[o + i] * x[o + i];
+        double c = rr * rr * rr / n * dot, mf = 0, mb = 0;
+        for (int i = 0; i < n; i++) {
+            double wi = w ? w[i] : 1.0;
+            double f = fabs(x[o + i] * rr * wi);
+            double b = fabs(dx0[o + i]) + fabs(rr * wi * dy[o + i]) + fabs(c * x[o + i]);
+            if (f > mf) mf = f;
+            if (b > mb) mb = b;
+        }
+        bool anchor = kind != B2_NAN && ss < 3.0e38;
+        for (int i = 0; i < n; i++) {
+            float hf = yh[o + i], df = yd[o + i], hb = dxh[o + i], db = dxd[o + i];
+#ifdef RUNNER_PORTABLE_MATH
+            bool same_f = b2_nan(hf) || b2_nan(df) ? b2_nan(hf) && b2_nan(df) : !memcmp(&hf, &df, 4);
+            bool same_b = b2_nan(hb) || b2_nan(db) ? b2_nan(hb) && b2_nan(db) : !memcmp(&hb, &db, 4);
+            if ((!same_f || !same_b) && !bad++)
+                fprintf(stderr, "FAIL: rmsnorm twin differs from the T3 host at n %d row %d [%d] "
+                        "x %.9g: y %.9g/%.9g dx %.9g/%.9g\n", n, r, i, x[o + i], df, hf, db, hb);
+#else
+            // this process flushes subnormals (FTZ and DAZ), as the default build's runner does
+            float vf = fabsf(df) < FLT_MIN ? 0.0f : df, vb = fabsf(db) < FLT_MIN ? 0.0f : db;
+            if (kind != B2_SUBNORMAL) {
+                double ef = b2_nan(hf) || b2_nan(vf) ? (b2_nan(hf) && b2_nan(vf) ? 0 : 1e300)
+                                                     : fabs((double)hf - vf) / (mf + 1e-300);
+                double eb = b2_nan(hb) || b2_nan(vb) ? (b2_nan(hb) && b2_nan(vb) ? 0 : 1e300)
+                                                     : fabs((double)hb - vb) / (mb + 1e-300);
+                if (ss < 3.0e38) {
+                    if (ef > whf) whf = ef;
+                    if (eb > whb) whb = eb;
+                    if ((ef > 0x1p-12 || eb > 0x1p-12) && !hbad++)
+                        fprintf(stderr, "FAIL: rmsnorm twin is off the default build's host at n %d "
+                                "row %d [%d]: y %.9g/%.9g dx %.9g/%.9g\n", n, r, i, vf, hf, vb, hb);
+                }
+            }
+#endif
+            if (anchor && mf > 0) {
+                double wi = w ? w[i] : 1.0;
+                double xf = x[o + i] * rr * wi;
+                double xb = dx0[o + i] + rr * wi * dy[o + i] - c * x[o + i];
+                double af = fabs(df - xf) / mf, ab = fabs(db - xb) / mb;
+                if (af > waf) waf = af;
+                if (ab > wab) wab = ab;
+                double lim = n * 0x1p-24 + 0x1p-20;
+                if ((af > lim || ab > lim) && !abad++)
+                    fprintf(stderr, "FAIL: rmsnorm twin is not the formula at n %d row %d [%d]: "
+                            "y %.9g (double %.9g) dx %.9g (%.9g)\n", n, r, i, df, xf, db, xb);
+            }
+        }
+    }
+    CHECK(!bad, "rmsnorm twin n %d rows %d stride %d %s: %zu elements differ from the T3 host's bits",
+          n, rows, stride, w ? "weighted" : "weightless", bad);
+    CHECK(!hbad, "rmsnorm twin n %d rows %d: %zu elements off the default build's host (worst "
+          "y %.3g, dx %.3g of the row's magnitude, bound 2^-12)", n, rows, hbad, whf, whb);
+    CHECK(!abad, "rmsnorm twin n %d rows %d: %zu elements off the double formula (worst y %.3g, "
+          "dx %.3g of the row's magnitude, bound n 2^-24 + 2^-20)", n, rows, abad, waf, wab);
+    if (ok)
+        printf("rmsnorm twin n %4d rows %4d stride %4d %-10s: host %s; against the double "
+               "formula y %.3g dx %.3g of the row's magnitude\n", n, rows, stride,
+               w ? "weighted" : "weightless",
+#ifdef RUNNER_PORTABLE_MATH
+               "T3 (memcmp)",
+#else
+               "default (bound 2^-12, subnormals flushed)",
+#endif
+               waf, wab);
+    free(x); free(dy); free(w); free(dx0); free(yh); free(yd); free(dxh); free(dxd);
+}
+static void b2_checks(model_t *m) {
+    // the step's n (2560 the 4B's attn, ffn and out norms; 128 a head), the
+    // block's and the warp's edges, one element, the widest families
+    static const int NS[] = { 2560, 128, 1, 31, 32, 33, 127, 129, 255, 256, 257,
+                              1023, 1024, 1025, 5120, 8192 };
+    for (size_t k = 0; k < sizeof(NS) / sizeof(*NS); k++)
+        b2_check(m, NS[k], 2 * B2_KINDS + 1, NS[k], true);
+    b2_check(m, 2560, 77, 2560, true);           // attn and ffn norms, T 77
+    b2_check(m, 128, 77 * 32, 128, true);        // q-norm per head, T 77 x 32 heads
+    b2_check(m, 128, 77 * 8, 128, false);        // the weightless V-norm form
+    b2_check(m, 128, 40, 4096, true);            // heads read out of q rows
+    b2_check(m, 100, 33, 103, false);            // strides past n
+}
+
 int main(void) {
     f16_init();
     model_t m;
@@ -871,6 +1023,7 @@ int main(void) {
     dn_check(&m, 4, 2, 40, 33);
     dn_check(&m, 2, 1, 32, 9);
     dn_check(&m, 4, 2, 8, 26);
+    b2_checks(&m);
     gpu_train_free(&m);
     free(keep_pinned);
     for (size_t k = 0; k < sizeof(keep) / sizeof(*keep); k++) free(keep[k]);

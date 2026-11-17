@@ -11760,6 +11760,15 @@ float model_ffn_act_deriv(int act, float g) { return act_d(act, g); }
 // loops, lffn_dg / lffn_du), element by element, for the device twin's gate
 float model_ffn_dg(int act, float dh, float u, float g) { return dh * u * act_d(act, g); }
 float model_ffn_du(int act, float dh, float g) { return dh * act_f(act, g); }
+// R8.24.1 B2: rmsnorm and its adjoint through the host's own functions (one
+// row of n floats), for the device twins' gate
+void model_rmsnorm(float *o, const float *x, const float *w, int n, float eps) {
+    rmsnorm(o, x, w, n, eps);
+}
+void model_rmsnorm_bw(const float *x, const float *w, const float *dy, float *dx,
+                      int n, float eps) {
+    rmsnorm_bw(x, w, dy, dx, n, eps);
+}
 float model_xielu(float x, float an, float ap, float b, float eps) { return xielu(x, an, ap, b, eps); }
 float model_xielu_deriv(float x, float an, float ap, float b, float eps) { return xielu_d(x, an, ap, b, eps); }
 

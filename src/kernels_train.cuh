@@ -1209,3 +1209,65 @@ extern "C" __global__ void k_tlora_dx(const float *A, const float *tb, float *dx
     float *xo = dx + (ulong64)b * a.x_stride + i;
     *xo = __fmaf_rn(a.s, acc, *xo);
 }
+// ---- R8.24.1 B2: rmsnorm and its adjoint, host-chain twins (kernel_args.h
+// trn_args; model.c rmsnorm and rmsnorm_bw). One block a row: thread 0 runs
+// the row's chains serially in the host's index order (the forward's ss a
+// multiply and an add per element, as rmsnorm writes ss += x*x; the
+// adjoint's ss and dot fmaf chains, as rmsnorm_bw writes them), then every
+// thread writes its elements, each the host's expression left to right,
+// never contracted. r = 1 / sqrtf(ss / n + eps) is correctly rounded on both
+// sides (__fsqrt_rn, __fdiv_rn), so a T3 host and these agree bit for bit; a
+// NaN comes back as the device's canonical NaN. The serial chain is a few
+// microseconds a row at n 2560, small next to the products.
+// RUNNER_TRN_MUTANT (never set in the committed PTX) swaps the forward's
+// multiply-add for an fmaf: the gate's mutant, which test-train-gpu must fail.
+#define TRN_THREADS 128
+
+extern "C" __global__ void __launch_bounds__(TRN_THREADS)
+k_trn_fw(const float *x, const float *w, float *y, trn_args a) {
+    __shared__ float rs;
+    int row = (int)blockIdx.x, n = a.n;
+    if (row >= a.rows) return;
+    const float *xr = x + (ulong64)row * a.x_stride;
+    float *yr = y + (ulong64)row * a.y_stride;
+    if (threadIdx.x == 0) {
+        float ss = 0.0f;
+        for (int i = 0; i < n; i++)
+#ifdef RUNNER_TRN_MUTANT
+            ss = __fmaf_rn(xr[i], xr[i], ss);
+#else
+            ss = __fadd_rn(ss, __fmul_rn(xr[i], xr[i]));
+#endif
+        rs = __fdiv_rn(1.0f, __fsqrt_rn(__fadd_rn(__fdiv_rn(ss, (float)n), a.eps)));
+    }
+    __syncthreads();
+    float r = rs;
+    for (int i = (int)threadIdx.x; i < n; i += (int)blockDim.x)
+        yr[i] = w ? __fmul_rn(__fmul_rn(xr[i], r), w[i]) : __fmul_rn(xr[i], r);
+}
+
+// dx[i] += r * w[i] * dy[i] - c * x[i], c = r * r * r / n * dot (w NULL: 1)
+extern "C" __global__ void __launch_bounds__(TRN_THREADS)
+k_trn_bw(const float *x, const float *w, const float *dy, float *dx, trn_args a) {
+    __shared__ float rs, cs;
+    int row = (int)blockIdx.x, n = a.n;
+    if (row >= a.rows) return;
+    const float *xr = x + (ulong64)row * a.x_stride;
+    const float *dyr = dy + (ulong64)row * a.dy_stride;
+    float *dxr = dx + (ulong64)row * a.dx_stride;
+    if (threadIdx.x == 0) {
+        float ss = 0.0f, dot = 0.0f;
+        for (int i = 0; i < n; i++) ss = __fmaf_rn(xr[i], xr[i], ss);
+        float r = __fdiv_rn(1.0f, __fsqrt_rn(__fadd_rn(__fdiv_rn(ss, (float)n), a.eps)));
+        for (int i = 0; i < n; i++)
+            dot = __fmaf_rn(w ? __fmul_rn(w[i], dyr[i]) : __fmul_rn(1.0f, dyr[i]), xr[i], dot);
+        rs = r;
+        cs = __fmul_rn(__fdiv_rn(__fmul_rn(__fmul_rn(r, r), r), (float)n), dot);
+    }
+    __syncthreads();
+    float r = rs, c = cs;
+    for (int i = (int)threadIdx.x; i < n; i += (int)blockDim.x) {
+        float rw = w ? __fmul_rn(r, w[i]) : __fmul_rn(r, 1.0f);
+        dxr[i] = __fadd_rn(dxr[i], __fsub_rn(__fmul_rn(rw, dyr[i]), __fmul_rn(c, xr[i])));
+    }
+}

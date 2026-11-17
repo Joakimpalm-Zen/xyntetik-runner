@@ -3779,6 +3779,11 @@ void *gpu_train_host_buf(model_t *mm, int slot, size_t bytes) {
     return NULL;
 }
 
+bool gpu_train_rmsnorm_check(model_t *mm, const trn_args *a, const float *x,
+                             const float *w, const float *dy, float *y, float *dx) {
+    (void)mm; (void)a; (void)x; (void)w; (void)dy; (void)y; (void)dx;
+    return false;
+}
 bool gpu_train_ffn_check(model_t *mm, int act, const float *g, const float *u,
                          const float *dh, float *h, float *dg, float *du, int n) {
     (void)mm; (void)act; (void)g; (void)u; (void)dh; (void)h; (void)dg; (void)du; (void)n;
