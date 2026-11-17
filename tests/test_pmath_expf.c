@@ -179,7 +179,9 @@ static __attribute__((noinline)) float copy_expf(float x, double ln2_lo) {
     union { double d; uint64_t u; } s;
     s.u = (uint64_t)(k + 1023) << 52;
     double e = p * s.d;
-    return (float)(xd == xd ? e : xd);
+    uint32_t xb;
+    memcpy(&xb, &x, sizeof xb);
+    return (xb & 0x7fffffffu) > 0x7f800000u ? (float)xd : (float)e;
 }
 #endif
 

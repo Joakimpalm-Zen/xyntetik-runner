@@ -20,6 +20,11 @@
 // Each with quiet NaNs of both signs and with payloads, and a signaling one.
 // Only NaN cases: for a finite input the C library's expf and pmath's may
 // differ in the last bit, which is the point of the portable math.
+// An output that is a NaN prints as "nan": its sign and payload come from the
+// -ffast-math arithmetic after the exp (a vectorized division can set the
+// sign), not from the exp, whose NaN tests/test_pmath_expf.c holds bit for
+// bit. What must agree is what the callers decide: the token, and whether
+// each output is a NaN or which finite value it is.
 #include "sample.h"
 #include "softmax.h"
 
@@ -30,6 +35,13 @@
 
 static float flt(uint32_t u) { float f; memcpy(&f, &u, 4); return f; }
 static uint32_t bits(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
+// an output: its bits, or "nan" for any NaN (see the top)
+static const char *out(float f, char *buf) {
+    uint32_t u = bits(f);
+    if ((u & 0x7fffffffu) > 0x7f800000u) return "nan";
+    snprintf(buf, 12, "%08" PRIx32, u);
+    return buf;
+}
 
 static const uint32_t NANS[] = { 0x7fc00000u, 0xffc00000u, 0x7fc12345u, 0xffd2468au, 0x7f800001u };
 enum { NNAN = (int)(sizeof(NANS) / sizeof(NANS[0])) };
@@ -43,12 +55,13 @@ int main(void) {
             sampler s = { .temp = 1.0f, .top_p = 1.0f, .top_k = 2, .repeat_penalty = 1.0f, .rng = seed };
             printf(" %d", sample_pick(&s, logits, 2, NULL, NULL));
         }
+        char b0[12], b1[12], b2[12];
         float x[2] = { 0.0f, -1.0f };
         softmax_sink(x, 2, q);
-        printf("; softmax_sink [0, -1] sink NaN: %08" PRIx32 " %08" PRIx32, bits(x[0]), bits(x[1]));
+        printf("; softmax_sink [0, -1] sink NaN: %s %s", out(x[0], b0), out(x[1], b1));
         float y[3] = { 0.0f, q, -1.0f };
         softmax(y, 3);
-        printf("; softmax [0, NaN, -1]: %08" PRIx32 " %08" PRIx32 " %08" PRIx32 "\n", bits(y[0]), bits(y[1]), bits(y[2]));
+        printf("; softmax [0, NaN, -1]: %s %s %s\n", out(y[0], b0), out(y[1], b1), out(y[2], b2));
     }
     return 0;
 }
