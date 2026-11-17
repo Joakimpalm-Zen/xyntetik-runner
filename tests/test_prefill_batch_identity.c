@@ -34,6 +34,18 @@
 //      the GRPO loop's -b 1 server is held to (tests/test_rollout_identity.py,
 //      tests/test_kv_f32.py). From -b 2 up the identity of gate 1 holds: -b 2
 //      stores -b 64's rows.
+//   5. A scored prompt (engine_score_prompt: echo, prompt_logprobs) writes its
+//      rows on the decode route. A normal request that extends it, through
+//      engine_prefix_reuse as every server request starts, keeps none of
+//      those rows and stores the cold feed's. Before R3.60's fix it kept them
+//      all, and the extension read a decode-route prefix under a prefill-pass
+//      suffix. Live control: the same reuse through the plain engine_rewind
+//      keeps the scored rows, and those differ from the cold feed's.
+//   6. The shared tier: a scored prompt published (engine_prefix_publish, as a
+//      request does after its prefill) and then extended by another slot
+//      stores the cold feed's rows. Before the fix it published the scored
+//      rows and the other slot forked them. Live control: a prompt fed as a
+//      prompt, published, is forked by the other slot.
 #include "runner.h"
 
 #include <stdio.h>
@@ -139,6 +151,7 @@ static float *feed_and_decode(slot *s, const int32_t *t, int n) {
 
 static void check_file(const char *path) {
     slot s64, s512, ref, s1, s2;
+    int control5 = 0, control6 = 0;
     if (!slot_open(&s64, path, 64) || !slot_open(&s512, path, 512) ||
         !slot_open(&ref, path, 64) || !slot_open(&s1, path, 1) || !slot_open(&s2, path, 2)) {
         fprintf(stderr, "FAIL: %s did not load\n", path);
@@ -192,7 +205,49 @@ static void check_file(const char *path) {
         engine_reset(&s64.e);
         bool two = engine_feed(&s2.e, t, n) && engine_feed(&s64.e, t, n);
         ck(two && kv_diff(&s2.m, &s64.m, n) == 0, path, n, "-b 2 and -b 64 store the same K and V rows");
+
+        // gate 5: a scored prompt, then a normal request extending it
+        int n2 = n + 6 <= CTX ? n + 6 : CTX;
+        prompt_scores ps;
+        bool scored = engine_score_prompt(&ref.e, t, n, 0, &ps) != NULL;
+        prompt_scores_free(&ps);
+        prefix_reuse r5 = scored ? engine_prefix_reuse(&ref.e, t, n2) : (prefix_reuse){ -1, 0, 0.0 };
+        bool fed5 = scored && engine_feed(&ref.e, t + r5.keep, n2 - r5.keep) != NULL;
+        engine_reset(&s64.e);
+        fed5 = fed5 && engine_feed(&s64.e, t, n2) != NULL;
+        int d5 = fed5 ? kv_diff(&ref.m, &s64.m, n2) : -1;
+        if (d5) fprintf(stderr, "  after a scored prompt: kept %d rows, %d (layer, position) rows differ from cold\n",
+                        r5.keep, d5);
+        ck(d5 == 0, path, n, "a normal prompt after a scored one stores the cold feed's rows");
+        // the control: engine_rewind keeps the scored rows, which are not the cold feed's
+        scored = engine_score_prompt(&ref.e, t, n, 0, &ps) != NULL;
+        prompt_scores_free(&ps);
+        int kept_c = scored ? engine_rewind(&ref.e, t, n2) : -1;
+        bool fed_c = scored && kept_c > 0 && engine_feed(&ref.e, t + kept_c, n2 - kept_c) != NULL;
+        control5 += fed_c && kv_diff(&ref.m, &s64.m, n2) > 0;
+
+        // gate 6: the shared tier, a scored prompt published, then another slot
+        scored = engine_score_prompt(&ref.e, t, n, 0, &ps) != NULL;
+        prompt_scores_free(&ps);
+        if (scored) engine_prefix_publish(&ref.e, t, n, n, 1.0);
+        engine_reset(&s2.e);
+        prefix_reuse r6 = engine_prefix_reuse(&s2.e, t, n2);
+        bool fed6 = scored && engine_feed(&s2.e, t + r6.keep, n2 - r6.keep) != NULL;
+        int d6 = fed6 ? kv_diff(&s2.m, &s64.m, n2) : -1;
+        if (d6) fprintf(stderr, "  another slot after a scored publish: kept %d rows, %d (layer, position) rows differ\n",
+                        r6.keep, d6);
+        ck(d6 == 0, path, n, "another slot extending a published scored prompt stores the cold feed's rows");
+        // the control: a prompt fed as a prompt is published, and the other slot forks it
+        engine_reset(&ref.e);
+        bool fedp = engine_feed(&ref.e, t, n) != NULL;
+        if (fedp) engine_prefix_publish(&ref.e, t, n, n, 1.0);
+        engine_reset(&s2.e);
+        prefix_reuse rc = engine_prefix_reuse(&s2.e, t, n2);
+        control6 += fedp && rc.keep >= n - 1;
     }
+    ck(control5 == NLEN, path, CTX,
+       "live control: rows a scored prompt left, kept, are not the cold feed's");
+    ck(control6 == NLEN, path, CTX, "live control: the shared tier forks a prompt that was fed as one");
     ck(control_live == NLEN, path, CTX,
        "live control: the decode route stores different rows at every prompt");
     slot_close(&s64);
