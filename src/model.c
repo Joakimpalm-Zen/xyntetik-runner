@@ -15857,6 +15857,16 @@ NUM_STAGE void layer_ffn(model_t *m, fwd_layer *c) {
     const int l = c->l, n = c->n, n_embd = c->n_embd, xdim = c->xdim;
     if (ly->moe_gemma) {
         gemma_moe_ffn(m, ly, n, xdim);  // reads m->x, writes dense⊕routed to m->xb
+    } else if (m->train_dev_ffn && t_mv_dev == m && ly->w_gate && !ly->is_moe && !c->dbg &&
+               !m->hyper_conn && !m->norm_layernorm && m->norm_groups <= 1 &&
+               gpu_train_ffn_fw_norm(m, l, ly->w_gate, ly->w_up, ly->w_down, ly->ffn_norm_w,
+                                     m->rms_eps, m->x, n_embd, m->xb, xdim, n_embd, ly->n_ff,
+                                     n)) {
+        // R8.24.1 B, the layer driver's first slot: in the device FFN's taped
+        // forward the plain RMS norm before it runs on the device too (B2's
+        // twin of rmsnorm), from the residual rows. Any other norm, or a
+        // decline, keeps the host's norm and FFN below, whole.
+        DT_MARK_AT(c->dt_t0, DT_DENSE_FFN);
     } else {
         if (m->hyper_conn)
             hc_mix(m, ly->hc_ffn_norm, ly->hc_ffn_down, ly->hc_ffn_up,

@@ -392,6 +392,14 @@ bool   gpu_train_site_pull(model_t *m, int l, int which, float *ga, float *gb);
 bool   gpu_train_ffn_fw(model_t *m, int l, const gguf_tensor *wg, const gguf_tensor *wu,
                         const gguf_tensor *wd, const float *x, int x_stride, float *y,
                         int y_stride, int E, int nff, int nb);
+// R8.24.1 B, the layer driver's first slot: as gpu_train_ffn_fw with x the
+// residual rows, the FFN's RMS norm (nw, NULL the weightless form, eps) run on
+// the device first (B2's k_trn_fw, model.c rmsnorm's twin). false before y is
+// touched: the caller then runs the host's norm and FFN.
+bool   gpu_train_ffn_fw_norm(model_t *m, int l, const gguf_tensor *wg, const gguf_tensor *wu,
+                             const gguf_tensor *wd, const float *nw, float eps,
+                             const float *x, int x_stride, float *y, int y_stride, int E,
+                             int nff, int nb);
 bool   gpu_train_ffn_recompute(model_t *m, int l, const gguf_tensor *wg,
                                const gguf_tensor *wu, const float *xn2, int E, int nff,
                                int T);

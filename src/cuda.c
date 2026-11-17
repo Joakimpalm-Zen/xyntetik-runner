@@ -8825,8 +8825,8 @@ typedef struct {
         bool live;
     } *site;
     int         n_site;
-    CUdeviceptr fb[10];
-    size_t      fb_cap[10];
+    CUdeviceptr fb[12];
+    size_t      fb_cap[12];
     size_t      model_need;
     // the attention backward (k_tab_p, k_tab_dq, k_tab_dkv) and its buffers
     CUfunction  f_tab_p, f_tab_dq, f_tab_dkv;
@@ -9987,7 +9987,9 @@ unsigned gpu_train_mm_parts(model_t *m, const gpu_mm_part *p, int np,
 // FB_G, FB_U, FB_H (gate, up, activation), FB_Y (the down output, or the
 // backward's dbr), FB_DH, FB_DG, FB_DU (their gradients), FB_DX (dxn2), FB_T
 // (the adapter's t / tf and tb, 2 x nb x r).
-enum { FB_X, FB_G, FB_U, FB_H, FB_Y, FB_DH, FB_DG, FB_DU, FB_DX, FB_T };
+// FB_R, FB_NW: the layer driver's norm slot (the residual rows, the norm's
+// weight), filled only when the norm runs on the device
+enum { FB_X, FB_G, FB_U, FB_H, FB_Y, FB_DH, FB_DG, FB_DU, FB_DX, FB_T, FB_R, FB_NW };
 
 // Whether the device FFN can run: its kernels are in this PTX and the arena
 // holds every tensor (so it never changes which weights the device holds,
@@ -10108,23 +10110,34 @@ static bool ffn_front(train_gpu_t *t, int n_layer, int l, const gguf_tensor *wg,
 
 // R8.24.1 B: the taped forward's FFN of layer l on the device: x (n_embd of
 // each row, rows x_stride apart) in, the down output (with its adapter) into
-// y (rows y_stride apart). y may be x. false before y is touched.
-bool gpu_train_ffn_fw(model_t *m, int l, const gguf_tensor *wg, const gguf_tensor *wu,
-                      const gguf_tensor *wd, const float *x, int x_stride, float *y,
-                      int y_stride, int E, int nff, int nb) {
+// y (rows y_stride apart). y may be x. false before y is touched. norm: x is
+// the residual and the FFN's RMS norm (weight nw, NULL the weightless form,
+// eps) runs first, on the device (B2's k_trn_fw: model.c rmsnorm's twin)
+static bool ffn_fw_core(model_t *m, int l, const gguf_tensor *wg, const gguf_tensor *wu,
+                        const gguf_tensor *wd, bool norm, const float *nw, float eps,
+                        const float *x, int x_stride, float *y, int y_stride, int E, int nff,
+                        int nb) {
     train_gpu_t *t = m->train_gpu;
-    if (!t || !wg || !wu || !wd || nb < 1 || cu.CtxSetCurrent(t->ctx) != 0) return false;
+    if (!t || !wg || !wu || !wd || nb < 1 || (norm && !t->f_trn_fw) ||
+        cu.CtxSetCurrent(t->ctx) != 0)
+        return false;
     double t0 = plat_now();
     size_t ne = (size_t)nb * E;
+    int in = norm ? FB_R : FB_X;
     if (!fb_planes(t, E, nff, nb, site_rmax(t, m->n_layer, l)) ||
+        (norm && (!fb_get(t, FB_R, ne) || !fb_get(t, FB_NW, (size_t)E))) ||
         !tg_host(&t->h_x, &t->cap_hx, ne) || !tg_host(&t->h_y, &t->cap_hy, ne))
         return false;
     for (int b = 0; b < nb; b++)
         memcpy(t->h_x + (size_t)b * E, x + (size_t)b * x_stride, sizeof(float) * (size_t)E);
     CUdeviceptr pd = tg_weights(t, wd);
-    if (!pd || cu.MemcpyHtoD(t->fb[FB_X], t->h_x, sizeof(float) * ne) != 0) return false;
+    if (!pd || cu.MemcpyHtoD(t->fb[in], t->h_x, sizeof(float) * ne) != 0 ||
+        (norm && nw && cu.MemcpyHtoD(t->fb[FB_NW], nw, sizeof(float) * (size_t)E) != 0))
+        return false;
     double k0 = plat_now();
-    if (!ffn_front(t, m->n_layer, l, wg, wu, E, nff, nb) ||
+    trn_args na = { E, nb, E, E, E, E, eps };
+    if ((norm && !trn_fw_launch(t, t->fb[FB_R], nw ? t->fb[FB_NW] : 0, t->fb[FB_X], &na)) ||
+        !ffn_front(t, m->n_layer, l, wg, wu, E, nff, nb) ||
         !tmm_launch(t, wd, pd, t->fb[FB_H], t->fb[FB_Y], nff, E, nb) ||
         !site_fw(t, tg_site(t, m->n_layer, l, 2), t->fb[FB_H], nff, t->fb[FB_Y], nb) ||
         cu.CtxSynchronize() != 0)
@@ -10136,6 +10149,19 @@ bool gpu_train_ffn_fw(model_t *m, int l, const gguf_tensor *wg, const gguf_tenso
     t->t_mm += plat_now() - t0;
     t->n_mm += 3;
     return true;
+}
+bool gpu_train_ffn_fw(model_t *m, int l, const gguf_tensor *wg, const gguf_tensor *wu,
+                      const gguf_tensor *wd, const float *x, int x_stride, float *y,
+                      int y_stride, int E, int nff, int nb) {
+    return ffn_fw_core(m, l, wg, wu, wd, false, NULL, 0.0f, x, x_stride, y, y_stride, E,
+                       nff, nb);
+}
+// R8.24.1 B, the layer driver's first slot: the FFN's RMS norm and the FFN in
+// one call, x the residual rows (B2's kernel; false before y is touched)
+bool gpu_train_ffn_fw_norm(model_t *m, int l, const gguf_tensor *wg, const gguf_tensor *wu,
+                           const gguf_tensor *wd, const float *nw, float eps, const float *x,
+                           int x_stride, float *y, int y_stride, int E, int nff, int nb) {
+    return ffn_fw_core(m, l, wg, wu, wd, true, nw, eps, x, x_stride, y, y_stride, E, nff, nb);
 }
 
 // R8.24.1 B: the backward's recompute of layer l's FFN front: xn2 (T rows of

@@ -3817,6 +3817,13 @@ bool gpu_train_site_pull(model_t *mm, int l, int which, float *ga, float *gb) {
     (void)mm; (void)l; (void)which; (void)ga; (void)gb;
     return false;
 }
+bool gpu_train_ffn_fw_norm(model_t *mm, int l, const gguf_tensor *wg, const gguf_tensor *wu,
+                           const gguf_tensor *wd, const float *nw, float eps, const float *x,
+                           int x_stride, float *y, int y_stride, int E, int nff, int nb) {
+    (void)mm; (void)l; (void)wg; (void)wu; (void)wd; (void)nw; (void)eps; (void)x;
+    (void)x_stride; (void)y; (void)y_stride; (void)E; (void)nff; (void)nb;
+    return false;
+}
 bool gpu_train_ffn_fw(model_t *mm, int l, const gguf_tensor *wg, const gguf_tensor *wu,
                       const gguf_tensor *wd, const float *x, int x_stride, float *y,
                       int y_stride, int E, int nff, int nb) {
