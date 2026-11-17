@@ -1300,6 +1300,15 @@ void   model_rope_ref(model_t *m, float *v, int n_heads, int pos, int layer, int
 bool   model_attn_ref(int T, int n_head, int kv_mul, int hd, int swa, float scale,
                       int kind_k, int kind_v, const void *kc, const void *vc,
                       size_t k_row_b, size_t v_row_b, const float *q, float *ao);
+// R8.24.1 B5: the head through the host's code, for the device twin's gate:
+// apply_head_transforms then train_row_lse on one row (the transformed target
+// logit out), and head_rows_bw's per-row adjoint (no teacher) on rows in place
+double model_head_fw_ref(float *logits, int V, float logit_scale, float softcap,
+                         const int32_t *suppress, int n_suppress, int target,
+                         float *z_target);
+bool   model_head_bw_ref(float *probs, int V, int rows, float logit_scale, float softcap,
+                         const int32_t *suppress, int n_suppress, const int32_t *targets,
+                         const float *pos_w);
 // R8.24.1 B6: one site's adapter through the host's code (lora_apply, then the
 // backward's four passes) on caller arrays, for the device twins' gate
 bool   model_lora_site_ref(int r, int n_in, int n_out, int nb, float s,

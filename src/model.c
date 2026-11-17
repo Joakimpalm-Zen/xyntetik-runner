@@ -17209,3 +17209,68 @@ void model_matmul(model_t *m, float *y, int y_stride, const gguf_tensor *w,
                   const float *bias, int n_batch) {
     matvec_b(m->tp, y, y_stride, w, x, x_stride, n_in, n_out, bias, n_batch);
 }
+
+// R8.24.1 B5: the head through the host's own code, for the device twin's
+// gate. model_head_fw_ref: apply_head_transforms on one row of V logits in
+// place, then train_row_lse as the taped forward's loss reads it; *z_target
+// is the transformed target logit. model_head_bw_ref: head_rows_bw's
+// per-row adjoint without a teacher, on rows of V logits in place, through
+// head_rows_bw itself (its product into dhn and the out-norm adjoint run on a
+// placeholder head of width 4 and are discarded); row r's target is
+// targets[r] and its weight pos_w[r] (pos_w may be NULL).
+double model_head_fw_ref(float *logits, int V, float logit_scale, float softcap,
+                         const int32_t *suppress, int n_suppress, int target,
+                         float *z_target) {
+    model_t mm;
+    memset(&mm, 0, sizeof(mm));
+    mm.n_vocab = V;
+    mm.logit_scale = logit_scale;
+    mm.logit_softcap = softcap;
+    mm.suppress = (int32_t *)suppress;
+    mm.n_suppress = n_suppress;
+    apply_head_transforms(&mm, logits);
+    *z_target = logits[target];
+    return train_row_lse(logits, V);
+}
+bool model_head_bw_ref(float *probs, int V, int rows, float logit_scale, float softcap,
+                       const int32_t *suppress, int n_suppress, const int32_t *targets,
+                       const float *pos_w) {
+    enum { E = 4 };
+    model_t mm;
+    memset(&mm, 0, sizeof(mm));
+    mm.n_embd = E;
+    mm.n_vocab = V;
+    mm.logit_scale = logit_scale;
+    mm.logit_softcap = softcap;
+    mm.suppress = (int32_t *)suppress;
+    mm.n_suppress = n_suppress;
+    mm.rms_eps = 1e-6f;
+    float *w = calloc((size_t)E * V, sizeof(float));
+    float *tape = calloc((size_t)rows * E, sizeof(float)), *onw = malloc(sizeof(float) * E);
+    float *dhn = calloc((size_t)rows * E, sizeof(float)), *dx = calloc((size_t)rows * E, sizeof(float));
+    int32_t *toks = calloc((size_t)rows + 1, sizeof(int32_t));
+    int *tmap = malloc(sizeof(int) * (size_t)rows);
+    float *thb = softcap > 0 ? malloc(sizeof(float) * (size_t)rows * V) : NULL;
+    bool ok = w && tape && onw && dhn && dx && toks && tmap && (softcap <= 0 || thb);
+    gguf_tensor out;
+    memset(&out, 0, sizeof(out));
+    if (ok) {
+        for (int i = 0; i < E; i++) onw[i] = 1.0f;
+        for (int r = 0; r < rows; r++) { tmap[r] = r; toks[r + 1] = targets[r]; }
+        out.type = T_F32;
+        out.n_dims = 2;
+        out.ne[0] = E;
+        out.ne[1] = (uint64_t)V;
+        out.data = w;
+        out.nbytes = sizeof(float) * (uint64_t)E * (uint64_t)V;
+        out.scale = 1.0f;
+        mm.output = &out;
+        mm.out_norm_w = onw;
+        mm.tape = tape;
+        mm.tape_T = rows;
+        ok = head_rows_bw(&mm, toks, rows, pos_w, NULL, probs, thb, dhn, tmap, rows, dx);
+    }
+    free(w); free(tape); free(onw); free(dhn); free(dx); free(toks); free(tmap); free(thb);
+    return ok;
+}
+

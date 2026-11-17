@@ -372,6 +372,15 @@ bool   gpu_train_kv_store_check(model_t *m, const tkv_args *a, const float *src,
 // no kernel in this PTX, or a shape or kind it does not take.
 bool   gpu_train_attn_fw_check(model_t *m, const tattn_args *a, const void *kc,
                                const void *vc, const float *q, float *ao);
+// R8.24.1 B5, the kernel gate's entry: the device twin of the head (k_thead)
+// over a->rows host rows of a->V logits a->stride apart, in place: for each
+// row with targets[r] >= 0, lse[r] and z_target[r] (the transformed row's
+// normalizer and target logit) and the row's adjoint (pos_w[r] its weight,
+// pos_w may be NULL; suppress: a->n_suppress ids). false: no context or no
+// kernel in this PTX.
+bool   gpu_train_head_check(model_t *m, const thead_args *a, float *z, const int32_t *targets,
+                            const float *pos_w, const int32_t *suppress, double *lse,
+                            float *z_target);
 bool   gpu_train_ffn_check(model_t *m, int act, const float *g, const float *u,
                            const float *dh, float *h, float *dg, float *du, int n);
 // R8.24.1 B6, the kernel gate's entry: the device twins of one site's adapter
