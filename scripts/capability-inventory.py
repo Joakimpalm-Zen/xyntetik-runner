@@ -91,7 +91,7 @@ CLI_RULES = {
         "--require-signed", "--require-signed-model", "--model-sig", "--model-pubkey",
         "--lora-sig", "--require-eval", "--watermark", "--force-uncertified",
         "runner attest", "runner attest keygen", "runner attest sign", "runner attest check",
-        "runner attest lineage", "runner attest bundle", "runner attest check-bundle",
+        "runner attest lineage", "runner attest replay", "runner attest bundle", "runner attest check-bundle",
         "runner attest pack", "runner attest check-pack", "runner attest sign-model",
         "runner attest watermark-keygen", "runner attest detect",
     },
