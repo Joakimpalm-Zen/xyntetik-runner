@@ -6504,6 +6504,35 @@ static bool runtime_kv_layout(model_t *m, const model_params *p, int n_ctx) {
     return true;
 }
 
+// hb/hb2's floats for B token columns (runtime_buffers says why)
+static size_t model_ff_scratch(const model_t *m, int B) {
+    size_t ff_scratch = (size_t)B * m->n_ff;
+    if (m->moe_gemma && 2 * (size_t)m->n_ff_exp > ff_scratch)
+        ff_scratch = 2 * (size_t)m->n_ff_exp;
+    return ff_scratch;
+}
+
+// R8.24.1 A4: under --train-gpu the forward's batch scratch, which every
+// device product of the forward reads from or writes into, is registered
+// with the training context for the run (its sizes are runtime_buffers'
+// for n_batch columns), so those copies run at pinned speed. A buffer the
+// driver will not register stays pageable; no value depends on it.
+void model_train_pin_scratch(model_t *m) {
+    int q_dim = 0, kv_dim = 0;
+    for (int l = 0; l < m->n_layer; l++) {
+        if (model_q_dim(m, l) > q_dim)   q_dim  = model_q_dim(m, l);
+        if (model_kv_dim(m, l) > kv_dim) kv_dim = model_kv_dim(m, l);
+    }
+    size_t B = (size_t)m->n_batch;
+    gpu_train_pin(m, m->xb, sizeof(float) * B * (size_t)m->xdim);
+    gpu_train_pin(m, m->xb2, sizeof(float) * B * (size_t)m->xdim);
+    gpu_train_pin(m, m->q, sizeof(float) * B * (size_t)q_dim);
+    gpu_train_pin(m, m->k_tmp, sizeof(float) * B * (size_t)kv_dim);
+    gpu_train_pin(m, m->v_tmp, sizeof(float) * B * (size_t)kv_dim);
+    gpu_train_pin(m, m->hb, sizeof(float) * model_ff_scratch(m, m->n_batch));
+    gpu_train_pin(m, m->hb2, sizeof(float) * model_ff_scratch(m, m->n_batch));
+}
+
 // This instance's buffers: the KV caches, the activations, every family's
 // scratch and recurrent state, the expert scratch; refused together.
 static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
@@ -6647,9 +6676,7 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
     // MoE also reuses hb to hold one token's fused gate_up of width 2*n_ff_exp,
     // so the buffer must cover both — otherwise --batch 1 with 2*n_ff_exp > n_ff
     // overflows the heap.
-    size_t ff_scratch = (size_t)B * m->n_ff;
-    if (m->moe_gemma && 2 * (size_t)m->n_ff_exp > ff_scratch)
-        ff_scratch = 2 * (size_t)m->n_ff_exp;
+    size_t ff_scratch = model_ff_scratch(m, B);
     m->hb     = malloc(sizeof(float) * ff_scratch);
     m->hb2    = malloc(sizeof(float) * ff_scratch);
     m->att    = malloc(sizeof(float) * (size_t)m->n_head * n_ctx);
@@ -7519,9 +7546,20 @@ static bool mv_fuse_enabled(void) {
 static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
                            int x_stride, int n_in, int n_batch) {
     if (t_mv_dev) {   // device mode: each part its own product
+        // R8.24.1: in one round trip (the input sent once, one sync), each
+        // part gpu_train_mm's bits; a part the device declines runs below
+        unsigned done = 0;
+        if (np <= GPU_MM_PARTS) {
+            gpu_mm_part gp[GPU_MM_PARTS] = { { 0 } };
+            for (int s = 0; s < np; s++)
+                gp[s] = (gpu_mm_part){ p[s].w, p[s].y, p[s].y_stride, p[s].n_out,
+                                       p[s].bias };
+            done = gpu_train_mm_parts(t_mv_dev, gp, np, x, x_stride, n_in, n_batch);
+        }
         for (int s = 0; s < np; s++)
-            matvec_b(tp, p[s].y, p[s].y_stride, p[s].w, x, x_stride, n_in,
-                     p[s].n_out, p[s].bias, n_batch);
+            if (!(done >> s & 1))
+                matvec_b(tp, p[s].y, p[s].y_stride, p[s].w, x, x_stride, n_in,
+                         p[s].n_out, p[s].bias, n_batch);
         return;
     }
     int ec = mv_exact_cols();
@@ -11303,11 +11341,19 @@ static void mvt_transpose_worker(void *ctx, int j0, int j1) {
                 jb->dy[(size_t)t * jb->n_out + j];
 }
 
+// R8.24.1: set (in device mode) by a caller whose dx is still the zeros it
+// was allocated as; the next matvec_t on this thread consumes it, and the
+// device clears its copy instead of receiving the zeros (gpu_train_mvt0)
+static _Thread_local bool t_mvt_dx_zero;
+
 static bool matvec_t(model_t *m, const gguf_tensor *w, const float *dy,
                      float *dx, int n_in, int n_out, int nb) {
+    bool dx_zero = t_mvt_dx_zero;
+    t_mvt_dx_zero = false;
     // the CUDA assist reads raw rows; a scaled tensor stays on the host path
     if (m->train_gpu && w->scale == 1.0f &&
-        gpu_train_mvt(m, w, dy, dx, n_in, n_out, nb))
+        (dx_zero ? gpu_train_mvt0(m, w, dy, dx, n_in, n_out, nb)
+                 : gpu_train_mvt(m, w, dy, dx, n_in, n_out, nb)))
         return true;
     float *dyT = NULL;
     if (nb > 1) {
@@ -11588,6 +11634,24 @@ static bool lora_site_bw(model_t *m, int l, int slot, const gguf_tensor *w,
     return true;
 }
 
+// R8.24.1: lora_site_bw for a dxin still at its allocated zeros, and
+// matvec_t likewise: under --train-gpu the base product starts from a
+// cleared device copy (the same values, so the same bits); elsewhere the
+// plain call
+static bool lora_site_bw0(model_t *m, int l, int slot, const gguf_tensor *w,
+                          const float *xin, const float *dy, float *dxin,
+                          int n_in, int n_out, int nb) {
+    t_mvt_dx_zero = m->train_dev;
+    bool ok = lora_site_bw(m, l, slot, w, xin, dy, dxin, n_in, n_out, nb);
+    t_mvt_dx_zero = false;
+    return ok;
+}
+static bool matvec_t0(model_t *m, const gguf_tensor *w, const float *dy,
+                      float *dx, int n_in, int n_out, int nb) {
+    t_mvt_dx_zero = m->train_dev;
+    return matvec_t(m, w, dy, dx, n_in, n_out, nb);
+}
+
 // forward apply for the recompute passes (LORA_HOOK's math), nb rows packed
 // n_in / n_out apart
 static void lora_site_fw(model_t *m, int l, int slot, float *y,
@@ -11668,6 +11732,51 @@ float model_ffn_act(int act, float g, float u) { return gated_act(act, g, u); }
 float model_ffn_act_deriv(int act, float g) { return act_d(act, g); }
 float model_xielu(float x, float an, float ap, float b, float eps) { return xielu(x, an, ap, b, eps); }
 float model_xielu_deriv(float x, float an, float ap, float b, float eps) { return xielu_d(x, an, ap, b, eps); }
+
+// R8.24.1: under --train-gpu the window's three elementwise loops of a gated
+// FFN (the recompute's act(g)*u, the gate site's dh*u*act'(g), the up site's
+// dh*act(g)) run on the pool by whole positions; each position's loop is the
+// serial one's, so no value depends on the thread count. The CPU trainer
+// keeps the serial loops (a loop moved into a worker can compile differently
+// under -ffast-math, the NUM_STAGE note), so its bytes cannot move.
+enum { LFFN_HACT, LFFN_DG, LFFN_DU };
+typedef struct {
+    int act, nff;
+    const float *g, *u, *dh;
+    float *out;
+} lffn_job;
+static void lffn_hact(void *ctx, int t0, int t1) {
+    const lffn_job *J = ctx;
+    for (int t = t0; t < t1; t++) {
+        const float *gt = J->g + (size_t)t * J->nff, *ut = J->u + (size_t)t * J->nff;
+        float *ht = J->out + (size_t)t * J->nff;
+        for (int i = 0; i < J->nff; i++) ht[i] = gated_act(J->act, gt[i], ut[i]);
+    }
+}
+static void lffn_dg(void *ctx, int t0, int t1) {
+    const lffn_job *J = ctx;
+    for (int t = t0; t < t1; t++) {
+        const float *gt = J->g + (size_t)t * J->nff, *ut = J->u + (size_t)t * J->nff;
+        const float *dht = J->dh + (size_t)t * J->nff;
+        float *dgt = J->out + (size_t)t * J->nff;
+        for (int i = 0; i < J->nff; i++) dgt[i] = dht[i] * ut[i] * act_d(J->act, gt[i]);
+    }
+}
+static void lffn_du(void *ctx, int t0, int t1) {
+    const lffn_job *J = ctx;
+    for (int t = t0; t < t1; t++) {
+        const float *gt = J->g + (size_t)t * J->nff;
+        const float *dht = J->dh + (size_t)t * J->nff;
+        float *dgt = J->out + (size_t)t * J->nff;
+        for (int i = 0; i < J->nff; i++) dgt[i] = dht[i] * act_f(J->act, gt[i]);
+    }
+}
+static void lffn_pool(model_t *m, int kind, int T, int nff, const float *g,
+                      const float *u, const float *dh, float *out) {
+    lffn_job j = { m->ffn_act, nff, g, u, dh, out };
+    tpool_run(m->tp, kind == LFFN_HACT ? lffn_hact : kind == LFFN_DG ? lffn_dg : lffn_du,
+              &j, T);
+}
 
 static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
     const char *r = NULL;
@@ -12127,6 +12236,7 @@ typedef struct {
     // two gradients go back through it as one interleaved plane
     bool q35;
     float *dqg;
+    bool ffn_pinned;   // R8.24.1: g, u, dhact, dgu are the context's blocks
 } lbw_state;
 
 // The sweep's shapes and buffers, and the layer output scale applied to dx;
@@ -12190,8 +12300,20 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
     float *xn2 = malloc(szE);
     float *q   = malloc(sizeof(float) * (size_t)T * q_dim);
     float *ao  = malloc(sizeof(float) * (size_t)T * q_dim);
-    float *g   = malloc(sizeof(float) * (size_t)T * nff);
-    float *u   = malloc(sizeof(float) * (size_t)T * nff);
+    // R8.24.1 A4: under --train-gpu the four n_ff-wide planes the device
+    // products fill or read (g, u, dhact, dgu) are the training context's
+    // pinned blocks, the same four for every layer (dhact cleared, as calloc
+    // gives it); without all four, the allocations as before
+    size_t szF = sizeof(float) * (size_t)T * nff;
+    float *pin[4] = { NULL, NULL, NULL, NULL };
+    bool ffn_pinned = false;
+    if (m->train_dev) {
+        for (int i = 0; i < 4; i++) pin[i] = gpu_train_host_buf(m, i, szF);
+        ffn_pinned = pin[0] && pin[1] && pin[2] && pin[3];
+        if (ffn_pinned) memset(pin[2], 0, szF);
+    }
+    float *g   = ffn_pinned ? pin[0] : malloc(sizeof(float) * (size_t)T * nff);
+    float *u   = ffn_pinned ? pin[1] : malloc(sizeof(float) * (size_t)T * nff);
     // window-wide gradient buffers: slice 3 runs each projection site as
     // ONE batched transposed matvec over all T positions, so the per-site
     // dy/dx live as [T][dim] planes rather than single reused rows
@@ -12201,8 +12323,8 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
     float *dk   = calloc((size_t)T * kv_dim, sizeof(float));
     float *dv   = calloc((size_t)T * kv_dim, sizeof(float));
     float *hact = malloc(sizeof(float) * (size_t)T * nff);
-    float *dhact = calloc((size_t)T * nff, sizeof(float));
-    float *dgu  = malloc(sizeof(float) * (size_t)T * nff);
+    float *dhact = ffn_pinned ? pin[2] : calloc((size_t)T * nff, sizeof(float));
+    float *dgu  = ffn_pinned ? pin[3] : malloc(sizeof(float) * (size_t)T * nff);
     float *dxn2 = calloc((size_t)T * E, sizeof(float));
     float *dao  = calloc((size_t)T * q_dim, sizeof(float));
     float *tmpE = malloc(sizeof(float) * (size_t)E);
@@ -12336,6 +12458,7 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
     s->dyb = dyb;
     s->q35 = q35;
     s->dqg = dqg;
+    s->ffn_pinned = ffn_pinned;
     return ok;
 }
 
@@ -12401,6 +12524,23 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
               ly->attn_norm_b, E, m->rms_eps);
     bool ex = t_mv_exact;
     t_mv_exact = true;
+    if (ok && t_mv_dev == m) {
+        // R8.24.1: under --train-gpu the products of xn1 below in one round
+        // trip (matvec_b_parts' device mode), in the same order
+        mv_part xp[4];
+        int np = 0;
+        if (s->q35)
+            xp[np++] = (mv_part){ s->dqg, 2 * q_dim, ly->wq, 2 * q_dim, ly->bq };
+        else
+            xp[np++] = (mv_part){ q, q_dim, ly->wq, q_dim, ly->bq };
+        if (need_kpre)
+            xp[np++] = (mv_part){ kpre, kv_dim, ly->wk, kv_dim, ly->bk };
+        if (vnorm && ly->wv)
+            xp[np++] = (mv_part){ vpre, kv_dim, ly->wv, kv_dim, ly->bv };
+        if (gate && !s->q35)
+            xp[np++] = (mv_part){ gpre, q_dim, ly->wq_gate, q_dim, NULL };
+        matvec_b_parts(m->tp, xp, np, xn1, E, E, T);
+    } else
     if (ok) {
         // qwen35's fused Q/gate plane goes to dqg (scratch until B2)
         if (s->q35)
@@ -12524,6 +12664,16 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
     // a gate-less FFN (Apertus) is up -> xIELU -> down, as serving's
     // layer_dense_ffn takes it; any other gate-less activation is not covered
     if (ok && !moe && !ly->w_gate && m->ffn_act != ACT_XIELU) ok = false;
+    if (ok && !moe && ly->w_gate && t_mv_dev == m) {
+        // R8.24.1: gate and up of xn2 in one round trip under --train-gpu
+        mv_part gu[2] = { { g, nff, ly->w_gate, nff, NULL },
+                          { u, nff, ly->w_up,   nff, NULL } };
+        t_mv_exact = true;
+        matvec_b_parts(m->tp, gu, 2, xn2, E, E, T);
+        t_mv_exact = ex;
+        lora_site_fw(m, l, LW_GATE, g, xn2, E, nff, T);
+        lora_site_fw(m, l, LW_UP, u, xn2, E, nff, T);
+    } else
     if (ok && !moe) {
         t_mv_exact = true;
         if (ly->w_gate) matvec_b(m->tp, g, nff, ly->w_gate, xn2, E, E, nff, NULL, T);
@@ -12534,6 +12684,9 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
     }
 
     if (lprof) lbw_tick(m, LBW_R, &lt, &s->dt);
+    if (ok && !moe && ly->w_gate && m->train_dev)
+        lffn_pool(m, LFFN_HACT, T, nff, g, u, NULL, hact);
+    else
     for (int t = 0; ok && !moe && t < T; t++) {
         const float *gt = g + (size_t)t * nff, *ut = u + (size_t)t * nff;
         float *ht = hact + (size_t)t * nff;
@@ -12748,7 +12901,7 @@ NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state
             ok = ok && matvec_t(m, ly->ffn_gate_inp, mdr, dx2, E, ne_x, 1);
         }
     } else {
-    ok = ok && lora_site_bw(m, l, LW_DOWN, ly->w_down, hact, dbr, dhact,
+    ok = ok && lora_site_bw0(m, l, LW_DOWN, ly->w_down, hact, dbr, dhact,
                             nff, E, T);
     if (!ly->w_gate) {
         // R8.27: a gate-less FFN, hact = xielu(u): d u = dhact * xielu'(u)
@@ -12768,14 +12921,20 @@ NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state
         ok = ok && lora_site_bw(m, l, LW_UP, ly->w_up, xn2, dgu, dxn2,
                                 E, nff, T);
     } else {
+    if (ok && m->train_dev)
+        lffn_pool(m, LFFN_DG, T, nff, g, u, dhact, dgu);
+    else
     for (int t = 0; ok && t < T; t++) {
         const float *gt = g + (size_t)t * nff, *ut = u + (size_t)t * nff;
         const float *dht = dhact + (size_t)t * nff;
         float *dgt = dgu + (size_t)t * nff;
         for (int i = 0; i < nff; i++) dgt[i] = dht[i] * ut[i] * act_d(m->ffn_act, gt[i]);
     }
-    ok = ok && lora_site_bw(m, l, LW_GATE, ly->w_gate, xn2, dgu, dxn2,
+    ok = ok && lora_site_bw0(m, l, LW_GATE, ly->w_gate, xn2, dgu, dxn2,
                             E, nff, T);
+    if (ok && m->train_dev)
+        lffn_pool(m, LFFN_DU, T, nff, g, NULL, dhact, dgu);
+    else
     for (int t = 0; ok && t < T; t++) {
         const float *gt = g + (size_t)t * nff;
         const float *dht = dhact + (size_t)t * nff;
@@ -12814,7 +12973,7 @@ NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state
             for (int i = 0; i < E; i++) dbt[i] = rs * dxat[i];
         }
     }
-    ok = ok && lora_site_bw(m, l, LW_O, ly->wo, ao, dbr, dao, q_dim, E, T);
+    ok = ok && lora_site_bw0(m, l, LW_O, ly->wo, ao, dbr, dao, q_dim, E, T);
     if (ok && gate) {
         // out = pre * sigmoid(g): d pre = dao * s; d g = dao * pre * s(1-s);
         // the gate projection is frozen, so its adjoint lands on the normed
@@ -13000,7 +13159,9 @@ NUM_STAGE void lbw_projections(model_t *m, int l, int T, float *dx, lbw_state *s
             }
         ok = ok && lora_site_bw(m, l, LW_Q, ly->wq, xn1, s->dqg, dxn1, E, 2 * q_dim, T);
     } else
-    ok = ok && lora_site_bw(m, l, LW_Q, ly->wq, xn1, dq, dxn1, E, q_dim, T);
+    // dxn1 is still zero here unless a frozen output gate added into it
+    ok = ok && (s->gate ? lora_site_bw : lora_site_bw0)(m, l, LW_Q, ly->wq, xn1,
+                                                        dq, dxn1, E, q_dim, T);
     if (owns) {
         ok = ok && lora_site_bw(m, l, LW_K, ly->wk, xn1, dk, dxn1, E, kv_dim, T);
         if (ly->wv)
@@ -13034,6 +13195,8 @@ NUM_STAGE void lbw_input_grad(model_t *m, int l, int T, float *dx, lbw_state *s,
 
 // Every buffer lbw_state_init allocated.
 static void lbw_state_free(lbw_state *s) {
+    // R8.24.1: the pinned planes belong to the training context
+    if (s->ffn_pinned) s->g = s->u = s->dhact = s->dgu = NULL;
     float *qpre = s->qpre;
     float *kpre = s->kpre;
     float *vpre = s->vpre;
@@ -13828,7 +13991,7 @@ NUM_STAGE bool head_rows_bw(model_t *m, const int32_t *toks, int T,
     }
     if (!ok) return false;
     memset(dhn, 0, sizeof(float) * (size_t)nc * E);
-    if (!matvec_t(m, m->output, probs, dhn, E, V, nc)) return false;
+    if (!matvec_t0(m, m->output, probs, dhn, E, V, nc)) return false;
     for (int c = 0; c < nc; c++) {
         const float *hc = m->tape + ((size_t)L * T + tmap[c]) * E;
         rmsnorm_bw(hc, m->out_norm_w, dhn + (size_t)c * E,

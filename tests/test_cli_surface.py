@@ -340,7 +340,7 @@ def test_attest_help_and_no_verb(runner_bin):
     assert p.returncode != 0 and b"frobnicate" in p.stderr
 
 
-ATTEST_VERBS = ["keygen", "sign", "check", "lineage", "bundle", "check-bundle", "pack",
+ATTEST_VERBS = ["keygen", "sign", "check", "lineage", "replay", "bundle", "check-bundle", "pack",
                 "check-pack", "sign-model", "watermark-keygen", "detect"]
 
 

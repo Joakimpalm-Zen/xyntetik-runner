@@ -239,6 +239,7 @@ def test_train_gpu_matches_cpu_within_rounding(runner_bin, base, tmp_path, famil
     for a, b in zip(lc, lg):
         assert abs(a - b) <= 1e-4 * max(abs(a), 1e-6), (family, lc, lg)
     rec = json.loads(pathlib.Path(str(ag) + ".train.json").read_text())
+    assert rec["determinism"] == "gpu-within-tolerance", rec
     assert rec["products"]["device"] == "cuda", rec.get("products")
     assert rec["products"]["tensors_on_device"] > 0, rec["products"]
     assert rec["products"]["tensors_on_cpu"] == 0, rec["products"]
@@ -708,3 +709,236 @@ def test_dpo_trains_without_naming_the_cpu(runner_bin, base, tmp_path):
                        stderr=subprocess.PIPE, timeout=600)
     assert p.returncode == 0, p.stderr.decode(errors="replace")
     assert out.exists()
+
+
+def _binary_flavor(runner_bin):
+    p = subprocess.run([str(runner_bin), "--version"], stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, check=True, text=True, timeout=30)
+    return "t3" if "(t3)" in p.stdout else "default"
+
+
+def test_train_record_carries_build_flavor_commit_and_replay_options(runner_bin, base, tmp_path):
+    """R17.9(a): .train.json carries the additive build and option fields needed
+    for replay, without host paths or an argv string."""
+    flavor = _binary_flavor(runner_bin)
+    plain, nobos, kvf32 = tmp_path / "plain.gguf", tmp_path / "nobos.gguf", tmp_path / "kvf32.gguf"
+    _train(runner_bin, base, plain, steps=2)
+    _train(runner_bin, base, nobos, steps=2, extra=("--no-bos",))
+    _train(runner_bin, base, kvf32, steps=2, extra=("--train-kv-f32",))
+
+    r_plain = json.loads(pathlib.Path(f"{plain}.train.json").read_text())
+    r_nobos = json.loads(pathlib.Path(f"{nobos}.train.json").read_text())
+    r_kvf32 = json.loads(pathlib.Path(f"{kvf32}.train.json").read_text())
+
+    assert r_plain["schema_version"] == "xyntetik.runner.train.v1"
+    b = r_plain["build"]
+    assert b["flavor"] == flavor
+    assert "commit" in b and "dirty" in b
+    if b["commit"] is not None:
+        assert len(b["commit"]) == 40 and isinstance(b["dirty"], bool)
+    else:
+        assert b["dirty"] is None
+
+    assert r_plain["no_bos"] is False and r_nobos["no_bos"] is True
+    assert r_plain["lora_scale"] == pytest.approx(1.0)
+    assert r_plain["kv_cache"] == "f16" and r_kvf32["kv_cache"] == "f32"
+    assert "resume_optim_sha256" not in r_plain
+    # R17.9: exact only from a clean, stamped T3 build (test_a_dirty_build_never_claims_t3_exact)
+    want_det = "cpu-t3-exact" if flavor == "t3" and b["commit"] and b["dirty"] is False else "cpu-same-binary"
+    assert r_plain["determinism"] == want_det
+    assert r_nobos["determinism"] == want_det and r_kvf32["determinism"] == want_det
+
+
+def test_continued_training_records_lora_scale(runner_bin, base, tmp_path):
+    first = tmp_path / "first.gguf"
+    unscaled = tmp_path / "unscaled.gguf"
+    scaled = tmp_path / "scaled.gguf"
+    _train(runner_bin, base, first, steps=2, extra=("--lora-rank", "4"))
+    _train(runner_bin, base, unscaled, steps=2, extra=("--lora", str(first)))
+    _train(runner_bin, base, scaled, steps=2, extra=("--lora", str(first), "--lora-scale", "0.5"))
+    rec = json.loads(pathlib.Path(f"{scaled}.train.json").read_text())
+    assert rec["lora_scale"] == pytest.approx(0.5)
+    assert scaled.read_bytes() != unscaled.read_bytes()
+
+
+def test_non_dense_ce_modes_keep_thread_identity_without_overclaiming_t3(runner_bin, base, tmp_path):
+    """R17.9(a): DPO, --train-full, DeltaNet and MoE hold single-build thread
+    identity, but their records stay at cpu-same-binary while cross-ISA coverage
+    is limited to dense LoRA cross-entropy."""
+    dpo_data = tmp_path / "pairs.jsonl"
+    dpo_data.write_text(
+        json.dumps({"prompt": "the runner trains", "chosen": " the adapter", "rejected": " the corpus"}) + "\n" +
+        json.dumps({"prompt": "the adapter learns", "chosen": " the corpus", "rejected": " the runner"}) + "\n")
+    dt1, dt3 = tmp_path / "dpo-t1.gguf", tmp_path / "dpo-t3.gguf"
+    for out, nt in ((dt1, "1"), (dt3, "3")):
+        p = subprocess.run([str(runner_bin), "-m", str(base / "base.gguf"), "--train-dpo", str(dpo_data),
+                            "--train-steps", "2", "--lr", "3e-3", "--train-out", str(out),
+                            "-t", nt, "--gpu", "off"], cwd=ROOT, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=600)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+    assert dt1.read_bytes() == dt3.read_bytes()
+    assert json.loads(pathlib.Path(f"{dt1}.train.json").read_text())["determinism"] == "cpu-same-binary"
+
+    ft1, ft3 = tmp_path / "full-t1.gguf", tmp_path / "full-t3.gguf"
+    for out, nt in ((ft1, "1"), (ft3, "3")):
+        p = subprocess.run([str(runner_bin), "-m", str(base / "base.gguf"), "--train", str(base / "data.jsonl"),
+                            "--train-steps", "2", "--lr", "1e-3", "--train-full", "--train-out", str(out),
+                            "-t", nt, "--gpu", "off"], cwd=ROOT, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=600)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+    assert ft1.read_bytes() == ft3.read_bytes()
+    assert json.loads(pathlib.Path(f"{ft1}.train.json").read_text())["determinism"] == "cpu-same-binary"
+
+    for family in ("qwen35", "clef", "moe-renorm"):
+        fdir = tmp_path / family
+        fdir.mkdir()
+        d = _family_fixture(fdir, family)
+        out = tmp_path / f"{family}.gguf"
+        _train(runner_bin, d, out, steps=2)
+        rec = json.loads(pathlib.Path(f"{out}.train.json").read_text())
+        assert rec["determinism"] == "cpu-same-binary", family
+
+
+def test_fresh_adapter_with_lora_scale_flag_records_scale_used(runner_bin, base, tmp_path):
+    """R17.9(a) P3: model_lora_train_init takes no --lora-scale, so a fresh run
+    passing --lora-scale still trains at scale 1 and records 1.0."""
+    plain = tmp_path / "plain.gguf"
+    flagged = tmp_path / "flagged.gguf"
+    _train(runner_bin, base, plain, steps=2)
+    _train(runner_bin, base, flagged, steps=2, extra=("--lora-scale", "0.5"))
+    rec = json.loads(pathlib.Path(f"{flagged}.train.json").read_text())
+    assert rec["lora_scale"] == pytest.approx(1.0)
+    assert flagged.read_bytes() == plain.read_bytes()
+
+
+def test_canon_gap_model_records_cpu_same_binary_while_q8_is_t3_exact(runner_bin, base, tmp_path):
+    """R17.9(a) P2: a T3 build keeps cpu-same-binary for models whose weights
+    lack canonical-order kernels (test-bf16.gguf), while canonical-clean models
+    (test-q8.gguf) record cpu-t3-exact."""
+    v = subprocess.run([str(runner_bin), "--version"], cwd=ROOT, capture_output=True, text=True, timeout=30)
+    t3 = "(t3)" in v.stdout
+    for fixture, expected in (("test-bf16.gguf", "cpu-same-binary"),
+                              ("test-q8.gguf", "cpu-t3-exact" if t3 else "cpu-same-binary")):
+        model = ROOT / fixture
+        if not model.exists():
+            pytest.skip(f"{fixture} not generated")
+        out = tmp_path / f"{model.stem}-out.gguf"
+        p = subprocess.run([str(runner_bin), "-m", str(model), "--gpu", "off",
+                            "--train", str(base / "corpus.txt"), "--train-steps", "2",
+                            "--lr", "3e-3", "--train-out", str(out), "-t", "2"],
+                           cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+        rec = json.loads(pathlib.Path(f"{out}.train.json").read_text())
+        # R17.9: a dirty or unstamped build is never exact (test_a_dirty_build_never_claims_t3_exact)
+        if expected == "cpu-t3-exact" and (rec["build"]["dirty"] is not False or not rec["build"]["commit"]):
+            expected = "cpu-same-binary"
+        assert rec["determinism"] == expected, (fixture, t3, rec["determinism"], rec.get("determinism_reasons"))
+
+
+# R17.9(a): what decides a training run's bytes is in its record, or the record does not claim cpu-t3-exact.
+def _train_record_with(runner_bin, base, tmp_path, name, extra=(), env=None):
+    model = ROOT / "test-q8.gguf"
+    if not model.exists():
+        pytest.skip("test-q8.gguf not generated")
+    out = tmp_path / f"{name}.gguf"
+    e = {k: v for k, v in os.environ.items() if not k.startswith("RUNNER_")}
+    e.update(env or {})
+    p = subprocess.run([str(runner_bin), "-m", str(model), "--gpu", "off", "--train", str(base / "corpus.txt"),
+                        "--train-steps", "2", "--lr", "3e-3", "--train-out", str(out), "-t", "2", *extra],
+                       cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600, env=e)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    return json.loads(pathlib.Path(f"{out}.train.json").read_text()), out
+
+
+def test_a_model_override_that_moves_the_bytes_is_in_the_record(runner_bin, base, tmp_path):
+    """--rope-base and --rope-scale change a run's adapter in a default and a T3 build. A record without them
+    replays to MISMATCH, and the replay with them on its command line read VERIFIED for a recipe the record did
+    not hold. The record names every model override the run took."""
+    plain, a = _train_record_with(runner_bin, base, tmp_path, "plain")
+    assert "model_overrides" not in plain, plain
+    rec, b = _train_record_with(runner_bin, base, tmp_path, "rope", extra=("--rope-base", "50000", "--rope-scale", "2"))
+    assert a.read_bytes() != b.read_bytes(), "live control: the overrides must move the bytes"
+    assert rec.get("model_overrides") == {"rope_base": 50000, "rope_scale": 2}, rec.get("model_overrides")
+
+
+def test_a_runner_switch_in_the_environment_is_recorded_and_not_exact(runner_bin, base, tmp_path):
+    """RUNNER_CPU_I8=1 (and RUNNER_CPU_I8_PREFILL=1) change a default build's adapter on test-q8.gguf. No list of
+    switches is known to be complete for every model, so every RUNNER_ variable outside a named inert set is in
+    the record, and a run with one set is never cpu-t3-exact. RUNNER_TRAIN_ROWS is in the inert set: every width
+    trains the same bytes (test_batched_taped_forward_is_the_solo_bytes)."""
+    rec, _ = _train_record_with(runner_bin, base, tmp_path, "i8", env={"RUNNER_CPU_I8": "1", "RUNNER_TRAIN_ROWS": "1"})
+    assert rec.get("environment") == {"RUNNER_CPU_I8": "1"}, rec.get("environment")
+    assert rec["determinism"] == "cpu-same-binary", rec["determinism"]
+    assert any("RUNNER_CPU_I8" in r for r in rec.get("determinism_reasons", [])), rec.get("determinism_reasons")
+    # inert: RUNNER_TRAIN_ROWS, and the variables GitHub Actions' runner sets on every job (the binary reads none)
+    inert, _ = _train_record_with(runner_bin, base, tmp_path, "rows",
+                                  env={"RUNNER_TRAIN_ROWS": "1", "RUNNER_OS": "Linux", "RUNNER_TEMP": "/tmp",
+                                       "RUNNER_NAME": "GitHub Actions 1", "RUNNER_ARCH": "X64"})
+    assert "environment" not in inert, inert.get("environment")
+
+
+def test_a_dirty_build_never_claims_t3_exact(runner_bin, base, tmp_path):
+    """A dirty build's source is not a commit, so no other machine can build its binary: it claims
+    cpu-same-binary at most, and says why. RUNNER_TEST_BUILD_DIRTY=1 marks the run's build dirty; it can add
+    dirt, never take it away."""
+    rec, _ = _train_record_with(runner_bin, base, tmp_path, "dirty", env={"RUNNER_TEST_BUILD_DIRTY": "1"})
+    assert rec["build"]["dirty"] is True, rec["build"]
+    assert rec["determinism"] == "cpu-same-binary", rec["determinism"]
+    assert any("build.dirty" in r for r in rec.get("determinism_reasons", [])), rec.get("determinism_reasons")
+
+
+def _fixture(tmp_path, name, *flags):
+    out = tmp_path / f"{name}.gguf"
+    subprocess.run([sys.executable, str(ROOT / "scripts" / "make-test-model.py"), *flags, str(out)], check=True,
+                   cwd=ROOT, stdout=subprocess.DEVNULL)
+    return out
+
+
+def _train_on(runner_bin, base, model, out, extra=(), env=None):
+    e = {k: v for k, v in os.environ.items() if not k.startswith("RUNNER_") and not k.startswith("XR_")}
+    e.update(env or {})
+    return subprocess.run([str(runner_bin), "-m", str(model), "--gpu", "off", "--train", str(base / "corpus.txt"),
+                           "--train-steps", "2", "--lr", "3e-3", "--train-out", str(out), "-t", "2", *extra],
+                          cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600, env=e)
+
+
+def test_mtp_moves_no_training_bytes_and_is_not_recorded(runner_bin, base, tmp_path):
+    """A predictor block (MTP) is a decode-time draft head: training never reads it. A run with --mtp on a model
+    that carries one trains the bytes of the run without it, so the record has nothing to cite for it. It wrote
+    "mtp": true before, with no file and no hash."""
+    model = _fixture(tmp_path, "mtp", "--mtp-layers", "1")
+    plain, mtp = tmp_path / "plain.gguf", tmp_path / "with-mtp.gguf"
+    assert _train_on(runner_bin, base, model, plain).returncode == 0
+    p = _train_on(runner_bin, base, model, mtp, extra=("--mtp",))
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    assert mtp.read_bytes() == plain.read_bytes(), "--mtp moved the training bytes"
+    rec = json.loads(pathlib.Path(f"{mtp}.train.json").read_text())
+    assert "mtp" not in rec.get("model_overrides", {}), rec.get("model_overrides")
+
+
+def test_the_ssm_switches_outside_the_runner_prefix_are_recorded(runner_bin, base, tmp_path):
+    """XR_SSM_CHUNK and XR_SSM_SERIAL (the recurrent scan's chunking) are the two variables the binary reads
+    outside the RUNNER_ prefix that reach arithmetic. A recurrent run is never cpu-t3-exact; recorded, a
+    same-binary replay can hold the replayer to them too."""
+    out = tmp_path / "ssm.gguf"
+    p = _train_on(runner_bin, base, ROOT / "test.gguf", out, env={"XR_SSM_SERIAL": "1"})
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    rec = json.loads(pathlib.Path(f"{out}.train.json").read_text())
+    assert rec.get("environment") == {"XR_SSM_SERIAL": "1"}, rec.get("environment")
+    assert rec["determinism"] == "cpu-same-binary", rec["determinism"]
+
+
+def test_batch_width_and_the_kv_ring_move_no_training_bytes(runner_bin, base, tmp_path):
+    """Measured for the record's table: on a model with sliding-window layers, -b 2 and -b 4 train the default
+    width's bytes (the rows a forward takes are capped by -b, and every width trains the same bytes), and
+    --kv-ring on is refused by training, so neither is recorded."""
+    model = _fixture(tmp_path, "swa", "--swa-window", "8")
+    ref = tmp_path / "ref.gguf"
+    assert _train_on(runner_bin, base, model, ref).returncode == 0
+    for flags in (("-b", "2"), ("-b", "4"), ("--kv-ring", "off")):
+        out = tmp_path / ("w%s.gguf" % "".join(flags).replace("-", ""))
+        p = _train_on(runner_bin, base, model, out, extra=flags)
+        assert p.returncode == 0, (flags, p.stderr.decode(errors="replace"))
+        assert out.read_bytes() == ref.read_bytes(), flags
+    ring = _train_on(runner_bin, base, model, tmp_path / "ring.gguf", extra=("--kv-ring", "on"))
+    assert ring.returncode != 0 and b"RUNNER_KV_RING" in ring.stderr, ring.stderr

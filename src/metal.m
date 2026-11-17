@@ -1515,6 +1515,7 @@ unsigned long gpu_attn_gqa_dispatches(void) { return g_gqa_dispatches; }
 // CUDA-only route; present so its gate links and reports 'never here'.
 unsigned long gpu_splitk_dispatches(void) { return 0; }
 long gpu_live_buffers(void) { return -1; }
+const char *gpu_module_failure(void) { return NULL; }
 static bool metal_attn_gqa_on(void) {
     static _Atomic int v = -1;
     if (v < 0) {
@@ -3749,12 +3750,34 @@ bool gpu_train_mvt(model_t *mm, const gguf_tensor *w, const float *dy,
     return false;
 }
 
+bool gpu_train_mvt0(model_t *mm, const gguf_tensor *w, const float *dy,
+                    float *dx, int n_in, int n_out, int nb) {
+    (void)mm; (void)w; (void)dy; (void)dx; (void)n_in; (void)n_out; (void)nb;
+    return false;
+}
+
 bool gpu_train_mm(model_t *mm, const gguf_tensor *w, const float *x,
                   int x_stride, float *y, int y_stride, int n_in, int n_out,
                   const float *bias, int nb) {
     (void)mm; (void)w; (void)x; (void)x_stride; (void)y; (void)y_stride;
     (void)n_in; (void)n_out; (void)bias; (void)nb;
     return false;
+}
+
+unsigned gpu_train_mm_parts(model_t *mm, const gpu_mm_part *p, int np,
+                            const float *x, int x_stride, int n_in, int nb) {
+    (void)mm; (void)p; (void)np; (void)x; (void)x_stride; (void)n_in; (void)nb;
+    return 0;
+}
+
+bool gpu_train_pin(model_t *mm, void *p, size_t bytes) {
+    (void)mm; (void)p; (void)bytes;
+    return false;
+}
+
+void *gpu_train_host_buf(model_t *mm, int slot, size_t bytes) {
+    (void)mm; (void)slot; (void)bytes;
+    return NULL;
 }
 
 void gpu_train_prof(model_t *mm, double *t_mm, long *n_mm, double *t_mvt,

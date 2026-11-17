@@ -269,6 +269,24 @@ unsigned long gpu_splitk_dispatches(void);
 // and has not freed), or -1 where the backend does not count them. A model
 // loaded and freed must leave it where it was (tests/test_cuda_teardown.c).
 long gpu_live_buffers(void);
+// R6.90: NULL, or the first kernel module that did not load on a device that
+// was up, with the CUDA error and the driver's JIT log. A gate that finds no
+// engaged device asks this before it skips (tests/gate_gpu.h): a module the
+// driver rejected is a failure, not "no device". NULL on Metal and the CPU.
+const char *gpu_module_failure(void);
+// R6.90 (review P2): the oldest compute capability each embedded PTX image
+// runs on. k_ptx_src is built for compute_75 (runner.h RUNNER_CUDA_MIN_CC),
+// k_ptx80_src for compute_80. A device below an image's minimum cannot JIT it:
+// that is no usable device (a skip), not a module that failed to load, so
+// cuda.c checks this before the load and records no failure for it.
+#define GPU_CUDA_MIN_CC_MAJOR 7
+#define GPU_CUDA_MIN_CC_MINOR 5
+static inline bool gpu_cc_at_least(int major, int minor, int need_major, int need_minor) {
+    return major > need_major || (major == need_major && minor >= need_minor);
+}
+static inline bool gpu_cc_usable(int major, int minor) {
+    return gpu_cc_at_least(major, minor, GPU_CUDA_MIN_CC_MAJOR, GPU_CUDA_MIN_CC_MINOR);
+}
 // test hook: force (1) or forbid (0) the eager MoE routing path; -1 = env
 void   gpu_moe_eager_force(int on);
 bool   gpu_init(model_t *m);                     // false = unsupported, use CPU
@@ -304,6 +322,11 @@ bool   gpu_train_init(model_t *m);
 void   gpu_train_free(model_t *m);
 bool   gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
                      float *dx, int n_in, int n_out, int nb);
+// R8.24.1: the same product for a dx the caller holds at zero (+0.0f, every
+// element): the device clears its copy instead of receiving the zeros, so
+// the result is gpu_train_mvt's bit for bit with one transfer fewer
+bool   gpu_train_mvt0(model_t *m, const gguf_tensor *w, const float *dy,
+                      float *dx, int n_in, int n_out, int nb);
 // R8.19: y[t][j] = sum_i W[j][i] x[t][i] (+ bias[j]) for t < nb on the same
 // context, rows x_stride / y_stride apart: a batch-invariant product (column
 // t's value does not depend on the other columns of the call), the training
@@ -313,6 +336,29 @@ bool   gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
 bool   gpu_train_mm(model_t *m, const gguf_tensor *w, const float *x,
                     int x_stride, float *y, int y_stride, int n_in, int n_out,
                     const float *bias, int nb);
+// R8.24.1: up to GPU_MM_PARTS of those products of ONE input x in one round
+// trip (x sent once, one sync); each part is gpu_train_mm's product bit for
+// bit, the weights taken up in the parts' order. Returns the parts computed,
+// bit s for part s; the caller computes the others (0: none, as when
+// gpu_train_mm returns false).
+enum { GPU_MM_PARTS = 4 };
+typedef struct {
+    const gguf_tensor *w;
+    float *y;
+    int y_stride, n_out;
+    const float *bias;
+} gpu_mm_part;
+unsigned gpu_train_mm_parts(model_t *m, const gpu_mm_part *p, int np,
+                            const float *x, int x_stride, int n_in, int nb);
+// R8.24.1: pinned host memory for the context's copies; only their speed
+// depends on it, never a value. gpu_train_pin registers [p, p + bytes) with
+// the driver until gpu_train_free (the range must outlive the context);
+// false leaves it pageable. gpu_train_host_buf hands out slot's pinned block
+// of at least bytes, owned by the context and the same block from call to
+// call (its contents are not kept when it grows); NULL when none can be had.
+enum { GPU_TRAIN_HBUF = 4 };
+bool   gpu_train_pin(model_t *m, void *p, size_t bytes);
+void  *gpu_train_host_buf(model_t *m, int slot, size_t bytes);
 // RUNNER_TRAIN_PROF: seconds inside gpu_train_mm / gpu_train_mvt (transfers
 // and syncs included), their counts, and the kernels' share (the launch and
 // its sync) since the last call, which resets them

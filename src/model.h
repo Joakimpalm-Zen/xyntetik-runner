@@ -1349,6 +1349,9 @@ void   model_full_free(model_t *m);
 bool   model_full_dump(const model_t *m, const char *prefix, const char *full);
 bool   model_lora_train_init(model_t *m, int rank, float alpha,
                              uint64_t seed);
+// R8.24.1: --train-gpu's forward scratch registered with the training
+// context (gpu_train_pin) for faster copies; no value depends on it
+void   model_train_pin_scratch(model_t *m);
 bool   model_lora_adam_step(model_t *m, float lr, float beta1, float beta2,
                             float eps, float wd, int step);
 bool   model_lora_save(model_t *m, const char *path);

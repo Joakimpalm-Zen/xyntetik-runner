@@ -17,7 +17,12 @@ does not make it, and the absence is deliberate.
 - **Training byte-determinism, same build.** `runner train` with identical
   inputs reproduces the same adapter file, byte for byte, verified by
   sha256 in CI. The `.train.json` sidecar records the binary sha,
-  compiler, OS, and arch that produced it.
+  compiler, OS, arch, build flavor (`"t3"` or `"default"`), git commit and
+  dirty flag, `no_bos`, `lora_scale`, `kv_cache`, `resume_optim_sha256` on
+  resume, and `determinism` (`"cpu-t3-exact"`, `"cpu-same-binary"`, or
+  `"gpu-within-tolerance"`). `runner attest replay RECORD` verifies those
+  pre-flight fields and input hashes, replays on CPU, and checks the
+  output sha256 byte for byte.
 - **Transcript replay tiers** (`--record` / `--verify`):
   - **T1, same binary**: bit-exact replay of a recorded run; verified
     token ids and raw streamed output bytes equal the record exactly. Raw
@@ -43,7 +48,15 @@ log-probabilities on arm64, x86-64 and riscv64 for every position of a
 tile, the k-quant formats, MoE experts and the GPU backends are not
 canonical yet, and no CI job runs the cross-ISA comparison. A T3 receipt
 records `"flavor":"t3"` in its build object so a verifier can tell which
-binary wrote it. When the coverage and the gate exist, T3 joins T1 and T2
+binary wrote it; in `.train.json`, `"determinism"` is `"cpu-t3-exact"` only
+for CPU dense LoRA cross-entropy on a T3 build with no canonical-kernel gaps
+(`canon_gaps` empty), no `RUNNER_` switch outside the inert set and a clean,
+stamped commit, and `"cpu-same-binary"` for canon-gap weight types, DPO,
+`--teacher`, `--train-full`, DeltaNet, MoE, a run with such a switch set and a
+dirty or unstamped build (or `"gpu-within-tolerance"` under `--train-gpu`);
+`determinism_reasons` names each reason. The record also names the model
+overrides that move a forward (`model_overrides`) and the switches
+(`environment`). When the coverage and the gate exist, T3 joins T1 and T2
 above as "another machine, same bytes".
 
 ## Explicitly not claimed
