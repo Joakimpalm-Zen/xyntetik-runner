@@ -13,6 +13,7 @@ on:
       - 'src/iq_decode.h'
       - 'src/kq_stage.h'
       - 'scripts/embed-ptx.py'
+      - 'scripts/check-ptx-isa.py'
       - 'tools/ptx-toolchain/**'
       - '.github/workflows/ptx-reproducible.yml'
   push:
@@ -36,6 +37,11 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: make ptx with the pinned toolchain
         run: MAMBA_ROOT_PREFIX="$RUNNER_TEMP/mamba" tools/ptx-toolchain/make-ptx.sh "$RUNNER_TEMP/ptx-toolchain"
+      # make ptx assembled each embedded string with the pinned ptxas
+      # (scripts/check-ptx-isa.py, R6.90); here a planted used_bytes_mask
+      # pragma must be caught by that ptxas as well as by the scan
+      - name: the embedded PTX check catches a planted feature above its version
+        run: python3 scripts/check-ptx-isa.py --self-test --ptxas "$RUNNER_TEMP/ptx-toolchain/bin/ptxas" src/kernels_ptx.h src/kernels_ptx80.h
       - name: the regenerated headers' sha256
         if: always()
         run: sha256sum src/kernels_ptx.h src/kernels_ptx80.h

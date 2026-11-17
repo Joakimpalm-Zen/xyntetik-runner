@@ -10,6 +10,7 @@
 // guard is deleted runs this harness identically and goes red there — that is
 // what keeps the gate falsifiable.
 #include "runner.h"
+#include "gate_gpu.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,6 +62,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (a.gpu_layers < 2) {
+        if (gate_no_device("test-split-guard")) { model_free(&a); return 1; }
         printf("skip: test-split-guard (no GPU backend, or fewer than 2 "
                "offloaded layers to disagree over)\n");
         model_free(&a);

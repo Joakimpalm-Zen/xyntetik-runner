@@ -16,6 +16,7 @@
 // The default model is the generated test.gguf, which is small but does go
 // through the real CUDA backend when one is present.
 #include "runner.h"
+#include "gate_gpu.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -113,6 +114,12 @@ int main(int argc, char **argv) {
     int n_vocab = ref.n_vocab;
     int ref_gpu_layers = ref.gpu_layers;
     bool ref_on_gpu = ref.gpu != NULL;
+    // a GPU run whose kernel module did not load would check the CPU's
+    // sharing and VRAM that nothing used (R6.90)
+    if (!g_gpu_off && !ref_on_gpu && gate_no_device("test-shared-weights")) {
+        model_free(&ref);
+        return 1;
+    }
     float *want[SEQ] = { 0 };
     for (int t = 0; t < SEQ; t++) {
         float *lg = model_forward(&ref, TOKENS[t], t);

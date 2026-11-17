@@ -23,6 +23,7 @@
 // Default model is test.gguf (F32 toy): it runs and self-skips only if the
 // route never dispatches.
 #include "runner.h"
+#include "gate_gpu.h"
 
 #include <float.h>
 #include <math.h>
@@ -278,6 +279,7 @@ int main(int argc, char **argv) {
             return g_fail;
         }
 #endif
+        if (gate_no_device("attn-tol")) return 1;
         printf("  mv tolerance gate  : skipped (config unavailable)\n"
                "attn-tol: %s\n", g_fail ? "FAILED" : "ok (skipped)");
         return g_fail;
@@ -290,6 +292,7 @@ int main(int argc, char **argv) {
             return g_fail;
         }
 #endif
+        if (gate_no_device("attn-tol")) return 1;
         printf("  mv-fast vs scalar : the fast route never dispatched: the "
                "cooperative attention read is Metal's (on CUDA and the CPU it "
                "never runs), or a CPU fallback. Skipping, not passing.\n"

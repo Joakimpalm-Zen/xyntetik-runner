@@ -14,6 +14,7 @@
 // run handed sequence w-1-i (column c's logits live at a fixed place), so a
 // seam that reverses nothing fails here instead of passing.
 #include "runner.h"
+#include "gate_gpu.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -82,6 +83,7 @@ int main(int argc, char **argv) {
         p.gpu_mode = GPU_AUTO;
         p.n_ctx = ctx;
         if (!model_load(&m[i], path, &p)) { fprintf(stderr, "cannot load %s\n", path); return 1; }
+        if (!m[i].gpu && gate_no_device("test-cuda-batch-columns")) return 1;
         if (!m[i].gpu) { fprintf(stderr, "test-cuda-batch-columns: skipped (no CUDA device took %s)\n", path); return 1; }
     }
     int nv = m[0].n_vocab;
