@@ -1483,3 +1483,13 @@ k_tattn(const uchar *kc, const uchar *vc, const float *q, float *ao, tattn_args 
         ao[(ulong64)b * a.q_dim + h * hd + i] = o;
     }
 }
+
+// ---- R8.24.1 B, R0 of the resident step: the residual add (kernel_args.h
+// tadd_args), a twin of layer_branch_out's x += y: one IEEE add an element.
+extern "C" __global__ void k_tadd(float *x, const float *y, tadd_args a) {
+    int e = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (e >= a.rows * a.n) return;
+    int r = e / a.n, i = e % a.n;
+    float *p = x + (ulong64)r * a.x_stride + i;
+    *p = __fadd_rn(*p, y[(ulong64)r * a.y_stride + i]);
+}

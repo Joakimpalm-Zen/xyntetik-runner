@@ -8817,6 +8817,7 @@ typedef struct {
     CUfunction  f_tkv;                  // R8.24.1 B8, the training K/V store
     CUfunction  f_tattn;                // R8.24.1 B4, the forward's attention
     int         tattn_dyn;              // the dynamic shared memory k_tattn may take, bytes
+    CUfunction  f_tadd;                 // R8.24.1 B R0, the residual add
     // R8.24.1 B6: the adapter at a site (k_tlora_t, _y, _tb, _ga, _gb, _dx)
     CUfunction  f_tlora[6];
     // R8.24.1 B: the device-resident FFN. The FFN sites' adapters for a
@@ -8939,6 +8940,7 @@ bool gpu_train_init(model_t *m) {
         t->f_trn_fw = t->f_trn_bw = NULL;
     if (cu.ModuleGetFunction(&t->f_trope, t->mod, "k_trope") != 0) t->f_trope = NULL;
     if (cu.ModuleGetFunction(&t->f_tkv, t->mod, "k_tkv_store") != 0) t->f_tkv = NULL;
+    if (cu.ModuleGetFunction(&t->f_tadd, t->mod, "k_tadd") != 0) t->f_tadd = NULL;
     if (cu.ModuleGetFunction(&t->f_tattn, t->mod, "k_tattn") != 0) t->f_tattn = NULL;
     // k_tattn (the second reader's F1): its scores take 4 bytes a key of dynamic
     // shared memory beside its own static arrays (qs and two scalars, about
@@ -9325,6 +9327,34 @@ static bool tkv_launch(train_gpu_t *t, CUdeviceptr src, CUdeviceptr dst, const t
     return t->f_tkv && n > 0 && n <= 0x7fffffffu &&   // the kernel indexes in int
            cu.LaunchKernel(t->f_tkv, (unsigned)((n + TKV_THREADS - 1) / TKV_THREADS), 1, 1,
                            TKV_THREADS, 1, 1, 0, NULL, p, NULL) == 0;
+}
+
+// R8.24.1 B R0 (kernels_train.cuh k_tadd): a thread an element.
+#define TADD_THREADS 256
+static bool tadd_launch(train_gpu_t *t, CUdeviceptr x, CUdeviceptr y, const tadd_args *a) {
+    tadd_args aa = *a;
+    void *p[] = { &x, &y, &aa };
+    size_t n = (size_t)a->rows * (size_t)a->n;
+    return t->f_tadd && n > 0 && n <= 0x7fffffffu &&
+           cu.LaunchKernel(t->f_tadd, (unsigned)((n + TADD_THREADS - 1) / TADD_THREADS), 1, 1,
+                           TADD_THREADS, 1, 1, 0, NULL, p, NULL) == 0;
+}
+// R8.24.1 B R0, for the kernel gate: x (host rows) += y, sent, run, brought
+// back. false: no context or no kernel in this PTX.
+bool gpu_train_add_check(model_t *m, const tadd_args *a, float *x, const float *y) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->f_tadd || a->rows < 1 || a->n < 1 || cu.CtxSetCurrent(t->ctx) != 0) return false;
+    size_t last = (size_t)(a->rows - 1);
+    size_t nx = sizeof(float) * (last * (size_t)a->x_stride + (size_t)a->n);
+    size_t ny = sizeof(float) * (last * (size_t)a->y_stride + (size_t)a->n);
+    CUdeviceptr dx = 0, dy = 0;
+    bool ok = cu.MemAlloc(&dx, nx) == 0 && cu.MemAlloc(&dy, ny) == 0 &&
+              cu.MemcpyHtoD(dx, x, nx) == 0 && cu.MemcpyHtoD(dy, y, ny) == 0 &&
+              tadd_launch(t, dx, dy, a) && cu.CtxSynchronize() == 0 &&
+              cu.MemcpyDtoH(x, dx, nx) == 0;
+    if (dx) cu.MemFree(dx);
+    if (dy) cu.MemFree(dy);
+    return ok;
 }
 
 // R8.24.1 B8, for the kernel gate: a->rows rows of a->n host floats stored

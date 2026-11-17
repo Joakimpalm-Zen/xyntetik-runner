@@ -1297,6 +1297,29 @@ void   model_rmsnorm_bw(const float *x, const float *w, const float *dy, float *
 void   model_rope_ref(model_t *m, float *v, int n_heads, int pos, int layer, int adjoint);
 // R8.24.1 B4: the forward's attention over T positions through the host's
 // attn_run (causal, a sliding window of swa rows, 0 none), for the device twin's gate
+// R8.24.1 B, the resident step's scope (out/r8241/B-resident-design.md), by
+// shape. resident_shape: the facts the planes and the scope depend on, filled
+// from a model by model_resident_why or by hand in the gate. The widths are
+// each layer's largest; adapter_floats is the sum over every slot with an
+// adapter of r (n_in + n_out); avail the device bytes the planes may take
+// beside the weights.
+typedef struct {
+    int n_layer, n_embd, q_dim, kv_dim, n_ff, n_head, T, rank_max;
+    size_t k_row_b, v_row_b;
+    long long adapter_floats;
+    size_t avail;
+} resident_shape;
+// the device bytes the resident step's planes take: the tape, the training
+// K/V rows, the residual and dx, a layer's work planes, the attention
+// backward's probability blocks, the adapters with their gradients
+size_t model_resident_need(const resident_shape *rs);
+// NULL when the step's T, rank and planes are within the resident scope, else why
+const char *model_resident_shape_why(const resident_shape *rs);
+// NULL when layer l's shape is within the resident scope for a step of T rows, else why
+const char *model_resident_layer_why(const model_t *m, int l, int T);
+// NULL when the whole step of T rows can run resident within avail device
+// bytes beside the weights, else the first reason it runs the slot path
+const char *model_resident_why(const model_t *m, int T, size_t avail);
 // R8.24.1 B, the attention slots' scope by shape: NULL when layer l's
 // attention over n rows from pos can run through the device twin, else why not
 const char *model_attn_dev_why(const model_t *m, int l, int pos, int n, int hd, int n_kv,

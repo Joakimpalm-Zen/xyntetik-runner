@@ -15741,6 +15741,86 @@ static attn_job attn_row_job(model_t *m, const fwd_layer *c, int b) {
     return aj;
 }
 
+// R8.24.1 B, the resident step's scope (out/r8241/B-resident-design.md). The
+// fallback boundary is the whole step: any reason here runs today's slot path
+// for every layer of it.
+size_t model_resident_need(const resident_shape *rs) {
+    size_t T = (size_t)(rs->T > 0 ? rs->T : 0), E = (size_t)rs->n_embd, L = (size_t)rs->n_layer;
+    size_t tb = T < 64 ? T : 64;   // TAB_TB: the attention backward's probability rows a block
+    size_t tape = (L + 1) * T * E * 4;
+    size_t kv = L * T * (rs->k_row_b + rs->v_row_b);
+    size_t resid = 2 * T * E * 4;   // the residual and dx
+    size_t work = T * (3 * E + 6 * (size_t)rs->n_ff + 3 * (size_t)rs->q_dim +
+                       4 * (size_t)rs->kv_dim) * 4;
+    size_t probs = tb * (size_t)rs->n_head * T * 4;
+    size_t adapters = (size_t)(rs->adapter_floats > 0 ? rs->adapter_floats : 0) * 2 * 4;   // A, B and ga, gb
+    return tape + kv + resid + work + probs + adapters;
+}
+const char *model_resident_shape_why(const resident_shape *rs) {
+    static _Thread_local char why[200];
+    if (rs->T < 2 || rs->T > 12288) return "a window past the attention twin's 12288 rows";
+    if (rs->rank_max > 512) return "an adapter rank past 512";
+    size_t need = model_resident_need(rs);
+    if (need > rs->avail) {
+        snprintf(why, sizeof why, "its planes need %.2f GB beside the weights and the device "
+                 "has %.2f GB for them", need / 1e9, rs->avail / 1e9);
+        return why;
+    }
+    return NULL;
+}
+const char *model_resident_layer_why(const model_t *m, int l, int T) {
+    const layer_t *ly = &m->layers[l];
+    if (m->full) return "full-weight training";
+    if (m->hyper_conn) return "hyper-connections";
+    if (m->norm_layernorm) return "layer norms";
+    if (m->norm_groups > 1) return "grouped norms";
+    if (m->resid_scale != 1.0f) return "a residual scale";
+    if (m->ffn_act != ACT_SILU) return "an FFN whose activation is not SiLU";
+    if (ly->recurrent) return "a recurrent layer";
+    if (ly->skip_mixer || ly->skip_ffn) return "a layer without attention or without an FFN";
+    if (ly->is_moe || ly->n_expert > 0 || ly->moe_gemma) return "a mixture of experts";
+    if (!ly->w_gate || !ly->w_up || !ly->w_down) return "an FFN that is not gated";
+    if (ly->post_attn_norm_w || ly->post_ffn_norm_w) return "a post-attention or post-FFN norm";
+    if (ly->ple_gate) return "per-layer embeddings";
+    if (ly->bq || ly->bk || ly->bv || ly->bo) return "biases on the attention's projections";
+    if (m->qwen35) return "qwen3.5's fused Q and gate";
+    if (m->attn_out_gate && ly->wq_gate) return "an attention output gate";
+    if (m->v_rmsnorm) return "a V norm";
+    if (model_temp_applies(m, l)) return "the attention temperature";
+    if (model_kv_owner(m, l) != l) return "a layer that reads another layer's K/V rows";
+    return model_attn_dev_why(m, l, 0, T, model_head_dim(m, l), model_n_head_kv(m, l),
+                              model_q_dim(m, l), model_q_dim(m, l));
+}
+const char *model_resident_why(const model_t *m, int T, size_t avail) {
+    if (!m->lora) return "no adapter";
+    resident_shape rs = { m->n_layer, m->n_embd, 0, 0, 0, m->n_head, T, 0, 0, 0, 0, avail };
+    for (int l = 0; l < m->n_layer; l++) {
+        const char *why = model_resident_layer_why(m, l, T);
+        if (why) return why;
+        const layer_t *ly = &m->layers[l];
+        int q_dim = model_q_dim(m, l), kv_dim = model_kv_dim(m, l), nff = ly->n_ff;
+        if (q_dim > rs.q_dim) rs.q_dim = q_dim;
+        if (kv_dim > rs.kv_dim) rs.kv_dim = kv_dim;
+        if (nff > rs.n_ff) rs.n_ff = nff;
+        // the sites' widths, in LW_ order: Q K V O gate up down
+        const int nin[7] = { m->n_embd, m->n_embd, m->n_embd, q_dim, m->n_embd, m->n_embd, nff };
+        const int nout[7] = { q_dim, kv_dim, kv_dim, m->n_embd, nff, nff, m->n_embd };
+        for (int w = 0; w < LW_SLOTS; w++) {
+            int r = m->lora[(size_t)l * LW_SLOTS + w].r;
+            if (!r) continue;
+            if (w > LW_DOWN) return "an adapter on a slot the resident step does not take";
+            if (r > rs.rank_max) rs.rank_max = r;
+            rs.adapter_floats += (long long)r * (nin[w] + nout[w]);
+        }
+    }
+    size_t k_row_b = 0, v_row_b = 0;
+    int kk = model_kv_kind_k(m), vk = model_kv_kind_v(m);
+    k_row_b = (size_t)rs.kv_dim * (kk == 3 ? 4 : 2);
+    v_row_b = (size_t)rs.kv_dim * (vk == 3 ? 4 : 2);
+    rs.k_row_b = k_row_b;
+    rs.v_row_b = v_row_b;
+    return model_resident_shape_why(&rs);
+}
 // R8.24.1 B, the layer driver's attention slots (2: the recompute's, 3: the
 // taped forward's): why layer l's attention over n rows from position pos
 // cannot run through the device's twin (B4's k_tattn), or NULL. The twin's

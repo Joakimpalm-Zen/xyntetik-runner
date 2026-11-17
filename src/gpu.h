@@ -365,6 +365,10 @@ bool   gpu_train_rope_check(model_t *m, const trope_args *a, const float *fr, fl
 // unchanged. false: no context, no kernel in this PTX, or another kind.
 bool   gpu_train_kv_store_check(model_t *m, const tkv_args *a, const float *src,
                                 unsigned char *dst);
+// R8.24.1 B R0, the kernel gate's entry: the residual add's twin (k_tadd),
+// x (a->rows host rows, a->x_stride apart) += y (a->y_stride apart) in
+// place. false: no context or no kernel in this PTX.
+bool   gpu_train_add_check(model_t *m, const tadd_args *a, float *x, const float *y);
 // R8.24.1 B4, the kernel gate's entry: the device twin of the forward's
 // attention (k_tattn, attn_run for one (t, head) a block) over a->T positions:
 // q rows a->q_dim apart in, the K / V rows (a->k_row_b / v_row_b bytes apart,

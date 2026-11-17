@@ -167,6 +167,13 @@ typedef struct {
     ka_u64 row_bytes;
 } tkv_args;
 
+// R0 of the resident step: the residual add, x[r][i] += y[r][i] over rows of
+// n floats (x rows x_stride apart, y rows y_stride), one float add an
+// element, as model.c layer_branch_out writes it.
+typedef struct {
+    int rows, n, x_stride, y_stride;
+} tadd_args;
+
 // B2: rmsnorm (model.c rmsnorm; qk_norm runs it per head) and its adjoint
 // (rmsnorm_bw), over `rows` rows of n floats. Forward y = x*r*w; adjoint
 // dx[i] += r*w[i]*dy[i] - c*x[i]. w is one n-vector for every row (qk_norm

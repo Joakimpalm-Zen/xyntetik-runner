@@ -3788,6 +3788,10 @@ bool gpu_train_rope_check(model_t *mm, const trope_args *a, const float *fr, flo
     (void)mm; (void)a; (void)fr; (void)v;
     return false;
 }
+bool gpu_train_add_check(model_t *mm, const tadd_args *a, float *x, const float *y) {
+    (void)mm; (void)a; (void)x; (void)y;
+    return false;
+}
 bool gpu_train_kv_store_check(model_t *mm, const tkv_args *a, const float *src,
                               unsigned char *dst) {
     (void)mm; (void)a; (void)src; (void)dst;

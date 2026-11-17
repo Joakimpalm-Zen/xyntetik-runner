@@ -1380,12 +1380,205 @@ static int b_scope_checks(void) {
                      "their reason)\n", cases, cases - 4);
     return bad;
 }
+// R8.24.1 B, R0 of the resident step: its scope by shape, with no device. A
+// layer in scope (the recipe's shape) and each condition outside it on its
+// own; the step's T, rank and planes against a budget (the planes at the
+// recipe's shape, and the largest T and rank a 12 GB and an 8 GB card hold,
+// taking the weights as this host measured them).
+static size_t b_res_need(int T, int r) {   // Qwen3-4B, f16 K/V, every site at rank r
+    const long long per_r = 6656 + 3584 + 3584 + 6656 + 12288 + 12288 + 12288;   // r (n_in + n_out), a layer
+    resident_shape rs = { 36, 2560, 4096, 1024, 9728, 32, T, r, 2048, 2048, 36 * per_r * r, 0 };
+    return model_resident_need(&rs);
+}
+static int b_resident_scope_checks(void) {
+    static layer_t ly[1];
+    static gguf_tensor wt;
+    static float bias[1], pnorm[1];
+    static int kvsrc[1] = { 1 };
+    model_t s;
+    int bad = 0, cases = 0;
+#define RES_RESET() do { memset(&s, 0, sizeof s); memset(ly, 0, sizeof ly); \
+        s.n_layer = 1; s.layers = ly; s.n_head = 32; s.head_dim = 128; s.n_head_kv = 8; \
+        s.n_embd = 2560; s.n_ctx = 512; s.resid_scale = 1.0f; s.ffn_act = ACT_SILU; \
+        ly[0].w_gate = ly[0].w_up = ly[0].w_down = &wt; ly[0].n_ff = 9728; } while (0)
+#define RES_CASE(label, want) do { \
+        cases++; \
+        const char *got = model_resident_layer_why(&s, 0, 300); \
+        bool okc = (want) ? got != NULL && strstr(got, (want)) != NULL : got == NULL; \
+        if (!okc && !bad++) \
+            fprintf(stderr, "FAIL: resident scope (%s): %s, want %s\n", label, \
+                    got ? got : "resident", (want) ? (want) : "resident"); \
+    } while (0)
+    RES_RESET(); RES_CASE("the recipe's layer", NULL);
+    RES_RESET(); s.full = (struct full_w *)(void *)&wt; RES_CASE("full-weight training", "full-weight");   // a non-NULL mark, never read
+    RES_RESET(); s.hyper_conn = true; RES_CASE("hyper-connections", "hyper-connections");
+    RES_RESET(); s.norm_layernorm = true; RES_CASE("layer norms", "layer norms");
+    RES_RESET(); s.norm_groups = 2; RES_CASE("grouped norms", "grouped");
+    RES_RESET(); s.resid_scale = 0.5f; RES_CASE("a residual scale", "residual scale");
+    RES_RESET(); s.ffn_act = ACT_GELU; RES_CASE("GELU", "not SiLU");
+    RES_RESET(); ly[0].recurrent = true; RES_CASE("a recurrent layer", "recurrent");
+    RES_RESET(); ly[0].skip_mixer = true; RES_CASE("no mixer", "without attention");
+    RES_RESET(); ly[0].is_moe = true; RES_CASE("MoE", "experts");
+    RES_RESET(); ly[0].w_gate = NULL; RES_CASE("an ungated FFN", "not gated");
+    RES_RESET(); ly[0].post_attn_norm_w = pnorm; RES_CASE("a post-attention norm", "post-attention");
+    RES_RESET(); ly[0].ple_gate = &wt; RES_CASE("PLE", "per-layer embeddings");
+    RES_RESET(); ly[0].bq = bias; RES_CASE("a Q bias", "biases");
+    RES_RESET(); s.qwen35 = true; RES_CASE("qwen3.5", "qwen3.5");
+    RES_RESET(); s.attn_out_gate = true; ly[0].wq_gate = &wt; RES_CASE("an output gate", "output gate");
+    RES_RESET(); s.v_rmsnorm = true; RES_CASE("a V norm", "V norm");
+    RES_RESET(); s.attn_temp_scale = 0.1f; s.attn_temp_all = true; RES_CASE("temperature", "temperature");
+    RES_RESET(); s.n_layer = 2; s.kv_src = kvsrc; RES_CASE("shared K/V", "another layer");
+    RES_RESET(); s.kv_q8 = true; RES_CASE("a q8 cache (the attention scope)", "q8 or fp4");
+#undef RES_CASE
+#undef RES_RESET
+    // the step's shape and planes
+    const long long per_r = 6656 + 3584 + 3584 + 6656 + 12288 + 12288 + 12288;
+    resident_shape rs = { 36, 2560, 4096, 1024, 9728, 32, 300, 8, 2048, 2048, 36 * per_r * 8,
+                          (size_t)8e9 };
+    const struct { const char *label; int T, r; size_t avail; const char *want; } SC[] = {
+        { "the recipe, 8 GB for the planes", 300, 8, (size_t)8e9, NULL },
+        { "the recipe, 0.3 GB", 300, 8, (size_t)3e8, "planes need" },
+        { "T 12289", 12289, 8, (size_t)8e12, "12288 rows" },
+        { "T 1", 1, 8, (size_t)8e9, "12288 rows" },
+        { "rank 513", 300, 513, (size_t)8e12, "rank past 512" },
+    };
+    for (size_t i = 0; i < sizeof SC / sizeof SC[0]; i++) {
+        cases++;
+        rs.T = SC[i].T; rs.rank_max = SC[i].r; rs.adapter_floats = 36 * per_r * SC[i].r;
+        rs.avail = SC[i].avail;
+        const char *got = model_resident_shape_why(&rs);
+        bool okc = SC[i].want ? got != NULL && strstr(got, SC[i].want) != NULL : got == NULL;
+        if (!okc && !bad++)
+            fprintf(stderr, "FAIL: resident shape (%s): %s\n", SC[i].label, got ? got : "resident");
+    }
+    // an absolute anchor for the planes: the tape alone is (L+1) T E floats
+    cases++;
+    rs.T = 300; rs.adapter_floats = 0; rs.n_ff = 0; rs.q_dim = 0; rs.kv_dim = 0; rs.n_head = 0;
+    rs.k_row_b = rs.v_row_b = 0;
+    size_t tape_resid = model_resident_need(&rs);
+    // (L+1) tape planes, the residual and dx, and a layer's three E-wide work rows (x, y, dx)
+    if (tape_resid != (size_t)(37 + 2 + 3) * 300 * 2560 * 4 && !bad++)
+        fprintf(stderr, "FAIL: resident planes: the tape, residual and E-wide work planes are %zu "
+                "bytes, not (37 + 2 + 3) x 300 x 2560 floats\n", tape_resid);
+    if (!bad) {
+        // the budgets: this host's 12 GB card offers 11.0 GB free to the run
+        // (its desktop holds 0.65 GB) and the recipe's weights take 2.4 GB on
+        // it (3.36 GB peak against 0.65 idle, at T 300); a CUDA context is
+        // about 0.3 GB. An 8 GB card with the same desktop: 7.2 GB free.
+        const struct { const char *card; double avail; } C[] = { { "12 GB", 11.0e9 - 2.4e9 - 0.3e9 },
+                                                                 { "8 GB", 7.2e9 - 2.4e9 - 0.3e9 } };
+        printf("resident scope: %d cases hold; the recipe's planes at T 300 rank 8: %.0f MB\n", cases,
+               b_res_need(300, 8) / 1e6);
+        for (int c = 0; c < 2; c++) {
+            int tmax = 2, rmax = 1;
+            while (tmax < 12288 && b_res_need(tmax + 1, 8) <= C[c].avail) tmax++;
+            while (rmax < 512 && b_res_need(300, rmax + 1) <= C[c].avail) rmax++;
+            printf("resident scope, a %s card (%.1f GB for the planes beside Qwen3-4B Q4_K_M): the "
+                   "largest T at rank 8 %d, the largest rank at T 300 %d\n", C[c].card,
+                   C[c].avail / 1e9, tmax, rmax);
+        }
+    }
+    return bad;
+}
+
+// R8.24.1 B, R0: the residual add's twin (gpu_train_add_check: k_tadd)
+// against the host's own add (layer_branch_out's x += y, one float add).
+// Anchors, IEEE 754 binary32 by hand: 1 + 2^-24 = 1 (a tie to even),
+// 1 + 3 2^-24 = 1 + 2^-22 (a tie to even, upward), FLT_MAX + FLT_MAX = inf,
+// inf + -inf = NaN, -0 + -0 = -0, 0 + -0 = 0. Rows at strides wider than the
+// data; boundary values (zeros, the largest finite, the smallest normal,
+// subnormals, infinities, NaNs) against every other, then random values. T3:
+// every element by bits (NaN meets NaN). The default build's host flushes
+// subnormal operands and results (FTZ and DAZ) where the device keeps them:
+// there the elements with a subnormal in them are counted, not compared.
+static void b_add_checks(model_t *m) {
+    static const uint32_t AN[][3] = {   // x, y, x + y
+        { 0x3f800000u, 0x33800000u, 0x3f800000u }, { 0x3f800000u, 0x34400000u, 0x3f800002u },
+        { 0x7f7fffffu, 0x7f7fffffu, 0x7f800000u }, { 0x80000000u, 0x80000000u, 0x80000000u },
+        { 0x00000000u, 0x80000000u, 0x00000000u },
+    };
+    int na = (int)(sizeof AN / sizeof AN[0]), abad = 0;
+    for (int i = 0; i < na; i++) {
+        float x, y, z;
+        memcpy(&x, &AN[i][0], 4); memcpy(&y, &AN[i][1], 4);
+        z = x + y;
+        uint32_t u;
+        memcpy(&u, &z, 4);
+        if (u != AN[i][2] && !abad++)
+            fprintf(stderr, "FAIL: the host's %08x + %08x is %08x, IEEE says %08x\n", (unsigned)AN[i][0],
+                    (unsigned)AN[i][1], (unsigned)u, (unsigned)AN[i][2]);
+    }
+    CHECK(!abad, "residual add: %d of the %d IEEE anchors differ on the host", abad, na);
+    static const uint32_t BV[] = { 0x00000000u, 0x80000000u, 0x3f800000u, 0xbf800000u, 0x7f7fffffu,
+                                   0xff7fffffu, 0x00800000u, 0x80800000u, 0x00000001u, 0x807fffffu,
+                                   0x7f800000u, 0xff800000u, 0x7fc00000u, 0x7fa12345u, 0x33800000u,
+                                   0x34400000u };
+    int nbv = (int)(sizeof BV / sizeof BV[0]);
+    int rows = 9, n = nbv * nbv + 211, xs = n + 5, ys = n + 3;
+    float *x = calloc((size_t)rows * xs, sizeof(float)), *y = calloc((size_t)rows * ys, sizeof(float));
+    float *xh = malloc(sizeof(float) * (size_t)rows * xs);
+    for (int r = 0; r < rows; r++)
+        for (int i = 0; i < n; i++) {
+            float a, b;
+            if (i < nbv * nbv) { memcpy(&a, &BV[i / nbv], 4); memcpy(&b, &BV[i % nbv], 4); }
+            else { a = frnd() * (r % 2 ? 1e30f : 3.0f); b = frnd() * (r % 3 ? 3.0f : 1e-30f); }
+            x[(size_t)r * xs + i] = a;
+            y[(size_t)r * ys + i] = b;
+        }
+    for (size_t k = 0; k < (size_t)rows * xs; k++) xh[k] = x[k];
+    for (int r = 0; r < rows; r++)
+        for (int i = 0; i < n; i++) xh[(size_t)r * xs + i] += y[(size_t)r * ys + i];
+    float *xd = malloc(sizeof(float) * (size_t)rows * xs);
+    memcpy(xd, x, sizeof(float) * (size_t)rows * xs);
+    tadd_args a = { rows, n, xs, ys };
+    bool ok = gpu_train_add_check(m, &a, xd, y);
+    CHECK(ok, "residual add twin: declined (no kernel in this PTX?)");
+    size_t bad = 0, skipped = 0;
+    (void)skipped;   // counted in the default build only
+    for (int r = 0; ok && r < rows; r++)
+        for (int i = 0; i < xs; i++) {
+            size_t o = (size_t)r * xs + i;
+            float h = xh[o], d = xd[o];
+            if (i >= n) {   // the bytes between rows come back as they went
+                if (memcmp(&d, &x[o], 4) && !bad++)
+                    fprintf(stderr, "FAIL: residual add twin wrote between rows at row %d [%d]\n", r, i);
+                continue;
+            }
+#ifndef RUNNER_PORTABLE_MATH
+            uint32_t ua, ub, ud;
+            float fa = x[o], fb = y[(size_t)r * ys + i];
+            memcpy(&ua, &fa, 4); memcpy(&ub, &fb, 4); memcpy(&ud, &d, 4);
+            bool sub = ((ua & 0x7f800000u) == 0 && (ua & 0x7fffffu)) ||
+                       ((ub & 0x7f800000u) == 0 && (ub & 0x7fffffu)) ||
+                       ((ud & 0x7f800000u) == 0 && (ud & 0x7fffffu));
+            if (sub) { skipped++; continue; }
+#endif
+            bool same = b2_nan(h) || b2_nan(d) ? b2_nan(h) && b2_nan(d) : !memcmp(&h, &d, 4);
+            if (!same && !bad++) {
+                uint32_t uh, ud2;
+                memcpy(&uh, &h, 4); memcpy(&ud2, &d, 4);
+                fprintf(stderr, "FAIL: residual add twin at row %d [%d]: %08x, the host %08x\n", r, i,
+                        (unsigned)ud2, (unsigned)uh);
+            }
+        }
+    CHECK(!bad, "residual add twin: %zu elements differ from the host's bits", bad);
+    if (ok && !bad)
+        printf("residual add twin: %d rows of %d (%d boundary pairs, %d IEEE anchors) == host by bits%s\n",
+               rows, n, nbv * nbv, na,
+#ifdef RUNNER_PORTABLE_MATH
+               "");
+#else
+               skipped ? "; the subnormal ones counted, not compared (this host flushes them)" : "");
+#endif
+    free(x); free(y); free(xh); free(xd);
+}
 int main(void) {
     f16_init();
     model_t m;
     memset(&m, 0, sizeof(m));
     m.train_gpu_budget = (uint64_t)1 << 30;   // no model file: the arena is this
     if (b_scope_checks()) return 1;   // no device needed
+    if (b_resident_scope_checks()) return 1;
     if (!gpu_train_init(&m)) {
         printf("train-gpu: no CUDA device, skipping (not passing)\n");
         return 0;
@@ -1683,6 +1876,7 @@ int main(void) {
     b2_checks(&m);
     b3_checks(&m);
     b8_checks(&m);
+    b_add_checks(&m);
     b4_checks(&m);
     gpu_train_free(&m);
     free(keep_pinned);
