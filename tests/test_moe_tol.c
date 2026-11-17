@@ -39,6 +39,7 @@
 //
 // Default model is test.gguf (dense F32 toy): the harness runs and self-skips.
 #include "runner.h"
+#include "gate_gpu.h"
 
 #include <float.h>
 #include <math.h>
@@ -269,6 +270,7 @@ int main(int argc, char **argv) {
 
     size_t n = (size_t)STEPS * (size_t)n_vocab;
     if (memcmp(eager.logits, fused.logits, sizeof(float) * n) == 0) {
+        if (gate_no_device("moe-tol")) return 1;
         printf("  bit-identical to the eager path: the fused router never "
                "engaged for this model; skipping, not passing\n"
                "moe-tol: ok (skipped)\n");

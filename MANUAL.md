@@ -2090,7 +2090,11 @@ that fails to capture or launch end the process with the failing stage, the CUDA
 error and the synchronous call that broke it, instead of falling back to plain
 launches with one line on stderr; a decode that is eager by design (experts on
 the host, eager MoE routing, a recurrent family not captured) prints why and
-runs. `./test-attn-tol MODEL.gguf` is the attention gate.
+runs. Under the same switch a kernel module the driver does not load, on a device
+that is up, ends the process with the driver's JIT log (R6.90); without it the
+runner prints that log and falls back as before, and a CUDA gate binary that
+finds no engaged device fails on it rather than skipping as if there were no
+device. `./test-attn-tol MODEL.gguf` is the attention gate.
 Weights are wrapped zero-copy from the model mmap. A file larger than the
 device's `maxBufferLength` - 4.29 GB on an Apple M1, against a 5.73 GB working set -
 is wrapped in several buffers instead of being copied or forced into a

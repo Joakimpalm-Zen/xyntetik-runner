@@ -37,6 +37,7 @@
 // Default model is test.gguf (F32 toy): the harness runs and self-skips,
 // because F32 has no fused kernel.
 #include "runner.h"
+#include "gate_gpu.h"
 
 #include <float.h>
 #include <math.h>
@@ -280,12 +281,14 @@ int main(int argc, char **argv) {
     config *ref = &cfgs[0], *ctrl = &cfgs[1], *i8 = &cfgs[2];
 
     if (!ref->available || !i8->available) {
+        if (gate_no_device("i8-tol")) return 1;
         printf("  i8 tolerance gate  : skipped (config unavailable)\n"
                "i8-tol: %s\n", g_fail ? "FAILED" : "ok (skipped)");
         return g_fail;
     }
 
     if (fired == 0) {
+        if (gate_no_device("i8-tol")) return 1;
         printf("  i8 vs scalar : the fused route never dispatched — this "
                "build has no kernel for these tensors. Skipping, not "
                "passing.\ni8-tol: ok (skipped)\n");

@@ -25,6 +25,7 @@
 // types the file must exercise ("Q4_K,Q6_K"): a fixture that no longer holds
 // one fails rather than skipping it unseen.
 #include "runner.h"
+#include "gate_gpu.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -74,6 +75,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (!m.gpu) {
+        if (gate_no_device("mvcanon")) { model_free(&m); return 1; }
         printf("mvcanon: no GPU backend — skipping (not passing)\n");
         model_free(&m);
         return 0;
@@ -150,6 +152,7 @@ int main(int argc, char **argv) {
         name += n + (name[n] == ',');
     }
     if (!tested) {
+        if (gate_no_device("mvcanon")) { model_free(&m); return 1; }
         printf("mvcanon: no canonical kernels for this model's types — "
                "skipping (not passing)\n");
         model_free(&m);
