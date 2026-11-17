@@ -12638,6 +12638,14 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
         if (need_kpre) lora_site_fw(m, l, LW_K, kpre, xn1, E, kv_dim, T);
         if (vnorm && ly->wv) lora_site_fw(m, l, LW_V, vpre, xn1, E, kv_dim, T);
     }
+    // R8.24.1 B, the layer driver's second slot: in a device step the
+    // attention over all T positions runs on the device (B4's twin of
+    // attn_run, every position's job as below) once every q row is ready; a
+    // decline runs attn_run a position, as before. Each position's attention
+    // reads only its own q row and the cache, so the order is the same.
+    int n_kv_h = hd > 0 ? kv_dim / hd : 0;
+    bool dev_attn = ok && m->train_dev_ffn && t_mv_dev == m && n_kv_h > 0 &&
+                    n_head % n_kv_h == 0 && n_head * hd == q_dim;
     for (int t = 0; ok && t < T; t++) {
         float *qt = q + (size_t)t * q_dim;
         if (s->q35) {
@@ -12674,11 +12682,29 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
                    sizeof(float) * (size_t)kv_dim);
         // the derived-K cache layout (m->tied_v) is refused above, so the
         // attention below always reads real K and V rows
-        attn_job aj = { m, kc_l, vc_l, qt, ao + (size_t)t * q_dim, t,
-                       attn_window_start(swa, t),
-                       hd, kv_dim, k_row_b, v_row_b, 0,
-                       model_kv_kind_k(m), model_kv_kind_v(m), scale, NULL, false, NULL, l };
-        attn_run(m, &aj, n_head);
+        if (!dev_attn) {
+            attn_job aj = { m, kc_l, vc_l, qt, ao + (size_t)t * q_dim, t,
+                           attn_window_start(swa, t),
+                           hd, kv_dim, k_row_b, v_row_b, 0,
+                           model_kv_kind_k(m), model_kv_kind_v(m), scale, NULL, false, NULL, l };
+            attn_run(m, &aj, n_head);
+        }
+    }
+    if (ok && dev_attn) {
+        tattn_args ta = { T, n_head, n_head / n_kv_h, hd, q_dim, kv_dim, swa,
+                          (ka_u64)k_row_b, (ka_u64)v_row_b, scale,
+                          model_kv_kind_k(m), model_kv_kind_v(m) };
+        if (!gpu_train_attn_fw_check(m, &ta, kc_l, vc_l, q, ao))
+            for (int t = 0; t < T; t++) {
+                attn_job aj = { m, kc_l, vc_l, q + (size_t)t * q_dim, ao + (size_t)t * q_dim, t,
+                               attn_window_start(swa, t),
+                               hd, kv_dim, k_row_b, v_row_b, 0,
+                               model_kv_kind_k(m), model_kv_kind_v(m), scale, NULL, false,
+                               NULL, l };
+                attn_run(m, &aj, n_head);
+            }
+    }
+    for (int t = 0; ok && t < T; t++) {
         if (gate) {
             // sigmoid gate applied element-wise to the attention output
             float *gt = gpre + (size_t)t * q_dim;
