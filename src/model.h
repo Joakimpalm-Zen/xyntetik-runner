@@ -1297,6 +1297,10 @@ void   model_rmsnorm_bw(const float *x, const float *w, const float *dy, float *
 void   model_rope_ref(model_t *m, float *v, int n_heads, int pos, int layer, int adjoint);
 // R8.24.1 B4: the forward's attention over T positions through the host's
 // attn_run (causal, a sliding window of swa rows, 0 none), for the device twin's gate
+// R8.24.1 B, the attention slots' scope by shape: NULL when layer l's
+// attention over n rows from pos can run through the device twin, else why not
+const char *model_attn_dev_why(const model_t *m, int l, int pos, int n, int hd, int n_kv,
+                               int q_dim, int out_stride);
 bool   model_attn_ref(int T, int n_head, int kv_mul, int hd, int swa, float scale,
                       int kind_k, int kind_v, const void *kc, const void *vc,
                       size_t k_row_b, size_t v_row_b, const float *q, float *ao);

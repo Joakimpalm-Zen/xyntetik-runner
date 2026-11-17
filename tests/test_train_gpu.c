@@ -1160,11 +1160,59 @@ static void b4_checks(model_t *m) {
     b4_check(m, 300, 2, 1, 64, 0, 1.0f, 0, 0);      // spans past a block of threads
 }
 
+// R8.24.1 B, the attention slots' scope (model_attn_dev_why), by shape and
+// with no device: the recipe's shape (and an f32 cache) runs on the twin, and
+// every condition outside the scope declines with its own reason, so a model
+// outside it takes today's path and says once why. Nonzero: a case that does
+// not hold.
+static int b_scope_checks(void) {
+    static layer_t ly[1];
+    static bool swa1[1] = { true };
+    static float knw[1], sink[1];
+    model_t s;
+    int bad = 0, cases = 0;
+#define SCOPE_RESET() do { memset(&s, 0, sizeof s); memset(ly, 0, sizeof ly); \
+        s.n_layer = 1; s.layers = ly; s.n_head = 32; s.n_ctx = 512; } while (0)
+#define SCOPE_CASE(label, want, pos, n, hd, nkv, qd, os) do { \
+        cases++; \
+        const char *got = model_attn_dev_why(&s, 0, pos, n, hd, nkv, qd, os); \
+        bool okc = (want) ? got != NULL && strstr(got, (want)) != NULL : got == NULL; \
+        if (!okc && !bad++) \
+            fprintf(stderr, "FAIL: attention scope (%s): %s, want %s\n", label, \
+                    got ? got : "runs on the device", (want) ? (want) : "runs on the device"); \
+    } while (0)
+    SCOPE_RESET(); SCOPE_CASE("the recipe's shape", NULL, 0, 300, 128, 8, 4096, 4096);
+    SCOPE_RESET(); s.kv_f32 = true; SCOPE_CASE("an f32 cache", NULL, 0, 300, 128, 8, 4096, 4096);
+    SCOPE_RESET(); SCOPE_CASE("a later chunk", "position 0", 64, 300, 128, 8, 4096, 4096);
+    SCOPE_RESET(); SCOPE_CASE("12289 rows", "shared memory", 0, 12289, 128, 8, 4096, 4096);
+    SCOPE_RESET(); s.mla_kv_lora = 512; SCOPE_CASE("MLA", "MLA", 0, 300, 128, 8, 4096, 4096);
+    SCOPE_RESET(); s.kv_ring = 128; s.l_is_swa = swa1;
+    SCOPE_CASE("a ring layer", "ring", 0, 300, 128, 8, 4096, 4096);
+    SCOPE_RESET(); s.l_is_swa = swa1;   // a sliding layer without a ring: the twin's window
+    SCOPE_CASE("a flat sliding layer", NULL, 0, 300, 128, 8, 4096, 4096);
+    SCOPE_RESET(); ly[0].attn_sinks = sink; SCOPE_CASE("sinks", "sinks", 0, 300, 128, 8, 4096, 4096);
+    SCOPE_RESET(); s.tied_v = true; s.v_rmsnorm = true; ly[0].knorm_w = knw;
+    SCOPE_CASE("tied V", "tied-V", 0, 300, 128, 8, 4096, 4096);
+    SCOPE_RESET(); s.kv_q8 = true; SCOPE_CASE("a q8 cache", "q8 or fp4", 0, 300, 128, 8, 4096, 4096);
+    SCOPE_RESET(); s.kv_fp4 = true; SCOPE_CASE("an fp4 cache", "q8 or fp4", 0, 300, 128, 8, 4096, 4096);
+    SCOPE_RESET(); s.kv_split = true; SCOPE_CASE("k8v4", "q8 or fp4", 0, 300, 128, 8, 4096, 4096);
+    SCOPE_RESET(); SCOPE_CASE("hd 576", "wider than 512", 0, 300, 576, 8, 32 * 576, 32 * 576);
+    SCOPE_RESET(); SCOPE_CASE("q rows", "n_head x head_dim", 0, 300, 128, 8, 4000, 4000);
+    SCOPE_RESET(); SCOPE_CASE("output rows", "wider than q", 0, 300, 128, 8, 4096, 5120);
+    SCOPE_RESET(); SCOPE_CASE("6 KV heads", "whole groups", 0, 300, 128, 6, 4096, 4096);
+    SCOPE_RESET(); SCOPE_CASE("no KV heads", "whole groups", 0, 300, 128, 0, 4096, 4096);
+#undef SCOPE_CASE
+#undef SCOPE_RESET
+    if (!bad) printf("attention scope: %d cases hold (3 run on the twin, %d decline with "
+                     "their reason)\n", cases, cases - 3);
+    return bad;
+}
 int main(void) {
     f16_init();
     model_t m;
     memset(&m, 0, sizeof(m));
     m.train_gpu_budget = (uint64_t)1 << 30;   // no model file: the arena is this
+    if (b_scope_checks()) return 1;   // no device needed
     if (!gpu_train_init(&m)) {
         printf("train-gpu: no CUDA device, skipping (not passing)\n");
         return 0;

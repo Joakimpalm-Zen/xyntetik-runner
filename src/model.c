@@ -12535,6 +12535,7 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
 
 // Phase R: the layer's forward internals recomputed from the tape, attention
 // through the production worker.
+static void attn_dev_why_once(int slot, const char *why);   // below, beside attn_rows
 NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, bool *okp) {
     bool lprof = s->lprof;
     double lt = s->lt;
@@ -12644,8 +12645,12 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
     // decline runs attn_run a position, as before. Each position's attention
     // reads only its own q row and the cache, so the order is the same.
     int n_kv_h = hd > 0 ? kv_dim / hd : 0;
-    bool dev_attn = ok && m->train_dev_ffn && t_mv_dev == m && n_kv_h > 0 &&
-                    n_head % n_kv_h == 0 && n_head * hd == q_dim;
+    bool dev_attn = false;
+    if (ok && m->train_dev_ffn && t_mv_dev == m) {
+        const char *why = model_attn_dev_why(m, l, 0, T, hd, n_kv_h, q_dim, q_dim);
+        if (why) attn_dev_why_once(2, why);
+        dev_attn = !why;
+    }
     for (int t = 0; ok && t < T; t++) {
         float *qt = q + (size_t)t * q_dim;
         if (s->q35) {
@@ -15736,6 +15741,39 @@ static attn_job attn_row_job(model_t *m, const fwd_layer *c, int b) {
     return aj;
 }
 
+// R8.24.1 B, the layer driver's attention slots (2: the recompute's, 3: the
+// taped forward's): why layer l's attention over n rows from position pos
+// cannot run through the device's twin (B4's k_tattn), or NULL. The twin's
+// scope, by shape: positions 0..n-1 over cache rows 0..n-1, real f16 or f32
+// K and V rows (no ring, no sinks, no tied V, no MLA), q and output rows
+// n_head x hd apart (out_stride, the output's row width, equal to it), the
+// query heads in whole groups of the n_kv KV heads, a head at most 512 wide
+// and at most 12288 rows (the twin's shared memory).
+const char *model_attn_dev_why(const model_t *m, int l, int pos, int n, int hd, int n_kv,
+                               int q_dim, int out_stride) {
+    const layer_t *ly = &m->layers[l];
+    if (pos != 0) return "the rows do not start at position 0";
+    if (n < 1 || n > 12288) return "more rows than the twin's shared memory holds";
+    if (m->mla_kv_lora > 0) return "MLA attention";
+    if (model_kv_is_ring(m, l)) return "a ring layer's K/V rows";
+    if (ly->attn_sinks) return "attention sinks";
+    if (model_layer_tied_v(m, l)) return "a tied-V layer";
+    int kk = model_kv_kind_k(m), vk = model_kv_kind_v(m);
+    if ((kk != 0 && kk != 3) || (vk != 0 && vk != 3)) return "a q8 or fp4 K/V cache";
+    if (hd < 1 || hd > 512) return "a head wider than 512";
+    if (q_dim != m->n_head * hd) return "q rows that are not n_head x head_dim";
+    if (out_stride != q_dim) return "output rows wider than q's";
+    if (n_kv < 1 || m->n_head % n_kv) return "query heads that are not whole groups of KV heads";
+    return NULL;
+}
+// once a run each: why an attention slot stays on the host
+static void attn_dev_why_once(int slot, const char *why) {
+    static _Atomic int said[4];
+    if (slot >= 0 && slot < 4 && !said[slot]++)
+        fprintf(stderr, "train-gpu: the %s attention stays on the host: %s\n",
+                slot == 2 ? "recompute's" : "forward's", why);
+}
+
 NUM_STAGE void attn_rows(model_t *m, const fwd_layer *c) {
     const layer_t *ly = c->ly;
     const int l = c->l, n = c->n, xdim = c->xdim;
@@ -15743,7 +15781,26 @@ NUM_STAGE void attn_rows(model_t *m, const fwd_layer *c) {
     const int dbg = c->dbg;
     // the batch's rows in one pool pass over heads (R3.27), else one pass a row
     double core_t0 = dbg_time_on() ? dt_now() : 0;
-    if (n > 1 && m->attn_batch >= 0) {
+    // R8.24.1 B, the layer driver's third slot: in a device step's taped
+    // forward the attention over the batch's rows runs through B4's twin,
+    // after attn_rope_store wrote the host's K/V cache as always (the
+    // backward reads it there); outside the twin's scope, or on a decline,
+    // the host's passes below run whole
+    bool dev = false;
+    if (m->train_dev_ffn && t_mv_dev == m && !dbg) {
+        const char *why = model_attn_dev_why(m, l, c->pos, n, hd, c->n_kv, q_dim, xdim);
+        if (why) {
+            attn_dev_why_once(3, why);
+        } else {
+            tattn_args ta = { n, m->n_head, m->n_head / c->n_kv, hd, q_dim, c->kv_dim,
+                              c->local ? m->swa_window : 0, (ka_u64)c->k_row_b,
+                              (ka_u64)c->v_row_b, c->scale, model_kv_kind_k(m),
+                              model_kv_kind_v(m) };
+            dev = gpu_train_attn_fw_check(m, &ta, c->kc_l, c->vc_l, m->q, m->xb2);
+        }
+    }
+    if (dev) {
+    } else if (n > 1 && m->attn_batch >= 0) {
         attn_batch_job bj = { m, c };
         tpool_run(m->tp, attn_batch_items, &bj, m->n_head);
         m->attn_batch_runs++;
