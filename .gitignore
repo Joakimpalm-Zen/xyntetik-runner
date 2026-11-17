@@ -364,6 +364,8 @@ test-pmath-expf-default
 test-pmath-expf-default.exe
 bench-pmath-loops-bin
 bench-pmath-loops-bin.exe
+test-pmath-softmax
+test-pmath-softmax.exe
 test-pmath-callers-default
 test-pmath-callers-default.exe
 test-pmath-callers-portable

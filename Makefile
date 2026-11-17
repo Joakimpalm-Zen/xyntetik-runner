@@ -346,6 +346,7 @@ TEST_PMATH_EXPF = $(TEST_BATCH:test-batch%=test-pmath-expf%)
 TEST_PMATH_EXPF_DEFAULT = $(TEST_BATCH:test-batch%=test-pmath-expf-default%)
 BENCH_PMATH_LOOPS = $(TEST_BATCH:test-batch%=bench-pmath-loops-bin%)
 TEST_PMATH_CALLERS_D = $(TEST_BATCH:test-batch%=test-pmath-callers-default%)
+TEST_PMATH_SOFTMAX = $(TEST_BATCH:test-batch%=test-pmath-softmax%)
 TEST_PMATH_CALLERS_P = $(TEST_BATCH:test-batch%=test-pmath-callers-portable%)
 TEST_FPCLASS = $(TEST_BATCH:test-batch%=test-fpclass%)
 TEST_ACT = $(TEST_BATCH:test-batch%=test-act%)
@@ -1799,16 +1800,13 @@ $(TEST_PMATH): tests/test_pmath.c src/pmath.h
 # make test runs the named inputs, the sample and the mutant, and the -default
 # binary's named inputs and sample. The -default
 # binary takes the engine's own CFLAGS (-ffast-math): the build a portable
-# default would be. There a NaN must give the strict build's answer: the old
-# function compiled under strict float in a unit of its own
-# (tests/pmath_expf_strict.c), linked in. The two -all targets compare every
-# one of the 2^32 floats, about a minute each.
+# default would be. In both a NaN must give the NaN quieted, and every other
+# float the old function's bits. The two -all targets compare every one of the
+# 2^32 floats, about a minute each.
 $(TEST_PMATH_EXPF): tests/test_pmath_expf.c src/pmath.h
 	$(CC) $(QUANTS_CFLAGS) -ffp-contract=off -I src tests/test_pmath_expf.c -o $@ -lm
-$(TEST_PMATH_EXPF_DEFAULT): tests/test_pmath_expf.c tests/pmath_expf_strict.c src/pmath.h
-	@mkdir -p $(OBJDIR)
-	$(CC) $(QUANTS_CFLAGS) -ffp-contract=off -I src -c tests/pmath_expf_strict.c -o $(OBJDIR)/pmath_expf_strict.o
-	$(CC) $(CFLAGS) -DPMATH_STRICT_ORACLE -I src tests/test_pmath_expf.c $(OBJDIR)/pmath_expf_strict.o -o $@ -lm
+$(TEST_PMATH_EXPF_DEFAULT): tests/test_pmath_expf.c src/pmath.h
+	$(CC) $(CFLAGS) -I src tests/test_pmath_expf.c -o $@ -lm
 .PHONY: test-pmath-expf-all test-pmath-expf-all-default
 test-pmath-expf-all: $(TEST_PMATH_EXPF)
 	./$(TEST_PMATH_EXPF) --all
@@ -1847,10 +1845,19 @@ test-pmath-callers: $(TEST_PMATH_CALLERS_D) $(TEST_PMATH_CALLERS_P)
 	  echo "test-pmath-callers: not run: these flags are portable already, so both builds are one"; exit 0;; esac; \
 	./$(TEST_PMATH_CALLERS_D) > test-pmath-callers-default.out && ./$(TEST_PMATH_CALLERS_P) > test-pmath-callers-portable.out \
 	  || { echo "FAIL: a caller test binary failed"; exit 1; }; \
-	if ! cmp -s test-pmath-callers-default.out test-pmath-callers-portable.out; then \
-	  echo "FAIL: a NaN at the exp's callers gives other answers in a portable build than in the default build:"; \
-	  diff test-pmath-callers-default.out test-pmath-callers-portable.out | sed 's/^/  /'; exit 1; fi; \
-	echo "pmath-callers: ok: the sampler and the softmax give the default build's answers for $$(wc -l < test-pmath-callers-default.out | tr -d ' ') NaN cases in a portable build"
+	$(PYTHON) -c "import sys; d = open(sys.argv[1], 'rb').read().splitlines(); p = open(sys.argv[2], 'rb').read().splitlines(); bad = [(a, b) for a, b in zip(d, p) if a != b]; \
+	  ok = d and len(d) == len(p) and not bad; \
+	  print('pmath-callers: ok: the sampler and the softmax give the default build\'s answers for %d NaN cases in a portable build' % len(d) if ok else 'FAIL: a NaN at the exp\'s callers gives other answers in a portable build than in the default build:'); \
+	  [print('  default:  %s\n  portable: %s' % (a.decode(), b.decode())) for a, b in bad]; sys.exit(0 if ok else 1)" \
+	  test-pmath-callers-default.out test-pmath-callers-portable.out
+
+# R6.86: the attention softmax's OUTPUT in a portable build of the default
+# flags, bit for bit, against the softmax before R6.86 (main's fused loop with
+# main's expf), over every length to 300 and around the SIMD steps to 4096;
+# with a live control (the fused loop with the vector-friendly exp must
+# differ under -ffast-math). In make test (tests/test_pmath_softmax.c).
+$(TEST_PMATH_SOFTMAX): tests/test_pmath_softmax.c src/softmax.h src/pmath.h
+	$(CC) $(PMATH_VEC_FLAGS) -I src tests/test_pmath_softmax.c -o $@ -lm
 
 # R6.86: the softmax and SwiGLU loops timed with the p_expf this change
 # replaced and with the new one, interleaved, in one binary built as
@@ -3691,7 +3698,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
       $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_TRAY_MAC_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) $(TEST_LINEAGE_OOM) $(TEST_DERIVE_OOM) test-lora.full.gguf \
-      $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_SHA256) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_PMATH_EXPF) $(TEST_PMATH_EXPF_DEFAULT) $(TEST_FPCLASS) $(TEST_ACT) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
+      $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_SHA256) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_PMATH_EXPF) $(TEST_PMATH_EXPF_DEFAULT) $(TEST_PMATH_SOFTMAX) $(TEST_FPCLASS) $(TEST_ACT) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) \
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_STREAM_OUT) $(TEST_RESIDENCY) $(TEST_CAPACITY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
@@ -4035,6 +4042,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	./$(TEST_PMATH)
 	./$(TEST_PMATH_EXPF)
 	./$(TEST_PMATH_EXPF_DEFAULT)
+	./$(TEST_PMATH_SOFTMAX)
 	$(MAKE) --no-print-directory test-pmath-vec
 	$(MAKE) --no-print-directory test-pmath-callers
 	./$(TEST_FPCLASS)

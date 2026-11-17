@@ -1,9 +1,16 @@
 // R6.86: src/pmath.h's p_expf, written with no branch and no loop so that a
-// compiler can vectorize the loops that call it, gives the bits of the p_expf
-// it replaced for every float input.
+// compiler can vectorize the loops that call it, gives:
+//   - for every float that is not a NaN, the bits of the p_expf it replaced;
+//   - for a NaN, the input NaN quieted (its sign and payload, the quiet bit
+//     set), in every build.
 //
-// The oracle is that p_expf word for word, (float)pm_exp_d((double)x):
-// pm_exp_d is unchanged and is still the exp of tanhf and powf.
+// The oracle for the first is that p_expf word for word,
+// (float)pm_exp_d((double)x), one noinline function in this build: pm_exp_d
+// is unchanged and is still the exp of tanhf and powf. The second has an
+// anchor outside the code: IEEE 754's answer for an operation on a NaN, and
+// the C library's. The old function's own NaN depended on the compiler (a
+// signaling NaN quieted or not as the float-double round trip was folded, and
+// under -ffast-math no defined answer), so it is not the oracle there.
 //
 //   ./test-pmath-expf         the named inputs below, then every 256th bit
 //                             pattern (2^24 inputs: every sign, exponent and
@@ -13,16 +20,12 @@
 //                             (strict flags) and make test-pmath-expf-all-default
 //                             (the engine's own flags)
 //
-// The comparison is of the bits: a NaN must come back with the oracle's sign
-// and payload, a zero with its sign. Each input goes through p_expf twice:
+// The comparison is of the bits, a zero with its sign. Each input goes through
+// p_expf twice:
 //   - in a buffer loop, the shape a compiler vectorizes, as the softmax's is;
 //   - in a scalar call.
-// Under the engine's default flags (-ffast-math, so __FAST_MATH__) the old
-// function's NaN answer is undefined (the compiler may assume no NaN), so there
-// a NaN must give the STRICT build's answer: the old function compiled under
-// strict float in a unit of its own (tests/pmath_expf_strict.c, linked in when
-// PMATH_STRICT_ORACLE is defined, as make test-pmath-expf-all-default does).
-// Every other input must give the old function's bits in the same build.
+// The same holds under strict float and under the engine's default flags
+// (-ffast-math): both builds fail on any difference, a NaN's included.
 //
 // The mutant is a live control for the sample. copy_expf is p_expf's body
 // with ln2_lo, the low half of the Cody-Waite split, as a parameter:
@@ -42,28 +45,23 @@
 
 static int g_fail = 0;
 
-// the p_expf this change replaced, as it stood: the oracle
-static float oracle(float x) { return (float)pm_exp_d((double)x); }
-#if defined(__FAST_MATH__) && defined(PMATH_STRICT_ORACLE)
-float pmath_expf_strict_oracle(float x);   // tests/pmath_expf_strict.c, strict float
-#define NAN_ORACLE(x) pmath_expf_strict_oracle(x)
-#else
-#define NAN_ORACLE(x) oracle(x)
-#endif
+// the p_expf this change replaced, as it stood: the oracle for every float
+// that is not a NaN. One noinline function, so every comparison asks the same
+// code, wherever it is called from.
+static __attribute__((noinline)) float oracle(float x) { return (float)pm_exp_d((double)x); }
 
 static uint32_t bits(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
 static float flt(uint32_t u) { float f; memcpy(&f, &u, 4); return f; }
 static int nan_bits(uint32_t u) { return (u & 0x7f800000u) == 0x7f800000u && (u & 0x007fffffu) != 0; }
+// what each input must give: the oracle's bits, or for a NaN the NaN quieted
+static uint32_t want(uint32_t x) { return nan_bits(x) ? (x | 0x00400000u) : bits(oracle(flt(x))); }
 
 enum { CHUNK = 4096 };
-static float g_in[CHUNK], g_new[CHUNK], g_old[CHUNK], g_one[CHUNK];
+static float g_in[CHUNK], g_new[CHUNK], g_one[CHUNK];
 
 // p_expf over a buffer, the loop shape the engine's softmax and SiLU have
 static __attribute__((noinline)) void run_new(int n) {
     for (int i = 0; i < n; i++) g_new[i] = p_expf(g_in[i]);
-}
-static __attribute__((noinline)) void run_old(int n) {
-    for (int i = 0; i < n; i++) g_old[i] = oracle(g_in[i]);
 }
 // p_expf alone, as a scalar call site compiles it
 static __attribute__((noinline)) float one_new(float x) { return p_expf(x); }
@@ -75,12 +73,11 @@ typedef struct {
 
 static void compare(tally *t, int n) {
     run_new(n);
-    run_old(n);
     for (int i = 0; i < n; i++) g_one[i] = one_new(g_in[i]);
     for (int i = 0; i < n; i++) {
         uint32_t x = bits(g_in[i]);
         int nan = nan_bits(x);
-        uint32_t o = nan ? bits(NAN_ORACLE(g_in[i])) : bits(g_old[i]);
+        uint32_t o = want(x);
         int differs = bits(g_new[i]) != o || bits(g_one[i]) != o;
         t->n++;
         t->nan_n += (uint64_t)nan;
@@ -90,22 +87,10 @@ static void compare(tally *t, int n) {
     }
 }
 
-// verdict on a tally: every input must match, a NaN its build's NaN oracle
-// (see the top). Without the strict oracle a fast-math build can only count
-// its NaNs, and says so. Prints one line.
+// verdict on a tally: every input must match. Prints one line.
 static void judge(const char *what, const tally *t) {
-#if defined(__FAST_MATH__) && !defined(PMATH_STRICT_ORACLE)
-    int nan_fails = 0;
-    const char *nan_note = " (counted, not judged: no strict oracle linked in)";
-#elif defined(__FAST_MATH__)
-    int nan_fails = t->nan_diff != 0;
-    const char *nan_note = " (against the strict build's answer)";
-#else
-    int nan_fails = t->nan_diff != 0;
-    const char *nan_note = "";
-#endif
-    printf("pmath-expf: %s: %" PRIu64 " inputs, %" PRIu64 " differ; NaN inputs %" PRIu64 ", %" PRIu64 " differ%s\n",
-           what, t->n, t->diff, t->nan_n, t->nan_diff, nan_note);
+    printf("pmath-expf: %s: %" PRIu64 " inputs, %" PRIu64 " differ; NaN inputs %" PRIu64 ", %" PRIu64
+           " differ (against the NaN quieted)\n", what, t->n, t->diff, t->nan_n, t->nan_diff);
     if (t->diff) {
         uint32_t x = t->first;
         fprintf(stderr, "FAIL: %s: p_expf(%a, bits %08" PRIx32 ") = %08" PRIx32 " (buffer) and %08" PRIx32
@@ -113,10 +98,10 @@ static void judge(const char *what, const tally *t) {
                 bits(one_new(flt(x))), bits(oracle(flt(x))));
         g_fail = 1;
     }
-    if (nan_fails) {
+    if (t->nan_diff) {
         uint32_t x = t->first_nan;
-        fprintf(stderr, "FAIL: %s: the NaN %08" PRIx32 " gives %08" PRIx32 ", the oracle %08" PRIx32 "\n",
-                what, x, bits(one_new(flt(x))), bits(NAN_ORACLE(flt(x))));
+        fprintf(stderr, "FAIL: %s: the NaN %08" PRIx32 " gives %08" PRIx32 " (buffer) and %08" PRIx32
+                " (scalar), not %08" PRIx32 "\n", what, x, bits(p_expf(flt(x))), bits(one_new(flt(x))), want(x));
         g_fail = 1;
     }
 }
@@ -181,7 +166,10 @@ static __attribute__((noinline)) float copy_expf(float x, double ln2_lo) {
     double e = p * s.d;
     uint32_t xb;
     memcpy(&xb, &x, sizeof xb);
-    return (xb & 0x7fffffffu) > 0x7f800000u ? (float)xd : (float)e;
+    uint32_t qb = xb | 0x00400000u;
+    float q;
+    memcpy(&q, &qb, sizeof q);
+    return (xb & 0x7fffffffu) > 0x7f800000u ? q : (float)e;
 }
 #endif
 
@@ -190,10 +178,7 @@ static uint32_t sample_bits(uint32_t i) { return (i << 8) | ((i * 151u) & 0xffu)
 
 int main(int argc, char **argv) {
     int all = argc > 1 && strcmp(argv[1], "--all") == 0;
-#if defined(__FAST_MATH__) && defined(PMATH_STRICT_ORACLE)
-    printf("pmath-expf: built with -ffast-math (the engine's default flags), NaNs against the strict build, %s\n",
-           __VERSION__);
-#elif defined(__FAST_MATH__)
+#if defined(__FAST_MATH__)
     printf("pmath-expf: built with -ffast-math (the engine's default flags), %s\n", __VERSION__);
 #else
     printf("pmath-expf: built with strict float (the T3 build's flags), %s\n", __VERSION__);
@@ -205,10 +190,7 @@ int main(int argc, char **argv) {
     compare(&named, NNAMED);
     for (int i = 0; i < NNAMED; i++) {
         float x = flt(NAMED[i].x);
-        uint32_t o = bits(nan_bits(NAMED[i].x) ? NAN_ORACLE(x) : oracle(x)), a = bits(one_new(x));
-#if defined(__FAST_MATH__) && !defined(PMATH_STRICT_ORACLE)
-        if (nan_bits(NAMED[i].x)) continue;
-#endif
+        uint32_t o = want(NAMED[i].x), a = bits(one_new(x));
         if (a != o) {
             fprintf(stderr, "FAIL: named %08" PRIx32 " (%s): p_expf %08" PRIx32 ", the oracle %08" PRIx32 "\n",
                     NAMED[i].x, NAMED[i].why, a, o);
@@ -246,10 +228,10 @@ int main(int argc, char **argv) {
         for (uint32_t j = 0; j < (UINT32_C(1) << 24); j++) {
             float x = flt(sample_bits(j));
             copy_diff += bits(copy_expf(x, 1.90821492927058770002e-10)) != bits(p_expf(x));
-            mutant_diff += bits(copy_expf(x, 0.0)) != bits(oracle(x));
+            mutant_diff += bits(copy_expf(x, 0.0)) != want(bits(x));
         }
         for (int i = 0; i < NNAMED; i++)
-            mutant_named += bits(copy_expf(flt(NAMED[i].x), 0.0)) != bits(oracle(flt(NAMED[i].x)));
+            mutant_named += bits(copy_expf(flt(NAMED[i].x), 0.0)) != want(NAMED[i].x);
         printf("pmath-expf: the copy of p_expf differs from it at %" PRIu64 " of the sample; the mutant (ln2_lo = 0) "
                "differs from the oracle at %" PRIu64 " of the sample and %" PRIu64 " of the named inputs\n",
                copy_diff, mutant_diff, mutant_named);
