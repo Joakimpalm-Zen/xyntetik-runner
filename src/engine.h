@@ -196,6 +196,10 @@ typedef struct {
     // R3.60: the context the request in progress names (its context_id), or
     // NULL: an imported context is forked only by a request naming it.
     const char *reuse_ctx;
+    // R3.60: the route identity of the rows this slot holds (engine_prompt_route
+    // when they were written), 0 for none known: rows of another route than
+    // the engine's now are reused by no later request
+    uint64_t rows_route;
     int      rope_rebuilds;   // R4.40: times a sequence was recomputed at the LongRoPE crossing
     uint64_t mark_hash;
     // R3.62: the preamble snapshot this slot's rows were last loaded from
@@ -485,9 +489,12 @@ int    engine_rewind(engine *e, const int32_t *toks, int n);
 int    engine_rewind_prompt(engine *e, const int32_t *toks, int n);
 // a scoring feed is about to write the solo row of position pos (decide)
 void   engine_mark_scored(engine *e, int pos);
-// the arithmetic class of this engine's prompt rows: solo (-b 1) or a prefill
-// pass (-b 2 and up); the persisted store and snapshot names carry it (R3.60)
-uint64_t engine_prefix_class(const engine *e);
+// R3.60: whether a prompt here is a prefill pass (engine_feed's route choice),
+// and the route identity of the rows this engine writes now: the model's route
+// record, the switches set and the prompt pass. Every store key, snapshot name,
+// session image and slot stamp carries the identity.
+bool     engine_prompt_prefill(const engine *e);
+uint64_t engine_prompt_route(const engine *e);
 // What engine_rewind (or the prefix fork after it) did with the slot's
 // previous state; engine_rewind_how_name spells it for the request telemetry
 // (runner_telemetry.timing.cache) and the start line, so a client that sees

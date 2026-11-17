@@ -54,6 +54,7 @@ typedef struct {
     // rows are then of unknown provenance, engine_state_load's default)
     int      scored_from;
     bool     mark_known;
+    uint64_t route;   // the rows' route identity (engine_prompt_route), 0 when the image names none
 } session_meta;
 
 // Writes the image of engine `e` (at pos = n_tokens, the last token already

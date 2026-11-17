@@ -6223,39 +6223,14 @@ extern char **environ;
 #define TRAIN_ENVIRON environ
 #endif
 
-// R17.9: the RUNNER_ variables that cannot change a training run's bytes. Every
-// other one the run started with is in its record, and a run with one set is
-// not cpu-t3-exact. No list of the switches that move bytes is known to be
-// complete for every model (RUNNER_CPU_I8 and RUNNER_CPU_I8_PREFILL move a
-// default build's adapter on Q8_0), so the environment is read whole, as
-// route_tuning reads it, and only these are let through.
-static const char *const TRAIN_ENV_INERT[] = {
-    // read only by the test harness, never by this binary
-    "RUNNER_EXE", "RUNNER_CONFORMANCE_OUT", "RUNNER_TEST_GPU_OFF", "RUNNER_TEST_TIMEOUT_SCALE",
-    "RUNNER_REQUIRE_TURN_GUARD", "RUNNER_SWEEP_MODELS", "RUNNER_LLAMA_CPP_BIN",
-    // set by GitHub Actions' runner on every job, never read by this binary
-    "RUNNER_NAME", "RUNNER_OS", "RUNNER_ARCH", "RUNNER_TEMP", "RUNNER_TOOL_CACHE", "RUNNER_WORKSPACE",
-    "RUNNER_ENVIRONMENT", "RUNNER_TRACKING_ID", "RUNNER_DEBUG", "RUNNER_PERFLOG",
-    // read, and held not to move a training run's bytes
-    "RUNNER_TRAIN_ROWS",       // every width trains the same bytes (test_batched_taped_forward_is_the_solo_bytes)
-    "RUNNER_TPOOL_SPIN",       // how idle pool threads wait
-    "RUNNER_HF_CACHE", "RUNNER_CURL", "RUNNER_PREFIX_CACHE_MB",   // downloads, the server's prefix cache
-    "RUNNER_TEST_BUILD_DIRTY", // marks the build dirty: it can only take the claim down
-};
-
-static bool train_env_inert(const char *name, size_t n) {
-    for (size_t i = 0; i < sizeof TRAIN_ENV_INERT / sizeof *TRAIN_ENV_INERT; i++)
-        if (strlen(TRAIN_ENV_INERT[i]) == n && !strncmp(TRAIN_ENV_INERT[i], name, n)) return true;
-    return false;
-}
-
-// Whether the variable `name` (n bytes) is one a record names: a RUNNER_ one
-// outside the inert set, or one of the two the binary reads outside that
-// prefix that reach arithmetic (the recurrent scan's chunking, src/model.c).
+// R17.9: whether the variable `name` (n bytes) is a switch a training record
+// names: runner_switch_counts (src/model.c), the rule a row's route identity
+// uses too, R3.60. Every RUNNER_ variable outside a short inert set (names
+// only the test harness or GitHub Actions' runner set, RUNNER_TRAIN_ROWS,
+// RUNNER_TPOOL_SPIN, the download and cache paths, RUNNER_TEST_BUILD_DIRTY),
+// and XR_SSM_CHUNK / XR_SSM_SERIAL.
 static bool train_env_counts(const char *name, size_t n) {
-    if (n == 12 && !strncmp(name, "XR_SSM_CHUNK", 12)) return true;
-    if (n == 13 && !strncmp(name, "XR_SSM_SERIAL", 13)) return true;
-    return n > 7 && !strncmp(name, "RUNNER_", 7) && !train_env_inert(name, n);
+    return runner_switch_counts(name, n);
 }
 
 // The run's RUNNER_ variables outside the inert set, as JSON members

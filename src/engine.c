@@ -122,6 +122,7 @@ void engine_request_defaults(engine *e) {
 void engine_reset(engine *e) {
     e->pos = 0;
     e->scored_from = INT_MAX;
+    e->rows_route = 0;
     e->hit_stop = false; e->stop_id = -1;
     e->rewind_how = REWIND_NONE;
     model_rope_for_len(e->m, 0);       // R4.40: a fresh sequence starts on the short set
@@ -365,15 +366,42 @@ int engine_rewind(engine *e, const int32_t *toks, int n) {
 }
 
 int engine_rewind_prompt(engine *e, const int32_t *toks, int n) {
-    return rewind_to(e, toks, n, e->scored_from);
+    // rows of another route than this engine's now are kept for no request
+    int cap = e->pos > 0 && e->rows_route != engine_prompt_route(e) ? 0 : e->scored_from;
+    return rewind_to(e, toks, n, cap);
 }
 
-// R3.60: the arithmetic a prompt's rows were made in. At -b 1 every row comes
-// from the decode route; at -b 2 and up a prompt is a prefill pass. The two
-// differ in their last bits, so rows persisted from one are never read by the
-// other: the store's keys and the automatic snapshot's name carry the class.
-uint64_t engine_prefix_class(const engine *e) {
-    return e->m->n_batch > 1 ? 0x70726566696c6cull /* "prefill" */ : 0x736f6c6full /* "solo" */;
+// R3.60: whether a prompt fed here is a prefill pass (the tile at every width,
+// width-invariant from -b 2) rather than the decode route: a CPU-only run at
+// -b 2 and up. engine_feed takes its route from this, and engine_prompt_route
+// names it, so the two cannot disagree.
+bool engine_prompt_prefill(const engine *e) {
+    return e->m->gpu == NULL && e->m->n_batch > 1;
+}
+
+// R3.60: the route identity of the rows this engine writes now: the receipt's
+// route record of the model (model_route_hash: backend and device, layer
+// split, host experts, KV, build, codegen, the CPU's activation, the switches
+// set) and the prompt pass. On the CPU, -b 2 and up are one pass and -b 1 the
+// decode route; a device's batch kernels make no width claim, so its width is
+// part of the route. Rows persisted under one identity are never read under
+// another: the store's keys, the automatic snapshot's name, a session image
+// and a slot's own rows (rows_route) carry it. The model key never keyed GPU
+// presence or the switches; this does.
+uint64_t engine_prompt_route(const engine *e) {
+    uint64_t pass = engine_prompt_prefill(e) ? 0x70726566696c6cull               // "prefill"
+                  : e->m->gpu ? 0x6770752d62000000ull ^ (uint64_t)e->m->n_batch   // "gpu-b" and the width
+                  : 0x736f6c6full;                                                // "solo"
+    uint64_t h = (model_route_hash(e->m) ^ pass) * 0x100000001b3ull;
+    return h ? h : 1;
+}
+
+// A slot's rows are of the route that wrote them: rows of another route (a
+// device that fell back to the CPU, gpu_disable) serve no later request.
+static void stamp_rows(engine *e) {
+    uint64_t r = engine_prompt_route(e);
+    if (e->pos > 0 && e->rows_route != r) e->scored_from = 0;
+    e->rows_route = r;
 }
 
 void engine_mark_scored(engine *e, int pos) {
@@ -607,7 +635,7 @@ typedef struct pfx_entry {
     size_t    bytes;
     double    used;
     uint64_t  hits;
-    // R3.60: the arithmetic class the rows were made in (engine_prefix_class),
+    // R3.60: the arithmetic class the rows were made in (engine_prompt_route),
     // and whether they came from disk (prefix_context_import): an imported
     // entry is forked only by a request that names its context.
     uint64_t  cls;
@@ -824,8 +852,9 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
     // logits to sample the first output token from
     int best = 0;
     pfx_entry *hit = NULL;
+    const uint64_t route = engine_prompt_route(e);
     for (pfx_entry *p = PFX.head; p; p = p->next) {
-        if (p->key != e->model_key || p->cls != engine_prefix_class(e)) continue;
+        if (p->key != e->model_key || p->cls != route) continue;
         // R3.60: rows from disk are of a provenance this process cannot vouch
         // for: only the request that names their context forks them
         if (p->imported && !(e->reuse_ctx && p->pinned && !strcmp(p->name, e->reuse_ctx))) continue;
@@ -863,6 +892,7 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
         // imported one is of unknown provenance: kept for the request that
         // named it, never published or reused by a later one
         e->scored_from = hit->imported ? 0 : INT_MAX;
+        e->rows_route = route;
         e->dpos = 0;          // the draft model's KV was not forked
         e->dsnap = -1;
         e->hit_stop = false; e->stop_id = -1;
@@ -902,6 +932,7 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
     // tokens: an entry of fewer (capped at the mark) would pair its rows with
     // a later fold. So, as for a ring, it is stored only when it ends here.
     bool recur_here = model_has_recurrent(e->m);
+    const uint64_t route = engine_prompt_route(e);
     if (!e->hist || n < PFX_MIN_TOKENS || e->pos < n || ((ring || recur_here) && e->pos != n)) return;
 
     pthread_mutex_lock(&PFX.mu);
@@ -944,7 +975,7 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
         pfx_entry *p = *pp;
         int lim = p->n < store_n ? p->n : store_n, c = 0;
         // an entry on the other LongRoPE set shares no rows with this prompt
-        if (p->key != e->model_key || p->cls != engine_prefix_class(e) ||
+        if (p->key != e->model_key || p->cls != route ||
             model_rope_wants_long(e->m, p->n) != e->m->rope_long) {
             pp = &p->next;
             continue;
@@ -975,7 +1006,7 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
     // has nothing shareable at a shorter length.
     if (!recur && diverge_at >= PFX_MIN_TOKENS && diverge_at < store_n) {
         for (pfx_entry *p = PFX.head; p; p = p->next) {
-            if (p->key != e->model_key || p->cls != engine_prefix_class(e) || p->n < diverge_at ||
+            if (p->key != e->model_key || p->cls != route || p->n < diverge_at ||
                 model_rope_wants_long(e->m, p->n) != e->m->rope_long) continue;
             int c = 0;
             while (c < diverge_at && p->toks[c] == toks[c]) c++;
@@ -999,7 +1030,7 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
     pfx_save(e->m, kv, store_n);
     pfx_ring_mark(e->m, ne, store_n, false);
     ne->key = e->model_key; ne->toks = nt; ne->n = store_n;
-    ne->cls = engine_prefix_class(e);
+    ne->cls = route;
     ne->kv = kv; ne->bytes = need; ne->used = now;
     ne->next = PFX.head; PFX.head = ne;
     PFX.bytes += need;
@@ -1078,7 +1109,7 @@ int prefix_context_pin(engine *e, const char *name, const int32_t *toks, int n) 
     old = pfx_find_named(name);   // the trim may have moved its link
     if (old) pfx_drop(old);
     ne->key = e->model_key; ne->toks = nt; ne->n = n;
-    ne->cls = engine_prefix_class(e);
+    ne->cls = engine_prompt_route(e);
     ne->kv = kv; ne->bytes = need; ne->used = now; ne->created = now;
     ne->pinned = true;
     snprintf(ne->name, sizeof ne->name, "%s", name);
@@ -1195,12 +1226,14 @@ int prefix_cache_save(const char *path) {
     // span (a rewind before it was taken) stays in memory only.
     pthread_mutex_lock(&PFX.mu);
     uint32_t count = 0;
-    for (pfx_entry *p = PFX.head; p; p = p->next) count += p->ring_whole;
+    // R3.60: nor an imported context: its restriction (forked only by a
+    // request naming it) is not a field of the file, so it stays in memory
+    for (pfx_entry *p = PFX.head; p; p = p->next) count += p->ring_whole && !p->imported;
 
     uint64_t digest = 0xcbf29ce484222325ull;
     bool ok = wr(f, PFX_MAGIC, PFX_MAGIC_N) && wr(f, &count, sizeof count);
     for (pfx_entry *p = PFX.head; ok && p; p = p->next) {
-        if (!p->ring_whole) continue;
+        if (!p->ring_whole || p->imported) continue;
         uint64_t key = p->key ^ PFX_STORE_SALT ^ p->cls, bytes = p->bytes;   // R3.60
         int32_t  n   = p->n;
         ok = wr(f, &key, sizeof key) && wr(f, &n, sizeof n) &&
@@ -1265,7 +1298,7 @@ int prefix_cache_load(const char *path, const engine *e) {
         // context length or another KV dtype is not adapted -- it is dropped.
         // Adapting it would be inventing KV rows, which reads as fluent output
         // and is wrong.
-        if (key != (e->model_key ^ PFX_STORE_SALT ^ engine_prefix_class(e)) ||   // R3.60: an older store's, another class's
+        if (key != (e->model_key ^ PFX_STORE_SALT ^ engine_prompt_route(e)) ||   // R3.60: an older store's, another class's
             bytes != prefix_cache_entry_bytes(e->m, n)) {
             free(toks); free(kv); refused++;
             continue;
@@ -1277,8 +1310,8 @@ int prefix_cache_load(const char *path, const engine *e) {
             free(toks); free(kv); free(ne);
             continue;
         }
-        ne->key = key ^ PFX_STORE_SALT ^ engine_prefix_class(e); ne->toks = toks; ne->n = n;   // the model key again
-        ne->cls = engine_prefix_class(e);
+        ne->key = key ^ PFX_STORE_SALT ^ engine_prompt_route(e); ne->toks = toks; ne->n = n;   // the model key again
+        ne->cls = engine_prompt_route(e);
         ne->kv = kv; ne->bytes = (size_t)bytes; ne->used = now;
         pfx_ring_mark(e->m, ne, n, true);
         ne->next = PFX.head; PFX.head = ne;
@@ -1468,7 +1501,7 @@ int prefix_context_import(const engine *e, const char *name, const char *path,
     old = pfx_find_named(name);
     if (old) pfx_drop(old);
     ne->key = e->model_key; ne->toks = toks; ne->n = n;
-    ne->cls = engine_prefix_class(e);
+    ne->cls = engine_prompt_route(e);
     ne->imported = true;   // R3.60: forked only by a request naming it
     ne->kv = kv; ne->bytes = (size_t)bytes; ne->used = now; ne->created = now;
     pfx_ring_mark(e->m, ne, n, true);
@@ -1721,7 +1754,8 @@ static float *engine_feed_inner(engine *e, const int32_t *toks, int n);
 // trainer's taped forward bit for bit, which the GRPO loop's -b 1 server is
 // held to (tests/test_rollout_identity.py, tests/test_kv_f32.py).
 float *engine_feed(engine *e, const int32_t *toks, int n) {
-    e->m->prefill_pass = e->m->gpu == NULL && e->m->n_batch > 1;
+    stamp_rows(e);
+    e->m->prefill_pass = engine_prompt_prefill(e);
     float *lg = engine_feed_inner(e, toks, n);
     e->m->prefill_pass = false;
     return lg;
@@ -1729,6 +1763,7 @@ float *engine_feed(engine *e, const int32_t *toks, int n) {
 
 // the decode step's route: prefill_pass stays false (engine.h)
 float *engine_feed_solo(engine *e, int32_t tok) {
+    stamp_rows(e);
     return engine_feed_inner(e, &tok, 1);
 }
 
@@ -3343,6 +3378,7 @@ bool engine_state_load(engine *e, const int32_t *hist, int n, const uint8_t *src
     // later request refeeds them and none is published. A caller that knows
     // the mark (a session image that carries it) sets e->scored_from after.
     e->scored_from = 0;
+    e->rows_route = 0;   // and of no route this engine can name
     return true;
 }
 

@@ -3570,13 +3570,16 @@ runner -m model.gguf --resume s.img                                 # the other 
 runner -m model.gguf --resume s.img --fork-seed 11                  # or a fork of them
 ```
 
-The image is one file: a `xyntetik.runner.session.v1` JSON header (the model's sha256
+The image is one file: a `xyntetik.runner.session.v2` JSON header (`runner.session.2`; an image of version 1 still resumes) (the model's sha256
 and the engine's model key, context length, KV type, prompt length, token count, the
 `-n` budget and how much of it is spent, the sampler's settings and rng state, the
 `--json` / `--json` constraint by digest, `--ignore-eos`, the runner version and
-the binary's sha256, and `scored_from`: the first position whose KV row a scoring feed
-wrote, `null` for none; an image written before R3.60 has no such field, and its rows
-then serve its own resume but are never published or reused by a later request), then
+the binary's sha256, `route`: the route identity of the rows (the arithmetic that wrote
+them: backend and device, layer split, the CPU's activation, the switches set and the
+prompt pass), and `scored_from`: the first position whose KV row a scoring feed wrote,
+`null` for none. A version 1 image, or a resume into another route, has rows that serve
+that resume but are never published or reused by a later request. A reader of version 1
+refuses a version 2 image), then
 the token ids, the KV of every position plus a recurrent
 model's fold state (the prefix cache's entry layout), and the next token's logits,
 closed by a SHA-256 over every byte before it. What the state does not hold (the

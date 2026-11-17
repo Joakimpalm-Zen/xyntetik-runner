@@ -1968,4 +1968,14 @@ bool model_moe_trace_on(void);
 void model_moe_trace_route(int pos, int layer, const int *sel, const float *selw,
                            const float *norms, int used);
 
+// R3.60: a hash of the route a forward takes on this model now (the receipt's
+// route record: backend, device, layer split, host experts, KV, the backend's
+// detail, build, codegen, the CPU's activation, the weight types) and of the
+// switches set (runner_switch_counts). Rows made under another hash are
+// another arithmetic's.
+uint64_t model_route_hash(const model_t *m);
+// Whether the variable `name` (n bytes) is a switch that may change arithmetic:
+// a RUNNER_ one outside the inert set, or XR_SSM_CHUNK / XR_SSM_SERIAL.
+bool     runner_switch_counts(const char *name, size_t n);
+
 #endif // RUNNER_MODEL_H

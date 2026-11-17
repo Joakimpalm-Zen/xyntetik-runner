@@ -8222,6 +8222,66 @@ static void route_collect(const model_t *m, route_facts *r) {
     route_tuning(r->tuning, sizeof r->tuning);
 }
 
+// R17.9, shared since R3.60: the RUNNER_ variables that cannot change
+// arithmetic. Every other one a run starts with counts as a switch that may:
+// a training record names it, and it is part of a row's route identity. No
+// list of the switches that move bytes is known to be complete for every
+// model (RUNNER_CPU_I8 and RUNNER_CPU_I8_PREFILL move a default build's), so
+// the environment is read whole, as route_tuning reads it, and only these
+// are let through.
+static const char *const RUNNER_SWITCH_INERT[] = {
+    // read only by the test harness, never by this binary
+    "RUNNER_EXE", "RUNNER_CONFORMANCE_OUT", "RUNNER_TEST_GPU_OFF", "RUNNER_TEST_TIMEOUT_SCALE",
+    "RUNNER_REQUIRE_TURN_GUARD", "RUNNER_SWEEP_MODELS", "RUNNER_LLAMA_CPP_BIN",
+    // set by GitHub Actions' runner on every job, never read by this binary
+    "RUNNER_NAME", "RUNNER_OS", "RUNNER_ARCH", "RUNNER_TEMP", "RUNNER_TOOL_CACHE", "RUNNER_WORKSPACE",
+    "RUNNER_ENVIRONMENT", "RUNNER_TRACKING_ID", "RUNNER_DEBUG", "RUNNER_PERFLOG",
+    // read, and held not to move a training run's bytes
+    "RUNNER_TRAIN_ROWS",       // every width trains the same bytes (test_batched_taped_forward_is_the_solo_bytes)
+    "RUNNER_TPOOL_SPIN",       // how idle pool threads wait
+    "RUNNER_HF_CACHE", "RUNNER_CURL", "RUNNER_PREFIX_CACHE_MB",   // downloads, the server's prefix cache
+    "RUNNER_TEST_BUILD_DIRTY", // marks a training build dirty: it can only take a claim down
+    // test seams that only wait (a sleep between steps, chunks or phases) or print
+    "RUNNER_TEST_STEP_DELAY_MS", "RUNNER_TEST_PREFILL_DELAY_MS", "RUNNER_TEST_LOAD_DELAY_MS",
+    "RUNNER_TEST_REQUEST_TAIL_MS", "RUNNER_TEST_DRAIN_GRACE_MS", "RUNNER_TEST_DRAIN_HARD_MS",
+    "RUNNER_TEST_DRAIN_LATE_MS", "RUNNER_TEST_INSTANCE_SWEEP_DELAY_MS",
+    "RUNNER_TEST_KV_DUMP",     // prints a KV row's hash
+};
+
+bool runner_switch_counts(const char *name, size_t n) {
+    if (n == 12 && !strncmp(name, "XR_SSM_CHUNK", 12)) return true;
+    if (n == 13 && !strncmp(name, "XR_SSM_SERIAL", 13)) return true;
+    if (n <= 7 || strncmp(name, "RUNNER_", 7) != 0) return false;
+    for (size_t i = 0; i < sizeof RUNNER_SWITCH_INERT / sizeof *RUNNER_SWITCH_INERT; i++)
+        if (strlen(RUNNER_SWITCH_INERT[i]) == n && !strncmp(RUNNER_SWITCH_INERT[i], name, n)) return false;
+    return true;
+}
+
+static uint64_t route_fnv(uint64_t h, const char *s) {
+    for (const char *c = s ? s : ""; *c; c++) { h ^= (uint8_t)*c; h *= 0x100000001b3ull; }
+    h ^= 0xff; h *= 0x100000001b3ull;   // a separator, so "ab","c" is not "a","bc"
+    return h;
+}
+
+uint64_t model_route_hash(const model_t *m) {
+    route_facts r;
+    memset(&r, 0, sizeof r);
+    route_collect(m, &r);
+    uint64_t h = 0xcbf29ce484222325ull;
+    char num[96];
+    snprintf(num, sizeof num, "%d/%d/%d/%d/%d", r.gpu_layers, r.n_layer, r.moe_layers, r.moe_host, r.moe_hot);
+    const char *parts[] = { r.backend, r.device, num, r.kv, r.detail, r.build, r.codegen, r.cpu_act, r.weights };
+    for (size_t i = 0; i < sizeof parts / sizeof *parts; i++) h = route_fnv(h, parts[i]);
+    // the switches, read live and in any order: XOR of each one's own hash
+    uint64_t sw = 0;
+    for (char **e = ROUTE_ENVIRON; e && *e; e++) {
+        const char *eq = strchr(*e, '=');
+        if (eq && runner_switch_counts(*e, (size_t)(eq - *e))) sw ^= route_fnv(0xcbf29ce484222325ull, *e);
+    }
+    h ^= sw; h *= 0x100000001b3ull;
+    return h;
+}
+
 enum { RP_SOLO, RP_BATCH, RP_KEEP, RP_MTP, RP_MICRO };
 static const char *const route_path_name[MODEL_ROUTE_PATHS] = {
     "solo", "batch", "keep", "mtp", "micro" };

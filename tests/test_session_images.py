@@ -31,7 +31,7 @@ import sys
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-MAGIC = b"runner.session.1"
+MAGIC = b"runner.session.2"   # R3.60: v2 carries the route and the scored mark
 N = 50
 HALF = 25
 SCHEMA = {"type": "object", "properties": {"text": {"type": "string"}},
@@ -138,7 +138,7 @@ def test_suspend_and_resume_write_the_straight_runs_image(runner_bin, fx, case):
 
     img, half = _image(d / "a.img"), _image(d / "b1.img")
     h = img["header"]
-    assert h["schema_version"] == "xyntetik.runner.session.v1"
+    assert h["schema_version"] == "xyntetik.runner.session.v2"   # R3.60: the route and the mark
     assert h["model"]["sha256"] == hashlib.sha256(model.read_bytes()).hexdigest()
     assert h["generated"] == N and h["max_new"] == N
     assert h["n_tokens"] == h["n_prompt"] + N == len(img["tokens"])
