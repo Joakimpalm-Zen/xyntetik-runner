@@ -503,7 +503,12 @@ done:
 // from random values (each chain runs from its stored value). Anchor: y
 // against a double reference within its chains' rounding, (n_in + r + 2)
 // 2^-23 of the sum of the terms' magnitudes.
-static void lora_case(model_t *m, int r, int n_in, int n_out, int nb, int edge) {
+// smode, the adapter's scale: 0 16/r (the recipe's alpha 16), 1 zero, 2 -16/r,
+// 3 the cancellation case: s 3.2 (no power of two, so s acc rounds) and y0 the
+// negated s acc of a first host pass, so y is the fused step's rounding residual
+// (an unfused y += s acc gives 0 there: RUNNER_TLORA_MUTANT's catch; every other
+// case's s is a power of two, or its s acc far below y0's ulp, and cannot see it)
+static void lora_case(model_t *m, int r, int n_in, int n_out, int nb, int edge, int smode) {
     size_t na = (size_t)r * n_in, nbb = (size_t)n_out * r;
     size_t nx = (size_t)nb * n_in, ny = (size_t)nb * n_out;
     float *A = malloc(sizeof(float) * na), *B = malloc(sizeof(float) * nbb);
@@ -537,7 +542,17 @@ static void lora_case(model_t *m, int r, int n_in, int n_out, int nb, int edge) 
     memcpy(gah, ga0, sizeof(float) * na); memcpy(gad, ga0, sizeof(float) * na);
     memcpy(gbh, gb0, sizeof(float) * nbb); memcpy(gbd, gb0, sizeof(float) * nbb);
     memcpy(dxh, dx0, sizeof(float) * nx); memcpy(dxd, dx0, sizeof(float) * nx);
-    float s = 16.0f / (float)r;
+    float s = smode == 1 ? 0.0f : smode == 2 ? -16.0f / (float)r : smode == 3 ? 3.2f : 16.0f / (float)r;
+    if (smode == 3) {   // y0 = -(s acc) of a first host pass: y is then the rounding residual
+        float *y1 = calloc(ny, sizeof(float)), *ga1 = malloc(sizeof(float) * na);
+        float *gb1 = malloc(sizeof(float) * nbb), *dx1 = malloc(sizeof(float) * nx);
+        memcpy(ga1, ga0, sizeof(float) * na); memcpy(gb1, gb0, sizeof(float) * nbb);
+        memcpy(dx1, dx0, sizeof(float) * nx);
+        model_lora_site_ref(r, n_in, n_out, nb, s, A, B, x, dy, y1, ga1, gb1, dx1);
+        for (size_t i = 0; i < ny; i++) y0[i] = -y1[i];
+        memcpy(yh, y0, sizeof(float) * ny); memcpy(yd, y0, sizeof(float) * ny);
+        free(y1); free(ga1); free(gb1); free(dx1);
+    }
     bool okh = model_lora_site_ref(r, n_in, n_out, nb, s, A, B, x, dy, yh, gah, gbh, dxh);
     bool okd = gpu_train_lora_check(m, r, n_in, n_out, nb, s, A, B, x, dy, yd, gad, gbd, dxd);
     CHECK(okh, "lora twin r %d %dx%d nb %d: the host reference failed", r, n_in, n_out, nb);
@@ -594,8 +609,8 @@ static void lora_case(model_t *m, int r, int n_in, int n_out, int nb, int edge) 
               "rounding bound)", r, n_in, n_out, nb, worst);
         CHECK(hworst <= 1.0, "lora twin r %d %dx%d nb %d: y is off the host's beyond the "
               "rounding bound (%.3g of it)", r, n_in, n_out, nb, hworst);
-        printf("lora twin r %2d %5dx%-5d nb %3d%s: %s == host; y %.3g of its bound from the "
-               "double, %.3g from the host\n", r, n_in, n_out, nb, edge ? " edge" : "     ",
+        printf("lora twin r %3d %5dx%-5d nb %3d s %-7.4g%s: %s == host; y %.3g of its bound from the "
+               "double, %.3g from the host\n", r, n_in, n_out, nb, s, edge ? " edge" : "     ",
                c0 ? "ga gb dx" : "y ga gb dx", worst, hworst);
         free(tq); free(ta);
     }
@@ -653,6 +668,70 @@ static float b2_ftz(float f) {
     return f;
 }
 #endif
+// R8.24.1 B1 (the second reader's gap): non-finite inputs. Every combination
+// of g, u and dh over the infinities, NaNs of three payloads and a few finite
+// values goes through the twins and the host's own functions. A NaN result
+// must meet a NaN (the CPU and the GPU propagate payloads by their own rules);
+// any other result must be the host's bits. T3 is the gate: the default
+// build's host is compiled with -ffast-math, which assumes no infinity or NaN,
+// so its answers there are undefined (measured: dh u act_d(g) at g -inf, u and
+// dh +inf is IEEE's inf 0 = NaN on the device and in T3, and 0 in the default
+// host, whose compiler folded the product); that build runs the twins over
+// the same inputs and reports how many outputs differ, without a verdict.
+static void ffn_nonfinite_check(model_t *m) {
+    const uint32_t NB[] = { 0x7f800000u, 0xff800000u, 0x7fc00000u, 0xffc00001u, 0x7fa00010u };
+    const float FV[] = { 1.0f, -2.0f, 0.0f, 90.0f };
+    float S[8];
+    int ns = 0;
+    for (int i = 0; i < 5; i++) memcpy(&S[ns++], &NB[i], 4);
+    for (int i = 0; i < 3; i++) S[ns++] = FV[i];
+    int n = ns * ns * ns;
+    float *g = malloc(sizeof(float) * n), *u = malloc(sizeof(float) * n), *dh = malloc(sizeof(float) * n);
+    float *h = malloc(sizeof(float) * n), *dg = malloc(sizeof(float) * n), *du = malloc(sizeof(float) * n);
+    int k = 0;
+    for (int a = 0; a < ns; a++)
+        for (int b = 0; b < ns; b++)
+            for (int c = 0; c < ns; c++, k++) { g[k] = S[a]; u[k] = S[b]; dh[k] = S[c]; }
+    bool ok = gpu_train_ffn_check(m, ACT_SILU, g, u, dh, h, dg, du, n);
+    CHECK(ok, "ffn twin, non-finite inputs: declined");
+    size_t bad = 0, nonfin_in = 0;
+    for (int i = 0; ok && i < n; i++) {
+        float r[3] = { model_ffn_act(ACT_SILU, g[i], u[i]), model_ffn_dg(ACT_SILU, dh[i], u[i], g[i]),
+                       model_ffn_du(ACT_SILU, dh[i], g[i]) };
+        float d[3] = { h[i], dg[i], du[i] };
+        if (b_nonfin(g[i]) || b_nonfin(u[i]) || b_nonfin(dh[i])) nonfin_in++;
+        for (int j = 0; j < 3; j++) {
+            bool same;
+            if (b2_nan(r[j]) || b2_nan(d[j])) same = b2_nan(r[j]) && b2_nan(d[j]);
+            else same = !memcmp(&r[j], &d[j], 4);
+#ifndef RUNNER_PORTABLE_MATH
+            if (!same) bad++;   // reported, not gated: see above
+            continue;
+#endif
+            if (!same && !bad++) {
+                uint32_t bg, bu, bd, br, bdv;
+                memcpy(&bg, &g[i], 4); memcpy(&bu, &u[i], 4); memcpy(&bd, &dh[i], 4);
+                memcpy(&br, &r[j], 4); memcpy(&bdv, &d[j], 4);
+                fprintf(stderr, "FAIL: ffn twin, non-finite inputs: g %08x u %08x dh %08x: %s %08x, "
+                        "the host %08x\n", (unsigned)bg, (unsigned)bu, (unsigned)bd,
+                        j == 0 ? "h" : j == 1 ? "dg" : "du", (unsigned)bdv, (unsigned)br);
+            }
+        }
+    }
+#ifdef RUNNER_PORTABLE_MATH
+    CHECK(!bad, "ffn twin, non-finite inputs: %zu outputs differ from the host's by class or bits", bad);
+    if (ok && !bad)
+        printf("ffn twin, non-finite inputs: %d combinations (%zu with an infinity or a NaN in), h dg du "
+               "== host by class (NaN meets NaN) and by bits otherwise\n", n, nonfin_in);
+#else
+    if (ok)
+        printf("ffn twin, non-finite inputs: %d combinations (%zu with an infinity or a NaN in) ran; %zu "
+               "of %d outputs differ from this -ffast-math host, whose answers there are undefined (T3 "
+               "gates them)\n", n, nonfin_in, bad, 3 * n);
+#endif
+    free(g); free(u); free(dh); free(h); free(dg); free(du);
+}
+
 static void b2_check(model_t *m, int n, int rows, int stride, bool weighted) {
     float eps = 1e-6f;
     size_t span = (size_t)(rows - 1) * stride + n;
@@ -1088,7 +1167,19 @@ static void b8_checks(model_t *m) {
 // its own q row and the rows before it, so the host's whole run is the
 // reference for any chunk).
 // plant: the control (the second reader's F2): a quiet NaN written into the
-// device's output, which every build's gate must catch.
+// device's output, which every build's gate must catch. kind, the caches'
+// kinds: 0 f16 rows, 3 f32 rows of the same (f16-exact) values, 4 K f16 and
+// V f32, 5 K f32 and V f16, 6 f32 rows of values no f16 holds.
+static double b4_kv(const uint8_t *base, int kind, size_t row_b, int s, size_t idx) {
+    if (kind == 3) {
+        float f;
+        memcpy(&f, base + (size_t)s * row_b + 4 * idx, 4);
+        return f;
+    }
+    f16_t h;
+    memcpy(&h, base + (size_t)s * row_b + 2 * idx, 2);
+    return f16_to_f32(h);
+}
 static void b4_check(model_t *m, int T, int H, int kv_mul, int hd, int swa, float scale_mul,
                      int kind, int zero_q, int pos0, int plant) {
     ab_shape sh = ab_shape_of(T, H, kv_mul, hd, swa);
@@ -1097,23 +1188,36 @@ static void b4_check(model_t *m, int T, int H, int kv_mul, int hd, int swa, floa
     float *q = malloc(sizeof(float) * nq), *dao = malloc(sizeof(float) * nq);
     ab_ref_fill(&sh, 0x9E3779B97F4A7C15ull ^ (uint64_t)(T * 131 + hd * 7 + swa), k16, v16, q, dao);
     if (zero_q) for (int i = 0; i < sh.q_dim; i++) q[i] = 0.0f;   // position 0: a flat softmax
-    size_t rowb = kind == 3 ? (size_t)sh.kv_dim * 4 : row16;
+    int kk = kind == 3 || kind == 5 || kind == 6 ? 3 : 0;   // K's kind
+    int kv = kind == 3 || kind == 4 || kind == 6 ? 3 : 0;   // V's kind
+    size_t rowkb = kk == 3 ? (size_t)sh.kv_dim * 4 : row16, rowvb = kv == 3 ? (size_t)sh.kv_dim * 4 : row16;
     uint8_t *kc = k16, *vc = v16;
-    if (kind == 3) {   // the f32 form of the same values
-        kc = malloc(rowb * T); vc = malloc(rowb * T);
+    for (int w = 0; w < 2; w++) {   // the f32 form of K and of V where asked
+        if ((w ? kv : kk) != 3) continue;
+        const uint8_t *src = w ? v16 : k16;
+        uint8_t *dst = malloc((size_t)sh.kv_dim * 4 * T);
         for (size_t i = 0; i < (size_t)T * sh.kv_dim; i++) {
-            f16_t a, b;
-            memcpy(&a, k16 + 2 * i, 2); memcpy(&b, v16 + 2 * i, 2);
-            float fa = f16_to_f32(a), fb = f16_to_f32(b);
-            memcpy(kc + 4 * i, &fa, 4); memcpy(vc + 4 * i, &fb, 4);
+            f16_t hb;
+            memcpy(&hb, src + 2 * i, 2);
+            float f = f16_to_f32(hb);
+            // kind 6: moved off the f16 grid by a few f32 ulps a value, by integers
+            // (no float arithmetic, which this build may flush or contract)
+            if (kind == 6 && (f != 0.0f)) {
+                uint32_t u;
+                memcpy(&u, &f, 4);
+                u += 1u + (uint32_t)((i * 2654435761u) >> 27);   // 1..32 ulps up in magnitude
+                memcpy(&f, &u, 4);
+            }
+            memcpy(dst + 4 * i, &f, 4);
         }
+        if (w) vc = dst; else kc = dst;
     }
     float scale = scale_mul / sqrtf((float)hd);
     int nb = T - pos0;   // the chunk's rows
     size_t qoff = (size_t)pos0 * sh.q_dim;
     float *aoh = calloc(nq, sizeof(float)), *aod = calloc((size_t)nb * sh.q_dim, sizeof(float));
-    bool okh = model_attn_ref(T, H, kv_mul, hd, swa, scale, kind, kind, kc, vc, rowb, rowb, q, aoh);
-    tattn_args a = { nb, H, kv_mul, hd, sh.q_dim, sh.kv_dim, swa, rowb, rowb, scale, kind, kind,
+    bool okh = model_attn_ref(T, H, kv_mul, hd, swa, scale, kk, kv, kc, vc, rowkb, rowvb, q, aoh);
+    tattn_args a = { nb, H, kv_mul, hd, sh.q_dim, sh.kv_dim, swa, rowkb, rowvb, scale, kk, kv,
                      pos0 };
     bool ok = okh && gpu_train_attn_fw_check(m, &a, kc, vc, q + qoff, aod);
     CHECK(ok, "attn twin T %d hd %d rows %d..%d: declined (no kernel in this PTX, or a span the "
@@ -1132,16 +1236,13 @@ static void b4_check(model_t *m, int T, int H, int kv_mul, int hd, int swa, floa
             double smax = 0, mx = -1e300, sum = 0, vmax = 0;
             for (int s = t0; s <= t; s++) {
                 double d = 0;
-                for (int i = 0; i < hd; i++) {
-                    f16_t kb; memcpy(&kb, k16 + (size_t)s * row16 + 2 * ((size_t)kvh * hd + i), 2);
-                    d += (double)qh[i] * f16_to_f32(kb);
-                }
+                for (int i = 0; i < hd; i++)
+                    d += (double)qh[i] * b4_kv(kc, kk, rowkb, s, (size_t)kvh * hd + i);
                 sc[s] = d * scale;
                 if (fabs(sc[s]) > smax) smax = fabs(sc[s]);
                 if (sc[s] > mx) mx = sc[s];
                 for (int i = 0; i < hd; i++) {
-                    f16_t vb; memcpy(&vb, v16 + (size_t)s * row16 + 2 * ((size_t)kvh * hd + i), 2);
-                    double v = fabs(f16_to_f32(vb));
+                    double v = fabs(b4_kv(vc, kv, rowvb, s, (size_t)kvh * hd + i));
                     if (v > vmax) vmax = v;
                 }
             }
@@ -1166,10 +1267,8 @@ static void b4_check(model_t *m, int T, int H, int kv_mul, int hd, int swa, floa
                             "i %d: %.9g/%.9g\n", T, t, h, i, ev, hv);
 #endif
                 double x = 0;
-                for (int s = t0; s <= t; s++) {
-                    f16_t vb; memcpy(&vb, v16 + (size_t)s * row16 + 2 * ((size_t)kvh * hd + i), 2);
-                    x += pr[s] / sum * f16_to_f32(vb);
-                }
+                for (int s = t0; s <= t; s++)
+                    x += pr[s] / sum * b4_kv(vc, kv, rowvb, s, (size_t)kvh * hd + i);
                 double ea = fabs((double)dv - x);
                 bool anf = b_nonfin(dv) || d_nonfin(x) || d_nonfin(ea);
                 if (!anf && ea / lim > wa) wa = ea / lim;
@@ -1203,7 +1302,8 @@ static void b4_check(model_t *m, int T, int H, int kv_mul, int hd, int swa, floa
                "default (bound, subnormals flushed)",
 #endif
                wa);
-    if (kind == 3) { free(kc); free(vc); }
+    if (kc != k16) free(kc);
+    if (vc != v16) free(vc);
     free(k16); free(v16); free(q); free(dao); free(aoh); free(aod); free(sc); free(pr);
 }
 static void b4_checks(model_t *m) {
@@ -1225,6 +1325,10 @@ static void b4_checks(model_t *m) {
     b4_check(m, 12288, 1, 1, 1, 0, 1.0f, 0, 0, 0, 0);
     b4_check(m, 12288, 2, 1, 4, 0, 1.0f, 3, 0, 12000, 0);
     b4_check(m, 12288, 1, 1, 8, 128, 1.0f, 0, 0, 11000, 0);
+    b4_check(m, 40, 2, 1, 512, 0, 1.0f, 0, 0, 0, 0);      // the widest head the twin takes
+    b4_check(m, 60, 4, 2, 128, 0, 1.0f, 4, 0, 0, 0);      // K f16, V f32
+    b4_check(m, 60, 4, 2, 128, 9, 1.0f, 5, 0, 20, 0);     // K f32, V f16, a window, a chunk
+    b4_check(m, 70, 4, 2, 96, 0, 1.0f, 6, 0, 0, 0);       // f32 rows no f16 holds
     b4_check(m, 64, 4, 2, 64, 0, 1.0f, 0, 0, 0, 1);       // the control: a planted NaN is caught
 }
 
@@ -1556,11 +1660,18 @@ int main(void) {
         free(bx); free(by);
     }
     ffn_check(&m);
-    lora_case(&m, 8, 2560, 1024, 104, 0);
-    lora_case(&m, 8, 9728, 2560, 104, 0);
-    lora_case(&m, 8, 37, 300, 7, 1);
-    lora_case(&m, 1, 64, 5, 1, 1);
-    lora_case(&m, 5, 129, 33, 17, 1);
+    ffn_nonfinite_check(&m);
+    lora_case(&m, 8, 2560, 1024, 104, 0, 0);
+    lora_case(&m, 8, 9728, 2560, 104, 0, 0);
+    lora_case(&m, 8, 37, 300, 7, 1, 0);
+    lora_case(&m, 1, 64, 5, 1, 1, 0);
+    lora_case(&m, 5, 129, 33, 17, 1, 0);
+    lora_case(&m, 512, 300, 200, 9, 0, 0);    // LORA_R_MAX, the largest rank --lora-rank takes
+    lora_case(&m, 512, 37, 61, 3, 1, 2);      // and with a negative scale, edge rows
+    lora_case(&m, 8, 129, 33, 17, 0, 1);      // a zero scale: y and the gradients' s terms vanish
+    lora_case(&m, 8, 37, 300, 7, 1, 2);       // a negative scale
+    lora_case(&m, 5, 129, 33, 17, 0, 3);      // the cancellation case: y is the fused step's residual
+    lora_case(&m, 8, 2560, 1024, 13, 0, 3);   // and at the recipe's width
     ab_check(&m, 77, 4, 2, 64, 0);
     ab_check(&m, 150, 8, 4, 64, 0);
     ab_check(&m, 90, 4, 1, 256, 24);

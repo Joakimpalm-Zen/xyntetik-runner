@@ -1110,7 +1110,11 @@ extern "C" __global__ void k_tffn_fw(const float *g, const float *u, float *h,
     int i = (int)(blockIdx.x * blockDim.x + threadIdx.x);
     if (i >= a.n) return;
     float gi = g[i];
+#ifdef RUNNER_TFFN_MUTANT   // never set in the committed PTX: the cutoff moved onto -80 itself
+    h[i] = gi <= -80.0f ? 0.0f : __fmul_rn(tw_silu(gi), u[i]);
+#else
     h[i] = gi < -80.0f ? 0.0f : __fmul_rn(tw_silu(gi), u[i]);
+#endif
 }
 
 // dg = dh * u * act_d(g) (left to right), du = dh * act_f(g)
@@ -1156,7 +1160,11 @@ extern "C" __global__ void k_tlora_y(const float *B, const float *t, float *y,
     float acc = 0.0f;
     for (int k = 0; k < a.r; k++) acc = __fmaf_rn(br[k], tr[k], acc);
     float *yo = y + (ulong64)b * a.y_stride + j;
+#ifdef RUNNER_TLORA_MUTANT   // never set in the committed PTX: the scale's step unfused
+    *yo = __fadd_rn(__fmul_rn(a.s, acc), *yo);
+#else
     *yo = __fmaf_rn(a.s, acc, *yo);
+#endif
 }
 
 // tb[b][k] = sum_j B[j][k] dy[b][j]  (lsb_proj's first chain)
