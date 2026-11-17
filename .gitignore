@@ -364,6 +364,12 @@ test-pmath-expf-default
 test-pmath-expf-default.exe
 bench-pmath-loops-bin
 bench-pmath-loops-bin.exe
+test-pmath-callers-default
+test-pmath-callers-default.exe
+test-pmath-callers-portable
+test-pmath-callers-portable.exe
+test-pmath-callers-default.out
+test-pmath-callers-portable.out
 test-fpclass
 test-fpclass.exe
 test-act
