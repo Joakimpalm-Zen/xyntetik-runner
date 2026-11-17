@@ -354,6 +354,30 @@ bool   gpu_train_ffn_check(model_t *m, int act, const float *g, const float *u,
 bool   gpu_train_lora_check(model_t *m, int r, int n_in, int n_out, int nb, float s,
                             const float *A, const float *B, const float *x,
                             const float *dy, float *y, float *ga, float *gb, float *dx);
+// R8.24.1 B: the device-resident FFN of a gated SiLU layer (the products, B1,
+// B6), for --train-gpu. gpu_train_ffn_dev_ok: its kernels are in this PTX and
+// the device holds every tensor. A backward pushes each FFN site's adapter
+// (which 0 gate, 1 up, 2 down; ga and gb continue from the host's values) and
+// pulls the gradients back at its end. gpu_train_ffn_fw: the taped forward's
+// FFN, x in, the down output into y (n_embd of each row, strides in floats;
+// false before y is touched). gpu_train_ffn_recompute: the backward's
+// recompute of the gate, up and act(g)*u of xn2, kept on the device for
+// gpu_train_ffn_bw: the three sites' backward in the host's order, dbr in,
+// dxn2 out (T packed rows).
+bool   gpu_train_ffn_dev_ok(model_t *m);
+bool   gpu_train_site_push(model_t *m, int l, int which, const float *a,
+                           const float *b, const float *ga, const float *gb,
+                           int r, int n_in, int n_out, float s);
+bool   gpu_train_site_pull(model_t *m, int l, int which, float *ga, float *gb);
+bool   gpu_train_ffn_fw(model_t *m, int l, const gguf_tensor *wg, const gguf_tensor *wu,
+                        const gguf_tensor *wd, const float *x, int x_stride, float *y,
+                        int y_stride, int E, int nff, int nb);
+bool   gpu_train_ffn_recompute(model_t *m, int l, const gguf_tensor *wg,
+                               const gguf_tensor *wu, const float *xn2, int E, int nff,
+                               int T);
+bool   gpu_train_ffn_bw(model_t *m, int l, const gguf_tensor *wg, const gguf_tensor *wu,
+                        const gguf_tensor *wd, const float *dbr, float *dxn2, int E,
+                        int nff, int T);
 // RUNNER_TRAIN_PROF: seconds inside gpu_train_mm / gpu_train_mvt (transfers
 // and syncs included), their counts, and the kernels' share (the launch and
 // its sync) since the last call, which resets them

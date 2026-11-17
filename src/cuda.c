@@ -8810,6 +8810,21 @@ typedef struct {
     CUfunction  f_tffn_fw, f_tffn_bw;
     // R8.24.1 B6: the adapter at a site (k_tlora_t, _y, _tb, _ga, _gb, _dx)
     CUfunction  f_tlora[6];
+    // R8.24.1 B: the device-resident FFN. The FFN sites' adapters for a
+    // backward (A, B, ga, gb per layer and site: gate, up, down), and one set
+    // of planes the layers reuse in turn (FB_*); model_need is every tensor's
+    // bytes, which the arena must hold for the device FFN to run
+    struct tsite {
+        CUdeviceptr a, b, ga, gb;
+        size_t cap_a, cap_b, cap_ga, cap_gb;
+        int r, n_in, n_out;
+        float s;
+        bool live;
+    } *site;
+    int         n_site;
+    CUdeviceptr fb[10];
+    size_t      fb_cap[10];
+    size_t      model_need;
     // the attention backward (k_tab_p, k_tab_dq, k_tab_dkv) and its buffers
     CUfunction  f_tab_p, f_tab_dq, f_tab_dkv;
     CUdeviceptr ab[AB_NBUF];
@@ -8977,6 +8992,7 @@ bool gpu_train_init(model_t *m) {
     for (uint64_t i = 0; i < m->gf.n_tensors; i++)
         need += ((size_t)m->gf.tensors[i].nbytes + 255) & ~(size_t)255;
     if (!m->gf.n_tensors) need = t->vram_budget;
+    t->model_need = need;
     t->arena_size = need < t->vram_budget ? need : t->vram_budget;
     if (t->arena_size && cu.MemAlloc(&t->arena, t->arena_size) != 0) {
         fprintf(stderr, "error: --train-gpu could not reserve %llu bytes "
@@ -9008,6 +9024,14 @@ void gpu_train_free(model_t *m) {
         if (t->d_dx) cu.MemFree(t->d_dx);
         for (int i = 0; i < GPU_MM_PARTS; i++)
             if (t->d_yp[i]) cu.MemFree(t->d_yp[i]);
+        for (int i = 0; i < t->n_site; i++) {
+            if (t->site[i].a) cu.MemFree(t->site[i].a);
+            if (t->site[i].b) cu.MemFree(t->site[i].b);
+            if (t->site[i].ga) cu.MemFree(t->site[i].ga);
+            if (t->site[i].gb) cu.MemFree(t->site[i].gb);
+        }
+        for (int i = 0; i < 10; i++)
+            if (t->fb[i]) cu.MemFree(t->fb[i]);
         for (int i = 0; i < t->n_pin; i++) cu.MemHostUnregister(t->pin_p[i]);
         for (int i = 0; i < GPU_TRAIN_HBUF; i++)
             if (t->hbuf[i]) cu.MemFreeHost(t->hbuf[i]);
@@ -9020,6 +9044,7 @@ void gpu_train_free(model_t *m) {
         cu.ModuleUnload(t->mod);
     }
     cu.PrimaryCtxRelease(t->dev);
+    free(t->site);
     free(t->pin_p);
     free(t->cache);
     free(t->dn_slot);
@@ -9252,6 +9277,9 @@ static CUdeviceptr tg_weights(train_gpu_t *t, const gguf_tensor *w) {
 static bool train_mvt(train_gpu_t *t, const gguf_tensor *w, const float *dy,
                       float *dx, int n_in, int n_out, int nb, bool dev,
                       bool zero);
+static bool tmvt_launch(train_gpu_t *t, const gguf_tensor *w, CUdeviceptr weights,
+                        CUdeviceptr d_dy, CUdeviceptr d_dx, int n_in, int n_out,
+                        int nb, bool dev);
 
 static bool train_mvt_call(model_t *m, const gguf_tensor *w, const float *dy,
                            float *dx, int n_in, int n_out, int nb, bool zero) {
@@ -9293,12 +9321,25 @@ static bool train_mvt(train_gpu_t *t, const gguf_tensor *w, const float *dy,
     if (cu.MemcpyHtoD(t->d_dy, dy, ny) != 0 ||
         (zero ? cu.MemsetD8(t->d_dx, 0, nx) : cu.MemcpyHtoD(t->d_dx, dx, nx)) != 0)
         return false;
+    double k0 = plat_now();
+    if (!tmvt_launch(t, w, weights, t->d_dy, t->d_dx, n_in, n_out, nb, dev) ||
+        cu.CtxSynchronize() != 0)
+        return false;
+    t->k_mvt += plat_now() - k0;
+    return cu.MemcpyDtoH(dx, t->d_dx, nx) == 0;
+}
+
+// One transposed product's launch, dy and dx on the device (no sync):
+// dx[t][i] += sum_j W[j][i] dy[t][j].
+// --train-gpu takes the register-blocked twins (k_tmvtr past 32 columns,
+// k_tmvtrn up to them); the assist (RUNNER_TRAIN_GPU=1) keeps k_tmvt, the
+// CPU chain's bits. RUNNER_TRAIN_MVT_KERNEL=chain takes k_tmvt in device
+// mode too, for comparison (read per call, like RUNNER_TRAIN_MM_KERNEL).
+static bool tmvt_launch(train_gpu_t *t, const gguf_tensor *w, CUdeviceptr weights,
+                        CUdeviceptr d_dy, CUdeviceptr d_dx, int n_in, int n_out,
+                        int nb, bool dev) {
     mv_args a = { n_in, n_out, 0, 0, nb, n_out, n_in };
-    void *p[] = { &weights, &t->d_dy, &t->d_dx, &a, &t->dummy };
-    // --train-gpu takes the register-blocked twins (k_tmvtr past 32 columns,
-    // k_tmvtrn up to them); the assist (RUNNER_TRAIN_GPU=1) keeps k_tmvt, the
-    // CPU chain's bits. RUNNER_TRAIN_MVT_KERNEL=chain takes k_tmvt in device
-    // mode too, for comparison (read per call, like RUNNER_TRAIN_MM_KERNEL).
+    void *p[] = { &weights, &d_dy, &d_dx, &a, &t->dummy };
     const char *ke = getenv("RUNNER_TRAIN_MVT_KERNEL");
     bool tile = dev && !(ke && !strcmp(ke, "chain")) && t->f_tmvtr[w->type] &&
                 t->f_tmvtrn[w->type];
@@ -9316,12 +9357,7 @@ static bool train_mvt(train_gpu_t *t, const gguf_tensor *w, const float *dy,
         rows = (unsigned)((nb + TV_TT - 1) / TV_TT);
         threads = TV_IT * TV_TT / 8;
     }
-    double k0 = plat_now();
-    if (cu.LaunchKernel(f, blocks, rows, 1, threads, 1, 1, 0, NULL, p, NULL) != 0 ||
-        cu.CtxSynchronize() != 0)
-        return false;
-    t->k_mvt += plat_now() - k0;
-    return cu.MemcpyDtoH(dx, t->d_dx, nx) == 0;
+    return cu.LaunchKernel(f, blocks, rows, 1, threads, 1, 1, 0, NULL, p, NULL) == 0;
 }
 
 static bool tg_host(float **buf, size_t *cap, size_t n) {
@@ -9817,6 +9853,219 @@ unsigned gpu_train_mm_parts(model_t *m, const gpu_mm_part *p, int np,
     t->t_mm += plat_now() - t0;
     for (int s = 0; s < np; s++) t->n_mm += want >> s & 1;
     return want;
+}
+
+// ---- R8.24.1 B: the device-resident FFN of a gated SiLU layer
+// (B1 + B6 + the products). The planes FB_X (the normed input, n_embd wide),
+// FB_G, FB_U, FB_H (gate, up, activation), FB_Y (the down output, or the
+// backward's dbr), FB_DH, FB_DG, FB_DU (their gradients), FB_DX (dxn2), FB_T
+// (the adapter's t / tf and tb, 2 x nb x r).
+enum { FB_X, FB_G, FB_U, FB_H, FB_Y, FB_DH, FB_DG, FB_DU, FB_DX, FB_T };
+
+// Whether the device FFN can run: its kernels are in this PTX and the arena
+// holds every tensor (so it never changes which weights the device holds,
+// which decides the adapter's bits)
+bool gpu_train_ffn_dev_ok(model_t *m) {
+    train_gpu_t *t = m->train_gpu;
+    return t && t->f_tffn_fw && t->f_tffn_bw && t->f_tlora[0] &&
+           t->arena_size >= t->model_need;
+}
+
+static struct tsite *tg_site(train_gpu_t *t, int n_layer, int l, int which) {
+    if (!t->site) {
+        t->site = calloc((size_t)n_layer * 3, sizeof(*t->site));
+        if (!t->site) return NULL;
+        t->n_site = n_layer * 3;
+    }
+    int i = l * 3 + which;
+    return i >= 0 && i < t->n_site ? &t->site[i] : NULL;
+}
+
+// A site's adapter for a backward: A, B and the gradients so far go up (the
+// gradients' chains continue from the host's values), r 0: no adapter there
+bool gpu_train_site_push(model_t *m, int l, int which, const float *a,
+                         const float *b, const float *ga, const float *gb,
+                         int r, int n_in, int n_out, float s) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || cu.CtxSetCurrent(t->ctx) != 0) return false;
+    struct tsite *st = tg_site(t, m->n_layer, l, which);
+    if (!st) return false;
+    st->live = false;
+    st->r = r;
+    if (!r) return true;
+    size_t na = sizeof(float) * (size_t)r * n_in, nb = sizeof(float) * (size_t)n_out * r;
+    if (!tg_scratch(&st->a, &st->cap_a, na) || !tg_scratch(&st->b, &st->cap_b, nb) ||
+        !tg_scratch(&st->ga, &st->cap_ga, na) || !tg_scratch(&st->gb, &st->cap_gb, nb))
+        return false;
+    if (cu.MemcpyHtoD(st->a, a, na) != 0 || cu.MemcpyHtoD(st->b, b, nb) != 0 ||
+        cu.MemcpyHtoD(st->ga, ga, na) != 0 || cu.MemcpyHtoD(st->gb, gb, nb) != 0)
+        return false;
+    st->n_in = n_in;
+    st->n_out = n_out;
+    st->s = s;
+    st->live = true;
+    return true;
+}
+
+// ... and its gradients back to the host at the backward's end
+bool gpu_train_site_pull(model_t *m, int l, int which, float *ga, float *gb) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || cu.CtxSetCurrent(t->ctx) != 0) return false;
+    struct tsite *st = tg_site(t, m->n_layer, l, which);
+    if (!st) return false;
+    if (!st->live) return st->r == 0;
+    st->live = false;
+    size_t na = sizeof(float) * (size_t)st->r * st->n_in;
+    size_t nb = sizeof(float) * (size_t)st->n_out * st->r;
+    return cu.CtxSynchronize() == 0 && cu.MemcpyDtoH(ga, st->ga, na) == 0 &&
+           cu.MemcpyDtoH(gb, st->gb, nb) == 0;
+}
+
+static bool fb_get(train_gpu_t *t, int i, size_t floats) {
+    return tg_scratch(&t->fb[i], &t->fb_cap[i], sizeof(float) * (floats ? floats : 1));
+}
+
+// the site's forward delta: y += s B (A x), x rows x_stride apart, y n_out
+static bool site_fw(train_gpu_t *t, const struct tsite *st, CUdeviceptr x, int x_stride,
+                    CUdeviceptr y, int nb) {
+    if (!st || !st->r) return true;
+    if (!st->live) return false;
+    tlora_args a = { st->n_in, st->n_out, st->r, nb, x_stride, st->n_out, st->s };
+    return tlora_launch(t, TL_T, st->a, x, t->fb[FB_T], &a) &&
+           tlora_launch(t, TL_Y, st->b, t->fb[FB_T], y, &a);
+}
+
+// the site's backward (lsb_proj, lsb_ga, lsb_gb, lsb_dx in that order)
+static bool site_bw(train_gpu_t *t, struct tsite *st, CUdeviceptr x, CUdeviceptr dy,
+                    CUdeviceptr dx, int nb) {
+    if (!st || !st->r) return true;
+    if (!st->live) return false;
+    tlora_args a = { st->n_in, st->n_out, st->r, nb, st->n_in, st->n_out, st->s };
+    CUdeviceptr tf = t->fb[FB_T], tb = t->fb[FB_T] + sizeof(float) * (size_t)nb * st->r;
+    return tlora_launch(t, TL_TB, st->b, dy, tb, &a) &&
+           tlora_launch(t, TL_T, st->a, x, tf, &a) &&
+           tlora_launch(t, TL_GA, tb, x, st->ga, &a) &&
+           tlora_launch(t, TL_GB, dy, tf, st->gb, &a) &&
+           tlora_launch(t, TL_DX, st->a, tb, dx, &a);
+}
+
+static bool fb_planes(train_gpu_t *t, int E, int nff, int nb, int r_max) {
+    size_t ne = (size_t)nb * E, nf = (size_t)nb * nff;
+    return fb_get(t, FB_X, ne) && fb_get(t, FB_G, nf) && fb_get(t, FB_U, nf) &&
+           fb_get(t, FB_H, nf) && fb_get(t, FB_Y, ne) && fb_get(t, FB_DH, nf) &&
+           fb_get(t, FB_DG, nf) && fb_get(t, FB_DU, nf) && fb_get(t, FB_DX, ne) &&
+           fb_get(t, FB_T, (size_t)2 * nb * (r_max > 0 ? r_max : 1));
+}
+
+static int site_rmax(train_gpu_t *t, int n_layer, int l) {
+    int r = 0;
+    for (int w = 0; w < 3; w++) {
+        struct tsite *st = tg_site(t, n_layer, l, w);
+        if (st && st->r > r) r = st->r;
+    }
+    return r;
+}
+
+// gate and up of FB_X, their adapters, the activation into FB_H (the
+// forward's order: both products, the gate's delta, the up's, act(g)*u)
+static bool ffn_front(train_gpu_t *t, int n_layer, int l, const gguf_tensor *wg,
+                      const gguf_tensor *wu, int E, int nff, int nb) {
+    CUdeviceptr pg = tg_weights(t, wg), pu = pg ? tg_weights(t, wu) : 0;
+    return pg && pu &&
+           tmm_launch(t, wg, pg, t->fb[FB_X], t->fb[FB_G], E, nff, nb) &&
+           tmm_launch(t, wu, pu, t->fb[FB_X], t->fb[FB_U], E, nff, nb) &&
+           site_fw(t, tg_site(t, n_layer, l, 0), t->fb[FB_X], E, t->fb[FB_G], nb) &&
+           site_fw(t, tg_site(t, n_layer, l, 1), t->fb[FB_X], E, t->fb[FB_U], nb) &&
+           tffn_fw_launch(t, t->fb[FB_G], t->fb[FB_U], t->fb[FB_H], nb * nff, ACT_SILU);
+}
+
+// R8.24.1 B: the taped forward's FFN of layer l on the device: x (n_embd of
+// each row, rows x_stride apart) in, the down output (with its adapter) into
+// y (rows y_stride apart). y may be x. false before y is touched.
+bool gpu_train_ffn_fw(model_t *m, int l, const gguf_tensor *wg, const gguf_tensor *wu,
+                      const gguf_tensor *wd, const float *x, int x_stride, float *y,
+                      int y_stride, int E, int nff, int nb) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !wg || !wu || !wd || nb < 1 || cu.CtxSetCurrent(t->ctx) != 0) return false;
+    double t0 = plat_now();
+    size_t ne = (size_t)nb * E;
+    if (!fb_planes(t, E, nff, nb, site_rmax(t, m->n_layer, l)) ||
+        !tg_host(&t->h_x, &t->cap_hx, ne) || !tg_host(&t->h_y, &t->cap_hy, ne))
+        return false;
+    for (int b = 0; b < nb; b++)
+        memcpy(t->h_x + (size_t)b * E, x + (size_t)b * x_stride, sizeof(float) * (size_t)E);
+    CUdeviceptr pd = tg_weights(t, wd);
+    if (!pd || cu.MemcpyHtoD(t->fb[FB_X], t->h_x, sizeof(float) * ne) != 0) return false;
+    double k0 = plat_now();
+    if (!ffn_front(t, m->n_layer, l, wg, wu, E, nff, nb) ||
+        !tmm_launch(t, wd, pd, t->fb[FB_H], t->fb[FB_Y], nff, E, nb) ||
+        !site_fw(t, tg_site(t, m->n_layer, l, 2), t->fb[FB_H], nff, t->fb[FB_Y], nb) ||
+        cu.CtxSynchronize() != 0)
+        return false;
+    t->k_mm += plat_now() - k0;
+    if (cu.MemcpyDtoH(t->h_y, t->fb[FB_Y], sizeof(float) * ne) != 0) return false;
+    for (int b = 0; b < nb; b++)
+        memcpy(y + (size_t)b * y_stride, t->h_y + (size_t)b * E, sizeof(float) * (size_t)E);
+    t->t_mm += plat_now() - t0;
+    t->n_mm += 3;
+    return true;
+}
+
+// R8.24.1 B: the backward's recompute of layer l's FFN front: xn2 (T rows of
+// n_embd, packed) goes up and stays, with g, u and act(g)*u, for the sites
+bool gpu_train_ffn_recompute(model_t *m, int l, const gguf_tensor *wg,
+                             const gguf_tensor *wu, const float *xn2, int E, int nff,
+                             int T) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !wg || !wu || T < 1 || cu.CtxSetCurrent(t->ctx) != 0) return false;
+    double t0 = plat_now();
+    if (!fb_planes(t, E, nff, T, site_rmax(t, m->n_layer, l)) ||
+        cu.MemcpyHtoD(t->fb[FB_X], xn2, sizeof(float) * (size_t)T * E) != 0)
+        return false;
+    double k0 = plat_now();
+    if (!ffn_front(t, m->n_layer, l, wg, wu, E, nff, T)) return false;
+    t->k_mm += plat_now() - k0;
+    t->t_mm += plat_now() - t0;
+    t->n_mm += 2;
+    return true;
+}
+
+// R8.24.1 B: layer l's FFN sites backward on the device, in the host's order
+// (lbw_ffn_and_output): dbr (T packed rows) up; down: dh from zero by the
+// transposed product, the down adapter (x = act(g)*u); dg, du (B1); gate:
+// dxn2 from zero, the gate adapter (x = xn2); up: into dxn2, the up adapter;
+// dxn2 back. The sites' ga and gb accumulate on the device.
+bool gpu_train_ffn_bw(model_t *m, int l, const gguf_tensor *wg, const gguf_tensor *wu,
+                      const gguf_tensor *wd, const float *dbr, float *dxn2, int E,
+                      int nff, int T) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !wg || !wu || !wd || T < 1 || cu.CtxSetCurrent(t->ctx) != 0) return false;
+    double t0 = plat_now();
+    CUdeviceptr pg = tg_weights(t, wg), pu = pg ? tg_weights(t, wu) : 0;
+    CUdeviceptr pd = pu ? tg_weights(t, wd) : 0;
+    size_t ne = sizeof(float) * (size_t)T * E, nf = sizeof(float) * (size_t)T * nff;
+    if (!pd || cu.MemcpyHtoD(t->fb[FB_Y], dbr, ne) != 0) return false;
+    double k0 = plat_now();
+    bool ok = cu.MemsetD8(t->fb[FB_DH], 0, nf) == 0 &&
+              tmvt_launch(t, wd, pd, t->fb[FB_Y], t->fb[FB_DH], nff, E, T, true) &&
+              site_bw(t, tg_site(t, m->n_layer, l, 2), t->fb[FB_H], t->fb[FB_Y],
+                      t->fb[FB_DH], T) &&
+              tffn_bw_launch(t, t->fb[FB_G], t->fb[FB_U], t->fb[FB_DH], t->fb[FB_DG],
+                             t->fb[FB_DU], T * nff, ACT_SILU) &&
+              cu.MemsetD8(t->fb[FB_DX], 0, ne) == 0 &&
+              tmvt_launch(t, wg, pg, t->fb[FB_DG], t->fb[FB_DX], E, nff, T, true) &&
+              site_bw(t, tg_site(t, m->n_layer, l, 0), t->fb[FB_X], t->fb[FB_DG],
+                      t->fb[FB_DX], T) &&
+              tmvt_launch(t, wu, pu, t->fb[FB_DU], t->fb[FB_DX], E, nff, T, true) &&
+              site_bw(t, tg_site(t, m->n_layer, l, 1), t->fb[FB_X], t->fb[FB_DU],
+                      t->fb[FB_DX], T) &&
+              cu.CtxSynchronize() == 0;
+    if (!ok) return false;
+    t->k_mvt += plat_now() - k0;
+    if (cu.MemcpyDtoH(dxn2, t->fb[FB_DX], ne) != 0) return false;
+    t->t_mvt += plat_now() - t0;
+    t->n_mvt += 3;
+    return true;
 }
 
 // Discrete VRAM: the hidden states and per-row logits live device-side and

@@ -767,6 +767,9 @@ typedef struct {
                              // training step and of its evals on train_gpu
                              // (gpu_train_mm), tolerance-equivalent to the
                              // CPU, not its bytes (--train-gpu)
+    bool   train_dev_ffn;    // R8.24.1 B: within a device-mode backward, the
+                             // gated FFN (products, adapter, activation) runs
+                             // on the device (gpu_train_ffn_*)
     uint64_t train_gpu_budget; // --train-gpu-budget: the device bytes the
                              // weights may take, 0 = the free memory measured
                              // at the start; which weights fit decides the
