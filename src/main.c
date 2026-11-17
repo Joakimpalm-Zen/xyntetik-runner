@@ -7813,6 +7813,7 @@ static int run_resume(cli_opts *o, cli_run *rt, session_image *simg, const char 
     if (!why && !engine_state_load(&rt->e, simg->tokens, sm->n_tokens, simg->state))
         why = "this model's KV layout (a tied-V cache, or a ring with a gap below its "
               "span) cannot be resumed";
+    if (!why) session_restore_mark(&rt->e, sm);   // R3.60
     if (why) {
         fprintf(stderr, "error: --resume %s: %s\n", o->resume_path, why);
         session_image_free(simg);

@@ -49,6 +49,11 @@ typedef struct {
     bool     json_mode, ignore_eos;
     char     schema_sha256[65];    // "" when no schema
     char     binary_sha256[65];
+    // R3.60: the first position whose row a scoring feed wrote (INT_MAX: none),
+    // and whether the image says (an image written before R3.60 does not: its
+    // rows are then of unknown provenance, engine_state_load's default)
+    int      scored_from;
+    bool     mark_known;
 } session_meta;
 
 // Writes the image of engine `e` (at pos = n_tokens, the last token already
@@ -102,5 +107,9 @@ bool session_image_write(const char *path, const engine *e, const char *model_pa
 // keys agree. buf holds the sentence.
 const char *session_key_mismatch(const session_meta *sm, const engine *e,
                                  char *buf, size_t cap);
+
+// R3.60: after engine_state_load, the image's mark when it carries one; an
+// older image's rows keep the unknown provenance the load gave them.
+void session_restore_mark(engine *e, const session_meta *m);
 
 #endif

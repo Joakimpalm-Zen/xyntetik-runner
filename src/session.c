@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -94,8 +95,11 @@ bool session_write(const char *path, const engine *e, const session_meta *mt,
            (unsigned long long)mt->rng, mt->json_mode ? "true" : "false");
     if (mt->schema_sha256[0]) sb_fmt(&h, "\"%s\"", mt->schema_sha256);
     else sb_lit(&h, "null");
-    sb_fmt(&h, "},\"ignore_eos\":%s,\"runner\":\"%s\",\"binary_sha256\":\"%s\"}",
+    sb_fmt(&h, "},\"ignore_eos\":%s,\"runner\":\"%s\",\"binary_sha256\":\"%s\"",
            mt->ignore_eos ? "true" : "false", RUNNER_VERSION, mt->binary_sha256);
+    // R3.60: the scored mark, so a loaded image keeps it (the state bytes do not)
+    if (e->scored_from == INT_MAX) sb_lit(&h, ",\"scored_from\":null}");
+    else sb_fmt(&h, ",\"scored_from\":%d}", e->scored_from);
     wbuf w = {0};
     uint32_t hl = (uint32_t)h.n, nt = (uint32_t)mt->n_tokens, nv = (uint32_t)n_vocab;
     uint64_t sl = sn;
@@ -222,6 +226,9 @@ bool session_read(const char *path, session_image *img) {
     m->n_tokens = (int)jv_num(jv_get(h, "n_tokens"), -1);
     m->max_new = (int)jv_num(jv_get(h, "max_new"), -1);
     m->generated = (int)jv_num(jv_get(h, "generated"), -1);
+    jv *sf = jv_get(h, "scored_from");
+    m->mark_known = sf != NULL && (sf->type == J_NULL || sf->type == J_NUM);
+    m->scored_from = !m->mark_known || sf->type == J_NULL ? INT_MAX : (int)jv_num(sf, 0);
     m->temp = (float)jv_num(jv_get(smp, "temp"), 0);
     m->top_k = (int)jv_num(jv_get(smp, "top_k"), 0);
     m->top_p = (float)jv_num(jv_get(smp, "top_p"), 1);
@@ -339,4 +346,8 @@ bool sessions_configure(const char *dir) {
 
 const char *sessions_dir(void) {
     return g_sessions_dir[0] ? g_sessions_dir : NULL;
+}
+
+void session_restore_mark(engine *e, const session_meta *m) {
+    if (m->mark_known) e->scored_from = m->scored_from < 0 ? 0 : m->scored_from;
 }

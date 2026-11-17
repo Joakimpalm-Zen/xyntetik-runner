@@ -80,8 +80,18 @@ the fresh slot's bits.
   session or snapshot resume, which restores saved rows as they were.
 - A persisted prefix store and automatic preamble snapshots saved before
   R3.60 hold rows made with the width-dependent arithmetic: their entries are
-  refused and their snapshots never found, and the rows are fed again. Session
-  images and named snapshots, an explicit resume, load as before.
+  refused and their snapshots never found, and the rows are fed again.
+- Rows persisted at `-b 1` (the decode route) and at `-b 2` and up (a
+  prefill pass) are kept apart: the store's keys and the automatic snapshot's
+  name carry the class, so a restart at another class feeds them again.
+- A recurrent entry is published only when it ends where the slot stands: its
+  fold is the slot's own, so an entry capped at the mark is not stored.
+- Rows loaded from disk whose provenance this process cannot vouch for are
+  kept for the resume that asked for them and are never published or reused
+  by another request: a session image written before R3.60 (newer images
+  carry the mark), and a named snapshot imported as a context, which only a
+  request naming that context forks. An explicit resume still restores its
+  rows as they were saved.
 
 ## CUDA: `enc_mv` in `src/cuda.c`
 

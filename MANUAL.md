@@ -3567,7 +3567,10 @@ The image is one file: a `xyntetik.runner.session.v1` JSON header (the model's s
 and the engine's model key, context length, KV type, prompt length, token count, the
 `-n` budget and how much of it is spent, the sampler's settings and rng state, the
 `--json` / `--json` constraint by digest, `--ignore-eos`, the runner version and
-the binary's sha256), then the token ids, the KV of every position plus a recurrent
+the binary's sha256, and `scored_from`: the first position whose KV row a scoring feed
+wrote, `null` for none; an image written before R3.60 has no such field, and its rows
+then serve its own resume but are never published or reused by a later request), then
+the token ids, the KV of every position plus a recurrent
 model's fold state (the prefix cache's entry layout), and the next token's logits,
 closed by a SHA-256 over every byte before it. What the state does not hold (the
 repeat-penalty window, the constraint validator, the reasoning and loop trackers) is

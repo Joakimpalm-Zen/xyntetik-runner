@@ -193,6 +193,9 @@ typedef struct {
     // rewind below it. Generated tokens are decode rows too, and are not
     // marked: a continuation reuses them, as it always has (docs/kernel-routes.md).
     int      scored_from;
+    // R3.60: the context the request in progress names (its context_id), or
+    // NULL: an imported context is forked only by a request naming it.
+    const char *reuse_ctx;
     int      rope_rebuilds;   // R4.40: times a sequence was recomputed at the LongRoPE crossing
     uint64_t mark_hash;
     // R3.62: the preamble snapshot this slot's rows were last loaded from
@@ -482,6 +485,9 @@ int    engine_rewind(engine *e, const int32_t *toks, int n);
 int    engine_rewind_prompt(engine *e, const int32_t *toks, int n);
 // a scoring feed is about to write the solo row of position pos (decide)
 void   engine_mark_scored(engine *e, int pos);
+// the arithmetic class of this engine's prompt rows: solo (-b 1) or a prefill
+// pass (-b 2 and up); the persisted store and snapshot names carry it (R3.60)
+uint64_t engine_prefix_class(const engine *e);
 // What engine_rewind (or the prefix fork after it) did with the slot's
 // previous state; engine_rewind_how_name spells it for the request telemetry
 // (runner_telemetry.timing.cache) and the start line, so a client that sees

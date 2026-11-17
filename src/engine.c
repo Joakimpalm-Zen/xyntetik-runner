@@ -368,6 +368,14 @@ int engine_rewind_prompt(engine *e, const int32_t *toks, int n) {
     return rewind_to(e, toks, n, e->scored_from);
 }
 
+// R3.60: the arithmetic a prompt's rows were made in. At -b 1 every row comes
+// from the decode route; at -b 2 and up a prompt is a prefill pass. The two
+// differ in their last bits, so rows persisted from one are never read by the
+// other: the store's keys and the automatic snapshot's name carry the class.
+uint64_t engine_prefix_class(const engine *e) {
+    return e->m->n_batch > 1 ? 0x70726566696c6cull /* "prefill" */ : 0x736f6c6full /* "solo" */;
+}
+
 void engine_mark_scored(engine *e, int pos) {
     if (pos >= 0 && pos < e->scored_from) e->scored_from = pos;
 }
@@ -599,6 +607,11 @@ typedef struct pfx_entry {
     size_t    bytes;
     double    used;
     uint64_t  hits;
+    // R3.60: the arithmetic class the rows were made in (engine_prefix_class),
+    // and whether they came from disk (prefix_context_import): an imported
+    // entry is forked only by a request that names its context.
+    uint64_t  cls;
+    bool      imported;
     // R10.4: a named context is pinned -- no TTL, never an eviction victim --
     // and released only by name, by clear, or with the model
     bool      pinned;
@@ -812,7 +825,10 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
     int best = 0;
     pfx_entry *hit = NULL;
     for (pfx_entry *p = PFX.head; p; p = p->next) {
-        if (p->key != e->model_key) continue;
+        if (p->key != e->model_key || p->cls != engine_prefix_class(e)) continue;
+        // R3.60: rows from disk are of a provenance this process cannot vouch
+        // for: only the request that names their context forks them
+        if (p->imported && !(e->reuse_ctx && p->pinned && !strcmp(p->name, e->reuse_ctx))) continue;
         if (p->bytes != prefix_cache_entry_bytes(e->m, p->n)) continue; // stale layout
         // R4.40: an entry is a whole prompt, rotated with the factor set its
         // length took; it is a prefix only of a prompt on the same set
@@ -843,7 +859,10 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
         }
         memcpy(e->hist, toks, sizeof(int32_t) * (size_t)best);
         e->pos = best;
-        e->scored_from = INT_MAX;   // a shared entry holds no scored row (engine_prefix_publish)
+        // a shared entry holds no scored row (engine_prefix_publish); an
+        // imported one is of unknown provenance: kept for the request that
+        // named it, never published or reused by a later one
+        e->scored_from = hit->imported ? 0 : INT_MAX;
         e->dpos = 0;          // the draft model's KV was not forked
         e->dsnap = -1;
         e->hit_stop = false; e->stop_id = -1;
@@ -879,7 +898,11 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
     // request that forked them would read other bits than a cold prompt: the
     // shared tier takes only the rows below them
     if (n > e->scored_from) n = e->scored_from;
-    if (!e->hist || n < PFX_MIN_TOKENS || e->pos < n || (ring && e->pos != n)) return;
+    // A recurrent entry's blob is the fold the slot holds now, after e->pos
+    // tokens: an entry of fewer (capped at the mark) would pair its rows with
+    // a later fold. So, as for a ring, it is stored only when it ends here.
+    bool recur_here = model_has_recurrent(e->m);
+    if (!e->hist || n < PFX_MIN_TOKENS || e->pos < n || ((ring || recur_here) && e->pos != n)) return;
 
     pthread_mutex_lock(&PFX.mu);
     pfx_defaults();
@@ -921,7 +944,8 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
         pfx_entry *p = *pp;
         int lim = p->n < store_n ? p->n : store_n, c = 0;
         // an entry on the other LongRoPE set shares no rows with this prompt
-        if (p->key != e->model_key || model_rope_wants_long(e->m, p->n) != e->m->rope_long) {
+        if (p->key != e->model_key || p->cls != engine_prefix_class(e) ||
+            model_rope_wants_long(e->m, p->n) != e->m->rope_long) {
             pp = &p->next;
             continue;
         }
@@ -951,7 +975,7 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
     // has nothing shareable at a shorter length.
     if (!recur && diverge_at >= PFX_MIN_TOKENS && diverge_at < store_n) {
         for (pfx_entry *p = PFX.head; p; p = p->next) {
-            if (p->key != e->model_key || p->n < diverge_at ||
+            if (p->key != e->model_key || p->cls != engine_prefix_class(e) || p->n < diverge_at ||
                 model_rope_wants_long(e->m, p->n) != e->m->rope_long) continue;
             int c = 0;
             while (c < diverge_at && p->toks[c] == toks[c]) c++;
@@ -975,6 +999,7 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
     pfx_save(e->m, kv, store_n);
     pfx_ring_mark(e->m, ne, store_n, false);
     ne->key = e->model_key; ne->toks = nt; ne->n = store_n;
+    ne->cls = engine_prefix_class(e);
     ne->kv = kv; ne->bytes = need; ne->used = now;
     ne->next = PFX.head; PFX.head = ne;
     PFX.bytes += need;
@@ -1053,6 +1078,7 @@ int prefix_context_pin(engine *e, const char *name, const int32_t *toks, int n) 
     old = pfx_find_named(name);   // the trim may have moved its link
     if (old) pfx_drop(old);
     ne->key = e->model_key; ne->toks = nt; ne->n = n;
+    ne->cls = engine_prefix_class(e);
     ne->kv = kv; ne->bytes = need; ne->used = now; ne->created = now;
     ne->pinned = true;
     snprintf(ne->name, sizeof ne->name, "%s", name);
@@ -1175,7 +1201,7 @@ int prefix_cache_save(const char *path) {
     bool ok = wr(f, PFX_MAGIC, PFX_MAGIC_N) && wr(f, &count, sizeof count);
     for (pfx_entry *p = PFX.head; ok && p; p = p->next) {
         if (!p->ring_whole) continue;
-        uint64_t key = p->key ^ PFX_STORE_SALT, bytes = p->bytes;   // R3.60
+        uint64_t key = p->key ^ PFX_STORE_SALT ^ p->cls, bytes = p->bytes;   // R3.60
         int32_t  n   = p->n;
         ok = wr(f, &key, sizeof key) && wr(f, &n, sizeof n) &&
              wr(f, &bytes, sizeof bytes) &&
@@ -1239,7 +1265,7 @@ int prefix_cache_load(const char *path, const engine *e) {
         // context length or another KV dtype is not adapted -- it is dropped.
         // Adapting it would be inventing KV rows, which reads as fluent output
         // and is wrong.
-        if (key != (e->model_key ^ PFX_STORE_SALT) ||   // R3.60: an older store's entry too
+        if (key != (e->model_key ^ PFX_STORE_SALT ^ engine_prefix_class(e)) ||   // R3.60: an older store's, another class's
             bytes != prefix_cache_entry_bytes(e->m, n)) {
             free(toks); free(kv); refused++;
             continue;
@@ -1251,7 +1277,8 @@ int prefix_cache_load(const char *path, const engine *e) {
             free(toks); free(kv); free(ne);
             continue;
         }
-        ne->key = key ^ PFX_STORE_SALT; ne->toks = toks; ne->n = n;   // the model key again
+        ne->key = key ^ PFX_STORE_SALT ^ engine_prefix_class(e); ne->toks = toks; ne->n = n;   // the model key again
+        ne->cls = engine_prefix_class(e);
         ne->kv = kv; ne->bytes = (size_t)bytes; ne->used = now;
         pfx_ring_mark(e->m, ne, n, true);
         ne->next = PFX.head; PFX.head = ne;
@@ -1441,6 +1468,8 @@ int prefix_context_import(const engine *e, const char *name, const char *path,
     old = pfx_find_named(name);
     if (old) pfx_drop(old);
     ne->key = e->model_key; ne->toks = toks; ne->n = n;
+    ne->cls = engine_prefix_class(e);
+    ne->imported = true;   // R3.60: forked only by a request naming it
     ne->kv = kv; ne->bytes = (size_t)bytes; ne->used = now; ne->created = now;
     pfx_ring_mark(e->m, ne, n, true);
     ne->pinned = true;
@@ -3309,6 +3338,11 @@ bool engine_state_load(engine *e, const int32_t *hist, int n, const uint8_t *src
     memcpy(e->hist, hist, sizeof(int32_t) * (size_t)n);
     e->pos = n;
     e->rewind_how = REWIND_NONE;
+    // R3.60: the state bytes carry no scored mark, so the loaded rows are of
+    // unknown provenance: the resume that loaded them continues from them, a
+    // later request refeeds them and none is published. A caller that knows
+    // the mark (a session image that carries it) sets e->scored_from after.
+    e->scored_from = 0;
     return true;
 }
 
