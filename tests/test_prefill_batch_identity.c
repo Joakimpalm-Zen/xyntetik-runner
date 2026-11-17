@@ -55,7 +55,20 @@
 //   9. A state saved and loaded is of unknown provenance: its rows are not
 //      published and not reused by a later request.
 //  10. A context imported from disk is forked only by a request naming it.
+//  11. ... and the prefix store does not persist it: its label would be lost.
+//  12. The route identity is the arithmetic, not the batch width alone: a
+//      switch that selects other prompt arithmetic (RUNNER_CPU_I8_PREFILL)
+//      is another route for the store and for a slot's own rows.
 #include "runner.h"
+
+// MinGW has no setenv/unsetenv; an empty value removes the variable there
+#ifdef _WIN32
+#define env_set(k, v) _putenv_s(k, v)
+#define env_unset(k)  _putenv_s(k, "")
+#else
+#define env_set(k, v) setenv(k, v, 1)
+#define env_unset(k)  unsetenv(k)
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -342,10 +355,50 @@ static void check_file(const char *path) {
             engine_reset(&s512.e);
             prefix_reuse r10 = engine_prefix_reuse(&s512.e, t, n10 + 6);
             ck(r10.keep == 0, path, n10, "an ordinary request forks no imported context");
+            // gate 11: a restart's store would load it as an ordinary entry
+            const char *store11 = "test-prefill-gate11.store";
+            int saved11 = prefix_cache_save(store11);
+            remove(store11);
+            ck(saved11 == 0, path, n10, "the prefix store does not persist an imported context");
         } else {
             fprintf(stderr, "  gate 10: this model pins no context (a ring), skipped\n");
         }
         prefix_cache_clear();
+    }
+
+    // gate 12: a switch that selects other prompt arithmetic is another route.
+    // RUNNER_CPU_I8_PREFILL runs a prompt's wide matvecs on the int8 tiles; a
+    // store and a slot's rows made without it are not that route's. Live
+    // control: with the switch unset again, the store loads and the slot keeps
+    // its rows.
+    {
+        int n12 = LENS[0];
+        const char *store = "test-prefill-gate12.store";
+        prefix_cache_clear();
+        engine_reset(&s64.e);
+        bool fed12 = engine_feed(&s64.e, t, n12) != NULL;
+        if (fed12) engine_prefix_publish(&s64.e, t, n12, n12, 0.0);
+        int saved12 = prefix_cache_save(store);
+        prefix_cache_clear();
+        env_set("RUNNER_CPU_I8_PREFILL", "1");
+        int other = saved12 > 0 ? prefix_cache_load(store, &s2.e) : -2;
+        int kept_other = fed12 ? engine_rewind_prompt(&s64.e, t, n12 + 6) : -2;
+        prefix_cache_clear();
+        env_unset("RUNNER_CPU_I8_PREFILL");
+        engine_reset(&s64.e);
+        fed12 = engine_feed(&s64.e, t, n12) != NULL;
+        int same = saved12 > 0 ? prefix_cache_load(store, &s2.e) : -2;
+        int kept_same = fed12 ? engine_rewind_prompt(&s64.e, t, n12 + 6) : -2;
+        prefix_cache_clear();
+        remove(store);
+        if (saved12 > 0) {
+            ck(other == 0, path, n12, "a store made without RUNNER_CPU_I8_PREFILL loads into no engine with it");
+            ck(same == saved12, path, n12, "live control: without the switch it loads");
+        } else {
+            fprintf(stderr, "  gate 12: this model stores no prefix entry (a ring), store half skipped\n");
+        }
+        ck(kept_other == 0, path, n12, "a slot's rows made without the switch are not kept under it");
+        ck(kept_same == n12, path, n12, "live control: without the switch the slot keeps its rows");
     }
 
     ck(control5 == NLEN, path, CTX,

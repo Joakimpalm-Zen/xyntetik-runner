@@ -796,3 +796,20 @@ def test_a_preamble_snapshot_of_the_other_arithmetic_class_is_not_found(runner_b
             warm = _chat(b, SYSTEM, "Which file is the largest?")
         assert (warm["reuse"] == "preamble_snapshot") == found, (first_b, warm)
 
+
+def test_a_preamble_snapshot_from_the_gpu_is_not_found_on_the_cpu(runner_bin, fx, tmp_path):
+    """R3.60: the snapshot's name carries the route identity, the arithmetic that wrote its rows: a GPU (or
+    partial GPU) run and a CPU run at the same -b are two routes, and the model key never keyed GPU presence.
+    Skipped on a host with no GPU route."""
+    snaps = tmp_path / "snaps-gpu"
+    with _auto(runner_bin, fx["model"], snaps, "64", "--gpu", "auto") as a:
+        with urllib.request.urlopen(a.base_url + "/v1/runner/provenance", timeout=30) as r:
+            prov = json.loads(r.read())
+        if not (prov.get("profile") or {}).get("gpu"):
+            pytest.skip("no GPU route on this host")
+        _chat(a, SYSTEM, "List the files.")
+        _wait_files(snaps, 1)
+    with _auto(runner_bin, fx["model"], snaps, "64") as b:
+        warm = _chat(b, SYSTEM, "Which file is the largest?")
+    assert warm["reuse"] != "preamble_snapshot", warm
+

@@ -368,3 +368,63 @@ def test_an_image_resumes_whatever_the_model_path_spelling(runner_bin, fx):
         assert rc == 0, err[-800:]
         rc, err = run(resume, "--resume", img)
         assert rc == 0, (tag, err[-800:])
+
+
+# R3.60: an image carries the arithmetic route its rows were made in and the scored mark, under a new version.
+def _header(path):
+    b = pathlib.Path(path).read_bytes()
+    (hl,) = struct.unpack_from("<I", b, 16)
+    return b[:16], json.loads(b[20:20 + hl])
+
+
+def test_an_image_names_its_route_and_mark_under_a_new_version(runner_bin, fx, tmp_path):
+    """A reader of runner.session.1 ignores the route and the mark and trusts the rows, so an image that carries
+    them is runner.session.2 / xyntetik.runner.session.v2, which that reader refuses."""
+    img = tmp_path / "a.img"
+    rc, _, err = _run(runner_bin, "-m", fx["model"], "-p", "hello", "--temp", "0", "--ignore-eos", "-n", 8,
+                      "--session-out", img)
+    assert rc == 0, err
+    magic, h = _header(img)
+    assert magic == b"runner.session.2", magic
+    assert h["schema_version"] == "xyntetik.runner.session.v2", h["schema_version"]
+    assert isinstance(h.get("route"), str) and len(h["route"]) == 16, h.get("route")
+    assert h.get("scored_from", "absent") is None, h.get("scored_from", "absent")
+
+
+def test_a_resume_into_another_route_keeps_the_rows_for_that_resume_only(runner_bin, fx, tmp_path):
+    """An image made at -b 1 (the decode route) resumed at -b 64 (a prefill pass): the resume continues from its
+    rows, but they are not the new route's prompt rows, so the image the resume writes marks them all
+    (scored_from 0) and no later request reuses them. Resumed into its own route the mark stays none."""
+    a = tmp_path / "b1.img"
+    rc, _, err = _run(runner_bin, "-m", fx["model"], "-p", "hello", "--temp", "0", "--ignore-eos", "-b", "1",
+                      "-n", 16, "--suspend-after", 8, "--session-out", a)
+    assert rc == 0, err
+    for b, want in (("64", 0), ("1", None)):
+        out = tmp_path / f"r{b}.img"
+        rc, _, err = _run(runner_bin, "-m", fx["model"], "--resume", a, "-b", b, "--session-out", out)
+        assert rc == 0, err
+        assert _header(out)[1].get("scored_from", "absent") == want, (b, _header(out)[1].get("scored_from", "absent"))
+
+
+def test_an_image_from_before_the_mark_still_resumes_its_rows_for_itself(runner_bin, fx, tmp_path):
+    """An image written before R3.60 (runner.session.1, no route, no mark) still resumes, and its rows serve that
+    resume only: the image the resume writes marks them all."""
+    a = tmp_path / "new.img"
+    rc, _, err = _run(runner_bin, "-m", fx["model"], "-p", "hello", "--temp", "0", "--ignore-eos", "-n", 16,
+                      "--suspend-after", 8, "--session-out", a)
+    assert rc == 0, err
+    b = bytearray(a.read_bytes()[:-32])
+    (hl,) = struct.unpack_from("<I", b, 16)
+    h = json.loads(bytes(b[20:20 + hl]))
+    h.pop("route", None)
+    h.pop("scored_from", None)
+    h["schema_version"] = "xyntetik.runner.session.v1"
+    hb = json.dumps(h, separators=(",", ":")).encode()
+    old = b"runner.session.1" + struct.pack("<I", len(hb)) + hb + bytes(b[20 + hl:])
+    v1 = tmp_path / "v1.img"
+    v1.write_bytes(old + hashlib.sha256(old).digest())
+    out = tmp_path / "from-v1.img"
+    rc, _, err = _run(runner_bin, "-m", fx["model"], "--resume", v1, "--session-out", out)
+    assert rc == 0, err
+    assert _header(out)[1].get("scored_from", "absent") == 0, _header(out)[1].get("scored_from", "absent")
+
