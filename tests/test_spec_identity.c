@@ -35,6 +35,7 @@
 //
 //   test-spec-identity MODEL.gguf [cpu]
 #include "runner.h"
+#include "gate_gpu.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,6 +68,9 @@ int main(int argc, char **argv) {
 
     model_t V, R;
     if (!load(&V, path, cpu) || !load(&R, path, cpu)) return 1;
+    // a device run that fell back to the CPU for want of its kernel module
+    // would compare the CPU against itself
+    if (!cpu && !V.gpu && gate_no_device("spec-identity")) { model_free(&V); model_free(&R); return 1; }
     const char *where = V.gpu ? "gpu" : "cpu";
     if (!model_spec_verify_ok(&V)) {
         printf("spec-identity: ok (skipped: %s cannot serve the verify walk for %s)\n",

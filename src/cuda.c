@@ -2599,20 +2599,15 @@ static atomic_bool g_jit_noted;
 // first failure is kept with the driver's log for gpu_module_failure (the
 // gates FAIL on it: tests/gate_gpu.h) and each one is printed on stderr;
 // under RUNNER_REQUIRE_GRAPH_CAPTURE=1, the CUDA gates' no-fallback switch,
-// it ends the process.
+// it ends the process. The log comes from the load itself (module_load_noted
+// asks for it when the driver has cuModuleLoadDataEx): no second JIT.
+// A device below an image's minimum compute capability is not this: it is no
+// usable device, checked before the load (module_cc_ok), and records nothing.
 static pthread_mutex_t g_mod_fail_mu = PTHREAD_MUTEX_INITIALIZER;
 static char g_mod_fail[2048];
-static void module_load_failed(const char *name, const void *img, CUresult r) {
-    char log[1536] = "";
-    if (cu.ModuleLoadDataEx) {   // the load once more, for the driver's log: this path only
-        int opt[2] = { 5, 6 };   // CU_JIT_ERROR_LOG_BUFFER, CU_JIT_ERROR_LOG_BUFFER_SIZE_BYTES
-        void *val[2] = { log, (void *)(uintptr_t)(sizeof(log) - 1) };
-        CUmodule m2 = NULL;
-        if (cu.ModuleLoadDataEx(&m2, img, 2, opt, val) == 0 && m2) cu.ModuleUnload(m2);
-        log[sizeof(log) - 1] = 0;
-        for (size_t n = strlen(log); n && (log[n - 1] == '\n' || log[n - 1] == '\r'); n--)
-            log[n - 1] = 0;
-    }
+static void module_load_failed(const char *name, CUresult r, char *log) {
+    for (size_t n = strlen(log); n && (log[n - 1] == '\n' || log[n - 1] == '\r'); n--)
+        log[n - 1] = 0;
     char msg[sizeof(g_mod_fail)];
     snprintf(msg, sizeof msg, "the kernel module %s did not load (%s)%s%s", name, cu_err(r),
              *log ? "; the driver's JIT log:\n" : "; the driver gave no JIT log", log);
@@ -2632,6 +2627,24 @@ const char *gpu_module_failure(void) {
     pthread_mutex_unlock(&g_mod_fail_mu);
     return s;
 }
+// R6.90 (review P2): whether dev can run an image built for compute
+// need_major.need_minor. Below it the driver cannot JIT the image, so that is
+// no usable device: one line on stderr (once a process), no module failure
+// recorded, the caller falls back as for no device. A capability the driver
+// does not report lets the load decide.
+static bool module_cc_ok(CUdevice dev, int need_major, int need_minor, const char *name) {
+    int maj = 0, min = 0;
+    if (!cu.DeviceGetAttribute || cu.DeviceGetAttribute(&maj, CU_DEV_ATTR_CC_MAJOR, dev) != 0 ||
+        cu.DeviceGetAttribute(&min, CU_DEV_ATTR_CC_MINOR, dev) != 0 ||
+        gpu_cc_at_least(maj, min, need_major, need_minor))
+        return true;
+    static atomic_bool said;
+    if (!atomic_exchange(&said, true))
+        fprintf(stderr, "gpu: the device is compute capability %d.%d and %s needs %d.%d or "
+                "later (this build's minimum is " RUNNER_CUDA_MIN_CC "): no usable GPU here\n",
+                maj, min, name, need_major, need_minor);
+    return false;
+}
 // name: the embedded string's name and its target, for the record (never the bare
 // name in quotes: scripts/check-ptx-roster.py reads every "k_..." literal as a kernel)
 static CUresult module_load_noted(CUmodule *mod, const void *img, const char *name) {
@@ -2639,13 +2652,26 @@ static CUresult module_load_noted(CUmodule *mod, const void *img, const char *na
         plat_slow_note_begin(stderr, "gpu: compiling the GPU kernels for this card and driver; this "
                              "happens once per card and driver, later loads take them from the "
                              "driver's cache", 2.0);
-    CUresult r = cu.ModuleLoadData(mod, img);
+    // the driver's error log from this load, when the driver can give one
+    char log[1536] = "";
+    CUresult r;
+    if (cu.ModuleLoadDataEx) {
+        int opt[2] = { 5, 6 };   // CU_JIT_ERROR_LOG_BUFFER, CU_JIT_ERROR_LOG_BUFFER_SIZE_BYTES
+        void *val[2] = { log, (void *)(uintptr_t)(sizeof(log) - 1) };
+        r = cu.ModuleLoadDataEx(mod, img, 2, opt, val);
+    } else {
+        r = cu.ModuleLoadData(mod, img);
+    }
+    log[sizeof(log) - 1] = 0;
     if (plat_slow_note_end(n)) atomic_store(&g_jit_noted, true);
-    if (r != 0) module_load_failed(name, img, r);
+    if (r != 0) module_load_failed(name, r, log);
     return r;
 }
 static bool shared_load_module(gpu_weights *w) {
     vram_probe("before module load");
+    if (!module_cc_ok(w->dev, GPU_CUDA_MIN_CC_MAJOR, GPU_CUDA_MIN_CC_MINOR,
+                      "k_ptx_src (compute_75)"))
+        return false;
     CK(module_load_noted(&w->mod, k_ptx_src, "k_ptx_src (compute_75)"));
     vram_probe("after module load");
     struct { CUfunction *f; const char *name; } fns[] = {
@@ -2927,8 +2953,11 @@ static bool shared_load_module(gpu_weights *w) {
         }
         // E1: on a compute capability 8.0+ device, the same GEMM built for
         // compute_80 (one m16n8k16 per 16-deep step), loaded unless TC2 is
-        // off. Non-fatal: a module that does not load leaves forced TC2 on
-        // the compute_75 kernels and auto TC2 off (tc2_fn).
+        // off, on a device of compute capability 8.0 or later only
+        // (sm80_module_wanted). A module that does not load leaves forced TC2
+        // on the compute_75 kernels and auto TC2 off (tc2_fn); under
+        // RUNNER_REQUIRE_GRAPH_CAPTURE=1 (the gates) it ends the process
+        // instead, as any failed load does (module_load_failed, R6.90).
         if (sm80_module_wanted(w) && w->f_x_half && cu.FuncSetAttribute) {
             if (module_load_noted(&w->mod80, k_ptx80_src, "k_ptx80_src (compute_80)") != 0) {
                 w->mod80 = NULL;
@@ -8905,6 +8934,8 @@ bool gpu_train_init(model_t *m) {
         return false;
     }
     if (cu.CtxSetCurrent(t->ctx) != 0 ||
+        !module_cc_ok(t->dev, GPU_CUDA_MIN_CC_MAJOR, GPU_CUDA_MIN_CC_MINOR,
+                      "k_ptx_src (compute_75, training)") ||
         module_load_noted(&t->mod, k_ptx_src, "k_ptx_src (compute_75, training)") != 0 ||
         cu.MemAlloc(&t->dummy, 4) != 0 ||
         cu.MemsetD8(t->dummy, 0, 4) != 0) {

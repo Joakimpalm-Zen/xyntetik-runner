@@ -2094,7 +2094,9 @@ runs. Under the same switch a kernel module the driver does not load, on a devic
 that is up, ends the process with the driver's JIT log (R6.90); without it the
 runner prints that log and falls back as before, and a CUDA gate binary that
 finds no engaged device fails on it rather than skipping as if there were no
-device. `./test-attn-tol MODEL.gguf` is the attention gate.
+device. A card below the build's minimum compute capability (7.5) is not that:
+the runner says so in one line, records nothing and runs on the CPU, and the
+gates skip. `./test-attn-tol MODEL.gguf` is the attention gate.
 Weights are wrapped zero-copy from the model mmap. A file larger than the
 device's `maxBufferLength` - 4.29 GB on an Apple M1, against a 5.73 GB working set -
 is wrapped in several buffers instead of being copied or forced into a

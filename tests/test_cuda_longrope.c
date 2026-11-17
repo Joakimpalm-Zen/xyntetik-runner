@@ -204,7 +204,7 @@ int main(int argc, char **argv) {
     if (!slot_open(&one, CTX)) { fprintf(stderr, "cannot load %s\n", g_path); return 1; }
     long b4 = gpu_live_buffers();
     if (!at_orig.m.gpu || !wide.m.gpu || !cold.m.gpu || !one.m.gpu) {
-        gate_no_device("test-cuda-longrope");   // prints the driver's log when that is why
+        if (gate_no_device("test-cuda-longrope")) return 1;   // the driver's log, not a skip
         fprintf(stderr, "test-cuda-longrope: skipped (no CUDA device took the fixture)\n");
         return 1;
     }

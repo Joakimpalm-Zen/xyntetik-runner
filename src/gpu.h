@@ -274,6 +274,19 @@ long gpu_live_buffers(void);
 // engaged device asks this before it skips (tests/gate_gpu.h): a module the
 // driver rejected is a failure, not "no device". NULL on Metal and the CPU.
 const char *gpu_module_failure(void);
+// R6.90 (review P2): the oldest compute capability each embedded PTX image
+// runs on. k_ptx_src is built for compute_75 (runner.h RUNNER_CUDA_MIN_CC),
+// k_ptx80_src for compute_80. A device below an image's minimum cannot JIT it:
+// that is no usable device (a skip), not a module that failed to load, so
+// cuda.c checks this before the load and records no failure for it.
+#define GPU_CUDA_MIN_CC_MAJOR 7
+#define GPU_CUDA_MIN_CC_MINOR 5
+static inline bool gpu_cc_at_least(int major, int minor, int need_major, int need_minor) {
+    return major > need_major || (major == need_major && minor >= need_minor);
+}
+static inline bool gpu_cc_usable(int major, int minor) {
+    return gpu_cc_at_least(major, minor, GPU_CUDA_MIN_CC_MAJOR, GPU_CUDA_MIN_CC_MINOR);
+}
 // test hook: force (1) or forbid (0) the eager MoE routing path; -1 = env
 void   gpu_moe_eager_force(int on);
 bool   gpu_init(model_t *m);                     // false = unsupported, use CPU

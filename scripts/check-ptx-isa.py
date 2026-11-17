@@ -17,8 +17,9 @@ Two checks, both need no GPU:
     the target the header names. This catches every feature, not only the
     ones listed. `make ptx` runs it with the pinned toolchain's ptxas, and so
     does the ptx-reproducible job.
---self-test plants a used_bytes_mask pragma in a copy of each header's string
-and requires the checks to catch it. --plant OUT writes that planted copy of
+--self-test plants, one at a time, a used_bytes_mask pragma and a `.reg .b128`
+declaration (each scanned feature's live control) in a copy of each header's
+string and requires every check to catch each. --plant OUT writes that planted copy of
 one header as a header: for the gates' red run (MANUAL.md, R6.90).
 """
 import os
@@ -35,6 +36,8 @@ FEATURES = [
     (re.compile(r"\.b128\b"), (8, 3), "the 128-bit type .b128"),
 ]
 PLANT = '\t.pragma "used_bytes_mask 15";'
+# the self-test's plants: one line for each feature the scan knows
+PLANTS = [PLANT, '\t.reg .b128 %rq<2>;']
 
 
 def decode(text):
@@ -83,12 +86,12 @@ def assemble(ptxas, ptx):
     return r.returncode == 0, (r.stdout + r.stderr).strip()
 
 
-def plant(ptx):
-    """The PTX with the pragma before its first parameter load."""
+def plant(ptx, line=PLANT):
+    """The PTX with the line before its first parameter load."""
     lines = ptx.split("\n")
     for i, ln in enumerate(lines):
         if ln.lstrip().startswith("ld.param"):
-            return "\n".join(lines[:i] + [PLANT] + lines[i:])
+            return "\n".join(lines[:i] + [line] + lines[i:])
     raise ValueError("no ld.param line to plant before")
 
 
@@ -146,15 +149,18 @@ def main(argv):
               % (h, name, ver[0], ver[1], target,
                  "%d problem(s)" % len(bad) if bad else "nothing above its version",
                  "; ptxas assembles it" if ptxas and not bad else ""))
-        if self_test:
-            caught = check("planted", plant(ptx), ptxas)
-            want = 2 if ptxas else 1
-            if len(caught) < want:
-                fails.append("%s: the self-test's planted used_bytes_mask pragma was not caught "
-                             "(%d of %d checks)" % (h, len(caught), want))
+        for line in PLANTS if self_test else []:
+            caught = check("planted", plant(ptx, line), ptxas)
+            what = line.strip()
+            scanned = any("planted line" in c for c in caught)
+            assembled = any("ptxas rejects" in c for c in caught)
+            if not scanned or (ptxas and not assembled):
+                fails.append("%s: the self-test's planted `%s` was not caught (scan %s, ptxas %s)"
+                             % (h, what, "yes" if scanned else "NO",
+                                ("yes" if assembled else "NO") if ptxas else "not run"))
             else:
-                print("ptx isa: %s: the planted used_bytes_mask pragma is caught by the scan%s"
-                      % (h, " and by ptxas" if ptxas else ""))
+                print("ptx isa: %s: the planted `%s` is caught by the scan%s"
+                      % (h, what, " and by ptxas" if ptxas else ""))
     if fails:
         print("FAIL: the embedded PTX uses a feature its pinned .version does not have; the "
               "driver's JIT would reject the module whole (keep kernel arguments small and "
