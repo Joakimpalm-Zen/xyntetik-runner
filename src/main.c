@@ -6855,9 +6855,9 @@ static bool replay_check_compat(const cli_opts *o, jv *rec, bool *want_t3_exact,
     return true;
 }
 
-// R17.9: the replay runs with the record's RUNNER_ switches and no other: each
-// of the record's must be set here to its value ("(set)", a credential's, only
-// set), and none outside the inert set may be set here that the record lacks.
+// R17.9: the replay runs with the record's switches and no other: each of the
+// record's must be set here to its value ("(set)", a credential's, only set),
+// and none a record names (train_env_counts) may be set here that it lacks.
 static bool replay_check_environment(jv *rec, int *rc) {
     jv *want = jv_get(rec, "environment");
     if (want && want->type != J_OBJ) return !replay_fail(rc, "environment", "an object", "invalid");
@@ -6870,9 +6870,8 @@ static bool replay_check_environment(jv *rec, int *rc) {
         return !replay_fail(rc, "environment", wb, gb);
     }
     for (char **e = TRAIN_ENVIRON; e && *e; e++) {
-        if (strncmp(*e, "RUNNER_", 7) != 0) continue;
         const char *eq = strchr(*e, '=');
-        if (!eq || train_env_inert(*e, (size_t)(eq - *e))) continue;
+        if (!eq || !train_env_counts(*e, (size_t)(eq - *e))) continue;   // the record's own rule
         snprintf(gb, sizeof gb, "%.*s set", (int)(eq - *e), *e);
         snprintf(wb, sizeof wb, "%.*s", (int)(eq - *e), *e);
         if (!want || !jv_get(want, wb)) return !replay_fail(rc, "environment", "no such switch", gb);
@@ -6902,11 +6901,7 @@ static bool replay_apply_overrides(cli_opts *o, jv *rec, int *rc) {
         }
         *fields[i] = (float)want;
     }
-    jv *mtp = mo ? jv_get(mo, "mtp") : NULL;
-    bool want_mtp = mtp && mtp->type == J_BOOL && mtp->b;
-    if (o->mp.mtp && !want_mtp) return !replay_fail(rc, "model_overrides.mtp", "none", "true");
-    o->mp.mtp = want_mtp;
-    o->mtp_on = want_mtp;
+    // --mtp is not one: training never reads the predictor (#925's measurement)
     return true;
 }
 
