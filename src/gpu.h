@@ -358,6 +358,13 @@ bool   gpu_train_rmsnorm_check(model_t *m, const trn_args *a, const float *x,
 // (a->stride floats apart) in place; fr: the layer's a->half_dim inverse
 // frequencies. false: no context or no kernel in this PTX.
 bool   gpu_train_rope_check(model_t *m, const trope_args *a, const float *fr, float *v);
+// R8.24.1 B8, the kernel gate's entry: the device twin of the forward's K/V
+// store (k_tkv_store) over a->rows host rows of a->n floats (a->src_stride
+// apart) into dst's rows (a->row_bytes apart) in kind 0 (f16, fp16.h's
+// rounding) or 3 (f32). dst goes up first: the bytes between rows come back
+// unchanged. false: no context, no kernel in this PTX, or another kind.
+bool   gpu_train_kv_store_check(model_t *m, const tkv_args *a, const float *src,
+                                unsigned char *dst);
 bool   gpu_train_ffn_check(model_t *m, int act, const float *g, const float *u,
                            const float *dh, float *h, float *dg, float *du, int n);
 // R8.24.1 B6, the kernel gate's entry: the device twins of one site's adapter

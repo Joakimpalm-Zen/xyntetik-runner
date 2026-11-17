@@ -236,6 +236,11 @@ bool gpu_train_rope_check(model_t *m, const trope_args *a, const float *fr, floa
     (void)m; (void)a; (void)fr; (void)v;
     return false;
 }
+bool gpu_train_kv_store_check(model_t *m, const tkv_args *a, const float *src,
+                              unsigned char *dst) {
+    (void)m; (void)a; (void)src; (void)dst;
+    return false;
+}
 bool gpu_train_ffn_check(model_t *m, int act, const float *g, const float *u,
                          const float *dh, float *h, float *dg, float *du, int n) {
     (void)m; (void)act; (void)g; (void)u; (void)dh; (void)h; (void)dg; (void)du; (void)n;

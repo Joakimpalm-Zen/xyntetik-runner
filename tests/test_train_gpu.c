@@ -884,6 +884,162 @@ static void b3_checks(model_t *m) {
     }
 }
 
+// R8.24.1 B8 (G0): the device twin of the forward's K/V store
+// (gpu_train_kv_store_check: k_tkv_store) against the host's own conversion,
+// fp16.h's f32_to_f16 (what model.c's kind-0 store calls), bit for bit in
+// both builds: the conversion is integers only. Every input is made from its
+// bits, never by float arithmetic, which the default build flushes. Inputs:
+// every half's float (each must come back as itself, a NaN quieted with its
+// payload kept); every f32 exponent with each sign and the rounding's edges
+// (zero, one, below, at and above the half-way tie with an even and with an
+// odd result, the carry into the exponent, all ones) plus fixed-seed
+// mantissas; and for every subnormal result's shift the ties and their
+// neighbours. Anchors, IEEE 754 binary16 by hand: 1 -> 3C00, -2 -> C000,
+// 65504 -> 7BFF, 65519.9921875 -> 7BFF, 65520 -> 7C00 (the tie goes to the
+// even inf), 2^-14 -> 0400, 2^-24 -> 0001, 2^-25 -> 0000 (a tie to even),
+// 1.5 * 2^-25 -> 0001, 2^-26 -> 0000, inf -> 7C00, the quiet NaN 7FC00000 ->
+// 7E00, the signalling NaN 7F800001 -> 7E00, -0 -> 8000. The rows go at a
+// source stride and a row width wider than the data: the bytes between rows
+// must come back as they went. Kind 3 (f32) stores the floats as they are.
+// RUNNER_TEST_KV_ALL=1 adds every one of the 2^32 inputs, 2^24 at a time.
+static uint32_t b8_half_bits(uint16_t h) {   // the float of a half, by integers
+    uint32_t s = (uint32_t)(h & 0x8000u) << 16, e = (h >> 10) & 0x1fu, mt = h & 0x3ffu;
+    if (e == 31) return s | 0x7F800000u | (mt << 13);
+    if (e) return s | ((e + 112u) << 23) | (mt << 13);
+    if (!mt) return s;
+    uint32_t k = 0;
+    while (!(mt & 0x400u)) { mt <<= 1; k++; }
+    return s | ((113u - k) << 23) | ((mt & 0x3ffu) << 13);
+}
+static float b8_f(uint32_t u) { float f; memcpy(&f, &u, 4); return f; }
+// kind 0 over n inputs at row layout (rows, n_row, src_stride, row_bytes);
+// returns the inputs whose half differs from the host's
+static size_t b8_store(model_t *m, const uint32_t *in, size_t n, int n_row, int pad_src,
+                       int pad_row, const char *what, bool *ran) {
+    int rows = (int)((n + (size_t)n_row - 1) / (size_t)n_row);
+    int stride = n_row + pad_src;
+    size_t row_bytes = (size_t)n_row * 2 + (size_t)pad_row;
+    float *src = calloc((size_t)rows * stride, sizeof(float));
+    size_t nd = (size_t)rows * row_bytes;
+    unsigned char *dst = malloc(nd), *want = malloc(nd);
+    memset(dst, 0xA5, nd);
+    memset(want, 0xA5, nd);
+    for (size_t k = 0; k < (size_t)rows * n_row; k++) {
+        uint32_t u = in[k < n ? k : n - 1];   // the last row's tail repeats the last input
+        size_t r = k / (size_t)n_row, i = k % (size_t)n_row;
+        memcpy(&src[r * stride + i], &u, 4);
+        f16_t h = f32_to_f16(b8_f(u));
+        memcpy(want + r * row_bytes + 2 * i, &h, 2);
+    }
+    tkv_args a = { rows, n_row, stride, 0, (ka_u64)row_bytes };
+    *ran = gpu_train_kv_store_check(m, &a, src, dst);
+    size_t bad = 0;
+    for (size_t k = 0; *ran && k < (size_t)rows * n_row; k++) {
+        size_t r = k / (size_t)n_row, i = k % (size_t)n_row, o = r * row_bytes + 2 * i;
+        if (memcmp(dst + o, want + o, 2) && !bad++) {
+            uint16_t g, w;
+            memcpy(&g, dst + o, 2); memcpy(&w, want + o, 2);
+            fprintf(stderr, "FAIL: kv store twin (%s) of %08x is %04x, the host's %04x\n", what,
+                    (unsigned)in[k < n ? k : n - 1], g, w);
+        }
+    }
+    if (*ran && memcmp(dst, want, nd) && !bad++)
+        fprintf(stderr, "FAIL: kv store twin (%s) wrote a byte between its rows\n", what);
+    free(src); free(dst); free(want);
+    return bad;
+}
+static void b8_checks(model_t *m) {
+    static const struct { uint32_t f; uint16_t h; } ANCHOR[] = {
+        { 0x3F800000u, 0x3C00 }, { 0xC0000000u, 0xC000 }, { 0x477FE000u, 0x7BFF },
+        { 0x477FEFFEu, 0x7BFF }, { 0x477FF000u, 0x7C00 }, { 0x38800000u, 0x0400 },
+        { 0x33800000u, 0x0001 }, { 0x33000000u, 0x0000 }, { 0x33400000u, 0x0001 },
+        { 0x32800000u, 0x0000 }, { 0x7F800000u, 0x7C00 }, { 0x7FC00000u, 0x7E00 },
+        { 0x7F800001u, 0x7E00 }, { 0x80000000u, 0x8000 },
+    };
+    int na = (int)(sizeof(ANCHOR) / sizeof(ANCHOR[0])), abad = 0;
+    for (int i = 0; i < na; i++) {
+        f16_t h = f32_to_f16(b8_f(ANCHOR[i].f));
+        if (h != ANCHOR[i].h && !abad++)
+            fprintf(stderr, "FAIL: the host's f32_to_f16(%08x) is %04x, IEEE binary16 says %04x\n",
+                    (unsigned)ANCHOR[i].f, h, ANCHOR[i].h);
+    }
+    CHECK(!abad, "kv store: %d of the %d IEEE anchors differ on the host", abad, na);
+    static const uint32_t EDGE[] = { 0, 1, 0x0FFF, 0x1000, 0x1001, 0x1FFF, 0x2FFF, 0x3000,
+                                     0x3001, 0x400000, 0x7FEFFF, 0x7FF000, 0x7FF001, 0x7FFFFF };
+    int ne = (int)(sizeof(EDGE) / sizeof(EDGE[0]));
+    size_t cap = 65536 + 2 * 256 * (size_t)(ne + 16) + 2 * 11 * 9 + (size_t)na, n = 0;
+    uint32_t *in = malloc(sizeof(uint32_t) * cap);
+    for (uint32_t h = 0; h < 65536; h++) in[n++] = b8_half_bits((uint16_t)h);
+    size_t n_half = n;
+    for (uint32_t s = 0; s < 2; s++)
+        for (uint32_t e = 0; e < 256; e++) {
+            for (int k = 0; k < ne; k++) in[n++] = (s << 31) | (e << 23) | EDGE[k];
+            for (int k = 0; k < 16; k++) in[n++] = (s << 31) | (e << 23) | (rnd32() & 0x7FFFFFu);
+        }
+    for (uint32_t s = 0; s < 2; s++)
+        for (uint32_t sh = 14; sh <= 24; sh++) {   // a subnormal half: exponent 14 - sh
+            uint32_t hmin = sh <= 23 ? 1u << (23 - sh) : 0, hmax = 0xFFFFFFu >> sh;
+            uint32_t hs[3] = { hmin, hmin + 1, hmax };
+            for (int j = 0; j < 3; j++)
+                for (int d = -1; d <= 1; d++) {
+                    uint32_t full = (hs[j] << sh) + (1u << (sh - 1)) + (uint32_t)d;
+                    if ((full >> 23) != 1) full = 0x800000u | (full & 0x7FFFFFu);
+                    in[n++] = (s << 31) | ((126u - sh) << 23) | (full & 0x7FFFFFu);
+                }
+        }
+    for (int i = 0; i < na; i++) in[n++] = ANCHOR[i].f;
+    bool ran = false;
+    size_t bad = b8_store(m, in, n, 4096, 7, 6, "f16 edges", &ran);
+    CHECK(ran, "kv store twin: declined (no kernel in this PTX?)");
+    CHECK(!bad, "kv store twin f16: %zu of %zu inputs differ from the host's bits", bad, n);
+    // every half's float comes back as that half (a NaN quieted, its payload kept)
+    size_t rbad = 0;
+    for (size_t k = 0; k < n_half; k++) {
+        uint16_t h = (uint16_t)k, want = ((h & 0x7C00) == 0x7C00 && (h & 0x3FF)) ? h | 0x200 : h;
+        if (f32_to_f16(b8_f(in[k])) != want && !rbad++)
+            fprintf(stderr, "FAIL: the half %04x does not come back as itself on the host\n", h);
+    }
+    CHECK(!rbad, "kv store: %zu of the 65536 halves do not round-trip", rbad);
+    bool r1 = false;
+    size_t b1 = b8_store(m, in, 37 * 5, 37, 4, 10, "rows", &r1);   // 5 rows, padded both sides
+    CHECK(r1 && !b1, "kv store twin rows: %zu differ", b1);
+    // kind 3: the floats as they are, NaN payloads and subnormals included
+    {
+        int rows = 4, nr = 300, stride = 301;
+        size_t rb = (size_t)nr * 4 + 8, nd = (size_t)rows * rb;
+        float *src = calloc((size_t)rows * stride, sizeof(float));
+        unsigned char *dst = malloc(nd), *want = malloc(nd);
+        memset(dst, 0x5A, nd); memset(want, 0x5A, nd);
+        for (int r = 0; r < rows; r++)
+            for (int i = 0; i < nr; i++) {
+                memcpy(&src[(size_t)r * stride + i], &in[(size_t)r * 7919 + (size_t)i * 101], 4);
+                memcpy(want + (size_t)r * rb + 4 * (size_t)i, &src[(size_t)r * stride + i], 4);
+            }
+        tkv_args a = { rows, nr, stride, 3, (ka_u64)rb };
+        bool ok = gpu_train_kv_store_check(m, &a, src, dst);
+        CHECK(ok && !memcmp(dst, want, nd), "kv store twin f32: the rows are not the floats as they are");
+        free(src); free(dst); free(want);
+    }
+    size_t nall = 0, ball = 0;
+    const char *all = getenv("RUNNER_TEST_KV_ALL");
+    if (all && *all && strcmp(all, "0") != 0) {   // every input, 2^24 at a time
+        uint32_t *ch = malloc(sizeof(uint32_t) << 24);
+        for (uint64_t base = 0; base < (1ull << 32); base += 1u << 24) {
+            for (uint32_t i = 0; i < (1u << 24); i++) ch[i] = (uint32_t)base + i;
+            bool r = false;
+            ball += b8_store(m, ch, 1u << 24, 1 << 24, 0, 0, "all", &r);
+            CHECK(r, "kv store twin: a chunk at %08x declined", (unsigned)base);
+            nall += 1u << 24;
+        }
+        free(ch);
+        CHECK(!ball, "kv store twin over all 2^32 inputs: %zu differ from the host's bits", ball);
+    }
+    if (ran)
+        printf("kv store twin f16: %zu inputs (65536 halves, %d exponents x 2 signs, the subnormal "
+               "ties) == host; %d IEEE anchors; rows and kind 3 == host%s\n", n, 256, na,
+               nall ? "; all 2^32 inputs == host" : "");
+    free(in);
+}
 int main(void) {
     f16_init();
     model_t m;
@@ -1178,6 +1334,7 @@ int main(void) {
     dn_check(&m, 4, 2, 8, 26);
     b2_checks(&m);
     b3_checks(&m);
+    b8_checks(&m);
     gpu_train_free(&m);
     free(keep_pinned);
     for (size_t k = 0; k < sizeof(keep) / sizeof(*keep); k++) free(keep[k]);

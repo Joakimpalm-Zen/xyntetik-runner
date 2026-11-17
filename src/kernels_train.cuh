@@ -1355,3 +1355,48 @@ k_trope(float *v, const float *fr, trope_args a) {
         }
     }
 }
+
+
+// ---- R8.24.1 B8: the training K/V store (kernel_args.h tkv_args), a twin of
+// the forward's store for the cache kinds 0 (f16) and 3 (f32). The f16 rounding
+// is fp16.h's f32_to_f16_soft line for line, integers only, so every one of the
+// 2^32 inputs lands on the host's bits. (Kernel arguments here stay small and
+// are read whole: a larger struct only partly read makes nvcc annotate its
+// loads with a pragma that kernels_ptx.h's pinned .version 7.8 rejects in the
+// driver's JIT, which ptxas offline does not catch.)
+static __device__ __forceinline__ unsigned short tw_f32_to_f16(float f) {
+    unsigned int u = __float_as_uint(f);
+    unsigned int sign = (u >> 16) & 0x8000u;
+    int exp = (int)((u >> 23) & 0xFFu) - 127 + 15;
+    unsigned int mant = u & 0x7FFFFFu;
+    if (exp >= 31) {
+        if (exp == 143 && mant)
+            return (unsigned short)(sign | 0x7C00u | (mant >> 13) | 0x0200u);
+        return (unsigned short)(sign | 0x7C00u);
+    }
+    if (exp <= 0) {
+        if (exp < -10) return (unsigned short)sign;
+        mant |= 0x800000u;
+        unsigned int shift = (unsigned int)(14 - exp);
+        unsigned int h = mant >> shift;
+        unsigned int rem = mant & ((1u << shift) - 1);
+        unsigned int half = 1u << (shift - 1);
+        if (rem > half || (rem == half && (h & 1))) h++;
+        return (unsigned short)(sign | h);
+    }
+    unsigned int h = ((unsigned int)exp << 10) | (mant >> 13);
+    unsigned int rem = mant & 0x1FFFu;
+    if (rem > 0x1000u || (rem == 0x1000u && (h & 1))) h++;
+    return (unsigned short)(sign | h);
+}
+
+// dst row r, element i: src[r][i] in the cache's kind
+extern "C" __global__ void k_tkv_store(const float *src, unsigned char *dst, tkv_args a) {
+    int e = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (e >= a.rows * a.n) return;
+    int r = e / a.n, i = e % a.n;
+    float v = src[(ulong64)r * a.src_stride + i];
+    unsigned char *row = dst + (ulong64)r * a.row_bytes;
+    if (a.kind == 3) ((float *)row)[i] = v;
+    else ((unsigned short *)row)[i] = tw_f32_to_f16(v);
+}

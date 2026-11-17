@@ -8810,6 +8810,7 @@ typedef struct {
     CUfunction  f_tffn_fw, f_tffn_bw;
     CUfunction  f_trn_fw, f_trn_bw;     // R8.24.1 B2, rmsnorm and its adjoint
     CUfunction  f_trope;                // R8.24.1 B3, rope and its adjoint
+    CUfunction  f_tkv;                  // R8.24.1 B8, the training K/V store
     // R8.24.1 B6: the adapter at a site (k_tlora_t, _y, _tb, _ga, _gb, _dx)
     CUfunction  f_tlora[6];
     // R8.24.1 B: the device-resident FFN. The FFN sites' adapters for a
@@ -8931,6 +8932,7 @@ bool gpu_train_init(model_t *m) {
         cu.ModuleGetFunction(&t->f_trn_bw, t->mod, "k_trn_bw") != 0)
         t->f_trn_fw = t->f_trn_bw = NULL;
     if (cu.ModuleGetFunction(&t->f_trope, t->mod, "k_trope") != 0) t->f_trope = NULL;
+    if (cu.ModuleGetFunction(&t->f_tkv, t->mod, "k_tkv_store") != 0) t->f_tkv = NULL;
     {
         static const char *const LN[6] = { "k_tlora_t", "k_tlora_y", "k_tlora_tb",
                                            "k_tlora_ga", "k_tlora_gb", "k_tlora_dx" };
@@ -9290,6 +9292,40 @@ bool gpu_train_rope_check(model_t *m, const trope_args *a, const float *fr, floa
               cu.MemcpyDtoH(v, dv, nv) == 0;
     if (dv) cu.MemFree(dv);
     if (df) cu.MemFree(df);
+    return ok;
+}
+
+// R8.24.1 B8 (kernels_train.cuh k_tkv_store): a thread an element.
+#define TKV_THREADS 256
+static bool tkv_launch(train_gpu_t *t, CUdeviceptr src, CUdeviceptr dst, const tkv_args *a) {
+    tkv_args aa = *a;
+    void *p[] = { &src, &dst, &aa };
+    size_t n = (size_t)a->rows * (size_t)a->n;
+    return t->f_tkv && n > 0 && n <= 0x7fffffffu &&   // the kernel indexes in int
+           cu.LaunchKernel(t->f_tkv, (unsigned)((n + TKV_THREADS - 1) / TKV_THREADS), 1, 1,
+                           TKV_THREADS, 1, 1, 0, NULL, p, NULL) == 0;
+}
+
+// R8.24.1 B8, for the kernel gate: a->rows rows of a->n host floats stored
+// into dst's rows in the cache's kind (0 f16, 3 f32), dst sent first so the
+// bytes between rows come back as they went. false: no context, no kernel in
+// this PTX, or a kind the store does not cover.
+bool gpu_train_kv_store_check(model_t *m, const tkv_args *a, const float *src,
+                              unsigned char *dst) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->f_tkv || a->rows < 1 || a->n < 1 || (a->kind != 0 && a->kind != 3) ||
+        cu.CtxSetCurrent(t->ctx) != 0)
+        return false;
+    size_t last = (size_t)(a->rows - 1);
+    size_t ns = sizeof(float) * (last * (size_t)a->src_stride + (size_t)a->n);
+    size_t nd = last * (size_t)a->row_bytes + (size_t)a->n * (a->kind == 3 ? 4 : 2);
+    CUdeviceptr ds = 0, dd = 0;
+    bool ok = cu.MemAlloc(&ds, ns) == 0 && cu.MemAlloc(&dd, nd) == 0 &&
+              cu.MemcpyHtoD(ds, src, ns) == 0 && cu.MemcpyHtoD(dd, dst, nd) == 0 &&
+              tkv_launch(t, ds, dd, a) && cu.CtxSynchronize() == 0 &&
+              cu.MemcpyDtoH(dst, dd, nd) == 0;
+    if (ds) cu.MemFree(ds);
+    if (dd) cu.MemFree(dd);
     return ok;
 }
 

@@ -157,6 +157,16 @@ typedef struct {
     float s;
 } tlora_args;
 
+// B8: the training K/V store, rows of n floats (src rows src_stride floats
+// apart) into the cache's rows (row_bytes apart) in the cache's kind, as the
+// forward writes them: kind 0 f16 through fp16.h's f32_to_f16_soft (round to
+// nearest, ties to even, NaN quieted with its payload kept), kind 3 the
+// floats as they are. Small and every field read: see the note at k_tkv_store.
+typedef struct {
+    int rows, n, src_stride, kind;
+    ka_u64 row_bytes;
+} tkv_args;
+
 // B2: rmsnorm (model.c rmsnorm; qk_norm runs it per head) and its adjoint
 // (rmsnorm_bw), over `rows` rows of n floats. Forward y = x*r*w; adjoint
 // dx[i] += r*w[i]*dy[i] - c*x[i]. w is one n-vector for every row (qk_norm
