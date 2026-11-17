@@ -870,7 +870,10 @@ def test_a_runner_switch_in_the_environment_is_recorded_and_not_exact(runner_bin
     assert rec.get("environment") == {"RUNNER_CPU_I8": "1"}, rec.get("environment")
     assert rec["determinism"] == "cpu-same-binary", rec["determinism"]
     assert any("RUNNER_CPU_I8" in r for r in rec.get("determinism_reasons", [])), rec.get("determinism_reasons")
-    inert, _ = _train_record_with(runner_bin, base, tmp_path, "rows", env={"RUNNER_TRAIN_ROWS": "1"})
+    # inert: RUNNER_TRAIN_ROWS, and the variables GitHub Actions' runner sets on every job (the binary reads none)
+    inert, _ = _train_record_with(runner_bin, base, tmp_path, "rows",
+                                  env={"RUNNER_TRAIN_ROWS": "1", "RUNNER_OS": "Linux", "RUNNER_TEMP": "/tmp",
+                                       "RUNNER_NAME": "GitHub Actions 1", "RUNNER_ARCH": "X64"})
     assert "environment" not in inert, inert.get("environment")
 
 
