@@ -308,6 +308,11 @@ static const char *envelope_state_name(int s) {
     }
 }
 
+const char *provenance_build_commit(bool *dirty) {
+    if (dirty) *dirty = RUNNER_BUILD_DIRTY != 0;
+    return RUNNER_BUILD_COMMIT[0] ? RUNNER_BUILD_COMMIT : NULL;
+}
+
 void provenance_render(sbuf *b, const char *model_id) {
     pthread_mutex_lock(&mu);
     sb_lit(b, "\"build\":{\"binary_sha256\":");

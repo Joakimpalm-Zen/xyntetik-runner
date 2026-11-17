@@ -6178,11 +6178,36 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
 // from_adapter: the record's input for the adapter a run continued from
 // (lineage_put_input JSON, taken before the first step), or NULL when the run
 // started a fresh one.
+#ifdef RUNNER_T3_BUILD
+static bool train_has_recurrent(const model_t *m) {
+    if (m->qwen35 || m->clef != NULL) return true;
+    for (int l = 0; l < m->n_layer; l++)
+        if (m->layers[l].recurrent) return true;
+    return false;
+}
+#endif
+
+static const char *train_determinism(const cli_opts *o, const cli_run *rt,
+                                     const train_teacher *tt) {
+    if (rt->m.train_dev) return "gpu-within-tolerance";
+#ifdef RUNNER_T3_BUILD
+    // Cross-ISA byte exactness under T3=1 is verified only for dense LoRA
+    // cross-entropy; DPO and teacher call double libm, DeltaNet uses
+    // log1pf/erff outside pmath.h, and MoE/full-weight lack cross-ISA checks.
+    if (!o->dpo_path && !tt && !model_full_on(&rt->m) &&
+        rt->m.n_expert == 0 && !train_has_recurrent(&rt->m))
+        return "cpu-t3-exact";
+#else
+    (void)o; (void)tt;
+#endif
+    return "cpu-same-binary";
+}
+
 static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
                          const char *from_adapter, const train_teacher *tt,
                          const train_eval_set *ev, int resumed_at,
-                         int wctx, int eot_id, double first_loss,
-                         double last_loss) {
+                         const char *resume_optim_sha, int wctx, int eot_id,
+                         double first_loss, double last_loss) {
     char bsha[65] = "", dsha[65] = "", asha[65] = "", xsha[65] = "";
     const char *data_path = o->dpo_path ? o->dpo_path : o->train_path;
     bool hash_ok = envelope_file_sha256(load_path, bsha) &&
@@ -6222,7 +6247,21 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
     sb_lit(&rec, "\",\"arch\":\"");
     const char *build_arch = RUNNER_BUILD_ARCH;
     sb_lit(&rec, build_arch);
-    sb_lit(&rec, "\"},\"base\":");
+    sb_lit(&rec, "\",\"flavor\":\"");
+    sb_lit(&rec, RUNNER_BUILD_FLAVOR ? RUNNER_BUILD_FLAVOR : "default");
+    bool build_dirty = false;
+    const char *build_commit = provenance_build_commit(&build_dirty);
+    sb_lit(&rec, "\",\"commit\":");
+    if (build_commit) {
+        sb_lit(&rec, "\"");
+        sb_esc(&rec, build_commit, strlen(build_commit));
+        sb_lit(&rec, build_dirty ? "\",\"dirty\":true" : "\",\"dirty\":false");
+    } else {
+        sb_lit(&rec, "null,\"dirty\":null");
+    }
+    sb_lit(&rec, "},\"determinism\":\"");
+    sb_lit(&rec, train_determinism(o, rt, tt));
+    sb_lit(&rec, "\",\"base\":");
     lineage_put_input(&rec, load_path, bsha);
     if (from_adapter) {
         sb_lit(&rec, ",\"from_adapter\":");
@@ -6249,7 +6288,7 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
     }
     sb_lit(&rec, ",\"data\":");
     lineage_put_input(&rec, data_path, dsha);
-    sb_lit(&rec, rt->m.kv_f32 ? ",\"kv_cache\":\"f32\"" : "");
+    sb_lit(&rec, rt->m.kv_f32 ? ",\"kv_cache\":\"f32\"" : ",\"kv_cache\":\"f16\"");
     if (model_full_on(&rt->m)) {
         // R8.25.2: what was trained, and through which type (the masters are
         // the base file's own f32 tensors, named under "base")
@@ -6259,9 +6298,9 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
                "\"slots\":\"attn q k v o, ffn gate up down\"}", fn, (unsigned long long)fp);
     }
     sb_fmt(&rec,
-            ",\"seed\":%llu,\"lora_rank\":%d,\"alpha\":%g,"
+            ",\"seed\":%llu,\"lora_rank\":%d,\"alpha\":%g,\"lora_scale\":%g,"
             "\"lr\":%g,\"steps\":%d,\"ctx\":%d,"
-            "\"end_of_turn\":%s,\"eot_id\":%d,"
+            "\"end_of_turn\":%s,\"eot_id\":%d,\"no_bos\":%s,"
             "\"adamw\":{\"beta1\":" TRAIN_STR(TRAIN_ADAM_BETA1)
             ",\"beta2\":" TRAIN_STR(TRAIN_ADAM_BETA2)
             ",\"eps\":" TRAIN_STR(TRAIN_ADAM_EPS)
@@ -6270,8 +6309,9 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
             "\"batch\":%d,\"loss\":\"%s\"},"
             "\"loss_first\":%.6f,\"loss_last\":%.6f,",
             (unsigned long long)(o->seed_given ? o->seed : 0),
-            model_lora_rank(&rt->m), (double)rt->m.lora_alpha, (double)o->train_lr,
-            o->train_steps, wctx, o->train_eot ? "true" : "false", eot_id,
+            model_lora_rank(&rt->m), (double)rt->m.lora_alpha, (double)o->lora_scale,
+            (double)o->train_lr, o->train_steps, wctx,
+            o->train_eot ? "true" : "false", eot_id, o->no_bos ? "true" : "false",
             (double)o->weight_decay, o->lr_schedule == 1 ? "cosine" : "constant",
             o->lr_warmup, (double)o->lr_floor,
             o->train_batch > 0 ? o->train_batch : 1,
@@ -6332,7 +6372,11 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
         sb_esc(&rec, o->kill_metric, strlen(o->kill_metric));
         sb_fmt(&rec, "\",\"min_rel\":%g},", (double)o->kill_min_rel);
     }
-    if (o->train_resume) sb_fmt(&rec, "\"resumed_at_step\":%d,", resumed_at);
+    if (o->train_resume) {
+        sb_fmt(&rec, "\"resumed_at_step\":%d,", resumed_at);
+        if (resume_optim_sha && resume_optim_sha[0])
+            sb_fmt(&rec, "\"resume_optim_sha256\":\"%s\",", resume_optim_sha);
+    }
     if (!hash_ok) {
         fprintf(stderr, "error: cannot hash an eval set for the provenance record\n");
         free(rec.s);
@@ -6395,6 +6439,16 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
     train_state st = {0, 0};
     ok = ok && train_evals_open(o, rt, wctx, eot_id, ev) &&
          (!o->train_resume || train_optim_load(o->train_resume, rt, &st, ev, o->n_eval));
+    char resume_optim_sha[65] = "";
+    if (ok && o->train_resume) {
+        char ropt[4096];
+        if (snprintf(ropt, sizeof ropt, "%s.optim", o->train_resume) >= (int)sizeof ropt ||
+            !envelope_file_sha256(ropt, resume_optim_sha)) {
+            fprintf(stderr, "error: cannot hash %s.optim for the provenance record\n",
+                    o->train_resume);
+            ok = false;
+        }
+    }
     if (ok && o->train_resume)
         fprintf(stderr, "train: resuming %s at step %d (row %lld next)\n",
                 o->train_resume, st.step, st.cursor % (n_ex > 0 ? n_ex : 1));
@@ -6421,7 +6475,8 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
     if (!rc && !((model_full_on(&rt->m) || model_lora_save(&rt->m, o->train_out)) &&
                  (!sidecar || train_optim_save(o->train_out, rt, &st, ev, o->n_eval)) &&
                  train_record(o, rt, load_path, from.s, o->train_teacher ? &tt : NULL,
-                              ev, resumed_at, wctx, eot_id, first_loss, last_loss)))
+                              ev, resumed_at, resume_optim_sha, wctx, eot_id,
+                              first_loss, last_loss)))
         rc = 1;
     if (!rc)
         fprintf(stderr, "train: done — first-step loss %.4f, last-step "

@@ -681,14 +681,17 @@ Every adapter is written with `ADAPTER.gguf.train.json`
 
 | Field | What it records |
 | --- | --- |
-| `runner`, `build` | Version, the binary's sha256, compiler, OS and architecture |
+| `runner`, `build` | Version, binary sha256, compiler, OS, architecture, `flavor` (`t3` or `default`), `commit`, `dirty` |
+| `determinism` | `cpu-t3-exact` (T3 CPU dense LoRA cross-entropy only), `cpu-same-binary`, or `gpu-within-tolerance` |
 | `base` | The base model's path and sha256, and its own record when it has one |
 | `from_adapter` | The adapter a continued run started from (absent for a fresh one) |
-| `objective` | `weighted-cross-entropy` or `dpo` (with `dpo_beta`) |
+| `objective` | `weighted-cross-entropy`, `kl-to-teacher` (`teacher`), or `dpo` (`dpo_beta`) |
 | `data` | The training file's path and sha256 |
-| `seed`, `lora_rank`, `alpha`, `lr`, `steps`, `ctx`, `end_of_turn`, `eot_id`, `adamw` | The full configuration |
+| `kv_cache` | `f16` (default) or `f32` (`--kv-f32`) |
+| `seed`, `lora_rank`, `alpha`, `lora_scale`, `lr`, `steps`, `ctx`, `end_of_turn`, `eot_id`, `no_bos`, `adamw`, `recipe` | The parsed training configuration (no host paths or raw argv) |
+| `resumed_at_step`, `resume_optim_sha256` | Checkpoint step and starting `.optim` sha256 on `--resume` |
 | `loss_first`, `loss_last` | The first and last step's loss |
-| `adapter` | The output's path and sha256 |
+| `adapter` (or `variant`) | The output's path and sha256 |
 
 A merge writes `MERGED.gguf.merge.json` the same way, with the survival
 measurement. The record is written only after the output is installed and
