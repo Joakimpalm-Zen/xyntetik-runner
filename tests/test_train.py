@@ -796,3 +796,36 @@ def test_non_dense_ce_modes_keep_thread_identity_without_overclaiming_t3(runner_
         _train(runner_bin, d, out, steps=2)
         rec = json.loads(pathlib.Path(f"{out}.train.json").read_text())
         assert rec["determinism"] == "cpu-same-binary", family
+
+
+def test_fresh_adapter_with_lora_scale_flag_records_scale_used(runner_bin, base, tmp_path):
+    """R17.9(a) P3: model_lora_train_init takes no --lora-scale, so a fresh run
+    passing --lora-scale still trains at scale 1 and records 1.0."""
+    plain = tmp_path / "plain.gguf"
+    flagged = tmp_path / "flagged.gguf"
+    _train(runner_bin, base, plain, steps=2)
+    _train(runner_bin, base, flagged, steps=2, extra=("--lora-scale", "0.5"))
+    rec = json.loads(pathlib.Path(f"{flagged}.train.json").read_text())
+    assert rec["lora_scale"] == pytest.approx(1.0)
+    assert flagged.read_bytes() == plain.read_bytes()
+
+
+def test_canon_gap_model_records_cpu_same_binary_while_q8_is_t3_exact(runner_bin, base, tmp_path):
+    """R17.9(a) P2: a T3 build keeps cpu-same-binary for models whose weights
+    lack canonical-order kernels (test-bf16.gguf), while canonical-clean models
+    (test-q8.gguf) record cpu-t3-exact."""
+    v = subprocess.run([str(runner_bin), "--version"], cwd=ROOT, capture_output=True, text=True, timeout=30)
+    t3 = "(t3)" in v.stdout
+    for fixture, expected in (("test-bf16.gguf", "cpu-same-binary"),
+                              ("test-q8.gguf", "cpu-t3-exact" if t3 else "cpu-same-binary")):
+        model = ROOT / fixture
+        if not model.exists():
+            pytest.skip(f"{fixture} not generated")
+        out = tmp_path / f"{model.stem}-out.gguf"
+        p = subprocess.run([str(runner_bin), "-m", str(model), "--gpu", "off",
+                            "--train", str(base / "corpus.txt"), "--train-steps", "2",
+                            "--lr", "3e-3", "--train-out", str(out), "-t", "2"],
+                           cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+        rec = json.loads(pathlib.Path(f"{out}.train.json").read_text())
+        assert rec["determinism"] == expected, (fixture, t3, rec["determinism"])
