@@ -9341,7 +9341,8 @@ static bool tattn_launch(train_gpu_t *t, CUdeviceptr kc, CUdeviceptr vc, CUdevic
     void *p[] = { &kc, &vc, &q, &ao, &aa };
     return t->f_tattn &&
            cu.LaunchKernel(t->f_tattn, (unsigned)a->T, (unsigned)a->n_head, 1, TATTN_THREADS,
-                           1, 1, (unsigned)(sizeof(float) * (size_t)a->T), NULL, p, NULL) == 0;
+                           1, 1, (unsigned)(sizeof(float) * (size_t)(a->pos0 + a->T)), NULL, p,
+                           NULL) == 0;
 }
 
 // R8.24.1 B4, for the kernel gate: K, V and q sent, the attention run, ao
@@ -9352,11 +9353,12 @@ bool gpu_train_attn_fw_check(model_t *m, const tattn_args *a, const void *kc,
                              const void *vc, const float *q, float *ao) {
     train_gpu_t *t = m->train_gpu;
     if (!t || !t->f_tattn || a->T < 1 || a->hd < 1 || a->hd > TATTN_MAX_HD ||
-        a->kv_mul < 1 || a->n_head % a->kv_mul || a->T > 12288 ||
+        a->kv_mul < 1 || a->n_head % a->kv_mul || a->pos0 < 0 || a->pos0 + a->T > 12288 ||
         (a->kind_k != 0 && a->kind_k != 3) || (a->kind_v != 0 && a->kind_v != 3) ||
         cu.CtxSetCurrent(t->ctx) != 0)
         return false;
-    size_t nk = (size_t)a->T * a->k_row_b, nv = (size_t)a->T * a->v_row_b;
+    size_t rows = (size_t)a->pos0 + (size_t)a->T;   // every key a query of the chunk reads
+    size_t nk = rows * a->k_row_b, nv = rows * a->v_row_b;
     size_t nq = sizeof(float) * (size_t)a->T * (size_t)a->q_dim;
     CUdeviceptr d[4] = {0};   // K, V, q, ao
     size_t sz[4] = { nk, nv, nq, nq };

@@ -1429,12 +1429,13 @@ extern "C" __global__ void __launch_bounds__(TATTN_THREADS)
 k_tattn(const uchar *kc, const uchar *vc, const float *q, float *ao, tattn_args a) {
     extern __shared__ float att[];          // the span's scores, then probabilities
     __shared__ float qs[TATTN_MAX_HD], mxs, sums;
-    int t = (int)blockIdx.x, h = (int)blockIdx.y, tid = (int)threadIdx.x, hd = a.hd;
+    int b = (int)blockIdx.x, h = (int)blockIdx.y, tid = (int)threadIdx.x, hd = a.hd;
     int kvh = h / a.kv_mul;
-    if (t >= a.T || h >= a.n_head || (kvh + 1) * hd > a.kv_dim) return;
+    if (b >= a.T || h >= a.n_head || (kvh + 1) * hd > a.kv_dim) return;
+    int t = a.pos0 + b;   // the query's position: its window and keys are absolute rows
     int t0 = a.swa > 0 && t - a.swa + 1 > 0 ? t - a.swa + 1 : 0, span = t - t0 + 1;
     int ek = a.kind_k == 3 ? 4 : 2, ev = a.kind_v == 3 ? 4 : 2;
-    for (int i = tid; i < hd; i += TATTN_THREADS) qs[i] = q[(ulong64)t * a.q_dim + h * hd + i];
+    for (int i = tid; i < hd; i += TATTN_THREADS) qs[i] = q[(ulong64)b * a.q_dim + h * hd + i];
     __syncthreads();
     for (int k = tid; k < span; k += TATTN_THREADS) {
         const uchar *kr = kc + (ulong64)(t0 + k) * a.k_row_b + (ulong64)kvh * hd * ek;
@@ -1471,6 +1472,6 @@ k_tattn(const uchar *kc, const uchar *vc, const float *q, float *ao, tattn_args 
             o = __fadd_rn(o, __fmul_rn(att[k], tattn_kv(vr, a.kind_v, i)));
 #endif
         }
-        ao[(ulong64)t * a.q_dim + h * hd + i] = o;
+        ao[(ulong64)b * a.q_dim + h * hd + i] = o;
     }
 }

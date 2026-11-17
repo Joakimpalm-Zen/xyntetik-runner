@@ -1052,9 +1052,13 @@ static void b8_checks(model_t *m) {
 // element within (hd + span + 8) 2^-24 (1 + |largest score|) of the span's
 // largest |v| (the float chains' own error, carried through the
 // probabilities), the device's subnormal results read as zero in the default
-// build.
+// build. pos0: the device runs only the chunk of positions pos0..T-1 (a later
+// chunk of the taped forward: its query rows, over cache rows 0..T-1), held
+// to the host's rows for those positions (a position's attention reads only
+// its own q row and the rows before it, so the host's whole run is the
+// reference for any chunk).
 static void b4_check(model_t *m, int T, int H, int kv_mul, int hd, int swa, float scale_mul,
-                     int kind, int zero_q) {
+                     int kind, int zero_q, int pos0) {
     ab_shape sh = ab_shape_of(T, H, kv_mul, hd, swa);
     size_t row16 = (size_t)sh.kv_dim * 2, nq = (size_t)T * sh.q_dim;
     uint8_t *k16 = malloc(row16 * T), *v16 = malloc(row16 * T);
@@ -1073,15 +1077,18 @@ static void b4_check(model_t *m, int T, int H, int kv_mul, int hd, int swa, floa
         }
     }
     float scale = scale_mul / sqrtf((float)hd);
-    float *aoh = calloc(nq, sizeof(float)), *aod = calloc(nq, sizeof(float));
+    int nb = T - pos0;   // the chunk's rows
+    size_t qoff = (size_t)pos0 * sh.q_dim;
+    float *aoh = calloc(nq, sizeof(float)), *aod = calloc((size_t)nb * sh.q_dim, sizeof(float));
     bool okh = model_attn_ref(T, H, kv_mul, hd, swa, scale, kind, kind, kc, vc, rowb, rowb, q, aoh);
-    tattn_args a = { T, H, kv_mul, hd, sh.q_dim, sh.kv_dim, swa, rowb, rowb, scale, kind, kind };
-    bool ok = okh && gpu_train_attn_fw_check(m, &a, kc, vc, q, aod);
+    tattn_args a = { nb, H, kv_mul, hd, sh.q_dim, sh.kv_dim, swa, rowb, rowb, scale, kind, kind,
+                     pos0 };
+    bool ok = okh && gpu_train_attn_fw_check(m, &a, kc, vc, q + qoff, aod);
     CHECK(ok, "attn twin T %d hd %d: declined (no kernel in this PTX?)", T, hd);
     size_t bad = 0, hbad = 0, abad = 0;
     double wh = 0, wa = 0;
     double *sc = malloc(sizeof(double) * T), *pr = malloc(sizeof(double) * T);
-    for (int t = 0; ok && t < T; t++)
+    for (int t = pos0; ok && t < T; t++)
         for (int h = 0; h < H; h++) {
             int kvh = h / kv_mul, t0 = swa > 0 && t - swa + 1 > 0 ? t - swa + 1 : 0, span = t - t0 + 1;
             const float *qh = q + (size_t)t * sh.q_dim + (size_t)h * hd;
@@ -1105,7 +1112,7 @@ static void b4_check(model_t *m, int T, int H, int kv_mul, int hd, int swa, floa
             double lim = (hd + span + 8) * 0x1p-24 * (1.0 + smax) * vmax + 1e-37;
             for (int i = 0; i < hd; i++) {
                 size_t o = (size_t)t * sh.q_dim + (size_t)h * hd + i;
-                float hv = aoh[o], dv = aod[o];
+                float hv = aoh[o], dv = aod[o - qoff];
 #ifdef RUNNER_PORTABLE_MATH
                 bool same = b2_nan(hv) || b2_nan(dv) ? b2_nan(hv) && b2_nan(dv) : !memcmp(&hv, &dv, 4);
                 if (!same && !bad++)
@@ -1138,9 +1145,9 @@ static void b4_check(model_t *m, int T, int H, int kv_mul, int hd, int swa, floa
     CHECK(!abad, "attn twin T %d hd %d: %zu elements off the double attention (worst %.3g of the "
           "bound)", T, hd, abad, wa);
     if (ok)
-        printf("attn twin T %3d H %2d kv_mul %d hd %3d swa %2d kind %d scale x%-4g%s: host %s; "
-               "against the double attention %.3g of the bound\n", T, H, kv_mul, hd, swa, kind,
-               scale_mul, zero_q ? " zero-q" : "",
+        printf("attn twin T %3d H %2d kv_mul %d hd %3d swa %2d kind %d scale x%-4g%s rows %d..%d: "
+               "host %s; against the double attention %.3g of the bound\n", T, H, kv_mul, hd, swa,
+               kind, scale_mul, zero_q ? " zero-q" : "", pos0, T - 1,
 #ifdef RUNNER_PORTABLE_MATH
                "T3 (memcmp)",
 #else
@@ -1151,13 +1158,18 @@ static void b4_check(model_t *m, int T, int H, int kv_mul, int hd, int swa, floa
     free(k16); free(v16); free(q); free(dao); free(aoh); free(aod); free(sc); free(pr);
 }
 static void b4_checks(model_t *m) {
-    b4_check(m, 128, 32, 4, 128, 0, 1.0f, 0, 0);    // the recipe's Qwen3-4B shape, T 128
-    b4_check(m, 77, 4, 2, 64, 0, 1.0f, 0, 1);       // grouped heads, a zero q row
-    b4_check(m, 90, 4, 1, 256, 24, 1.0f, 0, 0);     // a sliding window, head 256
-    b4_check(m, 33, 2, 2, 128, 1, 1.0f, 0, 0);      // a window of one key
-    b4_check(m, 64, 8, 4, 128, 0, 16.0f, 0, 0);     // peaked probabilities
-    b4_check(m, 50, 4, 2, 96, 7, 1.0f, 3, 0);       // f32 rows, a short window
-    b4_check(m, 300, 2, 1, 64, 0, 1.0f, 0, 0);      // spans past a block of threads
+    b4_check(m, 128, 32, 4, 128, 0, 1.0f, 0, 0, 0);    // the recipe's Qwen3-4B shape, T 128
+    b4_check(m, 77, 4, 2, 64, 0, 1.0f, 0, 1, 0);       // grouped heads, a zero q row
+    b4_check(m, 90, 4, 1, 256, 24, 1.0f, 0, 0, 0);     // a sliding window, head 256
+    b4_check(m, 33, 2, 2, 128, 1, 1.0f, 0, 0, 0);      // a window of one key
+    b4_check(m, 64, 8, 4, 128, 0, 16.0f, 0, 0, 0);     // peaked probabilities
+    b4_check(m, 50, 4, 2, 96, 7, 1.0f, 3, 0, 0);       // f32 rows, a short window
+    b4_check(m, 300, 2, 1, 64, 0, 1.0f, 0, 0, 0);      // spans past a block of threads
+    // later chunks of the taped forward (a start that is not 0)
+    b4_check(m, 300, 32, 4, 128, 0, 1.0f, 0, 0, 128);  // the recipe's shape, its second chunk
+    b4_check(m, 150, 4, 2, 64, 40, 1.0f, 0, 0, 100);   // a window across the chunk's first row
+    b4_check(m, 205, 2, 1, 64, 0, 1.0f, 3, 0, 192);    // the last short chunk (13 rows), f32 rows
+    b4_check(m, 129, 4, 2, 128, 0, 1.0f, 0, 0, 128);   // a one-row chunk
 }
 
 // R8.24.1 B, the attention slots' scope (model_attn_dev_why), by shape and
@@ -1183,8 +1195,9 @@ static int b_scope_checks(void) {
     } while (0)
     SCOPE_RESET(); SCOPE_CASE("the recipe's shape", NULL, 0, 300, 128, 8, 4096, 4096);
     SCOPE_RESET(); s.kv_f32 = true; SCOPE_CASE("an f32 cache", NULL, 0, 300, 128, 8, 4096, 4096);
-    SCOPE_RESET(); SCOPE_CASE("a later chunk", "position 0", 64, 300, 128, 8, 4096, 4096);
+    SCOPE_RESET(); SCOPE_CASE("a later chunk", NULL, 64, 300, 128, 8, 4096, 4096);
     SCOPE_RESET(); SCOPE_CASE("12289 rows", "shared memory", 0, 12289, 128, 8, 4096, 4096);
+    SCOPE_RESET(); SCOPE_CASE("a chunk ending past 12288", "shared memory", 12000, 300, 128, 8, 4096, 4096);
     SCOPE_RESET(); s.mla_kv_lora = 512; SCOPE_CASE("MLA", "MLA", 0, 300, 128, 8, 4096, 4096);
     SCOPE_RESET(); s.kv_ring = 128; s.l_is_swa = swa1;
     SCOPE_CASE("a ring layer", "ring", 0, 300, 128, 8, 4096, 4096);
@@ -1203,8 +1216,8 @@ static int b_scope_checks(void) {
     SCOPE_RESET(); SCOPE_CASE("no KV heads", "whole groups", 0, 300, 128, 0, 4096, 4096);
 #undef SCOPE_CASE
 #undef SCOPE_RESET
-    if (!bad) printf("attention scope: %d cases hold (3 run on the twin, %d decline with "
-                     "their reason)\n", cases, cases - 3);
+    if (!bad) printf("attention scope: %d cases hold (4 run on the twin, %d decline with "
+                     "their reason)\n", cases, cases - 4);
     return bad;
 }
 int main(void) {

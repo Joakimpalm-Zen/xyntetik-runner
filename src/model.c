@@ -12698,7 +12698,7 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
     if (ok && dev_attn) {
         tattn_args ta = { T, n_head, n_head / n_kv_h, hd, q_dim, kv_dim, swa,
                           (ka_u64)k_row_b, (ka_u64)v_row_b, scale,
-                          model_kv_kind_k(m), model_kv_kind_v(m) };
+                          model_kv_kind_k(m), model_kv_kind_v(m), 0 };
         if (!gpu_train_attn_fw_check(m, &ta, kc_l, vc_l, q, ao))
             for (int t = 0; t < T; t++) {
                 attn_job aj = { m, kc_l, vc_l, q + (size_t)t * q_dim, ao + (size_t)t * q_dim, t,
@@ -15744,16 +15744,17 @@ static attn_job attn_row_job(model_t *m, const fwd_layer *c, int b) {
 // R8.24.1 B, the layer driver's attention slots (2: the recompute's, 3: the
 // taped forward's): why layer l's attention over n rows from position pos
 // cannot run through the device's twin (B4's k_tattn), or NULL. The twin's
-// scope, by shape: positions 0..n-1 over cache rows 0..n-1, real f16 or f32
+// scope, by shape: positions pos..pos+n-1 over cache rows 0..pos+n-1 (at most
+// 12288, its shared memory), real f16 or f32
 // K and V rows (no ring, no sinks, no tied V, no MLA), q and output rows
 // n_head x hd apart (out_stride, the output's row width, equal to it), the
 // query heads in whole groups of the n_kv KV heads, a head at most 512 wide
-// and at most 12288 rows (the twin's shared memory).
+// (the twin's).
 const char *model_attn_dev_why(const model_t *m, int l, int pos, int n, int hd, int n_kv,
                                int q_dim, int out_stride) {
     const layer_t *ly = &m->layers[l];
-    if (pos != 0) return "the rows do not start at position 0";
-    if (n < 1 || n > 12288) return "more rows than the twin's shared memory holds";
+    if (pos < 0 || n < 1 || pos + n > 12288)
+        return "more rows (counting the chunk's start) than the twin's shared memory holds";
     if (m->mla_kv_lora > 0) return "MLA attention";
     if (model_kv_is_ring(m, l)) return "a ring layer's K/V rows";
     if (ly->attn_sinks) return "attention sinks";
@@ -15795,7 +15796,7 @@ NUM_STAGE void attn_rows(model_t *m, const fwd_layer *c) {
             tattn_args ta = { n, m->n_head, m->n_head / c->n_kv, hd, q_dim, c->kv_dim,
                               c->local ? m->swa_window : 0, (ka_u64)c->k_row_b,
                               (ka_u64)c->v_row_b, c->scale, model_kv_kind_k(m),
-                              model_kv_kind_v(m) };
+                              model_kv_kind_v(m), c->pos };
             dev = gpu_train_attn_fw_check(m, &ta, c->kc_l, c->vc_l, m->q, m->xb2);
         }
     }

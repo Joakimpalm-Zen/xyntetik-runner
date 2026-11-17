@@ -201,6 +201,8 @@ typedef struct {
     ka_u64 k_row_b, v_row_b;
     float scale;
     int kind_k, kind_v;
+    int pos0;   // the first query row's position: row b is position pos0 + b, over
+                // cache rows 0 .. pos0 + T - 1 (a chunk after the first; 0 otherwise)
 } tattn_args;
 
 // B5: the head over `rows` rows of V logits, rows `stride` floats apart. In:
