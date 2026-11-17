@@ -50,6 +50,11 @@
 //      alone from position m (engine_mark_scored(m), as src/decide.c marks
 //      where its scored tokens start). A normal request extending it keeps the
 //      m rows below the mark, no more, and stores the cold feed's rows.
+//   8. The persisted prefix store keys entries by arithmetic class: a -b 1
+//      store loads into no -b 64 engine; control: -b 64's loads into -b 2.
+//   9. A state saved and loaded is of unknown provenance: its rows are not
+//      published and not reused by a later request.
+//  10. A context imported from disk is forked only by a request naming it.
 #include "runner.h"
 
 #include <stdio.h>
@@ -263,6 +268,86 @@ static void check_file(const char *path) {
         ck(kept7 == m7 && d7 == 0, path, n,
            "after scored tokens from m, a normal prompt keeps exactly the m rows below them and stores the cold feed's");
     }
+    // gate 8: the persisted prefix store keys an entry by its arithmetic class.
+    // -b 1 writes a prompt's rows on the decode route, -b 2 and up as a
+    // prefill pass (gates 3 and 4): a -b 1 store loads into no -b 64 engine.
+    // Live control: a -b 64 store loads into a -b 2 engine, the same class.
+    {
+        int n8 = LENS[0];
+        const char *store = "test-prefill-gate8.store";
+        prefix_cache_clear();
+        engine_reset(&s1.e);
+        if (engine_feed(&s1.e, t, n8)) engine_prefix_publish(&s1.e, t, n8, n8, 0.0);
+        int saved8 = prefix_cache_save(store);
+        prefix_cache_clear();
+        int solo_into_tile = saved8 > 0 ? prefix_cache_load(store, &s64.e) : -2;
+        prefix_cache_clear();
+        engine_reset(&s64.e);
+        if (engine_feed(&s64.e, t, n8)) engine_prefix_publish(&s64.e, t, n8, n8, 0.0);
+        int saved8b = prefix_cache_save(store);
+        prefix_cache_clear();
+        int tile_into_tile = saved8b > 0 ? prefix_cache_load(store, &s2.e) : -2;
+        prefix_cache_clear();
+        remove(store);
+        if (saved8 > 0 && saved8b > 0) {
+            ck(solo_into_tile == 0, path, n8, "a -b 1 prefix store loads into no -b 64 engine");
+            ck(tile_into_tile == saved8b, path, n8, "live control: a -b 64 prefix store loads into -b 2");
+        } else {
+            fprintf(stderr, "  gate 8: this model stores no prefix entry (a ring), skipped\n");
+        }
+    }
+
+    // gate 9: rows a saved state carries are of unknown provenance once loaded
+    // (the state bytes hold no mark): kept for the resume that loaded them,
+    // never published, never reused by a later request. Here they are a
+    // scored prompt's, so either would read decode-route rows.
+    {
+        int n9 = LENS[0], n9b = n9 + 6;
+        prompt_scores ps9 = {0};
+        bool scored9 = engine_score_prompt(&ref.e, t, n9, 0, &ps9) != NULL;
+        prompt_scores_free(&ps9);
+        size_t sb = scored9 ? engine_state_bytes(&ref.e) : 0;
+        uint8_t *st = sb ? malloc(sb) : NULL;
+        bool ok9 = st && engine_state_save(&ref.e, st) && engine_state_load(&s64.e, t, n9, st);
+        free(st);
+        if (ok9) {
+            prefix_cache_clear();
+            engine_prefix_publish(&s64.e, t, n9, n9, 0.0);
+            engine_reset(&s512.e);
+            prefix_reuse r9 = engine_prefix_reuse(&s512.e, t, n9b);
+            ck(r9.keep == 0, path, n9, "a loaded state's rows are not published to another slot");
+            int kept9 = engine_rewind_prompt(&s64.e, t, n9b);
+            ck(kept9 == 0, path, n9, "a loaded state's rows are not reused by a later request");
+            prefix_cache_clear();
+        } else {
+            fprintf(stderr, "  gate 9: this model's state cannot be imaged (a ring), skipped\n");
+        }
+    }
+
+    // gate 10: a context imported from disk is forked only by a request that
+    // names it. Its rows' provenance is not this process's: an old snapshot
+    // holds the width-dependent arithmetic, or rows a later release cannot vouch
+    // for. An ordinary request with the same prefix feeds it cold.
+    {
+        int n10 = LENS[0];
+        const char *file = "test-prefill-gate10.kv";
+        prefix_cache_clear();
+        engine_reset(&s64.e);
+        int pinned = engine_feed(&s64.e, t, n10) ? prefix_context_pin(&s64.e, "g10", t, n10) : -1;
+        int exported = pinned > 0 ? prefix_context_export("g10", file) : -1;
+        prefix_cache_clear();
+        int imported = exported > 0 ? prefix_context_import(&s64.e, "g10i", file, "{}") : -1;
+        remove(file);
+        if (imported > 0) {
+            engine_reset(&s512.e);
+            prefix_reuse r10 = engine_prefix_reuse(&s512.e, t, n10 + 6);
+            ck(r10.keep == 0, path, n10, "an ordinary request forks no imported context");
+        } else {
+            fprintf(stderr, "  gate 10: this model pins no context (a ring), skipped\n");
+        }
+        prefix_cache_clear();
+    }
+
     ck(control5 == NLEN, path, CTX,
        "live control: rows a scored prompt left, kept, are not the cold feed's");
     ck(control6 == NLEN, path, CTX, "live control: the shared tier forks a prompt that was fed as one");

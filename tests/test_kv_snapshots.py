@@ -781,3 +781,18 @@ def test_a_model_and_template_that_keep_a_preamble_say_nothing_of_the_kind(runne
         assert len(_wait_files(snaps, 1)) == 1
     text = log.read_text()
     assert DECLINED_MODEL not in text and DECLINED_TEMPLATE not in text and DECLINED_TOKENS not in text
+
+
+def test_a_preamble_snapshot_of_the_other_arithmetic_class_is_not_found(runner_bin, fx, tmp_path):
+    """R3.60: at -b 1 a prompt's rows come from the decode route, at -b 2 and up from a prefill pass, and the two
+    differ in their last bits. A snapshot written at -b 1 is not found by a restart at -b 64 (its name carries the
+    class); one written at -b 2 is, the same class."""
+    for first_b, found in (("1", False), ("2", True)):
+        snaps = tmp_path / ("snaps-b" + first_b)
+        with _auto(runner_bin, fx["model"], snaps, "64", "-b", first_b) as a:
+            _chat(a, SYSTEM, "List the files.")
+            _wait_files(snaps, 1)
+        with _auto(runner_bin, fx["model"], snaps, "64", "-b", "64") as b:
+            warm = _chat(b, SYSTEM, "Which file is the largest?")
+        assert (warm["reuse"] == "preamble_snapshot") == found, (first_b, warm)
+
