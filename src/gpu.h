@@ -365,6 +365,13 @@ bool   gpu_train_rope_check(model_t *m, const trope_args *a, const float *fr, fl
 // unchanged. false: no context, no kernel in this PTX, or another kind.
 bool   gpu_train_kv_store_check(model_t *m, const tkv_args *a, const float *src,
                                 unsigned char *dst);
+// R8.24.1 B4, the kernel gate's entry: the device twin of the forward's
+// attention (k_tattn, attn_run for one (t, head) a block) over a->T positions:
+// q rows a->q_dim apart in, the K / V rows (a->k_row_b / v_row_b bytes apart,
+// kinds a->kind_k / kind_v: 0 f16, 3 f32) in, ao rows out. false: no context,
+// no kernel in this PTX, or a shape or kind it does not take.
+bool   gpu_train_attn_fw_check(model_t *m, const tattn_args *a, const void *kc,
+                               const void *vc, const float *q, float *ao);
 bool   gpu_train_ffn_check(model_t *m, int act, const float *g, const float *u,
                            const float *dh, float *h, float *dg, float *du, int n);
 // R8.24.1 B6, the kernel gate's entry: the device twins of one site's adapter

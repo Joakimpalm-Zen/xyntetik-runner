@@ -3793,6 +3793,11 @@ bool gpu_train_kv_store_check(model_t *mm, const tkv_args *a, const float *src,
     (void)mm; (void)a; (void)src; (void)dst;
     return false;
 }
+bool gpu_train_attn_fw_check(model_t *mm, const tattn_args *a, const void *kc,
+                             const void *vc, const float *q, float *ao) {
+    (void)mm; (void)a; (void)kc; (void)vc; (void)q; (void)ao;
+    return false;
+}
 bool gpu_train_ffn_check(model_t *mm, int act, const float *g, const float *u,
                          const float *dh, float *h, float *dg, float *du, int n) {
     (void)mm; (void)act; (void)g; (void)u; (void)dh; (void)h; (void)dg; (void)du; (void)n;

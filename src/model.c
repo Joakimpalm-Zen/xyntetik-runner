@@ -11775,6 +11775,32 @@ void model_rope_ref(model_t *m, float *v, int n_heads, int pos, int layer, int a
     if (adjoint) rope_unapply(m, v, n_heads, pos, layer);
     else         rope_apply(m, v, n_heads, pos, layer);
 }
+// R8.24.1 B4: the forward's attention over T training positions through the
+// host's own attn_run, as the recompute calls it (an attn_job a position: no
+// ring, no sinks, real K and V rows, the window start of attn_window_start),
+// q and ao rows n_head*hd apart, for the device twin's gate. The split path
+// is left off (it runs the same compiled loops; the gate is about the loops).
+bool model_attn_ref(int T, int n_head, int kv_mul, int hd, int swa, float scale,
+                    int kind_k, int kind_v, const void *kc, const void *vc,
+                    size_t k_row_b, size_t v_row_b, const float *q, float *ao) {
+    model_t mm;
+    memset(&mm, 0, sizeof(mm));
+    mm.n_head = n_head;
+    mm.n_ctx = T;
+    mm.attn_split = -1;
+    mm.att = calloc((size_t)n_head * (size_t)T, sizeof(float));
+    if (!mm.att) return false;
+    int q_dim = n_head * hd, kv_dim = n_head / kv_mul * hd;
+    for (int t = 0; t < T; t++) {
+        attn_job aj = { &mm, kc, vc, q + (size_t)t * q_dim, ao + (size_t)t * q_dim, t,
+                        swa > 0 && t - swa + 1 > 0 ? t - swa + 1 : 0,   // attn_window_start's rule
+                        hd, kv_dim, k_row_b, v_row_b, 0,
+                        kind_k, kind_v, scale, NULL, false, NULL, 0 };
+        attn_run(&mm, &aj, n_head);
+    }
+    free(mm.att);
+    return true;
+}
 float model_xielu(float x, float an, float ap, float b, float eps) { return xielu(x, an, ap, b, eps); }
 float model_xielu_deriv(float x, float an, float ap, float b, float eps) { return xielu_d(x, an, ap, b, eps); }
 

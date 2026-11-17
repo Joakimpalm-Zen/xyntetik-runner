@@ -1040,6 +1040,126 @@ static void b8_checks(model_t *m) {
                nall ? "; all 2^32 inputs == host" : "");
     free(in);
 }
+// R8.24.1 B4 (G0): the device twin of the forward's attention
+// (gpu_train_attn_fw_check: k_tattn) against the host's own attn_run as the
+// recompute calls it (model_attn_ref), on K / V rows as the training cache
+// holds them. Written before the kernel. A T3 build's host does the written
+// chains (a score a multiply and an add a channel, softmax's max, pmath's exp
+// and its float sum in key order, a value chain a channel in key order),
+// which the twin reproduces, so memcmp (a NaN compares as a NaN). The default
+// build's host may vectorize those sums under -ffast-math and takes the C
+// library's expf; there, and against a double reference in both builds, each
+// element within (hd + span + 8) 2^-24 (1 + |largest score|) of the span's
+// largest |v| (the float chains' own error, carried through the
+// probabilities), the device's subnormal results read as zero in the default
+// build.
+static void b4_check(model_t *m, int T, int H, int kv_mul, int hd, int swa, float scale_mul,
+                     int kind, int zero_q) {
+    ab_shape sh = ab_shape_of(T, H, kv_mul, hd, swa);
+    size_t row16 = (size_t)sh.kv_dim * 2, nq = (size_t)T * sh.q_dim;
+    uint8_t *k16 = malloc(row16 * T), *v16 = malloc(row16 * T);
+    float *q = malloc(sizeof(float) * nq), *dao = malloc(sizeof(float) * nq);
+    ab_ref_fill(&sh, 0x9E3779B97F4A7C15ull ^ (uint64_t)(T * 131 + hd * 7 + swa), k16, v16, q, dao);
+    if (zero_q) for (int i = 0; i < sh.q_dim; i++) q[i] = 0.0f;   // position 0: a flat softmax
+    size_t rowb = kind == 3 ? (size_t)sh.kv_dim * 4 : row16;
+    uint8_t *kc = k16, *vc = v16;
+    if (kind == 3) {   // the f32 form of the same values
+        kc = malloc(rowb * T); vc = malloc(rowb * T);
+        for (size_t i = 0; i < (size_t)T * sh.kv_dim; i++) {
+            f16_t a, b;
+            memcpy(&a, k16 + 2 * i, 2); memcpy(&b, v16 + 2 * i, 2);
+            float fa = f16_to_f32(a), fb = f16_to_f32(b);
+            memcpy(kc + 4 * i, &fa, 4); memcpy(vc + 4 * i, &fb, 4);
+        }
+    }
+    float scale = scale_mul / sqrtf((float)hd);
+    float *aoh = calloc(nq, sizeof(float)), *aod = calloc(nq, sizeof(float));
+    bool okh = model_attn_ref(T, H, kv_mul, hd, swa, scale, kind, kind, kc, vc, rowb, rowb, q, aoh);
+    tattn_args a = { T, H, kv_mul, hd, sh.q_dim, sh.kv_dim, swa, rowb, rowb, scale, kind, kind };
+    bool ok = okh && gpu_train_attn_fw_check(m, &a, kc, vc, q, aod);
+    CHECK(ok, "attn twin T %d hd %d: declined (no kernel in this PTX?)", T, hd);
+    size_t bad = 0, hbad = 0, abad = 0;
+    double wh = 0, wa = 0;
+    double *sc = malloc(sizeof(double) * T), *pr = malloc(sizeof(double) * T);
+    for (int t = 0; ok && t < T; t++)
+        for (int h = 0; h < H; h++) {
+            int kvh = h / kv_mul, t0 = swa > 0 && t - swa + 1 > 0 ? t - swa + 1 : 0, span = t - t0 + 1;
+            const float *qh = q + (size_t)t * sh.q_dim + (size_t)h * hd;
+            double smax = 0, mx = -1e300, sum = 0, vmax = 0;
+            for (int s = t0; s <= t; s++) {
+                double d = 0;
+                for (int i = 0; i < hd; i++) {
+                    f16_t kb; memcpy(&kb, k16 + (size_t)s * row16 + 2 * ((size_t)kvh * hd + i), 2);
+                    d += (double)qh[i] * f16_to_f32(kb);
+                }
+                sc[s] = d * scale;
+                if (fabs(sc[s]) > smax) smax = fabs(sc[s]);
+                if (sc[s] > mx) mx = sc[s];
+                for (int i = 0; i < hd; i++) {
+                    f16_t vb; memcpy(&vb, v16 + (size_t)s * row16 + 2 * ((size_t)kvh * hd + i), 2);
+                    double v = fabs(f16_to_f32(vb));
+                    if (v > vmax) vmax = v;
+                }
+            }
+            for (int s = t0; s <= t; s++) { pr[s] = exp(sc[s] - mx); sum += pr[s]; }
+            double lim = (hd + span + 8) * 0x1p-24 * (1.0 + smax) * vmax + 1e-37;
+            for (int i = 0; i < hd; i++) {
+                size_t o = (size_t)t * sh.q_dim + (size_t)h * hd + i;
+                float hv = aoh[o], dv = aod[o];
+#ifdef RUNNER_PORTABLE_MATH
+                bool same = b2_nan(hv) || b2_nan(dv) ? b2_nan(hv) && b2_nan(dv) : !memcmp(&hv, &dv, 4);
+                if (!same && !bad++)
+                    fprintf(stderr, "FAIL: attn twin differs from the T3 host at T %d t %d h %d i %d: "
+                            "%.9g/%.9g\n", T, t, h, i, dv, hv);
+#else
+                float ev = b2_ftz(dv);
+                double e = fabs((double)ev - hv);
+                if (e / lim > wh) wh = e / lim;
+                if (e > 2 * lim && !hbad++)
+                    fprintf(stderr, "FAIL: attn twin is off the default build's host at T %d t %d h %d "
+                            "i %d: %.9g/%.9g\n", T, t, h, i, ev, hv);
+#endif
+                double x = 0;
+                for (int s = t0; s <= t; s++) {
+                    f16_t vb; memcpy(&vb, v16 + (size_t)s * row16 + 2 * ((size_t)kvh * hd + i), 2);
+                    x += pr[s] / sum * f16_to_f32(vb);
+                }
+                double ea = fabs((double)dv - x);
+                if (ea / lim > wa) wa = ea / lim;
+                if (ea > lim && !abad++)
+                    fprintf(stderr, "FAIL: attn twin is not the attention at T %d t %d h %d i %d: "
+                            "%.9g (double %.9g)\n", T, t, h, i, dv, x);
+            }
+        }
+    CHECK(!bad, "attn twin T %d H %d kv_mul %d hd %d swa %d kind %d: %zu elements differ from "
+          "the T3 host's bits", T, H, kv_mul, hd, swa, kind, bad);
+    CHECK(!hbad, "attn twin T %d hd %d: %zu elements off the default build's host (worst %.3g of "
+          "the bound, allowed 2)", T, hd, hbad, wh);
+    CHECK(!abad, "attn twin T %d hd %d: %zu elements off the double attention (worst %.3g of the "
+          "bound)", T, hd, abad, wa);
+    if (ok)
+        printf("attn twin T %3d H %2d kv_mul %d hd %3d swa %2d kind %d scale x%-4g%s: host %s; "
+               "against the double attention %.3g of the bound\n", T, H, kv_mul, hd, swa, kind,
+               scale_mul, zero_q ? " zero-q" : "",
+#ifdef RUNNER_PORTABLE_MATH
+               "T3 (memcmp)",
+#else
+               "default (bound, subnormals flushed)",
+#endif
+               wa);
+    if (kind == 3) { free(kc); free(vc); }
+    free(k16); free(v16); free(q); free(dao); free(aoh); free(aod); free(sc); free(pr);
+}
+static void b4_checks(model_t *m) {
+    b4_check(m, 128, 32, 4, 128, 0, 1.0f, 0, 0);    // the recipe's Qwen3-4B shape, T 128
+    b4_check(m, 77, 4, 2, 64, 0, 1.0f, 0, 1);       // grouped heads, a zero q row
+    b4_check(m, 90, 4, 1, 256, 24, 1.0f, 0, 0);     // a sliding window, head 256
+    b4_check(m, 33, 2, 2, 128, 1, 1.0f, 0, 0);      // a window of one key
+    b4_check(m, 64, 8, 4, 128, 0, 16.0f, 0, 0);     // peaked probabilities
+    b4_check(m, 50, 4, 2, 96, 7, 1.0f, 3, 0);       // f32 rows, a short window
+    b4_check(m, 300, 2, 1, 64, 0, 1.0f, 0, 0);      // spans past a block of threads
+}
+
 int main(void) {
     f16_init();
     model_t m;
@@ -1335,6 +1455,7 @@ int main(void) {
     b2_checks(&m);
     b3_checks(&m);
     b8_checks(&m);
+    b4_checks(&m);
     gpu_train_free(&m);
     free(keep_pinned);
     for (size_t k = 0; k < sizeof(keep) / sizeof(*keep); k++) free(keep[k]);

@@ -1295,6 +1295,11 @@ void   model_rmsnorm_bw(const float *x, const float *w, const float *dy, float *
 // R8.24.1 B3: one position's row through the host's rope_apply (adjoint 0)
 // or rope_unapply (adjoint 1), for the device twins' gate
 void   model_rope_ref(model_t *m, float *v, int n_heads, int pos, int layer, int adjoint);
+// R8.24.1 B4: the forward's attention over T positions through the host's
+// attn_run (causal, a sliding window of swa rows, 0 none), for the device twin's gate
+bool   model_attn_ref(int T, int n_head, int kv_mul, int hd, int swa, float scale,
+                      int kind_k, int kind_v, const void *kc, const void *vc,
+                      size_t k_row_b, size_t v_row_b, const float *q, float *ao);
 // R8.24.1 B6: one site's adapter through the host's code (lora_apply, then the
 // backward's four passes) on caller arrays, for the device twins' gate
 bool   model_lora_site_ref(int r, int n_in, int n_out, int nb, float s,
