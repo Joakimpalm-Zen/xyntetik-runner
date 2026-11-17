@@ -5359,6 +5359,7 @@ static bool train_prepare(cli_opts *o, cli_run *rt) {
             return false;
         }
         rt->m.train_dev = true;
+        model_train_pin_scratch(&rt->m);   // R8.24.1: faster copies only
         fprintf(stderr, "train-gpu: every weight product on the GPU; the "
                 "adapter matches a CPU run within tolerance, not byte for "
                 "byte\n");

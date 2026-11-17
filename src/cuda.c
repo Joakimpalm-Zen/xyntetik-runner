@@ -93,6 +93,10 @@ static struct {
     // optional: page-locked host staging (X3's KV gather); absent, pageable
     CUresult (*MemAllocHost)(void **, size_t);
     CUresult (*MemFreeHost)(void *);
+    // optional (R8.24.1): --train-gpu's host buffers registered for the run;
+    // absent, they stay pageable
+    CUresult (*MemHostRegister)(void *, size_t, unsigned);
+    CUresult (*MemHostUnregister)(void *);
     // optional: CUDA graphs for the single-token decode path (Experiment A).
     // Not required for the backend to function — see cu_graphs_ok().
     CUresult (*StreamCreate)(CUstream *, unsigned);
@@ -202,6 +206,8 @@ static bool cu_load_now(void) {
     cu.FuncSetAttribute  = dl_sym(cu.lib, "cuFuncSetAttribute");
     cu.MemAllocHost      = sym2("cuMemAllocHost");
     cu.MemFreeHost       = dl_sym(cu.lib, "cuMemFreeHost");
+    cu.MemHostRegister   = sym2("cuMemHostRegister");
+    cu.MemHostUnregister = dl_sym(cu.lib, "cuMemHostUnregister");
     // optional graph entry points — absence just disables the graph path
     cu.StreamCreate       = dl_sym(cu.lib, "cuStreamCreate");
     cu.StreamDestroy      = sym2("cuStreamDestroy");
@@ -8814,6 +8820,16 @@ typedef struct {
     int         n_cache, cap_cache;
     CUdeviceptr d_dy, d_dx;
     size_t      cap_dy, cap_dx;
+    // R8.24.1: gpu_train_mm_parts' output rows, one buffer a part
+    CUdeviceptr d_yp[GPU_MM_PARTS];
+    size_t      cap_yp[GPU_MM_PARTS];
+    // R8.24.1 A4: host ranges registered for the run (gpu_train_pin), and
+    // the pinned blocks gpu_train_host_buf hands out, one a slot
+    void      **pin_p;
+    int         n_pin, cap_pin;
+    size_t      pin_bytes;
+    void       *hbuf[GPU_TRAIN_HBUF];
+    size_t      hbuf_cap[GPU_TRAIN_HBUF];
     float      *h_x, *h_y;        // the forward's packed host rows
     size_t      cap_hx, cap_hy;
     // RUNNER_TRAIN_PROF: wall time inside the two calls (transfers and the
@@ -8974,6 +8990,11 @@ void gpu_train_free(model_t *m) {
         if (t->arena) cu.MemFree(t->arena);
         if (t->d_dy) cu.MemFree(t->d_dy);
         if (t->d_dx) cu.MemFree(t->d_dx);
+        for (int i = 0; i < GPU_MM_PARTS; i++)
+            if (t->d_yp[i]) cu.MemFree(t->d_yp[i]);
+        for (int i = 0; i < t->n_pin; i++) cu.MemHostUnregister(t->pin_p[i]);
+        for (int i = 0; i < GPU_TRAIN_HBUF; i++)
+            if (t->hbuf[i]) cu.MemFreeHost(t->hbuf[i]);
         for (int i = 0; i < DN_NBUF; i++)
             if (t->dn[i]) cu.MemFree(t->dn[i]);
         for (int i = 0; i < t->n_dn_slot; i++) cu.MemFree(t->dn_slot[i].dev);
@@ -8983,6 +9004,7 @@ void gpu_train_free(model_t *m) {
         cu.ModuleUnload(t->mod);
     }
     cu.PrimaryCtxRelease(t->dev);
+    free(t->pin_p);
     free(t->cache);
     free(t->dn_slot);
     free(t->cpu_kept);
@@ -9017,6 +9039,52 @@ void gpu_train_placement(model_t *m, int *on_dev, size_t *dev_bytes,
     *cpu_bytes = t ? t->cpu_bytes : 0;
     *budget = t ? t->vram_budget : 0;
     *budget_set = t && t->budget_set;
+}
+
+// R8.24.1 A4: a host range the run's copies read or write, registered with
+// the driver once (steady copies at pinned speed: 23 to 28 GB/s against 11
+// to 14 pageable on an RTX 5070 host) and unregistered by gpu_train_free.
+// Registering per call costs more than it saves there, so this is for
+// buffers that outlive the context. false: it stays pageable.
+bool gpu_train_pin(model_t *m, void *p, size_t bytes) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !p || !bytes || !cu.MemHostRegister || !cu.MemHostUnregister)
+        return false;
+    if (t->n_pin == t->cap_pin) {
+        int cap = t->cap_pin ? t->cap_pin * 2 : 8;
+        void **np = realloc(t->pin_p, sizeof(*np) * (size_t)cap);
+        if (!np) return false;
+        t->pin_p = np;
+        t->cap_pin = cap;
+    }
+    if (cu.CtxSetCurrent(t->ctx) != 0 || cu.MemHostRegister(p, bytes, 0) != 0)
+        return false;
+    t->pin_p[t->n_pin++] = p;
+    t->pin_bytes += bytes;
+    return true;
+}
+
+// R8.24.1 A4: slot's pinned block of at least bytes, the context's own and
+// handed out again on the next call (what it held is not kept when it
+// grows); NULL when none can be had, and the caller allocates as before.
+void *gpu_train_host_buf(model_t *m, int slot, size_t bytes) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || slot < 0 || slot >= GPU_TRAIN_HBUF || !bytes ||
+        !cu.MemAllocHost || !cu.MemFreeHost)
+        return NULL;
+    if (t->hbuf_cap[slot] >= bytes) return t->hbuf[slot];
+    if (cu.CtxSetCurrent(t->ctx) != 0) return NULL;
+    if (t->hbuf[slot]) cu.MemFreeHost(t->hbuf[slot]);
+    t->hbuf[slot] = NULL;
+    t->hbuf_cap[slot] = 0;
+    // grown in whole MiB, so a slightly longer row does not allocate again
+    size_t cap = (bytes + ((size_t)1 << 20) - 1) & ~(((size_t)1 << 20) - 1);
+    if (cu.MemAllocHost(&t->hbuf[slot], cap) != 0) {
+        t->hbuf[slot] = NULL;
+        return NULL;
+    }
+    t->hbuf_cap[slot] = cap;
+    return t->hbuf[slot];
 }
 
 static bool tg_scratch(CUdeviceptr *buf, size_t *cap, size_t need) {
@@ -9068,24 +9136,36 @@ static CUdeviceptr tg_weights(train_gpu_t *t, const gguf_tensor *w) {
 }
 
 static bool train_mvt(train_gpu_t *t, const gguf_tensor *w, const float *dy,
-                      float *dx, int n_in, int n_out, int nb, bool dev);
+                      float *dx, int n_in, int n_out, int nb, bool dev,
+                      bool zero);
 
-bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
-                   float *dx, int n_in, int n_out, int nb) {
+static bool train_mvt_call(model_t *m, const gguf_tensor *w, const float *dy,
+                           float *dx, int n_in, int n_out, int nb, bool zero) {
     train_gpu_t *t = m->train_gpu;
     // the kernel reads raw rows: a scaled tensor (stored * scale) is the
     // CPU chain's, which multiplies the decoded row first
     if (!t || !w || w->scale != 1.0f || w->type >= KT_N || !t->f_tmvt[w->type])
         return false;
     double t0 = plat_now();
-    bool ok = train_mvt(t, w, dy, dx, n_in, n_out, nb, m->train_dev);
+    bool ok = train_mvt(t, w, dy, dx, n_in, n_out, nb, m->train_dev, zero);
     t->t_mvt += plat_now() - t0;
     t->n_mvt += ok;
     return ok;
 }
 
+bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
+                   float *dx, int n_in, int n_out, int nb) {
+    return train_mvt_call(m, w, dy, dx, n_in, n_out, nb, false);
+}
+
+bool gpu_train_mvt0(model_t *m, const gguf_tensor *w, const float *dy,
+                    float *dx, int n_in, int n_out, int nb) {
+    return train_mvt_call(m, w, dy, dx, n_in, n_out, nb, true);
+}
+
 static bool train_mvt(train_gpu_t *t, const gguf_tensor *w, const float *dy,
-                      float *dx, int n_in, int n_out, int nb, bool dev) {
+                      float *dx, int n_in, int n_out, int nb, bool dev,
+                      bool zero) {
     if (cu.CtxSetCurrent(t->ctx) != 0) return false;
     CUdeviceptr weights = tg_weights(t, w);
     if (!weights) return false;
@@ -9094,8 +9174,10 @@ static bool train_mvt(train_gpu_t *t, const gguf_tensor *w, const float *dy,
     if (!tg_scratch(&t->d_dy, &t->cap_dy, ny) ||
         !tg_scratch(&t->d_dx, &t->cap_dx, nx))
         return false;
+    // a zero start is cleared on the device (all-zero bytes are +0.0f, what
+    // the caller holds), not sent
     if (cu.MemcpyHtoD(t->d_dy, dy, ny) != 0 ||
-        cu.MemcpyHtoD(t->d_dx, dx, nx) != 0)
+        (zero ? cu.MemsetD8(t->d_dx, 0, nx) : cu.MemcpyHtoD(t->d_dx, dx, nx)) != 0)
         return false;
     mv_args a = { n_in, n_out, 0, 0, nb, n_out, n_in };
     void *p[] = { &weights, &t->d_dy, &t->d_dx, &a, &t->dummy };
@@ -9476,6 +9558,69 @@ void gpu_train_dn_counts(model_t *m, long *dev, long *failed) {
     *failed = t ? t->n_dn_failed : 0;
 }
 
+// One forward product's launch, x and y on the device (no sync).
+// The register-blocked kernels (k_tmmr, k_tmmrn past 32 columns and up
+// to them); RUNNER_TRAIN_MM_KERNEL=warp takes the per-warp ones instead
+// (k_tmm, k_tmmw past one 16-column tile), the arithmetic before R8.20
+// attempt 3, for comparison. Within a family every column gets the same
+// bits from either kernel; the two families differ, so one family serves
+// a whole run (read per call so test-train-gpu can compare them).
+static bool tmm_launch(train_gpu_t *t, const gguf_tensor *w, CUdeviceptr weights,
+                       CUdeviceptr d_x, CUdeviceptr d_y, int n_in, int n_out,
+                       int nb) {
+    mv_args a = { n_in, n_out, 0, 0, nb, n_in, n_out };
+    void *p[] = { &weights, &d_x, &d_y, &a, &t->dummy };
+    const char *ke = getenv("RUNNER_TRAIN_MM_KERNEL");
+    bool warp = (ke && !strcmp(ke, "warp")) || !t->f_tmmr[w->type] ||
+                !t->f_tmmrn[w->type];
+    CUfunction f;
+    unsigned blocks, cols, threads;
+    if (warp) {
+        bool wide = nb > TMM_NC && t->f_tmmw[w->type];
+        int ncb = wide ? TMM_NCW : TMM_NC;
+        f = wide ? t->f_tmmw[w->type] : t->f_tmm[w->type];
+        blocks = (unsigned)((n_out + TMM_WARPS * TMM_RW - 1) / (TMM_WARPS * TMM_RW));
+        cols = (unsigned)((nb + ncb - 1) / ncb);
+        threads = TMM_WARPS * 32;
+    } else {
+        int ncb = nb > 2 * TMR_BNN ? TMR_BN : TMR_BNN;
+        f = ncb == TMR_BN ? t->f_tmmr[w->type] : t->f_tmmrn[w->type];
+        blocks = (unsigned)((n_out + TMR_BM - 1) / TMR_BM);
+        cols = (unsigned)((nb + ncb - 1) / ncb);
+        threads = TMR_KS * 64;
+    }
+    return cu.LaunchKernel(f, blocks, cols, 1, threads, 1, 1, 0, NULL, p, NULL) == 0;
+}
+
+// A product's rows from the device into y (after the sync). R8.24.1: rows
+// packed as the device wrote them land in place (y is overwritten, so a
+// failed copy leaves nothing the CPU's retry reads); the bias is the same
+// one add per element as the staged path's.
+static bool tmm_land(train_gpu_t *t, CUdeviceptr d_y, float *y, int y_stride,
+                     int n_out, const float *bias, int nb) {
+    size_t ny = (size_t)nb * n_out;
+    if (y_stride == n_out) {
+        if (cu.MemcpyDtoH(y, d_y, sizeof(float) * ny) != 0) return false;
+        if (bias)
+            for (int c = 0; c < nb; c++) {
+                float *dst = y + (size_t)c * n_out;
+                for (int j = 0; j < n_out; j++) dst[j] += bias[j];
+            }
+        return true;
+    }
+    if (cu.MemcpyDtoH(t->h_y, d_y, sizeof(float) * ny) != 0)
+        return false;
+    for (int c = 0; c < nb; c++) {
+        const float *src = t->h_y + (size_t)c * n_out;
+        float *dst = y + (size_t)c * y_stride;
+        if (bias)
+            for (int j = 0; j < n_out; j++) dst[j] = src[j] + bias[j];
+        else
+            memcpy(dst, src, sizeof(float) * (size_t)n_out);
+    }
+    return true;
+}
+
 static bool train_mm(train_gpu_t *t, const gguf_tensor *w, const float *x,
                      int x_stride, float *y, int y_stride, int n_in, int n_out,
                      const float *bias, int nb) {
@@ -9496,49 +9641,68 @@ static bool train_mm(train_gpu_t *t, const gguf_tensor *w, const float *x,
         xp = t->h_x;
     }
     if (cu.MemcpyHtoD(t->d_dx, xp, sizeof(float) * nx) != 0) return false;
-    mv_args a = { n_in, n_out, 0, 0, nb, n_in, n_out };
-    void *p[] = { &weights, &t->d_dx, &t->d_dy, &a, &t->dummy };
-    // The register-blocked kernels (k_tmmr, k_tmmrn past 32 columns and up
-    // to them); RUNNER_TRAIN_MM_KERNEL=warp takes the per-warp ones instead
-    // (k_tmm, k_tmmw past one 16-column tile), the arithmetic before R8.20
-    // attempt 3, for comparison. Within a family every column gets the same
-    // bits from either kernel; the two families differ, so one family serves
-    // a whole run (read per call so test-train-gpu can compare them).
-    const char *ke = getenv("RUNNER_TRAIN_MM_KERNEL");
-    bool warp = (ke && !strcmp(ke, "warp")) || !t->f_tmmr[w->type] ||
-                !t->f_tmmrn[w->type];
-    CUfunction f;
-    unsigned blocks, cols, threads;
-    if (warp) {
-        bool wide = nb > TMM_NC && t->f_tmmw[w->type];
-        int ncb = wide ? TMM_NCW : TMM_NC;
-        f = wide ? t->f_tmmw[w->type] : t->f_tmm[w->type];
-        blocks = (unsigned)((n_out + TMM_WARPS * TMM_RW - 1) / (TMM_WARPS * TMM_RW));
-        cols = (unsigned)((nb + ncb - 1) / ncb);
-        threads = TMM_WARPS * 32;
-    } else {
-        int ncb = nb > 2 * TMR_BNN ? TMR_BN : TMR_BNN;
-        f = ncb == TMR_BN ? t->f_tmmr[w->type] : t->f_tmmrn[w->type];
-        blocks = (unsigned)((n_out + TMR_BM - 1) / TMR_BM);
-        cols = (unsigned)((nb + ncb - 1) / ncb);
-        threads = TMR_KS * 64;
-    }
     double k0 = plat_now();
-    if (cu.LaunchKernel(f, blocks, cols, 1, threads, 1, 1, 0, NULL, p, NULL) != 0 ||
+    if (!tmm_launch(t, w, weights, t->d_dx, t->d_dy, n_in, n_out, nb) ||
         cu.CtxSynchronize() != 0)
         return false;
     t->k_mm += plat_now() - k0;
-    if (cu.MemcpyDtoH(t->h_y, t->d_dy, sizeof(float) * ny) != 0)
-        return false;
-    for (int c = 0; c < nb; c++) {
-        const float *src = t->h_y + (size_t)c * n_out;
-        float *dst = y + (size_t)c * y_stride;
-        if (bias)
-            for (int j = 0; j < n_out; j++) dst[j] = src[j] + bias[j];
-        else
-            memcpy(dst, src, sizeof(float) * (size_t)n_out);
+    return tmm_land(t, t->d_dy, y, y_stride, n_out, bias, nb);
+}
+
+// R8.24.1: several products of ONE input in one round trip (the forward's
+// Q/K/V and gate/up, the recompute's): x goes up once, each part's kernel
+// writes its own device rows, one sync, and each part's rows come back.
+// Part s is train_mm's product bit for bit (the same kernel and launch for
+// its weights and nb, the same x). The weights are looked up in the parts'
+// order, as one call each would, so the budget's split is unchanged; a part
+// that is not on the device is left out of the result for the caller.
+unsigned gpu_train_mm_parts(model_t *m, const gpu_mm_part *p, int np,
+                            const float *x, int x_stride, int n_in, int nb) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || nb < 1 || np < 1 || np > GPU_MM_PARTS) return 0;
+    double t0 = plat_now();
+    unsigned want = 0;
+    CUdeviceptr wts[GPU_MM_PARTS] = {0};
+    size_t ny_max = 0;
+    if (cu.CtxSetCurrent(t->ctx) != 0) return 0;
+    for (int s = 0; s < np; s++) {
+        const gguf_tensor *w = p[s].w;
+        if (!w || w->scale != 1.0f || w->type >= KT_N || !t->f_tmm[w->type])
+            continue;
+        if (!(wts[s] = tg_weights(t, w))) continue;
+        want |= 1u << s;
+        size_t ny = (size_t)nb * p[s].n_out;
+        if (ny > ny_max) ny_max = ny;
+        if (!tg_scratch(&t->d_yp[s], &t->cap_yp[s], sizeof(float) * ny)) return 0;
     }
-    return true;
+    if (!want) return 0;
+    size_t nx = (size_t)nb * n_in;
+    if (!tg_scratch(&t->d_dx, &t->cap_dx, sizeof(float) * nx) ||
+        !tg_host(&t->h_y, &t->cap_hy, ny_max))
+        return 0;
+    const float *xp = x;
+    if (x_stride != n_in) {
+        if (!tg_host(&t->h_x, &t->cap_hx, nx)) return 0;
+        for (int c = 0; c < nb; c++)
+            memcpy(t->h_x + (size_t)c * n_in, x + (size_t)c * x_stride,
+                   sizeof(float) * (size_t)n_in);
+        xp = t->h_x;
+    }
+    if (cu.MemcpyHtoD(t->d_dx, xp, sizeof(float) * nx) != 0) return 0;
+    double k0 = plat_now();
+    for (int s = 0; s < np; s++)
+        if ((want >> s & 1) &&
+            !tmm_launch(t, p[s].w, wts[s], t->d_dx, t->d_yp[s], n_in, p[s].n_out, nb))
+            return 0;
+    if (cu.CtxSynchronize() != 0) return 0;
+    t->k_mm += plat_now() - k0;
+    for (int s = 0; s < np; s++)
+        if ((want >> s & 1) &&
+            !tmm_land(t, t->d_yp[s], p[s].y, p[s].y_stride, p[s].n_out, p[s].bias, nb))
+            return 0;
+    t->t_mm += plat_now() - t0;
+    for (int s = 0; s < np; s++) t->n_mm += want >> s & 1;
+    return want;
 }
 
 // Discrete VRAM: the hidden states and per-row logits live device-side and

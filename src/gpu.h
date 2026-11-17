@@ -304,6 +304,11 @@ bool   gpu_train_init(model_t *m);
 void   gpu_train_free(model_t *m);
 bool   gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
                      float *dx, int n_in, int n_out, int nb);
+// R8.24.1: the same product for a dx the caller holds at zero (+0.0f, every
+// element): the device clears its copy instead of receiving the zeros, so
+// the result is gpu_train_mvt's bit for bit with one transfer fewer
+bool   gpu_train_mvt0(model_t *m, const gguf_tensor *w, const float *dy,
+                      float *dx, int n_in, int n_out, int nb);
 // R8.19: y[t][j] = sum_i W[j][i] x[t][i] (+ bias[j]) for t < nb on the same
 // context, rows x_stride / y_stride apart: a batch-invariant product (column
 // t's value does not depend on the other columns of the call), the training
@@ -313,6 +318,29 @@ bool   gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
 bool   gpu_train_mm(model_t *m, const gguf_tensor *w, const float *x,
                     int x_stride, float *y, int y_stride, int n_in, int n_out,
                     const float *bias, int nb);
+// R8.24.1: up to GPU_MM_PARTS of those products of ONE input x in one round
+// trip (x sent once, one sync); each part is gpu_train_mm's product bit for
+// bit, the weights taken up in the parts' order. Returns the parts computed,
+// bit s for part s; the caller computes the others (0: none, as when
+// gpu_train_mm returns false).
+enum { GPU_MM_PARTS = 4 };
+typedef struct {
+    const gguf_tensor *w;
+    float *y;
+    int y_stride, n_out;
+    const float *bias;
+} gpu_mm_part;
+unsigned gpu_train_mm_parts(model_t *m, const gpu_mm_part *p, int np,
+                            const float *x, int x_stride, int n_in, int nb);
+// R8.24.1: pinned host memory for the context's copies; only their speed
+// depends on it, never a value. gpu_train_pin registers [p, p + bytes) with
+// the driver until gpu_train_free (the range must outlive the context);
+// false leaves it pageable. gpu_train_host_buf hands out slot's pinned block
+// of at least bytes, owned by the context and the same block from call to
+// call (its contents are not kept when it grows); NULL when none can be had.
+enum { GPU_TRAIN_HBUF = 4 };
+bool   gpu_train_pin(model_t *m, void *p, size_t bytes);
+void  *gpu_train_host_buf(model_t *m, int slot, size_t bytes);
 // RUNNER_TRAIN_PROF: seconds inside gpu_train_mm / gpu_train_mvt (transfers
 // and syncs included), their counts, and the kernels' share (the launch and
 // its sync) since the last call, which resets them

@@ -197,12 +197,34 @@ bool gpu_train_mvt(model_t *m, const gguf_tensor *w, const float *dy,
     return false;
 }
 
+bool gpu_train_mvt0(model_t *m, const gguf_tensor *w, const float *dy,
+                    float *dx, int n_in, int n_out, int nb) {
+    (void)m; (void)w; (void)dy; (void)dx; (void)n_in; (void)n_out; (void)nb;
+    return false;
+}
+
 bool gpu_train_mm(model_t *m, const gguf_tensor *w, const float *x,
                   int x_stride, float *y, int y_stride, int n_in, int n_out,
                   const float *bias, int nb) {
     (void)m; (void)w; (void)x; (void)x_stride; (void)y; (void)y_stride;
     (void)n_in; (void)n_out; (void)bias; (void)nb;
     return false;
+}
+
+unsigned gpu_train_mm_parts(model_t *m, const gpu_mm_part *p, int np,
+                            const float *x, int x_stride, int n_in, int nb) {
+    (void)m; (void)p; (void)np; (void)x; (void)x_stride; (void)n_in; (void)nb;
+    return 0;
+}
+
+bool gpu_train_pin(model_t *m, void *p, size_t bytes) {
+    (void)m; (void)p; (void)bytes;
+    return false;
+}
+
+void *gpu_train_host_buf(model_t *m, int slot, size_t bytes) {
+    (void)m; (void)slot; (void)bytes;
+    return NULL;
 }
 
 void gpu_train_prof(model_t *m, double *t_mm, long *n_mm, double *t_mvt,

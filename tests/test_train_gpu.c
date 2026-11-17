@@ -371,6 +371,7 @@ int main(void) {
     // the run in a mapped file), so a freed buffer the next type's malloc
     // got back would be served the previous type's device copy
     void *keep[sizeof(TYPES) / sizeof(*TYPES) + 1] = {0};
+    void *keep_pinned = NULL;   // a buffer registered with the context (R8.24.1)
     for (size_t k = 0; k < sizeof(TYPES) / sizeof(*TYPES); k++) {
         gguf_tensor w;
         memset(&w, 0, sizeof(w));
@@ -396,6 +397,30 @@ int main(void) {
                   B * N_IN, first, dxc[first], dxg[first]);
         }
         mvt_dev_check(&m, &w, dy, dx0, N_IN, N_OUT, B, TYPES[k].name);
+        // R8.24.1: a zero start cleared on the device (gpu_train_mvt0) is the
+        // zeros sent, bit for bit, in both kernel families, and reads nothing
+        // of the host dx (all-ones bytes going in); the assist's is the CPU
+        // chain from zero
+        for (int dev = 0; dev < 2; dev++) {
+            float *z0 = calloc((size_t)B * N_IN, sizeof(float));
+            float *zc = calloc((size_t)B * N_IN, sizeof(float));
+            float *zp = malloc(sizeof(float) * B * N_IN);
+            memset(zp, 0xFF, sizeof(float) * B * N_IN);
+            m.train_dev = dev;
+            bool a = gpu_train_mvt(&m, &w, dy, z0, N_IN, N_OUT, B);
+            bool b = gpu_train_mvt0(&m, &w, dy, zp, N_IN, N_OUT, B);
+            m.train_dev = false;
+            CHECK(a && b && !memcmp(z0, zp, sizeof(float) * B * N_IN),
+                  "%s: a zero start cleared on the device differs from the "
+                  "zeros sent (%s)", TYPES[k].name, dev ? "device mode" : "the assist");
+            if (!dev) {
+                cpu_mvt(&w, dy, zc, N_IN, N_OUT, B);
+                CHECK(!memcmp(zc, zp, sizeof(float) * B * N_IN),
+                      "%s: the assist's zero start is not the CPU chain from zero",
+                      TYPES[k].name);
+            }
+            free(z0); free(zc); free(zp);
+        }
         // forward: batch-invariant columns, and the product
         ok = gpu_train_mm(&m, &w, x, N_IN, y, N_OUT, N_IN, N_OUT, NULL, B);
         double t2 = clk();
@@ -458,6 +483,71 @@ int main(void) {
                       "strided column %d row %d", c, j);
             for (int j = N_OUT; j < YS; j++)
                 CHECK(ys[(size_t)c * YS + j] == -7.0f, "stride gap %d,%d written", c, j);
+        }
+        // R8.24.1: a packed call lands in place, and its bias is the same one
+        // add per element as the staged (strided) call's
+        float *yb = malloc(sizeof(float) * 3 * N_OUT);
+        bool okb = ok && gpu_train_mm(&m, &w, x, N_IN, yb, N_OUT, N_IN, N_OUT, bias, 3);
+        CHECK(!ok || okb, "packed call with a bias declined");
+        for (int c = 0; okb && c < 3; c++)
+            for (int j = 0; j < N_OUT; j++)
+                CHECK(yb[(size_t)c * N_OUT + j] == ys[(size_t)c * YS + j],
+                      "packed column %d row %d differs from the staged call", c, j);
+        free(yb);
+        // R8.24.1: three products of one x in one round trip are their own
+        // calls' bits (a strided part, a part with a bias); a scaled part is
+        // left to the caller
+        {
+            enum { YS2 = N_OUT + 3 };
+            gguf_tensor pw[3];
+            for (int s = 0; s < 3; s++) {
+                memset(&pw[s], 0, sizeof pw[s]);
+                pw[s].type = (uint32_t)TYPES[s].type;
+                pw[s].scale = s == 2 ? 2.0f : 1.0f;
+                pw[s].ne[0] = N_IN; pw[s].ne[1] = N_OUT;
+                pw[s].data = keep[s];
+                pw[s].nbytes = ggml_row_size(pw[s].type, N_IN) * N_OUT;
+            }
+            float b2[N_OUT];
+            for (int j = 0; j < N_OUT; j++) b2[j] = frnd();
+            float *pa = malloc(sizeof(float) * 3 * YS2), *ra = malloc(sizeof(float) * 3 * YS2);
+            float *pb = malloc(sizeof(float) * 3 * N_OUT), *rb = malloc(sizeof(float) * 3 * N_OUT);
+            float *pc = malloc(sizeof(float) * 3 * N_OUT);
+            for (int i = 0; i < 3 * YS2; i++) pa[i] = ra[i] = -7.0f;
+            gpu_mm_part pp[3] = { { &pw[0], pa, YS2, N_OUT, NULL },
+                                  { &pw[1], pb, N_OUT, N_OUT, b2 },
+                                  { &pw[2], pc, N_OUT, N_OUT, NULL } };
+            unsigned done = gpu_train_mm_parts(&m, pp, 3, x, N_IN, N_IN, 3);
+            CHECK(done == 3u, "parts: computed %#x, want parts 0 and 1 (the scaled "
+                  "part 2 is the caller's)", done);
+            bool okr = gpu_train_mm(&m, &pw[0], x, N_IN, ra, YS2, N_IN, N_OUT, NULL, 3) &&
+                       gpu_train_mm(&m, &pw[1], x, N_IN, rb, N_OUT, N_IN, N_OUT, b2, 3);
+            CHECK(okr, "parts: a reference call declined");
+            CHECK(!okr || !memcmp(pa, ra, sizeof(float) * 3 * YS2),
+                  "parts: the strided part differs from its own call");
+            CHECK(!okr || !memcmp(pb, rb, sizeof(float) * 3 * N_OUT),
+                  "parts: the part with a bias differs from its own call");
+            free(pa); free(ra); free(pb); free(rb); free(pc);
+        }
+        // R8.24.1 A4: a product read from a registered buffer and written into
+        // a pinned block is the pageable call's, memcmp; the block is handed
+        // out again while it is large enough
+        {
+            float *xr = malloc(sizeof(float) * 3 * N_IN), *yr = malloc(sizeof(float) * 3 * N_OUT);
+            memcpy(xr, x, sizeof(float) * 3 * N_IN);
+            bool pinned = gpu_train_pin(&m, xr, sizeof(float) * 3 * N_IN);
+            float *yp = gpu_train_host_buf(&m, 0, sizeof(float) * 3 * N_OUT);
+            CHECK(pinned && yp, "pinning: registered %d, block %p", (int)pinned, (void *)yp);
+            CHECK(!yp || gpu_train_host_buf(&m, 0, sizeof(float) * N_OUT) == yp,
+                  "pinning: a smaller request did not get the same block");
+            bool okp = yp && gpu_train_mm(&m, &w, xr, N_IN, yp, N_OUT, N_IN, N_OUT, bias, 3) &&
+                       gpu_train_mm(&m, &w, x, N_IN, yr, N_OUT, N_IN, N_OUT, bias, 3);
+            CHECK(!yp || okp, "pinning: a call declined");
+            CHECK(!okp || !memcmp(yp, yr, sizeof(float) * 3 * N_OUT),
+                  "pinning: the pinned call differs from the pageable one");
+            // xr stays registered until gpu_train_free, so it is freed after it
+            keep_pinned = xr;
+            free(yr);
         }
         // a scaled tensor is the CPU's
         w.scale = 2.0f;
@@ -542,6 +632,7 @@ int main(void) {
     dn_check(&m, 2, 1, 32, 9);
     dn_check(&m, 4, 2, 8, 26);
     gpu_train_free(&m);
+    free(keep_pinned);
     for (size_t k = 0; k < sizeof(keep) / sizeof(*keep); k++) free(keep[k]);
     for (size_t k = 0; k < sizeof(bkeep) / sizeof(*bkeep); k++) free(bkeep[k]);
     printf("%s: %d types\n", g_fail ? "FAIL" : "PASS", tested);
