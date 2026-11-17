@@ -45,6 +45,7 @@
 // that computes something else, which the pin alone would hide.
 #include "runner.h"
 #include "finite_check.h"
+#include "gate_gpu.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -439,6 +440,7 @@ int main(int argc, char **argv) {
             free(cpu); free(gpu);
             return 1;
         }
+        if (gate_no_device("gpu-identity")) { free(cpu); free(gpu); return 1; }
         printf("  skipped: no GPU, or this model fell back to the CPU — a "
                "comparison of the CPU against itself proves nothing\n"
                "gpu-identity: ok (skipped)\n");

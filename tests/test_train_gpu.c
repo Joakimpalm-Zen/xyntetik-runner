@@ -21,6 +21,7 @@
 #include "runner.h"
 #include "dn_ref.h"
 #include "attn_ref.h"
+#include "gate_gpu.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -350,7 +351,9 @@ int main(void) {
     model_t m;
     memset(&m, 0, sizeof(m));
     m.train_gpu_budget = (uint64_t)1 << 30;   // no model file: the arena is this
+    if (gate_cc_pins("train-gpu")) return 1;   // no device needed
     if (!gpu_train_init(&m)) {
+        if (gate_no_device("train-gpu")) return 1;
         printf("train-gpu: no CUDA device, skipping (not passing)\n");
         return 0;
     }

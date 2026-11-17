@@ -16,6 +16,19 @@
 //
 // Keep this header free of anything CUDA-specific: it is compiled as C by gcc
 // and as C++ by nvcc, so plain structs and fixed-width integers only.
+//
+// Keep kernel arguments small and read whole: plain pointers, ints and floats,
+// and structs like these, whose every field the kernel reads. A 336-byte
+// struct read only in part (a field indexed at run time), passed by value and
+// again read through a pointer, made nvcc 13 annotate its loads with
+// `.pragma "used_bytes_mask N"`, which needs PTX ISA 8.3 (R6.90).
+// scripts/embed-ptx.py pins the embedded string to .version 7.8, so the
+// driver's JIT rejected the whole module, and every kernel in it was gone,
+// while ptxas took the raw 9.0 PTX. make ptx now assembles the embedded
+// strings with the pinned ptxas (scripts/check-ptx-isa.py). After a kernel's
+// arguments change, also check on a CUDA host that the embedded string loads:
+// a gate whose device is up and whose module did not load fails with the
+// driver's log (tests/gate_gpu.h).
 #ifndef RUNNER_KERNEL_ARGS_H
 #define RUNNER_KERNEL_ARGS_H
 

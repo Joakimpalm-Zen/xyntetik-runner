@@ -15,6 +15,7 @@
 //
 //     ./test-lora-grad test.gguf test-lora.full.gguf
 #include "runner.h"
+#include "gate_gpu.h"
 
 #include <limits.h>
 #include <math.h>
@@ -129,6 +130,7 @@ int main(int argc, char **argv) {
     // product); a CUDA host runs it, anywhere else it skips.
     if (getenv("RUNNER_TEST_TRAIN_DEV")) {
         if (!gpu_train_init(&m)) {
+            if (gate_no_device("lora-grad")) return 1;
             printf("lora-grad: device mode needs a CUDA device, skipping (not passing)\n");
             return 0;
         }
