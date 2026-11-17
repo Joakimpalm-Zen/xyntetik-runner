@@ -145,7 +145,64 @@ static inline void pm_sincos_d(double x, double *sn, double *cs) {
     }
 }
 
-static inline float p_expf(float x)  { return (float)pm_exp_d((double)x); }
+// expf: the float rounding of pm_exp_d, (float)pm_exp_d((double)x), bit for
+// bit for every one of the 2^32 float inputs, NaNs included
+// (tests/test_pmath_expf.c; all of them in make test-pmath-expf-all). It is
+// written with no branch and no loop, so that a compiler can vectorize the
+// loops that call it: the attention softmax and SiLU (R6.86). Until then
+// p_expf called pm_exp_d, whose early returns and pm_ldexp2's loops kept
+// those loops scalar.
+// For a float input pm_exp_d's guards decide nothing:
+// - below -104 its double is under 2^-150, half the smallest float
+//   subnormal, so the float is +0, and exp(-104) (6.8e-46) rounds to +0 too;
+// - above 89 its double is over FLT_MAX, so the float is +inf, and exp(89)
+//   (4.5e38) rounds to +inf too;
+// - in [-104, 89] k lies in [-150, 128], where pm_ldexp2 runs no loop and
+//   2^k is the one exponent store below.
+// So x is clamped to [-104, 89], and the same operations as pm_exp_d's run
+// in the same order. A NaN takes 89 through the arithmetic (a NaN converted
+// to int is undefined), and the last select returns the NaN itself, the same
+// double NaN pm_exp_d returns. k's rounding adds a selected +0.5 or -0.5,
+// the same value as pm_exp_d's two sums with no arithmetic under a condition
+// (gcc's default -ftrapping-math keeps a conditional add out of a vector
+// loop). Floating-point exception flags may differ from pm_exp_d's: the
+// clamps' compares raise invalid on a NaN, and the casts raise overflow and
+// underflow where pm_exp_d returned early. The engine reads no flags.
+// Under -ffast-math (a portable build of the default flags) a NaN input is
+// undefined, as every NaN is there: the compiler drops the NaN test, and
+// already assumes the softmax's x[i] - mx is no NaN. On Apple clang 21 the
+// p_expf before this one gave +0 for every NaN there, this one +inf for a
+// quiet NaN (which a softmax still turns into a NaN, inf over inf) and +0 for
+// a signaling one; make test-pmath-expf-all-default counts them apart.
+static inline float p_expf(float x) {
+    const double ln2_hi = 6.93147180369123816490e-01;
+    const double ln2_lo = 1.90821492927058770002e-10;
+    const double inv_ln2 = 1.44269504088896338700e+00;
+    double xd = (double)x;
+    double xc = xd < 89.0 ? xd : 89.0;      // a NaN too: see above
+    xc = xc > -104.0 ? xc : -104.0;
+    double kd = xc * inv_ln2;
+    int k = (int)(kd + (kd >= 0 ? 0.5 : -0.5));
+    double r = (xc - (double)k * ln2_hi) - (double)k * ln2_lo;
+    double p = 1.0 / 6227020800.0;
+    p = p * r + 1.0 / 479001600.0;
+    p = p * r + 1.0 / 39916800.0;
+    p = p * r + 1.0 / 3628800.0;
+    p = p * r + 1.0 / 362880.0;
+    p = p * r + 1.0 / 40320.0;
+    p = p * r + 1.0 / 5040.0;
+    p = p * r + 1.0 / 720.0;
+    p = p * r + 1.0 / 120.0;
+    p = p * r + 1.0 / 24.0;
+    p = p * r + 1.0 / 6.0;
+    p = p * r + 0.5;
+    p = p * r + 1.0;
+    p = p * r + 1.0;
+    union { double d; uint64_t u; } s;
+    s.u = (uint64_t)(k + 1023) << 52;
+    double e = p * s.d;
+    return (float)(xd == xd ? e : xd);
+}
 static inline float p_logf(float x)  { return (float)pm_log_d((double)x); }
 static inline float p_sinf(float x)  { double s, c; pm_sincos_d((double)x, &s, &c); return (float)s; }
 static inline float p_cosf(float x)  { double s, c; pm_sincos_d((double)x, &s, &c); return (float)c; }
