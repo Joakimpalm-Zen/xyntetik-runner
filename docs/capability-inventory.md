@@ -6,14 +6,14 @@ Every public surface of Runner and the one component that owns it. The component
 
 | surface | Runtime | Execution | Model substrate | Model production | Proof | Shadow | Desktop | total |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Command line | 55 | 15 | 5 | 13 | 26 | 1 | 1 | 116 |
+| Command line | 55 | 15 | 5 | 13 | 27 | 1 | 1 | 117 |
 | HTTP routes | 22 |  |  |  | 1 |  |  | 23 |
 | `RUNNER_*` switches | 24 | 103 | 10 | 14 |  |  | 7 | 158 |
 | Record formats | 7 |  |  | 6 | 10 |  |  | 23 |
 | Python client | 14 |  |  |  |  | 25 |  | 39 |
 | TypeScript client | 18 |  |  |  | 7 |  |  | 25 |
 
-## Command line (116)
+## Command line (117)
 
 Every option `runner --help` declares, the subcommands, and the `runner attest` verbs.
 
@@ -23,7 +23,7 @@ Every option `runner --help` declares, the subcommands, and the `runner attest` 
 | Execution | 15 | `--bench-json`, `--cpu-moe`, `--draft`, `--draft-k`, `--draft-required`, `--gpu`, `--gpu-route`, `--kv`, `--kv-ring`, `--mlock`, `--moe-prefetch`, `--rope`, `-b`, `-c`, `-t` |
 | Model substrate | 5 | `--adapter`, `--lora`, `--lora-scale`, `--no-bos`, `-m` |
 | Model production | 13 | `--context-surgery`, `--imatrix`, `--merge-allow-erased`, `--merge-lora`, `--prune-experts`, `--quant`, `--quant-error`, `--remove-sublayer`, `--rewrite`, `--type-plan`, `--type-plan-strict`, `runner derive`, `runner train` |
-| Proof | 26 | `--force-uncertified`, `--lora-sig`, `--model-pubkey`, `--model-sig`, `--record`, `--record-keep`, `--record-prev`, `--require-eval`, `--require-signed`, `--require-signed-model`, `--sign-key`, `--trust-key`, `--verify`, `--watermark`, `runner attest`, `runner attest bundle`, `runner attest check`, `runner attest check-bundle`, `runner attest check-pack`, `runner attest detect`, `runner attest keygen`, `runner attest lineage`, `runner attest pack`, `runner attest sign`, `runner attest sign-model`, `runner attest watermark-keygen` |
+| Proof | 27 | `--force-uncertified`, `--lora-sig`, `--model-pubkey`, `--model-sig`, `--record`, `--record-keep`, `--record-prev`, `--require-eval`, `--require-signed`, `--require-signed-model`, `--sign-key`, `--trust-key`, `--verify`, `--watermark`, `runner attest`, `runner attest bundle`, `runner attest check`, `runner attest check-bundle`, `runner attest check-pack`, `runner attest detect`, `runner attest keygen`, `runner attest lineage`, `runner attest pack`, `runner attest replay`, `runner attest sign`, `runner attest sign-model`, `runner attest watermark-keygen` |
 | Shadow | 1 | `--shadow-mode` |
 | Desktop | 1 | `--tray` |
 

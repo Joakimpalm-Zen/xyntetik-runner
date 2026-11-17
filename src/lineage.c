@@ -187,7 +187,7 @@ bool lineage_require_eval(const char *model, const char *kind, const char *trust
 // its records and files together. An older record's full path is tried first
 // while it is still there. The hash still decides whether it is the file
 // that was cited.
-static const char *relocate(const char *cited, const char *citing, char *buf, size_t cap) {
+const char *lineage_relocate(const char *cited, const char *citing, char *buf, size_t cap) {
     char probe[65];
     const char *name = strrchr(cited, '/');
     const char *bs = strrchr(cited, '\\');
@@ -215,7 +215,7 @@ static void walk_input(const char *key, jv *in, const char *citing, const char *
     char s[13], probe[65];
     short_sha(sha, s);
     char here[4096];
-    const char *file = relocate(path, citing, here, sizeof here);
+    const char *file = lineage_relocate(path, citing, here, sizeof here);
     if (receipt && !envelope_cited_sha256(file, probe) && plat_path_base(path) == path &&
         envelope_cited_sha256(path, probe))
         file = path;
@@ -232,7 +232,7 @@ static void walk_input(const char *key, jv *in, const char *citing, const char *
     char moved[4096];
     const char *lname = jv_get(link, "name") ? jv_str(jv_get(link, "name"), "")
                                              : jv_str(jv_get(link, "path"), "");
-    walk_record(relocate(lname, file, moved, sizeof moved),
+    walk_record(lineage_relocate(lname, file, moved, sizeof moved),
                 jv_str(jv_get(link, "sha256"), NULL), sha, trust_hex, depth + 1, w);
 }
 
@@ -266,7 +266,7 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
     const char *out_path = jv_str(jv_get(out, "path"), "?");
     const char *out_sha = jv_str(jv_get(out, "sha256"), NULL);
     char out_here[4096];
-    const char *out_file = relocate(out_path, rec_path, out_here, sizeof out_here);
+    const char *out_file = lineage_relocate(out_path, rec_path, out_here, sizeof out_here);
     char pub[SIGN_PUBHEX_CAP];
     int sig = record_signature_state(rec_path, trust_hex, pub);
     char s[13];

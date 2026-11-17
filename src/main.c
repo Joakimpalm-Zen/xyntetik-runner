@@ -1473,6 +1473,14 @@ static const char ATTEST_VERBS[] =
     "        its origins: every link re-hashed, every signature checked.\n"
     "        Exit 0 verified and signed, 1 consistent but not all signed,\n"
     "        2 broken or no record\n"
+    "  replay RECORD [-m BASE] [--data FILE] [--teacher DIR] [--lora FILE] [--trust-key K]\n"
+    "         [--allow-same-binary]\n"
+    "        replay a training record (.train.json) on CPU and check the\n"
+    "        output sha256 byte for byte. Pre-flight checks schema,\n"
+    "        signature (--trust-key), runner version, build compatibility\n"
+    "        (T3=1, or same binary with --allow-same-binary) and every\n"
+    "        input hash before training starts. Exit 0 VERIFIED, 2 MISMATCH\n"
+    "        or refused, 1 error\n"
     "  bundle RECEIPT OUT_DIR [--model-sig F] [--model-pubkey F] [--key KEYFILE]\n"
     "        put the receipt, its model signature and key, the receipt\n"
     "        key's fingerprint and a sha256 manifest in one directory a\n"
@@ -2479,6 +2487,9 @@ typedef struct {
     const char *transcript_path, *transcript_prev, *sign_key, *keygen_path;
     const char *keygen_algo, *lineage_path, *require_eval;
     const char *sign_record, *record_prev, *check_record;
+    const char *replay_train, *replay_data;
+    bool allow_same_binary, train_out_given;
+    int replay_resumed_at;
     // R1.2.1: receipt bundles
     const char *export_bundle, *bundle_out, *check_bundle;
     const char *export_pack, *pack_out, *check_pack, *pack_envelope;
@@ -2635,6 +2646,9 @@ static const cli_opt CLI_OPTS[] = {
     { "--keygen", NULL, OPT_STR, false, OPT_AT(const char *, keygen_path), OPT_NONE, 0, 0 },
     { "--sign-record", NULL, OPT_STR, false, OPT_AT(const char *, sign_record), OPT_NONE, 0, 0 },
     { "--check-record", NULL, OPT_STR, false, OPT_AT(const char *, check_record), OPT_NONE, 0, 0 },
+    { "--replay-train", NULL, OPT_STR, false, OPT_AT(const char *, replay_train), OPT_NONE, 0, 0 },
+    { "--replay-data", NULL, OPT_STR, false, OPT_AT(const char *, replay_data), OPT_NONE, 0, 0 },
+    { "--allow-same-binary", NULL, OPT_FLAG, false, OPT_AT(bool, allow_same_binary), OPT_NONE, 0, 0 },
     { "--export-bundle", NULL, OPT_STR, false, OPT_AT(const char *, export_bundle), OPT_NONE, 0, 0 },
     { "--bundle-out", NULL, OPT_STR, false, OPT_AT(const char *, bundle_out), OPT_NONE, 0, 0 },
     { "--check-bundle", NULL, OPT_STR, false, OPT_AT(const char *, check_bundle), OPT_NONE, 0, 0 },
@@ -2703,7 +2717,7 @@ static const cli_opt CLI_OPTS[] = {
     { "--dpo-beta", NULL, OPT_FLOAT, false, OPT_AT(float, dpo_beta), OPT_NONE, 0, FLT_MAX },
     { "--train-eot", NULL, OPT_FLAG, false, OPT_AT(bool, train_eot), OPT_NONE, 0, 0 },
     { "--train-steps", NULL, OPT_INT, false, OPT_AT(int, train_steps), OPT_NONE, 1, INT_MAX },
-    { "--train-out", NULL, OPT_STR, false, OPT_AT(const char *, train_out), OPT_NONE, 0, 0 },
+    { "--train-out", NULL, OPT_STR, false, OPT_AT(const char *, train_out), OPT_AT(bool, train_out_given), 0, 0 },
     { "--train-logprobs", NULL, OPT_STR, false, OPT_AT(const char *, train_lp_path), OPT_NONE, 0, 0 },
     { "--train-teacher", NULL, OPT_STR, false, OPT_AT(const char *, train_teacher), OPT_NONE, 0, 0 },
     { "--train-ctx", NULL, OPT_INT, false, OPT_AT(int, train_ctx), OPT_NONE, 2, INT_MAX },
@@ -3147,6 +3161,7 @@ static int cli_verbs(const cli_opts *o, const char **names, int cap) {
     verb_note(names, &n, cap, o->sign_record, "--sign-record");
     verb_note(names, &n, cap, o->check_record, "--check-record");
     verb_note(names, &n, cap, o->lineage_path, "--lineage");
+    verb_note(names, &n, cap, o->replay_train, "--replay-train");
     verb_note(names, &n, cap, o->export_bundle, "--export-bundle");
     verb_note(names, &n, cap, o->check_bundle, "--check-bundle");
     verb_note(names, &n, cap, o->export_pack, "--export-pack");
@@ -3227,6 +3242,16 @@ static bool cli_resolve_shape(cli_opts *o) {
     if (o->parallel > 1 && !o->serve && !o->fit_path) {
         fprintf(stderr, "error: --parallel sizes server slots and needs --serve "
                 "(or --info fit, to size for them)\n");
+        return false;
+    }
+    if (o->train_out_given && o->replay_train) {
+        fprintf(stderr, "error: runner attest replay verifies the recorded output "
+                "hash and does not take --train-out\n");
+        return false;
+    }
+    if ((o->replay_data || o->allow_same_binary) && !o->replay_train) {
+        fprintf(stderr, "error: %s is only valid with runner attest replay\n",
+                o->replay_data ? "--replay-data" : "--allow-same-binary");
         return false;
     }
     // A server under a service manager queues for a held GPU and yields the
@@ -3347,7 +3372,8 @@ static int cli_expand_subcommand(int *argc, char ***argv) {
     static const sub_alias attest_aliases[] = {   // --key per verb, below
         { "--prev", "--record-prev" }, { "--algo", "--keygen-algo" },
         { "--out", "--model-sig" }, { "--envelope", "--pack-envelope" },
-        { "--attach", "--pack-attach" }, { NULL, NULL },
+        { "--attach", "--pack-attach" }, { "--data", "--replay-data" },
+        { "--teacher", "--train-teacher" }, { NULL, NULL },
     };
     const sub_alias *aliases = train ? train_aliases : attest_aliases;
     const char *key_flag = NULL;   // what --key means for this verb
@@ -3369,6 +3395,7 @@ static int cli_expand_subcommand(int *argc, char ***argv) {
             { "sign", "--sign-record", NULL, "--sign-key", 1 },
             { "check", "--check-record", NULL, NULL, 1 },
             { "lineage", "--lineage", NULL, NULL, 1 },
+            { "replay", "--replay-train", NULL, NULL, 1 },
             { "bundle", "--export-bundle", "--bundle-out", "--sign-key", 2 },
             { "check-bundle", "--check-bundle", NULL, NULL, 1 },
             { "pack", "--export-pack", "--pack-out", "--sign-key", 2 },
@@ -5424,15 +5451,17 @@ static bool train_dpo_steps(cli_opts *o, cli_run *rt, dpo_pair *pairs,
         // is doing anything: a run whose loss falls while the margin
         // stays at zero has learned to shrink the reference gap rather
         // than to prefer the chosen completion.
-        printf("{\"step\":%d,\"pair\":%d,\"tokens\":%d,"
-               "\"loss\":%.6f,\"margin\":%.6f,\"acc\":%.0f,"
-               "\"coeff\":%.6g,\"logp_w\":%.4f,\"logp_l\":%.4f,"
-               "\"logp_ref_w\":%.4f,\"logp_ref_l\":%.4f,"
-               "\"step_s\":%.2f}\n",
-               step, (step - 1) % n_pair, q->nw + q->nl,
-               d.loss, d.margin, d.acc, d.coeff,
-               d.logp_w, d.logp_l, d.logp_ref_w, d.logp_ref_l, step_s);
-        fflush(stdout);
+        if (!o->replay_train) {
+            printf("{\"step\":%d,\"pair\":%d,\"tokens\":%d,"
+                   "\"loss\":%.6f,\"margin\":%.6f,\"acc\":%.0f,"
+                   "\"coeff\":%.6g,\"logp_w\":%.4f,\"logp_l\":%.4f,"
+                   "\"logp_ref_w\":%.4f,\"logp_ref_l\":%.4f,"
+                   "\"step_s\":%.2f}\n",
+                   step, (step - 1) % n_pair, q->nw + q->nl,
+                   d.loss, d.margin, d.acc, d.coeff,
+                   d.logp_w, d.logp_l, d.logp_ref_w, d.logp_ref_l, step_s);
+            fflush(stdout);
+        }
         if (o->save_every > 0 && step % o->save_every == 0 &&
             !model_lora_save(&rt->m, o->train_out))
             return false;
@@ -6103,17 +6132,19 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
         // fields only — the reproducibility contract covers the loss
         // and the adapter bytes, never the clock.
         double step_s = plat_now() - step_t0;
-        printf("{\"step\":%d,\"example\":%d,\"tokens\":%ld,\"loss\":%.6f,\"lr\":%.6g,"
-               "\"grad_norm_max\":%.6g,\"grad_norm_mean\":%.6g", step, rows[0],
-               tokens, ml, lr, gmax, gmean);
-        if (mean) {
-            printf(",\"rows\":[");
-            for (int b = 0; b < B; b++) printf("%s%d", b ? "," : "", rows[b]);
-            printf("]");
+        if (!o->replay_train) {
+            printf("{\"step\":%d,\"example\":%d,\"tokens\":%ld,\"loss\":%.6f,\"lr\":%.6g,"
+                   "\"grad_norm_max\":%.6g,\"grad_norm_mean\":%.6g", step, rows[0],
+                   tokens, ml, lr, gmax, gmean);
+            if (mean) {
+                printf(",\"rows\":[");
+                for (int b = 0; b < B; b++) printf("%s%d", b ? "," : "", rows[b]);
+                printf("]");
+            }
+            printf(",\"step_s\":%.2f,\"tok_s\":%.1f}\n", step_s,
+                   step_s > 0 ? (double)tokens / step_s : 0.0);
+            fflush(stdout);
         }
-        printf(",\"step_s\":%.2f,\"tok_s\":%.1f}\n", step_s,
-               step_s > 0 ? (double)tokens / step_s : 0.0);
-        fflush(stdout);
         // after the step: the evals, the checkpoint, the kill rule, then the
         // stop file, the order a distillation pipeline checks them in
         if (o->n_eval && ((o->eval_every && step % o->eval_every == 0) ||
@@ -6133,14 +6164,14 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
                 if (!strcmp(ev[e].label, o->kill_metric)) k = &ev[e];
             double rel = k->has_base && k->base != 0 ? (k->base - k->last) / k->base : 0.0;
             bool pass = k->has_base && rel >= o->kill_min_rel;
-            if (!train_kill_record(o, pass ? ".kill-check.json" : ".killed.json", step,
+            if (!o->replay_train && !train_kill_record(o, pass ? ".kill-check.json" : ".killed.json", step,
                                    k->base, k->last, rel)) {
                 fprintf(stderr, "error: cannot write the kill rule's record\n");
                 rc = 1;
                 break;
             }
             if (!pass) {
-                if (!train_checkpoint(o, rt, st, ev, true)) { rc = 1; break; }
+                if (!o->replay_train && !train_checkpoint(o, rt, st, ev, true)) { rc = 1; break; }
                 printf("{\"killed\":{\"step\":%d,\"metric\":", step);
                 fput_json_str(stdout, o->kill_metric);
                 printf(",\"baseline\":%.6f,"
@@ -6178,14 +6209,12 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
 // from_adapter: the record's input for the adapter a run continued from
 // (lineage_put_input JSON, taken before the first step), or NULL when the run
 // started a fresh one.
-#ifdef RUNNER_T3_BUILD
 static bool train_has_recurrent(const model_t *m) {
     if (m->qwen35 || m->clef != NULL) return true;
     for (int l = 0; l < m->n_layer; l++)
         if (m->layers[l].recurrent) return true;
     return false;
 }
-#endif
 
 static const char *train_determinism(const cli_opts *o, const cli_run *rt,
                                      const train_teacher *tt) {
@@ -6421,7 +6450,7 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
                             &pairs, &n_pair)) return 1;
     } else if (!train_examples_load(&rt->tok, rt->m.n_vocab, o->train_path, o->no_bos, wctx, eot_id, o->train_eot,
                                     o->train_teacher != NULL, &exs, &n_ex)) return 1;
-    if (!o->dpo_path) train_risk_warn(o, exs, n_ex, eot_id);
+    if (!o->dpo_path && !o->replay_train) train_risk_warn(o, exs, n_ex, eot_id);
     train_teacher tt = {0};
     if (o->train_teacher &&
         !train_teacher_open(o->train_teacher, &rt->m, exs, n_ex, &tt)) {
@@ -6459,6 +6488,11 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
     int resumed_at = st.step;
     double first_loss = 0, last_loss = 0;
     int rc = ok ? 0 : 1;
+    if (!rc && o->replay_train && o->train_resume && resumed_at != o->replay_resumed_at) {
+        printf("MISMATCH resumed_at_step: expected %d, got %d\n",
+               o->replay_resumed_at, resumed_at);
+        rc = 2;
+    }
     if (!rc && o->dpo_path)
         rc = train_dpo_steps(o, rt, pairs, n_pair, wctx, &first_loss, &last_loss) ? 0 : 1;
     else if (!rc)
@@ -6477,12 +6511,13 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
         }
     }
     if (!rc && !((model_full_on(&rt->m) || model_lora_save(&rt->m, o->train_out)) &&
-                 (!sidecar || train_optim_save(o->train_out, rt, &st, ev, o->n_eval)) &&
-                 train_record(o, rt, load_path, from.s, o->train_teacher ? &tt : NULL,
-                              ev, resumed_at, resume_optim_sha, wctx, eot_id,
-                              first_loss, last_loss)))
+                 (o->replay_train != NULL ||
+                  ((!sidecar || train_optim_save(o->train_out, rt, &st, ev, o->n_eval)) &&
+                   train_record(o, rt, load_path, from.s, o->train_teacher ? &tt : NULL,
+                                ev, resumed_at, resume_optim_sha, wctx, eot_id,
+                                first_loss, last_loss)))))
         rc = 1;
-    if (!rc)
+    if (!rc && !o->replay_train)
         fprintf(stderr, "train: done — first-step loss %.4f, last-step "
                 "%.4f, %s -> %s\n", first_loss, last_loss,
                 model_full_on(&rt->m) ? "variant" : "adapter", o->train_out);
@@ -6493,6 +6528,449 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
     dpo_pairs_free(pairs, n_pair);
     model_debug_time_report();   // RUNNER_DEBUG_TIME: the forwards' stages
     return rc;
+}
+
+typedef struct {
+    bool  is_full, want_t3_exact;
+    int   want_ctx, want_eot_id, want_resumed_at;
+    float want_alpha;
+    char  want_out_path[512];
+    char  want_out_sha[65];
+    char  base_path[4096];
+    char  data_path[4096];
+    char  from_path[4096];
+    char  teacher_dir[4096];
+    char  eval_specs[8][8256];
+    char  kill_metric[128];
+    char  tmp_out[4096];
+} cli_replay;
+
+static bool replay_fail(int *rc, const char *field, const char *want, const char *got) {
+    printf("MISMATCH %s: expected %s, got %s\n", field, want, got ? got : "missing");
+    *rc = 2;
+    return true;
+}
+
+static bool replay_check_sha(const char *field, const char *path, const char *want, int *rc) {
+    if (!want || strlen(want) != 64) return !replay_fail(rc, field, "64-hex sha256", want);
+    char got[65] = "";
+    if (!path || !*path || !envelope_cited_sha256(path, got))
+        return !replay_fail(rc, field, want, "missing or unreadable");
+    if (strcmp(got, want) != 0) return !replay_fail(rc, field, want, got);
+    return true;
+}
+
+static void replay_parent_dir(const char *path, char *out, size_t cap) {
+    const char *s = strrchr(path, '/');
+    const char *b = strrchr(path, '\\');
+    if (b && (!s || b > s)) s = b;
+    if (!s) snprintf(out, cap, ".");
+    else snprintf(out, cap, "%.*s", (int)(s - path), path);
+}
+
+static bool replay_resolve_teacher(const cli_opts *o, cli_replay *rp, jv *tch, int *rc) {
+    jv *ti = jv_get(tch, "topk_idx"), *tl = jv_get(tch, "topk_logp");
+    const char *inm = jv_str(jv_get(ti, "path"), NULL), *isha = jv_str(jv_get(ti, "sha256"), NULL);
+    const char *lnm = jv_str(jv_get(tl, "path"), NULL), *lsha = jv_str(jv_get(tl, "sha256"), NULL);
+    if (!inm || !*inm || !lnm || !*lnm)
+        return !replay_fail(rc, "teacher", "topk_idx and topk_logp", "missing");
+    char idx_p[8192] = "", logp_p[8192] = "";
+    if (o->train_teacher) {
+        snprintf(rp->teacher_dir, sizeof rp->teacher_dir, "%s", o->train_teacher);
+        snprintf(idx_p, sizeof idx_p, "%s/%s", rp->teacher_dir, plat_path_base(inm));
+        snprintf(logp_p, sizeof logp_p, "%s/%s", rp->teacher_dir, plat_path_base(lnm));
+    } else {
+        char probe[4096], sub[8192], rdir[4096], ddir[4096];
+        const char *cand = lineage_relocate(inm, o->replay_train, probe, sizeof probe);
+        if (!record_regular_file(cand)) {
+            replay_parent_dir(o->replay_train, rdir, sizeof rdir);
+            snprintf(sub, sizeof sub, "%s/teacher/%s", rdir, plat_path_base(inm));
+            if (record_regular_file(sub)) {
+                snprintf(idx_p, sizeof idx_p, "%s", sub);
+            } else {
+                replay_parent_dir(rp->data_path, ddir, sizeof ddir);
+                snprintf(sub, sizeof sub, "%s/teacher/%s", ddir, plat_path_base(inm));
+                if (record_regular_file(sub)) snprintf(idx_p, sizeof idx_p, "%s", sub);
+            }
+        }
+        if (!idx_p[0]) snprintf(idx_p, sizeof idx_p, "%s", cand);
+        replay_parent_dir(idx_p, rp->teacher_dir, sizeof rp->teacher_dir);
+        snprintf(logp_p, sizeof logp_p, "%s/%s", rp->teacher_dir, plat_path_base(lnm));
+    }
+    return replay_check_sha("teacher.topk_idx.sha256", idx_p, isha, rc) &&
+           replay_check_sha("teacher.topk_logp.sha256", logp_p, lsha, rc);
+}
+
+static bool replay_resolve_evals(const cli_opts *o, cli_replay *rp, jv *rec, jv *kill_v, int *rc) {
+    jv *evals = jv_get(rec, "evals");
+    if (!evals) return true;
+    if (evals->type != J_ARR || evals->n > 8)
+        return !replay_fail(rc, "evals", "array of <= 8 eval sets", "invalid");
+    for (int i = 0; i < evals->n; i++) {
+        jv *e = evals->items[i], *rw = jv_get(e, "rows");
+        const char *lbl = jv_str(jv_get(e, "label"), NULL);
+        const char *rpath = jv_str(jv_get(rw, "path"), NULL), *rsha = jv_str(jv_get(rw, "sha256"), NULL);
+        char rbuf[4096];
+        const char *rf = rpath ? lineage_relocate(rpath, o->replay_train, rbuf, sizeof rbuf) : NULL;
+        if (!lbl || !*lbl || !replay_check_sha("evals.rows.sha256", rf, rsha, rc)) return false;
+        jv *ti = jv_get(e, "topk_idx"), *tl = jv_get(e, "topk_logp");
+        char tdir[4096] = "";
+        if (ti || tl) {
+            const char *inm = jv_str(jv_get(ti, "path"), NULL), *isha = jv_str(jv_get(ti, "sha256"), NULL);
+            const char *lnm = jv_str(jv_get(tl, "path"), NULL), *lsha = jv_str(jv_get(tl, "sha256"), NULL);
+            char ibuf[4096], lbuf[8192];
+            const char *ip = inm ? lineage_relocate(inm, o->replay_train, ibuf, sizeof ibuf) : NULL;
+            if (ip && !record_regular_file(ip)) {
+                char edir[4096];
+                replay_parent_dir(rf, edir, sizeof edir);
+                snprintf(lbuf, sizeof lbuf, "%s/%s", edir, plat_path_base(inm));
+                if (record_regular_file(lbuf)) { snprintf(ibuf, sizeof ibuf, "%s", lbuf); ip = ibuf; }
+            }
+            if (!ip || !replay_check_sha("evals.topk_idx.sha256", ip, isha, rc)) return false;
+            replay_parent_dir(ip, tdir, sizeof tdir);
+            snprintf(lbuf, sizeof lbuf, "%s/%s", tdir, lnm ? plat_path_base(lnm) : "");
+            if (!replay_check_sha("evals.topk_logp.sha256", lbuf, lsha, rc)) return false;
+        }
+        if (kill_v) {
+            if (tdir[0]) snprintf(rp->eval_specs[i], sizeof rp->eval_specs[i], "%s=%s,%s", lbl, rf, tdir);
+            else         snprintf(rp->eval_specs[i], sizeof rp->eval_specs[i], "%s=%s", lbl, rf);
+        }
+    }
+    return true;
+}
+
+static bool replay_check_compat(const cli_opts *o, jv *rec, bool *want_t3_exact, int *rc) {
+    if (strcmp(jv_str(jv_get(rec, "schema_version"), ""), "xyntetik.runner.train.v1"))
+        return !replay_fail(rc, "schema_version", "xyntetik.runner.train.v1",
+                            jv_str(jv_get(rec, "schema_version"), ""));
+    char pub[SIGN_PUBHEX_CAP];
+    int sig = record_signature_state(o->replay_train, o->trust_key, pub);
+    if (sig == 2) return !replay_fail(rc, "signature", "valid signature", "bad, malformed or untrusted");
+    if (sig == 1 && o->trust_key)
+        return !replay_fail(rc, "signature", "signed record (--trust-key)", "unsigned");
+    const char *det = jv_str(jv_get(rec, "determinism"), "");
+    if (jv_get(rec, "products") || strcmp(det, "gpu-within-tolerance") == 0)
+        return !replay_fail(rc, "determinism", "cpu-t3-exact or cpu-same-binary", "gpu-within-tolerance");
+    if (strcmp(det, "cpu-t3-exact") != 0 && strcmp(det, "cpu-same-binary") != 0)
+        return !replay_fail(rc, "determinism", "cpu-t3-exact or cpu-same-binary", det);
+    *want_t3_exact = strcmp(det, "cpu-t3-exact") == 0;
+    const char *rec_runner = jv_str(jv_get(rec, "runner"), "");
+    if (strcmp(rec_runner, RUNNER_VERSION) != 0)
+        return !replay_fail(rc, "runner", rec_runner, RUNNER_VERSION);
+    jv *bld = jv_get(rec, "build");
+    const char *rec_flavor = jv_str(jv_get(bld, "flavor"), "");
+    const char *cur_flavor = RUNNER_BUILD_FLAVOR ? RUNNER_BUILD_FLAVOR : "default";
+    if (strcmp(det, "cpu-t3-exact") == 0) {
+        if (strcmp(rec_flavor, "t3") != 0 || strcmp(cur_flavor, "t3") != 0)
+            return !replay_fail(rc, "build.flavor", "t3",
+                                strcmp(rec_flavor, "t3") ? rec_flavor : cur_flavor);
+        const char *rcm = jv_str(jv_get(bld, "commit"), NULL);
+        bool cdirty = false;
+        const char *ccm = provenance_build_commit(&cdirty);
+        if (rcm && ccm && strcmp(rcm, ccm) != 0)
+            return !replay_fail(rc, "build.commit", rcm, ccm);
+    } else {
+        if (!o->allow_same_binary)
+            return !replay_fail(rc, "determinism", "cpu-t3-exact (or --allow-same-binary)", det);
+        char *exe = plat_executable_path();
+        char cur_sha[65] = "";
+        bool xok = exe && envelope_file_sha256(exe, cur_sha);
+        free(exe);
+        const char *want_sha = jv_str(jv_get(bld, "binary_sha256"), "");
+        if (!xok || strcmp(cur_sha, want_sha) != 0)
+            return !replay_fail(rc, "build.binary_sha256", want_sha, xok ? cur_sha : "unreadable");
+    }
+    return true;
+}
+
+static bool cli_prepare_replay_train(cli_opts *o, cli_replay *rp, int *rc) {
+    if (!o->replay_train) return false;
+    if (!record_regular_file(o->replay_train)) {
+        fprintf(stderr, "error: cannot read %s\n", o->replay_train);
+        *rc = 1;
+        return true;
+    }
+    size_t rlen = 0;
+    char *rbuf = plat_read_file(o->replay_train, MAX_INPUT_FILE, &rlen);
+    jv *rec = rbuf ? json_parse(rbuf, rlen) : NULL;
+    free(rbuf);
+    if (!rec || rec->type != J_OBJ) {
+        fprintf(stderr, "error: %s is not a valid JSON training record\n", o->replay_train);
+        jv_free(rec);
+        *rc = 1;
+        return true;
+    }
+    bool ok = replay_check_compat(o, rec, &rp->want_t3_exact, rc);
+    rp->is_full = jv_get(rec, "full_weight") != NULL;
+    jv *out_v = ok ? jv_get(rec, rp->is_full ? "variant" : "adapter") : NULL;
+    const char *out_name = jv_str(jv_get(out_v, "path"), NULL);
+    const char *out_sha = jv_str(jv_get(out_v, "sha256"), NULL);
+    if (ok && (!out_name || !*out_name || !out_sha || strlen(out_sha) != 64))
+        ok = !replay_fail(rc, rp->is_full ? "variant.sha256" : "adapter.sha256", "64-hex sha256", out_sha);
+    if (ok) {
+        snprintf(rp->want_out_path, sizeof rp->want_out_path, "%s", out_name);
+        snprintf(rp->want_out_sha, sizeof rp->want_out_sha, "%s", out_sha);
+    }
+
+    // Locate & hash every input before touching the model.
+    jv *base = ok ? jv_get(rec, "base") : NULL;
+    jv *data = ok ? jv_get(rec, "data") : NULL;
+    if (ok) {
+        const char *bp = o->model_path ? o->model_path
+                                       : lineage_relocate(jv_str(jv_get(base, "path"), ""),
+                                                          o->replay_train, rp->base_path, sizeof rp->base_path);
+        if (bp != rp->base_path) snprintf(rp->base_path, sizeof rp->base_path, "%s", bp);
+        ok = replay_check_sha("base.sha256", rp->base_path, jv_str(jv_get(base, "sha256"), NULL), rc);
+        if (ok) o->model_path = rp->base_path;
+    }
+    if (ok) {
+        const char *dp = o->replay_data ? o->replay_data
+                                        : lineage_relocate(jv_str(jv_get(data, "path"), ""),
+                                                           o->replay_train, rp->data_path, sizeof rp->data_path);
+        if (dp != rp->data_path) snprintf(rp->data_path, sizeof rp->data_path, "%s", dp);
+        ok = replay_check_sha("data.sha256", rp->data_path, jv_str(jv_get(data, "sha256"), NULL), rc);
+    }
+
+    jv *res_v = jv_get(rec, "resumed_at_step");
+    jv *from_v = jv_get(rec, "from_adapter");
+    if (ok && (from_v || res_v)) {
+        if (res_v && o->lora_path) {
+            fprintf(stderr, "error: record resumes a checkpoint (--train-resume), not --lora\n");
+            *rc = 1;
+            ok = false;
+        } else if (!res_v && o->train_resume) {
+            fprintf(stderr, "error: record continues from --lora adapter, not --train-resume\n");
+            *rc = 1;
+            ok = false;
+        }
+        const char *fp = !ok ? ""
+                       : o->train_resume ? o->train_resume
+                       : o->lora_path ? o->lora_path
+                       : lineage_relocate(jv_str(jv_get(from_v, "path"), ""),
+                                          o->replay_train, rp->from_path, sizeof rp->from_path);
+        if (ok && fp != rp->from_path) snprintf(rp->from_path, sizeof rp->from_path, "%s", fp);
+        if (ok) ok = replay_check_sha("from_adapter.sha256", rp->from_path, jv_str(jv_get(from_v, "sha256"), NULL), rc);
+        if (ok && res_v) {
+            int rs = 0;
+            if (!record_int(rec, "resumed_at_step", 0, INT_MAX, &rs))
+                ok = !replay_fail(rc, "resumed_at_step", "integer", "invalid");
+            char opt_p[4120];
+            if (ok && snprintf(opt_p, sizeof opt_p, "%s.optim", rp->from_path) < (int)sizeof opt_p)
+                ok = replay_check_sha("resume_optim_sha256", opt_p,
+                                      jv_str(jv_get(rec, "resume_optim_sha256"), NULL), rc);
+            if (ok) {
+                o->train_resume = rp->from_path;
+                o->lora_path = NULL;
+                o->replay_resumed_at = rp->want_resumed_at = rs;
+            }
+        } else if (ok) {
+            o->lora_path = rp->from_path;
+            o->train_resume = NULL;
+        }
+    } else if (ok && (o->lora_path || o->train_resume)) {
+        fprintf(stderr, "error: fresh training record does not take --lora or --train-resume\n");
+        *rc = 1;
+        ok = false;
+    }
+
+    const char *obj = jv_str(jv_get(rec, "objective"), "");
+    jv *tch = jv_get(rec, "teacher");
+    if (ok && !strcmp(obj, "kl-to-teacher")) {
+        if (!tch || !replay_resolve_teacher(o, rp, tch, rc)) {
+            if (*rc != 2) replay_fail(rc, "teacher", "teacher object", "missing");
+            ok = false;
+        } else {
+            o->train_teacher = rp->teacher_dir;
+        }
+    }
+
+    jv *kill_v = jv_get(rec, "kill");
+    if (ok) ok = replay_resolve_evals(o, rp, rec, kill_v, rc);
+
+    // Parse hyperparameters and configure CPU-only execution.
+    const char *kv = jv_str(jv_get(rec, "kv_cache"), NULL);
+    jv *nb = jv_get(rec, "no_bos"), *eot = jv_get(rec, "end_of_turn");
+    jv *sv = jv_get(rec, "seed"), *adm = jv_get(rec, "adamw"), *rcp = jv_get(rec, "recipe");
+    int rank = 0, steps = 0, ctx = 0, eot_id = -1, warm = 0, batch = 1;
+    double alpha = 0, lscale = 0, lr = 0, beta = 0.1, wd = 0, lr_floor_d = 0;
+    double b1 = 0, b2 = 0, eps = 0;
+    uint64_t seed_u64 = 0;
+    if (ok) {
+        if (!kv || (strcmp(kv, "f16") && strcmp(kv, "f32")))
+            ok = !replay_fail(rc, "kv_cache", "f16 or f32", kv);
+        else if (!nb || nb->type != J_BOOL)
+            ok = !replay_fail(rc, "no_bos", "bool", "missing");
+        else if (!eot || eot->type != J_BOOL)
+            ok = !replay_fail(rc, "end_of_turn", "bool", "missing");
+        else if (!record_int(rec, "lora_rank", rp->is_full ? 0 : 1, 512, &rank) ||
+                 !record_num(rec, "alpha", 0, FLT_MAX, &alpha) ||
+                 (rp->is_full && (rank != 0 || alpha != 0.0)) ||
+                 !record_num(rec, "lora_scale", 0, FLT_MAX, &lscale) ||
+                 (!from_v && !res_v && fabs(lscale - 1.0) > 1e-6) ||
+                 !record_num(rec, "lr", 0, 1, &lr) ||
+                 !record_int(rec, "steps", 1, INT_MAX, &steps) ||
+                 !record_int(rec, "ctx", 2, INT_MAX, &ctx) ||
+                 !record_int(rec, "eot_id", -1, INT_MAX, &eot_id))
+            ok = !replay_fail(rc, "recipe", "valid training hyperparameters", "invalid");
+        else if (!sv || sv->type != J_NUM ||
+                 !(sv->num_text ? parse_u64(sv->num_text, 0, UINT64_MAX, &seed_u64)
+                                : (sv->num >= 0 && sv->num <= 9007199254740992.0 &&
+                                   sv->num == trunc(sv->num) && (seed_u64 = (uint64_t)sv->num, true))))
+            ok = !replay_fail(rc, "seed", "exact uint64", "invalid");
+        else if (!adm || !record_num(adm, "beta1", 0, 1, &b1) || !record_num(adm, "beta2", 0, 1, &b2) ||
+                 !record_num(adm, "eps", 0, 1, &eps) || !record_num(adm, "weight_decay", 0, 1, &wd) ||
+                 fabs(b1 - TRAIN_ADAM_BETA1) > 1e-6 || fabs(b2 - TRAIN_ADAM_BETA2) > 1e-6 ||
+                 fabs(eps - TRAIN_ADAM_EPS) > 1e-12)
+            ok = !replay_fail(rc, "adamw", "matching AdamW constants", "mismatch");
+        else if (!rcp || !record_int(rcp, "warmup", 0, INT_MAX, &warm) ||
+                 !record_num(rcp, "floor", 0, 1, &lr_floor_d) ||
+                 !record_int(rcp, "batch", 1, 65536, &batch))
+            ok = !replay_fail(rc, "recipe", "valid lr/batch config", "invalid");
+    }
+    if (ok) {
+        const char *sched = jv_str(jv_get(rcp, "schedule"), "");
+        const char *loss_mode = jv_str(jv_get(rcp, "loss"), "");
+        if (strcmp(sched, "constant") && strcmp(sched, "cosine"))
+            ok = !replay_fail(rc, "recipe.schedule", "constant or cosine", sched);
+        else if (strcmp(loss_mode, "row-sum") && strcmp(loss_mode, "position-mean"))
+            ok = !replay_fail(rc, "recipe.loss", "row-sum or position-mean", loss_mode);
+        else if (batch > 1 && strcmp(loss_mode, "position-mean") != 0)
+            ok = !replay_fail(rc, "recipe.loss", "position-mean", loss_mode);
+        else if (rp->want_t3_exact && (rp->is_full || strcmp(obj, "weighted-cross-entropy") != 0))
+            ok = !replay_fail(rc, "determinism", "cpu-same-binary", "cpu-t3-exact");
+        else if (!strcmp(obj, "dpo")) {
+            if (!record_num(rec, "dpo_beta", 0, FLT_MAX, &beta))
+                ok = !replay_fail(rc, "dpo_beta", "number", "missing");
+            else { o->dpo_path = rp->data_path; o->dpo_beta = (float)beta; o->train_path = NULL; }
+        } else if (!strcmp(obj, "weighted-cross-entropy") || !strcmp(obj, "kl-to-teacher")) {
+            o->train_path = rp->data_path;
+            o->dpo_path = NULL;
+        } else {
+            ok = !replay_fail(rc, "objective", "weighted-cross-entropy, kl-to-teacher or dpo", obj);
+        }
+        if (ok) {
+            o->mp.kv_f32 = strcmp(kv, "f32") == 0;
+            o->train_kv_f32 = o->mp.kv_f32;
+            o->train_full = rp->is_full;
+            o->no_bos = nb->b;
+            o->train_eot = eot->b;
+            o->lora_rank = rank;
+            o->lora_scale = (float)lscale;
+            o->train_lr = (float)lr;
+            o->train_steps = steps;
+            o->train_ctx = ctx;
+            o->seed = seed_u64;
+            o->seed_given = true;
+            o->weight_decay = (float)wd;
+            o->lr_schedule = strcmp(sched, "cosine") == 0 ? 1 : 0;
+            o->lr_warmup = warm;
+            o->lr_floor = (float)lr_floor_d;
+            o->train_batch = (!strcmp(loss_mode, "position-mean") || batch > 1) ? batch : 0;
+            o->mp.gpu_mode = GPU_OFF;
+            o->train_gpu = false;
+            o->train_gpu_budget = 0;
+            o->save_every = 0;
+            o->sign_key = NULL;
+            o->stop_file = NULL;
+            o->train_lp_path = NULL;
+            rp->want_ctx = ctx;
+            rp->want_eot_id = eot_id;
+            rp->want_alpha = (float)alpha;
+            if (kill_v) {
+                int kat = 0; double kmin = 0;
+                const char *km = jv_str(jv_get(kill_v, "metric"), NULL);
+                jv *evals = jv_get(rec, "evals");
+                if (!km || !*km || strlen(km) >= sizeof rp->kill_metric ||
+                    !record_int(kill_v, "at", 1, INT_MAX, &kat) ||
+                    !record_num(kill_v, "min_rel", -1, 1, &kmin) || !evals)
+                    ok = !replay_fail(rc, "kill", "valid kill object", "invalid");
+                else {
+                    snprintf(rp->kill_metric, sizeof rp->kill_metric, "%s", km);
+                    o->kill_at = kat;
+                    o->kill_metric = rp->kill_metric;
+                    o->kill_min_rel = (float)kmin;
+                    o->n_eval = evals->n;
+                    for (int i = 0; i < evals->n; i++) o->eval_spec[i] = rp->eval_specs[i];
+                }
+            } else {
+                o->n_eval = 0;
+                o->kill_at = 0;
+                o->kill_metric = NULL;
+            }
+            if (ok && snprintf(rp->tmp_out, sizeof rp->tmp_out, "%s/runner-replay-%ld.gguf",
+                               plat_runtime_dir(), plat_pid_self()) < (int)sizeof rp->tmp_out) {
+                plat_remove(rp->tmp_out);
+                o->train_out = rp->tmp_out;
+            } else if (ok) {
+                fprintf(stderr, "error: replay output path too long\n");
+                *rc = 1;
+                ok = false;
+            }
+        }
+    }
+    jv_free(rec);
+    return !ok;
+}
+
+static int run_replay_train(cli_opts *o, cli_run *rt, const cli_replay *rp,
+                            int tmpl_override, const char *load_path) {
+    int rc = 0;
+    int wctx = o->train_ctx < rt->m.n_ctx ? o->train_ctx : rt->m.n_ctx;
+    if (wctx != rp->want_ctx) {
+        char wb[32], gb[32];
+        snprintf(wb, sizeof wb, "%d", rp->want_ctx);
+        snprintf(gb, sizeof gb, "%d", wctx);
+        replay_fail(&rc, "ctx", wb, gb);
+        return rc;
+    }
+    int tmpl = tmpl_override >= 0 ? tmpl_override
+             : template_detect(gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL), &rt->tok);
+    int eot_id = train_eot_id(&rt->tok, tmpl);
+    if (eot_id != rp->want_eot_id) {
+        char wb[32], gb[32];
+        snprintf(wb, sizeof wb, "%d", rp->want_eot_id);
+        snprintf(gb, sizeof gb, "%d", eot_id);
+        replay_fail(&rc, "eot_id", wb, gb);
+        return rc;
+    }
+    if (rp->want_t3_exact) {
+        char gaps[128] = "";
+        if (!model_canon_gaps(&rt->m, gaps, sizeof gaps) || gaps[0] != '\0' ||
+            rt->m.n_expert != 0 || train_has_recurrent(&rt->m)) {
+            replay_fail(&rc, "determinism", "dense CE model with empty canon_gaps",
+                        gaps[0] ? gaps : "non-dense-ce");
+            return rc;
+        }
+    }
+    if (!rp->is_full) {
+        float eff_alpha = rt->m.lora ? rt->m.lora_alpha : 2.0f * (float)o->lora_rank;
+        if (fabsf(eff_alpha - rp->want_alpha) > 1e-4f) {
+            char wb[32], gb[32];
+            snprintf(wb, sizeof wb, "%g", (double)rp->want_alpha);
+            snprintf(gb, sizeof gb, "%g", (double)eff_alpha);
+            replay_fail(&rc, "alpha", wb, gb);
+            return rc;
+        }
+    }
+    int trc = run_train(o, rt, tmpl_override, load_path);
+    if (trc != 0) {
+        plat_remove(rp->tmp_out);
+        return trc;
+    }
+    char got_sha[65] = "";
+    bool hok = envelope_file_sha256(rp->tmp_out, got_sha);
+    plat_remove(rp->tmp_out);
+    if (!hok) {
+        fprintf(stderr, "error: cannot hash replayed output\n");
+        return 1;
+    }
+    if (strcmp(got_sha, rp->want_out_sha) != 0) {
+        replay_fail(&rc, rp->is_full ? "variant.sha256" : "adapter.sha256",
+                    rp->want_out_sha, got_sha);
+        return rc;
+    }
+    printf("VERIFIED %s sha256 %s\n", rp->want_out_path, got_sha);
+    return 0;
 }
 
 // A record written before R3.39.2 named the tensor-core MODE in its route
@@ -8253,6 +8731,9 @@ static int cli_main(int argc, char **argv, char **owned_prompt, session_image *s
 
     if (!cli_chat_flags_ok(o)) return 1;
     if (run_record_utility(o, &rc)) return rc;
+    cli_replay rp;
+    memset(&rp, 0, sizeof rp);
+    if (cli_prepare_replay_train(o, &rp, &rc)) return rc;
     // R1.8.1: one key for everything this process marks, replays or scores
     wm_key wmk;
     memset(&wmk, 0, sizeof wmk);
@@ -8389,6 +8870,7 @@ static int cli_main(int argc, char **argv, char **owned_prompt, session_image *s
     // cli_wm outlives the engine that points at it
     wm_state cli_wm = { .key = wm_on ? &wmk : NULL };
     if (!cli_engine_setup(o, rt, wm_on, &cli_wm)) rc = 1;
+    else if (o->replay_train) rc = run_replay_train(o, rt, &rp, tmpl_override, load_path);
     else if (o->train_path || o->dpo_path) rc = run_train(o, rt, tmpl_override, load_path);
     else if (o->verify_path) {
         rc = run_verify_replay(o, rt, &vr, load_path);

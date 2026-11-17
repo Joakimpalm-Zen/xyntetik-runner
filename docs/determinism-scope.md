@@ -20,7 +20,9 @@ does not make it, and the absence is deliberate.
   compiler, OS, arch, build flavor (`"t3"` or `"default"`), git commit and
   dirty flag, `no_bos`, `lora_scale`, `kv_cache`, `resume_optim_sha256` on
   resume, and `determinism` (`"cpu-t3-exact"`, `"cpu-same-binary"`, or
-  `"gpu-within-tolerance"`).
+  `"gpu-within-tolerance"`). `runner attest replay RECORD` verifies those
+  pre-flight fields and input hashes, replays on CPU, and checks the
+  output sha256 byte for byte.
 - **Transcript replay tiers** (`--record` / `--verify`):
   - **T1, same binary**: bit-exact replay of a recorded run; verified
     token ids and raw streamed output bytes equal the record exactly. Raw

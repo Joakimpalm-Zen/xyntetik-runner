@@ -747,6 +747,14 @@ when. [The lineage walkthrough](lineage-walkthrough.md) runs the whole chain,
 from quantization through training, merging, evaluation and serving, to a
 flipped byte.
 
+### Replay verification
+
+```sh
+./runner attest replay adapter.gguf.train.json
+```
+
+**Limits first:** cross-machine replay works only for strict `T3=1` CPU dense LoRA cross-entropy records (`"determinism":"cpu-t3-exact"`, 27% to 41% slower on Apple Silicon at 4B); GPU records (`gpu-within-tolerance`) are refused, `cpu-same-binary` records require `--allow-same-binary` with the exact `build.binary_sha256`, the auditor must hold the base GGUF and training data, and replay proves training provenance rather than adapter quality. Pre-flight checks the signature (`--trust-key`), `runner` version, build compatibility, and every input sha256 before training begins, exiting `0` (`VERIFIED <path> sha256 <hex>`) or `2` (`MISMATCH <field>: ...`).
+
 ## 13. Receipts and replay with an adapter
 
 A one-shot run recorded with `--record FILE`, and every served answer under
