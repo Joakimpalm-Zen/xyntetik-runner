@@ -311,7 +311,7 @@ def test_replay_enforces_signatures_preflight_and_output_mismatch(runner_bin, fx
 # R17.9, the second read: the replay takes the recipe and every setting that decides the bytes from the record
 # alone. A model flag or RUNNER_ switch of the caller's that differs is a refusal before training, naming the field.
 def _clean_env(**extra):
-    env = {k: v for k, v in os.environ.items() if not k.startswith("RUNNER_")}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("RUNNER_") and not k.startswith("XR_")}
     env.update(extra)
     return env
 
@@ -400,3 +400,15 @@ def test_a_changed_data_byte_that_passes_preflight_is_a_mismatch_after_training(
     bad = _run_env(runner_bin, ["attest", "replay", rec, "-t", "1", *_same_binary(rec)], _clean_env())
     assert bad.returncode == 2 and "MISMATCH adapter.sha256" in bad.stdout, bad.stdout + bad.stderr
     assert "train:" in bad.stderr, "the mismatch must come from training"
+
+
+def test_replay_holds_the_ssm_switches_as_it_holds_the_runner_ones(runner_bin, fx, tmp_path):
+    """XR_SSM_CHUNK and XR_SSM_SERIAL are read outside the RUNNER_ prefix and reach the recurrent scan's
+    arithmetic; the record names them (#925). A replayer that sets one the record lacks is refused before
+    training, as for a RUNNER_ switch."""
+    rec, _ = _trained(runner_bin, fx, tmp_path, "plain-ssm")
+    r = _run_env(runner_bin, ["attest", "replay", rec, "-t", "1", *_same_binary(rec)],
+                 _clean_env(XR_SSM_SERIAL="1"))
+    assert r.returncode == 2 and "MISMATCH environment" in r.stdout, r.stdout + r.stderr
+    assert "train:" not in r.stderr, "refused only after training"
+
