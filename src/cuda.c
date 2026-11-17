@@ -8806,6 +8806,8 @@ typedef struct {
     bool        dn_noted;
     double      t_dn;             // RUNNER_TRAIN_PROF: wall inside the calls
     long        n_dn, n_dn_failed;   // the record: calls run, calls failed
+    // R8.24.1 B1: a gated FFN's activation and its adjoint, host-chain twins
+    CUfunction  f_tffn_fw, f_tffn_bw;
     // the attention backward (k_tab_p, k_tab_dq, k_tab_dkv) and its buffers
     CUfunction  f_tab_p, f_tab_dq, f_tab_dkv;
     CUdeviceptr ab[AB_NBUF];
@@ -8903,6 +8905,9 @@ bool gpu_train_init(model_t *m) {
         cu.ModuleGetFunction(&t->f_tab_dq, t->mod, "k_tab_dq") != 0 ||
         cu.ModuleGetFunction(&t->f_tab_dkv, t->mod, "k_tab_dkv") != 0)
         t->f_tab_p = t->f_tab_dq = t->f_tab_dkv = NULL;
+    if (cu.ModuleGetFunction(&t->f_tffn_fw, t->mod, "k_tffn_fw") != 0 ||
+        cu.ModuleGetFunction(&t->f_tffn_bw, t->mod, "k_tffn_bw") != 0)
+        t->f_tffn_fw = t->f_tffn_bw = NULL;
     if (cu.ModuleGetFunction(&t->f_tdn_fw, t->mod, "k_tdn_fw") != 0 ||
         cu.ModuleGetFunction(&t->f_tdn_bw, t->mod, "k_tdn_bw") != 0)
         t->f_tdn_fw = t->f_tdn_bw = NULL;
@@ -9085,6 +9090,50 @@ void *gpu_train_host_buf(model_t *m, int slot, size_t bytes) {
     }
     t->hbuf_cap[slot] = cap;
     return t->hbuf[slot];
+}
+
+// R8.24.1 B1: the twins on device rows (no sync): h = act(g)*u over n
+// floats, and dg = dh*u*act'(g), du = dh*act(g)
+static bool tffn_fw_launch(train_gpu_t *t, CUdeviceptr g, CUdeviceptr u,
+                           CUdeviceptr h, int n, int act) {
+    tffn_args a = { n, act };
+    void *p[] = { &g, &u, &h, &a };
+    return t->f_tffn_fw &&
+           cu.LaunchKernel(t->f_tffn_fw, (unsigned)((n + 255) / 256), 1, 1, 256,
+                           1, 1, 0, NULL, p, NULL) == 0;
+}
+static bool tffn_bw_launch(train_gpu_t *t, CUdeviceptr g, CUdeviceptr u,
+                           CUdeviceptr dh, CUdeviceptr dg, CUdeviceptr du,
+                           int n, int act) {
+    tffn_args a = { n, act };
+    void *p[] = { &g, &u, &dh, &dg, &du, &a };
+    return t->f_tffn_bw &&
+           cu.LaunchKernel(t->f_tffn_bw, (unsigned)((n + 255) / 256), 1, 1, 256,
+                           1, 1, 0, NULL, p, NULL) == 0;
+}
+
+// R8.24.1 B1, for the kernel gate: the twins over n host floats (sent, run,
+// brought back). false: no context, no kernel in this PTX, or an activation
+// the twins do not cover (ACT_SILU only).
+bool gpu_train_ffn_check(model_t *m, int act, const float *g, const float *u,
+                         const float *dh, float *h, float *dg, float *du, int n) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->f_tffn_fw || !t->f_tffn_bw || act != ACT_SILU || n < 1 ||
+        cu.CtxSetCurrent(t->ctx) != 0)
+        return false;
+    size_t nb = sizeof(float) * (size_t)n;
+    CUdeviceptr d[6] = {0};
+    bool ok = true;
+    for (int i = 0; i < 6 && ok; i++) ok = cu.MemAlloc(&d[i], nb) == 0;
+    ok = ok && cu.MemcpyHtoD(d[0], g, nb) == 0 && cu.MemcpyHtoD(d[1], u, nb) == 0 &&
+         cu.MemcpyHtoD(d[2], dh, nb) == 0 &&
+         tffn_fw_launch(t, d[0], d[1], d[3], n, act) &&
+         tffn_bw_launch(t, d[0], d[1], d[2], d[4], d[5], n, act) &&
+         cu.CtxSynchronize() == 0 && cu.MemcpyDtoH(h, d[3], nb) == 0 &&
+         cu.MemcpyDtoH(dg, d[4], nb) == 0 && cu.MemcpyDtoH(du, d[5], nb) == 0;
+    for (int i = 0; i < 6; i++)
+        if (d[i]) cu.MemFree(d[i]);
+    return ok;
 }
 
 static bool tg_scratch(CUdeviceptr *buf, size_t *cap, size_t need) {

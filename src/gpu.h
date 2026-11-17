@@ -341,6 +341,12 @@ unsigned gpu_train_mm_parts(model_t *m, const gpu_mm_part *p, int np,
 enum { GPU_TRAIN_HBUF = 4 };
 bool   gpu_train_pin(model_t *m, void *p, size_t bytes);
 void  *gpu_train_host_buf(model_t *m, int slot, size_t bytes);
+// R8.24.1 B1, the kernel gate's entry: the device twins of a gated FFN's
+// activation and adjoint over n host floats, h = act(g)*u, dg = dh*u*act'(g),
+// du = dh*act(g) (model.c gated_act, act_d, act_f). false: no context, no
+// kernel in this PTX, or an activation they do not cover (ACT_SILU only).
+bool   gpu_train_ffn_check(model_t *m, int act, const float *g, const float *u,
+                           const float *dh, float *h, float *dg, float *du, int n);
 // RUNNER_TRAIN_PROF: seconds inside gpu_train_mm / gpu_train_mvt (transfers
 // and syncs included), their counts, and the kernels' share (the launch and
 // its sync) since the last call, which resets them

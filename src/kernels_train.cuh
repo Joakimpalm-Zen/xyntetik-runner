@@ -1050,3 +1050,76 @@ k_tab_dkv(const float *q, const float *dao, const float *P, const float *DS,
         *vo = dva;
     }
 }
+
+// ---- R8.24.1 B1: a gated FFN's activation and its adjoint, host-chain twins
+// (model.c gated_act's SiLU, silu_d, act_f; kernel_args.h tffn_args). The exp
+// is src/pmath.h's pm_exp_d / p_expf operation for operation, in double with
+// every multiply and add rounded on its own (no contraction), and the float
+// expressions keep the host's order: so a T3 build's host (strict float,
+// pmath) computes these very bits, and test-train-gpu holds them to it with
+// memcmp. Elementwise, so batch-invariant.
+static __device__ __forceinline__ double tw_ldexp2(double x, int k) {
+    while (k > 1000) { x = __dmul_rn(x, 0x1p1000); k -= 1000; }
+    while (k < -1000) { x = __dmul_rn(x, 0x1p-1000); k += 1000; }
+    return __dmul_rn(x, __longlong_as_double((long long)(k + 1023) << 52));
+}
+static __device__ __forceinline__ double tw_exp_d(double x) {
+    if (x != x) return x;
+    if (x > 709.0) return __longlong_as_double(0x7ff0000000000000LL);
+    if (x < -745.0) return 0.0;
+    const double ln2_hi = 6.93147180369123816490e-01;
+    const double ln2_lo = 1.90821492927058770002e-10;
+    const double inv_ln2 = 1.44269504088896338700e+00;
+    double kd = __dmul_rn(x, inv_ln2);
+    int k = __double2int_rz(kd >= 0 ? __dadd_rn(kd, 0.5) : __dsub_rn(kd, 0.5));
+    double r = __dsub_rn(__dsub_rn(x, __dmul_rn((double)k, ln2_hi)),
+                         __dmul_rn((double)k, ln2_lo));
+    double p = 1.0 / 6227020800.0;
+    p = __dadd_rn(__dmul_rn(p, r), 1.0 / 479001600.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0 / 39916800.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0 / 3628800.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0 / 362880.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0 / 40320.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0 / 5040.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0 / 720.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0 / 120.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0 / 24.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0 / 6.0);
+    p = __dadd_rn(__dmul_rn(p, r), 0.5);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0);
+    return tw_ldexp2(p, k);
+}
+static __device__ __forceinline__ float tw_expf(float x) {
+    return __double2float_rn(tw_exp_d((double)x));
+}
+// silu_f: 0 below -80, else g / (1 + exp(-g))
+static __device__ __forceinline__ float tw_silu(float g) {
+    return g < -80.0f ? 0.0f : __fdiv_rn(g, __fadd_rn(1.0f, tw_expf(-g)));
+}
+// silu_d: 0 below -80, else sg * (1 + g * (1 - sg)), sg = 1 / (1 + exp(-g))
+static __device__ __forceinline__ float tw_silu_d(float g) {
+    if (g < -80.0f) return 0.0f;
+    float sg = __fdiv_rn(1.0f, __fadd_rn(1.0f, tw_expf(-g)));
+    return __fmul_rn(sg, __fadd_rn(1.0f, __fmul_rn(g, __fsub_rn(1.0f, sg))));
+}
+
+// h = gated_act(ACT_SILU, g, u): 0 below -80, else (g / (1 + exp(-g))) * u
+extern "C" __global__ void k_tffn_fw(const float *g, const float *u, float *h,
+                                     tffn_args a) {
+    int i = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (i >= a.n) return;
+    float gi = g[i];
+    h[i] = gi < -80.0f ? 0.0f : __fmul_rn(tw_silu(gi), u[i]);
+}
+
+// dg = dh * u * act_d(g) (left to right), du = dh * act_f(g)
+extern "C" __global__ void k_tffn_bw(const float *g, const float *u,
+                                     const float *dh, float *dg, float *du,
+                                     tffn_args a) {
+    int i = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (i >= a.n) return;
+    float gi = g[i], d = dh[i];
+    dg[i] = __fmul_rn(__fmul_rn(d, u[i]), tw_silu_d(gi));
+    du[i] = __fmul_rn(d, tw_silu(gi));
+}

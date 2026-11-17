@@ -22,6 +22,7 @@
 #include "dn_ref.h"
 #include "attn_ref.h"
 
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -345,6 +346,129 @@ static void ab_check(model_t *m, int T, int H, int kv_mul, int hd, int swa) {
     free(kc); free(vc); free(q); free(dao);
 }
 
+// R8.24.1 B1 (G0): the device twins of a gated SiLU and its adjoint
+// (gpu_train_ffn_check: h = act(g)*u, dg = dh*u*act'(g), du = dh*act(g))
+// against the host's own expressions (model_ffn_act, model_ffn_dg,
+// model_ffn_du). A T3 build's host does exactly the written operations with
+// pmath's exp, which the twins reproduce, so memcmp. The default build's host
+// takes the C library's expf, may contract, and runs with subnormals flushed
+// (-ffast-math links crtfastmath: FTZ and DAZ for the process), so it is held
+// to a stated bound with the device's subnormal results read as zero. In both,
+// the anchor: h and du within 4 ulps of the formula in double (the C
+// library's double exp, the same 0 below -80); dg within the float formula's
+// own conditioning, |dh u| (|g| + 2) 2^-22 (its 1 - sg cancels as g grows).
+static int64_t f_ord(float f) {
+    int32_t i;
+    memcpy(&i, &f, 4);
+    return i < 0 ? (int64_t)INT32_MIN - i : i;
+}
+static int64_t f_ulps(float a, float b) {
+    int64_t d = f_ord(a) - f_ord(b);
+    return d < 0 ? -d : d;
+}
+static void ffn_check(model_t *m) {
+    // boundary gates: the -80 cutoff and its neighbours, the float exp's
+    // overflow edge, subnormals, both zeros, the largest magnitudes kept
+    // finite through the product
+    const float GB[] = {
+        -80.0f, nextafterf(-80.0f, -100.0f), nextafterf(-80.0f, 0.0f), -79.5f,
+        -87.33f, -88.73f, -100.0f, -1e30f, -3.0e38f, -50.0f, -20.0f, -10.0f,
+        -1.0f, -1e-3f, -1e-30f, -1e-40f, -0.0f, 0.0f, 1e-40f, 1e-30f, 1e-3f,
+        0.5f, 1.0f, 2.0f, 10.0f, 15.0f, 16.6f, 20.0f, 30.0f, 50.0f, 80.0f,
+        88.0f, 88.73f, 89.0f, 100.0f, 1e10f, 1e30f };
+    const float UB[] = { 1.0f, -1.0f, 0.5f, 0.0f, -0.0f, 3.0f };
+    const float DB[] = { 1.0f, -2.5f, 0.75f, 0.0f };
+    int nb = (int)(sizeof(GB) / sizeof(*GB)), nu = (int)(sizeof(UB) / sizeof(*UB));
+    enum { NR = 77777 };   // random elements: no multiple of a block
+    int n = nb * nu + NR;
+    float *g = malloc(sizeof(float) * n), *u = malloc(sizeof(float) * n);
+    float *dh = malloc(sizeof(float) * n), *h = malloc(sizeof(float) * n);
+    float *dg = malloc(sizeof(float) * n), *du = malloc(sizeof(float) * n);
+    int k = 0;
+    for (int i = 0; i < nb; i++)
+        for (int j = 0; j < nu; j++, k++) {
+            g[k] = GB[i];
+            u[k] = UB[j];
+            dh[k] = DB[k % 4];
+        }
+    for (; k < n; k++) {
+        // mostly the activations' working range, some far outside it
+        g[k] = k % 17 == 0 ? frnd() * 1e6f : frnd() * 90.0f;
+        u[k] = frnd() * 4.0f;
+        dh[k] = frnd() * 4.0f;
+    }
+    bool ok = gpu_train_ffn_check(m, ACT_SILU, g, u, dh, h, dg, du, n);
+    CHECK(ok, "ffn twin: declined (no kernel in this PTX?)");
+    if (!ok) goto done;
+    int64_t wh = 0, wdu = 0, ah = 0, adu = 0;
+    double wdg = 0, adg = 0;   // dg against its conditioning bound, worst ratio
+    size_t bad = 0, abad = 0, hbad = 0;
+    for (int i = 0; i < n; i++) {
+        float rh = model_ffn_act(ACT_SILU, g[i], u[i]);
+        float rdg = model_ffn_dg(ACT_SILU, dh[i], u[i], g[i]);
+        float rdu = model_ffn_du(ACT_SILU, dh[i], g[i]);
+        float vh = h[i], vdg = dg[i], vdu = du[i];
+#ifdef RUNNER_PORTABLE_MATH
+        if (memcmp(&rh, &vh, 4) || memcmp(&rdg, &vdg, 4) || memcmp(&rdu, &vdu, 4)) {
+            if (!bad++)
+                fprintf(stderr, "FAIL: ffn twin differs from the T3 host at [%d] g %.9g u %.9g dh "
+                        "%.9g: h %.9g/%.9g dg %.9g/%.9g du %.9g/%.9g\n", i, g[i], u[i], dh[i],
+                        vh, rh, vdg, rdg, vdu, rdu);
+        }
+#else
+        // this process flushes subnormals, as the default build's runner does
+        if (fabsf(vh) < FLT_MIN) vh = 0.0f;
+        if (fabsf(vdg) < FLT_MIN) vdg = 0.0f;
+        if (fabsf(vdu) < FLT_MIN) vdu = 0.0f;
+#endif
+        double gd = g[i], cond = fabs((double)dh[i] * u[i]) * (fabs(gd) + 2.0) * 0x1p-22 + 0x1p-126;
+        int64_t e;
+        if ((e = f_ulps(vh, rh)) > wh) wh = e;
+        if ((e = f_ulps(vdu, rdu)) > wdu) wdu = e;
+        double edg = fabs((double)vdg - (double)rdg) / cond;
+        if (edg > wdg) wdg = edg;
+#ifndef RUNNER_PORTABLE_MATH
+        if ((f_ulps(vh, rh) > 4 || f_ulps(vdu, rdu) > 4 || edg > 1.0) && !hbad++)
+            fprintf(stderr, "FAIL: ffn twin is off the default build's host at [%d] g %.9g u %.9g "
+                    "dh %.9g: h %.9g/%.9g dg %.9g/%.9g du %.9g/%.9g\n", i, g[i], u[i], dh[i],
+                    vh, rh, vdg, rdg, vdu, rdu);
+#endif
+        // the anchor: the formula in double, the C library's double exp
+        double sgd = 1.0 / (1.0 + exp(-gd));
+        float xh = g[i] < -80.0f ? 0.0f : (float)(gd / (1.0 + exp(-gd)) * u[i]);
+        double xdg = g[i] < -80.0f ? 0.0 : (double)dh[i] * u[i] * (sgd * (1.0 + gd * (1.0 - sgd)));
+        float xdu = g[i] < -80.0f ? 0.0f : (float)((double)dh[i] * (gd / (1.0 + exp(-gd))));
+#ifndef RUNNER_PORTABLE_MATH
+        if (fabsf(xh) < FLT_MIN) xh = 0.0f;
+        if (fabsf(xdu) < FLT_MIN) xdu = 0.0f;
+#endif
+        int64_t a1 = f_ulps(vh, xh), a3 = f_ulps(vdu, xdu);
+        double a2 = fabs((double)vdg - xdg) / cond;
+        if (a1 > ah) ah = a1;
+        if (a2 > adg) adg = a2;
+        if (a3 > adu) adu = a3;
+        if ((a1 > 4 || a2 > 1.0 || a3 > 4) && !abad++)
+            fprintf(stderr, "FAIL: ffn twin is not the formula at [%d] g %.9g u %.9g dh %.9g: "
+                    "h %.9g (double %.9g) dg %.9g (%.9g) du %.9g (%.9g)\n", i, g[i], u[i], dh[i],
+                    vh, xh, vdg, xdg, vdu, xdu);
+    }
+    CHECK(!bad, "ffn twin: %zu of %d elements differ from the T3 host's bits", bad, n);
+    CHECK(!abad, "ffn twin: %zu of %d elements off the double formula (h %lld, du %lld ulps "
+          "worst; dg %.3g of its bound)", abad, n, (long long)ah, (long long)adu, adg);
+    CHECK(!hbad, "ffn twin: %zu of %d elements off the default build's host (h %lld, du %lld "
+          "ulps worst, bound 4; dg %.3g of its bound)", hbad, n, (long long)wh, (long long)wdu, wdg);
+    printf("ffn twin (SiLU) %d elements: host %s; worst against the host h %lld du %lld ulps, "
+           "dg %.3g of its bound; against the double formula h %lld du %lld ulps, dg %.3g\n", n,
+#ifdef RUNNER_PORTABLE_MATH
+           "T3 (memcmp)",
+#else
+           "default (bound, subnormals flushed)",
+#endif
+           (long long)wh, (long long)wdu, wdg, (long long)ah, (long long)adu, adg);
+done:
+    free(g); free(u); free(dh); free(h); free(dg); free(du);
+}
+
 int main(void) {
     f16_init();
     model_t m;
@@ -623,6 +747,7 @@ int main(void) {
         }
         free(bx); free(by);
     }
+    ffn_check(&m);
     ab_check(&m, 77, 4, 2, 64, 0);
     ab_check(&m, 150, 8, 4, 64, 0);
     ab_check(&m, 90, 4, 1, 256, 24);

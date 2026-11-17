@@ -1281,6 +1281,9 @@ bool      model_lora_use(model_t *m, const lora_set *ls);
 // and the backward's d/dg of act(g), dispatched on the activation kind
 float  model_ffn_act(int act, float g, float u);
 float  model_ffn_act_deriv(int act, float g);
+// R8.24.1 B1: dh*u*act'(g) and dh*act(g), the gate and up sites' expressions
+float  model_ffn_dg(int act, float dh, float u, float g);
+float  model_ffn_du(int act, float dh, float g);
 // test hooks: the serving xIELU and the backward's derivative (R8.27)
 float  model_xielu(float x, float an, float ap, float b, float eps);
 float  model_xielu_deriv(float x, float an, float ap, float b, float eps);

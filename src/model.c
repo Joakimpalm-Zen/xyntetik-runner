@@ -11717,6 +11717,10 @@ static float act_d(int act, float g) {
 // tell the SiLU derivative from the GELU one at fixture scale (R8.9.5).
 float model_ffn_act(int act, float g, float u) { return gated_act(act, g, u); }
 float model_ffn_act_deriv(int act, float g) { return act_d(act, g); }
+// R8.24.1 B1: the gate and up sites' adjoint expressions (lbw_ffn_and_output's
+// loops, lffn_dg / lffn_du), element by element, for the device twin's gate
+float model_ffn_dg(int act, float dh, float u, float g) { return dh * u * act_d(act, g); }
+float model_ffn_du(int act, float dh, float g) { return dh * act_f(act, g); }
 float model_xielu(float x, float an, float ap, float b, float eps) { return xielu(x, an, ap, b, eps); }
 float model_xielu_deriv(float x, float an, float ap, float b, float eps) { return xielu_d(x, an, ap, b, eps); }
 
