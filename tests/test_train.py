@@ -239,6 +239,7 @@ def test_train_gpu_matches_cpu_within_rounding(runner_bin, base, tmp_path, famil
     for a, b in zip(lc, lg):
         assert abs(a - b) <= 1e-4 * max(abs(a), 1e-6), (family, lc, lg)
     rec = json.loads(pathlib.Path(str(ag) + ".train.json").read_text())
+    assert rec["determinism"] == "gpu-within-tolerance", rec
     assert rec["products"]["device"] == "cuda", rec.get("products")
     assert rec["products"]["tensors_on_device"] > 0, rec["products"]
     assert rec["products"]["tensors_on_cpu"] == 0, rec["products"]
@@ -708,3 +709,90 @@ def test_dpo_trains_without_naming_the_cpu(runner_bin, base, tmp_path):
                        stderr=subprocess.PIPE, timeout=600)
     assert p.returncode == 0, p.stderr.decode(errors="replace")
     assert out.exists()
+
+
+def _binary_flavor(runner_bin):
+    p = subprocess.run([str(runner_bin), "--version"], stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, check=True, text=True, timeout=30)
+    return "t3" if "(t3)" in p.stdout else "default"
+
+
+def test_train_record_carries_build_flavor_commit_and_replay_options(runner_bin, base, tmp_path):
+    """R17.9(a): .train.json carries the additive build and option fields needed
+    for replay, without host paths or an argv string."""
+    flavor = _binary_flavor(runner_bin)
+    plain, nobos, kvf32 = tmp_path / "plain.gguf", tmp_path / "nobos.gguf", tmp_path / "kvf32.gguf"
+    _train(runner_bin, base, plain, steps=2)
+    _train(runner_bin, base, nobos, steps=2, extra=("--no-bos",))
+    _train(runner_bin, base, kvf32, steps=2, extra=("--train-kv-f32",))
+
+    r_plain = json.loads(pathlib.Path(f"{plain}.train.json").read_text())
+    r_nobos = json.loads(pathlib.Path(f"{nobos}.train.json").read_text())
+    r_kvf32 = json.loads(pathlib.Path(f"{kvf32}.train.json").read_text())
+
+    assert r_plain["schema_version"] == "xyntetik.runner.train.v1"
+    b = r_plain["build"]
+    assert b["flavor"] == flavor
+    assert "commit" in b and "dirty" in b
+    if b["commit"] is not None:
+        assert len(b["commit"]) == 40 and isinstance(b["dirty"], bool)
+    else:
+        assert b["dirty"] is None
+
+    assert r_plain["no_bos"] is False and r_nobos["no_bos"] is True
+    assert r_plain["lora_scale"] == pytest.approx(1.0)
+    assert r_plain["kv_cache"] == "f16" and r_kvf32["kv_cache"] == "f32"
+    assert "resume_optim_sha256" not in r_plain
+    want_det = "cpu-t3-exact" if flavor == "t3" else "cpu-same-binary"
+    assert r_plain["determinism"] == want_det
+    assert r_nobos["determinism"] == want_det and r_kvf32["determinism"] == want_det
+
+
+def test_continued_training_records_lora_scale(runner_bin, base, tmp_path):
+    first = tmp_path / "first.gguf"
+    unscaled = tmp_path / "unscaled.gguf"
+    scaled = tmp_path / "scaled.gguf"
+    _train(runner_bin, base, first, steps=2, extra=("--lora-rank", "4"))
+    _train(runner_bin, base, unscaled, steps=2, extra=("--lora", str(first)))
+    _train(runner_bin, base, scaled, steps=2, extra=("--lora", str(first), "--lora-scale", "0.5"))
+    rec = json.loads(pathlib.Path(f"{scaled}.train.json").read_text())
+    assert rec["lora_scale"] == pytest.approx(0.5)
+    assert scaled.read_bytes() != unscaled.read_bytes()
+
+
+def test_non_dense_ce_modes_keep_thread_identity_without_overclaiming_t3(runner_bin, base, tmp_path):
+    """R17.9(a): DPO, --train-full, DeltaNet and MoE hold single-build thread
+    identity, but their records stay at cpu-same-binary while cross-ISA coverage
+    is limited to dense LoRA cross-entropy."""
+    dpo_data = tmp_path / "pairs.jsonl"
+    dpo_data.write_text(
+        json.dumps({"prompt": "the runner trains", "chosen": " the adapter", "rejected": " the corpus"}) + "\n" +
+        json.dumps({"prompt": "the adapter learns", "chosen": " the corpus", "rejected": " the runner"}) + "\n")
+    dt1, dt3 = tmp_path / "dpo-t1.gguf", tmp_path / "dpo-t3.gguf"
+    for out, nt in ((dt1, "1"), (dt3, "3")):
+        p = subprocess.run([str(runner_bin), "-m", str(base / "base.gguf"), "--train-dpo", str(dpo_data),
+                            "--train-steps", "2", "--lr", "3e-3", "--train-out", str(out),
+                            "-t", nt, "--gpu", "off"], cwd=ROOT, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=600)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+    assert dt1.read_bytes() == dt3.read_bytes()
+    assert json.loads(pathlib.Path(f"{dt1}.train.json").read_text())["determinism"] == "cpu-same-binary"
+
+    ft1, ft3 = tmp_path / "full-t1.gguf", tmp_path / "full-t3.gguf"
+    for out, nt in ((ft1, "1"), (ft3, "3")):
+        p = subprocess.run([str(runner_bin), "-m", str(base / "base.gguf"), "--train", str(base / "data.jsonl"),
+                            "--train-steps", "2", "--lr", "1e-3", "--train-full", "--train-out", str(out),
+                            "-t", nt, "--gpu", "off"], cwd=ROOT, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=600)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+    assert ft1.read_bytes() == ft3.read_bytes()
+    assert json.loads(pathlib.Path(f"{ft1}.train.json").read_text())["determinism"] == "cpu-same-binary"
+
+    for family in ("qwen35", "clef", "moe-renorm"):
+        fdir = tmp_path / family
+        fdir.mkdir()
+        d = _family_fixture(fdir, family)
+        out = tmp_path / f"{family}.gguf"
+        _train(runner_bin, d, out, steps=2)
+        rec = json.loads(pathlib.Path(f"{out}.train.json").read_text())
+        assert rec["determinism"] == "cpu-same-binary", family
