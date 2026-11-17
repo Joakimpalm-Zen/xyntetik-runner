@@ -183,6 +183,16 @@ typedef struct {
     // mark_pos), whose FNV-1a hash this is. Belt and braces over the
     // structural rule (the mark is dropped whenever pos moves below it).
     int      rewind_how;
+    // R3.60: the first position whose KV row a scoring feed wrote, INT_MAX
+    // when none does. A scored prompt (echo, prompt_logprobs) and decide's
+    // scored tokens are fed one token at a time on the decode route
+    // (engine_feed_solo), whose rows differ in their last bits from the rows
+    // a prompt's prefill pass writes. A normal request reuses the slot's rows
+    // only below this mark (engine_rewind_prompt), and nothing at or past it
+    // is published, pinned or exported. engine_reset clears it, and so does a
+    // rewind below it. Generated tokens are decode rows too, and are not
+    // marked: a continuation reuses them, as it always has (docs/kernel-routes.md).
+    int      scored_from;
     int      rope_rebuilds;   // R4.40: times a sequence was recomputed at the LongRoPE crossing
     uint64_t mark_hash;
     // R3.62: the preamble snapshot this slot's rows were last loaded from
@@ -465,6 +475,13 @@ void   engine_think_prime(engine *e, const char *prompt);
 // keep the KV for the longest common prefix of hist and toks, reset the rest
 // of the engine state; returns how many prompt tokens can be skipped
 int    engine_rewind(engine *e, const int32_t *toks, int n);
+// engine_rewind for the start of a normal request: it keeps no row at or past
+// e->scored_from, so a prompt never reuses the decode route's rows of an
+// earlier scoring request (R3.60). decide's own rewinds between its options
+// keep engine_rewind, which reuses the solo rows of its own path.
+int    engine_rewind_prompt(engine *e, const int32_t *toks, int n);
+// a scoring feed is about to write the solo row of position pos (decide)
+void   engine_mark_scored(engine *e, int pos);
 // What engine_rewind (or the prefix fork after it) did with the slot's
 // previous state; engine_rewind_how_name spells it for the request telemetry
 // (runner_telemetry.timing.cache) and the start line, so a client that sees
@@ -482,6 +499,7 @@ enum rewind_how {
     REWIND_ROPE,       // LongRoPE: the prompt's length takes the other factor set
     REWIND_FORK,       // forked from the shared prefix cache (engine_prefix_reuse)
     REWIND_PREAMBLE,   // the slot's rows were loaded from a preamble snapshot (R3.62)
+    REWIND_SCORED,     // rows from a scoring feed's decode route: kept only below them (R3.60)
 };
 const char *engine_rewind_how_name(int how);
 // Recurrent turn mark (model_recurrent_mark): checkpoint the fold at the

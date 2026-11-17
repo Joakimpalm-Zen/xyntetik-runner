@@ -58,6 +58,7 @@ bool engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp) {
     memset(e, 0, sizeof(*e));
     e->cdoc_rec = true;
     e->dsnap = -1;
+    e->scored_from = INT_MAX;
     e->m = m;
     e->tok = tok;
     e->smp = smp;
@@ -120,6 +121,7 @@ void engine_request_defaults(engine *e) {
 
 void engine_reset(engine *e) {
     e->pos = 0;
+    e->scored_from = INT_MAX;
     e->hit_stop = false; e->stop_id = -1;
     e->rewind_how = REWIND_NONE;
     model_rope_for_len(e->m, 0);       // R4.40: a fresh sequence starts on the short set
@@ -246,6 +248,7 @@ const char *engine_rewind_how_name(int how) {
     case REWIND_ROPE:      return "rope_set";
     case REWIND_FORK:      return "prefix_cache";
     case REWIND_PREAMBLE:  return "preamble_snapshot";
+    case REWIND_SCORED:    return "scored_rows";
     default:               return "none";
     }
 }
@@ -266,13 +269,16 @@ static bool mark_here(engine *e, bool anchor) {
 bool engine_mark_turn(engine *e) { return mark_here(e, false); }
 bool engine_mark_anchor(engine *e) { return mark_here(e, true); }
 
-int engine_rewind(engine *e, const int32_t *toks, int n) {
+static int rewind_to(engine *e, const int32_t *toks, int n, int cap) {
     int keep = 0;
     if (e->hist)
         while (keep < e->pos && keep < n - 1 && e->hist[keep] == toks[keep])
             keep++; // n - 1: always feed at least one token to get logits
     int how = keep == e->pos ? (keep ? REWIND_EXTENDED : REWIND_NONE)
             : keep ? REWIND_KV : REWIND_MISMATCH;
+    // R3.60: rows from a scoring feed are the decode route's, not a prompt's
+    // prefill pass: a normal request keeps the slot's rows only below them
+    if (keep > cap) { keep = cap; how = REWIND_SCORED; }
     int agree = keep, mark_before = model_recurrent_mark_pos(e->m);
     // Recurrent layers hold a fold over [0, e->pos), not a per-position prefix,
     // so keeping KV rows [0, keep) does not put the recurrent state at `keep`.
@@ -340,6 +346,8 @@ int engine_rewind(engine *e, const int32_t *toks, int n) {
     // the pending hidden is lost, see model_mtp_reset
     if (e->mtp_on && keep < e->pos) model_mtp_reset(e->m, keep);
     e->pos = keep;
+    // the scored rows are gone once the slot keeps none of them
+    if (keep <= e->scored_from) e->scored_from = INT_MAX;
     // the draft's KV beyond the kept prefix was computed from the previous
     // request's tokens; the catch-up loop re-feeds hist[dpos..pos)
     dpos_rewind(e, keep);
@@ -350,6 +358,18 @@ int engine_rewind(engine *e, const int32_t *toks, int n) {
     constraint_reset(e);
     cdoc_release(e);
     return keep;
+}
+
+int engine_rewind(engine *e, const int32_t *toks, int n) {
+    return rewind_to(e, toks, n, INT_MAX);
+}
+
+int engine_rewind_prompt(engine *e, const int32_t *toks, int n) {
+    return rewind_to(e, toks, n, e->scored_from);
+}
+
+void engine_mark_scored(engine *e, int pos) {
+    if (pos >= 0 && pos < e->scored_from) e->scored_from = pos;
 }
 
 // ==================================================== shared KV prefix cache
@@ -776,8 +796,9 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
     // only call between two requests that resets e->pos, and skipping it leaves
     // the next prompt appended to stale context.
     prefix_reuse r = { 0, 0, 0.0 };
-    // the slot's own KV first: it is already in place and costs nothing
-    r.keep = engine_rewind(e, toks, n);
+    // the slot's own KV first: it is already in place and costs nothing (below
+    // any scored rows, R3.60)
+    r.keep = engine_rewind_prompt(e, toks, n);
     if (e->m->tied_v) return r;
     if (!e->hist || n < 2) return r;
 
@@ -822,6 +843,7 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
         }
         memcpy(e->hist, toks, sizeof(int32_t) * (size_t)best);
         e->pos = best;
+        e->scored_from = INT_MAX;   // a shared entry holds no scored row (engine_prefix_publish)
         e->dpos = 0;          // the draft model's KV was not forked
         e->dsnap = -1;
         e->hit_stop = false; e->stop_id = -1;
@@ -853,6 +875,10 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
     // it: past it, decode has recycled rows the snapshot would claim.
     bool ring = model_kv_ring_active(e->m);
     if (e->m->tied_v) return;
+    // R3.60: rows a scoring feed wrote are the decode route's, and a later
+    // request that forked them would read other bits than a cold prompt: the
+    // shared tier takes only the rows below them
+    if (n > e->scored_from) n = e->scored_from;
     if (!e->hist || n < PFX_MIN_TOKENS || e->pos < n || (ring && e->pos != n)) return;
 
     pthread_mutex_lock(&PFX.mu);
@@ -995,6 +1021,12 @@ int prefix_context_pin(engine *e, const char *name, const int32_t *toks, int n) 
     // a recurrent fold belongs to position e->pos and nowhere else
     if (n < 1 || e->pos != n || memcmp(e->hist, toks, sizeof(int32_t) * (size_t)n))
         return PFX_CTX_MISMATCH;
+    // R3.60: a context names its tokens' rows as a prompt's prefill pass
+    // writes them; rows a scoring feed wrote are not those. The server pins
+    // after engine_prefix_reuse, which rewinds to the mark and feeds the rest
+    // as a prompt, so it never meets one; this keeps a direct caller from
+    // pinning n tokens of which some are scored (a pin names exactly n).
+    if (e->scored_from < n) return PFX_CTX_MISMATCH;
     size_t need = prefix_cache_entry_bytes(e->m, n);
     pfx_entry *ne = calloc(1, sizeof *ne);
     int32_t *nt = malloc(sizeof(int32_t) * (size_t)n);
@@ -1095,6 +1127,13 @@ int prefix_context_list(prefix_context_info **out) {
 // ---------------------------------------------------- snapshot persistence
 
 #define PFX_MAGIC   "runner.prefix.v1"
+// R3.60: the persisted prefix store's entries were made with the width-dependent
+// prompt arithmetic until R3.60, so the store keys its entries with this salt
+// over the model key, and an entry saved before it is refused (its prompt is
+// fed again). Only the store: the model key itself is not moved, which would
+// refuse session images and named snapshots, an explicit resume that keeps
+// its rows as saved.
+#define PFX_STORE_SALT 0x5233362e36302e31ull   // "R36.60.1"
 #define PFX_MAGIC_N 16
 
 // FNV-1a over the body. Not a security primitive -- it is here so a truncated
@@ -1136,7 +1175,7 @@ int prefix_cache_save(const char *path) {
     bool ok = wr(f, PFX_MAGIC, PFX_MAGIC_N) && wr(f, &count, sizeof count);
     for (pfx_entry *p = PFX.head; ok && p; p = p->next) {
         if (!p->ring_whole) continue;
-        uint64_t key = p->key, bytes = p->bytes;
+        uint64_t key = p->key ^ PFX_STORE_SALT, bytes = p->bytes;   // R3.60
         int32_t  n   = p->n;
         ok = wr(f, &key, sizeof key) && wr(f, &n, sizeof n) &&
              wr(f, &bytes, sizeof bytes) &&
@@ -1200,7 +1239,7 @@ int prefix_cache_load(const char *path, const engine *e) {
         // context length or another KV dtype is not adapted -- it is dropped.
         // Adapting it would be inventing KV rows, which reads as fluent output
         // and is wrong.
-        if (key != e->model_key ||
+        if (key != (e->model_key ^ PFX_STORE_SALT) ||   // R3.60: an older store's entry too
             bytes != prefix_cache_entry_bytes(e->m, n)) {
             free(toks); free(kv); refused++;
             continue;
@@ -1212,7 +1251,7 @@ int prefix_cache_load(const char *path, const engine *e) {
             free(toks); free(kv); free(ne);
             continue;
         }
-        ne->key = key; ne->toks = toks; ne->n = n;
+        ne->key = key ^ PFX_STORE_SALT; ne->toks = toks; ne->n = n;   // the model key again
         ne->kv = kv; ne->bytes = (size_t)bytes; ne->used = now;
         pfx_ring_mark(e->m, ne, n, true);
         ne->next = PFX.head; PFX.head = ne;
@@ -1304,6 +1343,11 @@ int prefix_slot_export(const engine *e, int n, const char *path) {
         model_has_recurrent(e->m))
         return PFX_CTX_UNSUPPORTED;
     if (n < 1 || e->pos < n) return PFX_CTX_MISMATCH;
+    // R3.60: as a pin, never rows a scoring feed wrote. Not reached from the
+    // server: the automatic preamble snapshot follows a chat request, which
+    // never scores its prompt (echo and prompt_logprobs are the text API's),
+    // after engine_prefix_reuse has fed the rows from the mark as a prompt.
+    if (e->scored_from < n) return PFX_CTX_MISMATCH;
     // R4.40.1: a file says how many tokens it holds, and its loader takes the
     // LongRoPE set that length takes. Rows of a preamble inside a sequence
     // past the original context are on the long set whatever the preamble's
@@ -1725,6 +1769,7 @@ float *engine_score_prompt(engine *e, const int32_t *toks, int n, int top_n,
         return NULL;
     }
     engine_reset(e);
+    e->scored_from = 0;   // every row below is a solo feed's (R3.60)
     // R4.40: the prompt is scored as one sequence of n tokens, on the
     // LongRoPE set that length takes from its first position
     model_rope_for_len(e->m, n);

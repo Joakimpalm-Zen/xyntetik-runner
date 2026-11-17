@@ -72,7 +72,7 @@ static bool canon_seat(engine *e, canon_prefix *c, const int32_t *ptoks, int np,
         c->upto = c->n;
     }
     // keep exactly k rows: engine_rewind keeps at most (n - 1) of n
-    if (engine_rewind(e, ptoks, k + 1) != k) {
+    if (engine_rewind_prompt(e, ptoks, k + 1) != k) {
         engine_reset(e);
         c->upto = -1;
         return true;
@@ -162,6 +162,9 @@ static bool score_mode(engine *e, const char *prompt, tok_mode mode,
             !engine_feed(e, s->toks + e->pos, (start - 1) - e->pos)) {
             *err = "engine feed failed (context or memory)"; ok = false; break;
         }
+        // from here the rows are the decode route's: a later normal request
+        // keeps the slot's rows only below them (R3.60)
+        engine_mark_scored(e, start - 1);
         const float *L = engine_feed_solo(e, s->toks[start - 1]);
         if (!L) { *err = "engine feed failed (context or memory)"; ok = false; break; }
         double total = 0;

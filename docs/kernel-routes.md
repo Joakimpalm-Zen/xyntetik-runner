@@ -67,8 +67,21 @@ prompt moved the answer, by at most 4e-5, and a BF16 file's never did;
 `"cache_prompt": false` reproduces the fresh slot, and so does a restart).
 Since R3.60, on a CPU-only run at `-b` 2 or more the new tokens take the same
 route as a fresh slot's prompt, so a continued prefix that was prefilled gives
-the fresh slot's bits; tokens the model generated were decoded, one a forward,
-and a request that continues them can still differ from a fresh slot.
+the fresh slot's bits.
+- A scored prompt (echo, `prompt_logprobs`) and the scored tokens of
+  `/v1/decide` are fed one token a forward on the decode route. The engine
+  marks the first row a scoring feed wrote. A normal request keeps the slot's
+  rows only below that mark, and feeds the rest as a prompt; the rows at and
+  past it are never published to the shared tier, pinned as a context or
+  written as a preamble snapshot. So a decide's shared state, prefilled, is
+  still reused by the next request, and its scored tokens are not.
+- Tokens the model generated were decoded, one a forward, and a request that
+  continues them can still differ from a fresh slot, as can an explicit
+  session or snapshot resume, which restores saved rows as they were.
+- A persisted prefix store and automatic preamble snapshots saved before
+  R3.60 hold rows made with the width-dependent arithmetic: their entries are
+  refused and their snapshots never found, and the rows are fed again. Session
+  images and named snapshots, an explicit resume, load as before.
 
 ## CUDA: `enc_mv` in `src/cuda.c`
 

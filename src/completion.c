@@ -5148,7 +5148,7 @@ static float *turn_prefill(turn_result *t) {
         // them. The slot's own rows, so no cache budget is involved.
         if (prep->preamble && t->reuse.keep < prep->preamble &&
             kvsnap_auto_load(e, prep->pre_name)) {
-            t->reuse = (prefix_reuse){ .keep = engine_rewind(e, prep->toks, prep->n_prompt) };
+            t->reuse = (prefix_reuse){ .keep = engine_rewind_prompt(e, prep->toks, prep->n_prompt) };
             if (t->reuse.keep >= prep->preamble) {
                 prep->pre_loaded = true;
                 prep->diag.context_id = prep->pre_name;
@@ -5158,7 +5158,7 @@ static float *turn_prefill(turn_result *t) {
         }
     }
     else if (q->cache_prompt)
-        t->reuse.keep = engine_rewind(e, prep->toks, prep->n_prompt);
+        t->reuse.keep = engine_rewind_prompt(e, prep->toks, prep->n_prompt);
     else
         engine_reset(e);
     t->keep = t->reuse.keep;

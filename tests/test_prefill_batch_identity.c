@@ -46,6 +46,10 @@
 //      stores the cold feed's rows. Before the fix it published the scored
 //      rows and the other slot forked them. Live control: a prompt fed as a
 //      prompt, published, is forked by the other slot.
+//   7. The mark is a position: a prefix fed as a prompt, then scored tokens
+//      alone from position m (engine_mark_scored(m), as src/decide.c marks
+//      where its scored tokens start). A normal request extending it keeps the
+//      m rows below the mark, no more, and stores the cold feed's rows.
 #include "runner.h"
 
 #include <stdio.h>
@@ -244,6 +248,20 @@ static void check_file(const char *path) {
         engine_reset(&s2.e);
         prefix_reuse rc = engine_prefix_reuse(&s2.e, t, n2);
         control6 += fedp && rc.keep >= n - 1;
+
+        // gate 7: the mark is a position (a decide's state is kept, its scored tokens are not)
+        int m7 = n / 2;
+        engine_reset(&ref.e);
+        bool ok7 = engine_feed(&ref.e, t, m7) != NULL;
+        engine_mark_scored(&ref.e, m7);
+        for (int j = m7; j < n && ok7; j++) ok7 = engine_feed_solo(&ref.e, t[j]) != NULL;
+        int kept7 = ok7 ? engine_rewind_prompt(&ref.e, t, n2) : -1;
+        ok7 = ok7 && engine_feed(&ref.e, t + kept7, n2 - kept7) != NULL;
+        int d7 = ok7 ? kv_diff(&ref.m, &s64.m, n2) : -1;
+        if (d7 || kept7 != m7) fprintf(stderr, "  after scored tokens from %d: kept %d rows, %d (layer, position) rows differ\n",
+                                       m7, kept7, d7);
+        ck(kept7 == m7 && d7 == 0, path, n,
+           "after scored tokens from m, a normal prompt keeps exactly the m rows below them and stores the cold feed's");
     }
     ck(control5 == NLEN, path, CTX,
        "live control: rows a scored prompt left, kept, are not the cold feed's");

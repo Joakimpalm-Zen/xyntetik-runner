@@ -529,7 +529,13 @@ void kvsnap_auto_name(const engine *e, const int32_t *toks, int n,
     uint8_t *buf = malloc(nb);
     char hex[65] = "";
     if (buf) {
-        memcpy(buf, &e->model_key, sizeof(uint64_t));
+        // R3.60: a preamble's rows are a prompt's prefill pass, which no longer
+        // depends on -b; a snapshot written before it holds the old rows, so
+        // its name is not this one and it is never loaded (it ages out of the
+        // directory as the trim takes it). Named snapshots are not salted:
+        // loading one is an explicit resume.
+        uint64_t key = e->model_key ^ 0x5233362e36302e31ull;   // "R36.60.1"
+        memcpy(buf, &key, sizeof(uint64_t));
         memcpy(buf + sizeof(uint64_t), toks, sizeof(int32_t) * (size_t)n);
         envelope_data_sha256(buf, nb, hex);
         free(buf);
