@@ -9241,15 +9241,24 @@ static int cli_main(int argc, char **argv, char **owned_prompt, session_image *s
         for (int i = 0; tw && *tw && i < 600 && !plat_file_readable(tw); i++) plat_sleep_ms(100);
         // The identity of the image running, never of a file a path names now:
         // on Linux the hash of /proc/self/exe (the image itself), on macOS the
-        // loaded image's LC_UUID, elsewhere none (a value of this process).
+        // loaded image's LC_UUID, on Windows the hash of the module's file checked
+        // against the image's mapping (plat_running_image_open), elsewhere none: a
+        // value of this process, said once on stderr since it ends cross-process reuse.
         char bid[96] = "";
         if (dirty) {
-#if defined(__linux__)
             char sha[65];
+#if defined(__linux__)
             if (envelope_file_sha256("/proc/self/exe", sha)) snprintf(bid, sizeof bid, "sha256:%s", sha);
+#elif defined(_WIN32)
+            if (envelope_stream_sha256(plat_running_image_open(), sha)) snprintf(bid, sizeof bid, "sha256:%s", sha);
 #else
+            (void)sha;
             if (!plat_running_image_id(bid, sizeof bid)) bid[0] = 0;
 #endif
+            if (!bid[0])
+                fprintf(stderr, "runner: warning: this dirty build has no identity of its running image here, so "
+                        "it reuses nothing another process persisted (prefix stores, automatic snapshots, "
+                        "sessions)\n");
         }
         model_route_set_build(rev ? rev : "", dirty, bid[0] ? bid : NULL);
     }

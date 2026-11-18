@@ -18,6 +18,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <fcntl.h>
 #include <io.h>
 #include <psapi.h>
 
@@ -2657,4 +2658,43 @@ bool plat_running_image_id(char *out, size_t cap) {
     return false;
 }
 #endif
+
+// R20: the file of the image this process runs, open for reading, or NULL. On
+// Windows a running image cannot be overwritten, but it can be renamed and
+// another file put at its path, so the path GetModuleFileNameW names is not
+// trusted: the file is opened by the NT name the image is mapped from
+// (GetMappedFileNameW, which follows a rename) and kept only if the opened
+// handle's own NT path is that name. The caller hashes through the handle, so
+// a rename after the check changes nothing. NULL elsewhere (Linux hashes
+// /proc/self/exe, macOS reads the image's LC_UUID).
+FILE *plat_running_image_open(void) {
+#ifdef _WIN32
+    enum { WN = 32768 };
+    static const wchar_t root[] = L"\\\\?\\GLOBALROOT";
+    wchar_t *path = malloc(sizeof(wchar_t) * WN * 3);
+    if (!path) return NULL;
+    wchar_t *fin = path + WN, *mapped = path + 2 * WN;
+    FILE *f = NULL;
+    DWORD b = GetMappedFileNameW(GetCurrentProcess(), (LPVOID)GetModuleHandleW(NULL), mapped, WN);
+    HANDLE h = INVALID_HANDLE_VALUE;
+    if (b && b < WN - 32) {
+        wcscpy(path, root);
+        wcscat(path, mapped);
+        h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                        FILE_ATTRIBUTE_NORMAL, NULL);
+    }
+    if (h != INVALID_HANDLE_VALUE) {
+        DWORD a = GetFinalPathNameByHandleW(h, fin, WN, VOLUME_NAME_NT);
+        int fd = -1;
+        if (a && a < WN && _wcsicmp(fin, mapped) == 0)
+            fd = _open_osfhandle((intptr_t)h, _O_RDONLY | _O_BINARY);
+        if (fd < 0) CloseHandle(h);
+        else if (!(f = _fdopen(fd, "rb"))) _close(fd);
+    }
+    free(path);
+    return f;
+#else
+    return NULL;
+#endif
+}
 

@@ -349,6 +349,9 @@ void        plat_sleep_ms(int ms);
 // R20: the running image's own identity where the platform gives one from
 // memory (macOS: the main image's LC_UUID); false elsewhere
 bool        plat_running_image_id(char *out, size_t cap);
+// R20: the running image's own file, open for reading, where only a path names
+// it (Windows, checked against the image's mapping); NULL elsewhere
+FILE       *plat_running_image_open(void);
 long        plat_pid_self(void);
 
 // Is file descriptor `fd` a terminal a person is at? On Windows a console,

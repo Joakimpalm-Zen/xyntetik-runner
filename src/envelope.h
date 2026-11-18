@@ -1,6 +1,7 @@
 #ifndef RUNNER_ENVELOPE_H
 #define RUNNER_ENVELOPE_H
 
+#include <stdio.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -50,6 +51,8 @@ enum envelope_state {
 // sha256 of a whole file as lowercase hex (exported for the training
 // provenance record; the envelope gate uses it internally)
 bool envelope_file_sha256(const char *path, char hex[65]);
+// the same over an open stream, which it closes (R20: the running image's file on Windows)
+bool envelope_stream_sha256(FILE *f, char hex[65]);
 // For a verifier that follows someone else's word (a lineage record, a bundle
 // or pack manifest): the files it reads and hashes are named by a file that
 // may be anyone's, and only a regular file is one of them. A record that
