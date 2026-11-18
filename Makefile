@@ -506,7 +506,7 @@ $(OBJDIR)/metal.o: src/metal.m $(HDR) src/kernels_metal.h src/kernels_tensor_met
 
 SRC = src/gguf.c src/compat.c $(QUANTS_OBJ) src/instances.c src/tokenizer.c src/model.c src/sample.c src/dpo.c \
       src/vramreg.c src/npy.c \
-      src/template.c src/jsonmode.c $(SCHEMA_SRC) $(QUANTIZE_OBJ) src/engine.c src/decide.c src/clef.c src/json.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/http.c src/registry.c src/provenance.c src/lineage.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c src/session.c src/scheduler.c src/completion.c src/api_responses.c src/api_anthropic.c src/server.c src/hfhub.c src/bundle.c \
+      src/template.c src/jsonmode.c $(SCHEMA_SRC) $(QUANTIZE_OBJ) src/engine.c src/decide.c src/clef.c src/json.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/http.c src/registry.c src/provenance.c src/lineage.c src/train_record.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c src/session.c src/scheduler.c src/completion.c src/api_responses.c src/api_anthropic.c src/server.c src/hfhub.c src/bundle.c \
       src/derive.c src/main.c $(GPU_SRC) $(TRAY_SRC)
 
 # Cross-compile a static riscv64 binary with zig (no toolchain install;
@@ -4308,6 +4308,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_hf_fetch.py \
     tests/test_hf_spec_bounds.py \
     tests/test_hostile_geometry.py \
+    tests/test_hostile_records.py \
     tests/test_hub_upload_check.py \
     tests/test_hybrid_admission.py \
     tests/test_idle_coexistence.py \
@@ -4640,7 +4641,7 @@ FUZZ_TIME    ?= 20
 FUZZ_RSS_MB  ?= 2048
 FUZZ_TARGETS = json_parse schema_compile sval_feed sval_trial jsonv_feed \
                gguf_open http_request tokenizer model_load gguf_split \
-               tool_stream record_check session_read
+               tool_stream record_check session_read train_record
 # -O1 -g: libFuzzer wants speed but ASan reports want frames.
 # No -march=native and no -ffast-math: the point here is defined behaviour,
 # and UBSan must abort rather than warn or the run cannot gate anything.
@@ -4665,6 +4666,7 @@ FUZZ_SRC_gguf_split     = src/gguf.c src/compat.c src/quants.c
 FUZZ_SRC_tool_stream    = src/template.c src/gguf.c src/tokenizer.c $(SCHEMA_SRC) src/jsonmode.c \
                           src/json.c src/compat.c src/quants.c
 FUZZ_SRC_record_check   = src/envelope.c src/ed25519.c $(MLDSA_SRC) src/json.c src/compat.c
+FUZZ_SRC_train_record   = src/train_record.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/json.c src/compat.c
 # session.c's writer half calls the engine, so its reader links the server's
 # whole source set, as the thread-sanitizer gates do
 FUZZ_SRC_session_read   = $(filter-out tests/test_swap_race.c $(GPU_SRC),$(TEST_SWAP_RACE_SRC)) src/gpu_none.c
@@ -4703,8 +4705,10 @@ FUZZ_ARGS_gguf_split = -max_len=1048576
 # a model's turn is kilobytes; the split-point property is found on short ones
 FUZZ_ARGS_tool_stream = -max_len=4096 -dict=tests/fuzz/tool_stream.dict
 FUZZ_ARGS_record_check = -max_len=16384 -dict=tests/fuzz/record.dict
+FUZZ_ARGS_train_record = -max_len=32768 -dict=tests/fuzz/train_record.dict
 FUZZ_ARGS_session_read = -max_len=65536
 FUZZ_ENV_record_check = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=.build/fuzz-findings/record_check/asan UBSAN_OPTIONS=halt_on_error=1:log_path=.build/fuzz-findings/record_check/ubsan
+FUZZ_ENV_train_record = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=.build/fuzz-findings/train_record/asan UBSAN_OPTIONS=halt_on_error=1:log_path=.build/fuzz-findings/train_record/ubsan
 FUZZ_ENV_session_read = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=.build/fuzz-findings/session_read/asan UBSAN_OPTIONS=halt_on_error=1:log_path=.build/fuzz-findings/session_read/ubsan
 FUZZ_ENV_model_load = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=.build/fuzz-findings/model_load/asan UBSAN_OPTIONS=halt_on_error=1:log_path=.build/fuzz-findings/model_load/ubsan
 FUZZ_ENV_gguf_split = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=.build/fuzz-findings/gguf_split/asan UBSAN_OPTIONS=halt_on_error=1:log_path=.build/fuzz-findings/gguf_split/ubsan
@@ -4853,7 +4857,7 @@ test-makefile-sane:
 		exit 1; \
 	}; \
 	if grep -q 'system(' src/tray.c src/tray_*.c src/tray_*.m; then echo "FAIL: tray launches through a shell"; exit 1; fi; \
-	for f in src/model.c src/engine.c src/completion.c src/server.c src/scheduler.c src/registry.c src/provenance.c src/lineage.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c src/session.c src/api_responses.c src/api_anthropic.c src/template.c $(SCHEMA_SRC) src/jsonmode.c src/tokenizer.c src/sample.c src/envelope.c src/oms.c src/http.c src/json.c src/gguf.c; do \
+	for f in src/model.c src/engine.c src/completion.c src/server.c src/scheduler.c src/registry.c src/provenance.c src/lineage.c src/train_record.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c src/session.c src/api_responses.c src/api_anthropic.c src/template.c $(SCHEMA_SRC) src/jsonmode.c src/tokenizer.c src/sample.c src/envelope.c src/oms.c src/http.c src/json.c src/gguf.c; do \
 	  $(CC) -fsyntax-only -std=gnu11 -Werror=vla -DRUNNER_GPU_CUDA -I src $$f 2>/dev/null || { \
 	    echo "FAIL: $$f declares a variable-length stack array (the forward runs on 512 KB server threads; size by file values goes on the heap)"; exit 1; }; done; \
 	tline=$$($(MAKE) -Bn --no-print-directory T3=1 CFLAGS="-O3 -ffast-math" runner | grep -- ' src/model.c '); \

@@ -1,11 +1,13 @@
 #include "lineage.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "compat.h"
 #include "envelope.h"
+#include "fpclass.h"
 #include "receipts.h"
 
 #include <sys/stat.h>
@@ -49,11 +51,28 @@ bool lineage_sign(const char *record_path, const char *sign_key) {
 
 // ------------------------------------------------------------------ walker --
 
-// The walker follows a record's word, so it reads regular files only
-// (envelope.h, record_regular_file): a record that cited /dev/zero was hashed
-// with no end (R6.68.56).
+// The walker reads local regular files without following symlinks
+// (envelope.h, record_regular_file_nofollow): a record that cited /dev/zero
+// was hashed with no end (R6.68.56).
+static bool safe_local_name(const char *s) {
+    if (!s || !*s || strlen(s) > 255) return false;
+    if (!strcmp(s, ".") || !strcmp(s, "..")) return false;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (*p < 0x20 || *p == 0x7f || *p == '/' || *p == '\\' || *p == ':') return false;
+    }
+    return true;
+}
+
+static bool cited_is_unsafe_file(const char *path) {
+    if (!path || !*path) return false;
+    plat_stat_t st;
+    bool is_link = false;
+    if (plat_stat_nofollow(path, &st, &is_link) != 0) return false;
+    return is_link || !S_ISREG(st.st_mode);
+}
+
 static jv *read_json(const char *path) {
-    if (!record_regular_file(path)) return NULL;
+    if (!record_regular_file_nofollow(path)) return NULL;
     FILE *f = plat_fopen(path, "rb");
     if (!f) return NULL;
     size_t cap = 1 << 16, n = 0, r;
@@ -97,19 +116,86 @@ static const char *const INPUT_KEYS[] = {
 
 // The deepest a walk goes, in printed links (an input and its record are two):
 // a chain past it is BROKEN, whatever kind its links are.
-#define LINEAGE_MAX_DEPTH 32
+#define LINEAGE_MAX_DEPTH  32
+#define LINEAGE_MAX_SEEN   4096
+#define LINEAGE_MAX_VISITS 16384
 
-// worst: 0 verified, 1 unsigned, 2 broken. The records on the path walked now,
-// by sha256, so a record that is its own ancestor is a cycle, not a loop the
-// depth bound has to stop.
-typedef struct { int worst; int sp; char path[LINEAGE_MAX_DEPTH + 2][65]; } walk_state;
+typedef struct {
+    char *path;
+    char rsha[65];
+    char want_out[65];
+    int worst;
+    int max_depth_rel;
+} lineage_seen_node;
+
+// worst: 0 verified, 1 unsigned, 2 broken. `path` holds active ancestors by
+// sha256 so cycles fail immediately; completed non-cyclic subtrees are memoized
+// in `seen` up to LINEAGE_MAX_SEEN, failing closed if capacity or visits run out.
+typedef struct {
+    int worst;
+    int sp;
+    char path[LINEAGE_MAX_DEPTH + 2][65];
+    int max_depth;
+    int visits;
+    bool saw_cycle;
+    bool aborted;
+    lineage_seen_node *seen;
+    int n_seen;
+    int cap_seen;
+} walk_state;
+
+static void walk_state_free(walk_state *w) {
+    for (int i = 0; i < w->n_seen; i++) free(w->seen[i].path);
+    free(w->seen);
+    w->seen = NULL;
+    w->n_seen = w->cap_seen = 0;
+}
+
+static const lineage_seen_node *walk_seen_find(const walk_state *w, const char *rec_path,
+                                               const char *rsha, const char *want_out_sha) {
+    const char *wo = want_out_sha ? want_out_sha : "";
+    for (int i = 0; i < w->n_seen; i++) {
+        if (strcmp(w->seen[i].rsha, rsha) == 0 &&
+            strcmp(w->seen[i].want_out, wo) == 0 &&
+            strcmp(w->seen[i].path, rec_path) == 0)
+            return &w->seen[i];
+    }
+    return NULL;
+}
+
+static bool walk_seen_add(walk_state *w, const char *rec_path, const char *rsha,
+                          const char *want_out_sha, int worst, int max_depth_rel) {
+    if (walk_seen_find(w, rec_path, rsha, want_out_sha)) return true;
+    if (w->n_seen >= LINEAGE_MAX_SEEN) return false;
+    if (w->n_seen == w->cap_seen) {
+        int nc = w->cap_seen ? w->cap_seen * 2 : 32;
+        if (nc > LINEAGE_MAX_SEEN) nc = LINEAGE_MAX_SEEN;
+        lineage_seen_node *g = realloc(w->seen, (size_t)nc * sizeof *g);
+        if (!g) return false;
+        w->seen = g;
+        w->cap_seen = nc;
+    }
+    char *pdup = strdup(rec_path);
+    if (!pdup) return false;
+    lineage_seen_node *node = &w->seen[w->n_seen++];
+    node->path = pdup;
+    snprintf(node->rsha, sizeof node->rsha, "%s", rsha);
+    snprintf(node->want_out, sizeof node->want_out, "%s", want_out_sha ? want_out_sha : "");
+    node->worst = worst;
+    node->max_depth_rel = max_depth_rel;
+    return true;
+}
 
 static void note(walk_state *w, int level) { if (level > w->worst) w->worst = level; }
 
 static void indent(int depth) { for (int i = 0; i < depth; i++) fputs("  ", stdout); }
 
 static void short_sha(const char *sha, char out[13]) {
-    snprintf(out, 13, "%.12s", sha ? sha : "?");
+    if (!envelope_is_sha256_hex(sha)) {
+        snprintf(out, 13, "invalid");
+        return;
+    }
+    snprintf(out, 13, "%.12s", sha);
 }
 
 static void walk_record(const char *rec_path, const char *want_rec_sha,
@@ -120,6 +206,13 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
 // beside its chain. An evaluation made for another file (its subject hash
 // differs) is STALE and does not count; a bad signature is BROKEN.
 static const char *const EVAL_KINDS[] = { "fidelity", "agent" };
+
+static int lineage_safe_count(jv *v, int min_val, int fallback) {
+    if (!v || v->type != J_NUM || !fp_isfinite(v->num)) return fallback;
+    if (v->num <= (double)min_val) return min_val;
+    if (v->num >= (double)INT_MAX) return INT_MAX;
+    return (int)v->num;
+}
 
 static void walk_evals(const char *file, const char *sha, const char *trust_hex,
                        int depth, walk_state *w) {
@@ -136,17 +229,25 @@ static void walk_evals(const char *file, const char *sha, const char *trust_hex,
         const char *pw = !pass || pass->type == J_NULL ? "no threshold set"
                        : pass->type == J_BOOL && pass->b ? "pass" : "FAIL";
         printf("eval %s: ", EVAL_KINDS[k]);
-        if (!strcmp(EVAL_KINDS[k], "fidelity"))
-            printf("vs %s, %d positions, top-1 %.1f%%, mean KL %.4g; %s",
-                   jv_str(jv_get(jv_get(ev, "reference"), "path"), "?"),
-                   (int)jv_num(jv_get(m, "positions_scored"), 0),
+        if (!strcmp(EVAL_KINDS[k], "fidelity")) {
+            fputs("vs ", stdout);
+            envelope_print_safe(stdout, jv_str(jv_get(jv_get(ev, "reference"), "path"), "?"),
+                                255, "?", false);
+            printf(", %d positions, top-1 %.1f%%, mean KL %.4g; %s",
+                   lineage_safe_count(jv_get(m, "positions_scored"), 0, 0),
                    jv_num(jv_get(m, "top1_agreement_pct"), 0),
                    jv_num(jv_get(m, "mean_kld"), 0), pw);
-        else
+        } else
             printf("%d of %d tasks verified, %d aborts; %s",
-                   (int)jv_num(jv_get(m, "tasks_verified"), 0),
-                   (int)jv_num(jv_get(m, "tasks_attempted"), 0),
-                   (int)jv_num(jv_get(m, "engine_error_aborts"), 0), pw);
+                   lineage_safe_count(jv_get(m, "tasks_verified"), 0, 0),
+                   lineage_safe_count(jv_get(m, "tasks_attempted"), 0, 0),
+                   lineage_safe_count(jv_get(m, "engine_error_aborts"), 0, 0), pw);
+        if (!envelope_is_sha256_hex(subj)) {
+            printf("  BROKEN: invalid subject.sha256\n");
+            note(w, 2);
+            jv_free(ev);
+            continue;
+        }
         if (!sha || strcmp(subj, sha) != 0) {
             printf("  STALE (made for another file)\n");
             jv_free(ev);
@@ -169,12 +270,15 @@ bool lineage_require_eval(const char *model, const char *kind, const char *trust
     if (!ev) { snprintf(why, cap, "no %s evaluation beside the model (%s)", kind, path); return false; }
     bool ok = false;
     jv *pass = jv_get(ev, "pass");
+    const char *subj = jv_str(jv_get(jv_get(ev, "subject"), "sha256"), "");
     if (strcmp(jv_str(jv_get(ev, "schema_version"), ""), "xyntetik.runner.eval.v1") ||
         strcmp(jv_str(jv_get(ev, "kind"), ""), kind))
         snprintf(why, cap, "%s is not a %s evaluation record", path, kind);
+    else if (!envelope_is_sha256_hex(subj))
+        snprintf(why, cap, "%s has an invalid subject.sha256", path);
     else if (!envelope_cited_sha256(model, sha))
         snprintf(why, cap, "cannot hash %s", model);
-    else if (strcmp(jv_str(jv_get(jv_get(ev, "subject"), "sha256"), ""), sha))
+    else if (strcmp(subj, sha))
         snprintf(why, cap, "%s was made for another file (its subject sha256 differs)", path);
     else if (!pass || pass->type != J_BOOL || !pass->b)
         snprintf(why, cap, "%s did not pass (or set no threshold)", path);
@@ -191,22 +295,23 @@ bool lineage_require_eval(const char *model, const char *kind, const char *trust
 
 // A file a record names, found beside the record that names it: records name
 // files by base name, and a chain copied to another machine or folder keeps
-// its records and files together. An older record's full path is tried first
-// while it is still there. The hash still decides whether it is the file
-// that was cited.
+// its records and files together. Unsafe names, path separators, traversal,
+// and control bytes are refused rather than probed outside the audit dir.
 const char *lineage_relocate(const char *cited, const char *citing, char *buf, size_t cap) {
-    char probe[65];
-    const char *name = strrchr(cited, '/');
-    const char *bs = strrchr(cited, '\\');
-    if (bs && (!name || bs > name)) name = bs;
-    if (name && envelope_cited_sha256(cited, probe)) return cited;
-    name = name ? name + 1 : cited;
+    if (!safe_local_name(cited) || !citing) {
+        if (buf && cap) buf[0] = 0;
+        return "";
+    }
     const char *dir_end = strrchr(citing, '/');
     const char *bs2 = strrchr(citing, '\\');
     if (bs2 && (!dir_end || bs2 > dir_end)) dir_end = bs2;
     int dn = dir_end ? (int)(dir_end - citing + 1) : 0;
-    int n = snprintf(buf, cap, "%.*s%s", dn, citing, name);
-    return (n > 0 && (size_t)n < cap) ? buf : cited;
+    int n = snprintf(buf, cap, "%.*s%s", dn, citing, cited);
+    if (n <= 0 || (size_t)n >= cap) {
+        if (buf && cap) buf[0] = 0;
+        return "";
+    }
+    return buf;
 }
 
 // One input of a record: a file by hash, and the record that made it if any.
@@ -219,83 +324,178 @@ static void walk_input(const char *key, jv *in, const char *citing, const char *
     const char *path = jv_get(in, "name") ? jv_str(jv_get(in, "name"), "?")
                                           : jv_str(jv_get(in, "path"), "?");
     const char *sha = jv_str(jv_get(in, "sha256"), NULL);
+    bool sha_ok = envelope_is_sha256_hex(sha);
     char s[13], probe[65];
     short_sha(sha, s);
     char here[4096];
     const char *file = lineage_relocate(path, citing, here, sizeof here);
-    if (receipt && !envelope_cited_sha256(file, probe) && plat_path_base(path) == path &&
-        envelope_cited_sha256(path, probe))
+    if (!file[0]) {
+        indent(depth);
+        printf("%s: ", key);
+        envelope_print_safe(stdout, path, 255, "?", false);
+        printf(" sha256 %s  BROKEN: unsafe path\n", s);
+        note(w, 2);
+        return;
+    }
+    if (receipt && !record_regular_file_nofollow(file) && plat_path_base(path) == path &&
+        envelope_cited_regular_sha256(path, probe))
         file = path;
+    if (cited_is_unsafe_file(file)) {
+        indent(depth);
+        printf("%s: ", key);
+        envelope_print_safe(stdout, path, 255, "?", false);
+        printf(" sha256 %s  BROKEN: symlink or special file on disk\n", s);
+        note(w, 2);
+        return;
+    }
+    if (!sha_ok) {
+        indent(depth);
+        printf("%s: ", key);
+        envelope_print_safe(stdout, path, 255, "?", false);
+        printf(" sha256 %s  BROKEN: invalid %s.sha256\n", s, key);
+        note(w, 2);
+        return;
+    }
     jv *link = jv_get(in, "record");
     indent(depth);
     if (!link) {
-        printf("%s: %s sha256 %s  ORIGIN (no record: a download, or made before records)\n",
-               key, path, s);
+        printf("%s: ", key);
+        envelope_print_safe(stdout, path, 255, "?", false);
+        printf(" sha256 %s  ORIGIN (no record: a download, or made before records)\n", s);
         walk_evals(file, sha, trust_hex, depth + 1, w);
         return;
     }
-    printf("%s: %s sha256 %s\n", key, path, s);
+    printf("%s: ", key);
+    envelope_print_safe(stdout, path, 255, "?", false);
+    printf(" sha256 %s\n", s);
     walk_evals(file, sha, trust_hex, depth + 1, w);
     char moved[4096];
     const char *lname = jv_get(link, "name") ? jv_str(jv_get(link, "name"), "")
                                              : jv_str(jv_get(link, "path"), "");
-    walk_record(lineage_relocate(lname, file, moved, sizeof moved),
-                jv_str(jv_get(link, "sha256"), NULL), sha, trust_hex, depth + 1, w);
+    const char *lrec = lineage_relocate(lname, file, moved, sizeof moved);
+    if (!lrec[0]) {
+        indent(depth + 1);
+        fputs("BROKEN: unsafe record path ", stdout);
+        envelope_print_safe(stdout, lname, 255, "?", false);
+        putchar('\n');
+        note(w, 2);
+        return;
+    }
+    const char *lsha = jv_str(jv_get(link, "sha256"), NULL);
+    if (lsha && !envelope_is_sha256_hex(lsha)) {
+        indent(depth + 1);
+        printf("BROKEN: invalid %s.record.sha256\n", key);
+        note(w, 2);
+        return;
+    }
+    walk_record(lrec, lsha, sha, trust_hex, depth + 1, w);
 }
 
 static void walk_record(const char *rec_path, const char *want_rec_sha,
                         const char *want_out_sha, const char *trust_hex,
                         int depth, walk_state *w) {
+    if (w->aborted) return;
     indent(depth);
+    if (++w->visits > LINEAGE_MAX_VISITS) {
+        printf("BROKEN: lineage walk exceeded %d visits\n", LINEAGE_MAX_VISITS);
+        note(w, 2);
+        w->aborted = true;
+        return;
+    }
+    if (depth > w->max_depth) w->max_depth = depth;
     if (depth > LINEAGE_MAX_DEPTH) {
         printf("BROKEN: the chain is longer than %d links\n", LINEAGE_MAX_DEPTH);
         note(w, 2);
         return;
     }
     char rsha[65];
-    if (!envelope_cited_sha256(rec_path, rsha)) {
-        printf("BROKEN: record %s is missing\n", rec_path);
+    if (!envelope_cited_regular_sha256(rec_path, rsha)) {
+        fputs("BROKEN: record ", stdout);
+        envelope_print_safe(stdout, rec_path, 0, "?", false);
+        fputs(" is missing or unsafe\n", stdout);
         note(w, 2);
         return;
     }
     for (int i = 0; i < w->sp; i++)
         if (!strcmp(w->path[i], rsha)) {
-            printf("BROKEN: record %s is its own ancestor (a cycle)\n", rec_path);
+            fputs("BROKEN: record ", stdout);
+            envelope_print_safe(stdout, rec_path, 0, "?", false);
+            fputs(" is its own ancestor (a cycle)\n", stdout);
+            w->saw_cycle = true;
             note(w, 2);
             return;
         }
     // the record must be the one the child recorded: altered later is broken
     if (want_rec_sha && strcmp(want_rec_sha, rsha) != 0) {
-        printf("BROKEN: record %s changed after the next step recorded it\n", rec_path);
+        fputs("BROKEN: record ", stdout);
+        envelope_print_safe(stdout, rec_path, 0, "?", false);
+        fputs(" changed after the next step recorded it\n", stdout);
         note(w, 2);
         return;
     }
+    const lineage_seen_node *cached = walk_seen_find(w, rec_path, rsha, want_out_sha);
+    if (cached) {
+        if (depth + cached->max_depth_rel > LINEAGE_MAX_DEPTH) {
+            printf("BROKEN: the chain is longer than %d links\n", LINEAGE_MAX_DEPTH);
+            note(w, 2);
+            return;
+        }
+        int leaf_d = depth + cached->max_depth_rel;
+        if (leaf_d > w->max_depth) w->max_depth = leaf_d;
+        const char *cname = strrchr(rec_path, '/');
+        cname = cname ? cname + 1 : rec_path;
+        fputs("already verified earlier in walk (", stdout);
+        envelope_print_safe(stdout, cname, 0, "?", false);
+        printf(", status %s)\n",
+               cached->worst == 0 ? "VERIFIED" : cached->worst == 1 ? "UNSIGNED" : "BROKEN");
+        note(w, cached->worst);
+        return;
+    }
+    int prev_worst = w->worst;
+    int prev_max_depth = w->max_depth;
+    bool prev_cycle = w->saw_cycle;
+    w->worst = 0;
+    w->max_depth = depth;
+    w->saw_cycle = false;
     jv *rec = read_json(rec_path);
     const char *out_key = NULL;
     const char *step = rec ? step_of(rec, &out_key) : NULL;
     if (!step) {
-        printf("BROKEN: %s is not a lineage record\n", rec_path);
+        fputs("BROKEN: ", stdout);
+        envelope_print_safe(stdout, rec_path, 0, "?", false);
+        fputs(" is not a lineage record\n", stdout);
         note(w, 2);
         jv_free(rec);
+        if (prev_worst > w->worst) w->worst = prev_worst;
+        if (prev_max_depth > w->max_depth) w->max_depth = prev_max_depth;
+        if (prev_cycle) w->saw_cycle = true;
         return;
     }
     jv *out = jv_get(rec, out_key);
     const char *out_path = jv_str(jv_get(out, "path"), "?");
     const char *out_sha = jv_str(jv_get(out, "sha256"), NULL);
+    bool out_sha_ok = envelope_is_sha256_hex(out_sha);
     char out_here[4096];
     const char *out_file = lineage_relocate(out_path, rec_path, out_here, sizeof out_here);
+    bool out_unsafe = !out_file[0] || cited_is_unsafe_file(out_file);
     char pub[SIGN_PUBHEX_CAP];
     int sig = record_signature_state(rec_path, trust_hex, pub);
     char s[13];
     short_sha(out_sha, s);
     // the link itself: the child's input hash is this record's output hash
-    bool link_ok = !want_out_sha || (out_sha && !strcmp(want_out_sha, out_sha));
+    bool link_ok = !want_out_sha || (out_sha_ok && !strcmp(want_out_sha, out_sha));
     // and the output file, where it is still on disk, is that file
     char disk[65];
-    bool on_disk = envelope_cited_sha256(out_file, disk);
-    bool disk_ok = !on_disk || (out_sha && !strcmp(disk, out_sha));
+    bool on_disk = !out_unsafe && envelope_cited_regular_sha256(out_file, disk);
+    bool disk_ok = !on_disk || (out_sha_ok && !strcmp(disk, out_sha));
+    char bad_sha_msg[64];
     const char *verdict;
-    if (!link_ok) { verdict = "BROKEN: its output is not the file the next step used"; note(w, 2); }
+    if (!out_sha_ok) {
+        snprintf(bad_sha_msg, sizeof bad_sha_msg, "BROKEN: invalid %s.sha256", out_key);
+        verdict = bad_sha_msg;
+        note(w, 2);
+    } else if (!link_ok) { verdict = "BROKEN: its output is not the file the next step used"; note(w, 2); }
+    else if (out_unsafe) { verdict = "BROKEN: unsafe output path or symlink on disk"; note(w, 2); }
     else if (!disk_ok) { verdict = "BROKEN: the file on disk no longer matches its record"; note(w, 2); }
     else if (sig == 2) { verdict = "BROKEN: bad, malformed or untrusted signature"; note(w, 2); }
     else if (sig == 1) { verdict = "UNSIGNED"; note(w, 1); }
@@ -306,12 +506,18 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
     if (bs && (!rec_name || bs > rec_name)) rec_name = bs;
 #endif
     rec_name = rec_name ? rec_name + 1 : rec_path;
-    printf("%s -> %s sha256 %s  %s", step, out_path, s, verdict);
+    printf("%s -> ", step);
+    envelope_print_safe(stdout, out_path, 255, "?", false);
+    printf(" sha256 %s  %s", s, verdict);
     if (sig == 0) printf(" (signed %.16s...)", pub);
     if (!on_disk) printf(" (output file not present; checked by its recorded hash)");
-    printf("  [runner %s, record %s]\n", jv_str(jv_get(rec, "runner"), "?"), rec_name);
+    fputs("  [runner ", stdout);
+    envelope_print_safe(stdout, jv_str(jv_get(rec, "runner"), "?"), 128, "?", false);
+    fputs(", record ", stdout);
+    envelope_print_safe(stdout, rec_name, 0, "?", false);
+    fputs("]\n", stdout);
     if (w->sp < LINEAGE_MAX_DEPTH + 2) memcpy(w->path[w->sp++], rsha, sizeof rsha);
-    for (size_t i = 0; i < sizeof INPUT_KEYS / sizeof INPUT_KEYS[0]; i++) {
+    for (size_t i = 0; !w->aborted && i < sizeof INPUT_KEYS / sizeof INPUT_KEYS[0]; i++) {
         if (!strcmp(INPUT_KEYS[i], out_key)) continue;   // a train record's "adapter" is its output
         jv *in = jv_get(rec, INPUT_KEYS[i]);
         if (in && in->type == J_OBJ && jv_get(in, "sha256"))
@@ -320,29 +526,63 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
     // R17.9: an unlearned adapter's parent record, cited by sha256 (runner
     // --unlearn). It is walked as the record it names; its output is not an
     // input here, so no output link is checked, only the record itself.
-    jv *pr = jv_get(jv_get(rec, "unlearn"), "parent_record");
+    jv *pr = !w->aborted ? jv_get(jv_get(rec, "unlearn"), "parent_record") : NULL;
     if (pr && pr->type == J_OBJ) {
         jv *un = jv_get(rec, "unlearn");
         const char *ppath = jv_str(jv_get(pr, "path"), "");
+        const char *safe_p = safe_local_name(ppath) ? ppath : "<unsafe path>";
+        const char *dsha = jv_str(jv_get(un, "dropped_sha256"), NULL);
+        bool dsha_ok = envelope_is_sha256_hex(dsha);
+        char ds[13];
+        short_sha(dsha, ds);
         indent(depth + 1);
-        printf("unlearned from: %s (dropped %d rows of %d lines, sha256 %.12s)\n", ppath,
-               (int)jv_num(jv_get(un, "dropped_count"), -1), (int)jv_num(jv_get(un, "dropped_distinct"), -1),
-               jv_str(jv_get(un, "dropped_sha256"), "?"));
+        fputs("unlearned from: ", stdout);
+        envelope_print_safe(stdout, safe_p, 255, "<unsafe path>", false);
+        printf(" (dropped %d rows of %d lines, sha256 %s)\n",
+               lineage_safe_count(jv_get(un, "dropped_count"), INT_MIN, -1),
+               lineage_safe_count(jv_get(un, "dropped_distinct"), INT_MIN, -1), ds);
+        if (!dsha_ok) {
+            indent(depth + 2);
+            fputs("BROKEN: invalid unlearn.dropped_sha256\n", stdout);
+            note(w, 2);
+        }
         // a link without a hash is not a link: nothing holds the parent named
         // to the record the unlearned run read
         const char *psha = jv_str(jv_get(pr, "sha256"), NULL);
-        if (!psha || strlen(psha) != 64) {
+        if (!envelope_is_sha256_hex(psha)) {
             indent(depth + 2);
-            printf("BROKEN: unlearn.parent_record has no sha256: a link without a hash is not a link\n");
+            if (!psha || !*psha)
+                fputs("BROKEN: unlearn.parent_record has no sha256: a link without a hash is not a link\n", stdout);
+            else
+                fputs("BROKEN: invalid unlearn.parent_record.sha256\n", stdout);
             note(w, 2);
         } else {
             char moved[4096];
-            walk_record(lineage_relocate(ppath, rec_path, moved, sizeof moved), psha, NULL, trust_hex,
-                        depth + 2, w);
+            const char *lrec = lineage_relocate(ppath, rec_path, moved, sizeof moved);
+            if (!lrec[0]) {
+                indent(depth + 2);
+                printf("BROKEN: unsafe unlearn.parent_record path\n");
+                note(w, 2);
+            } else {
+                walk_record(lrec, psha, NULL, trust_hex, depth + 2, w);
+            }
         }
     }
     if (w->sp > 0) w->sp--;
     jv_free(rec);
+    int sub_worst = w->worst;
+    int rel_depth = w->max_depth - depth;
+    if (rel_depth < 0) rel_depth = 0;
+    if (!w->saw_cycle && !w->aborted &&
+        !walk_seen_add(w, rec_path, rsha, want_out_sha, sub_worst, rel_depth)) {
+        indent(depth);
+        printf("BROKEN: lineage graph exceeded memoization capacity (%d records)\n", LINEAGE_MAX_SEEN);
+        note(w, 2);
+        w->aborted = true;
+    }
+    if (prev_worst > w->worst) w->worst = prev_worst;
+    if (prev_max_depth > w->max_depth) w->max_depth = prev_max_depth;
+    if (prev_cycle) w->saw_cycle = true;
 }
 
 // --lineage DIR on a --receipts directory (R17.4): which model and adapter
@@ -355,7 +595,9 @@ static int walk_receipts_dir(const char *dir, const char *trust_hex) {
     walk_state w = { 0 };
     char **paths = NULL;
     int n = receipts_list_dir(dir, &paths);
-    printf("lineage of the receipts in %s: %d answers\n", dir, n);
+    fputs("lineage of the receipts in ", stdout);
+    envelope_print_safe(stdout, dir, 0, "?", false);
+    printf(": %d answers\n", n);
     if (n == 0) { printf("  NO RECORD: no receipt-*.json files\n"); free(paths); return 2; }
     version *v = calloc((size_t)n, sizeof *v);
     int nv = 0, *seq_v = calloc((size_t)n, sizeof *seq_v);
@@ -383,6 +625,8 @@ static int walk_receipts_dir(const char *dir, const char *trust_hex) {
         const char *ms = jv_str(jv_get(jv_get(r, "model"), "sha256"), "");
         jv *ad = jv_get(r, "adapter");
         const char *as = ad && ad->type == J_OBJ ? jv_str(jv_get(ad, "sha256"), "") : "";
+        if (!envelope_is_sha256_hex(ms) || (ad && ad->type == J_OBJ && !envelope_is_sha256_hex(as)))
+            bad_n++;
         const char *utc = jv_str(jv_get(r, "generated_utc"), "?");
         int k = 0;
         while (k < nv && (strcmp(v[k].model, ms) || strcmp(v[k].adapter, as))) k++;
@@ -416,11 +660,15 @@ static int walk_receipts_dir(const char *dir, const char *trust_hex) {
     for (int k = 0; k < nv; k++) {
         char ms[13], as[13];
         short_sha(v[k].model, ms);
-        short_sha(v[k].adapter[0] ? v[k].adapter : "none", as);
-        printf("  v%d: model sha256 %s, adapter %s: %d answers, %s .. %s\n", k + 1, ms,
-               v[k].adapter[0] ? as : "none", v[k].count, v[k].first, v[k].last);
+        short_sha(v[k].adapter, as);
+        printf("  v%d: model sha256 %s, adapter %s: %d answers, ", k + 1, ms,
+               v[k].adapter[0] ? as : "none", v[k].count);
+        envelope_print_safe(stdout, v[k].first, 31, "?", false);
+        fputs(" .. ", stdout);
+        envelope_print_safe(stdout, v[k].last, 31, "?", false);
+        putchar('\n');
         static const char *const KEYS[] = { "model", "adapter" };
-        for (size_t i = 0; i < 2; i++) {
+        for (size_t i = 0; !w.aborted && i < 2; i++) {
             jv *in = jv_get(first_rec[k], KEYS[i]);
             if (in && in->type == J_OBJ && jv_get(in, "sha256"))
                 walk_input(KEYS[i], in, paths[0], trust_hex, 2, &w, true);
@@ -432,7 +680,9 @@ static int walk_receipts_dir(const char *dir, const char *trust_hex) {
     printf("RESULT: %s\n", w.worst == 0 ? "VERIFIED (every link consistent and signed)"
                          : w.worst == 1 ? "CONSISTENT, NOT ALL SIGNED"
                                         : "BROKEN");
-    return w.worst;
+    int worst = w.worst;
+    walk_state_free(&w);
+    return worst;
 }
 
 int lineage_walk(const char *start, const char *trust_hex) {
@@ -452,13 +702,15 @@ int lineage_walk(const char *start, const char *trust_hex) {
         // model and adapter it names, walked back through their records.
         char pub[SIGN_PUBHEX_CAP];
         int sig = record_signature_state(start, trust_hex, pub);
-        printf("lineage of receipt %s: %s", start,
+        fputs("lineage of receipt ", stdout);
+        envelope_print_safe(stdout, start, 0, "?", false);
+        printf(": %s",
                sig == 0 ? "signed" : sig == 1 ? "UNSIGNED" : "BROKEN: bad, malformed or untrusted signature");
         if (sig == 0) printf(" (%.16s...)", pub);
         printf("\n");
         note(&w, sig);
         static const char *const KEYS[] = { "model", "adapter" };
-        for (size_t i = 0; i < 2; i++) {
+        for (size_t i = 0; !w.aborted && i < 2; i++) {
             jv *in = jv_get(probe, KEYS[i]);
             if (in && in->type == J_OBJ && jv_get(in, "sha256"))
                 walk_input(KEYS[i], in, start, trust_hex, 1, &w, true);
@@ -467,23 +719,32 @@ int lineage_walk(const char *start, const char *trust_hex) {
         printf("RESULT: %s\n", w.worst == 0 ? "VERIFIED (every link consistent and signed)"
                              : w.worst == 1 ? "CONSISTENT, NOT ALL SIGNED"
                                             : "BROKEN");
-        return w.worst;
+        int worst = w.worst;
+        walk_state_free(&w);
+        return worst;
     }
     if (probe && step_of(probe, &ok_key)) {
         snprintf(rec, sizeof rec, "%s", start);
-        printf("lineage of record %s\n", start);
+        fputs("lineage of record ", stdout);
+        envelope_print_safe(stdout, start, 0, "?", false);
+        putchar('\n');
     } else {
         if (!envelope_cited_sha256(start, sha)) {
-            printf("BROKEN: cannot read %s\n", start);
+            fputs("BROKEN: cannot read ", stdout);
+            envelope_print_safe(stdout, start, 0, "?", false);
+            putchar('\n');
             jv_free(probe);
             return 2;
         }
         char s[13];
         short_sha(sha, s);
-        printf("lineage of %s (sha256 %s)\n", start, s);
+        fputs("lineage of ", stdout);
+        envelope_print_safe(stdout, start, 0, "?", false);
+        printf(" (sha256 %s)\n", s);
         if (!lineage_sidecar(start, rec, sizeof rec)) {
-            printf("  NO RECORD: no step on this machine wrote %s (a download, or made "
-                   "before records)\n", start);
+            fputs("  NO RECORD: no step on this machine wrote ", stdout);
+            envelope_print_safe(stdout, start, 0, "?", false);
+            fputs(" (a download, or made before records)\n", stdout);
             jv_free(probe);
             return 2;
         }
@@ -495,5 +756,7 @@ int lineage_walk(const char *start, const char *trust_hex) {
     printf("RESULT: %s\n", w.worst == 0 ? "VERIFIED (every link consistent and signed)"
                          : w.worst == 1 ? "CONSISTENT, NOT ALL SIGNED"
                                         : "BROKEN");
-    return w.worst;
+    int worst = w.worst;
+    walk_state_free(&w);
+    return worst;
 }
