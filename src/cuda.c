@@ -10581,6 +10581,8 @@ bool gpu_train_res_layer_bw(model_t *m, int l) {
     int half = model_rope_dim(m, l) / 2;
     float ms = model_rope_mscale(m, l);
     if (ropes && !fr) return false;
+    // the attention backward's own bounds (gpu_train_attn_bw's on the slot path)
+    if (!t->f_tab_p || hd < 1 || hd > TAB_MAX_HD || nkv < 1 || nh % nkv) return false;
     trn_args ne_a = { E, T, E, E, E, E, m->rms_eps };
     tadd_args xa_a = { T, E, E, E };
     // ---- the recompute (lbw_recompute): the attention norm, Q and its

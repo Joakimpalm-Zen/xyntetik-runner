@@ -14322,10 +14322,10 @@ static void lbw_res_why(const char *why) {
     static _Atomic int said;
     if (!said++) fprintf(stderr, "train-gpu: the step stays on the slot path: %s\n", why);
 }
-// Whether this step's taped forward runs resident (model_resident_why, with
-// the device's own budget), and if so the attention sites' adapters up (the
-// host's backward keeps its own copies and chains in R1) and the step's
-// planes. Within a device FFN step only (RUNNER_TRAIN_DEVICE_STEP=0 and the
+// Whether this step runs resident (model_resident_why, with the device's own
+// budget), and if so the attention sites' adapters up (their gradients'
+// chains continue on the device from the host's values through the resident
+// backward, R2, and come back in lbw_resident_end) and the step's planes. Within a device FFN step only (RUNNER_TRAIN_DEVICE_STEP=0 and the
 // FFN slot's scope keep the host's or the slot path); RUNNER_TRAIN_RESIDENT=0
 // keeps the slot path in a device step, for comparison.
 static bool lbw_resident_begin(model_t *m, int T) {
@@ -14362,7 +14362,8 @@ static bool lbw_resident_begin(model_t *m, int T) {
     }
     m->train_resident = true;
     return true;
-}// the end of a resident step: the attention sites' gradients, accumulated on
+}
+// the end of a resident step: the attention sites' gradients, accumulated on
 // the device by the resident backward from the host's values, come back
 static bool lbw_resident_end(model_t *m) {
     static const int slot[4] = { LW_Q, LW_K, LW_V, LW_O };
