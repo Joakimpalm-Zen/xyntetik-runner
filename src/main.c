@@ -2563,6 +2563,10 @@ typedef struct {
     char sampling[256];           // the effective sampler, as the load line says
     double load_s;
     char prev_hash[65];           // --transcript-prev's chain hash, read before the load
+    // R17.9 step 4: the numbered checkpoints this run wrote, for the record's
+    // checkpoints and checkpoint_chain (train_checkpoint fills it)
+    struct train_ckpt { int step; long long cursor; char adapter[65], optim[65]; } *ckpt;
+    int n_ckpt, cap_ckpt;
 } cli_run;
 
 static void cli_opts_init(cli_opts *o) {
@@ -6034,7 +6038,26 @@ static bool train_checkpoint(cli_opts *o, cli_run *rt, const train_state *st,
     if (snprintf(path, sizeof path, "%s.step-%05d", o->train_out, st->step) >=
         (int)sizeof path)
         return false;
-    return model_lora_save(&rt->m, path) && train_optim_save(path, rt, st, ev, o->n_eval);
+    if (!model_lora_save(&rt->m, path) || !train_optim_save(path, rt, st, ev, o->n_eval)) return false;
+    // R17.9 step 4: what the record commits to, hashed from the files as written
+    char opath[4200];
+    if (rt->n_ckpt == rt->cap_ckpt) {
+        int cap = rt->cap_ckpt ? rt->cap_ckpt * 2 : 16;
+        void *p = realloc(rt->ckpt, sizeof *rt->ckpt * (size_t)cap);
+        if (!p) return false;
+        rt->ckpt = p;
+        rt->cap_ckpt = cap;
+    }
+    struct train_ckpt *c = &rt->ckpt[rt->n_ckpt];
+    c->step = st->step;
+    c->cursor = st->cursor;
+    snprintf(opath, sizeof opath, "%s.optim", path);
+    if (!envelope_file_sha256(path, c->adapter) || !envelope_file_sha256(opath, c->optim)) {
+        fprintf(stderr, "error: cannot hash checkpoint %s for the provenance record\n", path);
+        return false;
+    }
+    rt->n_ckpt++;
+    return true;
 }
 
 // The kill rule's verdict beside the adapter: OUT.killed.json when the run
@@ -6632,7 +6655,34 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
     sb_lit(&rec, model_full_on(&rt->m) ? "\"variant\":{\"path\":\"" : "\"adapter\":{\"path\":\"");
     sb_esc(&rec, plat_path_base(o->train_out), strlen(plat_path_base(o->train_out)));
     sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, asha);
-    sb_lit(&rec, "\"}}\n");
+    sb_lit(&rec, "\"}");
+    // R17.9 step 4: the checkpoints this run wrote and a chain over them, bound
+    // to this record: h_0 hashes the record's bytes so far (closed with "}"),
+    // so the chain cannot be moved to a run of another base, data or recipe;
+    // h_i = sha256("h_{i-1}|step|cursor|adapter|optim"), hex text throughout
+    if (rt->n_ckpt > 0 && !rec.failed) {
+        char body[65], h[65];
+        sb_lit(&rec, "}");
+        envelope_data_sha256(rec.s, rec.n, body);
+        rec.n--;                                         // the "}" again, the chain follows
+        rec.s[rec.n] = 0;
+        char line[512];
+        int n = snprintf(line, sizeof line, "xyntetik.runner.train.chain.v1|%s", body);
+        envelope_data_sha256(line, (size_t)n, h);
+        sb_fmt(&rec, ",\"checkpoints\":[");
+        char h0[65];
+        memcpy(h0, h, sizeof h0);
+        for (int i = 0; i < rt->n_ckpt; i++) {
+            const struct train_ckpt *c = &rt->ckpt[i];
+            sb_fmt(&rec, "%s{\"step\":%d,\"cursor\":%lld,\"adapter_sha256\":\"%s\",\"optim_sha256\":\"%s\"}",
+                   i ? "," : "", c->step, c->cursor, c->adapter, c->optim);
+            n = snprintf(line, sizeof line, "%s|%d|%lld|%s|%s", h, c->step, c->cursor, c->adapter, c->optim);
+            envelope_data_sha256(line, (size_t)n, h);
+        }
+        sb_fmt(&rec, "],\"checkpoint_chain\":{\"basis\":\"xyntetik.runner.train.chain.v1\",\"h0\":\"%s\","
+               "\"head\":\"%s\"}", h0, h);
+    }
+    sb_lit(&rec, "}\n");
     bool ok = write_record(o->train_out, ".train.json", "train", &rec, o->sign_key);
     free(rec.s);
     return ok;
@@ -6740,6 +6790,9 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
     train_teacher_close(&tt);
     train_examples_free(exs, n_ex);
     dpo_pairs_free(pairs, n_pair);
+    free(rt->ckpt);              // R17.9 step 4: the record has what it needs
+    rt->ckpt = NULL;
+    rt->n_ckpt = rt->cap_ckpt = 0;
     model_debug_time_report();   // RUNNER_DEBUG_TIME: the forwards' stages
     return rc;
 }
