@@ -8263,7 +8263,8 @@ static _Atomic uint64_t g_route_hashes;   // computations, for the tests
 static char g_route_revision[64];
 static bool g_route_dirty;
 
-void model_route_set_build(const char *revision, bool dirty) {
+void model_route_set_build(const char *revision, bool dirty, const char *binary_sha256) {
+    (void)binary_sha256;
     snprintf(g_route_revision, sizeof g_route_revision, "%s", revision ? revision : "");
     g_route_dirty = dirty;
 }

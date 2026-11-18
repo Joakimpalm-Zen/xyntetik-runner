@@ -1995,6 +1995,6 @@ uint64_t model_route_hash_count(void);
 void     model_route_transition(model_t *m);
 // the source the binary was built from, as the receipt prints it (once, at
 // start; a library that names none hashes "")
-void     model_route_set_build(const char *revision, bool dirty);
+void     model_route_set_build(const char *revision, bool dirty, const char *binary_sha256);
 
 #endif // RUNNER_MODEL_H

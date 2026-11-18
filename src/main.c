@@ -9231,7 +9231,7 @@ static int cli_main(int argc, char **argv, char **owned_prompt, session_image *s
         // route identity (the receipt prints the same)
         bool dirty = false;
         const char *rev = provenance_build_commit(&dirty);
-        model_route_set_build(rev ? rev : "", dirty);
+        model_route_set_build(rev ? rev : "", dirty, NULL);
     }
     cli_replay rp;
     memset(&rp, 0, sizeof rp);
