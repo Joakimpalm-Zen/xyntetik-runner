@@ -212,9 +212,9 @@ endif
 # read it first in every unit. The system headers it includes then come
 # before a source's own feature macros, so the two compat.c sets
 # (sched_getaffinity on Linux, rand_s on Windows) are given here too.
-ifneq ($(filter -DRUNNER_PORTABLE_MATH,$(CFLAGS)),)
 PMATH_FEATURES_Linux = -D_GNU_SOURCE
 PMATH_FEATURES_Windows = -D_CRT_RAND_S=
+ifneq ($(filter -DRUNNER_PORTABLE_MATH,$(CFLAGS)),)
 override CFLAGS += -include src/pmath.h $(PMATH_FEATURES_$(BUILD_OS))
 endif
 
@@ -342,6 +342,12 @@ TEST_SHA256 = $(TEST_BATCH:test-batch%=test-sha256%)
 TEST_ED25519 = $(TEST_BATCH:test-batch%=test-ed25519%)
 TEST_MLDSA = $(TEST_BATCH:test-batch%=test-mldsa%)
 TEST_PMATH = $(TEST_BATCH:test-batch%=test-pmath%)
+TEST_PMATH_EXPF = $(TEST_BATCH:test-batch%=test-pmath-expf%)
+TEST_PMATH_EXPF_DEFAULT = $(TEST_BATCH:test-batch%=test-pmath-expf-default%)
+BENCH_PMATH_LOOPS = $(TEST_BATCH:test-batch%=bench-pmath-loops-bin%)
+TEST_PMATH_CALLERS_D = $(TEST_BATCH:test-batch%=test-pmath-callers-default%)
+TEST_PMATH_SOFTMAX = $(TEST_BATCH:test-batch%=test-pmath-softmax%)
+TEST_PMATH_CALLERS_P = $(TEST_BATCH:test-batch%=test-pmath-callers-portable%)
 TEST_FPCLASS = $(TEST_BATCH:test-batch%=test-fpclass%)
 TEST_ACT = $(TEST_BATCH:test-batch%=test-act%)
 TEST_ECDSA = $(TEST_BATCH:test-batch%=test-ecdsa%)
@@ -1785,6 +1791,83 @@ $(TEST_ACT): tests/test_act.c src/act.h src/fpclass.h
 
 $(TEST_PMATH): tests/test_pmath.c src/pmath.h
 	$(CC) -O2 -fno-fast-math -ffp-contract=off -std=gnu11 -Wall -I src tests/test_pmath.c -o $@ -lm
+
+# R6.86: pmath.h's p_expf, with no branch and no loop so that the loops that
+# call it vectorize, against the p_expf it replaced, (float)pm_exp_d, bit for
+# bit (tests/test_pmath_expf.c). This binary takes the T3 build's float flags
+# (the engine's, without fast-math, without contraction), at the engine's -O3
+# and -march, so its buffer loop is vectorized as the engine's loops are.
+# make test runs the named inputs, the sample and the mutant, and the -default
+# binary's named inputs and sample. The -default
+# binary takes the engine's own CFLAGS (-ffast-math): the build a portable
+# default would be. In both a NaN must give the NaN quieted, and every other
+# float the old function's bits. The two -all targets compare every one of the
+# 2^32 floats, about a minute each.
+$(TEST_PMATH_EXPF): tests/test_pmath_expf.c src/pmath.h
+	$(CC) $(QUANTS_CFLAGS) -ffp-contract=off -I src tests/test_pmath_expf.c -o $@ -lm
+$(TEST_PMATH_EXPF_DEFAULT): tests/test_pmath_expf.c src/pmath.h
+	$(CC) $(CFLAGS) -I src tests/test_pmath_expf.c -o $@ -lm
+.PHONY: test-pmath-expf-all test-pmath-expf-all-default
+test-pmath-expf-all: $(TEST_PMATH_EXPF)
+	./$(TEST_PMATH_EXPF) --all
+test-pmath-expf-all-default: $(TEST_PMATH_EXPF_DEFAULT)
+	./$(TEST_PMATH_EXPF_DEFAULT) --all
+
+# R6.86: the compiler's own report that the loops the portable exp sits in are
+# vectorized, in a portable build of the engine's default flags: what a build
+# with -DRUNNER_PORTABLE_MATH makes, a Windows default among them. Required:
+# the attention softmax's exp loop (softmax and softmax_sink). Reported: the
+# prompt FFN's SwiGLU. Clang's -Rpass=loop-vectorize or gcc's -fopt-info-vec,
+# whichever $(CC) is (scripts/check-pmath-vec.py). make test runs it, with
+# Linux gcc in CI; the macos and windows jobs run it with Apple clang and
+# MinGW gcc. A compiler's word only: make bench-pmath-loops times the same
+# loops. Not for T3=1: the T3 build keeps the softmax's sum in order, which a
+# vector loop does not.
+PMATH_VEC_FLAGS = $(CFLAGS) $(if $(filter -DRUNNER_PORTABLE_MATH,$(CFLAGS)),,-DRUNNER_PORTABLE_MATH -include src/pmath.h $(PMATH_FEATURES_$(BUILD_OS)))
+.PHONY: test-pmath-vec
+test-pmath-vec:
+	@mkdir -p $(OBJDIR)
+	$(PYTHON) scripts/check-pmath-vec.py --cc "$(CC)" --source src/model.c -- $(PMATH_VEC_FLAGS) -I src -c src/model.c -o $(OBJDIR)/pmath-vec-model.o
+
+# R6.86: what a NaN does at the portable exp's callers (tests/test_pmath_callers.c):
+# the engine's sampler and softmax built with the default flags (the C
+# library's expf) and as a portable build of them (pmath.h's), each printing
+# its answers for NaN inputs; the two must be identical, so that a portable
+# default changes nothing for a poisoned value. In make test. Not for T3=1,
+# whose flags are already portable: both builds would be the same.
+$(TEST_PMATH_CALLERS_D): tests/test_pmath_callers.c src/sample.c src/sample.h src/softmax.h
+	$(CC) $(CFLAGS) -I src tests/test_pmath_callers.c src/sample.c -o $@ -lm
+$(TEST_PMATH_CALLERS_P): tests/test_pmath_callers.c src/sample.c src/sample.h src/softmax.h src/pmath.h
+	$(CC) $(PMATH_VEC_FLAGS) -I src tests/test_pmath_callers.c src/sample.c -o $@ -lm
+.PHONY: test-pmath-callers
+test-pmath-callers: $(TEST_PMATH_CALLERS_D) $(TEST_PMATH_CALLERS_P)
+	@case " $(CFLAGS) " in *" -DRUNNER_PORTABLE_MATH "*) \
+	  echo "test-pmath-callers: not run: these flags are portable already, so both builds are one"; exit 0;; esac; \
+	./$(TEST_PMATH_CALLERS_D) > test-pmath-callers-default.out && ./$(TEST_PMATH_CALLERS_P) > test-pmath-callers-portable.out \
+	  || { echo "FAIL: a caller test binary failed"; exit 1; }; \
+	$(PYTHON) -c "import sys; d = open(sys.argv[1], 'rb').read().splitlines(); p = open(sys.argv[2], 'rb').read().splitlines(); bad = [(a, b) for a, b in zip(d, p) if a != b]; \
+	  ok = d and len(d) == len(p) and not bad; \
+	  print('pmath-callers: ok: the sampler and the softmax give the default build\'s answers for %d NaN cases in a portable build' % len(d) if ok else 'FAIL: a NaN at the exp\'s callers gives other answers in a portable build than in the default build:'); \
+	  [print('  default:  %s\n  portable: %s' % (a.decode(), b.decode())) for a, b in bad]; sys.exit(0 if ok else 1)" \
+	  test-pmath-callers-default.out test-pmath-callers-portable.out
+
+# R6.86: the attention softmax's OUTPUT in a portable build of the default
+# flags, bit for bit, against the softmax before R6.86 (main's fused loop with
+# main's expf), over every length to 300 and around the SIMD steps to 4096;
+# with a live control (the fused loop with the vector-friendly exp must
+# differ under -ffast-math). In make test (tests/test_pmath_softmax.c).
+$(TEST_PMATH_SOFTMAX): tests/test_pmath_softmax.c src/softmax.h src/pm_order.h src/pmath.h
+	$(CC) $(PMATH_VEC_FLAGS) -I src tests/test_pmath_softmax.c -o $@ -lm
+
+# R6.86: the softmax and SwiGLU loops timed with the p_expf this change
+# replaced and with the new one, interleaved, in one binary built as
+# test-pmath-vec compiles the engine (tests/bench_pmath_loops.c). A
+# measurement for the record, not a gate.
+$(BENCH_PMATH_LOOPS): tests/bench_pmath_loops.c src/pmath.h
+	$(CC) $(PMATH_VEC_FLAGS) -I src tests/bench_pmath_loops.c -o $@ -lm
+.PHONY: bench-pmath-loops
+bench-pmath-loops: $(BENCH_PMATH_LOOPS)
+	./$(BENCH_PMATH_LOOPS)
 
 # R6.86: a portable build (T3=1, or -DRUNNER_PORTABLE_MATH in CFLAGS) calls
 # none of the C library's expf, logf, sinf, cosf, tanhf and powf, whose last
@@ -3634,7 +3717,7 @@ test-gates-core: test-python-deps test-sample-nan $(TEST_JSON_SCHEMA) $(TEST_SVA
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
       $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_TRAY_MAC_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) $(TEST_LINEAGE_OOM) $(TEST_DERIVE_OOM) test-lora.full.gguf \
-      $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_SHA256) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_FPCLASS) $(TEST_ACT) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
+      $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_SHA256) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_PMATH_EXPF) $(TEST_PMATH_EXPF_DEFAULT) $(TEST_PMATH_SOFTMAX) $(TEST_FPCLASS) $(TEST_ACT) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) \
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_STREAM_OUT) $(TEST_RESIDENCY) $(TEST_CAPACITY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
@@ -3977,6 +4060,11 @@ test-gates-core: test-python-deps test-sample-nan $(TEST_JSON_SCHEMA) $(TEST_SVA
 	./$(TEST_MLDSA)
 	./$(TEST_CANON_KERNELS)
 	./$(TEST_PMATH)
+	./$(TEST_PMATH_EXPF)
+	./$(TEST_PMATH_EXPF_DEFAULT)
+	./$(TEST_PMATH_SOFTMAX)
+	$(MAKE) --no-print-directory test-pmath-vec
+	$(MAKE) --no-print-directory test-pmath-callers
 	./$(TEST_FPCLASS)
 	./$(TEST_ACT)
 	./$(TEST_ECDSA)
