@@ -883,3 +883,74 @@ def test_lineage_and_envelope_reject_non_hex_sha256_without_forging_verified_lin
     assert r_bld.returncode == 2 and "MISMATCH build.binary_sha256:" in r_bld.stdout, (r_bld.stdout, r_bld.stderr)
 
 
+def test_diagnostic_sanitizers_escape_c1_bidi_and_raw_high_bytes(runner_bin, fx, tmp_path):
+    """Bytes outside printable ASCII (0x20..0x7e) — C1 controls, bidi overrides, lone 0xff — escape as \\xNN."""
+    d = tmp_path / "esc_high"
+    shutil.copytree(fx, d)
+
+    def run_bytes(args):
+        return subprocess.run(
+            [str(runner_bin), *map(str, args)],
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+            env=_clean_env(),
+        )
+
+    # 1. Claude's C1 CSI probe (\u009b2J -> C2 9B 32 4A) in --unlearn drop line and attest lineage base.path
+    drop_c1 = d / "drop_c1.jsonl"
+    drop_c1.write_bytes(b'{"prompt":"\xc2\x9b2J\xc2\x9b31mFAKE"}\n')
+    r_c1 = run_bytes([
+        "--unlearn", d / "parent.gguf.train.json", "--drop", drop_c1,
+        "-m", d / "base.gguf", "--train", d / "data1.jsonl", "--train-out", d / "u_c1.gguf",
+        "-t", "1", "--gpu", "off",
+    ])
+    assert r_c1.returncode != 0
+    assert b"\xc2\x9b2J" not in r_c1.stderr and b"\xc2\x9b" not in r_c1.stdout, (r_c1.stdout, r_c1.stderr)
+    assert b"\\xc2\\x9b" in r_c1.stderr, r_c1.stderr
+
+    lin_c1 = d / "lin_c1.json"
+    lin_c1.write_bytes(json.dumps({
+        "schema_version": "xyntetik.runner.merge.v1",
+        "runner": "test",
+        "merged": {"path": "absent.gguf", "sha256": "0" * 64},
+        "base": {"path": "\u009b2Jbad", "sha256": "1" * 64},
+    }).encode("utf-8"))
+    r_lc1 = run_bytes(["attest", "lineage", lin_c1])
+    assert r_lc1.returncode == 2
+    assert b"\xc2\x9b2J" not in r_lc1.stdout and b"\xc2\x9b" not in r_lc1.stderr, (r_lc1.stdout, r_lc1.stderr)
+    assert b"\\xc2\\x9b" in r_lc1.stdout, r_lc1.stdout
+
+    # 2. Bidi override (U+202E -> E2 80 AE) in record field & envelope sidecar schema
+    rec = json.loads((d / "plain.gguf.train.json").read_text(encoding="utf-8"))
+    rec["runner"] = "safe\u202eevil"
+    p_bidi = d / "bidi.train.json"
+    p_bidi.write_text(json.dumps(rec), encoding="utf-8")
+    r_bidi = run_bytes(["attest", "replay", p_bidi, *_replay_flags(p_bidi)])
+    assert r_bidi.returncode == 2
+    assert b"\xe2\x80\xae" not in r_bidi.stdout and b"\xe2\x80\xae" not in r_bidi.stderr
+    assert b"\\xe2\\x80\\xae" in r_bidi.stdout, r_bidi.stdout
+
+    env_mdl = d / "env_probe.gguf"
+    shutil.copyfile(d / "base.gguf", env_mdl)
+    (d / "env_probe.gguf.envelope.json").write_bytes(
+        b'{"schema_version":"bad\\n\xc2\x9b2J\xe2\x80\xae"}'
+    )
+    r_env = run_bytes(["-m", env_mdl, "-p", "hi", "-n", "1", "--gpu", "off"])
+    assert b"\xc2\x9b" not in r_env.stderr and b"\xe2\x80\xae" not in r_env.stderr, r_env.stderr
+
+    # 3. Lone invalid UTF-8 byte 0xff in --unlearn drop line (and backslash doubling)
+    drop_ff = d / "drop_ff.jsonl"
+    drop_ff.write_bytes(b'{"prompt":"x\\y\xff"}\n')
+    r_ff = run_bytes([
+        "--unlearn", d / "parent.gguf.train.json", "--drop", drop_ff,
+        "-m", d / "base.gguf", "--train", d / "data1.jsonl", "--train-out", d / "u_ff.gguf",
+        "-t", "1", "--gpu", "off",
+    ])
+    assert r_ff.returncode != 0
+    assert b"\xff" not in r_ff.stderr and b"\xff" not in r_ff.stdout, (r_ff.stdout, r_ff.stderr)
+    assert b"\\xff" in r_ff.stderr and b"\\\\" in r_ff.stderr, r_ff.stderr
+
+
+
