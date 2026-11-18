@@ -67,6 +67,9 @@ ifeq ($(BUILD_OS),Windows)
 # shell (otherwise it dies at load with STATUS_DLL_NOT_FOUND on libwinpthread-1.dll)
 CFLAGS += -Werror=format-truncation -Werror=cpp
 LDFLAGS += -lws2_32 -lpsapi -static   # psapi: QueryWorkingSetEx / GetProcessMemoryInfo
+# R20: a content-derived build id in the image's CodeView record, which a dirty
+# build's route identity reads from memory (compat.c plat_running_image_id)
+LDFLAGS += -Wl,--build-id
 # tray: gdi32 (icon painting) and comdlg32 (GetOpenFileName) are not in the
 # MinGW default lib set; shell32/advapi32 are but stay explicit for clarity
 LDFLAGS += -lshell32 -lgdi32 -lcomdlg32 -ladvapi32
@@ -814,6 +817,10 @@ TEST_FILE_ID_SRC = tests/test_file_identity.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.
                    $(QUANTS_OBJ) $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_FILE_ID): $(TEST_FILE_ID_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_FILE_ID_SRC) -o $@ $(LDFLAGS)
+
+TEST_SPAWN_EINTR = $(TEST_BATCH:test-batch%=test-spawn-eintr%)
+$(TEST_SPAWN_EINTR): tests/test_spawn_eintr.c src/compat.c $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_spawn_eintr.c src/compat.c -o $@ $(LDFLAGS)
 
 # A bare `runner` in a terminal starts the tray; a bare `runner` anywhere
 # else must NOT — a GUI event loop on a piped stdin would hang every script
@@ -3721,6 +3728,16 @@ endif
 
 # R6.91: the sampler gives a NaN logit no mass, in the default, a portable and a
 # strict (T3 float flags) build: tests/test_sample_nan.c compiled three ways and
+# R20: the PE build-id walker (src/pe_buildid.h) on crafted header buffers
+# (tests/test_pe_buildid.c): every inconsistency gives false, never a fault.
+# Under ASan and UBSan where the toolchain has them (MinGW has neither), so a
+# read past a buffer fails the test instead of passing by luck.
+PE_SAN := $(if $(filter Windows,$(BUILD_OS)),,-fsanitize=address,undefined -fno-omit-frame-pointer)
+.PHONY: test-pe-buildid
+test-pe-buildid: tests/test_pe_buildid.c src/pe_buildid.h
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) $(PE_SAN) -I src tests/test_pe_buildid.c -o test-pe-buildid$(if $(filter Windows,$(BUILD_OS)),.exe,)
+	./test-pe-buildid$(if $(filter Windows,$(BUILD_OS)),.exe,)
+
 # checked by scripts/check-sample-nan.sh, whose control is the finite picks of
 # main's sampler at SN_BASE.
 SN_EXT := $(if $(filter %.exe,$(RUNNER_EXE)),.exe,)
@@ -3738,10 +3755,10 @@ test-sample-nan: tests/test_sample_nan.c src/sample.c scripts/check-sample-nan.s
 	$(CC) $(SN_STRICT) -I src tests/test_sample_nan.c src/sample.c -o test-sample-nan-strict$(SN_EXT) $(LDFLAGS)
 	sh scripts/check-sample-nan.sh "$(SN_EXT)" $(SN_BASE) $(CC) $(CFLAGS) -- $(LDFLAGS)
 
-test-gates-core: test-python-deps test-sample-nan $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) $(TEST_MICRO_SCHED) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
+test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) $(TEST_MICRO_SCHED) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) $(TEST_ATEM_OOM) $(TEST_TEMPLATE_FAMILIES) \
-      $(TEST_TOOLS) $(TEST_SHARED) $(TEST_MLOCK) test-es-mlock.gguf $(TEST_WILLNEED) $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
+      $(TEST_TOOLS) $(TEST_SHARED) $(TEST_MLOCK) test-es-mlock.gguf $(TEST_WILLNEED) $(TEST_SPAWN_EINTR) $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
       $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_TRAY_MAC_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) $(TEST_LINEAGE_OOM) $(TEST_DERIVE_OOM) test-lora.full.gguf \
@@ -3936,6 +3953,7 @@ test-gates-core: test-python-deps test-sample-nan $(TEST_JSON_SCHEMA) $(TEST_SVA
 	  echo 'FAIL: a wrong lock was not named as one'; tail -5 .build/test-mlock-defect.out; exit 1; \
 	else echo 'test-mlock refusal cases: a transient refusal retried to a pass, a persistent one named as the machine, a wrong lock failed at once'; fi
 	./$(TEST_WILLNEED)
+	./$(TEST_SPAWN_EINTR)
 	./$(TEST_FILE_ID)
 	$(METAL_PREFIX_TIGHT) ./$(TEST_PREFIX)
 	$(METAL_PREFIX_TIGHT) ./$(TEST_PREFIX) test.gguf 64
@@ -4396,6 +4414,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_package_manifests.py \
     tests/test_parent_pid.py \
     tests/test_pattern_automaton.py \
+    tests/test_pe_buildid_link.py \
     tests/test_phi3_rope.py \
     tests/test_phys_footprint.py \
     tests/test_port_in_use.py \
@@ -4427,6 +4446,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_retired_switches.py \
     tests/test_rewind_under_refused_prefix.py \
     tests/test_rollout_identity.py \
+    tests/test_route_identity_running_image.py \
     tests/test_sampling_defaults.py \
     tests/test_scheduled_ci_alert.py \
     tests/test_schema_annotations.py \
@@ -4768,7 +4788,7 @@ clean:
 	rm -f test-moe-fixture.*.gguf test-q8.gguf test-bf16.gguf runner runner-debug runner-no-manifest.exe $(TEST_UTF8_CONSOLE) $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) $(TEST_MICRO_SCHED) \
 		$(TEST_TEMPLATE_OOM) $(TEST_ATEM_OOM) $(TEST_TEMPLATE_FAMILIES) \
 	      $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_TOKENIZER) \
-	      $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) $(TEST_SHARED) $(TEST_MLOCK) $(TEST_WILLNEED) \
+	      $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) $(TEST_SHARED) $(TEST_MLOCK) $(TEST_WILLNEED) $(TEST_SPAWN_EINTR) \
 	      $(TEST_BATCH) $(TEST_BIND) $(TEST_HOST_HEADER) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_TRAIN_GPU) test-shared-asan-bin \
 	      $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_TOOLS) $(DIFFTOK) \
 	      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \

@@ -8238,7 +8238,19 @@ static _Atomic uint64_t g_route_hashes;   // computations, for the tests
 static char g_route_revision[64];
 static bool g_route_dirty;
 
-void model_route_set_build(const char *revision, bool dirty) {
+// R20: a dirty build's source is no commit, so its identity is its binary's
+// sha256: two dirty trees at one revision are two binaries, and two identities.
+// If the binary could not be hashed, a value of this process alone, so a dirty
+// build of unknown bytes reuses nothing another process persisted.
+static char g_route_binary[80];
+
+void model_route_set_build(const char *revision, bool dirty, const char *binary_sha256) {
+    if (!dirty) g_route_binary[0] = 0;
+    else if (binary_sha256 && *binary_sha256 && strlen(binary_sha256) < sizeof g_route_binary)
+        snprintf(g_route_binary, sizeof g_route_binary, "%s", binary_sha256);
+    else
+        snprintf(g_route_binary, sizeof g_route_binary, "process-%llx-%llx", (unsigned long long)plat_pid_self(),
+                 (unsigned long long)(plat_now() * 1e9));
     snprintf(g_route_revision, sizeof g_route_revision, "%s", revision ? revision : "");
     g_route_dirty = dirty;
 }
@@ -8255,11 +8267,11 @@ int model_route_text(const model_t *m, char *out, size_t cap) {
     route_collect(m, &r);
     // the build is the profile and architecture (route_build), the compiler
     // that built this code and the source revision the receipt prints
-    return snprintf(out, cap, "%s|%s|%d/%d/%d/%d/%d|%s|%s|%s|%s|%s|%s|%s|%s%s", r.backend ? r.backend : "",
+    return snprintf(out, cap, "%s|%s|%d/%d/%d/%d/%d|%s|%s|%s|%s|%s|%s|%s|%s%s%s", r.backend ? r.backend : "",
                     r.device, r.gpu_layers, r.n_layer, r.moe_layers, r.moe_host, r.moe_hot,
                     r.kv ? r.kv : "", r.detail ? r.detail : "", r.build ? r.build : "",
                     r.codegen ? r.codegen : "", r.cpu_act ? r.cpu_act : "", r.weights,
-                    __VERSION__, g_route_revision, g_route_dirty ? "+dirty" : "");
+                    __VERSION__, g_route_revision, g_route_dirty ? "+dirty:" : "", g_route_binary);
 }
 
 uint64_t model_route_hash(const model_t *m) {
