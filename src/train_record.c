@@ -13,7 +13,6 @@
 #include "envelope.h"
 #include "fpclass.h"
 #include "lineage.h"
-#include "model.h"
 
 #define MAX_INPUT_FILE (256u * 1024u * 1024u)
 
@@ -47,7 +46,7 @@ bool train_record_int(jv *obj, const char *key, int min, int max, int *out) {
 
 // R17.9 and R3.60: whether the variable `name` (n bytes) is a switch a
 // training record names. One rule with the route identity of every persisted
-// row: runner_switch_counts (src/model.c), whose inert set holds the names
+// row: runner_switch_counts (src/compat.c), whose inert set holds the names
 // only the test harness or GitHub Actions' runner set, RUNNER_TRAIN_ROWS,
 // RUNNER_TPOOL_SPIN, the download and cache paths, RUNNER_TEST_BUILD_DIRTY and
 // the test seams that only wait or print; XR_SSM_CHUNK and XR_SSM_SERIAL count.
