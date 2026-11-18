@@ -49,11 +49,28 @@ bool lineage_sign(const char *record_path, const char *sign_key) {
 
 // ------------------------------------------------------------------ walker --
 
-// The walker follows a record's word, so it reads regular files only
-// (envelope.h, record_regular_file): a record that cited /dev/zero was hashed
-// with no end (R6.68.56).
+// The walker reads local regular files without following symlinks
+// (envelope.h, record_regular_file_nofollow): a record that cited /dev/zero
+// was hashed with no end (R6.68.56).
+static bool safe_local_name(const char *s) {
+    if (!s || !*s || strlen(s) > 255) return false;
+    if (!strcmp(s, ".") || !strcmp(s, "..")) return false;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (*p < 0x20 || *p == 0x7f || *p == '/' || *p == '\\') return false;
+    }
+    return true;
+}
+
+static bool cited_is_unsafe_file(const char *path) {
+    if (!path || !*path) return false;
+    plat_stat_t st;
+    bool is_link = false;
+    if (plat_stat_nofollow(path, &st, &is_link) != 0) return false;
+    return is_link || !S_ISREG(st.st_mode);
+}
+
 static jv *read_json(const char *path) {
-    if (!record_regular_file(path)) return NULL;
+    if (!record_regular_file_nofollow(path)) return NULL;
     FILE *f = plat_fopen(path, "rb");
     if (!f) return NULL;
     size_t cap = 1 << 16, n = 0, r;
@@ -191,22 +208,23 @@ bool lineage_require_eval(const char *model, const char *kind, const char *trust
 
 // A file a record names, found beside the record that names it: records name
 // files by base name, and a chain copied to another machine or folder keeps
-// its records and files together. An older record's full path is tried first
-// while it is still there. The hash still decides whether it is the file
-// that was cited.
+// its records and files together. Unsafe names, path separators, traversal,
+// and control bytes are refused rather than probed outside the audit dir.
 const char *lineage_relocate(const char *cited, const char *citing, char *buf, size_t cap) {
-    char probe[65];
-    const char *name = strrchr(cited, '/');
-    const char *bs = strrchr(cited, '\\');
-    if (bs && (!name || bs > name)) name = bs;
-    if (name && envelope_cited_sha256(cited, probe)) return cited;
-    name = name ? name + 1 : cited;
+    if (!safe_local_name(cited) || !citing) {
+        if (buf && cap) buf[0] = 0;
+        return "";
+    }
     const char *dir_end = strrchr(citing, '/');
     const char *bs2 = strrchr(citing, '\\');
     if (bs2 && (!dir_end || bs2 > dir_end)) dir_end = bs2;
     int dn = dir_end ? (int)(dir_end - citing + 1) : 0;
-    int n = snprintf(buf, cap, "%.*s%s", dn, citing, name);
-    return (n > 0 && (size_t)n < cap) ? buf : cited;
+    int n = snprintf(buf, cap, "%.*s%s", dn, citing, cited);
+    if (n <= 0 || (size_t)n >= cap) {
+        if (buf && cap) buf[0] = 0;
+        return "";
+    }
+    return buf;
 }
 
 // One input of a record: a file by hash, and the record that made it if any.
@@ -223,9 +241,21 @@ static void walk_input(const char *key, jv *in, const char *citing, const char *
     short_sha(sha, s);
     char here[4096];
     const char *file = lineage_relocate(path, citing, here, sizeof here);
-    if (receipt && !envelope_cited_sha256(file, probe) && plat_path_base(path) == path &&
-        envelope_cited_sha256(path, probe))
+    if (!file[0]) {
+        indent(depth);
+        printf("%s: %s sha256 %s  BROKEN: unsafe path\n", key, path, s);
+        note(w, 2);
+        return;
+    }
+    if (receipt && !record_regular_file_nofollow(file) && plat_path_base(path) == path &&
+        envelope_cited_regular_sha256(path, probe))
         file = path;
+    if (cited_is_unsafe_file(file)) {
+        indent(depth);
+        printf("%s: %s sha256 %s  BROKEN: symlink or special file on disk\n", key, path, s);
+        note(w, 2);
+        return;
+    }
     jv *link = jv_get(in, "record");
     indent(depth);
     if (!link) {
@@ -239,8 +269,14 @@ static void walk_input(const char *key, jv *in, const char *citing, const char *
     char moved[4096];
     const char *lname = jv_get(link, "name") ? jv_str(jv_get(link, "name"), "")
                                              : jv_str(jv_get(link, "path"), "");
-    walk_record(lineage_relocate(lname, file, moved, sizeof moved),
-                jv_str(jv_get(link, "sha256"), NULL), sha, trust_hex, depth + 1, w);
+    const char *lrec = lineage_relocate(lname, file, moved, sizeof moved);
+    if (!lrec[0]) {
+        indent(depth + 1);
+        printf("BROKEN: unsafe record path %s\n", lname);
+        note(w, 2);
+        return;
+    }
+    walk_record(lrec, jv_str(jv_get(link, "sha256"), NULL), sha, trust_hex, depth + 1, w);
 }
 
 static void walk_record(const char *rec_path, const char *want_rec_sha,
@@ -253,8 +289,8 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
         return;
     }
     char rsha[65];
-    if (!envelope_cited_sha256(rec_path, rsha)) {
-        printf("BROKEN: record %s is missing\n", rec_path);
+    if (!envelope_cited_regular_sha256(rec_path, rsha)) {
+        printf("BROKEN: record %s is missing or unsafe\n", rec_path);
         note(w, 2);
         return;
     }
@@ -284,6 +320,7 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
     const char *out_sha = jv_str(jv_get(out, "sha256"), NULL);
     char out_here[4096];
     const char *out_file = lineage_relocate(out_path, rec_path, out_here, sizeof out_here);
+    bool out_unsafe = !out_file[0] || cited_is_unsafe_file(out_file);
     char pub[SIGN_PUBHEX_CAP];
     int sig = record_signature_state(rec_path, trust_hex, pub);
     char s[13];
@@ -292,10 +329,11 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
     bool link_ok = !want_out_sha || (out_sha && !strcmp(want_out_sha, out_sha));
     // and the output file, where it is still on disk, is that file
     char disk[65];
-    bool on_disk = envelope_cited_sha256(out_file, disk);
+    bool on_disk = !out_unsafe && envelope_cited_regular_sha256(out_file, disk);
     bool disk_ok = !on_disk || (out_sha && !strcmp(disk, out_sha));
     const char *verdict;
     if (!link_ok) { verdict = "BROKEN: its output is not the file the next step used"; note(w, 2); }
+    else if (out_unsafe) { verdict = "BROKEN: unsafe output path or symlink on disk"; note(w, 2); }
     else if (!disk_ok) { verdict = "BROKEN: the file on disk no longer matches its record"; note(w, 2); }
     else if (sig == 2) { verdict = "BROKEN: bad, malformed or untrusted signature"; note(w, 2); }
     else if (sig == 1) { verdict = "UNSIGNED"; note(w, 1); }
@@ -324,8 +362,9 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
     if (pr && pr->type == J_OBJ) {
         jv *un = jv_get(rec, "unlearn");
         const char *ppath = jv_str(jv_get(pr, "path"), "");
+        const char *safe_p = safe_local_name(ppath) ? ppath : "<unsafe path>";
         indent(depth + 1);
-        printf("unlearned from: %s (dropped %d rows of %d lines, sha256 %.12s)\n", ppath,
+        printf("unlearned from: %s (dropped %d rows of %d lines, sha256 %.12s)\n", safe_p,
                (int)jv_num(jv_get(un, "dropped_count"), -1), (int)jv_num(jv_get(un, "dropped_distinct"), -1),
                jv_str(jv_get(un, "dropped_sha256"), "?"));
         // a link without a hash is not a link: nothing holds the parent named
@@ -337,8 +376,14 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
             note(w, 2);
         } else {
             char moved[4096];
-            walk_record(lineage_relocate(ppath, rec_path, moved, sizeof moved), psha, NULL, trust_hex,
-                        depth + 2, w);
+            const char *lrec = lineage_relocate(ppath, rec_path, moved, sizeof moved);
+            if (!lrec[0]) {
+                indent(depth + 2);
+                printf("BROKEN: unsafe unlearn.parent_record path\n");
+                note(w, 2);
+            } else {
+                walk_record(lrec, psha, NULL, trust_hex, depth + 2, w);
+            }
         }
     }
     if (w->sp > 0) w->sp--;
