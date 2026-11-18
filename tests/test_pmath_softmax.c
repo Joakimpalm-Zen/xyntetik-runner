@@ -14,10 +14,15 @@
 // Equal exp bits are not enough: under -ffast-math a fused loop that
 // vectorizes adds its sum as a vector of partial sums, and the output moves in
 // its last bits. That moved two Windows CPU replies off their pins (the first
-// version of R6.86). So the control, which must be live: the fused loop with
-// the vector-friendly exp, as that first version had it, must differ from the
-// old output on some row under -ffast-math. Under strict float (T3) no loop
-// reorders a sum, so there the control is not run and says so.
+// version of R6.86). So the control, which must be live: the same exps added
+// in the order a vectorized loop adds them, as CONTROL_LANES partial sums
+// reduced pairwise, must differ from the old output on some row. The test
+// writes that order out itself, each lane's add held by PM_IN_ORDER, so the
+// control is live whatever the compiler does with -ffast-math, and in a
+// strict-float (T3) build too. Whether this compiler actually vectorizes the
+// fused loop of the first version is printed beside it, not gated: gcc 13 at
+// -march=native on an AVX-512 CPU kept that loop's sum in order, and a
+// control that waits for the compiler's choice was dead there.
 //
 // The rows (deterministic): every length from 1 to 300, then lengths around
 // the SIMD steps up to 4096, each with several value shapes: attention-like
@@ -55,12 +60,32 @@ static __attribute__((noinline)) void old_softmax(float *x, int n) {
     for (int i = 0; i < n; i++) { x[i] = old_expf(x[i] - mx); s += x[i]; }
     for (int i = 0; i < n; i++) x[i] /= s;
 }
-// the control: the fused loop with the vector-friendly exp (the first version of R6.86)
+// the fused loop with the vector-friendly exp (the first version of R6.86): what
+// this compiler makes of it is printed, not gated
 static __attribute__((noinline)) void fused_softmax(float *x, int n) {
     float mx = x[0];
     for (int i = 1; i < n; i++) if (x[i] > mx) mx = x[i];
     float s = 0;
     for (int i = 0; i < n; i++) { x[i] = p_expf(x[i] - mx); s += x[i]; }
+    for (int i = 0; i < n; i++) x[i] /= s;
+}
+// the control: the same exps as the new softmax, added as a vectorized loop adds
+// them, a partial sum per lane (element i goes to lane i % CONTROL_LANES), the
+// lanes then reduced pairwise. Every add is held in that order by PM_IN_ORDER
+// (this file is built with RUNNER_PORTABLE_MATH), so no compiler can move it.
+#ifndef RUNNER_PORTABLE_MATH
+#error "test_pmath_softmax.c needs RUNNER_PORTABLE_MATH: PM_IN_ORDER holds the control's order only there"
+#endif
+#define CONTROL_LANES 8
+static __attribute__((noinline)) void lanes_softmax(float *x, int n) {
+    float mx = x[0];
+    for (int i = 1; i < n; i++) if (x[i] > mx) mx = x[i];
+    for (int i = 0; i < n; i++) x[i] = p_expf(x[i] - mx);
+    float lane[CONTROL_LANES] = { 0 };
+    for (int i = 0; i < n; i++) { float v = lane[i % CONTROL_LANES] + x[i]; PM_IN_ORDER(v); lane[i % CONTROL_LANES] = v; }
+    for (int w = CONTROL_LANES / 2; w >= 1; w /= 2)
+        for (int l = 0; l < w; l++) { float v = lane[l] + lane[l + w]; PM_IN_ORDER(v); lane[l] = v; }
+    float s = lane[0];
     for (int i = 0; i < n; i++) x[i] /= s;
 }
 static __attribute__((noinline)) void new_softmax(float *x, int n) { softmax(x, n); }
@@ -89,7 +114,7 @@ static void fill(float *x, int n, int shape) {
 }
 
 static int g_fail = 0;
-static uint64_t g_rows = 0, g_elems = 0, g_control_rows = 0;
+static uint64_t g_rows = 0, g_elems = 0, g_control_rows = 0, g_fused_rows = 0;
 
 // row by row: old and new equal bit for bit; the probabilities are a distribution
 static void check(const char *what, const float *a, const float *b, int n) {
@@ -126,8 +151,10 @@ static void row(int n, int shape) {
     memcpy(a, src, sizeof(float) * (size_t)n); old_softmax(a, n);
     memcpy(b, src, sizeof(float) * (size_t)n); new_softmax(b, n);
     check("softmax", a, b, n);
-    memcpy(c, src, sizeof(float) * (size_t)n); fused_softmax(c, n);
+    memcpy(c, src, sizeof(float) * (size_t)n); lanes_softmax(c, n);
     if (memcmp(a, c, sizeof(float) * (size_t)n) != 0) g_control_rows++;
+    memcpy(c, src, sizeof(float) * (size_t)n); fused_softmax(c, n);
+    if (memcmp(a, c, sizeof(float) * (size_t)n) != 0) g_fused_rows++;
     float sink = shape == 3 ? 40.0f : uni(-4.0f, 6.0f);
     memcpy(a, src, sizeof(float) * (size_t)n); old_softmax_sink(a, n, sink);
     memcpy(b, src, sizeof(float) * (size_t)n); new_softmax_sink(b, n, sink);
@@ -143,17 +170,21 @@ int main(void) {
         for (int sh = 0; sh < SHAPES; sh++) row(more[k], sh);
     printf("pmath-softmax: %" PRIu64 " rows, %" PRIu64 " probabilities: %s against the softmax before R6.86\n",
            g_rows, g_elems, g_fail ? "NOT bit-identical" : "bit-identical");
-#ifdef __FAST_MATH__
-    printf("pmath-softmax: control: the fused loop with the vector-friendly exp differs on %" PRIu64 " of %" PRIu64
-           " softmax rows\n", g_control_rows, g_rows / 2);
+    printf("pmath-softmax: control: the same exps summed in %d lanes, as a vectorized loop adds them, differ on %"
+           PRIu64 " of %" PRIu64 " softmax rows\n", CONTROL_LANES, g_control_rows, g_rows / 2);
     if (!g_control_rows) {
-        fprintf(stderr, "FAIL: the control is not live: the fused loop gives the old output on every row, so this "
-                "test would not see a reordered sum\n");
+        fprintf(stderr, "FAIL: the control is not live: a sum in %d lanes gives the old output on every row, so this "
+                "test would not see a reordered sum\n", CONTROL_LANES);
         g_fail = 1;
     }
+    printf("pmath-softmax: not gated: the fused loop with the vector-friendly exp, as this compiler builds it, differs "
+           "on %" PRIu64 " of %" PRIu64 " softmax rows%s\n", g_fused_rows, g_rows / 2,
+#ifdef __FAST_MATH__
+           g_fused_rows ? "" : " (this compiler kept its sum in order)"
 #else
-    printf("pmath-softmax: control not run: strict float reorders no sum\n");
+           " (strict float reorders no sum)"
 #endif
+           );
     if (g_fail) { fprintf(stderr, "pmath-softmax: FAILED\n"); return 1; }
     printf("pmath-softmax: OK\n");
     return 0;
