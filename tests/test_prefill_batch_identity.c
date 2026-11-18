@@ -65,6 +65,7 @@
 //      RUNNER_TEST_ROUTE_FLIP_AT forces it on the CPU) leaves rows of no one
 //      route: nothing is published, pinned or exported from them.
 //  15. The identity names the compiler's version (__VERSION__).
+//  16. Two dirty builds of one revision are two identities (R20).
 #include "runner.h"
 
 // MinGW has no setenv/unsetenv; an empty value removes the variable there
@@ -455,13 +456,32 @@ static void check_file(const char *path) {
         model_route_text(&s64.m, rt, sizeof rt);
         ck(strstr(rt, __VERSION__) != NULL, path, 0, "the route identity names the compiler's version");
         // and the source revision the binary names (here a test's own)
-        model_route_set_build("0123456789abcdef0123456789abcdef01234567", true);
+        model_route_set_build("0123456789abcdef0123456789abcdef01234567", true, NULL);
         model_route_transition(&s64.m);
         model_route_text(&s64.m, rt, sizeof rt);
         ck(strstr(rt, "0123456789abcdef0123456789abcdef01234567+dirty") != NULL, path, 0,
            "the route identity names the source revision and whether it was dirty");
-        model_route_set_build("", false);
+        model_route_set_build("", false, NULL);
         model_route_transition(&s64.m);
+    }
+
+    // gate 16 (R20): two dirty builds of one revision are two binaries, and two
+    // route identities: a dirty build's identity holds its binary's sha256.
+    // Live control: two identical clean builds share one identity, whatever
+    // digest the binary has.
+    {
+        static const char *rev = "0123456789abcdef0123456789abcdef01234567";
+        static const char *da = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        static const char *db = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        char ra[1400], rb[1400], ca[1400], cb[1400];
+        model_route_set_build(rev, true, da);  model_route_text(&s64.m, ra, sizeof ra);
+        model_route_set_build(rev, true, db);  model_route_text(&s64.m, rb, sizeof rb);
+        model_route_set_build(rev, false, da); model_route_text(&s64.m, ca, sizeof ca);
+        model_route_set_build(rev, false, db); model_route_text(&s64.m, cb, sizeof cb);
+        model_route_set_build("", false, NULL);
+        model_route_transition(&s64.m);
+        ck(strcmp(ra, rb) != 0, path, 0, "two dirty builds of one revision are two route identities");
+        ck(strcmp(ca, cb) == 0, path, 0, "live control: two identical clean builds share one route identity");
     }
 
     ck(control5 == NLEN, path, CTX,

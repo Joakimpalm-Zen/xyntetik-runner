@@ -354,6 +354,9 @@ char       *plat_executable_dir(void);
 void        plat_parent_watch(long pid);
 
 void        plat_sleep_ms(int ms);
+// R20: the running image's own identity where the platform gives one from
+// memory (macOS: the main image's LC_UUID; Windows: the PE build id); false elsewhere
+bool        plat_running_image_id(char *out, size_t cap);
 long        plat_pid_self(void);
 
 // Is file descriptor `fd` a terminal a person is at? On Windows a console,
