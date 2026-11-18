@@ -98,8 +98,12 @@ the fresh slot's bits.
 - A change of the recorded compiler version, source revision (with its dirty
   mark) or build profile makes persisted stores and automatic snapshots
   misses and session images resume their own rows only. An identical clean
-  rebuild need not miss. Two dirty builds of one revision share a
-  fingerprint, as main shared everything (R20).
+  rebuild need not miss. A dirty build's identity also holds its binary's
+  sha256, hashed once at start (R20): two dirty trees at one revision are two
+  identities, and if the binary cannot be hashed, a value of that process
+  alone, so nothing persisted is reused. The cost, on a dirty tree: every
+  rebuild misses persisted stores and automatic snapshots, and session images
+  resume their own rows only; restarts of the same dirty binary still reuse.
 - A recurrent entry is published only when it ends where the slot stands: its
   fold is the slot's own, so an entry capped at the mark is not stored.
 - Rows loaded from disk whose provenance this process cannot vouch for are

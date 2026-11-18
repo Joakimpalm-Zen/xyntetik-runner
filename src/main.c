@@ -9231,7 +9231,14 @@ static int cli_main(int argc, char **argv, char **owned_prompt, session_image *s
         // route identity (the receipt prints the same)
         bool dirty = false;
         const char *rev = provenance_build_commit(&dirty);
-        model_route_set_build(rev ? rev : "", dirty, NULL);
+        // R20: a dirty build is identified by its own bytes, hashed once here
+        char bsha[65] = "";
+        if (dirty) {
+            char *exe = plat_executable_path();
+            if (!exe || !envelope_file_sha256(exe, bsha)) bsha[0] = 0;
+            free(exe);
+        }
+        model_route_set_build(rev ? rev : "", dirty, bsha[0] ? bsha : NULL);
     }
     cli_replay rp;
     memset(&rp, 0, sizeof rp);
