@@ -382,8 +382,8 @@ jobs:
       # gcc narrows (float)exp((double)f) into a call of expf, which pmath.h's
       # macros never see: the KD teacher's head did, found on Windows. The t3
       # job checks a strict build, where gcc narrows nothing.
-      - name: a portable build at the release's flags imports no C-runtime math
-        run: make CFLAGS="-O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=x86-64-v3 -DRUNNER_PORTABLE_MATH" test-portable-imports PYTHON=python3
+      - name: a Windows build at the release's own flags imports no C-runtime math (R6.85)
+        run: make CFLAGS="-O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=x86-64-v3" test-portable-imports PYTHON=python3
       - name: reject invalid CLI values
         run: |
           for args in '--port 70000' '--gpu typo' '--kv typo' '--reserve 101'; do

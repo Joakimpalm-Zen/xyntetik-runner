@@ -1991,10 +1991,12 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
 // string, so a supervisor can name the build in its own records and refuse one
 // below its floor without inferring it from the feature set. A T3 build also
 // names its flavor, as its receipts do; the default build writes none.
+// R6.85: and its math ("portable" or "libc", runner.h), so a Windows build and
+// its PORTABLE_MATH=0 opt-out answer differently.
 #ifdef RUNNER_T3_BUILD
-#define BUILD_JSON "\"version\":\"" RUNNER_VERSION "\",\"build_flavor\":\"t3\""
+#define BUILD_JSON "\"version\":\"" RUNNER_VERSION "\",\"build_flavor\":\"t3\",\"math\":\"" RUNNER_BUILD_MATH "\""
 #else
-#define BUILD_JSON "\"version\":\"" RUNNER_VERSION "\""
+#define BUILD_JSON "\"version\":\"" RUNNER_VERSION "\",\"math\":\"" RUNNER_BUILD_MATH "\""
 #endif
 
 // /health and /v1/models read only startup-immutable strings plus an atomic
