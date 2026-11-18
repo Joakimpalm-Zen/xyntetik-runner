@@ -3794,6 +3794,13 @@ size_t gpu_train_scratch_bytes(void) { return 0; }
 bool gpu_train_res_begin(model_t *mm, int T) { (void)mm; (void)T; return false; }
 bool gpu_train_res_round(model_t *mm, int n, int pos) { (void)mm; (void)n; (void)pos; return false; }
 bool gpu_train_res_bw_begin(model_t *mm, const float *dx, int T) { (void)mm; (void)dx; (void)T; return false; }
+const char *gpu_train_res_head_begin(model_t *mm, int rows) { (void)mm; (void)rows; return "no CUDA device"; }
+bool gpu_train_res_head(model_t *mm, int n, int pos, const int *run_b, const int *run_len, int nruns,
+                        const int32_t *targets, const float *pos_w, int nc, double *lse, float *z_target) {
+    (void)mm; (void)n; (void)pos; (void)run_b; (void)run_len; (void)nruns; (void)targets; (void)pos_w; (void)nc;
+    (void)lse; (void)z_target;
+    return false;
+}
 bool gpu_train_res_layer_bw(model_t *mm, int l) { (void)mm; (void)l; return false; }
 bool gpu_train_res_bw_end(model_t *mm) { (void)mm; return false; }
 bool gpu_train_add_check(model_t *mm, const tadd_args *a, float *x, const float *y) {

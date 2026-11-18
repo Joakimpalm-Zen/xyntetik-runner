@@ -311,6 +311,70 @@ int main(int argc, char **argv) {
 #endif
         run_backward(&m, toks);   // the checks below read the resident step's gradients
     }
+    // R8.24.1 B R3: a resident step's head on the device against the host's
+    // (RUNNER_TRAIN_RES_HEAD=0), on a weight pattern that makes many runs of
+    // scored rows: rounds of 5 rows over the 14 positions, scored and unscored
+    // rows alternating in the first round, a second round with no scored row,
+    // a weight of 0.5 and one of -0.25 (DPO's sign), and the last position,
+    // which no window scores. The head's rows are gathered and scattered by
+    // runs, so this is where a run's offset would show. T3: every gradient and
+    // the loss by bits; a default build's host head keeps its own arithmetic
+    // (the C library's exp under fast math): bounded there.
+    if (m.train_dev && m.train_res_windows > 0) {
+        static const float W[T - 1] = { 1, 0, 0.5f, 0, 1,  0, 0, 0, 0, 0,  0, -0.25f, 1 };
+        const char *rows_was = getenv("RUNNER_TRAIN_ROWS");
+        static char rows_env[64];   // putenv keeps the pointer on POSIX: static, not the stack
+        snprintf(rows_env, sizeof rows_env, "RUNNER_TRAIN_ROWS=%s", rows_was ? rows_was : "");
+        putenv("RUNNER_TRAIN_ROWS=5");
+        long h0 = m.train_res_head_windows;
+        double ld = 0, lh = 0;
+        model_lora_grad_zero(&m);
+        bool okd = model_lora_backward_w(&m, toks, T, W, &ld);
+        long h1 = m.train_res_head_windows;
+        float *hd[MAX_BUF];
+        for (int i = 0; i < nsnap; i++) {
+            int cnt = 0;
+            const float *g = model_lora_gradbuf(&m, lay[i], slo[i], whi[i], &cnt);
+            hd[i] = malloc(sizeof(float) * (size_t)snap_n[i]);
+            if (g && cnt == snap_n[i]) memcpy(hd[i], g, sizeof(float) * (size_t)cnt);
+            else memset(hd[i], 0, sizeof(float) * (size_t)snap_n[i]);
+        }
+        putenv("RUNNER_TRAIN_RES_HEAD=0");
+        model_lora_grad_zero(&m);
+        bool okh = model_lora_backward_w(&m, toks, T, W, &lh);
+        putenv("RUNNER_TRAIN_RES_HEAD=");
+        putenv(rows_env);
+        CHECK(okd && okh, "the weighted backward failed (device head %d, host head %d)", okd, okh);
+        CHECK(h1 == h0 + 1 && m.train_res_head_windows == h1, "the device head ran %ld times, then "
+              "%ld under RUNNER_TRAIN_RES_HEAD=0", h1 - h0, m.train_res_head_windows - h1);
+        size_t diff = 0, tot = 0;
+        double worst = 0;
+        for (int i = 0; i < nsnap; i++) {
+            int cnt = 0;
+            const float *g = model_lora_gradbuf(&m, lay[i], slo[i], whi[i], &cnt);
+            if (!g || cnt != snap_n[i]) { CHECK(0, "grad buffer %d missing on the host head", i); free(hd[i]); continue; }
+            float mx = 0;
+            for (int k = 0; k < cnt; k++) mx = fabsf(g[k]) > mx ? fabsf(g[k]) : mx;
+            for (int k = 0; k < cnt; k++, tot++) {
+                if (memcmp(&g[k], &hd[i][k], 4)) diff++;
+                double e = mx > 0 ? fabs((double)g[k] - (double)hd[i][k]) / mx : 0;
+                if (e > worst) worst = e;
+            }
+            free(hd[i]);
+        }
+#ifdef RUNNER_PORTABLE_MATH
+        CHECK(diff == 0 && memcmp(&ld, &lh, sizeof ld) == 0, "the device head and the host's differ "
+              "in a T3 build: %zu of %zu gradients, loss %.17g against %.17g", diff, tot, ld, lh);
+        printf("ok: device head == host head by bits (T3), many runs and an empty round: %zu "
+               "gradients and the loss %.6f\n", tot, ld);
+#else
+        CHECK(worst <= 1e-3 && fabs(ld - lh) <= 1e-4 * fabs(lh), "device head against the host's: "
+              "worst gradient gap %.3g of its buffer's largest, loss %.17g against %.17g", worst, ld, lh);
+        printf("ok: device head against the host head (default build, bounded), many runs and an "
+               "empty round: %zu of %zu gradients differ, worst %.3g\n", diff, tot, worst);
+#endif
+        run_backward(&m, toks);   // the checks below read the resident step's gradients
+    }
     // RUNNER_GRAD_DUMP=FILE: the loss, then per buffer its layer, slot, side
     // (0 A, 1 B) and count as int32 and its gradients as float32, for
     // tests/test_deltanet_autograd.py

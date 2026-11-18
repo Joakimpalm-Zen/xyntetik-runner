@@ -8921,6 +8921,15 @@ typedef struct {
     int         res_tab_n;              // its layers (gpu_train_free drops each)
     CUfunction  f_thead;                // R8.24.1 B5, the head
     CUfunction  f_tadam, f_tgnorm;      // R8.24.1 B7, AdamW and the gradient norms
+    // R3 of the resident step: the head's planes for a round's scored rows
+    // (RH_*), the output norm and the suppress list on the device (frozen:
+    // up once), the round gpu_train_res_round last ran (the head reads its
+    // final hidden there), and the head's rounds for the record of a test
+    CUdeviceptr rh[12];
+    size_t      rh_cap[12];
+    bool        rh_frozen;
+    int         res_last_pos, res_last_n;
+    long        n_res_head;
     // R8.24.1 B6: the adapter at a site (k_tlora_t, _y, _tb, _ga, _gb, _dx)
     CUfunction  f_tlora[6];
     // R8.24.1 B: the device-resident FFN. The FFN sites' adapters for a
@@ -9187,6 +9196,7 @@ void gpu_train_free(model_t *m) {
         // the resident step's planes (R1, R2) and the frozen per-layer copies
         for (size_t i = 0; i < sizeof t->rp / sizeof *t->rp; i++) tg_drop(&t->rp[i], &t->rp_cap[i]);
         for (size_t i = 0; i < sizeof t->rb / sizeof *t->rb; i++) tg_drop(&t->rb[i], &t->rb_cap[i]);
+        for (size_t i = 0; i < sizeof t->rh / sizeof *t->rh; i++) tg_drop(&t->rh[i], &t->rh_cap[i]);
         tg_drop(&t->res_k, &t->res_k_cap);
         tg_drop(&t->res_v, &t->res_v_cap);
         tg_drop(&t->res_fr, &t->res_fr_cap);
@@ -10667,6 +10677,8 @@ bool gpu_train_res_round(model_t *m, int n, int pos) {
     }
     bool ok = cu.CtxSynchronize() == 0 && cu.MemcpyDtoH(m->x, t->rp[RP_X], sizeof(float) * ne) == 0;
     t->t_res += plat_now() - t0;   // its own bucket: the product calls' split stays theirs
+    t->res_last_pos = ok ? pos : -1;   // R3: the head reads this round's final hidden in rp[RP_X]
+    t->res_last_n = ok ? n : 0;
     return ok;
 }
 // ---- R8.24.1 B, R2 of the resident step: the backward over the device's
@@ -10682,7 +10694,92 @@ enum { RB_XN1, RB_Q, RB_QP, RB_KP, RB_AO, RB_OB, RB_XA, RB_DXA, RB_DAO, RB_DQ, R
 bool gpu_train_res_bw_begin(model_t *m, const float *dx, int T) {
     train_gpu_t *t = m->train_gpu;
     if (!t || !t->res_tab || T != t->res_T || cu.CtxSetCurrent(t->ctx) != 0) return false;
+    if (!dx) return true;   // R3: the device head already wrote the plane
     return cu.MemcpyHtoD(t->res_dx, dx, sizeof(float) * (size_t)T * m->n_embd) == 0;
+}
+
+// ---- R3 of the resident step: the head on the device, per forward round,
+// on the round's scored rows (the rows head_rows_bw takes): gathered from the
+// round's final hidden by runs, the output norm (B2), the logits product, the
+// head's twin (B5: the transforms, the row's normalizer and target logit, the
+// adjoint in place), the transposed product and the norm's adjoint into
+// zeroed rows, scattered into the step's dx plane. Every op the host's twin,
+// so the step's bits are the host head's in a T3 build.
+enum { RH_X, RH_XN, RH_LG, RH_TH, RH_DHN, RH_DXC, RH_TG, RH_PW, RH_LSE, RH_ZT, RH_ONW, RH_SUP, RH_N };
+_Static_assert(RH_N == sizeof(((train_gpu_t *)0)->rh) / sizeof(CUdeviceptr), "rh[] holds RH_N planes");
+const char *gpu_train_res_head_begin(model_t *m, int rows) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->res_tab || rows < 1 || cu.CtxSetCurrent(t->ctx) != 0) return "no resident step";
+    if (!t->f_thead) return "the head's kernel is not in this PTX";
+    if (!m->out_norm_w || m->out_norm_b) return "an output norm other than a weighted RMS norm";
+    if (!m->output || !tg_weights(t, m->output)) return "the output weights are not on the device";
+    size_t E = (size_t)m->n_embd, V = (size_t)m->n_vocab, r = (size_t)rows;
+    size_t ns = m->n_suppress > 0 ? (size_t)m->n_suppress : 1;
+    size_t sz[RH_N] = { 4 * r * E, 4 * r * E, 4 * r * V, m->logit_softcap > 0 ? 4 * r * V : 4,
+                        4 * r * E, 4 * r * E, 4 * r, 4 * r, 8 * r, 4 * r, 4 * E, 4 * ns };
+    for (int i = 0; i < RH_N; i++)
+        if (!tg_scratch(&t->rh[i], &t->rh_cap[i], sz[i])) return "the device cannot hold the head's planes";
+    if (!t->rh_frozen) {
+        if (cu.MemcpyHtoD(t->rh[RH_ONW], m->out_norm_w, 4 * E) != 0 ||
+            (m->n_suppress > 0 &&
+             cu.MemcpyHtoD(t->rh[RH_SUP], m->suppress, 4 * (size_t)m->n_suppress) != 0))
+            return "the output norm or the suppressed ids could not go up";
+        t->rh_frozen = true;
+    }
+    // the rows no scored position writes stay +0, as the host's calloc'd dx
+    if (cu.MemsetD8(t->res_dx, 0, 4 * (size_t)t->res_T * E) != 0) return "the dx plane could not be zeroed";
+    return NULL;
+}
+bool gpu_train_res_head(model_t *m, int n, int pos, const int *run_b, const int *run_len, int nruns,
+                        const int32_t *targets, const float *pos_w, int nc, double *lse, float *z_target) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->res_tab || nc < 1 || nruns < 1 || pos != t->res_last_pos || n != t->res_last_n ||
+        cu.CtxSetCurrent(t->ctx) != 0)
+        return false;
+    double t0 = plat_now();
+    int E = m->n_embd, V = m->n_vocab;
+    size_t fe = sizeof(float) * (size_t)nc * E;
+    CUdeviceptr pout = tg_weights(t, m->output);
+    if (!pout) return false;
+    int c = 0;
+    for (int k = 0; k < nruns; k++) {
+        if (run_b[k] < 0 || run_len[k] < 1 || run_b[k] + run_len[k] > n ||
+            cu.MemcpyDtoD(t->rh[RH_X] + sizeof(float) * (size_t)c * E,
+                          t->rp[RP_X] + sizeof(float) * (size_t)run_b[k] * E,
+                          sizeof(float) * (size_t)run_len[k] * E) != 0)
+            return false;
+        c += run_len[k];
+    }
+    if (c != nc) return false;
+    trn_args na = { E, nc, E, E, E, E, m->rms_eps };
+    thead_args ha = { V, nc, V, m->n_suppress, m->logit_scale, m->logit_softcap };
+    CUdeviceptr th = m->logit_softcap > 0 ? t->rh[RH_TH] : 0, pw = pos_w ? t->rh[RH_PW] : 0;
+    void *p[] = { &t->rh[RH_LG], &th, &t->rh[RH_TG], &pw, &t->rh[RH_SUP], &t->rh[RH_LSE],
+                  &t->rh[RH_ZT], &ha };
+    if (!trn_fw_launch(t, t->rh[RH_X], t->rh[RH_ONW], t->rh[RH_XN], &na) ||
+        !tmm_launch(t, m->output, pout, t->rh[RH_XN], t->rh[RH_LG], E, V, nc) ||
+        cu.MemcpyHtoD(t->rh[RH_TG], targets, sizeof(int32_t) * (size_t)nc) != 0 ||
+        (pos_w && cu.MemcpyHtoD(t->rh[RH_PW], pos_w, sizeof(float) * (size_t)nc) != 0) ||
+        cu.LaunchKernel(t->f_thead, (unsigned)nc, 1, 1, THEAD_THREADS, 1, 1, 0, NULL, p, NULL) != 0 ||
+        cu.MemsetD8(t->rh[RH_DHN], 0, fe) != 0 ||
+        !tmvt_launch(t, m->output, pout, t->rh[RH_LG], t->rh[RH_DHN], E, V, nc, true) ||
+        cu.MemsetD8(t->rh[RH_DXC], 0, fe) != 0 ||
+        !trn_bw_launch(t, t->rh[RH_X], t->rh[RH_ONW], t->rh[RH_DHN], t->rh[RH_DXC], &na))
+        return false;
+    c = 0;
+    for (int k = 0; k < nruns; k++) {
+        if (cu.MemcpyDtoD(t->res_dx + sizeof(float) * ((size_t)pos + run_b[k]) * E,
+                          t->rh[RH_DXC] + sizeof(float) * (size_t)c * E,
+                          sizeof(float) * (size_t)run_len[k] * E) != 0)
+            return false;
+        c += run_len[k];
+    }
+    bool ok = cu.CtxSynchronize() == 0 &&
+              cu.MemcpyDtoH(lse, t->rh[RH_LSE], sizeof(double) * (size_t)nc) == 0 &&
+              cu.MemcpyDtoH(z_target, t->rh[RH_ZT], sizeof(float) * (size_t)nc) == 0;
+    t->t_res += plat_now() - t0;
+    if (ok) t->n_res_head++;
+    return ok;
 }
 
 // layer l's backward: the step's dx (the gradient at the layer's output) in,

@@ -273,7 +273,13 @@ Outside it the run says once on stderr why, and the step takes the same
 kernels piece by piece, each layer's values passing through the host;
 `RUNNER_TRAIN_RESIDENT=0` keeps that path for comparison. A resident step
 that fails on the device fails the run, since the host holds no tape to
-resume from. The CPU keeps the head's loss and adjoint and the optimizer.
+resume from. A resident step runs the head on the device too: on each
+round's scored rows, the output norm, the logits, the transforms, the loss's
+normalizer and the adjoint into the device's dx; only each row's normalizer
+and target logit come back for the loss. A teacher's targets
+(`--train-teacher`) and `--train-logprobs`, which read every row's logits,
+keep the head on the host, and so does `RUNNER_TRAIN_RES_HEAD=0`, for
+comparison; the run says why once on stderr. The CPU keeps the optimizer.
 
 Every one of these kernels is a host-chain twin: it computes each element as
 a strict build's host computes it (`make T3=1`: the host's order of
@@ -281,8 +287,8 @@ operations, no contraction, the portable exp). A T3 build's `--train-gpu`
 adapter is therefore the one it was before, byte for byte (Qwen3-4B Q4_K_M,
 5 steps). A default build's adapter changed with R8.24.1, because its host
 had used the C library's `expf` and `-ffast-math` in the parts that moved;
-until the head and the optimizer move too, a default build's adapter is not
-a T3 build's, though both are within the tolerance below.
+until the optimizer moves too, a default build's adapter is not a T3
+build's, though both are within the tolerance below.
 
 On an RTX 5070 with 8 CPU threads (Qwen3-4B Q4_K_M, the ToolUse record's
 data, rank 8 on every projection, ctx 128; the median of steps 2 to 20,
@@ -953,7 +959,8 @@ rule's verdict),
 **Environment.** `RUNNER_TRAIN_GPU=1` (the CUDA assist, same bytes; `--train-gpu`
 is the whole step on the GPU), `RUNNER_TRAIN_DEVICE_STEP=0` (`--train-gpu`
 keeps a gated FFN's adapter and activation on the host), `RUNNER_TRAIN_RESIDENT=0`
-(`--train-gpu` keeps a step in the resident scope on the per-piece path), `RUNNER_TRAIN_PROF=1`
+(`--train-gpu` keeps a step in the resident scope on the per-piece path), `RUNNER_TRAIN_RES_HEAD=0`
+(a resident step's head on the host), `RUNNER_TRAIN_PROF=1`
 (per-step phase times on stderr, with each phase's device share under
 `--train-gpu`), `RUNNER_DEBUG_TIME=1` (the forward's stage times at the end
 of a run, under `--train-gpu` split into device and host), `RUNNER_TRAIN_ROWS=N` (positions the trained

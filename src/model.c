@@ -14111,6 +14111,45 @@ NUM_STAGE bool head_rows_bw(model_t *m, const int32_t *toks, int T,
     return true;
 }
 
+// R8.24.1 B R3: why a resident step's head stays on the host, said once a run
+static void lbw_head_why(const char *why) {
+    static _Atomic int said;
+    if (!said++) fprintf(stderr, "train-gpu: the head stays on the host: %s\n", why);
+}
+// R3: one round's head on the device (gpu_train_res_head), on the rows the
+// host's head takes (t < T - 1 with a nonzero weight, head_rows_bw's), in
+// runs of consecutive rows; the loss added in row order with the host's own
+// expression. A round with no scored row computes nothing, as on the host.
+// Scratch of the round's width: rb, rl (runs), tg, pw (targets, weights),
+// lse, zt (each scored row's normalizer and transformed target logit).
+static bool lbw_head_round(model_t *m, const int32_t *toks, int T, int t0, int n,
+                           const float *pos_w, double *loss, int *rb, int *rl, int32_t *tg,
+                           float *pw, double *lse, float *zt) {
+    int nr = 0, nc = 0;
+    for (int b = 0; b < n; b++) {
+        int t = t0 + b;
+        if (!(t < T - 1 && (!pos_w || pos_w[t] != 0.0f))) continue;
+        if (nr && rb[nr - 1] + rl[nr - 1] == b) rl[nr - 1]++;
+        else { rb[nr] = b; rl[nr] = 1; nr++; }
+        tg[nc] = toks[t + 1];
+        if (pos_w) pw[nc] = pos_w[t];
+        nc++;
+    }
+    if (!nc) return true;
+    if (!gpu_train_res_head(m, n, t0, rb, rl, nr, tg, pos_w ? pw : NULL, nc, lse, zt)) {
+        fprintf(stderr, "error: --train-gpu: the resident head failed on the device\n");
+        return false;
+    }
+    for (int b = 0, c = 0; b < n; b++) {
+        int t = t0 + b;
+        if (!(t < T - 1 && (!pos_w || pos_w[t] != 0.0f))) continue;
+        double w = pos_w ? (double)pos_w[t] : 1.0;
+        *loss += w * (lse[c] - (double)zt[c]);
+        c++;
+    }
+    return true;
+}
+
 // The taped forward: the inference forward in rounds of solo bits, every
 // layer's input kept on the tape, the window's (weighted) next-token loss, or
 // with a teacher its (weighted) KL, and the head's adjoint into dx for each
@@ -14128,6 +14167,41 @@ NUM_STAGE bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
     m->tape = malloc(sizeof(float) * (size_t)(L + 1) * T * E);
     if (!m->tape) { m->tape_T = 0; return false; }
     int rows = lora_fw_rows(m);
+    // R8.24.1 B R3: a resident step's head on the device, round by round,
+    // unless a teacher's targets or a reader of every row's logits
+    // (--train-logprobs) needs the host's; RUNNER_TRAIN_RES_HEAD=0 keeps the
+    // host's for comparison. Nothing else reads the unscored rows' logits
+    // (the evals run their own forward, the step log reads the loss).
+    m->train_res_head = false;
+    if (m->train_resident) {
+        const char *e = getenv("RUNNER_TRAIN_RES_HEAD");
+        const char *why = tch ? "a teacher's targets"
+                        : m->tape_logits_cb ? "every row's logits are read (--train-logprobs)"
+                        : e && e[0] == '0' && !e[1] ? "RUNNER_TRAIN_RES_HEAD=0"
+                        : gpu_train_res_head_begin(m, rows);
+        if (why) lbw_head_why(why);
+        else m->train_res_head = true;
+    }
+    if (m->train_res_head) {
+        m->train_res_head_windows++;
+        int *rb = malloc(sizeof(int) * (size_t)rows), *rl = malloc(sizeof(int) * (size_t)rows);
+        int32_t *tg = malloc(sizeof(int32_t) * (size_t)rows);
+        float *pw = malloc(sizeof(float) * (size_t)rows), *zt = malloc(sizeof(float) * (size_t)rows);
+        double *lse = malloc(sizeof(double) * (size_t)rows);
+        bool ok = rb && rl && tg && pw && zt && lse;
+        for (int t0 = 0; ok && t0 < T; t0 += rows) {
+            int n = T - t0 < rows ? T - t0 : rows;
+            bool ex = t_mv_exact;
+            t_mv_exact = true;
+            model_forward_batch(m, toks + t0, n, t0, false);
+            t_mv_exact = ex;
+            if (m->train_res_failed) ok = false;
+            ok = ok && lbw_head_round(m, toks, T, t0, n, pos_w, &loss, rb, rl, tg, pw, lse, zt);
+        }
+        free(rb); free(rl); free(tg); free(pw); free(zt); free(lse);
+        if (ok) *loss_out = loss;
+        return ok;
+    }
     float *raw   = malloc(sizeof(float) * (size_t)rows * V);
     float *probs = malloc(sizeof(float) * (size_t)rows * V);
     float *lgt   = malloc(sizeof(float) * (size_t)V);
@@ -14213,7 +14287,7 @@ static bool lora_layers_bw(model_t *m, const int32_t *toks, int T, float *dx) {
     // device's tape and K/V rows (no PLE, no shared K/V in its scope), dx up
     // once; a failure fails the step (the host holds no tape to resume from)
     if (ok && m->train_resident) {
-        ok = gpu_train_res_bw_begin(m, dx, T);
+        ok = gpu_train_res_bw_begin(m, m->train_res_head ? NULL : dx, T);   // R3: dx is resident already
         for (int l = L - 1; ok && l >= 0; l--) ok = gpu_train_res_layer_bw(m, l);
         ok = ok && gpu_train_res_bw_end(m);
         if (!ok) fprintf(stderr, "error: --train-gpu: the resident backward failed on the device\n");
@@ -14439,6 +14513,7 @@ static bool lora_backward(model_t *m, const int32_t *toks, int T,
     if (!lbw_dn_settle(m)) ok = false;
     if (m->train_resident && !lbw_resident_end(m)) ok = false;
     m->train_resident = false;
+    m->train_res_head = false;
     if (dffn && !lbw_dev_ffn_end(m)) ok = false;
     t_mv_dev = dev;
     if (ok && loss_out) *loss_out = loss;

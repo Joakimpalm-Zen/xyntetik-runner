@@ -399,7 +399,19 @@ bool   gpu_train_res_round(model_t *m, int n, int pos);
 // R2: the resident backward. dx (the head's adjoint, T rows) up once; layer
 // l's backward on the device's tape and K/V rows, dx staying on the device;
 // every launch done. false: the step fails.
-bool   gpu_train_res_bw_begin(model_t *m, const float *dx, int T);
+bool   gpu_train_res_bw_begin(model_t *m, const float *dx, int T);   // dx NULL: R3's head wrote it
+// R3: the head on the device for a resident step. _begin: its planes for a
+// round of `rows`, the output norm and suppressed ids up once, the step's dx
+// plane zeroed; NULL, or why the head stays on the host this step. Per round
+// after gpu_train_res_round(m, n, pos): the nc scored rows (nruns runs of the
+// round's rows, run_b[k] .. run_b[k] + run_len[k] - 1), their targets and
+// weights (pos_w NULL: none), the head's adjoint into dx at those positions,
+// each row's normalizer (lse) and transformed target logit back. false: the
+// step fails.
+const char *gpu_train_res_head_begin(model_t *m, int rows);
+bool   gpu_train_res_head(model_t *m, int n, int pos, const int *run_b, const int *run_len,
+                          int nruns, const int32_t *targets, const float *pos_w, int nc,
+                          double *lse, float *z_target);
 bool   gpu_train_res_layer_bw(model_t *m, int l);
 bool   gpu_train_res_bw_end(model_t *m);
 // R8.24.1 B R0, the kernel gate's entry: the residual add's twin (k_tadd),
