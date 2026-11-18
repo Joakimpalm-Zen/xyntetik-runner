@@ -867,27 +867,38 @@ bool signkey_load(const char *path, signkey *k) {
 // (R6.68.61). The rule lived in --check-record and the lineage walker only;
 // it is part of the check itself now, so every reader of a signed record has
 // it: a record with anything after its signature is RSIG_BAD.
-static bool record_tail_clean(const char *buf, size_t n) {
-    const char *sig = NULL, *p = buf;
-    while ((p = strstr(p, ",\"signature\"")) != NULL) { sig = p; p++; }
-    if (!sig) return false;
-    const char *close = strchr(sig, '}');   // its values are hex and a name, never braces
+static const char *find_last_signature_key(const char *buf, size_t n) {
+    static const char needle[] = ",\"signature\"";
+    const size_t klen = sizeof needle - 1;
+    if (!buf || n < klen) return NULL;
+    for (size_t i = n - klen + 1; i > 0; i--) {
+        if (memcmp(buf + i - 1, needle, klen) == 0) return buf + i - 1;
+    }
+    return NULL;
+}
+
+static bool record_tail_clean_at(const char *sig, const char *buf, size_t n) {
+    if (!sig || sig < buf || (size_t)(sig - buf) >= n) return false;
+    const char *end = buf + n;
+    const char *close = memchr(sig, '}', (size_t)(end - sig));   // its values are hex and a name, never braces
     if (!close) return false;
     const char *q = close + 1;
-    while (*q == ' ' || *q == '\n' || *q == '\r' || *q == '\t') q++;
-    if (*q != '}') return false;
-    for (q++; *q; q++)
+    while (q < end && (*q == ' ' || *q == '\n' || *q == '\r' || *q == '\t')) q++;
+    if (q == end || *q != '}') return false;
+    for (q++; q < end; q++)
         if (!(*q == ' ' || *q == '\n' || *q == '\r' || *q == '\t')) return false;
-    return (size_t)(q - buf) == n;
+    return true;
 }
 
 receipt_sig_state receipt_signature_check(const char *rec, size_t n, char pub_hex[SIGN_PUBHEX_CAP]) {
+    if (!rec) return RSIG_MALFORMED;
+    if (pub_hex) pub_hex[0] = 0;
+    if (memchr(rec, '\0', n)) return RSIG_MALFORMED;
     // the signed span ends at the LAST `,"signature"` key (the record's own
     // JSON strings are escaped, so the key cannot appear inside a value)
-    const char *pos = NULL, *scan = rec;
-    while ((scan = strstr(scan, ",\"signature\"")) != NULL) { pos = scan; scan++; }
+    const char *pos = find_last_signature_key(rec, n);
     if (!pos) return RSIG_NONE;
-    if (pub_hex) pub_hex[0] = 0;
+    if (!record_tail_clean_at(pos, rec, n)) return RSIG_BAD;
     jv *j = json_parse(rec, n);
     if (!j) return RSIG_MALFORMED;
     jv *sg = jv_get(j, "signature");
@@ -907,7 +918,6 @@ receipt_sig_state receipt_signature_check(const char *rec, size_t n, char pub_he
     }
     bool ok = pk_n == 32 ? ed25519_verify(sig, rec, (size_t)(pos - rec), pk)
                          : mldsa44_verify(sig, rec, (size_t)(pos - rec), pk);
-    ok = ok && record_tail_clean(rec, n);
     if (ok && pub_hex) memcpy(pub_hex, pk_hex, pk_n * 2 + 1);
     jv_free(j);
     return ok ? RSIG_OK : RSIG_BAD;
@@ -1409,7 +1419,8 @@ int record_check(const char *path, const char *trust_hex) {
     }
     char pub[SIGN_PUBHEX_CAP] = "";
     receipt_sig_state st = receipt_signature_check(buf, n, pub);
-    bool tail_ok = record_tail_clean(buf, n);
+    bool tail_ok = memchr(buf, '\0', n) != NULL ||
+                   record_tail_clean_at(find_last_signature_key(buf, n), buf, n);
     char chain[65] = "";
     record_chain_hash(path, chain);
     free(buf);

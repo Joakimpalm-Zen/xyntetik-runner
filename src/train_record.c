@@ -201,18 +201,72 @@ static bool replay_resolve_teacher(const train_record_opts *o, cli_replay *rp, j
            replay_check_sha_opt("teacher.topk_logp.sha256", logp_p, lsha, !explicit_dir, rc);
 }
 
+static bool safe_eval_label(const char *s) {
+    if (!s || !*s || strlen(s) >= 64) return false;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (*p < 0x20 || *p == 0x7f || *p == '=' || *p == ',') return false;
+    }
+    return true;
+}
+
+static bool validate_evals_and_kill_meta(jv *rec, size_t kill_cap, int *rc) {
+    jv *evals = jv_get(rec, "evals");
+    jv *kill_v = jv_get(rec, "kill");
+    if (evals) {
+        if (evals->type != J_ARR || evals->n > 8)
+            return !replay_fail(rc, "evals", "array of <= 8 eval sets", "invalid");
+        for (int i = 0; i < evals->n; i++) {
+            jv *e = evals->items[i];
+            if (!e || e->type != J_OBJ)
+                return !replay_fail(rc, "evals", "eval set objects", "invalid");
+            const char *lbl = jv_str(jv_get(e, "label"), NULL);
+            if (!safe_eval_label(lbl))
+                return !replay_fail(rc, "evals.label", "safe label under 64 bytes", lbl);
+            for (int j = 0; j < i; j++) {
+                const char *prev = jv_str(jv_get(evals->items[j], "label"), "");
+                if (strcmp(lbl, prev) == 0)
+                    return !replay_fail(rc, "evals.label", "unique eval labels", lbl);
+            }
+            jv *rw = jv_get(e, "rows");
+            if (!rw || rw->type != J_OBJ)
+                return !replay_fail(rc, "evals.rows", "rows object", "missing");
+            jv *ti = jv_get(e, "topk_idx"), *tl = jv_get(e, "topk_logp");
+            if ((ti || tl) && (!ti || !tl || ti->type != J_OBJ || tl->type != J_OBJ))
+                return !replay_fail(rc, "evals.teacher", "topk_idx and topk_logp objects", "invalid");
+        }
+    }
+    if (kill_v) {
+        if (kill_v->type != J_OBJ)
+            return !replay_fail(rc, "kill", "kill object", "invalid");
+        int kat = 0;
+        double kmin = 0;
+        const char *km = jv_str(jv_get(kill_v, "metric"), NULL);
+        bool match = false;
+        if (km && *km && evals) {
+            for (int i = 0; i < evals->n; i++) {
+                const char *lbl = jv_str(jv_get(evals->items[i], "label"), "");
+                if (strcmp(lbl, km) == 0) { match = true; break; }
+            }
+        }
+        if (!km || !*km || strlen(km) >= kill_cap ||
+            !record_int(kill_v, "at", 1, INT_MAX, &kat) ||
+            !record_num(kill_v, "min_rel", -1, 1, &kmin) ||
+            !evals || evals->n == 0 || !match)
+            return !replay_fail(rc, "kill", "valid kill rule matching an eval label", km ? km : "invalid");
+    }
+    return true;
+}
+
 static bool replay_resolve_evals(const train_record_opts *o, cli_replay *rp, jv *rec, jv *kill_v, int *rc) {
     jv *evals = jv_get(rec, "evals");
     if (!evals) return true;
-    if (evals->type != J_ARR || evals->n > 8)
-        return !replay_fail(rc, "evals", "array of <= 8 eval sets", "invalid");
     for (int i = 0; i < evals->n; i++) {
         jv *e = evals->items[i], *rw = jv_get(e, "rows");
         const char *lbl = jv_str(jv_get(e, "label"), NULL);
         const char *rpath = jv_str(jv_get(rw, "path"), NULL), *rsha = jv_str(jv_get(rw, "sha256"), NULL);
         char rbuf[4096];
         const char *rf = relocate_local(rpath, o->replay_train, rbuf, sizeof rbuf) ? rbuf : NULL;
-        if (!lbl || !*lbl || !replay_check_sha_opt("evals.rows.sha256", rf, rsha, true, rc)) return false;
+        if (!replay_check_sha_opt("evals.rows.sha256", rf, rsha, true, rc)) return false;
         jv *ti = jv_get(e, "topk_idx"), *tl = jv_get(e, "topk_logp");
         char tdir[4096] = "";
         if (ti || tl) {
@@ -495,22 +549,36 @@ out:
     return ok;
 }
 
+static bool has_jsonl_suffix(const char *p) {
+    size_t n = p ? strlen(p) : 0;
+    return n >= 6 && strcmp(p + n - 6, ".jsonl") == 0;
+}
+
+static const char *unlearn_record_eligible(jv *rec) {
+    if (!rec || rec->type != J_OBJ)
+        return "is not a valid JSON training record";
+    if (strcmp(jv_str(jv_get(rec, "schema_version"), ""), "xyntetik.runner.train.v1"))
+        return "is not a xyntetik.runner.train.v1 training record";
+    if (strcmp(jv_str(jv_get(rec, "objective"), ""), "weighted-cross-entropy"))
+        return "is not a cross-entropy run (a teacher's arrays and DPO pairs are not rows to drop)";
+    if (jv_get(rec, "from_adapter") || jv_get(rec, "resumed_at_step"))
+        return "continued another adapter (an unlearned run starts from the base)";
+    if (jv_get(rec, "full_weight"))
+        return "trained the full weights";
+    if (jv_get(rec, "evals") || jv_get(rec, "kill"))
+        return "has evals or a kill rule, whose files would need the rows dropped too";
+    const char *dpath = jv_str(jv_get(jv_get(rec, "data"), "path"), "");
+    if (!has_jsonl_suffix(dpath))
+        return "does not train on .jsonl rows";
+    return NULL;
+}
+
 // --unlearn: the parent record a retrain may follow, and the retained rows,
 // written beside the output. A fresh cross-entropy adapter only: a teacher's
 // arrays are indexed by row, a continued or resumed run starts from another
 // adapter, and evals and a kill rule would need their own files dropped too.
 static bool unlearn_prepare(train_record_opts *o, jv *rec, int *rc) {
-    const char *why = NULL;
-    if (strcmp(jv_str(jv_get(rec, "schema_version"), ""), "xyntetik.runner.train.v1"))
-        why = "is not a xyntetik.runner.train.v1 training record";
-    else if (strcmp(jv_str(jv_get(rec, "objective"), ""), "weighted-cross-entropy"))
-        why = "is not a cross-entropy run (a teacher's arrays and DPO pairs are not rows to drop)";
-    else if (jv_get(rec, "from_adapter") || jv_get(rec, "resumed_at_step"))
-        why = "continued another adapter (an unlearned run starts from the base)";
-    else if (jv_get(rec, "full_weight"))
-        why = "trained the full weights";
-    else if (jv_get(rec, "evals") || jv_get(rec, "kill"))
-        why = "has evals or a kill rule, whose files would need the rows dropped too";
+    const char *why = unlearn_record_eligible(rec);
     if (why) {
         fprintf(stderr, "error: --unlearn: %s %s\n", o->unlearn_parent, why);
         *rc = 1;
@@ -590,6 +658,9 @@ static bool jv_same(const jv *a, const jv *b) {
 // holds, before any replay: the parent record, its data, the dropped rows, and
 // DATA1 less D as the record's own data.
 static bool unlearn_audit_check(const train_record_opts *o, jv *rec, const char *rec_path, int *rc) {
+    const char *c_why = unlearn_record_eligible(rec);
+    if (c_why)
+        return !replay_fail(rc, "unlearn", "eligible weighted-cross-entropy LoRA .jsonl run", c_why);
     jv *un = jv_get(rec, "unlearn");
     if (!un || un->type != J_OBJ)
         return !replay_fail(rc, "unlearn", "a record of runner train --unlearn", "none");
@@ -598,6 +669,8 @@ static bool unlearn_audit_check(const train_record_opts *o, jv *rec, const char 
         !record_int(un, "dropped_distinct", 1, INT_MAX, &dd))
         return !replay_fail(rc, "unlearn.dropped_count", "positive integers", "invalid");
     jv *pr = jv_get(un, "parent_record");
+    if (!pr || pr->type != J_OBJ)
+        return !replay_fail(rc, "unlearn.parent_record", "parent_record object", "missing");
     const char *ppath = jv_str(jv_get(pr, "path"), NULL);
     char pbuf[4096];
     const char *pf = relocate_local(ppath, rec_path, pbuf, sizeof pbuf) ? pbuf : NULL;
@@ -605,6 +678,13 @@ static bool unlearn_audit_check(const train_record_opts *o, jv *rec, const char 
         return false;
     char rerr[512] = "";
     jv *parent = read_bounded_record(pf, true, rerr, sizeof rerr, NULL, NULL);
+    if (!parent)
+        return !replay_fail(rc, "unlearn.parent_record", "valid JSON training record", rerr[0] ? rerr : "unreadable");
+    const char *p_why = unlearn_record_eligible(parent);
+    if (p_why) {
+        jv_free(parent);
+        return !replay_fail(rc, "unlearn.parent_record", "eligible weighted-cross-entropy LoRA .jsonl run", p_why);
+    }
     const char *pdata_raw = jv_str(jv_get(jv_get(parent, "data"), "sha256"), NULL);
     if (!is_sha256_hex(pdata_raw)) {
         replay_fail(rc, "unlearn.parent_data.sha256", "64-hex sha256", pdata_raw);
@@ -685,10 +765,43 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
               replay_check_environment(host, rec, rc) && replay_apply_overrides(o, rec, rc);
     free(rbuf);
     if (!ok && *rc == 0) *rc = 1;
-    rp->is_full = jv_get(rec, "full_weight") != NULL;
-    jv *out_v = ok ? jv_get(rec, rp->is_full ? "variant" : "adapter") : NULL;
-    const char *out_name = jv_str(jv_get(out_v, "path"), NULL);
-    const char *out_sha = jv_str(jv_get(out_v, "sha256"), NULL);
+    jv *fw_v = jv_get(rec, "full_weight");
+    if (ok && fw_v && fw_v->type != J_OBJ)
+        ok = !replay_fail(rc, "full_weight", "full_weight object", "invalid");
+    rp->is_full = fw_v && fw_v->type == J_OBJ;
+    jv *base = jv_get(rec, "base");
+    jv *data = jv_get(rec, "data");
+    jv *out_v = jv_get(rec, rp->is_full ? "variant" : "adapter");
+    jv *res_v = jv_get(rec, "resumed_at_step");
+    jv *from_v = jv_get(rec, "from_adapter");
+    jv *tch = jv_get(rec, "teacher");
+    jv *kill_v = jv_get(rec, "kill");
+    jv *un_v = jv_get(rec, "unlearn");
+    jv *bld_v = jv_get(rec, "build");
+    jv *adm = jv_get(rec, "adamw"), *rcp = jv_get(rec, "recipe");
+    if (ok && (!base || base->type != J_OBJ))
+        ok = !replay_fail(rc, "base", "base object", "invalid");
+    if (ok && (!data || data->type != J_OBJ))
+        ok = !replay_fail(rc, "data", "data object", "invalid");
+    if (ok && (!out_v || out_v->type != J_OBJ))
+        ok = !replay_fail(rc, rp->is_full ? "variant" : "adapter", "output object", "invalid");
+    if (ok && from_v && from_v->type != J_OBJ)
+        ok = !replay_fail(rc, "from_adapter", "adapter object", "invalid");
+    if (ok && tch && tch->type != J_OBJ)
+        ok = !replay_fail(rc, "teacher", "teacher object", "invalid");
+    if (ok && kill_v && kill_v->type != J_OBJ)
+        ok = !replay_fail(rc, "kill", "kill object", "invalid");
+    if (ok && un_v && un_v->type != J_OBJ)
+        ok = !replay_fail(rc, "unlearn", "unlearn object", "invalid");
+    if (ok && !retrain && (!bld_v || bld_v->type != J_OBJ))
+        ok = !replay_fail(rc, "build", "build object", "invalid");
+    if (ok && (!adm || adm->type != J_OBJ))
+        ok = !replay_fail(rc, "adamw", "adamw object", "invalid");
+    if (ok && (!rcp || rcp->type != J_OBJ))
+        ok = !replay_fail(rc, "recipe", "recipe object", "invalid");
+
+    const char *out_name = ok ? jv_str(jv_get(out_v, "path"), NULL) : NULL;
+    const char *out_sha = ok ? jv_str(jv_get(out_v, "sha256"), NULL) : NULL;
     if (ok && (!safe_relname(out_name, 255) || !is_sha256_hex(out_sha)))
         ok = !replay_fail(rc, rp->is_full ? "variant.path" : "adapter.path",
                           "safe basename and 64-hex sha256", out_name);
@@ -698,14 +811,10 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
 
     // Validate hyperparameters and cheap scalar fields before any large I/O,
     // unlearning split, or model load.
-    jv *res_v = jv_get(rec, "resumed_at_step");
-    jv *from_v = jv_get(rec, "from_adapter");
     const char *obj = jv_str(jv_get(rec, "objective"), "");
-    jv *tch = jv_get(rec, "teacher");
-    jv *kill_v = jv_get(rec, "kill");
     const char *kv = jv_str(jv_get(rec, "kv_cache"), NULL);
     jv *nb = jv_get(rec, "no_bos"), *eot = jv_get(rec, "end_of_turn");
-    jv *sv = jv_get(rec, "seed"), *adm = jv_get(rec, "adamw"), *rcp = jv_get(rec, "recipe");
+    jv *sv = jv_get(rec, "seed");
     int rank = 0, steps = 0, ctx = 0, eot_id = -1, warm = 0, batch = 1;
     double alpha = 0, lscale = 0, lr = 0, beta = 0.1, wd = 0, lr_floor_d = 0;
     double b1 = 0, b2 = 0, eps = 0;
@@ -732,12 +841,12 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
                                 : (sv->num >= 0 && sv->num <= 9007199254740992.0 &&
                                    sv->num == trunc(sv->num) && (seed_u64 = (uint64_t)sv->num, true))))
             ok = !replay_fail(rc, "seed", "exact uint64", "invalid");
-        else if (!adm || !record_num(adm, "beta1", 0, 1, &b1) || !record_num(adm, "beta2", 0, 1, &b2) ||
+        else if (!record_num(adm, "beta1", 0, 1, &b1) || !record_num(adm, "beta2", 0, 1, &b2) ||
                  !record_num(adm, "eps", 0, 1, &eps) || !record_num(adm, "weight_decay", 0, 1, &wd) ||
                  fabs(b1 - TRAIN_ADAM_BETA1) > 1e-6 || fabs(b2 - TRAIN_ADAM_BETA2) > 1e-6 ||
                  fabs(eps - TRAIN_ADAM_EPS) > 1e-12)
             ok = !replay_fail(rc, "adamw", "matching AdamW constants", "mismatch");
-        else if (!rcp || !record_int(rcp, "warmup", 0, INT_MAX, &warm) ||
+        else if (!record_int(rcp, "warmup", 0, INT_MAX, &warm) ||
                  !record_num(rcp, "floor", 0, 1, &lr_floor_d) ||
                  !record_int(rcp, "batch", 1, 65536, &batch))
             ok = !replay_fail(rc, "recipe", "valid lr/batch config", "invalid");
@@ -759,13 +868,13 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
         } else if (strcmp(obj, "weighted-cross-entropy") != 0 && strcmp(obj, "kl-to-teacher") != 0) {
             ok = !replay_fail(rc, "objective", "weighted-cross-entropy, kl-to-teacher or dpo", obj);
         }
+        if (ok && !validate_evals_and_kill_meta(rec, sizeof rp->kill_metric, rc))
+            ok = false;
     }
     if (ok && o->unlearn_audit && !unlearn_audit_check(o, rec, rec_path, rc))
         ok = false;
 
     // Locate & hash every input before touching the model.
-    jv *base = ok ? jv_get(rec, "base") : NULL;
-    jv *data = ok ? jv_get(rec, "data") : NULL;
     if (ok) {
         bool explicit_m = o->model_path != NULL;
         const char *bp = explicit_m ? o->model_path
