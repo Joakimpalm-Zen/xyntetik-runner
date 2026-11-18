@@ -124,7 +124,9 @@ static const char *const INPUT_KEYS[] = {
 
 // The deepest a walk goes, in printed links (an input and its record are two):
 // a chain past it is BROKEN, whatever kind its links are.
-#define LINEAGE_MAX_DEPTH 32
+#define LINEAGE_MAX_DEPTH  32
+#define LINEAGE_MAX_SEEN   4096
+#define LINEAGE_MAX_VISITS 16384
 
 typedef struct {
     char *path;
@@ -136,13 +138,15 @@ typedef struct {
 
 // worst: 0 verified, 1 unsigned, 2 broken. `path` holds active ancestors by
 // sha256 so cycles fail immediately; completed non-cyclic subtrees are memoized
-// in `seen` to avoid exponential diamond re-walks.
+// in `seen` up to LINEAGE_MAX_SEEN, failing closed if capacity or visits run out.
 typedef struct {
     int worst;
     int sp;
     char path[LINEAGE_MAX_DEPTH + 2][65];
     int max_depth;
+    int visits;
     bool saw_cycle;
+    bool aborted;
     lineage_seen_node *seen;
     int n_seen;
     int cap_seen;
@@ -167,24 +171,27 @@ static const lineage_seen_node *walk_seen_find(const walk_state *w, const char *
     return NULL;
 }
 
-static void walk_seen_add(walk_state *w, const char *rec_path, const char *rsha,
+static bool walk_seen_add(walk_state *w, const char *rec_path, const char *rsha,
                           const char *want_out_sha, int worst, int max_depth_rel) {
-    if (w->n_seen >= 4096 || walk_seen_find(w, rec_path, rsha, want_out_sha)) return;
+    if (walk_seen_find(w, rec_path, rsha, want_out_sha)) return true;
+    if (w->n_seen >= LINEAGE_MAX_SEEN) return false;
     if (w->n_seen == w->cap_seen) {
         int nc = w->cap_seen ? w->cap_seen * 2 : 32;
+        if (nc > LINEAGE_MAX_SEEN) nc = LINEAGE_MAX_SEEN;
         lineage_seen_node *g = realloc(w->seen, (size_t)nc * sizeof *g);
-        if (!g) return;
+        if (!g) return false;
         w->seen = g;
         w->cap_seen = nc;
     }
     char *pdup = strdup(rec_path);
-    if (!pdup) return;
+    if (!pdup) return false;
     lineage_seen_node *node = &w->seen[w->n_seen++];
     node->path = pdup;
     snprintf(node->rsha, sizeof node->rsha, "%s", rsha);
     snprintf(node->want_out, sizeof node->want_out, "%s", want_out_sha ? want_out_sha : "");
     node->worst = worst;
     node->max_depth_rel = max_depth_rel;
+    return true;
 }
 
 static void note(walk_state *w, int level) { if (level > w->worst) w->worst = level; }
@@ -360,7 +367,14 @@ static void walk_input(const char *key, jv *in, const char *citing, const char *
 static void walk_record(const char *rec_path, const char *want_rec_sha,
                         const char *want_out_sha, const char *trust_hex,
                         int depth, walk_state *w) {
+    if (w->aborted) return;
     indent(depth);
+    if (++w->visits > LINEAGE_MAX_VISITS) {
+        printf("BROKEN: lineage walk exceeded %d visits\n", LINEAGE_MAX_VISITS);
+        note(w, 2);
+        w->aborted = true;
+        return;
+    }
     if (depth > w->max_depth) w->max_depth = depth;
     if (depth > LINEAGE_MAX_DEPTH) {
         printf("BROKEN: the chain is longer than %d links\n", LINEAGE_MAX_DEPTH);
@@ -458,7 +472,7 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
     print_safe_lineage(jv_str(jv_get(rec, "runner"), "?"), 128);
     printf(", record %s]\n", rec_name);
     if (w->sp < LINEAGE_MAX_DEPTH + 2) memcpy(w->path[w->sp++], rsha, sizeof rsha);
-    for (size_t i = 0; i < sizeof INPUT_KEYS / sizeof INPUT_KEYS[0]; i++) {
+    for (size_t i = 0; !w->aborted && i < sizeof INPUT_KEYS / sizeof INPUT_KEYS[0]; i++) {
         if (!strcmp(INPUT_KEYS[i], out_key)) continue;   // a train record's "adapter" is its output
         jv *in = jv_get(rec, INPUT_KEYS[i]);
         if (in && in->type == J_OBJ && jv_get(in, "sha256"))
@@ -467,7 +481,7 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
     // R17.9: an unlearned adapter's parent record, cited by sha256 (runner
     // --unlearn). It is walked as the record it names; its output is not an
     // input here, so no output link is checked, only the record itself.
-    jv *pr = jv_get(jv_get(rec, "unlearn"), "parent_record");
+    jv *pr = !w->aborted ? jv_get(jv_get(rec, "unlearn"), "parent_record") : NULL;
     if (pr && pr->type == J_OBJ) {
         jv *un = jv_get(rec, "unlearn");
         const char *ppath = jv_str(jv_get(pr, "path"), "");
@@ -502,8 +516,13 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
     int sub_worst = w->worst;
     int rel_depth = w->max_depth - depth;
     if (rel_depth < 0) rel_depth = 0;
-    if (!w->saw_cycle)
-        walk_seen_add(w, rec_path, rsha, want_out_sha, sub_worst, rel_depth);
+    if (!w->saw_cycle && !w->aborted &&
+        !walk_seen_add(w, rec_path, rsha, want_out_sha, sub_worst, rel_depth)) {
+        indent(depth);
+        printf("BROKEN: lineage graph exceeded memoization capacity (%d records)\n", LINEAGE_MAX_SEEN);
+        note(w, 2);
+        w->aborted = true;
+    }
     if (prev_worst > w->worst) w->worst = prev_worst;
     if (prev_max_depth > w->max_depth) w->max_depth = prev_max_depth;
     if (prev_cycle) w->saw_cycle = true;
@@ -584,7 +603,7 @@ static int walk_receipts_dir(const char *dir, const char *trust_hex) {
         printf("  v%d: model sha256 %s, adapter %s: %d answers, %s .. %s\n", k + 1, ms,
                v[k].adapter[0] ? as : "none", v[k].count, v[k].first, v[k].last);
         static const char *const KEYS[] = { "model", "adapter" };
-        for (size_t i = 0; i < 2; i++) {
+        for (size_t i = 0; !w.aborted && i < 2; i++) {
             jv *in = jv_get(first_rec[k], KEYS[i]);
             if (in && in->type == J_OBJ && jv_get(in, "sha256"))
                 walk_input(KEYS[i], in, paths[0], trust_hex, 2, &w, true);
@@ -624,7 +643,7 @@ int lineage_walk(const char *start, const char *trust_hex) {
         printf("\n");
         note(&w, sig);
         static const char *const KEYS[] = { "model", "adapter" };
-        for (size_t i = 0; i < 2; i++) {
+        for (size_t i = 0; !w.aborted && i < 2; i++) {
             jv *in = jv_get(probe, KEYS[i]);
             if (in && in->type == J_OBJ && jv_get(in, "sha256"))
                 walk_input(KEYS[i], in, start, trust_hex, 1, &w, true);
