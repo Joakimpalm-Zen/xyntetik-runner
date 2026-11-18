@@ -885,9 +885,13 @@ $(TEST_SPLIT_GUARD): $(TEST_SPLIT_GUARD_SRC) $(HDR)
 # resident path, forced to a different split, must be reported loudly. The
 # harness self-skips (exit 0, says so) without a GPU backend; when it does
 # run, the report line is the gate — delete the guard and this goes red.
+# A harness that itself fails (a crash, or a missing device R6.90's gate
+# turns into a failure) prints its log too: under set -e the bare call ended
+# the recipe before any cat, and the failure came with no output at all.
 test-split-guard: $(TEST_SPLIT_GUARD) test.gguf
-	@set -e; \
-	./$(TEST_SPLIT_GUARD) $(ASAN_MODEL) > split-guard.out 2>&1; \
+	@set -e; rc=0; \
+	./$(TEST_SPLIT_GUARD) $(ASAN_MODEL) > split-guard.out 2>&1 || rc=$$?; \
+	if [ $$rc -ne 0 ]; then echo "FAIL: the split-guard harness exited $$rc"; cat split-guard.out; exit 1; fi; \
 	if grep -q "^skip:" split-guard.out; then cat split-guard.out; exit 0; fi; \
 	grep -q "re-decided the CPU/GPU split without a file identity" split-guard.out || { \
 		echo "FAIL: forced split disagreement produced no loud report"; \
