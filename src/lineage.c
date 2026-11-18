@@ -328,9 +328,18 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
         printf("unlearned from: %s (dropped %d rows of %d lines, sha256 %.12s)\n", ppath,
                (int)jv_num(jv_get(un, "dropped_count"), -1), (int)jv_num(jv_get(un, "dropped_distinct"), -1),
                jv_str(jv_get(un, "dropped_sha256"), "?"));
-        char moved[4096];
-        walk_record(lineage_relocate(ppath, rec_path, moved, sizeof moved),
-                    jv_str(jv_get(pr, "sha256"), NULL), NULL, trust_hex, depth + 2, w);
+        // a link without a hash is not a link: nothing holds the parent named
+        // to the record the unlearned run read
+        const char *psha = jv_str(jv_get(pr, "sha256"), NULL);
+        if (!psha || strlen(psha) != 64) {
+            indent(depth + 2);
+            printf("BROKEN: unlearn.parent_record has no sha256: a link without a hash is not a link\n");
+            note(w, 2);
+        } else {
+            char moved[4096];
+            walk_record(lineage_relocate(ppath, rec_path, moved, sizeof moved), psha, NULL, trust_hex,
+                        depth + 2, w);
+        }
     }
     if (w->sp > 0) w->sp--;
     jv_free(rec);
