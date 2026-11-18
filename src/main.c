@@ -1481,6 +1481,11 @@ static const char ATTEST_VERBS[] =
     "        (T3=1, or same binary with --allow-same-binary) and every\n"
     "        input hash before training starts. Exit 0 VERIFIED, 2 MISMATCH\n"
     "        or refused, 1 error\n"
+    "  unlearn RECORD --parent-data DATA1 --dropped D [-m BASE] [--allow-same-binary]\n"
+    "        audit an unlearned adapter (runner train --unlearn): DATA1 is the\n"
+    "        parent record's data, D the dropped rows' file, DATA1 less every\n"
+    "        line of D the retained data, then replay as above. Exit 0\n"
+    "        VERIFIED, 2 MISMATCH or refused, 1 error\n"
     "  bundle RECEIPT OUT_DIR [--model-sig F] [--model-pubkey F] [--key KEYFILE]\n"
     "        put the receipt, its model signature and key, the receipt\n"
     "        key's fingerprint and a sha256 manifest in one directory a\n"
@@ -1609,6 +1614,12 @@ static void usage_train_to(FILE *f) {
         "  --kv-f32       an f32 KV cache for this run (CPU only), so the\n"
         "                 gradient matches fp32 autograd (--kv f32 is the\n"
         "                 same cache for inference)\n"
+        "  --unlearn REC  retrain without some rows (R17.9): the recipe of the\n"
+        "                 training record REC, from -m, on DATA (REC's data,\n"
+        "                 JSONL rows) with every line of --drop removed; the\n"
+        "                 retained rows go to OUT.retained.jsonl and the record\n"
+        "                 names what was dropped (runner attest unlearn)\n"
+        "  --drop F       with --unlearn: the rows to remove, one JSONL line each\n"
         "  --sign-key F   sign the training record with the key in F\n\n"
         "Every other option (-m, -s, -t, -c, --chat-template, --model-pubkey,\n"
         "...) is the runner's own and passed through as given. The longer\n"
@@ -2488,6 +2499,11 @@ typedef struct {
     const char *keygen_algo, *lineage_path, *require_eval;
     const char *sign_record, *record_prev, *check_record;
     const char *replay_train, *replay_data;
+    // R17.9(c): --unlearn PARENT --drop D (a retrain without D's rows), and
+    // attest unlearn RECORD --parent-data DATA1 --dropped D (its audit)
+    const char *unlearn_parent, *unlearn_drop, *unlearn_audit, *unlearn_parent_data, *unlearn_dropped;
+    const char *unlearn_retained;   // the retained rows' file, written beside the output
+    int unlearn_count, unlearn_distinct;
     bool allow_same_binary, train_out_given;
     int replay_resumed_at;
     // R1.2.1: receipt bundles
@@ -2648,6 +2664,11 @@ static const cli_opt CLI_OPTS[] = {
     { "--check-record", NULL, OPT_STR, false, OPT_AT(const char *, check_record), OPT_NONE, 0, 0 },
     { "--replay-train", NULL, OPT_STR, false, OPT_AT(const char *, replay_train), OPT_NONE, 0, 0 },
     { "--replay-data", NULL, OPT_STR, false, OPT_AT(const char *, replay_data), OPT_NONE, 0, 0 },
+    { "--unlearn", NULL, OPT_STR, false, OPT_AT(const char *, unlearn_parent), OPT_NONE, 0, 0 },
+    { "--drop", NULL, OPT_STR, false, OPT_AT(const char *, unlearn_drop), OPT_NONE, 0, 0 },
+    { "--unlearn-audit", NULL, OPT_STR, false, OPT_AT(const char *, unlearn_audit), OPT_NONE, 0, 0 },
+    { "--parent-data", NULL, OPT_STR, false, OPT_AT(const char *, unlearn_parent_data), OPT_NONE, 0, 0 },
+    { "--dropped", NULL, OPT_STR, false, OPT_AT(const char *, unlearn_dropped), OPT_NONE, 0, 0 },
     { "--allow-same-binary", NULL, OPT_FLAG, false, OPT_AT(bool, allow_same_binary), OPT_NONE, 0, 0 },
     { "--export-bundle", NULL, OPT_STR, false, OPT_AT(const char *, export_bundle), OPT_NONE, 0, 0 },
     { "--bundle-out", NULL, OPT_STR, false, OPT_AT(const char *, bundle_out), OPT_NONE, 0, 0 },
@@ -3162,6 +3183,7 @@ static int cli_verbs(const cli_opts *o, const char **names, int cap) {
     verb_note(names, &n, cap, o->check_record, "--check-record");
     verb_note(names, &n, cap, o->lineage_path, "--lineage");
     verb_note(names, &n, cap, o->replay_train, "--replay-train");
+    verb_note(names, &n, cap, o->unlearn_audit, "--unlearn-audit");
     verb_note(names, &n, cap, o->export_bundle, "--export-bundle");
     verb_note(names, &n, cap, o->check_bundle, "--check-bundle");
     verb_note(names, &n, cap, o->export_pack, "--export-pack");
@@ -3249,7 +3271,26 @@ static bool cli_resolve_shape(cli_opts *o) {
                 "hash and does not take --train-out\n");
         return false;
     }
-    if ((o->replay_data || o->allow_same_binary) && !o->replay_train) {
+    if (o->unlearn_audit && (!o->unlearn_parent_data || !o->unlearn_dropped)) {
+        fprintf(stderr, "error: runner attest unlearn needs --parent-data DATA1 and --dropped D\n");
+        return false;
+    }
+    if ((o->unlearn_parent_data || o->unlearn_dropped) && !o->unlearn_audit) {
+        fprintf(stderr, "error: %s is only valid with runner attest unlearn\n",
+                o->unlearn_parent_data ? "--parent-data" : "--dropped");
+        return false;
+    }
+    if (!!o->unlearn_parent != !!o->unlearn_drop || (o->unlearn_parent && !o->train_path)) {
+        fprintf(stderr, "error: --unlearn PARENT.train.json takes --drop D and --train DATA1 (the parent's data)\n");
+        return false;
+    }
+    if (o->unlearn_parent && (o->dpo_path || o->train_teacher || o->train_resume || o->lora_path || o->replay_train)) {
+        fprintf(stderr, "error: --unlearn retrains a fresh cross-entropy adapter from the base: it does not take %s\n",
+                o->dpo_path ? "--train-dpo" : o->train_teacher ? "--train-teacher" :
+                o->train_resume ? "--train-resume" : o->lora_path ? "--lora" : "runner attest replay");
+        return false;
+    }
+    if ((o->replay_data || o->allow_same_binary) && !o->replay_train && !o->unlearn_audit) {
         fprintf(stderr, "error: %s is only valid with runner attest replay\n",
                 o->replay_data ? "--replay-data" : "--allow-same-binary");
         return false;
@@ -3396,6 +3437,7 @@ static int cli_expand_subcommand(int *argc, char ***argv) {
             { "check", "--check-record", NULL, NULL, 1 },
             { "lineage", "--lineage", NULL, NULL, 1 },
             { "replay", "--replay-train", NULL, NULL, 1 },
+            { "unlearn", "--unlearn-audit", NULL, NULL, 1 },
             { "bundle", "--export-bundle", "--bundle-out", "--sign-key", 2 },
             { "check-bundle", "--check-bundle", NULL, NULL, 1 },
             { "pack", "--export-pack", "--pack-out", "--sign-key", 2 },
@@ -6454,6 +6496,17 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
     }
     sb_lit(&rec, ",\"data\":");
     lineage_put_input(&rec, data_path, dsha);
+    if (o->unlearn_parent) {
+        // R17.9(c): the parent record, the dropped rows by digest only (D stays
+        // with whoever holds the data), how many rows went and how many lines D
+        // listed (one listed line can take out several rows)
+        char dsh[65] = "";
+        if (!envelope_file_sha256(o->unlearn_drop, dsh)) hash_ok = false;
+        sb_lit(&rec, ",\"unlearn\":{\"parent_record\":");
+        if (!lineage_put_input(&rec, o->unlearn_parent, NULL)) hash_ok = false;
+        sb_fmt(&rec, ",\"dropped_sha256\":\"%s\",\"dropped_count\":%d,\"dropped_distinct\":%d}",
+               dsh, o->unlearn_count, o->unlearn_distinct);
+    }
     sb_lit(&rec, rt->m.kv_f32 ? ",\"kv_cache\":\"f32\"" : ",\"kv_cache\":\"f16\"");
     if (model_full_on(&rt->m)) {
         // R8.25.2: what was trained, and through which type (the masters are
@@ -6880,25 +6933,263 @@ static bool replay_apply_overrides(cli_opts *o, jv *rec, int *rc) {
     return true;
 }
 
+// R17.9(c), exact unlearning as a retrain: DATA1's lines less every occurrence
+// of D's lines, the rest in their order, each closed by "\n", into *kept. A
+// line is dropped when it equals one of D's non-empty lines byte for byte (its
+// newline aside). *count is the rows removed, *distinct the lines D lists.
+// False, with why, for a text corpus (it has no rows), a line of D that is not
+// in DATA1, or a file that cannot be read.
+static int unlearn_line_cmp(const void *a, const void *b) {
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+static bool unlearn_split(const char *data1, const char *drop, sbuf *kept, int *count, int *distinct,
+                          char *why, size_t cap) {
+    size_t n1 = 0, n2 = 0;
+    char *a = plat_read_file(data1, MAX_INPUT_FILE, &n1);
+    char *d = plat_read_file(drop, MAX_INPUT_FILE, &n2);
+    char **dl = NULL;
+    bool *found = NULL, ok = false;
+    int nd = 0, capn = 0;
+    *count = *distinct = 0;
+    if (!a || !d) { snprintf(why, cap, "cannot read %s", !a ? data1 : drop); goto out; }
+    size_t i0 = 0;
+    while (i0 < n1 && (a[i0] == ' ' || a[i0] == '\t' || a[i0] == '\r' || a[i0] == '\n')) i0++;
+    if (i0 == n1 || a[i0] != '{') {
+        snprintf(why, cap, "%s is not JSONL rows: a text corpus has no row to drop", data1);
+        goto out;
+    }
+    for (size_t p = 0; p < n2; ) {
+        const char *e = memchr(d + p, '\n', n2 - p);
+        size_t len = e ? (size_t)(e - (d + p)) : n2 - p;
+        if (len) {
+            if (nd == capn) {
+                capn = capn ? 2 * capn : 16;
+                char **g = realloc(dl, sizeof *dl * (size_t)capn);
+                if (!g) { snprintf(why, cap, "out of memory"); goto out; }
+                dl = g;
+            }
+            dl[nd] = malloc(len + 1);
+            if (!dl[nd]) { snprintf(why, cap, "out of memory"); goto out; }
+            memcpy(dl[nd], d + p, len);
+            dl[nd++][len] = 0;
+        }
+        p += len + 1;
+    }
+    if (nd == 0) { snprintf(why, cap, "%s lists no row", drop); goto out; }
+    qsort(dl, (size_t)nd, sizeof *dl, unlearn_line_cmp);
+    int u = 1;   // distinct, in place
+    for (int i = 1; i < nd; i++)
+        if (strcmp(dl[i], dl[u - 1])) dl[u++] = dl[i];
+        else free(dl[i]);
+    nd = u;
+    found = calloc((size_t)nd, sizeof *found);
+    if (!found) { snprintf(why, cap, "out of memory"); goto out; }
+    for (size_t p = 0; p < n1; ) {
+        char *e = memchr(a + p, '\n', n1 - p);
+        size_t len = e ? (size_t)(e - (a + p)) : n1 - p;
+        char save = a[p + len];
+        a[p + len] = 0;   // the buffer is ours: the line as a string for the search
+        const char *key = a + p;
+        char **hit = len ? bsearch(&key, dl, (size_t)nd, sizeof *dl, unlearn_line_cmp) : NULL;
+        a[p + len] = save;
+        if (hit) { found[hit - dl] = true; (*count)++; }
+        else if (len || e) { sb_put(kept, a + p, len); sb_lit(kept, "\n"); }
+        p += len + 1;
+    }
+    for (int i = 0; i < nd; i++)
+        if (!found[i]) { snprintf(why, cap, "a line of %s is not in the parent's data: %.60s", drop, dl[i]); goto out; }
+    *distinct = nd;
+    ok = !kept->failed;
+    if (!ok) snprintf(why, cap, "out of memory");
+out:
+    if (dl) for (int i = 0; i < nd; i++) free(dl[i]);
+    free(dl);
+    free(found);
+    free(a);
+    free(d);
+    return ok;
+}
+
+// --unlearn: the parent record a retrain may follow, and the retained rows,
+// written beside the output. A fresh cross-entropy adapter only: a teacher's
+// arrays are indexed by row, a continued or resumed run starts from another
+// adapter, and evals and a kill rule would need their own files dropped too.
+static bool unlearn_prepare(cli_opts *o, jv *rec, int *rc) {
+    const char *why = NULL;
+    if (strcmp(jv_str(jv_get(rec, "schema_version"), ""), "xyntetik.runner.train.v1"))
+        why = "is not a xyntetik.runner.train.v1 training record";
+    else if (strcmp(jv_str(jv_get(rec, "objective"), ""), "weighted-cross-entropy"))
+        why = "is not a cross-entropy run (a teacher's arrays and DPO pairs are not rows to drop)";
+    else if (jv_get(rec, "from_adapter") || jv_get(rec, "resumed_at_step"))
+        why = "continued another adapter (an unlearned run starts from the base)";
+    else if (jv_get(rec, "full_weight"))
+        why = "trained the full weights";
+    else if (jv_get(rec, "evals") || jv_get(rec, "kill"))
+        why = "has evals or a kill rule, whose files would need the rows dropped too";
+    if (why) {
+        fprintf(stderr, "error: --unlearn: %s %s\n", o->unlearn_parent, why);
+        *rc = 1;
+        return false;
+    }
+    char have[65] = "";
+    const char *want = jv_str(jv_get(jv_get(rec, "data"), "sha256"), "");
+    if (!envelope_file_sha256(o->train_path, have) || strcmp(have, want)) {
+        fprintf(stderr, "error: --unlearn: %s is not the parent's data (sha256 %s, the record names %s)\n",
+                o->train_path, have[0] ? have : "unreadable", want);
+        *rc = 1;
+        return false;
+    }
+    sbuf kept = {0};
+    char swhy[512];
+    if (!unlearn_split(o->train_path, o->unlearn_drop, &kept, &o->unlearn_count, &o->unlearn_distinct,
+                       swhy, sizeof swhy)) {
+        fprintf(stderr, "error: --unlearn: %s\n", swhy);
+        free(kept.s);
+        *rc = 1;
+        return false;
+    }
+    if (kept.n == 0) {
+        fprintf(stderr, "error: --unlearn: %s drops every row of %s: nothing is left to train on\n",
+                o->unlearn_drop, o->train_path);
+        free(kept.s);
+        *rc = 1;
+        return false;
+    }
+    static char path[4200];
+    snprintf(path, sizeof path, "%s.retained.jsonl", o->train_out);
+    FILE *f = plat_fopen(path, "wb");
+    bool ok = f && (kept.n == 0 || fwrite(kept.s, 1, kept.n, f) == kept.n);
+    if (f && fclose(f) != 0) ok = false;
+    free(kept.s);
+    if (!ok) {
+        fprintf(stderr, "error: --unlearn: cannot write %s\n", path);
+        *rc = 1;
+        return false;
+    }
+    o->unlearn_retained = path;
+    return true;
+}
+
+// Two JSON values the same: type, number, string, bool, and objects and arrays
+// member for member (an absent value is the same only as another absent one).
+static bool jv_same(const jv *a, const jv *b) {
+    if (!a || !b) return a == b;
+    if (a->type != b->type) return false;
+    switch (a->type) {
+    case J_NULL: return true;
+    case J_BOOL: return a->b == b->b;
+    case J_NUM:  return a->num_text || b->num_text
+                      ? a->num_text && b->num_text && !strcmp(a->num_text, b->num_text)
+                      : a->num == b->num;
+    case J_STR:  return !strcmp(a->str, b->str);
+    case J_ARR:
+        if (a->n != b->n) return false;
+        for (int i = 0; i < a->n; i++) if (!jv_same(a->items[i], b->items[i])) return false;
+        return true;
+    case J_OBJ:
+        if (a->n != b->n) return false;
+        for (int i = 0; i < a->n; i++)
+            if (!jv_same(a->items[i], jv_get((jv *)b, a->keys[i]))) return false;
+        return true;
+    }
+    return false;
+}
+
+// attest unlearn: the record's unlearn object against the files the auditor
+// holds, before any replay: the parent record, its data, the dropped rows, and
+// DATA1 less D as the record's own data.
+static bool unlearn_audit_check(const cli_opts *o, jv *rec, const char *rec_path, int *rc) {
+    jv *un = jv_get(rec, "unlearn");
+    if (!un || un->type != J_OBJ)
+        return !replay_fail(rc, "unlearn", "a record of runner train --unlearn", "none");
+    jv *pr = jv_get(un, "parent_record");
+    const char *ppath = jv_str(jv_get(pr, "path"), NULL);
+    char pbuf[4096];
+    const char *pf = ppath ? lineage_relocate(ppath, rec_path, pbuf, sizeof pbuf) : NULL;
+    if (!replay_check_sha("unlearn.parent_record.sha256", pf, jv_str(jv_get(pr, "sha256"), NULL), rc))
+        return false;
+    size_t pn = 0;
+    char *pb = plat_read_file(pf, MAX_INPUT_FILE, &pn);
+    jv *parent = pb ? json_parse(pb, pn) : NULL;
+    free(pb);
+    char pdata[65] = "";
+    snprintf(pdata, sizeof pdata, "%s", jv_str(jv_get(jv_get(parent, "data"), "sha256"), ""));
+    // the same base and the same recipe as the parent: every field replay reads
+    // to train, the switches and the model overrides. Otherwise a from-scratch
+    // run under another recipe, given an unlearn block, would replay to its own
+    // bytes and verify.
+    static const char *const same[] = {
+        "objective", "lora_rank", "alpha", "lora_scale", "lr", "steps", "ctx", "seed", "kv_cache",
+        "no_bos", "end_of_turn", "eot_id", "adamw", "recipe", "model_overrides", "environment",
+    };
+    const char *pbase = jv_str(jv_get(jv_get(parent, "base"), "sha256"), "");
+    const char *rbase = jv_str(jv_get(jv_get(rec, "base"), "sha256"), "");
+    bool same_ok = parent && !strcmp(pbase, rbase);
+    const char *differs = same_ok ? NULL : "base.sha256";
+    for (size_t i = 0; same_ok && i < sizeof same / sizeof *same; i++)
+        if (!jv_same(jv_get(parent, same[i]), jv_get(rec, same[i]))) { same_ok = false; differs = same[i]; }
+    jv_free(parent);
+    if (!same_ok) {
+        char field[64];
+        snprintf(field, sizeof field, "unlearn.%s", differs);
+        return !replay_fail(rc, field, "the parent's", "another");
+    }
+    if (!replay_check_sha("unlearn.parent_data.sha256", o->unlearn_parent_data, pdata, rc)) return false;
+    if (!replay_check_sha("unlearn.dropped_sha256", o->unlearn_dropped,
+                          jv_str(jv_get(un, "dropped_sha256"), NULL), rc))
+        return false;
+    sbuf kept = {0};
+    int count = 0, distinct = 0;
+    char why[512], got[65] = "";
+    if (!unlearn_split(o->unlearn_parent_data, o->unlearn_dropped, &kept, &count, &distinct, why, sizeof why)) {
+        free(kept.s);
+        return !replay_fail(rc, "unlearn.retained", "DATA1 less D's lines", why);
+    }
+    envelope_data_sha256(kept.s ? kept.s : "", kept.n, got);
+    free(kept.s);
+    const char *want = jv_str(jv_get(jv_get(rec, "data"), "sha256"), "");
+    if (strcmp(got, want)) return !replay_fail(rc, "unlearn.retained", want, got);
+    double c = 0, dd = 0;
+    if (!record_num(un, "dropped_count", 0, 1e12, &c) || (int)c != count ||
+        !record_num(un, "dropped_distinct", 0, 1e12, &dd) || (int)dd != distinct) {
+        char w[64], g[64];
+        snprintf(w, sizeof w, "%d rows of %d lines", (int)c, (int)dd);
+        snprintf(g, sizeof g, "%d rows of %d lines", count, distinct);
+        return !replay_fail(rc, "unlearn.dropped_count", w, g);
+    }
+    return true;
+}
+
 static bool cli_prepare_replay_train(cli_opts *o, cli_replay *rp, int *rc) {
-    if (!o->replay_train) return false;
-    if (!record_regular_file(o->replay_train)) {
-        fprintf(stderr, "error: cannot read %s\n", o->replay_train);
+    // R17.9(c): attest unlearn is a replay of the record after its unlearn
+    // checks; --unlearn reads the parent record here for its recipe, retrains
+    // into the caller's --train-out, and is no replay (nothing is compared).
+    if (o->unlearn_audit && !o->replay_train) o->replay_train = o->unlearn_audit;
+    const bool retrain = !o->replay_train && o->unlearn_parent;
+    const char *rec_path = o->replay_train ? o->replay_train : o->unlearn_parent;
+    if (!rec_path) return false;
+    if (!record_regular_file(rec_path)) {
+        fprintf(stderr, "error: cannot read %s\n", rec_path);
         *rc = 1;
         return true;
     }
     size_t rlen = 0;
-    char *rbuf = plat_read_file(o->replay_train, MAX_INPUT_FILE, &rlen);
+    char *rbuf = plat_read_file(rec_path, MAX_INPUT_FILE, &rlen);
     jv *rec = rbuf ? json_parse(rbuf, rlen) : NULL;
     free(rbuf);
     if (!rec || rec->type != J_OBJ) {
-        fprintf(stderr, "error: %s is not a valid JSON training record\n", o->replay_train);
+        fprintf(stderr, "error: %s is not a valid JSON training record\n", rec_path);
         jv_free(rec);
         *rc = 1;
         return true;
     }
-    bool ok = replay_check_compat(o, rec, &rp->want_t3_exact, rc) &&
+    const char *caller_sign_key = o->sign_key;
+    if (retrain) o->replay_data = o->train_path;   // DATA1, hashed as the parent's data below
+    bool ok = (retrain ? unlearn_prepare(o, rec, rc) : replay_check_compat(o, rec, &rp->want_t3_exact, rc)) &&
+              (!o->unlearn_audit || unlearn_audit_check(o, rec, rec_path, rc)) &&
               replay_check_environment(rec, rc) && replay_apply_overrides(o, rec, rc);
+    if (!ok && *rc == 0) *rc = 1;
     rp->is_full = jv_get(rec, "full_weight") != NULL;
     jv *out_v = ok ? jv_get(rec, rp->is_full ? "variant" : "adapter") : NULL;
     const char *out_name = jv_str(jv_get(out_v, "path"), NULL);
@@ -6916,7 +7207,7 @@ static bool cli_prepare_replay_train(cli_opts *o, cli_replay *rp, int *rc) {
     if (ok) {
         const char *bp = o->model_path ? o->model_path
                                        : lineage_relocate(jv_str(jv_get(base, "path"), ""),
-                                                          o->replay_train, rp->base_path, sizeof rp->base_path);
+                                                          rec_path, rp->base_path, sizeof rp->base_path);
         if (bp != rp->base_path) snprintf(rp->base_path, sizeof rp->base_path, "%s", bp);
         ok = replay_check_sha("base.sha256", rp->base_path, jv_str(jv_get(base, "sha256"), NULL), rc);
         if (ok) o->model_path = rp->base_path;
@@ -6924,7 +7215,7 @@ static bool cli_prepare_replay_train(cli_opts *o, cli_replay *rp, int *rc) {
     if (ok) {
         const char *dp = o->replay_data ? o->replay_data
                                         : lineage_relocate(jv_str(jv_get(data, "path"), ""),
-                                                           o->replay_train, rp->data_path, sizeof rp->data_path);
+                                                           rec_path, rp->data_path, sizeof rp->data_path);
         if (dp != rp->data_path) snprintf(rp->data_path, sizeof rp->data_path, "%s", dp);
         ok = replay_check_sha("data.sha256", rp->data_path, jv_str(jv_get(data, "sha256"), NULL), rc);
     }
@@ -6945,7 +7236,7 @@ static bool cli_prepare_replay_train(cli_opts *o, cli_replay *rp, int *rc) {
                        : o->train_resume ? o->train_resume
                        : o->lora_path ? o->lora_path
                        : lineage_relocate(jv_str(jv_get(from_v, "path"), ""),
-                                          o->replay_train, rp->from_path, sizeof rp->from_path);
+                                          rec_path, rp->from_path, sizeof rp->from_path);
         if (ok && fp != rp->from_path) snprintf(rp->from_path, sizeof rp->from_path, "%s", fp);
         if (ok) ok = replay_check_sha("from_adapter.sha256", rp->from_path, jv_str(jv_get(from_v, "sha256"), NULL), rc);
         if (ok && res_v) {
@@ -7095,7 +7386,12 @@ static bool cli_prepare_replay_train(cli_opts *o, cli_replay *rp, int *rc) {
                 o->kill_at = 0;
                 o->kill_metric = NULL;
             }
-            if (ok && snprintf(rp->tmp_out, sizeof rp->tmp_out, "%s/runner-replay-%ld.gguf",
+            if (ok && retrain) {
+                // the retrain trains the retained rows into the caller's output, signed as asked
+                o->train_path = o->unlearn_retained;
+                o->sign_key = caller_sign_key;
+                o->replay_data = NULL;
+            } else if (ok && snprintf(rp->tmp_out, sizeof rp->tmp_out, "%s/runner-replay-%ld.gguf",
                                plat_runtime_dir(), plat_pid_self()) < (int)sizeof rp->tmp_out) {
                 plat_remove(rp->tmp_out);
                 o->train_out = rp->tmp_out;

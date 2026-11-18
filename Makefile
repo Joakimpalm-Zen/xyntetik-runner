@@ -212,9 +212,9 @@ endif
 # read it first in every unit. The system headers it includes then come
 # before a source's own feature macros, so the two compat.c sets
 # (sched_getaffinity on Linux, rand_s on Windows) are given here too.
-ifneq ($(filter -DRUNNER_PORTABLE_MATH,$(CFLAGS)),)
 PMATH_FEATURES_Linux = -D_GNU_SOURCE
 PMATH_FEATURES_Windows = -D_CRT_RAND_S=
+ifneq ($(filter -DRUNNER_PORTABLE_MATH,$(CFLAGS)),)
 override CFLAGS += -include src/pmath.h $(PMATH_FEATURES_$(BUILD_OS))
 endif
 
@@ -343,6 +343,12 @@ TEST_SHA256 = $(TEST_BATCH:test-batch%=test-sha256%)
 TEST_ED25519 = $(TEST_BATCH:test-batch%=test-ed25519%)
 TEST_MLDSA = $(TEST_BATCH:test-batch%=test-mldsa%)
 TEST_PMATH = $(TEST_BATCH:test-batch%=test-pmath%)
+TEST_PMATH_EXPF = $(TEST_BATCH:test-batch%=test-pmath-expf%)
+TEST_PMATH_EXPF_DEFAULT = $(TEST_BATCH:test-batch%=test-pmath-expf-default%)
+BENCH_PMATH_LOOPS = $(TEST_BATCH:test-batch%=bench-pmath-loops-bin%)
+TEST_PMATH_CALLERS_D = $(TEST_BATCH:test-batch%=test-pmath-callers-default%)
+TEST_PMATH_SOFTMAX = $(TEST_BATCH:test-batch%=test-pmath-softmax%)
+TEST_PMATH_CALLERS_P = $(TEST_BATCH:test-batch%=test-pmath-callers-portable%)
 TEST_FPCLASS = $(TEST_BATCH:test-batch%=test-fpclass%)
 TEST_ACT = $(TEST_BATCH:test-batch%=test-act%)
 TEST_ECDSA = $(TEST_BATCH:test-batch%=test-ecdsa%)
@@ -1794,6 +1800,83 @@ $(TEST_ACT): tests/test_act.c src/act.h src/fpclass.h
 
 $(TEST_PMATH): tests/test_pmath.c src/pmath.h
 	$(CC) -O2 -fno-fast-math -ffp-contract=off -std=gnu11 -Wall -I src tests/test_pmath.c -o $@ -lm
+
+# R6.86: pmath.h's p_expf, with no branch and no loop so that the loops that
+# call it vectorize, against the p_expf it replaced, (float)pm_exp_d, bit for
+# bit (tests/test_pmath_expf.c). This binary takes the T3 build's float flags
+# (the engine's, without fast-math, without contraction), at the engine's -O3
+# and -march, so its buffer loop is vectorized as the engine's loops are.
+# make test runs the named inputs, the sample and the mutant, and the -default
+# binary's named inputs and sample. The -default
+# binary takes the engine's own CFLAGS (-ffast-math): the build a portable
+# default would be. In both a NaN must give the NaN quieted, and every other
+# float the old function's bits. The two -all targets compare every one of the
+# 2^32 floats, about a minute each.
+$(TEST_PMATH_EXPF): tests/test_pmath_expf.c src/pmath.h
+	$(CC) $(QUANTS_CFLAGS) -ffp-contract=off -I src tests/test_pmath_expf.c -o $@ -lm
+$(TEST_PMATH_EXPF_DEFAULT): tests/test_pmath_expf.c src/pmath.h
+	$(CC) $(CFLAGS) -I src tests/test_pmath_expf.c -o $@ -lm
+.PHONY: test-pmath-expf-all test-pmath-expf-all-default
+test-pmath-expf-all: $(TEST_PMATH_EXPF)
+	./$(TEST_PMATH_EXPF) --all
+test-pmath-expf-all-default: $(TEST_PMATH_EXPF_DEFAULT)
+	./$(TEST_PMATH_EXPF_DEFAULT) --all
+
+# R6.86: the compiler's own report that the loops the portable exp sits in are
+# vectorized, in a portable build of the engine's default flags: what a build
+# with -DRUNNER_PORTABLE_MATH makes, a Windows default among them. Required:
+# the attention softmax's exp loop (softmax and softmax_sink). Reported: the
+# prompt FFN's SwiGLU. Clang's -Rpass=loop-vectorize or gcc's -fopt-info-vec,
+# whichever $(CC) is (scripts/check-pmath-vec.py). make test runs it, with
+# Linux gcc in CI; the macos and windows jobs run it with Apple clang and
+# MinGW gcc. A compiler's word only: make bench-pmath-loops times the same
+# loops. Not for T3=1: the T3 build keeps the softmax's sum in order, which a
+# vector loop does not.
+PMATH_VEC_FLAGS = $(CFLAGS) $(if $(filter -DRUNNER_PORTABLE_MATH,$(CFLAGS)),,-DRUNNER_PORTABLE_MATH -include src/pmath.h $(PMATH_FEATURES_$(BUILD_OS)))
+.PHONY: test-pmath-vec
+test-pmath-vec:
+	@mkdir -p $(OBJDIR)
+	$(PYTHON) scripts/check-pmath-vec.py --cc "$(CC)" --source src/model.c -- $(PMATH_VEC_FLAGS) -I src -c src/model.c -o $(OBJDIR)/pmath-vec-model.o
+
+# R6.86: what a NaN does at the portable exp's callers (tests/test_pmath_callers.c):
+# the engine's sampler and softmax built with the default flags (the C
+# library's expf) and as a portable build of them (pmath.h's), each printing
+# its answers for NaN inputs; the two must be identical, so that a portable
+# default changes nothing for a poisoned value. In make test. Not for T3=1,
+# whose flags are already portable: both builds would be the same.
+$(TEST_PMATH_CALLERS_D): tests/test_pmath_callers.c src/sample.c src/sample.h src/softmax.h
+	$(CC) $(CFLAGS) -I src tests/test_pmath_callers.c src/sample.c -o $@ -lm
+$(TEST_PMATH_CALLERS_P): tests/test_pmath_callers.c src/sample.c src/sample.h src/softmax.h src/pmath.h
+	$(CC) $(PMATH_VEC_FLAGS) -I src tests/test_pmath_callers.c src/sample.c -o $@ -lm
+.PHONY: test-pmath-callers
+test-pmath-callers: $(TEST_PMATH_CALLERS_D) $(TEST_PMATH_CALLERS_P)
+	@case " $(CFLAGS) " in *" -DRUNNER_PORTABLE_MATH "*) \
+	  echo "test-pmath-callers: not run: these flags are portable already, so both builds are one"; exit 0;; esac; \
+	./$(TEST_PMATH_CALLERS_D) > test-pmath-callers-default.out && ./$(TEST_PMATH_CALLERS_P) > test-pmath-callers-portable.out \
+	  || { echo "FAIL: a caller test binary failed"; exit 1; }; \
+	$(PYTHON) -c "import sys; d = open(sys.argv[1], 'rb').read().splitlines(); p = open(sys.argv[2], 'rb').read().splitlines(); bad = [(a, b) for a, b in zip(d, p) if a != b]; \
+	  ok = d and len(d) == len(p) and not bad; \
+	  print('pmath-callers: ok: the sampler and the softmax give the default build\'s answers for %d NaN cases in a portable build' % len(d) if ok else 'FAIL: a NaN at the exp\'s callers gives other answers in a portable build than in the default build:'); \
+	  [print('  default:  %s\n  portable: %s' % (a.decode(), b.decode())) for a, b in bad]; sys.exit(0 if ok else 1)" \
+	  test-pmath-callers-default.out test-pmath-callers-portable.out
+
+# R6.86: the attention softmax's OUTPUT in a portable build of the default
+# flags, bit for bit, against the softmax before R6.86 (main's fused loop with
+# main's expf), over every length to 300 and around the SIMD steps to 4096;
+# with a live control (the fused loop with the vector-friendly exp must
+# differ under -ffast-math). In make test (tests/test_pmath_softmax.c).
+$(TEST_PMATH_SOFTMAX): tests/test_pmath_softmax.c src/softmax.h src/pm_order.h src/pmath.h
+	$(CC) $(PMATH_VEC_FLAGS) -I src tests/test_pmath_softmax.c -o $@ -lm
+
+# R6.86: the softmax and SwiGLU loops timed with the p_expf this change
+# replaced and with the new one, interleaved, in one binary built as
+# test-pmath-vec compiles the engine (tests/bench_pmath_loops.c). A
+# measurement for the record, not a gate.
+$(BENCH_PMATH_LOOPS): tests/bench_pmath_loops.c src/pmath.h
+	$(CC) $(PMATH_VEC_FLAGS) -I src tests/bench_pmath_loops.c -o $@ -lm
+.PHONY: bench-pmath-loops
+bench-pmath-loops: $(BENCH_PMATH_LOOPS)
+	./$(BENCH_PMATH_LOOPS)
 
 # R6.86: a portable build (T3=1, or -DRUNNER_PORTABLE_MATH in CFLAGS) calls
 # none of the C library's expf, logf, sinf, cosf, tanhf and powf, whose last
@@ -3617,14 +3700,33 @@ else
 	@echo "test-metal-kv-grow: NOT RUN, the Metal backend's growing KV cache (this host has no Metal)"
 endif
 
-test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) $(TEST_MICRO_SCHED) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
+# R6.91: the sampler gives a NaN logit no mass, in the default, a portable and a
+# strict (T3 float flags) build: tests/test_sample_nan.c compiled three ways and
+# checked by scripts/check-sample-nan.sh, whose control is the finite picks of
+# main's sampler at SN_BASE.
+SN_EXT := $(if $(filter %.exe,$(RUNNER_EXE)),.exe,)
+# a portable build has the compiler read pmath.h first in every unit (R6.86)
+SN_PMATH := -include src/pmath.h $(if $(filter Linux,$(BUILD_OS)),-D_GNU_SOURCE,) \
+            $(if $(filter Windows,$(BUILD_OS)),-D_CRT_RAND_S=,)
+SN_PORTABLE := $(CFLAGS) -DRUNNER_PORTABLE_MATH $(SN_PMATH)
+SN_STRICT := $(filter-out -ffast-math,$(CFLAGS)) -fno-fast-math -ffp-contract=off \
+             -DRUNNER_PORTABLE_MATH -DRUNNER_CANON_KERNELS -DRUNNER_T3_BUILD $(SN_PMATH)
+SN_BASE := 6e035a770e5952c873c6170c37e1a857985eb48f
+test-sample-nan: tests/test_sample_nan.c src/sample.c scripts/check-sample-nan.sh $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_sample_nan.c src/sample.c -o test-sample-nan-default$(SN_EXT) $(LDFLAGS)
+	$(CC) $(SN_PORTABLE) -I src tests/test_sample_nan.c src/sample.c -o test-sample-nan-portable$(SN_EXT) $(LDFLAGS)
+	$(if $(filter Windows,$(BUILD_OS)),,$(CC) $(CFLAGS) -fsanitize=address -fno-omit-frame-pointer -I src tests/test_sample_nan.c src/sample.c -o test-sample-nan-asan $(LDFLAGS))
+	$(CC) $(SN_STRICT) -I src tests/test_sample_nan.c src/sample.c -o test-sample-nan-strict$(SN_EXT) $(LDFLAGS)
+	sh scripts/check-sample-nan.sh "$(SN_EXT)" $(SN_BASE) $(CC) $(CFLAGS) -- $(LDFLAGS)
+
+test-gates-core: test-python-deps test-sample-nan $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) $(TEST_MICRO_SCHED) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) $(TEST_ATEM_OOM) $(TEST_TEMPLATE_FAMILIES) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_MLOCK) test-es-mlock.gguf $(TEST_WILLNEED) $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
       $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_TRAY_MAC_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) $(TEST_LINEAGE_OOM) $(TEST_DERIVE_OOM) test-lora.full.gguf \
-      $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_SHA256) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_FPCLASS) $(TEST_ACT) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
+      $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_SHA256) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_PMATH_EXPF) $(TEST_PMATH_EXPF_DEFAULT) $(TEST_PMATH_SOFTMAX) $(TEST_FPCLASS) $(TEST_ACT) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) \
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_STREAM_OUT) $(TEST_RESIDENCY) $(TEST_CAPACITY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
@@ -3977,6 +4079,11 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	./$(TEST_MLDSA)
 	./$(TEST_CANON_KERNELS)
 	./$(TEST_PMATH)
+	./$(TEST_PMATH_EXPF)
+	./$(TEST_PMATH_EXPF_DEFAULT)
+	./$(TEST_PMATH_SOFTMAX)
+	$(MAKE) --no-print-directory test-pmath-vec
+	$(MAKE) --no-print-directory test-pmath-callers
 	./$(TEST_FPCLASS)
 	./$(TEST_ACT)
 	./$(TEST_ECDSA)
@@ -4102,7 +4209,7 @@ test-python: test-python-deps runner runner-turn-guard test.gguf $(TMPL_CONF_REN
              test.gguf test-lora.full.gguf test-moe-train.moe4-train.gguf test-es.gguf
 	@[ -f test-moe-fixture.moe4.gguf ] || $(PYTHON) scripts/make-test-moe.py test-moe-fixture > /dev/null
 	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/
-	RUNNER_REQUIRE_TURN_GUARD=1 $(ROOT_PYTEST_ENV) $(PYTHON) scripts/ci-run.py --timeout $(ROOT_PYTEST_TIMEOUT) root-pytest -- $(PYTHON) -m pytest $(PYTEST_XDIST) $(ROOT_PYTEST_ARGS) --durations=25 -ra --junitxml=.build/ci/root.xml -q tests/test_ci_contracts.py tests/test_commit_hygiene.py tests/test_template_kwargs.py tests/test_known_kwargs.py tests/test_attn_dec_repeat.py tests/test_attn_wide_repeat.py tests/test_moe_hot.py tests/test_check_portability.py tests/test_cuda_act_probe.py tests/test_fit_check.py tests/test_fit_matches_load.py tests/test_owned_fields.py tests/test_recommend.py tests/test_cached.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_nemotron_latent_moe.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_context_full.py tests/test_hf_fetch.py tests/test_pull.py tests/test_hub_upload_check.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_metal_mv_default.py tests/test_metal_microbatch_profile.py tests/test_metal_batch_tiles.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_scheduled_ci_alert.py tests/test_glibc_release.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_gguf_truncated.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_recurrent_refeed.py tests/test_draft_lookup.py tests/test_draft_k_defaults.py tests/test_cuda_plan_runs.py tests/test_cuda_fit_hybrid.py tests/test_cuda_rec_slots.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_moe_replay.py tests/test_act_trace.py tests/test_mistral3.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_queued_load_disconnect.py tests/test_score.py tests/test_score_route.py tests/test_cpu_i8_prefill.py tests/test_decide.py tests/test_clef.py tests/test_lfm2.py tests/test_qwen35moe.py tests/test_qwen36_preserve_thinking.py tests/test_spark2_5.py tests/test_flint.py tests/test_k2_horizon.py tests/test_yarn_betas.py tests/test_hf_spec_bounds.py tests/test_doc_counts.py tests/test_lora.py tests/test_train_kv_refusal.py tests/test_full_train.py tests/test_lora_qwen35.py tests/test_train.py tests/test_train_teacher.py tests/test_train_recipe.py tests/test_train_replay.py tests/test_deltanet_autograd.py tests/test_rollout_identity.py tests/test_merge.py tests/test_lineage.py tests/test_eval_record.py tests/test_moe_lora.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_model_tiers.py tests/test_site_tiers.py tests/test_tier_smoke.py tests/test_template_conformance_token_only.py tests/test_difftok.py tests/test_unicode_classes.py tests/test_gemma4_untyped_fallback.py tests/test_xml_schema_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_phi3_rope.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_type_plan_by_sensitivity.py tests/test_derive.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_tray_not_raised_without_console.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_gpu_split_order.py tests/test_metal_split_layout.py tests/test_cuda_tensor_roles.py tests/test_cuda_buffer_lifetime.py tests/test_cuda_upload_report.py tests/test_tooluse_shifted.py tests/test_reasoning_budget.py tests/test_reasoning_sampling.py tests/test_loop_guard.py tests/test_model_id_long_name.py tests/test_gguf_blockorder.py tests/test_schema_close_api.py tests/test_embeddings_pooling.py tests/test_batch_rows_match_cpu.py tests/test_apertus_thinking.py tests/test_comment_only_check.py tests/test_nonfinite_responses.py tests/test_nonfinite_records.py tests/test_provenance.py tests/test_rerank.py tests/test_echo_logprobs.py tests/test_top_logprobs_keys.py tests/test_repeated_tool_calls.py tests/test_named_contexts.py tests/test_responses_store.py tests/test_adapter_routing.py tests/test_bundle.py tests/test_serve_receipts.py tests/test_adapter_signature.py tests/test_sign_model.py tests/test_agent_transcripts.py tests/test_stop_replay.py tests/test_think_replay.py tests/test_watermark.py tests/test_kv_snapshots.py tests/test_kv_f32.py tests/test_session_images.py tests/test_canon_gaps.py tests/test_qwen35_kv_rows.py tests/test_prefix_budget.py tests/test_parent_pid.py tests/test_lease_interop.py tests/test_gold_logits.py tests/test_mv_fuse.py tests/test_stream_utf8.py tests/test_tool_schema_validity.py tests/test_schema_refs.py tests/test_doctor.py tests/test_metal_attn_tile.py tests/test_metal_attn_gqa.py tests/test_server_sessions.py tests/test_confirm_below.py tests/test_evidence_pack.py tests/test_closure_provenance.py tests/test_reasoning_reserve.py tests/test_hermes_json_families.py tests/test_adapt_info.py tests/test_expect_resident.py tests/test_health_requests.py tests/test_ignore_eos_request.py tests/test_server_shared_pool.py tests/test_completion_token_ids.py tests/test_cli_smokes.py tests/test_utf8_io.py tests/test_cli_lifecycle.py tests/test_cli_surface.py tests/test_completion_sequences.py tests/test_reasoning_start.py tests/test_generation_fault_framing.py tests/test_stop_latency.py tests/test_agent_torture.py tests/test_torture_compare.py tests/test_competitor_freshness.py tests/test_write_stall_experiment.py tests/test_idle_coexistence.py tests/test_family_fixtures.py tests/test_bench_corpus.py tests/test_turn_write_guard.py tests/test_metal_memory.py tests/test_server_log_kept.py tests/test_port_in_use.py tests/test_draft_defaults.py tests/test_tc_spark_promotion.py tests/test_tc_clef_promotion.py tests/test_tc_route_label.py tests/test_verify_tc_compat.py tests/test_cuda_fit_ring.py tests/test_cuda_fit_full_offload.py tests/test_cancel_route.py tests/test_soak_serve.py tests/test_phys_footprint.py tests/test_tool_replay.py tests/test_nemotron_hetero_moe.py tests/test_gate_scripts.py tests/test_prompt_file_crlf.py tests/test_cancel_handles.py tests/test_package_manifests.py tests/test_fidelity_index.py tests/test_schema_annotations.py tests/test_pattern_automaton.py tests/test_metal_split_budget.py tests/test_repeat_count.py tests/test_seams_say_so.py tests/test_metal_kv_grow.py tests/test_metal_kv_restores.py tests/test_retired_switches.py tests/test_documented_controls.py tests/test_switches_documented.py tests/test_exclusive_bounds.py tests/test_kv_dump.py tests/test_prefix_scored.py
+	RUNNER_REQUIRE_TURN_GUARD=1 $(ROOT_PYTEST_ENV) $(PYTHON) scripts/ci-run.py --timeout $(ROOT_PYTEST_TIMEOUT) root-pytest -- $(PYTHON) -m pytest $(PYTEST_XDIST) $(ROOT_PYTEST_ARGS) --durations=25 -ra --junitxml=.build/ci/root.xml -q tests/test_ci_contracts.py tests/test_commit_hygiene.py tests/test_template_kwargs.py tests/test_known_kwargs.py tests/test_attn_dec_repeat.py tests/test_attn_wide_repeat.py tests/test_moe_hot.py tests/test_check_portability.py tests/test_cuda_act_probe.py tests/test_fit_check.py tests/test_fit_matches_load.py tests/test_owned_fields.py tests/test_recommend.py tests/test_cached.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_nemotron_latent_moe.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_context_full.py tests/test_hf_fetch.py tests/test_pull.py tests/test_hub_upload_check.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_metal_mv_default.py tests/test_metal_microbatch_profile.py tests/test_metal_batch_tiles.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_scheduled_ci_alert.py tests/test_glibc_release.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_gguf_truncated.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_recurrent_refeed.py tests/test_draft_lookup.py tests/test_draft_k_defaults.py tests/test_cuda_plan_runs.py tests/test_cuda_fit_hybrid.py tests/test_cuda_rec_slots.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_moe_replay.py tests/test_act_trace.py tests/test_mistral3.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_queued_load_disconnect.py tests/test_score.py tests/test_score_route.py tests/test_cpu_i8_prefill.py tests/test_decide.py tests/test_clef.py tests/test_lfm2.py tests/test_qwen35moe.py tests/test_qwen36_preserve_thinking.py tests/test_spark2_5.py tests/test_flint.py tests/test_k2_horizon.py tests/test_yarn_betas.py tests/test_hf_spec_bounds.py tests/test_doc_counts.py tests/test_lora.py tests/test_train_kv_refusal.py tests/test_full_train.py tests/test_lora_qwen35.py tests/test_train.py tests/test_train_teacher.py tests/test_train_recipe.py tests/test_train_replay.py tests/test_train_unlearn.py tests/test_deltanet_autograd.py tests/test_rollout_identity.py tests/test_merge.py tests/test_lineage.py tests/test_eval_record.py tests/test_moe_lora.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_model_tiers.py tests/test_site_tiers.py tests/test_tier_smoke.py tests/test_template_conformance_token_only.py tests/test_difftok.py tests/test_unicode_classes.py tests/test_gemma4_untyped_fallback.py tests/test_xml_schema_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_phi3_rope.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_type_plan_by_sensitivity.py tests/test_derive.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_tray_not_raised_without_console.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_gpu_split_order.py tests/test_metal_split_layout.py tests/test_cuda_tensor_roles.py tests/test_cuda_buffer_lifetime.py tests/test_cuda_upload_report.py tests/test_tooluse_shifted.py tests/test_reasoning_budget.py tests/test_reasoning_sampling.py tests/test_loop_guard.py tests/test_model_id_long_name.py tests/test_gguf_blockorder.py tests/test_schema_close_api.py tests/test_embeddings_pooling.py tests/test_batch_rows_match_cpu.py tests/test_apertus_thinking.py tests/test_comment_only_check.py tests/test_nonfinite_responses.py tests/test_nonfinite_records.py tests/test_provenance.py tests/test_rerank.py tests/test_echo_logprobs.py tests/test_top_logprobs_keys.py tests/test_repeated_tool_calls.py tests/test_named_contexts.py tests/test_responses_store.py tests/test_adapter_routing.py tests/test_bundle.py tests/test_serve_receipts.py tests/test_adapter_signature.py tests/test_sign_model.py tests/test_agent_transcripts.py tests/test_stop_replay.py tests/test_think_replay.py tests/test_watermark.py tests/test_kv_snapshots.py tests/test_kv_f32.py tests/test_session_images.py tests/test_canon_gaps.py tests/test_qwen35_kv_rows.py tests/test_prefix_budget.py tests/test_parent_pid.py tests/test_lease_interop.py tests/test_gold_logits.py tests/test_mv_fuse.py tests/test_stream_utf8.py tests/test_tool_schema_validity.py tests/test_schema_refs.py tests/test_doctor.py tests/test_metal_attn_tile.py tests/test_metal_attn_gqa.py tests/test_server_sessions.py tests/test_confirm_below.py tests/test_evidence_pack.py tests/test_closure_provenance.py tests/test_reasoning_reserve.py tests/test_hermes_json_families.py tests/test_adapt_info.py tests/test_expect_resident.py tests/test_health_requests.py tests/test_ignore_eos_request.py tests/test_server_shared_pool.py tests/test_completion_token_ids.py tests/test_cli_smokes.py tests/test_utf8_io.py tests/test_cli_lifecycle.py tests/test_cli_surface.py tests/test_completion_sequences.py tests/test_reasoning_start.py tests/test_generation_fault_framing.py tests/test_stop_latency.py tests/test_agent_torture.py tests/test_torture_compare.py tests/test_competitor_freshness.py tests/test_write_stall_experiment.py tests/test_idle_coexistence.py tests/test_family_fixtures.py tests/test_bench_corpus.py tests/test_turn_write_guard.py tests/test_metal_memory.py tests/test_server_log_kept.py tests/test_port_in_use.py tests/test_draft_defaults.py tests/test_tc_spark_promotion.py tests/test_tc_clef_promotion.py tests/test_tc_route_label.py tests/test_verify_tc_compat.py tests/test_cuda_fit_ring.py tests/test_cuda_fit_full_offload.py tests/test_cancel_route.py tests/test_soak_serve.py tests/test_phys_footprint.py tests/test_tool_replay.py tests/test_nemotron_hetero_moe.py tests/test_gate_scripts.py tests/test_prompt_file_crlf.py tests/test_cancel_handles.py tests/test_package_manifests.py tests/test_fidelity_index.py tests/test_schema_annotations.py tests/test_pattern_automaton.py tests/test_metal_split_budget.py tests/test_repeat_count.py tests/test_seams_say_so.py tests/test_metal_kv_grow.py tests/test_metal_kv_restores.py tests/test_retired_switches.py tests/test_documented_controls.py tests/test_switches_documented.py tests/test_exclusive_bounds.py tests/test_kv_dump.py tests/test_prefix_scored.py
 
 # The python half again, against the ASan+UBSan build (R6.68.21): `make
 # debug`, copied over ./runner for the run (RUNNER_COPY_FROM, so the

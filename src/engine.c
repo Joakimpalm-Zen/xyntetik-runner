@@ -13,6 +13,7 @@
 #include <string.h>
 #include <math.h>
 #include "pmath.h"
+#include "pm_order.h"   // PM_IN_ORDER: sums a portable build keeps in order (R6.86)
 
 double now_s(void) { return plat_now(); }
 
@@ -1830,7 +1831,7 @@ float engine_logsumexp(const float *logits, int n) {
     float mx = logits[0];
     for (int i = 1; i < n; i++) if (logits[i] > mx) mx = logits[i];
     double sum = 0;
-    for (int i = 0; i < n; i++) sum += expf(logits[i] - mx);
+    for (int i = 0; i < n; i++) { sum += expf(logits[i] - mx); PM_IN_ORDER(sum); }
     return mx + logf((float)sum);
 }
 
