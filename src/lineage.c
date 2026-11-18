@@ -1,11 +1,13 @@
 #include "lineage.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "compat.h"
 #include "envelope.h"
+#include "fpclass.h"
 #include "receipts.h"
 
 #include <sys/stat.h>
@@ -194,6 +196,13 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
 // differs) is STALE and does not count; a bad signature is BROKEN.
 static const char *const EVAL_KINDS[] = { "fidelity", "agent" };
 
+static int lineage_safe_count(jv *v, int min_val, int fallback) {
+    if (!v || v->type != J_NUM || !fp_isfinite(v->num)) return fallback;
+    if (v->num <= (double)min_val) return min_val;
+    if (v->num >= (double)INT_MAX) return INT_MAX;
+    return (int)v->num;
+}
+
 static void walk_evals(const char *file, const char *sha, const char *trust_hex,
                        int depth, walk_state *w) {
     for (size_t k = 0; k < sizeof EVAL_KINDS / sizeof EVAL_KINDS[0]; k++) {
@@ -212,14 +221,14 @@ static void walk_evals(const char *file, const char *sha, const char *trust_hex,
         if (!strcmp(EVAL_KINDS[k], "fidelity"))
             printf("vs %s, %d positions, top-1 %.1f%%, mean KL %.4g; %s",
                    jv_str(jv_get(jv_get(ev, "reference"), "path"), "?"),
-                   (int)jv_num(jv_get(m, "positions_scored"), 0),
+                   lineage_safe_count(jv_get(m, "positions_scored"), 0, 0),
                    jv_num(jv_get(m, "top1_agreement_pct"), 0),
                    jv_num(jv_get(m, "mean_kld"), 0), pw);
         else
             printf("%d of %d tasks verified, %d aborts; %s",
-                   (int)jv_num(jv_get(m, "tasks_verified"), 0),
-                   (int)jv_num(jv_get(m, "tasks_attempted"), 0),
-                   (int)jv_num(jv_get(m, "engine_error_aborts"), 0), pw);
+                   lineage_safe_count(jv_get(m, "tasks_verified"), 0, 0),
+                   lineage_safe_count(jv_get(m, "tasks_attempted"), 0, 0),
+                   lineage_safe_count(jv_get(m, "engine_error_aborts"), 0, 0), pw);
         if (!sha || strcmp(subj, sha) != 0) {
             printf("  STALE (made for another file)\n");
             jv_free(ev);
@@ -448,7 +457,8 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
         const char *safe_p = safe_local_name(ppath) ? ppath : "<unsafe path>";
         indent(depth + 1);
         printf("unlearned from: %s (dropped %d rows of %d lines, sha256 %.12s)\n", safe_p,
-               (int)jv_num(jv_get(un, "dropped_count"), -1), (int)jv_num(jv_get(un, "dropped_distinct"), -1),
+               lineage_safe_count(jv_get(un, "dropped_count"), INT_MIN, -1),
+               lineage_safe_count(jv_get(un, "dropped_distinct"), INT_MIN, -1),
                jv_str(jv_get(un, "dropped_sha256"), "?"));
         // a link without a hash is not a link: nothing holds the parent named
         // to the record the unlearned run read
