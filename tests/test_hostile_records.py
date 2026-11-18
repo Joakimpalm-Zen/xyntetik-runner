@@ -1,0 +1,632 @@
+"""R6.94: hostile-record sweep of `runner attest replay` and `runner attest unlearn`.
+
+Every file an auditor verifies — the training record, parent record, data
+file, drop list, and cited sidecars — is untrusted input. Each test crafts a
+concrete hostile input targeting a distinct failure mechanism and must fail
+cleanly without memory corruption, UB, path escape, silent buffer truncation,
+false VERIFIED/exit-0 verdicts, or multi-hundred-MB preflight reads.
+"""
+import hashlib
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+
+import pytest
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+ROWS = [
+    {"prompt": "the runner trains", "completion": " the adapter"},
+    {"prompt": "the adapter learns", "completion": " the corpus"},
+    {"prompt": "the corpus teaches", "completion": " the model"},
+]
+DROP = [ROWS[1]]
+RECIPE = ("--train-steps", "2", "--lr", "3e-3", "-t", "1", "--gpu", "off")
+
+
+@pytest.fixture(scope="module")
+def runner_bin():
+    env_exe = os.environ.get("RUNNER_EXE")
+    if env_exe:
+        p = pathlib.Path(env_exe)
+        if not p.is_absolute():
+            p = ROOT / p
+        if p.exists():
+            return p
+    dbg = ROOT / ("runner-debug.exe" if sys.platform == "win32" else "runner-debug")
+    if dbg.exists():
+        newest = max((f.stat().st_mtime for f in (ROOT / "src").rglob("*.c")), default=0)
+        if dbg.stat().st_mtime >= newest:
+            return dbg
+    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
+    if not exe.exists():
+        pytest.skip("runner binary not built")
+    return exe
+
+
+def _run(exe, args, cwd=ROOT, env=None):
+    return subprocess.run(
+        [str(exe), *map(str, args)],
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+
+
+def _sha(path):
+    return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+
+
+def _clean_env(**extra):
+    env = {
+        k: v for k, v in os.environ.items()
+        if not k.startswith("RUNNER_") and not k.startswith("XR_")
+    }
+    env.update(extra)
+    return env
+
+
+def _replay_flags(rec_path):
+    rec = json.loads(pathlib.Path(rec_path).read_text(encoding="utf-8"))
+    return ["--allow-same-binary"] if rec.get("determinism") == "cpu-same-binary" else []
+
+
+def _write_rows(path, rows):
+    pathlib.Path(path).write_bytes(
+        "".join(json.dumps(r) + "\n" for r in rows).encode("utf-8")
+    )
+
+
+def _assert_no_sanitizer_or_crash(res):
+    assert res.returncode >= 0, (res.returncode, res.stderr)
+    assert "runtime error:" not in res.stderr, res.stderr
+    assert "AddressSanitizer" not in res.stderr, res.stderr
+
+
+@pytest.fixture(scope="module")
+def fx(runner_bin, tmp_path_factory):
+    """Real base model, parent CE record, replayable CE record, and unlearn record."""
+    d = tmp_path_factory.mktemp("hostile_fx")
+    subprocess.run(
+        [sys.executable, str(ROOT / "scripts/make-test-model.py"), str(d / "base.gguf")],
+        check=True,
+        cwd=ROOT,
+        stdout=subprocess.DEVNULL,
+    )
+    _write_rows(d / "data1.jsonl", ROWS)
+    _write_rows(d / "drop.jsonl", DROP)
+    (d / "corpus.txt").write_text("the runner trains cleanly. " * 4, encoding="utf-8")
+
+    # Parent CE run
+    p = _run(
+        runner_bin,
+        ["-m", d / "base.gguf", "--train", d / "data1.jsonl", "--train-out", d / "parent.gguf", *RECIPE],
+        env=_clean_env(),
+    )
+    assert p.returncode == 0, p.stderr
+
+    # Genuine unlearn run
+    u = _run(
+        runner_bin,
+        ["--unlearn", d / "parent.gguf.train.json", "--drop", d / "drop.jsonl",
+         "-m", d / "base.gguf", "--train", d / "data1.jsonl", "--train-out", d / "unlearned.gguf",
+         "-t", "1", "--gpu", "off"],
+        env=_clean_env(),
+    )
+    assert u.returncode == 0, u.stderr
+
+    # Plain corpus replay run
+    c = _run(
+        runner_bin,
+        ["-m", d / "base.gguf", "--train", d / "corpus.txt", "--train-out", d / "plain.gguf", *RECIPE],
+        env=_clean_env(),
+    )
+    assert c.returncode == 0, c.stderr
+    return d
+
+
+def test_unlearn_dropped_count_ubsan_overflow_and_fractional_float(runner_bin, fx, tmp_path):
+    """dropped_count=1e12 triggered UBSan float-cast-overflow; 1.9 truncated to 1 and VERIFIED."""
+    d = tmp_path / "num"
+    shutil.copytree(fx, d)
+    rec = d / "unlearned.gguf.train.json"
+    raw = json.loads(rec.read_text(encoding="utf-8"))
+    flags = _replay_flags(rec)
+
+    # 1. Float above INT_MAX (1e12 <= 1e12 limit): must refuse cleanly, never UB-crash
+    big = json.loads(json.dumps(raw))
+    big["unlearn"]["dropped_count"] = 1e12
+    rec.write_text(json.dumps(big), encoding="utf-8")
+    r_big = _run(runner_bin, ["attest", "unlearn", rec, "--parent-data", d / "data1.jsonl",
+                              "--dropped", d / "drop.jsonl", *flags], env=_clean_env())
+    _assert_no_sanitizer_or_crash(r_big)
+    assert r_big.returncode == 2, (r_big.stdout, r_big.stderr)
+    assert "VERIFIED" not in r_big.stdout
+
+    # 2. Fractional float whose (int) truncation equals the true integer count
+    frac = json.loads(json.dumps(raw))
+    frac["unlearn"]["dropped_count"] = 1.9
+    frac["unlearn"]["dropped_distinct"] = 1.5
+    rec.write_text(json.dumps(frac), encoding="utf-8")
+    r_frac = _run(runner_bin, ["attest", "unlearn", rec, "--parent-data", d / "data1.jsonl",
+                               "--dropped", d / "drop.jsonl", *flags], env=_clean_env())
+    _assert_no_sanitizer_or_crash(r_frac)
+    assert r_frac.returncode == 2, (r_frac.stdout, r_frac.stderr)
+    assert "VERIFIED" not in r_frac.stdout
+
+
+def test_replay_rejects_float_where_integer_is_read(runner_bin, fx, tmp_path):
+    """JSON float literals like 2.0 or 16.0 must not pass integer record fields."""
+    d = tmp_path / "int_float"
+    shutil.copytree(fx, d)
+    src = (d / "plain.gguf.train.json").read_text(encoding="utf-8")
+    raw = json.loads(src)
+    flags = _replay_flags(d / "plain.gguf.train.json")
+
+    replacements = [
+        ("steps", f'"steps":{raw["steps"]}', f'"steps":{raw["steps"]}.0'),
+        ("ctx", f'"ctx":{raw["ctx"]}', f'"ctx":{raw["ctx"]}.0'),
+        ("lora_rank", f'"lora_rank":{raw["lora_rank"]}', f'"lora_rank":{raw["lora_rank"]}.0'),
+        ("seed", f'"seed":{raw["seed"]}', f'"seed":{raw["seed"]}.0'),
+        ("batch", f'"batch":{raw["recipe"]["batch"]}', f'"batch":{raw["recipe"]["batch"]}.0'),
+        ("warmup", f'"warmup":{raw["recipe"]["warmup"]}', f'"warmup":{raw["recipe"]["warmup"]}.0'),
+    ]
+    for name, old, new in replacements:
+        assert old in src, (name, old)
+        mut = d / f"{name}.train.json"
+        mut.write_text(src.replace(old, new, 1), encoding="utf-8")
+        r = _run(runner_bin, ["attest", "replay", mut, *flags], env=_clean_env())
+        _assert_no_sanitizer_or_crash(r)
+        assert r.returncode == 2, (name, r.returncode, r.stdout, r.stderr)
+        assert "VERIFIED" not in r.stdout
+
+
+def test_unlearn_embedded_nul_byte_cannot_alias_rows(runner_bin, fx, tmp_path):
+    """Embedded NUL in DATA1/D stopped strcmp at NUL, dropping unrelated rows."""
+    d = tmp_path / "nul"
+    d.mkdir()
+    shutil.copy(fx / "base.gguf", d / "base.gguf")
+    row_pub = b'{"prompt":"the runner","completion":" a\x00PUBLIC"}\n'
+    row_sec = b'{"prompt":"the runner","completion":" a\x00SECRET"}\n'
+    row_ok = b'{"prompt":"the runner trains","completion":" the adapter"}\n'
+    row_drop = b'{"prompt":"the runner","completion":" a\x00OTHER"}\n'
+    (d / "data1.jsonl").write_bytes(row_pub + row_sec + row_ok)
+    (d / "drop.jsonl").write_bytes(row_drop)
+    (d / "ok_only.jsonl").write_bytes(row_ok)
+
+    # Craft a valid parent record pointing at NUL-containing data1, and an
+    # unlearned child claiming the NUL rows were dropped cleanly via row_drop.
+    p = _run(
+        runner_bin,
+        ["-m", d / "base.gguf", "--train", d / "ok_only.jsonl", "--train-out", d / "parent_tpl.gguf", *RECIPE],
+        env=_clean_env(),
+    )
+    assert p.returncode == 0, p.stderr
+    parent_raw = json.loads((d / "parent_tpl.gguf.train.json").read_text(encoding="utf-8"))
+    parent_raw["data"]["path"] = "data1.jsonl"
+    parent_raw["data"]["sha256"] = _sha(d / "data1.jsonl")
+    (d / "parent.train.json").write_text(json.dumps(parent_raw), encoding="utf-8")
+
+    # 1. --unlearn must refuse NUL bytes in data/drop and write nothing
+    u = _run(
+        runner_bin,
+        ["--unlearn", d / "parent.train.json", "--drop", d / "drop.jsonl",
+         "-m", d / "base.gguf", "--train", d / "data1.jsonl", "--train-out", d / "u.gguf",
+         "-t", "1", "--gpu", "off"],
+        env=_clean_env(),
+    )
+    _assert_no_sanitizer_or_crash(u)
+    assert u.returncode != 0, (u.stdout, u.stderr)
+    assert not (d / "u.gguf.retained.jsonl").exists()
+    assert not (d / "u.gguf").exists()
+
+    # 2. Even if someone replays/audits a forged record matching only row_ok,
+    # attest unlearn must refuse NUL bytes rather than aliasing via strcmp.
+    shutil.copy(d / "ok_only.jsonl", d / "u.gguf.retained.jsonl")
+    child_raw = json.loads((d / "parent_tpl.gguf.train.json").read_text(encoding="utf-8"))
+    child_raw["data"]["path"] = "u.gguf.retained.jsonl"
+    child_raw["data"]["sha256"] = _sha(d / "ok_only.jsonl")
+    child_raw["unlearn"] = {
+        "parent_record": {"path": "parent.train.json", "sha256": _sha(d / "parent.train.json")},
+        "dropped_sha256": _sha(d / "drop.jsonl"),
+        "dropped_count": 2,
+        "dropped_distinct": 1,
+    }
+    child_rec = d / "forged_nul.train.json"
+    child_rec.write_text(json.dumps(child_raw), encoding="utf-8")
+    a = _run(
+        runner_bin,
+        ["attest", "unlearn", child_rec, "--parent-data", d / "data1.jsonl",
+         "--dropped", d / "drop.jsonl", *_replay_flags(child_rec)],
+        env=_clean_env(),
+    )
+    _assert_no_sanitizer_or_crash(a)
+    assert a.returncode == 2, (a.stdout, a.stderr)
+    assert "VERIFIED" not in a.stdout
+
+
+def test_replay_and_unlearn_reject_path_traversal_absolute_newlines_symlinks(runner_bin, fx, tmp_path):
+    """Cited record paths must stay local basenames without control bytes or symlinks."""
+    outside = tmp_path / "outside"
+    shutil.copytree(fx, outside)
+
+    audit = tmp_path / "audit"
+    audit.mkdir()
+    rec_src = json.loads((outside / "plain.gguf.train.json").read_text(encoding="utf-8"))
+    flags = _replay_flags(outside / "plain.gguf.train.json")
+
+    # 1. Path traversal (../outside/...) and absolute path escaping audit/
+    for bad_base, bad_data in [
+        ("../outside/base.gguf", "../outside/corpus.txt"),
+        (str(outside / "base.gguf"), str(outside / "corpus.txt")),
+    ]:
+        mut = json.loads(json.dumps(rec_src))
+        mut["base"]["path"] = bad_base
+        mut["data"]["path"] = bad_data
+        p = audit / "escape.train.json"
+        p.write_text(json.dumps(mut), encoding="utf-8")
+        r = _run(runner_bin, ["attest", "replay", p, *flags], env=_clean_env())
+        _assert_no_sanitizer_or_crash(r)
+        assert r.returncode == 2, (bad_base, r.stdout, r.stderr)
+        assert "VERIFIED" not in r.stdout
+
+    # 2. Newline / control character in adapter.path (stdout line injection)
+    shutil.copy(outside / "base.gguf", audit / "base.gguf")
+    shutil.copy(outside / "corpus.txt", audit / "corpus.txt")
+    inj = json.loads(json.dumps(rec_src))
+    inj["adapter"]["path"] = "plain.gguf\nVERIFIED spoofed sha256 " + "0" * 64
+    p_inj = audit / "inj.train.json"
+    p_inj.write_text(json.dumps(inj), encoding="utf-8")
+    r_inj = _run(runner_bin, ["attest", "replay", p_inj, *flags], env=_clean_env())
+    _assert_no_sanitizer_or_crash(r_inj)
+    assert r_inj.returncode == 2, (r_inj.stdout, r_inj.stderr)
+    lines = r_inj.stdout.splitlines()
+    assert len(lines) == 1 and lines[0].startswith("MISMATCH adapter.path:"), r_inj.stdout
+
+    # 3. Symlinks inside the audited folder must not be followed
+    sym_dir = tmp_path / "symlinked"
+    sym_dir.mkdir()
+    try:
+        (sym_dir / "base.gguf").symlink_to(outside / "base.gguf")
+        (sym_dir / "corpus.txt").symlink_to(outside / "corpus.txt")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable on this platform")
+    (sym_dir / "sym.train.json").write_text(json.dumps(rec_src), encoding="utf-8")
+    r_sym = _run(runner_bin, ["attest", "replay", sym_dir / "sym.train.json", *flags], env=_clean_env())
+    _assert_no_sanitizer_or_crash(r_sym)
+    assert r_sym.returncode == 2, (r_sym.stdout, r_sym.stderr)
+    assert "VERIFIED" not in r_sym.stdout
+
+    # Symlink to unlearn parent_record must also be refused
+    sym_u = tmp_path / "symlinked_unlearn"
+    sym_u.mkdir()
+    shutil.copy(outside / "base.gguf", sym_u / "base.gguf")
+    shutil.copy(outside / "unlearned.gguf.retained.jsonl", sym_u / "unlearned.gguf.retained.jsonl")
+    shutil.copy(outside / "data1.jsonl", sym_u / "data1.jsonl")
+    shutil.copy(outside / "drop.jsonl", sym_u / "drop.jsonl")
+    (sym_u / "parent.gguf.train.json").symlink_to(outside / "parent.gguf.train.json")
+    u_rec = json.loads((outside / "unlearned.gguf.train.json").read_text(encoding="utf-8"))
+    (sym_u / "u.train.json").write_text(json.dumps(u_rec), encoding="utf-8")
+    r_usym = _run(
+        runner_bin,
+        ["attest", "unlearn", sym_u / "u.train.json", "--parent-data", sym_u / "data1.jsonl",
+         "--dropped", sym_u / "drop.jsonl", *_replay_flags(sym_u / "u.train.json")],
+        env=_clean_env(),
+    )
+    _assert_no_sanitizer_or_crash(r_usym)
+    assert r_usym.returncode == 2, (r_usym.stdout, r_usym.stderr)
+    assert "VERIFIED" not in r_usym.stdout
+
+
+def test_silent_truncation_of_parent_data_sha_and_overlong_adapter_path(runner_bin, fx, tmp_path):
+    """Fixed buffers truncated >64-char sha and >512-char adapter paths instead of refusing."""
+    d = tmp_path / "trunc"
+    shutil.copytree(fx, d)
+
+    # 1. parent.data.sha256 with trailing suffix past 64 chars was truncated to 64 hex by snprintf
+    p_path = d / "parent.gguf.train.json"
+    p_raw = json.loads(p_path.read_text(encoding="utf-8"))
+    p_raw["data"]["sha256"] = p_raw["data"]["sha256"] + "EXTRA"
+    p_path.write_text(json.dumps(p_raw), encoding="utf-8")
+
+    u_path = d / "unlearned.gguf.train.json"
+    u_raw = json.loads(u_path.read_text(encoding="utf-8"))
+    u_raw["unlearn"]["parent_record"]["sha256"] = _sha(p_path)
+    u_path.write_text(json.dumps(u_raw), encoding="utf-8")
+
+    r_sha = _run(
+        runner_bin,
+        ["attest", "unlearn", u_path, "--parent-data", d / "data1.jsonl",
+         "--dropped", d / "drop.jsonl", *_replay_flags(u_path)],
+        env=_clean_env(),
+    )
+    _assert_no_sanitizer_or_crash(r_sha)
+    assert r_sha.returncode == 2, (r_sha.stdout, r_sha.stderr)
+    assert "VERIFIED" not in r_sha.stdout
+
+    # 2. Overlong adapter.path (>512 bytes) was silently truncated in VERIFIED output
+    long_rec = d / "long_adapter.train.json"
+    c_raw = json.loads((d / "plain.gguf.train.json").read_text(encoding="utf-8"))
+    c_raw["adapter"]["path"] = ("a" * 520) + ".gguf"
+    long_rec.write_text(json.dumps(c_raw), encoding="utf-8")
+    r_long = _run(runner_bin, ["attest", "replay", long_rec, *_replay_flags(long_rec)], env=_clean_env())
+    _assert_no_sanitizer_or_crash(r_long)
+    assert r_long.returncode == 2, (r_long.stdout, r_long.stderr)
+    assert "VERIFIED" not in r_long.stdout
+
+
+def test_environment_block_rejects_arbitrary_vars_and_non_secret_wildcard(runner_bin, fx, tmp_path):
+    """environment block must only hold tracked training switches and never wildcard non-secrets with (set)."""
+    d = tmp_path / "env"
+    shutil.copytree(fx, d)
+    rec = d / "plain.gguf.train.json"
+    raw = json.loads(rec.read_text(encoding="utf-8"))
+    raw["determinism"] = "cpu-same-binary"
+
+    # 1. Arbitrary process env var ("PATH") and inert variable ("RUNNER_EXE")
+    for env_block in ({"PATH": "(set)"}, {"RUNNER_EXE": "(set)"}):
+        mut = json.loads(json.dumps(raw))
+        mut["environment"] = env_block
+        p = d / "env_arb.train.json"
+        p.write_text(json.dumps(mut), encoding="utf-8")
+        r = _run(
+            runner_bin,
+            ["attest", "replay", p, "--allow-same-binary"],
+            env=_clean_env(PATH=os.environ.get("PATH", "/usr/bin:/bin"), RUNNER_EXE=str(runner_bin)),
+        )
+        _assert_no_sanitizer_or_crash(r)
+        assert r.returncode == 2, (env_block, r.stdout, r.stderr)
+        assert "VERIFIED" not in r.stdout
+
+    # 2. "(set)" wildcard on a non-credential training switch ("RUNNER_CPU_I8")
+    wild = json.loads(json.dumps(raw))
+    wild["environment"] = {"RUNNER_CPU_I8": "(set)"}
+    p_wild = d / "env_wild.train.json"
+    p_wild.write_text(json.dumps(wild), encoding="utf-8")
+    r_wild = _run(
+        runner_bin,
+        ["attest", "replay", p_wild, "--allow-same-binary"],
+        env=_clean_env(RUNNER_CPU_I8="1"),
+    )
+    _assert_no_sanitizer_or_crash(r_wild)
+    assert r_wild.returncode == 2, (r_wild.stdout, r_wild.stderr)
+    assert "VERIFIED" not in r_wild.stdout
+
+
+def test_oversized_record_and_preflight_order_before_large_allocation(runner_bin, fx, tmp_path):
+    """Oversized records (>16 MiB) and invalid unlearn records must fail before reading large inputs."""
+    d = tmp_path / "preflight"
+    shutil.copytree(fx, d)
+
+    # 1. >16 MiB hostile record refused before JSON AST allocation
+    huge = d / "huge.train.json"
+    with open(huge, "wb") as f:
+        f.write(b'{"schema_version":"bad","pad":"')
+        chunk = b"A" * (1024 * 1024)
+        for _ in range(17):
+            f.write(chunk)
+        f.write(b'"}\n')
+    r_huge = _run(runner_bin, ["attest", "replay", huge], env=_clean_env())
+    _assert_no_sanitizer_or_crash(r_huge)
+    assert r_huge.returncode in (1, 2)
+    assert "too large" in r_huge.stderr.lower() or "16 mib" in r_huge.stderr.lower(), (
+        r_huge.stdout, r_huge.stderr
+    )
+
+    # 2. Invalid scalar field (steps = -1) must be refused BEFORE reading/splitting parent DATA1 & D
+    u_rec = d / "unlearned.gguf.train.json"
+    u_raw = json.loads(u_rec.read_text(encoding="utf-8"))
+    (d / "plain.txt").write_text("plain non jsonl text\n", encoding="utf-8")
+    u_raw["unlearn"]["parent_data_not_read"] = True
+    u_raw["steps"] = -1
+    bad_p = json.loads((d / "parent.gguf.train.json").read_text(encoding="utf-8"))
+    bad_p["steps"] = -1
+    bad_p["data"]["sha256"] = _sha(d / "plain.txt")
+    (d / "parent.gguf.train.json").write_text(json.dumps(bad_p), encoding="utf-8")
+    u_raw["unlearn"]["parent_record"]["sha256"] = _sha(d / "parent.gguf.train.json")
+    del u_raw["unlearn"]["parent_data_not_read"]
+    u_rec.write_text(json.dumps(u_raw), encoding="utf-8")
+    r_ord = _run(
+        runner_bin,
+        ["attest", "unlearn", u_rec, "--parent-data", d / "plain.txt",
+         "--dropped", d / "drop.jsonl", *_replay_flags(u_rec)],
+        env=_clean_env(),
+    )
+    _assert_no_sanitizer_or_crash(r_ord)
+    assert r_ord.returncode == 2, (r_ord.stdout, r_ord.stderr)
+    assert "MISMATCH recipe" in r_ord.stdout, (r_ord.stdout, r_ord.stderr)
+
+    # 3. A D that drops every row of DATA1 must fail preflight BEFORE loading the model
+    shutil.copytree(fx, d / "alldrop", dirs_exist_ok=True)
+    ad = d / "alldrop"
+    _write_rows(ad / "all_drop.jsonl", ROWS)
+    ad_u = json.loads((ad / "unlearned.gguf.train.json").read_text(encoding="utf-8"))
+    ad_u["data"]["sha256"] = hashlib.sha256(b"").hexdigest()
+    ad_u["unlearn"]["dropped_sha256"] = _sha(ad / "all_drop.jsonl")
+    ad_u["unlearn"]["dropped_count"] = len(ROWS)
+    ad_u["unlearn"]["dropped_distinct"] = len(ROWS)
+    (ad / "alldrop.train.json").write_text(json.dumps(ad_u), encoding="utf-8")
+    r_ad = _run(
+        runner_bin,
+        ["attest", "unlearn", ad / "alldrop.train.json", "--parent-data", ad / "data1.jsonl",
+         "--dropped", ad / "all_drop.jsonl", *_replay_flags(ad / "alldrop.train.json")],
+        env=_clean_env(),
+    )
+    _assert_no_sanitizer_or_crash(r_ad)
+    assert r_ad.returncode == 2, (r_ad.stdout, r_ad.stderr)
+    assert "load:" not in r_ad.stderr, (r_ad.stdout, r_ad.stderr)
+
+
+def test_type_confusion_eval_kill_eligibility_and_signature_nul(runner_bin, fx, tmp_path):
+    """Type confusion, kill/eval syntax, ineligible unlearn modes, and embedded NUL before signature."""
+    d = tmp_path / "types"
+    shutil.copytree(fx, d)
+    raw = json.loads((d / "plain.gguf.train.json").read_text(encoding="utf-8"))
+    flags = _replay_flags(d / "plain.gguf.train.json")
+
+    # 1. full_weight: null must fail type validation instead of acting like full_weight=true
+    fw_null = json.loads(json.dumps(raw))
+    fw_null["full_weight"] = None
+    (d / "fw_null.train.json").write_text(json.dumps(fw_null), encoding="utf-8")
+    r_fw = _run(runner_bin, ["attest", "replay", d / "fw_null.train.json", *flags], env=_clean_env())
+    _assert_no_sanitizer_or_crash(r_fw)
+    assert r_fw.returncode == 2 and "MISMATCH full_weight" in r_fw.stdout, (r_fw.stdout, r_fw.stderr)
+
+    # 2. Unknown kill.metric must fail in preflight (exit 2) before loading the model
+    km = json.loads(json.dumps(raw))
+    km["evals"] = [{"label": "val", "rows": {"path": "corpus.txt", "sha256": _sha(d / "corpus.txt")}}]
+    km["kill"] = {"at": 1, "metric": "nonexistent", "min_rel": 0.0}
+    (d / "kill_bad.train.json").write_text(json.dumps(km), encoding="utf-8")
+    r_km = _run(runner_bin, ["attest", "replay", d / "kill_bad.train.json", *flags], env=_clean_env())
+    _assert_no_sanitizer_or_crash(r_km)
+    assert r_km.returncode == 2 and "MISMATCH kill" in r_km.stdout, (r_km.stdout, r_km.stderr)
+    assert "load:" not in r_km.stderr
+
+    # 3. attest unlearn must refuse ineligible parent/child modes (e.g. DPO on both)
+    pairs = [
+        {"prompt": "the runner", "chosen": " a1", "rejected": " a2"},
+        {"prompt": "the adapter", "chosen": " b1", "rejected": " b2"},
+        {"prompt": "the corpus", "chosen": " c1", "rejected": " c2"},
+    ]
+    _write_rows(d / "pairs.jsonl", pairs)
+    _write_rows(d / "drop_pair.jsonl", pairs[1:2])
+    _write_rows(d / "kept_pair.jsonl", [pairs[0], pairs[2]])
+    assert _run(
+        runner_bin,
+        ["-m", d / "base.gguf", "--train-dpo", d / "pairs.jsonl", "--dpo-beta", "0.2",
+         "--train-out", d / "dpo_p.gguf", *RECIPE],
+        env=_clean_env(),
+    ).returncode == 0
+    assert _run(
+        runner_bin,
+        ["-m", d / "base.gguf", "--train-dpo", d / "kept_pair.jsonl", "--dpo-beta", "0.2",
+         "--train-out", d / "dpo_u.gguf", *RECIPE],
+        env=_clean_env(),
+    ).returncode == 0
+    dpo_u = json.loads((d / "dpo_u.gguf.train.json").read_text(encoding="utf-8"))
+    dpo_u["unlearn"] = {
+        "parent_record": {"path": "dpo_p.gguf.train.json", "sha256": _sha(d / "dpo_p.gguf.train.json")},
+        "dropped_sha256": _sha(d / "drop_pair.jsonl"),
+        "dropped_count": 1,
+        "dropped_distinct": 1,
+    }
+    (d / "dpo_u.gguf.train.json").write_text(json.dumps(dpo_u), encoding="utf-8")
+    r_dpo = _run(
+        runner_bin,
+        ["attest", "unlearn", d / "dpo_u.gguf.train.json", "--parent-data", d / "pairs.jsonl",
+         "--dropped", d / "drop_pair.jsonl", "--allow-same-binary"],
+        env=_clean_env(),
+    )
+    _assert_no_sanitizer_or_crash(r_dpo)
+    assert r_dpo.returncode == 2, (r_dpo.stdout, r_dpo.stderr)
+    assert "VERIFIED" not in r_dpo.stdout
+
+    # 4. attest check on a record with embedded NUL before ,"signature" must report BAD SIGNATURE (2), not UNSIGNED (1)
+    nul_sig = d / "nul_sig.train.json"
+    nul_sig.write_bytes(
+        b'{"schema_version":"xyntetik.runner.train.v1"}\x00,"signature":{"algo":"ed25519","public_key":"'
+        + b"0" * 64 + b'","sig":"' + b"0" * 128 + b'"}}'
+    )
+    r_ns = _run(runner_bin, ["attest", "check", nul_sig], env=_clean_env())
+    _assert_no_sanitizer_or_crash(r_ns)
+    assert r_ns.returncode == 2 and "UNSIGNED" not in r_ns.stdout, (r_ns.stdout, r_ns.stderr)
+
+
+def test_lineage_rejects_relocate_traversal_and_symlinks(runner_bin, fx, tmp_path):
+    """attest lineage must not escape the record directory via ../, absolute paths, or symlinks."""
+    outside = tmp_path / "outside"
+    shutil.copytree(fx, outside)
+    raw = json.loads((outside / "plain.gguf.train.json").read_text(encoding="utf-8"))
+
+    audit = tmp_path / "audit"
+    audit.mkdir()
+    for bad_base in (str(outside / "base.gguf"), "../outside/base.gguf"):
+        mut = json.loads(json.dumps(raw))
+        mut["base"]["path"] = bad_base
+        mut["data"]["path"] = str(outside / "corpus.txt")
+        rec = audit / "esc.train.json"
+        rec.write_text(json.dumps(mut), encoding="utf-8")
+        r = _run(runner_bin, ["attest", "lineage", rec], env=_clean_env())
+        _assert_no_sanitizer_or_crash(r)
+        assert r.returncode == 2 and "BROKEN" in r.stdout, (bad_base, r.returncode, r.stdout)
+
+    sym_dir = tmp_path / "sym"
+    sym_dir.mkdir()
+    try:
+        (sym_dir / "base.gguf").symlink_to(outside / "base.gguf")
+        (sym_dir / "corpus.txt").symlink_to(outside / "corpus.txt")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable on this platform")
+    (sym_dir / "sym.train.json").write_text(json.dumps(raw), encoding="utf-8")
+    r_sym = _run(runner_bin, ["attest", "lineage", sym_dir / "sym.train.json"], env=_clean_env())
+    _assert_no_sanitizer_or_crash(r_sym)
+    assert r_sym.returncode == 2 and "BROKEN" in r_sym.stdout, (r_sym.returncode, r_sym.stdout)
+
+
+def test_lineage_diamond_dag_is_not_rewalked_exponentially(runner_bin, tmp_path):
+    """Shared ancestors in a multi-parent DAG must be memoized, not walked O(2^depth) times."""
+    origin_bytes = b"origin"
+    origin_sha = hashlib.sha256(origin_bytes).hexdigest()
+    (tmp_path / "origin.gguf").write_bytes(origin_bytes)
+
+    levels = 11
+    prev_recs = []
+    # Build bottom-up DAG of merge-like records linking two child records ("base" and "adapter")
+    for lvl in range(levels, 0, -1):
+        cur = []
+        for idx in range(2):
+            name = f"L{lvl}_{idx}.json"
+            out_bytes = f"out_{lvl}_{idx}".encode()
+            out_sha = hashlib.sha256(out_bytes).hexdigest()
+            rec = {
+                "schema_version": "xyntetik.runner.merge.v1",
+                "runner": "test",
+                "merged": {"path": f"m_{lvl}_{idx}.gguf", "sha256": out_sha},
+            }
+            if lvl == levels:
+                rec["base"] = {"path": "origin.gguf", "sha256": origin_sha}
+            else:
+                rec["base"] = {
+                    "path": prev_recs[0][1], "sha256": prev_recs[0][2],
+                    "record": {"path": prev_recs[0][0], "sha256": prev_recs[0][3]},
+                }
+                rec["adapter"] = {
+                    "path": prev_recs[1][1], "sha256": prev_recs[1][2],
+                    "record": {"path": prev_recs[1][0], "sha256": prev_recs[1][3]},
+                }
+            raw = json.dumps(rec).encode()
+            (tmp_path / name).write_bytes(raw)
+            cur.append((name, f"m_{lvl}_{idx}.gguf", out_sha, hashlib.sha256(raw).hexdigest()))
+            if lvl == 1:
+                break
+        prev_recs = cur
+
+    r = _run(runner_bin, ["attest", "lineage", tmp_path / "L1_0.json"], env=_clean_env())
+    _assert_no_sanitizer_or_crash(r)
+    assert r.returncode == 1 and "BROKEN" not in r.stdout, (r.returncode, r.stdout)
+    # Unmemoized DAG walked L11_0.json 1024 times; memoized walks each shared node once.
+    assert r.stdout.count("record L11_0.json") <= 2, r.stdout.count("record L11_0.json")
+
+
+def test_lineage_eval_float_counts_do_not_trigger_ubsan(runner_bin, fx, tmp_path):
+    """Out-of-range floats (1e18) in eval sidecar metrics must not UBSan-crash (int)jv_num()."""
+    d = tmp_path / "eval_ub"
+    shutil.copytree(fx, d)
+    base_sha = _sha(d / "base.gguf")
+    (d / "base.gguf.eval.fidelity.json").write_text(json.dumps({
+        "schema_version": "xyntetik.runner.eval.v1",
+        "kind": "fidelity",
+        "subject": {"path": "base.gguf", "sha256": base_sha},
+        "reference": {"path": "ref.gguf"},
+        "metrics": {"positions_scored": 1e18, "top1_agreement_pct": 99.0, "mean_kld": 0.01},
+        "pass": True,
+    }), encoding="utf-8")
+    r = _run(runner_bin, ["attest", "lineage", d / "plain.gguf.train.json"], env=_clean_env())
+    _assert_no_sanitizer_or_crash(r)
+
