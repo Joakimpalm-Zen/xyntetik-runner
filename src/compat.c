@@ -2626,6 +2626,45 @@ bool plat_file_identity(const char *path, uint64_t *size, uint64_t *ino,
     return true;
 }
 
+// R17.9, shared since R3.60: the RUNNER_ variables that cannot change
+// arithmetic. Every other one a run starts with counts as a switch that may:
+// a training record names it, and it is part of a row's route identity. No
+// list of the switches that move bytes is known to be complete for every
+// model (RUNNER_CPU_I8 and RUNNER_CPU_I8_PREFILL move a default build's), so
+// the environment is read whole, as route_tuning reads it, and only these
+// are let through.
+// Here, in the platform layer, because every binary that links the model or
+// reads a training record links compat: the one rule needs no other unit
+// (the record reader's fuzz target links train_record.c without the model).
+static const char *const RUNNER_SWITCH_INERT[] = {
+    // read only by the test harness, never by this binary
+    "RUNNER_EXE", "RUNNER_CONFORMANCE_OUT", "RUNNER_TEST_GPU_OFF", "RUNNER_TEST_TIMEOUT_SCALE",
+    "RUNNER_REQUIRE_TURN_GUARD", "RUNNER_SWEEP_MODELS", "RUNNER_LLAMA_CPP_BIN",
+    // set by GitHub Actions' runner on every job, never read by this binary
+    "RUNNER_NAME", "RUNNER_OS", "RUNNER_ARCH", "RUNNER_TEMP", "RUNNER_TOOL_CACHE", "RUNNER_WORKSPACE",
+    "RUNNER_ENVIRONMENT", "RUNNER_TRACKING_ID", "RUNNER_DEBUG", "RUNNER_PERFLOG",
+    // read, and held not to move a training run's bytes
+    "RUNNER_TRAIN_ROWS",       // every width trains the same bytes (test_batched_taped_forward_is_the_solo_bytes)
+    "RUNNER_TPOOL_SPIN",       // how idle pool threads wait
+    "RUNNER_HF_CACHE", "RUNNER_CURL", "RUNNER_PREFIX_CACHE_MB",   // downloads, the server's prefix cache
+    "RUNNER_TEST_BUILD_DIRTY", // marks a training build dirty: it can only take a claim down
+    // test seams that only wait (a sleep between steps, chunks or phases) or print
+    "RUNNER_TEST_STEP_DELAY_MS", "RUNNER_TEST_PREFILL_DELAY_MS", "RUNNER_TEST_LOAD_DELAY_MS",
+    "RUNNER_TEST_REQUEST_TAIL_MS", "RUNNER_TEST_DRAIN_GRACE_MS", "RUNNER_TEST_DRAIN_HARD_MS",
+    "RUNNER_TEST_DRAIN_LATE_MS", "RUNNER_TEST_INSTANCE_SWEEP_DELAY_MS",
+    "RUNNER_TEST_KV_DUMP",     // prints a KV row's hash
+    "RUNNER_TEST_REPORT_SUFFIX", // names --report's temporary file, written after the audit
+};
+
+bool runner_switch_counts(const char *name, size_t n) {
+    if (n == 12 && !strncmp(name, "XR_SSM_CHUNK", 12)) return true;
+    if (n == 13 && !strncmp(name, "XR_SSM_SERIAL", 13)) return true;
+    if (n <= 7 || strncmp(name, "RUNNER_", 7) != 0) return false;
+    for (size_t i = 0; i < sizeof RUNNER_SWITCH_INERT / sizeof *RUNNER_SWITCH_INERT; i++)
+        if (strlen(RUNNER_SWITCH_INERT[i]) == n && !strncmp(RUNNER_SWITCH_INERT[i], name, n)) return false;
+    return true;
+}
+
 // R17.9 step 4b: a new file for writing, created exclusively and never
 // through a link: NULL if anything (a file, a symlink, dangling or not) is
 // already at the name. POSIX: O_CREAT|O_EXCL|O_NOFOLLOW, which refuse an

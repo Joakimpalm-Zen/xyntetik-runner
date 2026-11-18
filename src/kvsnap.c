@@ -425,6 +425,13 @@ static bool load_one(engine *e, const char *id, const char *name, bool slot, sbu
             // must not take this turn's snapshot out of its receipt
             snprintf(e->snap_name, sizeof e->snap_name, "%s", name);
             snprintf(e->snap_origin, sizeof e->snap_origin, "%s", origin);
+            // R3.60: only an automatic preamble snapshot loads into a slot, and
+            // its name carries this release's salt and the arithmetic class,
+            // while its writer (prefix_slot_export) refuses scored rows: its
+            // rows are a prompt's prefill pass of this class, not of the
+            // unknown provenance a load gives (engine_state_load)
+            e->scored_from = INT_MAX;
+            e->rows_route = engine_prompt_route(e);
         }
         if (n == PFX_CTX_MISMATCH) {
             fail(err, 409, "snapshot_model_mismatch", "snapshot %s was made for "
@@ -529,7 +536,13 @@ void kvsnap_auto_name(const engine *e, const int32_t *toks, int n,
     uint8_t *buf = malloc(nb);
     char hex[65] = "";
     if (buf) {
-        memcpy(buf, &e->model_key, sizeof(uint64_t));
+        // R3.60: a preamble's rows are a prompt's prefill pass, which no longer
+        // depends on -b; a snapshot written before it holds the old rows, so
+        // its name is not this one and it is never loaded (it ages out of the
+        // directory as the trim takes it). Named snapshots are not salted:
+        // loading one is an explicit resume.
+        uint64_t key = e->model_key ^ 0x5233362e36302e31ull ^ engine_prompt_route(e);   // "R36.60.1", and the route
+        memcpy(buf, &key, sizeof(uint64_t));
         memcpy(buf + sizeof(uint64_t), toks, sizeof(int32_t) * (size_t)n);
         envelope_data_sha256(buf, nb, hex);
         free(buf);

@@ -499,6 +499,7 @@ typedef struct {
     f16_t *kcache, *vcache;  // [n_layer][n_ctx][kv_dim], fp16 (or q8_0 blocks
                              // when kv_q8 — treated as raw bytes then)
     kv_owner_t kv_owner;     // malloc on CPU/CUDA; backend-owned on Metal
+    bool       prefill_pass; // engine_feed is feeding a prompt on a CPU-only run (R3.60)
     bool   kv_q8;            // KV rows stored as q8_0 blocks (CPU and CUDA)
     bool   kv_fp4;           // KV rows stored as fp4 blocks (16 values in 9 bytes)
     bool   kv_split;         // K rows q8_0, V rows fp4 (--kv k8v4): the caches differ
@@ -752,6 +753,15 @@ typedef struct {
                              // Decided by the first instance to upload a given
                              // file and reused by every instance sharing it, so
                              // parallel slots cannot end up on different splits.
+    // R3.60: the route identity, kept once computed (model_route_hash) with
+    // what it was computed for; a transition (a device falling back to the
+    // CPU, model_route_transition) makes the next call recompute it
+    uint64_t    route_hash;
+    const void *route_gpu;
+    int         route_layers;
+    unsigned    route_epoch, route_hash_epoch;
+    bool        route_known;
+    int         test_route_flip_at;   // RUNNER_TEST_ROUTE_FLIP_AT at load: a forced transition there, -1 none
     void  *gpu;              // active GPU backend context (NULL = CPU path).
                              // Runtime fallback clears this without implying
                              // that backend-owned resources may be released.
@@ -2023,5 +2033,24 @@ void model_moe_pin_counts(unsigned long *forced, unsigned long *differed,
 bool model_moe_trace_on(void);
 void model_moe_trace_route(int pos, int layer, const int *sel, const float *selw,
                            const float *norms, int used);
+
+// R3.60: a hash of the route a forward takes on this model now (the receipt's
+// route record: backend, device, layer split, host experts, KV, the backend's
+// detail, build, codegen, the CPU's activation, the weight types) and of the
+// switches set (runner_switch_counts). Rows made under another hash are
+// another arithmetic's.
+uint64_t model_route_hash(const model_t *m);
+// runner_switch_counts, the switches' rule, is in compat.h (shared with the
+// training record's reader, src/train_record.c)
+// the facts model_route_hash hashes, as text, and how many times it has been
+// computed in this process (for the tests)
+int      model_route_text(const model_t *m, char *out, size_t cap);
+uint64_t model_route_hash_count(void);
+// a runtime change of the route (a fallback); the next model_route_hash
+// computes the identity again
+void     model_route_transition(model_t *m);
+// the source the binary was built from, as the receipt prints it (once, at
+// start; a library that names none hashes "")
+void     model_route_set_build(const char *revision, bool dirty);
 
 #endif // RUNNER_MODEL_H
