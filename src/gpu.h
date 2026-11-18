@@ -3,7 +3,8 @@
 #define RUNNER_GPU_H
 
 #include "tdn_args.h"   // the training DeltaNet calls' shape
-#include "kernel_args.h" // trn_args (R8.24.1 B2)
+#include "train_args.h" // the resident step's kernel arguments (R8.24.1 B); never
+                        // kernel_args.h here: metal.m keeps its own copies of its structs
 #include "model.h"
 #include <stdio.h>
 #include <string.h>
@@ -390,6 +391,9 @@ bool   gpu_train_kv_store_check(model_t *m, const tkv_args *a, const float *src,
 // hidden back in m->x, the tape's and the K/V rows kept on the device for the
 // resident backward). false: the step fails.
 size_t gpu_train_res_avail(model_t *m);
+// the bytes the training contexts' scratch planes hold now: 0 after every
+// gpu_train_free (#935: the resident planes were never freed)
+size_t gpu_train_scratch_bytes(void);
 bool   gpu_train_res_begin(model_t *m, int T);
 bool   gpu_train_res_round(model_t *m, int n, int pos);
 // R2: the resident backward. dx (the head's adjoint, T rows) up once; layer

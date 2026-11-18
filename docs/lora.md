@@ -286,7 +286,8 @@ a T3 build's, though both are within the tolerance below.
 
 On an RTX 5070 with 8 CPU threads (Qwen3-4B Q4_K_M, the ToolUse record's
 data, rank 8 on every projection, ctx 128; the median of steps 2 to 20,
-interleaved runs on 2026-11-18), a resident step takes 0.67 s, against
+interleaved runs on 2026-11-18 at a3589d19, whose tree is 6d3a65d9's), a
+resident step takes 0.67 s, against
 1.79 s for Runner 1.20.0's (d9b54174), 1.37 s for main before R8.24.1's list
 B (cc7af33b) and 1.06 s on the per-piece path.
 
@@ -332,7 +333,9 @@ at a batching that would expose a product that depends on it. The record
 with the budget and the weights it held, and on a Gated DeltaNet model the
 recurrence's calls on the device (`deltanet_device_calls`) and any that
 failed there and ran on the CPU instead (`deltanet_failed_calls`, which
-stderr also reports).
+stderr also reports). `resident_steps` counts the steps every window of which
+ran as a resident step; a run whose planes stop fitting partway takes the
+per-piece path for the rest, and the count says how many steps did not.
 
 The weights are cached as long as the device budget allows, and the rest
 train on the CPU, where a tensor's products take the CPU's order. So the

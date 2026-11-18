@@ -251,6 +251,11 @@ def test_train_gpu_matches_cpu_within_rounding(runner_bin, base, tmp_path, famil
     # every family has attention layers, and their backward ran on the device
     assert rec["products"]["attention_device_calls"] > 0, (family, rec["products"])
     assert rec["products"]["attention_failed_calls"] == 0, rec["products"]
+    # R8.24.1 B: which path each step took. The dense families in the resident
+    # step's scope run all 4 steps resident; the others (post norms, recurrent
+    # layers, experts, another activation) none, on the per-piece path
+    resident = 4 if family in ("base", "q8_0") else 0
+    assert rec["products"]["resident_steps"] == resident, (family, rec["products"])
 
 
 # Which weights the device holds decides a --train-gpu adapter's bits (a

@@ -888,7 +888,11 @@ static void b3_check(model_t *m, int hd, int rd, int neox, int n_heads, int T, i
     for (int j = 0; j < half; j++) fr[j] = powf(10000.0f, -2.0f * j / (float)rd);
     if (odd_freqs && half > 3) {      // the reduction's far edges: fmod, and NaN
         fr[half - 1] = 1.0e13f;
-        fr[half - 2] = INFINITY;
+        {   // +inf by its bits: fast math assumes no infinity, and Apple clang
+            // refuses the INFINITY macro there (-Werror=nan-infinity-disabled)
+            const uint32_t inf_bits = 0x7f800000u;
+            memcpy(&fr[half - 2], &inf_bits, 4);
+        }
         fr[half - 3] = 1.0f;          // angle = position: up to 1.3e5
     }
     float *v0 = calloc(span, sizeof(float)), *vh = calloc(span, sizeof(float));
@@ -1200,16 +1204,15 @@ static void b4_check(model_t *m, int T, int H, int kv_mul, int hd, int swa, floa
         for (size_t i = 0; i < (size_t)T * sh.kv_dim; i++) {
             f16_t hb;
             memcpy(&hb, src + 2 * i, 2);
-            float f = f16_to_f32(hb);
+            const float f = f16_to_f32(hb);
+            uint32_t u;   // the value's bits, end to end: no float written back and
+            memcpy(&u, &f, 4);   // read again (CI's gcc flagged that round trip)
             // kind 6: moved off the f16 grid by a few f32 ulps a value, by integers
-            // (no float arithmetic, which this build may flush or contract)
-            if (kind == 6 && (f != 0.0f)) {
-                uint32_t u;
-                memcpy(&u, &f, 4);
+            // (no float arithmetic, which this build may flush or contract); a
+            // signed zero stays as it is
+            if (kind == 6 && (u & 0x7fffffffu))
                 u += 1u + (uint32_t)((i * 2654435761u) >> 27);   // 1..32 ulps up in magnitude
-                memcpy(&f, &u, 4);
-            }
-            memcpy(dst + 4 * i, &f, 4);
+            memcpy(dst + 4 * i, &u, 4);
         }
         if (w) vc = dst; else kc = dst;
     }
