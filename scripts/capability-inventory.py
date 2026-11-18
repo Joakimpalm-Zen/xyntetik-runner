@@ -91,7 +91,7 @@ CLI_RULES = {
         "--require-signed", "--require-signed-model", "--model-sig", "--model-pubkey",
         "--lora-sig", "--require-eval", "--watermark", "--force-uncertified",
         "runner attest", "runner attest keygen", "runner attest sign", "runner attest check",
-        "runner attest lineage", "runner attest bundle", "runner attest check-bundle",
+        "runner attest lineage", "runner attest replay", "runner attest bundle", "runner attest check-bundle",
         "runner attest pack", "runner attest check-pack", "runner attest sign-model",
         "runner attest watermark-keygen", "runner attest detect",
     },
@@ -116,7 +116,7 @@ HTTP_RULES = {
 # has the same one. A switch read in a shared file, or in files of two
 # components, needs a name rule.
 ENV_NAME_RULES = [
-    ("production", re.compile(r"^(TRAIN_|LORA_ADAM_|GOLD_)")),
+    ("production", re.compile(r"^(TRAIN_|LORA_ADAM_|GOLD_|TEST_BUILD_DIRTY$)")),
     ("runtime", re.compile(r"^(SCHEMA_|PREFIX_CACHE_|REPEAT_COUNT$|SCORE_|TEST_SCRIPTED_REPLY$|"
                            r"TEST_STREAM_OUT_CAP$|VRAM_PRIORITY$)")),
     ("substrate", re.compile(r"^(ALLOW_UNKNOWN_ARCH|PREFETCH|TEST_LOAD_DELAY_MS|"

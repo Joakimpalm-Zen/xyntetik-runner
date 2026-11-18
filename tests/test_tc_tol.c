@@ -45,6 +45,7 @@
 // Default model is test.gguf (F32 toy): the harness runs and self-skips.
 #include "runner.h"
 #include "finite_check.h"
+#include "gate_gpu.h"
 
 #include <float.h>
 #include <math.h>
@@ -542,6 +543,7 @@ int main(int argc, char **argv) {
         unsigned long fired = 0;
         for (int t = 0; t < TYPE_N; t++) fired += tc->disp[t];
         if (fired == 0) {
+            if (gate_no_device("tc-tol")) return 1;
             printf("  tc-b64 vs scalar-b64 : logits BIT-IDENTICAL and the TC "
                    "GEMM never dispatched — skipping, not passing\n"
                    "tc-tol: ok (skipped)\n");

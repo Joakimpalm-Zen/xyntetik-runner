@@ -1705,7 +1705,7 @@ silently dropped branch.
 | Tokenizers | SPM and byte-level BPE with llama, qwen2/qwen35, smollm, afmoe, tekken, llama4/gpt-4o, Gemma, and GPT-2-family (including `granite-docling`) pre-tokenization rules. The qwen2 and qwen35 tokenizers apply the NFC normalizer Qwen's `tokenizer.json` declares, so decomposed text (`e` plus U+0301) tokenizes as the publisher's tokenizer does; a `clef` file uses Clef's own qwen2 split although its GGUF declares `qwen35`. |
 | Quantizations | `--info caps` lists the admitted tensor formats: the k-quant and legacy families plus MXFP4, NVFP4 (two-level, with its per-tensor scale companion applied) and the codebook i-quants (IQ1_S/M, IQ2_XXS/XS/S, IQ3_XXS/S, IQ4_NL/XS). CUDA serves every one of them; Metal admits the codebook i-quants through its current dense kernels and retains separate NVFP4/MoE/layout refusals, naming the tensor and type that caused a fallback. |
 | Transformer | RMSNorm, adjacent-pair and NeoX RoPE, grouped-query attention, SwiGLU/GELU/xIELU family paths, tied embeddings, dense and selected sparse MoE. |
-| Sampling | Greedy, temperature, top-k, top-p, min-p, repeat penalty, stop strings, JSON/schema constraints, speculative decoding. |
+| Sampling | Greedy, temperature, top-k, top-p, min-p, repeat penalty, stop strings, JSON/schema constraints, speculative decoding. A NaN logit (a defect upstream) gets no probability in any build; if every candidate is NaN, the lowest id is returned and the sampler says so once. |
 | Context | Batched prefill, f16/q8 KV, linear/YaRN/llama-3 scaling, automatic extension. |
 | Serving | Chat Completions, Responses, legacy completions, embeddings, Anthropic Messages, SSE, parallel slots, model swap, prefix reuse. |
 | Desktop | macOS menu bar and Windows notification-area controller. |
@@ -1803,7 +1803,7 @@ Measured on a 165-token scoring run of the same Q8_0 model: 0 of 165
 positions bit-identical between an Apple M1 and an x86-64 box in the
 default build, 165 of 165 in the T3 build, and the same on riscv64 under
 qemu. Cost: 7% decode on x86-64, 17% on the Apple M1, all of it the strict-float
-flags. A T3 receipt carries `"flavor":"t3"` in its `build` object. This is
+flags. A T3 receipt carries `"flavor":"t3"` in its `build` object (and a training record carries `"default"` otherwise, beside `commit` and `dirty`; training records also set `"determinism"` to `"cpu-t3-exact"` for CPU dense LoRA cross-entropy on a T3 build when every weight format has a canonical kernel, `"cpu-same-binary"` for other CPU modes or canon gaps, or `"gpu-within-tolerance"` under `--train-gpu`). This is
 measured, not yet a claimed tier: the batched prefill tile, the other
 weight formats (Q2_K, Q3_K, Q4_1, Q5_0, Q5_1, BF16, the IQ and MXFP4 ones),
 MoE and the GPU backends are not canonical yet. A T3 run names the
@@ -2090,7 +2090,13 @@ that fails to capture or launch end the process with the failing stage, the CUDA
 error and the synchronous call that broke it, instead of falling back to plain
 launches with one line on stderr; a decode that is eager by design (experts on
 the host, eager MoE routing, a recurrent family not captured) prints why and
-runs. `./test-attn-tol MODEL.gguf` is the attention gate.
+runs. Under the same switch a kernel module the driver does not load, on a device
+that is up, ends the process with the driver's JIT log (R6.90); without it the
+runner prints that log and falls back as before, and a CUDA gate binary that
+finds no engaged device fails on it rather than skipping as if there were no
+device. A card below the build's minimum compute capability (7.5) is not that:
+the runner says so in one line, records nothing and runs on the CPU, and the
+gates skip. `./test-attn-tol MODEL.gguf` is the attention gate.
 Weights are wrapped zero-copy from the model mmap. A file larger than the
 device's `maxBufferLength` - 4.29 GB on an Apple M1, against a 5.73 GB working set -
 is wrapped in several buffers instead of being copied or forced into a
@@ -2529,6 +2535,7 @@ written).
 | `runner attest sign RECORD --key KEYFILE [--prev PREV]` | Sign a JSON object in place, the transcript's chain and signature objects; `--prev` links it to a previous signed record. Shadow delegation receipts use this generic interface. |
 | `runner attest check RECORD [--trust-key K]` | Verify one record's signature and chain fields. |
 | `runner attest lineage FILE [--trust-key K]` | Walk the provenance chain of a model or adapter file, of its record, of an answer's receipt, or of a `--record` directory (versions served, timeline, chain continuity) back to its origins: each step's record re-hashed and checked against the next, each signature verified, `--trust-key` pinning the signer. Exit 0 verified and signed, 1 consistent but not all signed, 2 broken or no record. [Details](#lineage). |
+| `runner attest replay RECORD [-m BASE] [--data FILE] [--teacher DIR] [--lora FILE] [--allow-same-binary] [--trust-key K]` | Replay a training record (`.train.json`) on CPU and check that the output artifact's sha256 matches byte for byte. The recipe, the model overrides (`model_overrides`) and the `RUNNER_` switches (`environment`) come from the record alone: a caller's flag or switch that differs is refused before training, naming the field. Pre-flight checks schema, signature (`--trust-key`), runner version, build compatibility (`cpu-t3-exact` requires a `T3=1` binary; `cpu-same-binary` requires `--allow-same-binary` with matching `binary_sha256`; `gpu-within-tolerance` is refused), and every cited input hash before loading weights or training. Files omitted from flags are located beside `RECORD`. Replay proves what data and recipe produced the weights, requires the auditor to hold the base GGUF and training data, and costs a full run (27% to 41% slower under `T3=1` on measured 4B CPU runs). Exit 0 `VERIFIED`, 2 `MISMATCH` naming the first differing field, 1 on read/CLI errors. |
 | `runner attest bundle RECEIPT OUT_DIR [--model-sig F] [--model-pubkey F] [--key KEYFILE]` | Put a receipt, the OMS model signature and its key, the receipt key's fingerprint (sha256 of the key bytes) and a `xyntetik.runner.bundle.v1` manifest of every file's sha256 into one directory a verifier can take; `--key` also signs the manifest. A receipt whose chain does not recompute is refused, not bundled. |
 | `runner attest check-bundle DIR [--trust-key K]` | Verify a bundle offline: the files are the ones listed, the receipt's chain hash recomputes, its signature is the one the manifest names, both key fingerprints recompute, and the manifest's own signature (pinned with `--trust-key`). Exit 0 OK, 2 BAD naming the file or check, 3 UNVERIFIABLE. The check does not replay the inference; the bundled receipt does, with `-m MODEL --verify DIR/receipt.json`. |
 | `runner attest pack RECEIPTS_DIR OUT_DIR [--envelope F] [--attach F]... [--model-sig F] [--model-pubkey F] [--key KEYFILE]` | An evidence pack (`xyntetik.runner.evidence-pack.v1`): every `receipt-*.json` of a receipts directory (one model, one binary, one envelope manifest, or the export refuses), the OMS model signature and key, the envelope manifest the receipts name by digest (`--envelope`, refused when it is not that one) and up to 16 attachments (`--attach`, repeatable: oversight records, a tool cassette; listed by sha256, never interpreted), under `pack.json`: every file with its role and sha256, one inference per receipt (id = chain hash, the request id and surface, what shaped it, the signer's fingerprint, the envelope verdict), and the chain `segment` they form (`contiguous`, `breaks`). `--key` signs the manifest. |
@@ -3311,11 +3318,11 @@ vocabulary as one tail bucket) instead of the next token: distillation, for brin
 quantized file back toward its parent ([guide](docs/lora.md#6-distillation-toward-a-parent-model)), with a
 learning-rate schedule, batches, held-out evals, a kill rule and a stop file
 when a distillation pipeline's recipe needs them. `--save-every` checkpoints
-carry the optimizer state, and `--resume` continues such a run exactly. Fresh adapters start as an exact no-op (A seeded,
+carry the optimizer state, and `--resume` continues such a run exactly (recording `resumed_at_step` and the starting `resume_optim_sha256`, hashed before step 1). Fresh adapters start as an exact no-op (A seeded,
 B zero); checkpoints are adapter GGUFs that `--lora` loads back. `runner train` with `--lora`
 continues that adapter: it keeps its rank and alpha, AdamW starts fresh (`--lora` loads
 the weights only; `--resume` loads a checkpoint's optimizer state too), and the record names it as `from_adapter`, hashed before the
-first step, so `runner attest lineage` walks back through every earlier run. Deterministic by
+first step, with `lora_scale`, `no_bos`, `kv_cache` (`"f16"` or `"f32"`), `build.flavor`, `build.commit`, `build.dirty`, `determinism` (`"cpu-t3-exact"`, `"cpu-same-binary"`, or `"gpu-within-tolerance"`) with `determinism_reasons` naming why it is not exact, and what else decided the bytes: `model_overrides` (`--rope-base`, `--rope-scale`, `--yarn-factor`) and `environment` (every `RUNNER_` variable outside a short inert set, and `XR_SSM_CHUNK` / `XR_SSM_SERIAL`). A dirty or unstamped build, or one such variable, keeps the word at `"cpu-same-binary"`, so `runner attest lineage` walks back through every earlier run. Deterministic by
 default: same data + same seed produce a byte-identical adapter file, gated in `make
 test`. One example per step, cycled in file order; before the first step `runner train`
 warns when the run is likely to memorize (more than three passes over fewer than 200
@@ -3336,7 +3343,7 @@ DeltaNet) layers and MoE expert banks. `--kv-f32` (`--train-kv-f32`, CPU only) g
 training run an f32 KV cache: on the default f16 cache the full-weight gradient matches
 PyTorch fp32 autograd to 2.7e-3 relative L2, because K and V are rounded to f16; with the
 f32 cache it matches to 6.9e-6 over all 196 matrices of Qwen3-0.6B, and the record
-writes `"kv_cache":"f32"`. Training with `--kv q8`, `--kv k8v4` or `--kv fp4` is refused by name
+writes `"kv_cache":"f32"` (`"f16"` otherwise). Training with `--kv q8`, `--kv k8v4` or `--kv fp4` is refused by name
 (`use --kv f16`): the backward reads K and V rows as f16, or f32 with `--kv-f32`.
 
 Design, gates and measured results:

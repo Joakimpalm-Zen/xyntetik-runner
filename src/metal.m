@@ -1515,6 +1515,7 @@ unsigned long gpu_attn_gqa_dispatches(void) { return g_gqa_dispatches; }
 // CUDA-only route; present so its gate links and reports 'never here'.
 unsigned long gpu_splitk_dispatches(void) { return 0; }
 long gpu_live_buffers(void) { return -1; }
+const char *gpu_module_failure(void) { return NULL; }
 static bool metal_attn_gqa_on(void) {
     static _Atomic int v = -1;
     if (v < 0) {

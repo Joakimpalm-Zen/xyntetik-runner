@@ -16,6 +16,7 @@
 //     ./test-mvt test-q8.gguf      # Q8_0
 //     ./test-mvt test-bf16.gguf    # BF16
 #include "runner.h"
+#include "gate_gpu.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -75,6 +76,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (!m.gpu) {
+        if (gate_no_device("mvt")) { model_free(&m); return 1; }
         printf("mvt: no GPU backend — skipping (not passing)\n");
         model_free(&m);
         return 0;
@@ -140,6 +142,7 @@ int main(int argc, char **argv) {
         }
     }
     if (!tested) {
+        if (gate_no_device("mvt")) { model_free(&m); return 1; }
         printf("mvt: no device training kernels on this backend — skipping "
                "(not passing)\n");
         model_free(&m);

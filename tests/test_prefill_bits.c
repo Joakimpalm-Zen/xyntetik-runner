@@ -51,6 +51,7 @@
 //
 // Without a CUDA device it says so and passes (nothing to compare).
 #include "runner.h"
+#include "gate_gpu.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -200,7 +201,8 @@ int main(int argc, char **argv) {
         printf("prefill-bits: route table on %s's device\n", argv[1]);
         int r = route_table(argv[1]);
         if (r < 0) fail = 1;
-        if (r == 1) printf("prefill-bits: route table skipped (no CUDA device)\n");
+        if (r == 1 && gate_no_device("prefill-bits")) fail = 1;
+        else if (r == 1) printf("prefill-bits: route table skipped (no CUDA device)\n");
     }
     for (int a = 1; a < argc; a++) {
         const char *path = argv[a];
@@ -218,7 +220,11 @@ int main(int argc, char **argv) {
         rows0 ref = { 0 };
         int gl = 0;
         int r = prefill_rows0(path, toks, 1, &ref, &gl);
-        if (r == 1) { printf("prefill-bits: %s skipped (no CUDA device)\n", path); continue; }
+        if (r == 1) {
+            if (gate_no_device("prefill-bits")) fail = 1;
+            else printf("prefill-bits: %s skipped (no CUDA device)\n", path);
+            continue;
+        }
         if (r < 0) { fail = 1; continue; }
         // anti-vacuity: rows of zeros compare equal to anything that is also zeros
         long nz = 0;
