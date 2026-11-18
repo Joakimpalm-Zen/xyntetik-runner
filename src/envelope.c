@@ -1261,21 +1261,17 @@ static char *record_read(const char *path, size_t *n_out) {
     if (!record_regular_file(path)) return NULL;
     FILE *f = plat_fopen(path, "rb");
     if (!f) return NULL;
-    size_t cap = 1 << 16, n = 0;
+    uint64_t fsz = 0;
+    if (!plat_file_size(f, &fsz) || fsz > (64u << 20)) { fclose(f); return NULL; }
+    size_t cap = (size_t)fsz + 1;
     char *buf = malloc(cap);
     if (!buf) { fclose(f); return NULL; }
-    size_t r;
-    while ((r = fread(buf + n, 1, cap - n, f)) > 0) {
-        n += r;
-        if (n == cap) {
-            if (cap > (64u << 20)) { free(buf); fclose(f); return NULL; }
-            char *nb = realloc(buf, cap * 2);
-            if (!nb) { free(buf); fclose(f); return NULL; }
-            buf = nb; cap *= 2;
-        }
-    }
+    size_t n = 0, r;
+    while (n < cap - 1 && (r = fread(buf + n, 1, cap - 1 - n, f)) > 0) n += r;
+    bool extra = (fgetc(f) != EOF) || ferror(f) != 0;
     fclose(f);
-    buf[n] = 0;   // the loop grows at n == cap, so a spare byte always exists
+    if (extra) { free(buf); return NULL; }
+    buf[n] = 0;
     *n_out = n;
     return buf;
 }

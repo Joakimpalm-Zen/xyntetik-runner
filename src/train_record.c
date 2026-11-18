@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "compat.h"
 #include "envelope.h"
@@ -245,12 +246,51 @@ static bool replay_resolve_evals(const train_record_opts *o, cli_replay *rp, jv 
     return true;
 }
 
-static bool replay_check_compat(const train_record_host *host, const train_record_opts *o, jv *rec, bool *want_t3_exact, int *rc) {
+static jv *read_bounded_record(const char *path, bool nofollow, char *err, size_t err_cap,
+                               char **buf_out, size_t *len_out) {
+    if (nofollow ? !record_regular_file_nofollow(path) : !record_regular_file(path)) {
+        fmt_checked(err, err_cap, "cannot read %s", path);
+        return NULL;
+    }
+    plat_stat_t st;
+    if (plat_stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+        fmt_checked(err, err_cap, "cannot read %s", path);
+        return NULL;
+    }
+    if ((uint64_t)st.st_size > TRAIN_RECORD_MAX_BYTES) {
+        fmt_checked(err, err_cap, "%s is too large (records up to %u MiB are supported)",
+                    path, TRAIN_RECORD_MAX_BYTES / (1024u * 1024u));
+        return NULL;
+    }
+    size_t n = 0;
+    char *b = plat_read_file(path, TRAIN_RECORD_MAX_BYTES, &n);
+    if (!b) {
+        fmt_checked(err, err_cap, "cannot read %s", path);
+        return NULL;
+    }
+    jv *rec = json_parse(b, n);
+    if (!rec || rec->type != J_OBJ) {
+        jv_free(rec);
+        free(b);
+        fmt_checked(err, err_cap, "%s is not a valid JSON training record", path);
+        return NULL;
+    }
+    if (buf_out) *buf_out = b;
+    else free(b);
+    if (len_out) *len_out = n;
+    return rec;
+}
+
+static bool replay_check_compat(const train_record_host *host, const train_record_opts *o,
+                                jv *rec, const char *rec_buf, size_t rec_len,
+                                bool *want_t3_exact, int *rc) {
     if (strcmp(jv_str(jv_get(rec, "schema_version"), ""), "xyntetik.runner.train.v1"))
         return !replay_fail(rc, "schema_version", "xyntetik.runner.train.v1",
                             jv_str(jv_get(rec, "schema_version"), ""));
     char pub[SIGN_PUBHEX_CAP];
-    int sig = record_signature_state(o->replay_train, o->trust_key, pub);
+    receipt_sig_state st = receipt_signature_check(rec_buf, rec_len, pub);
+    int sig = st == RSIG_NONE ? 1 : (st != RSIG_OK ? 2 :
+              (o->trust_key && *o->trust_key && strcmp(o->trust_key, pub) != 0 ? 2 : 0));
     if (sig == 2) return !replay_fail(rc, "signature", "valid signature", "bad, malformed or untrusted");
     if (sig == 1 && o->trust_key)
         return !replay_fail(rc, "signature", "signed record (--trust-key)", "unsigned");
@@ -553,16 +593,18 @@ static bool unlearn_audit_check(const train_record_opts *o, jv *rec, const char 
     jv *un = jv_get(rec, "unlearn");
     if (!un || un->type != J_OBJ)
         return !replay_fail(rc, "unlearn", "a record of runner train --unlearn", "none");
+    int c = 0, dd = 0;
+    if (!record_int(un, "dropped_count", 1, INT_MAX, &c) ||
+        !record_int(un, "dropped_distinct", 1, INT_MAX, &dd))
+        return !replay_fail(rc, "unlearn.dropped_count", "positive integers", "invalid");
     jv *pr = jv_get(un, "parent_record");
     const char *ppath = jv_str(jv_get(pr, "path"), NULL);
     char pbuf[4096];
     const char *pf = relocate_local(ppath, rec_path, pbuf, sizeof pbuf) ? pbuf : NULL;
     if (!replay_check_sha_opt("unlearn.parent_record.sha256", pf, jv_str(jv_get(pr, "sha256"), NULL), true, rc))
         return false;
-    size_t pn = 0;
-    char *pb = plat_read_file(pf, MAX_INPUT_FILE, &pn);
-    jv *parent = pb ? json_parse(pb, pn) : NULL;
-    free(pb);
+    char rerr[512] = "";
+    jv *parent = read_bounded_record(pf, true, rerr, sizeof rerr, NULL, NULL);
     const char *pdata_raw = jv_str(jv_get(jv_get(parent, "data"), "sha256"), NULL);
     if (!is_sha256_hex(pdata_raw)) {
         replay_fail(rc, "unlearn.parent_data.sha256", "64-hex sha256", pdata_raw);
@@ -602,14 +644,14 @@ static bool unlearn_audit_check(const train_record_opts *o, jv *rec, const char 
         free(kept.s);
         return !replay_fail(rc, "unlearn.retained", "DATA1 less D's lines", why);
     }
-    envelope_data_sha256(kept.s ? kept.s : "", kept.n, got);
+    if (kept.n == 0) {
+        free(kept.s);
+        return !replay_fail(rc, "unlearn.retained", "non-empty retained rows", "empty retained set");
+    }
+    envelope_data_sha256(kept.s, kept.n, got);
     free(kept.s);
     const char *want = jv_str(jv_get(jv_get(rec, "data"), "sha256"), "");
     if (strcmp(got, want)) return !replay_fail(rc, "unlearn.retained", want, got);
-    int c = 0, dd = 0;
-    if (!record_int(un, "dropped_count", 1, INT_MAX, &c) ||
-        !record_int(un, "dropped_distinct", 1, INT_MAX, &dd))
-        return !replay_fail(rc, "unlearn.dropped_count", "positive integers", "invalid");
     if (c != count || dd != distinct) {
         char w[64], g[64];
         snprintf(w, sizeof w, "%d rows of %d lines", c, dd);
@@ -627,26 +669,21 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
     const bool retrain = !o->replay_train && o->unlearn_parent;
     const char *rec_path = o->replay_train ? o->replay_train : o->unlearn_parent;
     if (!rec_path) return false;
-    if (!retrain ? !record_regular_file_nofollow(rec_path) : !record_regular_file(rec_path)) {
-        fprintf(stderr, "error: cannot read %s\n", rec_path);
-        *rc = 1;
-        return true;
-    }
+    char err[512] = "";
+    char *rbuf = NULL;
     size_t rlen = 0;
-    char *rbuf = plat_read_file(rec_path, MAX_INPUT_FILE, &rlen);
-    jv *rec = rbuf ? json_parse(rbuf, rlen) : NULL;
-    free(rbuf);
-    if (!rec || rec->type != J_OBJ) {
-        fprintf(stderr, "error: %s is not a valid JSON training record\n", rec_path);
-        jv_free(rec);
+    jv *rec = read_bounded_record(rec_path, !retrain, err, sizeof err, &rbuf, &rlen);
+    if (!rec) {
+        fprintf(stderr, "error: %s\n", err[0] ? err : rec_path);
         *rc = 1;
         return true;
     }
     const char *caller_sign_key = o->sign_key;
     if (retrain) o->replay_data = o->train_path;   // DATA1, hashed as the parent's data below
-    bool ok = (retrain ? unlearn_prepare(o, rec, rc) : replay_check_compat(host, o, rec, &rp->want_t3_exact, rc)) &&
-              (!o->unlearn_audit || unlearn_audit_check(o, rec, rec_path, rc)) &&
+    bool ok = (retrain ? unlearn_prepare(o, rec, rc)
+                       : replay_check_compat(host, o, rec, rbuf, rlen, &rp->want_t3_exact, rc)) &&
               replay_check_environment(host, rec, rc) && replay_apply_overrides(o, rec, rc);
+    free(rbuf);
     if (!ok && *rc == 0) *rc = 1;
     rp->is_full = jv_get(rec, "full_weight") != NULL;
     jv *out_v = ok ? jv_get(rec, rp->is_full ? "variant" : "adapter") : NULL;
@@ -659,95 +696,13 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
                !fmt_checked(rp->want_out_sha, sizeof rp->want_out_sha, "%s", out_sha)))
         ok = !replay_fail(rc, rp->is_full ? "variant.path" : "adapter.path", "path fitting limit", "too long");
 
-    // Locate & hash every input before touching the model.
-    jv *base = ok ? jv_get(rec, "base") : NULL;
-    jv *data = ok ? jv_get(rec, "data") : NULL;
-    if (ok) {
-        bool explicit_m = o->model_path != NULL;
-        const char *bp = explicit_m ? o->model_path
-                                    : (relocate_local(jv_str(jv_get(base, "path"), ""),
-                                                      rec_path, rp->base_path, sizeof rp->base_path)
-                                       ? rp->base_path : NULL);
-        if (!bp || (bp != rp->base_path && !fmt_checked(rp->base_path, sizeof rp->base_path, "%s", bp)))
-            ok = !replay_fail(rc, "base.path", "safe path fitting limit", jv_str(jv_get(base, "path"), NULL));
-        else
-            ok = replay_check_sha_opt("base.sha256", rp->base_path, jv_str(jv_get(base, "sha256"), NULL), !explicit_m, rc);
-        if (ok) o->model_path = rp->base_path;
-    }
-    if (ok) {
-        bool explicit_d = o->replay_data != NULL;
-        const char *dp = explicit_d ? o->replay_data
-                                    : (relocate_local(jv_str(jv_get(data, "path"), ""),
-                                                      rec_path, rp->data_path, sizeof rp->data_path)
-                                       ? rp->data_path : NULL);
-        if (!dp || (dp != rp->data_path && !fmt_checked(rp->data_path, sizeof rp->data_path, "%s", dp)))
-            ok = !replay_fail(rc, "data.path", "safe path fitting limit", jv_str(jv_get(data, "path"), NULL));
-        else
-            ok = replay_check_sha_opt("data.sha256", rp->data_path, jv_str(jv_get(data, "sha256"), NULL), !explicit_d, rc);
-    }
-
+    // Validate hyperparameters and cheap scalar fields before any large I/O,
+    // unlearning split, or model load.
     jv *res_v = jv_get(rec, "resumed_at_step");
     jv *from_v = jv_get(rec, "from_adapter");
-    if (ok && (from_v || res_v)) {
-        if (res_v && o->lora_path) {
-            fprintf(stderr, "error: record resumes a checkpoint (--train-resume), not --lora\n");
-            *rc = 1;
-            ok = false;
-        } else if (!res_v && o->train_resume) {
-            fprintf(stderr, "error: record continues from --lora adapter, not --train-resume\n");
-            *rc = 1;
-            ok = false;
-        }
-        const char *cli_f = o->train_resume ? o->train_resume : o->lora_path;
-        bool explicit_f = cli_f != NULL;
-        const char *fp = !ok ? ""
-                       : explicit_f ? cli_f
-                       : (relocate_local(jv_str(jv_get(from_v, "path"), ""),
-                                         rec_path, rp->from_path, sizeof rp->from_path)
-                          ? rp->from_path : NULL);
-        if (ok && (!fp || (fp != rp->from_path && !fmt_checked(rp->from_path, sizeof rp->from_path, "%s", fp))))
-            ok = !replay_fail(rc, "from_adapter.path", "safe path fitting limit", jv_str(jv_get(from_v, "path"), NULL));
-        if (ok) ok = replay_check_sha_opt("from_adapter.sha256", rp->from_path, jv_str(jv_get(from_v, "sha256"), NULL), !explicit_f, rc);
-        if (ok && res_v) {
-            int rs = 0;
-            if (!record_int(rec, "resumed_at_step", 0, INT_MAX, &rs))
-                ok = !replay_fail(rc, "resumed_at_step", "integer", "invalid");
-            char opt_p[4120];
-            if (ok && !fmt_checked(opt_p, sizeof opt_p, "%s.optim", rp->from_path))
-                ok = !replay_fail(rc, "resume_optim_sha256", "path fitting limit", "too long");
-            else if (ok)
-                ok = replay_check_sha_opt("resume_optim_sha256", opt_p,
-                                          jv_str(jv_get(rec, "resume_optim_sha256"), NULL), !explicit_f, rc);
-            if (ok) {
-                o->train_resume = rp->from_path;
-                o->lora_path = NULL;
-                o->replay_resumed_at = rp->want_resumed_at = rs;
-            }
-        } else if (ok) {
-            o->lora_path = rp->from_path;
-            o->train_resume = NULL;
-        }
-    } else if (ok && (o->lora_path || o->train_resume)) {
-        fprintf(stderr, "error: fresh training record does not take --lora or --train-resume\n");
-        *rc = 1;
-        ok = false;
-    }
-
     const char *obj = jv_str(jv_get(rec, "objective"), "");
     jv *tch = jv_get(rec, "teacher");
-    if (ok && !strcmp(obj, "kl-to-teacher")) {
-        if (!tch || !replay_resolve_teacher(o, rp, tch, rc)) {
-            if (*rc != 2) replay_fail(rc, "teacher", "teacher object", "missing");
-            ok = false;
-        } else {
-            o->train_teacher = rp->teacher_dir;
-        }
-    }
-
     jv *kill_v = jv_get(rec, "kill");
-    if (ok) ok = replay_resolve_evals(o, rp, rec, kill_v, rc);
-
-    // Parse hyperparameters and configure CPU-only execution.
     const char *kv = jv_str(jv_get(rec, "kv_cache"), NULL);
     jv *nb = jv_get(rec, "no_bos"), *eot = jv_get(rec, "end_of_turn");
     jv *sv = jv_get(rec, "seed"), *adm = jv_get(rec, "adamw"), *rcp = jv_get(rec, "recipe");
@@ -801,14 +756,108 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
         else if (!strcmp(obj, "dpo")) {
             if (!record_num(rec, "dpo_beta", 0, FLT_MAX, &beta))
                 ok = !replay_fail(rc, "dpo_beta", "number", "missing");
-            else { o->dpo_path = rp->data_path; o->dpo_beta = (float)beta; o->train_path = NULL; }
-        } else if (!strcmp(obj, "weighted-cross-entropy") || !strcmp(obj, "kl-to-teacher")) {
-            o->train_path = rp->data_path;
-            o->dpo_path = NULL;
-        } else {
+        } else if (strcmp(obj, "weighted-cross-entropy") != 0 && strcmp(obj, "kl-to-teacher") != 0) {
             ok = !replay_fail(rc, "objective", "weighted-cross-entropy, kl-to-teacher or dpo", obj);
         }
-        if (ok) {
+    }
+    if (ok && o->unlearn_audit && !unlearn_audit_check(o, rec, rec_path, rc))
+        ok = false;
+
+    // Locate & hash every input before touching the model.
+    jv *base = ok ? jv_get(rec, "base") : NULL;
+    jv *data = ok ? jv_get(rec, "data") : NULL;
+    if (ok) {
+        bool explicit_m = o->model_path != NULL;
+        const char *bp = explicit_m ? o->model_path
+                                    : (relocate_local(jv_str(jv_get(base, "path"), ""),
+                                                      rec_path, rp->base_path, sizeof rp->base_path)
+                                       ? rp->base_path : NULL);
+        if (!bp || (bp != rp->base_path && !fmt_checked(rp->base_path, sizeof rp->base_path, "%s", bp)))
+            ok = !replay_fail(rc, "base.path", "safe path fitting limit", jv_str(jv_get(base, "path"), NULL));
+        else
+            ok = replay_check_sha_opt("base.sha256", rp->base_path, jv_str(jv_get(base, "sha256"), NULL), !explicit_m, rc);
+        if (ok) o->model_path = rp->base_path;
+    }
+    if (ok) {
+        bool explicit_d = o->replay_data != NULL;
+        const char *dp = explicit_d ? o->replay_data
+                                    : (relocate_local(jv_str(jv_get(data, "path"), ""),
+                                                      rec_path, rp->data_path, sizeof rp->data_path)
+                                       ? rp->data_path : NULL);
+        if (!dp || (dp != rp->data_path && !fmt_checked(rp->data_path, sizeof rp->data_path, "%s", dp)))
+            ok = !replay_fail(rc, "data.path", "safe path fitting limit", jv_str(jv_get(data, "path"), NULL));
+        else
+            ok = replay_check_sha_opt("data.sha256", rp->data_path, jv_str(jv_get(data, "sha256"), NULL), !explicit_d, rc);
+    }
+
+    if (ok && (from_v || res_v)) {
+        if (res_v && o->lora_path) {
+            fprintf(stderr, "error: record resumes a checkpoint (--train-resume), not --lora\n");
+            *rc = 1;
+            ok = false;
+        } else if (!res_v && o->train_resume) {
+            fprintf(stderr, "error: record continues from --lora adapter, not --train-resume\n");
+            *rc = 1;
+            ok = false;
+        }
+        const char *cli_f = o->train_resume ? o->train_resume : o->lora_path;
+        bool explicit_f = cli_f != NULL;
+        const char *fp = !ok ? ""
+                       : explicit_f ? cli_f
+                       : (relocate_local(jv_str(jv_get(from_v, "path"), ""),
+                                         rec_path, rp->from_path, sizeof rp->from_path)
+                          ? rp->from_path : NULL);
+        if (ok && (!fp || (fp != rp->from_path && !fmt_checked(rp->from_path, sizeof rp->from_path, "%s", fp))))
+            ok = !replay_fail(rc, "from_adapter.path", "safe path fitting limit", jv_str(jv_get(from_v, "path"), NULL));
+        if (ok) ok = replay_check_sha_opt("from_adapter.sha256", rp->from_path, jv_str(jv_get(from_v, "sha256"), NULL), !explicit_f, rc);
+        if (ok && res_v) {
+            int rs = 0;
+            if (!record_int(rec, "resumed_at_step", 0, INT_MAX, &rs))
+                ok = !replay_fail(rc, "resumed_at_step", "integer", "invalid");
+            char opt_p[4120];
+            if (ok && !fmt_checked(opt_p, sizeof opt_p, "%s.optim", rp->from_path))
+                ok = !replay_fail(rc, "resume_optim_sha256", "path fitting limit", "too long");
+            else if (ok)
+                ok = replay_check_sha_opt("resume_optim_sha256", opt_p,
+                                          jv_str(jv_get(rec, "resume_optim_sha256"), NULL), !explicit_f, rc);
+            if (ok) {
+                o->train_resume = rp->from_path;
+                o->lora_path = NULL;
+                o->replay_resumed_at = rp->want_resumed_at = rs;
+            }
+        } else if (ok) {
+            o->lora_path = rp->from_path;
+            o->train_resume = NULL;
+        }
+    } else if (ok && (o->lora_path || o->train_resume)) {
+        fprintf(stderr, "error: fresh training record does not take --lora or --train-resume\n");
+        *rc = 1;
+        ok = false;
+    }
+
+    if (ok && !strcmp(obj, "kl-to-teacher")) {
+        if (!tch || !replay_resolve_teacher(o, rp, tch, rc)) {
+            if (*rc != 2) replay_fail(rc, "teacher", "teacher object", "missing");
+            ok = false;
+        } else {
+            o->train_teacher = rp->teacher_dir;
+        }
+    }
+
+    if (ok) ok = replay_resolve_evals(o, rp, rec, kill_v, rc);
+
+    if (ok) {
+        const char *sched = jv_str(jv_get(rcp, "schedule"), "");
+        const char *loss_mode = jv_str(jv_get(rcp, "loss"), "");
+        if (!strcmp(obj, "dpo")) {
+            o->dpo_path = rp->data_path;
+            o->dpo_beta = (float)beta;
+            o->train_path = NULL;
+        } else {
+            o->train_path = rp->data_path;
+            o->dpo_path = NULL;
+        }
+        {
             o->mp.kv_f32 = strcmp(kv, "f32") == 0;
             o->train_kv_f32 = o->mp.kv_f32;
             o->train_full = rp->is_full;

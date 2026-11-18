@@ -10,6 +10,8 @@
 
 #include "json.h"
 
+#define TRAIN_RECORD_MAX_BYTES (16u * 1024u * 1024u)
+
 #define TRAIN_ADAM_BETA1 0.9
 #define TRAIN_ADAM_BETA2 0.999
 #define TRAIN_ADAM_EPS   1e-8
