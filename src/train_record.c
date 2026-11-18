@@ -278,20 +278,31 @@ static bool replay_apply_overrides(train_record_opts *o, jv *rec, int *rc) {
 // newline aside). *count is the rows removed, *distinct the lines D lists.
 // False, with why, for a text corpus (it has no rows), a line of D that is not
 // in DATA1, or a file that cannot be read.
-static int unlearn_line_cmp(const void *a, const void *b) {
-    return strcmp(*(char *const *)a, *(char *const *)b);
+typedef struct {
+    const char *p;
+    size_t      len;
+} unlearn_line;
+
+static int unlearn_line_cmp(const void *va, const void *vb) {
+    const unlearn_line *a = va, *b = vb;
+    size_t m = a->len < b->len ? a->len : b->len;
+    int c = m ? memcmp(a->p, b->p, m) : 0;
+    if (c) return c;
+    return a->len < b->len ? -1 : (a->len > b->len ? 1 : 0);
 }
 
 static bool unlearn_split(const char *data1, const char *drop, sbuf *kept, int *count, int *distinct,
                           char *why, size_t cap) {
     size_t n1 = 0, n2 = 0;
     char *a = plat_read_file(data1, MAX_INPUT_FILE, &n1);
-    char *d = plat_read_file(drop, MAX_INPUT_FILE, &n2);
-    char **dl = NULL;
+    char *d = a ? plat_read_file(drop, MAX_INPUT_FILE, &n2) : NULL;
+    unlearn_line *dl = NULL;
     bool *found = NULL, ok = false;
     int nd = 0, capn = 0;
     *count = *distinct = 0;
     if (!a || !d) { snprintf(why, cap, "cannot read %s", !a ? data1 : drop); goto out; }
+    if (memchr(a, '\0', n1)) { snprintf(why, cap, "%s contains a NUL byte", data1); goto out; }
+    if (memchr(d, '\0', n2)) { snprintf(why, cap, "%s contains a NUL byte", drop); goto out; }
     size_t i0 = 0;
     while (i0 < n1 && (a[i0] == ' ' || a[i0] == '\t' || a[i0] == '\r' || a[i0] == '\n')) i0++;
     if (i0 == n1 || a[i0] != '{') {
@@ -302,47 +313,45 @@ static bool unlearn_split(const char *data1, const char *drop, sbuf *kept, int *
         const char *e = memchr(d + p, '\n', n2 - p);
         size_t len = e ? (size_t)(e - (d + p)) : n2 - p;
         if (len) {
+            if (nd == INT_MAX) { snprintf(why, cap, "%s has too many rows", drop); goto out; }
             if (nd == capn) {
+                if (capn > INT_MAX / 2) { snprintf(why, cap, "%s has too many rows", drop); goto out; }
                 capn = capn ? 2 * capn : 16;
-                char **g = realloc(dl, sizeof *dl * (size_t)capn);
+                unlearn_line *g = realloc(dl, sizeof *dl * (size_t)capn);
                 if (!g) { snprintf(why, cap, "out of memory"); goto out; }
                 dl = g;
             }
-            dl[nd] = malloc(len + 1);
-            if (!dl[nd]) { snprintf(why, cap, "out of memory"); goto out; }
-            memcpy(dl[nd], d + p, len);
-            dl[nd++][len] = 0;
+            dl[nd++] = (unlearn_line){ d + p, len };
         }
-        p += len + 1;
+        p += e ? len + 1 : len;
     }
     if (nd == 0) { snprintf(why, cap, "%s lists no row", drop); goto out; }
     qsort(dl, (size_t)nd, sizeof *dl, unlearn_line_cmp);
     int u = 1;   // distinct, in place
     for (int i = 1; i < nd; i++)
-        if (strcmp(dl[i], dl[u - 1])) dl[u++] = dl[i];
-        else free(dl[i]);
+        if (unlearn_line_cmp(&dl[i], &dl[u - 1]) != 0) dl[u++] = dl[i];
     nd = u;
     found = calloc((size_t)nd, sizeof *found);
     if (!found) { snprintf(why, cap, "out of memory"); goto out; }
     for (size_t p = 0; p < n1; ) {
-        char *e = memchr(a + p, '\n', n1 - p);
+        const char *e = memchr(a + p, '\n', n1 - p);
         size_t len = e ? (size_t)(e - (a + p)) : n1 - p;
-        char save = a[p + len];
-        a[p + len] = 0;   // the buffer is ours: the line as a string for the search
-        const char *key = a + p;
-        char **hit = len ? bsearch(&key, dl, (size_t)nd, sizeof *dl, unlearn_line_cmp) : NULL;
-        a[p + len] = save;
+        unlearn_line key = { a + p, len };
+        unlearn_line *hit = len ? bsearch(&key, dl, (size_t)nd, sizeof *dl, unlearn_line_cmp) : NULL;
         if (hit) { found[hit - dl] = true; (*count)++; }
         else if (len || e) { sb_put(kept, a + p, len); sb_lit(kept, "\n"); }
-        p += len + 1;
+        p += e ? len + 1 : len;
     }
     for (int i = 0; i < nd; i++)
-        if (!found[i]) { snprintf(why, cap, "a line of %s is not in the parent's data: %.60s", drop, dl[i]); goto out; }
+        if (!found[i]) {
+            snprintf(why, cap, "a line of %s is not in the parent's data: %.*s",
+                     drop, (int)(dl[i].len > 60 ? 60 : dl[i].len), dl[i].p);
+            goto out;
+        }
     *distinct = nd;
     ok = !kept->failed;
     if (!ok) snprintf(why, cap, "out of memory");
 out:
-    if (dl) for (int i = 0; i < nd; i++) free(dl[i]);
     free(dl);
     free(found);
     free(a);
