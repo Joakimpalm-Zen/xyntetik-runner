@@ -2040,9 +2040,8 @@ void model_moe_trace_route(int pos, int layer, const int *sel, const float *selw
 // switches set (runner_switch_counts). Rows made under another hash are
 // another arithmetic's.
 uint64_t model_route_hash(const model_t *m);
-// Whether the variable `name` (n bytes) is a switch that may change arithmetic:
-// a RUNNER_ one outside the inert set, or XR_SSM_CHUNK / XR_SSM_SERIAL.
-bool     runner_switch_counts(const char *name, size_t n);
+// runner_switch_counts, the switches' rule, is in compat.h (shared with the
+// training record's reader, src/train_record.c)
 // the facts model_route_hash hashes, as text, and how many times it has been
 // computed in this process (for the tests)
 int      model_route_text(const model_t *m, char *out, size_t cap);
