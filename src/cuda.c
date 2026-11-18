@@ -10750,6 +10750,7 @@ bool gpu_train_res_layer_bw(model_t *m, int l) {
         cu.MemsetD8(t->rb[RB_DV], 0, fk) != 0 ||
         !attn_bw_core(t, &ta, kl, vl, Q, t->rb[RB_DAO], t->rb[RB_DQ], t->rb[RB_DK], t->rb[RB_DV]))
         return false;
+    t->n_ab++;   // the record's attention_device_calls, a layer's backward as on the slot path
     // ---- the projections (lbw_projections): rope's adjoint on dq and dk, the
     // Q and K norms' adjoints per head into fresh rows, then Q (zero-started
     // dxn1), K and V: each transpose, then its adapter's backward
