@@ -25,11 +25,12 @@ static bool record_num(jv *obj, const char *key, double min, double max,
 }
 
 static bool record_int(jv *obj, const char *key, int min, int max, int *out) {
-    double d;
-    if (!record_num(obj, key, (double)min, (double)max, &d) ||
-        d != trunc(d))
+    jv *v = jv_get(obj, key);
+    if (!v || v->type != J_NUM || !v->num_int || v->num_text ||
+        !fp_isfinite(v->num) || v->num < (double)min || v->num > (double)max ||
+        v->num != trunc(v->num))
         return false;
-    *out = (int)d;
+    *out = (int)v->num;
     return true;
 }
 
@@ -417,9 +418,10 @@ static bool jv_same(const jv *a, const jv *b) {
     switch (a->type) {
     case J_NULL: return true;
     case J_BOOL: return a->b == b->b;
-    case J_NUM:  return a->num_text || b->num_text
-                      ? a->num_text && b->num_text && !strcmp(a->num_text, b->num_text)
-                      : a->num == b->num;
+    case J_NUM:  return a->num_int == b->num_int &&
+                      (a->num_text || b->num_text
+                           ? a->num_text && b->num_text && !strcmp(a->num_text, b->num_text)
+                           : a->num == b->num);
     case J_STR:  return !strcmp(a->str, b->str);
     case J_ARR:
         if (a->n != b->n) return false;
@@ -488,11 +490,13 @@ static bool unlearn_audit_check(const train_record_opts *o, jv *rec, const char 
     free(kept.s);
     const char *want = jv_str(jv_get(jv_get(rec, "data"), "sha256"), "");
     if (strcmp(got, want)) return !replay_fail(rc, "unlearn.retained", want, got);
-    double c = 0, dd = 0;
-    if (!record_num(un, "dropped_count", 0, 1e12, &c) || (int)c != count ||
-        !record_num(un, "dropped_distinct", 0, 1e12, &dd) || (int)dd != distinct) {
+    int c = 0, dd = 0;
+    if (!record_int(un, "dropped_count", 1, INT_MAX, &c) ||
+        !record_int(un, "dropped_distinct", 1, INT_MAX, &dd))
+        return !replay_fail(rc, "unlearn.dropped_count", "positive integers", "invalid");
+    if (c != count || dd != distinct) {
         char w[64], g[64];
-        snprintf(w, sizeof w, "%d rows of %d lines", (int)c, (int)dd);
+        snprintf(w, sizeof w, "%d rows of %d lines", c, dd);
         snprintf(g, sizeof g, "%d rows of %d lines", count, distinct);
         return !replay_fail(rc, "unlearn.dropped_count", w, g);
     }
@@ -639,7 +643,7 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
                  !record_int(rec, "ctx", 2, INT_MAX, &ctx) ||
                  !record_int(rec, "eot_id", -1, INT_MAX, &eot_id))
             ok = !replay_fail(rc, "recipe", "valid training hyperparameters", "invalid");
-        else if (!sv || sv->type != J_NUM ||
+        else if (!sv || sv->type != J_NUM || !sv->num_int ||
                  !(sv->num_text ? parse_u64(sv->num_text, 0, UINT64_MAX, &seed_u64)
                                 : (sv->num >= 0 && sv->num <= 9007199254740992.0 &&
                                    sv->num == trunc(sv->num) && (seed_u64 = (uint64_t)sv->num, true))))
