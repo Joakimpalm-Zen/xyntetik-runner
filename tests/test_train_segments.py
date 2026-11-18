@@ -189,3 +189,77 @@ def test_a_teacher_dpo_or_full_record_is_refused_for_segments_by_name(runner_bin
         rec_path.write_text(json.dumps(r0))
         r = _attest(runner_bin, [rec_path, "--segment", "2..4", "-t", 2, *_same_binary(rec)])
         assert r.returncode == 2 and name in r.stdout + r.stderr, (field, r.stdout + r.stderr)
+
+
+# ---- from the read of #942: the start files are hostile input, and so is every number in the record ----
+
+@pytest.fixture(scope="module")
+def hostile_bin():
+    """The sanitizer build when it is fresh (make debug: ASan and UBSan), else the plain one, as
+    tests/test_hostile_records.py chooses."""
+    dbg = ROOT / ("runner-debug.exe" if sys.platform == "win32" else "runner-debug")
+    if dbg.exists():
+        newest = max((f.stat().st_mtime for f in (ROOT / "src").rglob("*.c")), default=0)
+        if dbg.stat().st_mtime >= newest:
+            return dbg
+    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
+    if not exe.exists():
+        pytest.skip("runner binary not built")
+    return exe
+
+
+def test_a_symlinked_start_file_is_refused(runner_bin, hostile_bin, run6):
+    """The step-A files are opened as the record's other cited files are: a regular file by its base name, never
+    a symlink, even to the right bytes."""
+    d, out, rec_path, rec = run6
+    start = _ck(out, 2)
+    elsewhere = d / "outside"
+    elsewhere.mkdir()
+    real = elsewhere / "real.step2"
+    real.write_bytes(start.read_bytes())
+    start.unlink()
+    try:
+        os.symlink(real, start)
+    except (OSError, NotImplementedError):
+        pytest.skip("no symlinks here")
+    r = _attest(hostile_bin, [rec_path, "--segment", "2..4", "-t", 2, *_same_binary(rec)])
+    assert r.returncode == 2 and "VERIFIED" not in r.stdout, (r.returncode, r.stdout + r.stderr)
+    assert "not a regular file" in r.stderr, r.stderr
+
+
+def _with_checkpoints(text, steps, entries):
+    """The record's text with another steps count and checkpoint list, its chain recomputed as the runner does."""
+    body = text[:text.index(',"checkpoints":')]
+    body = body.replace('"steps":%d' % json.loads(text)["steps"], '"steps":%d' % steps, 1)
+    h0 = hashlib.sha256(("xyntetik.runner.train.chain.v1|" +
+                         hashlib.sha256((body + "}").encode()).hexdigest()).encode()).hexdigest()
+    h = h0
+    for c in entries:
+        h = hashlib.sha256(("%s|%d|%d|%s|%s" % (h, c["step"], c["cursor"], c["adapter_sha256"],
+                                                 c["optim_sha256"])).encode()).hexdigest()
+    return (body + ',"checkpoints":' + json.dumps(entries, separators=(",", ":")) +
+            ',"checkpoint_chain":{"basis":"xyntetik.runner.train.chain.v1","h0":"%s","head":"%s"}}\n' % (h0, h))
+
+
+def test_a_hostile_checkpoint_interval_is_refused_without_overflow(hostile_bin, run6):
+    """Steps near INT_MAX: the interval check must not overflow int (UBSan aborts on it). A record whose second
+    checkpoint is not twice its first is refused."""
+    d, out, rec_path, rec = run6
+    c0 = rec["checkpoints"][0]
+    entries = [dict(c0, step=1073741824), dict(c0, step=2147483646)]
+    rec_path.write_text(_with_checkpoints(rec_path.read_text(), 2147483647, entries))
+    r = _attest(hostile_bin, [rec_path, "--segment", "0..1073741824", "-t", 2, *_same_binary(rec)])
+    assert r.returncode == 2, (r.returncode, (r.stdout + r.stderr)[-600:])
+    assert "not every K steps" in r.stderr and "runtime error" not in r.stderr, r.stderr[-600:]
+
+
+def test_the_record_is_checked_before_its_start_files(runner_bin, run6):
+    """The record's own checks (schema, signature, determinism) come before the segment's: a same-binary record
+    without --allow-same-binary is refused for that, never by the state of the files beside it."""
+    d, out, rec_path, rec = run6
+    if rec.get("determinism") != "cpu-same-binary":
+        pytest.skip("this build's record is exact across machines")
+    _ck(out, 2).unlink()
+    r = _attest(runner_bin, [rec_path, "--segment", "2..4", "-t", 2])
+    assert r.returncode == 2 and "MISMATCH determinism" in r.stdout, (r.stdout + r.stderr)[-600:]
+    assert "is not the checkpoint" not in r.stderr, r.stderr
