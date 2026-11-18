@@ -602,17 +602,19 @@ static const char *unlearn_record_eligible(jv *rec) {
     return NULL;
 }
 
+static bool unlearn_check_eligible(const train_record_opts *o, jv *rec, int *rc) {
+    const char *why = unlearn_record_eligible(rec);
+    if (!why) return true;
+    fprintf(stderr, "error: --unlearn: %s %s\n", o->unlearn_parent, why);
+    *rc = 1;
+    return false;
+}
+
 // --unlearn: the parent record a retrain may follow, and the retained rows,
 // written beside the output. A fresh cross-entropy adapter only: a teacher's
 // arrays are indexed by row, a continued or resumed run starts from another
 // adapter, and evals and a kill rule would need their own files dropped too.
 static bool unlearn_prepare(train_record_opts *o, jv *rec, int *rc) {
-    const char *why = unlearn_record_eligible(rec);
-    if (why) {
-        fprintf(stderr, "error: --unlearn: %s %s\n", o->unlearn_parent, why);
-        *rc = 1;
-        return false;
-    }
     char have[65] = "";
     const char *want = jv_str(jv_get(jv_get(rec, "data"), "sha256"), "");
     if (!envelope_file_sha256(o->train_path, have) || strcmp(have, want)) {
@@ -791,7 +793,7 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
     }
     const char *caller_sign_key = o->sign_key;
     if (retrain) o->replay_data = o->train_path;   // DATA1, hashed as the parent's data below
-    bool ok = (retrain ? unlearn_prepare(o, rec, rc)
+    bool ok = (retrain ? unlearn_check_eligible(o, rec, rc)
                        : replay_check_compat(host, o, rec, rbuf, rlen, &rp->want_t3_exact, rc)) &&
               replay_check_environment(host, rec, rc) && replay_apply_overrides(o, rec, rc);
     free(rbuf);
@@ -902,7 +904,9 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
         if (ok && !validate_evals_and_kill_meta(rec, sizeof rp->kill_metric, rc))
             ok = false;
     }
-    if (ok && o->unlearn_audit && !unlearn_audit_check(o, rec, rec_path, rc))
+    if (ok && retrain && !unlearn_prepare(o, rec, rc))
+        ok = false;
+    else if (ok && o->unlearn_audit && !unlearn_audit_check(o, rec, rec_path, rc))
         ok = false;
 
     // Locate & hash every input before touching the model.
