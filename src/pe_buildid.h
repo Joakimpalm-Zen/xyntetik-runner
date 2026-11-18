@@ -35,7 +35,7 @@ static inline bool pe_span(uint64_t off, uint64_t len, size_t size) {
 }
 
 static inline bool pe_buildid_walk(const uint8_t *img, size_t size, char *out, size_t cap) {
-    if (!img || cap < 60 || !pe_span(0, 64, size)) return false;
+    if (!img || !out || cap < 60 || !pe_span(0, 64, size)) return false;
     if (pe_u16(img) != 0x5a4d) return false;                       // "MZ"
     uint64_t nt = pe_u32(img + 0x3c);
     if (!pe_span(nt, 4 + 20, size) || memcmp(img + nt, "PE\0\0", 4) != 0) return false;

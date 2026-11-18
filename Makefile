@@ -4408,6 +4408,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_package_manifests.py \
     tests/test_parent_pid.py \
     tests/test_pattern_automaton.py \
+    tests/test_pe_buildid_link.py \
     tests/test_phi3_rope.py \
     tests/test_phys_footprint.py \
     tests/test_port_in_use.py \
