@@ -163,3 +163,34 @@ def test_unlearn_refuses_what_it_cannot_do_exactly(runner_bin, d, case):
     p = _run(runner_bin, [*args, "-m", d / "base.gguf", "--train-out", d / "a2.gguf"])
     assert p.returncode != 0 and want in p.stderr, (case, p.returncode, p.stderr[-400:])
     assert not (d / "a2.gguf").exists(), case
+
+
+def test_attest_unlearn_refuses_a_run_whose_recipe_is_not_the_parents(runner_bin, d):
+    """The review's P3: the audit held the parent's data, not its base and recipe. A from-scratch run with another
+    learning rate on the retained rows, given the genuine run's unlearn block, replays to its own bytes; it must be
+    refused, naming the field, because it is not the parent's recipe."""
+    parent = _parent(runner_bin, d)
+    p = _run(runner_bin, ["--unlearn", parent, "--drop", d / "drop.jsonl", "-m", d / "base.gguf",
+                          "--train", d / "data1.jsonl", "--train-out", d / "a2.gguf"])
+    assert p.returncode == 0, p.stdout + p.stderr
+    other = [a if a != "3e-3" else "1e-3" for a in RECIPE]
+    p = _run(runner_bin, ["-m", d / "base.gguf", "--train", d / "a2.gguf.retained.jsonl", "--train-out",
+                          d / "forged.gguf", *other])
+    assert p.returncode == 0, p.stderr
+    forged = json.loads((d / "forged.gguf.train.json").read_text())
+    forged["unlearn"] = json.loads((d / "a2.gguf.train.json").read_text())["unlearn"]
+    (d / "forged.gguf.train.json").write_text(json.dumps(forged))
+    r = _run(runner_bin, ["attest", "unlearn", d / "forged.gguf.train.json", "--parent-data", d / "data1.jsonl",
+                          "--dropped", d / "drop.jsonl", *_same_binary(d / "forged.gguf.train.json")])
+    assert r.returncode == 2 and "MISMATCH unlearn.lr" in r.stdout, r.stdout + r.stderr
+    assert "train:" not in r.stderr
+
+
+def test_unlearn_refuses_a_drop_of_every_row_before_writing(runner_bin, d):
+    """A D that removes every row leaves nothing to train on: refused by name, with no retained file left."""
+    parent = _parent(runner_bin, d)
+    _write_rows(d / "all.jsonl", ROWS)
+    p = _run(runner_bin, ["--unlearn", parent, "--drop", d / "all.jsonl", "-m", d / "base.gguf",
+                          "--train", d / "data1.jsonl", "--train-out", d / "a2.gguf"])
+    assert p.returncode != 0 and "every row" in p.stderr, p.stderr[-400:]
+    assert not (d / "a2.gguf.retained.jsonl").exists() and not (d / "a2.gguf").exists()
