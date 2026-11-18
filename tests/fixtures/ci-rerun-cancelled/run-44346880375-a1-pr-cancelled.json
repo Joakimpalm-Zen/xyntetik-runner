@@ -1,0 +1,1469 @@
+{
+ "run": {
+  "id": 44346880375,
+  "name": "ci",
+  "event": "pull_request",
+  "status": "completed",
+  "conclusion": "failure",
+  "run_attempt": 1,
+  "created_at": "2026-11-18T16:24:30Z",
+  "html_url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/actions/runs/44346880375",
+  "head_sha": "da64e70eb4b3fdd3389d05511153be8ff1781bd9"
+ },
+ "jobs": {
+  "total_count": 20,
+  "jobs": [
+   {
+    "id": 134951539939,
+    "name": "changes",
+    "status": "completed",
+    "conclusion": "success",
+    "html_url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/actions/runs/44346880375/job/134951539939",
+    "steps": [
+     {
+      "number": 1,
+      "name": "Set up job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:35Z",
+      "completed_at": "2026-11-18T16:24:35Z"
+     },
+     {
+      "number": 2,
+      "name": "Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:35Z",
+      "completed_at": "2026-11-18T16:24:40Z"
+     },
+     {
+      "number": 3,
+      "name": "classify the change and look for a green run of this tree",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:40Z",
+      "completed_at": "2026-11-18T16:24:40Z"
+     },
+     {
+      "number": 4,
+      "name": "record the tree this pull-request run tests",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:40Z",
+      "completed_at": "2026-11-18T16:24:41Z"
+     },
+     {
+      "number": 8,
+      "name": "Post Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:41Z",
+      "completed_at": "2026-11-18T16:24:41Z"
+     },
+     {
+      "number": 9,
+      "name": "Complete job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:41Z",
+      "completed_at": "2026-11-18T16:24:41Z"
+     }
+    ]
+   },
+   {
+    "id": 134951543256,
+    "name": "suite-sanitized",
+    "status": "completed",
+    "conclusion": "skipped",
+    "html_url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/actions/runs/44346880375/job/134951543256",
+    "steps": []
+   },
+   {
+    "id": 134951675949,
+    "name": "conformance-sanitized",
+    "status": "completed",
+    "conclusion": "success",
+    "html_url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/actions/runs/44346880375/job/134951675949",
+    "steps": [
+     {
+      "number": 1,
+      "name": "Set up job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:47Z",
+      "completed_at": "2026-11-18T16:24:47Z"
+     },
+     {
+      "number": 2,
+      "name": "Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:47Z",
+      "completed_at": "2026-11-18T16:24:51Z"
+     },
+     {
+      "number": 3,
+      "name": "pip download cache",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:51Z",
+      "completed_at": "2026-11-18T16:24:52Z"
+     },
+     {
+      "number": 4,
+      "name": "build sanitized runner",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:52Z",
+      "completed_at": "2026-11-18T16:25:30Z"
+     },
+     {
+      "number": 5,
+      "name": "make test model",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:25:30Z",
+      "completed_at": "2026-11-18T16:25:30Z"
+     },
+     {
+      "number": 6,
+      "name": "install pytest",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:25:30Z",
+      "completed_at": "2026-11-18T16:25:34Z"
+     },
+     {
+      "number": 7,
+      "name": "agent-protocol conformance harness (sanitized)",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:25:34Z",
+      "completed_at": "2026-11-18T16:27:22Z"
+     },
+     {
+      "number": 8,
+      "name": "sanitizer instrumentation negative controls",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:27:22Z",
+      "completed_at": "2026-11-18T16:27:24Z"
+     },
+     {
+      "number": 9,
+      "name": "sanitized sharing and load cleanup",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:27:24Z",
+      "completed_at": "2026-11-18T16:28:24Z"
+     },
+     {
+      "number": 10,
+      "name": "the pattern automaton and the schema validator under sanitizers",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:28:24Z",
+      "completed_at": "2026-11-18T16:28:42Z"
+     },
+     {
+      "number": 11,
+      "name": "CLI leak gate",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:28:42Z",
+      "completed_at": "2026-11-18T16:28:45Z"
+     },
+     {
+      "number": 12,
+      "name": "sanitized server race gate",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:28:45Z",
+      "completed_at": "2026-11-18T16:31:44Z"
+     },
+     {
+      "number": 13,
+      "name": "CLI lifecycle and transformations under sanitizers",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:31:44Z",
+      "completed_at": "2026-11-18T16:34:15Z"
+     },
+     {
+      "number": 14,
+      "name": "hostile geometry and the valid fixtures under sanitizers",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:34:15Z",
+      "completed_at": "2026-11-18T16:34:23Z"
+     },
+     {
+      "number": 15,
+      "name": "conformance report",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:34:23Z",
+      "completed_at": "2026-11-18T16:34:24Z"
+     },
+     {
+      "number": 16,
+      "name": "Run actions/upload-artifact@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:34:24Z",
+      "completed_at": "2026-11-18T16:34:24Z"
+     },
+     {
+      "number": 17,
+      "name": "CI timing and test reports",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:34:24Z",
+      "completed_at": "2026-11-18T16:34:25Z"
+     },
+     {
+      "number": 33,
+      "name": "Post pip download cache",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:34:25Z",
+      "completed_at": "2026-11-18T16:34:26Z"
+     },
+     {
+      "number": 34,
+      "name": "Post Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:34:26Z",
+      "completed_at": "2026-11-18T16:34:26Z"
+     },
+     {
+      "number": 35,
+      "name": "Complete job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:34:26Z",
+      "completed_at": "2026-11-18T16:34:26Z"
+     }
+    ]
+   },
+   {
+    "id": 134951675992,
+    "name": "make-test",
+    "status": "completed",
+    "conclusion": "success",
+    "html_url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/actions/runs/44346880375/job/134951675992",
+    "steps": [
+     {
+      "number": 1,
+      "name": "Set up job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:46Z",
+      "completed_at": "2026-11-18T16:24:47Z"
+     },
+     {
+      "number": 2,
+      "name": "Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:47Z",
+      "completed_at": "2026-11-18T16:24:52Z"
+     },
+     {
+      "number": 3,
+      "name": "pip download cache",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:52Z",
+      "completed_at": "2026-11-18T16:24:52Z"
+     },
+     {
+      "number": 4,
+      "name": "install pytest and mypy",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:52Z",
+      "completed_at": "2026-11-18T16:25:01Z"
+     },
+     {
+      "number": 5,
+      "name": "build",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:25:01Z",
+      "completed_at": "2026-11-18T16:26:16Z"
+     },
+     {
+      "number": 6,
+      "name": "python client type check",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:16Z",
+      "completed_at": "2026-11-18T16:26:17Z"
+     },
+     {
+      "number": 7,
+      "name": "make test",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:17Z",
+      "completed_at": "2026-11-18T16:44:30Z"
+     },
+     {
+      "number": 8,
+      "name": "CI timing and test reports",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:44:30Z",
+      "completed_at": "2026-11-18T16:44:31Z"
+     },
+     {
+      "number": 15,
+      "name": "Post pip download cache",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:44:31Z",
+      "completed_at": "2026-11-18T16:44:31Z"
+     },
+     {
+      "number": 16,
+      "name": "Post Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:44:31Z",
+      "completed_at": "2026-11-18T16:44:32Z"
+     },
+     {
+      "number": 17,
+      "name": "Complete job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:44:32Z",
+      "completed_at": "2026-11-18T16:44:32Z"
+     }
+    ]
+   },
+   {
+    "id": 134951676085,
+    "name": "simd-isa-levels",
+    "status": "completed",
+    "conclusion": "success",
+    "html_url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/actions/runs/44346880375/job/134951676085",
+    "steps": [
+     {
+      "number": 1,
+      "name": "Set up job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:46Z",
+      "completed_at": "2026-11-18T16:24:47Z"
+     },
+     {
+      "number": 2,
+      "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:47Z",
+      "completed_at": "2026-11-18T16:24:52Z"
+     },
+     {
+      "number": 3,
+      "name": "host",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:52Z",
+      "completed_at": "2026-11-18T16:24:52Z"
+     },
+     {
+      "number": 4,
+      "name": "SIMD gates at -march=x86-64-v3 (the release pin)",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:52Z",
+      "completed_at": "2026-11-18T16:25:01Z"
+     },
+     {
+      "number": 5,
+      "name": "SIMD gates at -march=x86-64-v4",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:25:01Z",
+      "completed_at": "2026-11-18T16:25:01Z"
+     },
+     {
+      "number": 6,
+      "name": "CI timing and test reports",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:25:01Z",
+      "completed_at": "2026-11-18T16:25:01Z"
+     },
+     {
+      "number": 12,
+      "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:25:01Z",
+      "completed_at": "2026-11-18T16:25:02Z"
+     },
+     {
+      "number": 13,
+      "name": "Complete job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:25:02Z",
+      "completed_at": "2026-11-18T16:25:02Z"
+     }
+    ]
+   },
+   {
+    "id": 134951676117,
+    "name": "fuzz-files",
+    "status": "completed",
+    "conclusion": "success",
+    "html_url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/actions/runs/44346880375/job/134951676117",
+    "steps": [
+     {
+      "number": 1,
+      "name": "Set up job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:47Z",
+      "completed_at": "2026-11-18T16:24:48Z"
+     },
+     {
+      "number": 2,
+      "name": "Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:48Z",
+      "completed_at": "2026-11-18T16:24:51Z"
+     },
+     {
+      "number": 3,
+      "name": "compiler",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:51Z",
+      "completed_at": "2026-11-18T16:24:52Z"
+     },
+     {
+      "number": 4,
+      "name": "Run actions/cache/restore@v4",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:52Z",
+      "completed_at": "2026-11-18T16:24:53Z"
+     },
+     {
+      "number": 5,
+      "name": "build harnesses",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:53Z",
+      "completed_at": "2026-11-18T16:26:21Z"
+     },
+     {
+      "number": 6,
+      "name": "fuzz with bounded budget",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:21Z",
+      "completed_at": "2026-11-18T16:30:00Z"
+     },
+     {
+      "number": 7,
+      "name": "minimize evolved corpora",
+      "conclusion": "skipped",
+      "started_at": "2026-11-18T16:30:00Z",
+      "completed_at": "2026-11-18T16:30:00Z"
+     },
+     {
+      "number": 8,
+      "name": "source coverage from the evolved corpus",
+      "conclusion": "skipped",
+      "started_at": "2026-11-18T16:30:00Z",
+      "completed_at": "2026-11-18T16:30:00Z"
+     },
+     {
+      "number": 9,
+      "name": "Run actions/cache/save@v4",
+      "conclusion": "skipped",
+      "started_at": "2026-11-18T16:30:00Z",
+      "completed_at": "2026-11-18T16:30:00Z"
+     },
+     {
+      "number": 10,
+      "name": "preserve corpora, crashes, sanitizer logs and timing",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:30:00Z",
+      "completed_at": "2026-11-18T16:30:04Z"
+     },
+     {
+      "number": 11,
+      "name": "no-op without clang",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:30:04Z",
+      "completed_at": "2026-11-18T16:30:05Z"
+     },
+     {
+      "number": 22,
+      "name": "Post Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:30:05Z",
+      "completed_at": "2026-11-18T16:30:05Z"
+     },
+     {
+      "number": 23,
+      "name": "Complete job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:30:05Z",
+      "completed_at": "2026-11-18T16:30:05Z"
+     }
+    ]
+   },
+   {
+    "id": 134951676135,
+    "name": "macos-suite-metal-pytest",
+    "status": "completed",
+    "conclusion": "success",
+    "html_url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/actions/runs/44346880375/job/134951676135",
+    "steps": [
+     {
+      "number": 1,
+      "name": "Set up job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:49Z",
+      "completed_at": "2026-11-18T16:24:50Z"
+     },
+     {
+      "number": 2,
+      "name": "Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:50Z",
+      "completed_at": "2026-11-18T16:24:56Z"
+     },
+     {
+      "number": 3,
+      "name": "install pytest",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:56Z",
+      "completed_at": "2026-11-18T16:25:01Z"
+     },
+     {
+      "number": 4,
+      "name": "make test-metal-pytest",
+      "conclusion": "skipped",
+      "started_at": "2026-11-18T16:25:01Z",
+      "completed_at": "2026-11-18T16:25:01Z"
+     },
+     {
+      "number": 5,
+      "name": "build and test model",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:25:01Z",
+      "completed_at": "2026-11-18T16:25:41Z"
+     },
+     {
+      "number": 6,
+      "name": "Metal pytest files",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:25:41Z",
+      "completed_at": "2026-11-18T16:34:39Z"
+     },
+     {
+      "number": 7,
+      "name": "Run actions/upload-artifact@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:34:39Z",
+      "completed_at": "2026-11-18T16:34:41Z"
+     },
+     {
+      "number": 14,
+      "name": "Post Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:34:41Z",
+      "completed_at": "2026-11-18T16:34:41Z"
+     },
+     {
+      "number": 15,
+      "name": "Complete job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:34:41Z",
+      "completed_at": "2026-11-18T16:34:50Z"
+     }
+    ]
+   },
+   {
+    "id": 134951676156,
+    "name": "windows",
+    "status": "completed",
+    "conclusion": "success",
+    "html_url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/actions/runs/44346880375/job/134951676156",
+    "steps": [
+     {
+      "number": 1,
+      "name": "Set up job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:47Z",
+      "completed_at": "2026-11-18T16:24:48Z"
+     },
+     {
+      "number": 2,
+      "name": "Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:48Z",
+      "completed_at": "2026-11-18T16:24:55Z"
+     },
+     {
+      "number": 3,
+      "name": "Run msys2/setup-msys2@v2",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:55Z",
+      "completed_at": "2026-11-18T16:25:50Z"
+     },
+     {
+      "number": 4,
+      "name": "build",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:25:50Z",
+      "completed_at": "2026-11-18T16:27:36Z"
+     },
+     {
+      "number": 5,
+      "name": "the portable exp's loops vectorize",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:27:36Z",
+      "completed_at": "2026-11-18T16:28:10Z"
+     },
+     {
+      "number": 6,
+      "name": "a Windows build at the release's own flags imports no C-runtime math (R6.85)",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:28:10Z",
+      "completed_at": "2026-11-18T16:29:59Z"
+     },
+     {
+      "number": 7,
+      "name": "reject invalid CLI values",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:29:59Z",
+      "completed_at": "2026-11-18T16:30:00Z"
+     },
+     {
+      "number": 8,
+      "name": "loopback bind invariant",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:30:00Z",
+      "completed_at": "2026-11-18T16:30:00Z"
+     },
+     {
+      "number": 9,
+      "name": "tray menu text",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:30:00Z",
+      "completed_at": "2026-11-18T16:30:06Z"
+     },
+     {
+      "number": 10,
+      "name": "make test model",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:30:06Z",
+      "completed_at": "2026-11-18T16:30:06Z"
+     },
+     {
+      "number": 11,
+      "name": "UTF-8 at the process boundary",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:30:06Z",
+      "completed_at": "2026-11-18T16:30:13Z"
+     },
+     {
+      "number": 12,
+      "name": "offline cache inventory",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:30:13Z",
+      "completed_at": "2026-11-18T16:30:17Z"
+     },
+     {
+      "number": 13,
+      "name": "UTF-8 console code page",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:30:17Z",
+      "completed_at": "2026-11-18T16:30:20Z"
+     },
+     {
+      "number": 14,
+      "name": "python client tests",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:30:20Z",
+      "completed_at": "2026-11-18T16:31:33Z"
+     },
+     {
+      "number": 15,
+      "name": "agent-protocol conformance harness",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:31:33Z",
+      "completed_at": "2026-11-18T16:32:28Z"
+     },
+     {
+      "number": 16,
+      "name": "smoke test (server, backslash model path)",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:32:28Z",
+      "completed_at": "2026-11-18T16:32:30Z"
+     },
+     {
+      "number": 17,
+      "name": "smoke test (parent-pid watch)",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:32:30Z",
+      "completed_at": "2026-11-18T16:32:33Z"
+     },
+     {
+      "number": 18,
+      "name": "CI timing and test reports",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:32:33Z",
+      "completed_at": "2026-11-18T16:32:34Z"
+     },
+     {
+      "number": 36,
+      "name": "Post Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:32:34Z",
+      "completed_at": "2026-11-18T16:32:36Z"
+     },
+     {
+      "number": 37,
+      "name": "Complete job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:32:36Z",
+      "completed_at": "2026-11-18T16:32:36Z"
+     }
+    ]
+   },
+   {
+    "id": 134951676190,
+    "name": "t3",
+    "status": "completed",
+    "conclusion": "success",
+    "html_url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/actions/runs/44346880375/job/134951676190",
+    "steps": [
+     {
+      "number": 1,
+      "name": "Set up job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:47Z",
+      "completed_at": "2026-11-18T16:24:50Z"
+     },
+     {
+      "number": 2,
+      "name": "Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:50Z",
+      "completed_at": "2026-11-18T16:24:59Z"
+     },
+     {
+      "number": 3,
+      "name": "build actual T3 binary and fixture",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:59Z",
+      "completed_at": "2026-11-18T16:26:17Z"
+     },
+     {
+      "number": 4,
+      "name": "install pytest",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:17Z",
+      "completed_at": "2026-11-18T16:26:21Z"
+     },
+     {
+      "number": 5,
+      "name": "deterministic generation, training and replay",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:21Z",
+      "completed_at": "2026-11-18T16:26:40Z"
+     },
+     {
+      "number": 6,
+      "name": "Run actions/upload-artifact@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:40Z",
+      "completed_at": "2026-11-18T16:26:42Z"
+     },
+     {
+      "number": 12,
+      "name": "Post Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:42Z",
+      "completed_at": "2026-11-18T16:26:42Z"
+     },
+     {
+      "number": 13,
+      "name": "Complete job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:42Z",
+      "completed_at": "2026-11-18T16:26:42Z"
+     }
+    ]
+   },
+   {
+    "id": 134951676226,
+    "name": "fuzz-parsers",
+    "status": "completed",
+    "conclusion": "success",
+    "html_url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/actions/runs/44346880375/job/134951676226",
+    "steps": [
+     {
+      "number": 1,
+      "name": "Set up job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:47Z",
+      "completed_at": "2026-11-18T16:24:48Z"
+     },
+     {
+      "number": 2,
+      "name": "Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:48Z",
+      "completed_at": "2026-11-18T16:24:52Z"
+     },
+     {
+      "number": 3,
+      "name": "compiler",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:52Z",
+      "completed_at": "2026-11-18T16:24:52Z"
+     },
+     {
+      "number": 4,
+      "name": "Run actions/cache/restore@v4",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:52Z",
+      "completed_at": "2026-11-18T16:24:53Z"
+     },
+     {
+      "number": 5,
+      "name": "build harnesses",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:53Z",
+      "completed_at": "2026-11-18T16:25:34Z"
+     },
+     {
+      "number": 6,
+      "name": "fuzz with bounded budget",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:25:34Z",
+      "completed_at": "2026-11-18T16:29:14Z"
+     },
+     {
+      "number": 7,
+      "name": "minimize evolved corpora",
+      "conclusion": "skipped",
+      "started_at": "2026-11-18T16:29:14Z",
+      "completed_at": "2026-11-18T16:29:14Z"
+     },
+     {
+      "number": 8,
+      "name": "source coverage from the evolved corpus",
+      "conclusion": "skipped",
+      "started_at": "2026-11-18T16:29:14Z",
+      "completed_at": "2026-11-18T16:29:14Z"
+     },
+     {
+      "number": 9,
+      "name": "Run actions/cache/save@v4",
+      "conclusion": "skipped",
+      "started_at": "2026-11-18T16:29:14Z",
+      "completed_at": "2026-11-18T16:29:14Z"
+     },
+     {
+      "number": 10,
+      "name": "preserve corpora, crashes, sanitizer logs and timing",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:29:14Z",
+      "completed_at": "2026-11-18T16:29:21Z"
+     },
+     {
+      "number": 11,
+      "name": "no-op without clang",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:29:21Z",
+      "completed_at": "2026-11-18T16:29:21Z"
+     },
+     {
+      "number": 22,
+      "name": "Post Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:29:21Z",
+      "completed_at": "2026-11-18T16:29:22Z"
+     },
+     {
+      "number": 23,
+      "name": "Complete job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:29:22Z",
+      "completed_at": "2026-11-18T16:29:22Z"
+     }
+    ]
+   },
+   {
+    "id": 134951676228,
+    "name": "macos",
+    "status": "completed",
+    "conclusion": "cancelled",
+    "html_url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/actions/runs/44346880375/job/134951676228",
+    "steps": []
+   },
+   {
+    "id": 134951676230,
+    "name": "thread-sanitizer",
+    "status": "completed",
+    "conclusion": "success",
+    "html_url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/actions/runs/44346880375/job/134951676230",
+    "steps": [
+     {
+      "number": 1,
+      "name": "Set up job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:47Z",
+      "completed_at": "2026-11-18T16:24:48Z"
+     },
+     {
+      "number": 2,
+      "name": "Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:48Z",
+      "completed_at": "2026-11-18T16:24:52Z"
+     },
+     {
+      "number": 3,
+      "name": "shared pool, registry/shutdown and tokenizer races",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:52Z",
+      "completed_at": "2026-11-18T16:26:50Z"
+     },
+     {
+      "number": 4,
+      "name": "Run actions/upload-artifact@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:50Z",
+      "completed_at": "2026-11-18T16:26:52Z"
+     },
+     {
+      "number": 8,
+      "name": "Post Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:52Z",
+      "completed_at": "2026-11-18T16:26:52Z"
+     },
+     {
+      "number": 9,
+      "name": "Complete job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:52Z",
+      "completed_at": "2026-11-18T16:26:52Z"
+     }
+    ]
+   },
+   {
+    "id": 134951676298,
+    "name": "windows-suite-gates-core",
+    "status": "completed",
+    "conclusion": "success",
+    "html_url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/actions/runs/44346880375/job/134951676298",
+    "steps": [
+     {
+      "number": 1,
+      "name": "Set up job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:54Z",
+      "completed_at": "2026-11-18T16:24:55Z"
+     },
+     {
+      "number": 2,
+      "name": "Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:55Z",
+      "completed_at": "2026-11-18T16:25:03Z"
+     },
+     {
+      "number": 3,
+      "name": "Run msys2/setup-msys2@v2",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:25:03Z",
+      "completed_at": "2026-11-18T16:26:15Z"
+     },
+     {
+      "number": 4,
+      "name": "make test-gates-core",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:15Z",
+      "completed_at": "2026-11-18T16:35:16Z"
+     },
+     {
+      "number": 5,
+      "name": "CI timing and test reports",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:35:16Z",
+      "completed_at": "2026-11-18T16:35:18Z"
+     },
+     {
+      "number": 10,
+      "name": "Post Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:35:18Z",
+      "completed_at": "2026-11-18T16:35:20Z"
+     },
+     {
+      "number": 11,
+      "name": "Complete job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:35:20Z",
+      "completed_at": "2026-11-18T16:35:20Z"
+     }
+    ]
+   },
+   {
+    "id": 134951676324,
+    "name": "conformance",
+    "status": "completed",
+    "conclusion": "success",
+    "html_url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/actions/runs/44346880375/job/134951676324",
+    "steps": [
+     {
+      "number": 1,
+      "name": "Set up job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:48Z",
+      "completed_at": "2026-11-18T16:24:52Z"
+     },
+     {
+      "number": 2,
+      "name": "Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:52Z",
+      "completed_at": "2026-11-18T16:24:59Z"
+     },
+     {
+      "number": 3,
+      "name": "pip download cache",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:59Z",
+      "completed_at": "2026-11-18T16:25:00Z"
+     },
+     {
+      "number": 4,
+      "name": "build",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:25:00Z",
+      "completed_at": "2026-11-18T16:25:58Z"
+     },
+     {
+      "number": 5,
+      "name": "make test model",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:25:58Z",
+      "completed_at": "2026-11-18T16:25:59Z"
+     },
+     {
+      "number": 6,
+      "name": "install pytest",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:25:59Z",
+      "completed_at": "2026-11-18T16:26:03Z"
+     },
+     {
+      "number": 7,
+      "name": "agent-protocol conformance harness",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:03Z",
+      "completed_at": "2026-11-18T16:26:51Z"
+     },
+     {
+      "number": 8,
+      "name": "conformance report",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:51Z",
+      "completed_at": "2026-11-18T16:26:51Z"
+     },
+     {
+      "number": 9,
+      "name": "agent torture (self-conformance)",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:51Z",
+      "completed_at": "2026-11-18T16:26:53Z"
+     },
+     {
+      "number": 10,
+      "name": "Run actions/upload-artifact@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:53Z",
+      "completed_at": "2026-11-18T16:26:54Z"
+     },
+     {
+      "number": 11,
+      "name": "CI timing and test reports",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:54Z",
+      "completed_at": "2026-11-18T16:26:56Z"
+     },
+     {
+      "number": 21,
+      "name": "Post pip download cache",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:56Z",
+      "completed_at": "2026-11-18T16:26:56Z"
+     },
+     {
+      "number": 22,
+      "name": "Post Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:56Z",
+      "completed_at": "2026-11-18T16:26:56Z"
+     },
+     {
+      "number": 23,
+      "name": "Complete job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:56Z",
+      "completed_at": "2026-11-18T16:26:56Z"
+     }
+    ]
+   },
+   {
+    "id": 134951676340,
+    "name": "consumer-compatibility",
+    "status": "completed",
+    "conclusion": "success",
+    "html_url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/actions/runs/44346880375/job/134951676340",
+    "steps": [
+     {
+      "number": 1,
+      "name": "Set up job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:47Z",
+      "completed_at": "2026-11-18T16:24:47Z"
+     },
+     {
+      "number": 2,
+      "name": "Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:48Z",
+      "completed_at": "2026-11-18T16:24:52Z"
+     },
+     {
+      "number": 3,
+      "name": "pip download cache",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:52Z",
+      "completed_at": "2026-11-18T16:24:52Z"
+     },
+     {
+      "number": 4,
+      "name": "Run actions/setup-node@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:52Z",
+      "completed_at": "2026-11-18T16:24:53Z"
+     },
+     {
+      "number": 5,
+      "name": "build and make test model",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:53Z",
+      "completed_at": "2026-11-18T16:26:05Z"
+     },
+     {
+      "number": 6,
+      "name": "install pinned consumers",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:05Z",
+      "completed_at": "2026-11-18T16:26:31Z"
+     },
+     {
+      "number": 7,
+      "name": "official SDK, LiteLLM and LangChain compatibility",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:31Z",
+      "completed_at": "2026-11-18T16:26:35Z"
+     },
+     {
+      "number": 8,
+      "name": "install Vercel AI SDK conformance dependencies",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:35Z",
+      "completed_at": "2026-11-18T16:26:38Z"
+     },
+     {
+      "number": 9,
+      "name": "SDK protocol conformance (required, no skips)",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:38Z",
+      "completed_at": "2026-11-18T16:26:42Z"
+     },
+     {
+      "number": 10,
+      "name": "TypeScript client (clients/typescript)",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:42Z",
+      "completed_at": "2026-11-18T16:26:45Z"
+     },
+     {
+      "number": 11,
+      "name": "Run actions/upload-artifact@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:45Z",
+      "completed_at": "2026-11-18T16:26:46Z"
+     },
+     {
+      "number": 12,
+      "name": "CI timing and test reports",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:46Z",
+      "completed_at": "2026-11-18T16:26:46Z"
+     },
+     {
+      "number": 22,
+      "name": "Post Run actions/setup-node@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:46Z",
+      "completed_at": "2026-11-18T16:26:47Z"
+     },
+     {
+      "number": 23,
+      "name": "Post pip download cache",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:47Z",
+      "completed_at": "2026-11-18T16:26:47Z"
+     },
+     {
+      "number": 24,
+      "name": "Post Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:47Z",
+      "completed_at": "2026-11-18T16:26:48Z"
+     },
+     {
+      "number": 25,
+      "name": "Complete job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:48Z",
+      "completed_at": "2026-11-18T16:26:48Z"
+     }
+    ]
+   },
+   {
+    "id": 134951676382,
+    "name": "template-conformance",
+    "status": "completed",
+    "conclusion": "success",
+    "html_url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/actions/runs/44346880375/job/134951676382",
+    "steps": [
+     {
+      "number": 1,
+      "name": "Set up job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:46Z",
+      "completed_at": "2026-11-18T16:24:47Z"
+     },
+     {
+      "number": 2,
+      "name": "Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:47Z",
+      "completed_at": "2026-11-18T16:24:51Z"
+     },
+     {
+      "number": 3,
+      "name": "pip download cache",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:51Z",
+      "completed_at": "2026-11-18T16:24:52Z"
+     },
+     {
+      "number": 4,
+      "name": "install jinja2",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:52Z",
+      "completed_at": "2026-11-18T16:24:55Z"
+     },
+     {
+      "number": 5,
+      "name": "runner C renderer vs upstream jinja templates",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:55Z",
+      "completed_at": "2026-11-18T16:26:06Z"
+     },
+     {
+      "number": 6,
+      "name": "Run actions/upload-artifact@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:06Z",
+      "completed_at": "2026-11-18T16:26:07Z"
+     },
+     {
+      "number": 7,
+      "name": "CI timing and test reports",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:07Z",
+      "completed_at": "2026-11-18T16:26:07Z"
+     },
+     {
+      "number": 13,
+      "name": "Post pip download cache",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:07Z",
+      "completed_at": "2026-11-18T16:26:07Z"
+     },
+     {
+      "number": 14,
+      "name": "Post Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:07Z",
+      "completed_at": "2026-11-18T16:26:07Z"
+     },
+     {
+      "number": 15,
+      "name": "Complete job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:07Z",
+      "completed_at": "2026-11-18T16:26:07Z"
+     }
+    ]
+   },
+   {
+    "id": 134951676408,
+    "name": "anchors",
+    "status": "completed",
+    "conclusion": "success",
+    "html_url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/actions/runs/44346880375/job/134951676408",
+    "steps": [
+     {
+      "number": 1,
+      "name": "Set up job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:46Z",
+      "completed_at": "2026-11-18T16:24:47Z"
+     },
+     {
+      "number": 2,
+      "name": "Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:47Z",
+      "completed_at": "2026-11-18T16:24:52Z"
+     },
+     {
+      "number": 3,
+      "name": "pip download cache",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:52Z",
+      "completed_at": "2026-11-18T16:24:54Z"
+     },
+     {
+      "number": 4,
+      "name": "model file cache",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:54Z",
+      "completed_at": "2026-11-18T16:24:55Z"
+     },
+     {
+      "number": 5,
+      "name": "install torch (CPU), transformers and the other optional packages",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:24:55Z",
+      "completed_at": "2026-11-18T16:25:37Z"
+     },
+     {
+      "number": 6,
+      "name": "anchored tests, no skip allowed",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:25:37Z",
+      "completed_at": "2026-11-18T16:26:38Z"
+     },
+     {
+      "number": 7,
+      "name": "CI timing and test reports",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:38Z",
+      "completed_at": "2026-11-18T16:26:39Z"
+     },
+     {
+      "number": 12,
+      "name": "Post model file cache",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:39Z",
+      "completed_at": "2026-11-18T16:26:39Z"
+     },
+     {
+      "number": 13,
+      "name": "Post pip download cache",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:39Z",
+      "completed_at": "2026-11-18T16:26:39Z"
+     },
+     {
+      "number": 14,
+      "name": "Post Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:39Z",
+      "completed_at": "2026-11-18T16:26:39Z"
+     },
+     {
+      "number": 15,
+      "name": "Complete job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:26:39Z",
+      "completed_at": "2026-11-18T16:26:39Z"
+     }
+    ]
+   },
+   {
+    "id": 134951677537,
+    "name": "windows-suite-python",
+    "status": "completed",
+    "conclusion": "success",
+    "html_url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/actions/runs/44346880375/job/134951677537",
+    "steps": [
+     {
+      "number": 1,
+      "name": "Set up job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:25:05Z",
+      "completed_at": "2026-11-18T16:25:06Z"
+     },
+     {
+      "number": 2,
+      "name": "Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:25:06Z",
+      "completed_at": "2026-11-18T16:25:16Z"
+     },
+     {
+      "number": 3,
+      "name": "Run msys2/setup-msys2@v2",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:25:16Z",
+      "completed_at": "2026-11-18T16:25:59Z"
+     },
+     {
+      "number": 4,
+      "name": "make test-python",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:25:59Z",
+      "completed_at": "2026-11-18T16:34:44Z"
+     },
+     {
+      "number": 5,
+      "name": "CI timing and test reports",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:34:44Z",
+      "completed_at": "2026-11-18T16:34:45Z"
+     },
+     {
+      "number": 10,
+      "name": "Post Run actions/checkout@v7",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:34:45Z",
+      "completed_at": "2026-11-18T16:34:48Z"
+     },
+     {
+      "number": 11,
+      "name": "Complete job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:34:48Z",
+      "completed_at": "2026-11-18T16:34:48Z"
+     }
+    ]
+   },
+   {
+    "id": 134951679488,
+    "name": "reverse-proxy",
+    "status": "completed",
+    "conclusion": "skipped",
+    "html_url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/actions/runs/44346880375/job/134951679488",
+    "steps": []
+   },
+   {
+    "id": 134965295970,
+    "name": "pr-gate",
+    "status": "completed",
+    "conclusion": "failure",
+    "html_url": "https://github.com/Joakimpalm-Zen/xyntetik-runner/actions/runs/44346880375/job/134965295970",
+    "steps": [
+     {
+      "number": 1,
+      "name": "Set up job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:44:38Z",
+      "completed_at": "2026-11-18T16:44:38Z"
+     },
+     {
+      "number": 2,
+      "name": "every needed job succeeded or was skipped",
+      "conclusion": "failure",
+      "started_at": "2026-11-18T16:44:38Z",
+      "completed_at": "2026-11-18T16:44:38Z"
+     },
+     {
+      "number": 3,
+      "name": "Complete job",
+      "conclusion": "success",
+      "started_at": "2026-11-18T16:44:38Z",
+      "completed_at": "2026-11-18T16:44:38Z"
+     }
+    ]
+   }
+  ]
+ }
+}

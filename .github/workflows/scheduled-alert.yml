@@ -31,8 +31,34 @@ permissions:
   contents: read
 
 jobs:
+  # Security: a workflow_run trigger runs with the base repository's token even
+  # when the triggering ci run came from a fork's pull request. This job checks
+  # out the default branch only (never the triggering run's head or ref),
+  # executes only its own script from that trusted checkout, and passes no
+  # triggering-run text (branch names, PR titles) into a shell unquoted.
+  rerun:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.name == 'ci'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    outputs:
+      reran: ${{ steps.check.outputs.reran }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: rerun once when cancelled with zero steps
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+          DRY: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '--dry-run' || '' }}
+        run: python3 scripts/ci-rerun-cancelled.py --repo "$REPO" --run-id "$RUN_ID" $DRY
+
   alert:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'schedule'
+    needs: rerun
+    if: always() && needs.rerun.outputs.reran != 'true' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'schedule')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
