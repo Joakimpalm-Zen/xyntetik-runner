@@ -828,6 +828,29 @@ A run with `--save-every K` writes a checkpoint every K steps and at its last, a
 
 Measured on 2026-11-18 (T3 build): runs resumed from a checkpoint are the uninterrupted run byte for byte at every later checkpoint, with warmup and a cosine schedule, at another thread count, with an eval set, and on Qwen3-0.6B. `tests/test_train_segments.py` keeps the fixture case as a gate in CI's T3 job.
 
+### Sampled audit (s random segments)
+
+```sh
+./runner attest replay adapter.gguf.train.json --sample 3 --seed os --report audit.json
+```
+
+**Limits first:** the printed probability is a bound for **random** draws by an auditor, and nothing more:
+- If k of the record's M segments are false, s segments drawn at random miss all of them with probability C(M-k, s) / C(M, s). One false segment is missed with probability (M-s)/M.
+- It holds only if the seed was chosen after the record was fixed and kept from the record's author. An auditor who always audits the same segment (the last one, say) proves that segment only, and an author who expects that can make only it honest.
+- It proves nothing about the segments not drawn.
+- **Why the seed must stay unknown until the record is fixed:** the draw depends on the record's chain head. So an author who knew the seed beforehand could re-make the record (another checkpoint interval, another byte anywhere in it) until a draw misses the false segments. That takes about C(M, s) / C(M-k, s) tries on average, few for small M. A seed chosen after the record is fixed leaves nothing to try.
+- **The verdicts:**
+  - VERIFIED: every drawn segment matched;
+  - MISMATCH (exit 2): one did not;
+  - ERROR (exit 1): a drawn segment could not be replayed at all, so there is no verdict on it.
+
+The record's own checks (schema, signature, determinism) run once before the draw.
+
+The draw ranks segment j (the interval between two of the record's checkpoints, the first from the run's start) by sha256(`xyntetik.runner.train.sample.v1|SEED|head|j`), where head is the record's `checkpoint_chain.head`, and replays the s lowest. Each drawn segment is replayed by `--segment` in a process of its own, so the first interval starts from the seed's adapter initialisation, as a full replay does.
+- **SEED** is the auditor's: `--seed` takes 32 to 128 hex digits (at least 128 bits), or `os` to draw them from the system's random source. It is never read from the record.
+- **The first two lines printed** carry everything a third party needs to redo the draw: the algorithm, the seed, the record's head, M, s and the drawn segments.
+- **`--report FILE`** writes the same as JSON (`xyntetik.runner.sample.v1`): each drawn segment with its verdict, the verdict, and the one-false-segment miss probability. Nothing reads it back yet.
+
 ### Exact unlearning (a retrain with a receipt)
 
 ```sh

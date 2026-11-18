@@ -201,6 +201,9 @@ char       *plat_read_file(const char *path, size_t max_bytes, size_t *n_out);
 bool        plat_file_size(FILE *f, uint64_t *out);   // 64-bit, position left at the start
 // n bytes from the operating system's random generator; false when it has none.
 bool        plat_random(uint8_t *out, size_t n);
+// a new file for writing: created exclusively, never through a link; NULL if the
+// name exists (R17.9 step 4b's --report)
+FILE       *plat_fopen_new(const char *path);
 // The last path component: what follows the last '/' or '\\' (both count on
 // every platform, so a path spelled the other platform's way still names
 // its file), or the whole string when it has neither.

@@ -2625,3 +2625,29 @@ bool plat_file_identity(const char *path, uint64_t *size, uint64_t *ino,
     if (ctime) *ctime = stat_ctime_ns(&st);
     return true;
 }
+
+// R17.9 step 4b: a new file for writing, created exclusively and never
+// through a link: NULL if anything (a file, a symlink, dangling or not) is
+// already at the name. POSIX: O_CREAT|O_EXCL|O_NOFOLLOW, which refuse an
+// existing name without following it; Windows: CREATE_NEW, which fails on
+// any existing name, a reparse point included.
+FILE *plat_fopen_new(const char *path) {
+#ifdef _WIN32
+    void *h = plat_create_file(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL);
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+    int fd = _open_osfhandle((intptr_t)h, _O_WRONLY | _O_BINARY);
+    if (fd < 0) {
+        CloseHandle(h);
+        return NULL;
+    }
+    FILE *f = _fdopen(fd, "wb");
+    if (!f) _close(fd);
+    return f;
+#else
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
+    if (fd < 0) return NULL;
+    FILE *f = fdopen(fd, "wb");
+    if (!f) close(fd);
+    return f;
+#endif
+}

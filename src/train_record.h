@@ -74,6 +74,9 @@ typedef struct {
 } train_record_opts;
 
 bool train_env_counts(const char *name, size_t n);
+// R17.9 step 4b: a record's segments for attest replay --sample (bounds[0] = 0, then each checkpoint step)
+bool train_record_sample_plan(const train_record_host *host, const train_record_opts *o, int *bounds, int cap,
+                               int *m, char head[65], int *rc);
 bool train_env_is_secret(const char *name, size_t n);
 bool train_record_num(jv *obj, const char *key, double min, double max, double *out);
 bool train_record_int(jv *obj, const char *key, int min, int max, int *out);
