@@ -758,6 +758,15 @@ flipped byte.
 
 **Limits first:** cross-machine replay works only for strict `T3=1` CPU dense LoRA cross-entropy records (`"determinism":"cpu-t3-exact"`, 27% to 41% slower on Apple Silicon at 4B); GPU records (`gpu-within-tolerance`) are refused, `cpu-same-binary` records require `--allow-same-binary` with the exact `build.binary_sha256`, the auditor must hold the base GGUF and training data, and replay proves training provenance rather than adapter quality. Pre-flight checks the signature (`--trust-key`), `runner` version, build compatibility, and every input sha256 before training begins, exiting `0` (`VERIFIED <path> sha256 <hex>`) or `2` (`MISMATCH <field>: ...`).
 
+### Exact unlearning (a retrain with a receipt)
+
+```sh
+./runner --unlearn a1.gguf.train.json --drop forget.jsonl -m base.gguf --train data1.jsonl --train-out a2.gguf
+./runner attest unlearn a2.gguf.train.json --parent-data data1.jsonl --dropped forget.jsonl
+```
+
+**Limits first:** this is retraining, not an approximation. `a2` is the run that the parent's recipe gives from the base on `data1` with every line of `forget.jsonl` removed. It is byte for byte what a from-scratch run with that recipe on the retained rows gives, and across machines only in a strict `T3=1` build (`cpu-t3-exact`). The recipe is counted in steps, so the retained rows are seen in another mix than the parent's: nothing is claimed about `a2` against `a1`. The record carries the dropped rows by sha256 only. For a short or guessable row a hash is not secrecy, so `forget.jsonl` stays with whoever holds the data. It proves what `a2` was trained on, not that the base or the retained rows hold nothing of the dropped ones, not that `a1` or anything it produced is gone, and nothing about quality. A fresh cross-entropy run on JSONL rows only.
+
 ## 13. Receipts and replay with an adapter
 
 A one-shot run recorded with `--record FILE`, and every served answer under
