@@ -314,33 +314,45 @@ bool envelope_is_sha256_hex(const char *s) {
     return i == 64 && s[i] == '\0';
 }
 
+static int format_escaped_byte(unsigned char c, char out[4]) {
+    static const char hexd[] = "0123456789abcdef";
+    if (c == '\\') {
+        out[0] = '\\'; out[1] = '\\';
+        return 2;
+    }
+    if (c < 0x20 || c >= 0x7f) {
+        out[0] = '\\'; out[1] = 'x';
+        out[2] = hexd[c >> 4]; out[3] = hexd[c & 15];
+        return 4;
+    }
+    out[0] = (char)c;
+    return 1;
+}
+
 void envelope_print_safe(FILE *out, const char *s, size_t max_chars,
                          const char *fallback, bool ellipsis) {
-    if (!s) {
-        const char *fb = fallback ? fallback : "missing";
-        for (size_t i = 0; fb[i]; i++) {
-            unsigned char c = (unsigned char)fb[i];
-            fputc((c < 0x20 || c == 0x7f) ? '?' : (int)c, out);
-        }
-        return;
-    }
+    const char *src = s ? s : (fallback ? fallback : "missing");
     size_t i = 0;
-    for (; s[i] && (max_chars == 0 || i < max_chars); i++) {
-        unsigned char c = (unsigned char)s[i];
-        fputc((c < 0x20 || c == 0x7f) ? '?' : (int)c, out);
+    for (; src[i] && (!s || max_chars == 0 || i < max_chars); i++) {
+        char esc[4];
+        int n = format_escaped_byte((unsigned char)src[i], esc);
+        fwrite(esc, 1, (size_t)n, out);
     }
-    if (ellipsis && max_chars > 0 && s[i]) fputs("...", out);
+    if (s && ellipsis && max_chars > 0 && src[i]) fputs("...", out);
 }
 
 static void copy_safe_str(char *dst, size_t cap, const char *s, const char *fallback) {
     if (!cap) return;
     const char *src = s ? s : (fallback ? fallback : "");
-    size_t i = 0;
-    for (; src[i] && i + 1 < cap; i++) {
-        unsigned char c = (unsigned char)src[i];
-        dst[i] = (c < 0x20 || c == 0x7f) ? '?' : (char)c;
+    size_t pos = 0;
+    for (size_t i = 0; src[i]; i++) {
+        char esc[4];
+        int n = format_escaped_byte((unsigned char)src[i], esc);
+        if (pos + (size_t)n >= cap) break;
+        memcpy(dst + pos, esc, (size_t)n);
+        pos += (size_t)n;
     }
-    dst[i] = 0;
+    dst[pos] = 0;
 }
 
 // ---- notarized inference D1: the transcript writer -------------------------

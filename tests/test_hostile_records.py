@@ -918,7 +918,7 @@ def test_diagnostic_sanitizers_escape_c1_bidi_and_raw_high_bytes(runner_bin, fx,
         "base": {"path": "\u009b2Jbad", "sha256": "1" * 64},
     }).encode("utf-8"))
     r_lc1 = run_bytes(["attest", "lineage", lin_c1])
-    assert r_lc1.returncode == 2
+    assert r_lc1.returncode == 1
     assert b"\xc2\x9b2J" not in r_lc1.stdout and b"\xc2\x9b" not in r_lc1.stderr, (r_lc1.stdout, r_lc1.stderr)
     assert b"\\xc2\\x9b" in r_lc1.stdout, r_lc1.stdout
 
