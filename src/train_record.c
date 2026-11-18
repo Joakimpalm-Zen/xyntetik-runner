@@ -56,6 +56,7 @@ static const char *const TRAIN_ENV_INERT[] = {
     "RUNNER_TPOOL_SPIN",       // how idle pool threads wait
     "RUNNER_HF_CACHE", "RUNNER_CURL", "RUNNER_PREFIX_CACHE_MB",   // downloads, the server's prefix cache
     "RUNNER_TEST_BUILD_DIRTY", // marks the build dirty: it can only take the claim down
+    "RUNNER_TEST_REPORT_SUFFIX", // names --report's temporary file, written after the audit
 };
 
 static bool train_env_inert(const char *name, size_t n) {

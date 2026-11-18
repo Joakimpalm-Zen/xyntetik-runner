@@ -8902,7 +8902,13 @@ static int run_replay_sample(cli_opts *o, const train_record_host *host, const t
             }
         }
         char tmp[4200];
-        if (snprintf(tmp, sizeof tmp, "%s.partial-%ld", o->audit_report, plat_pid_self()) >= (int)sizeof tmp) {
+        // RUNNER_TEST_REPORT_SUFFIX fixes the temporary name's suffix, so a
+        // test can plant a file there (tests/test_train_segments.py)
+        const char *tsuf = getenv("RUNNER_TEST_REPORT_SUFFIX");
+        char suf[40];
+        snprintf(suf, sizeof suf, "%ld", plat_pid_self());
+        if (tsuf && *tsuf && strlen(tsuf) < sizeof suf) snprintf(suf, sizeof suf, "%s", tsuf);
+        if (snprintf(tmp, sizeof tmp, "%s.partial-%s", o->audit_report, suf) >= (int)sizeof tmp) {
             fprintf(stderr, "error: --report path too long\n");
             return 1;
         }

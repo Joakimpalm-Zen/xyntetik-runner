@@ -390,3 +390,24 @@ def test_a_sample_checks_the_record_once_before_it_draws(runner_bin, run8):
     r = _sample(runner_bin, rec_path, rec, "--sample", 3, "--seed", SEED, "--trust-key", "a" * 64)
     assert r.returncode == 2 and r.stdout.count("MISMATCH signature") == 1, (r.stdout + r.stderr)[-600:]
     assert "sample: drawn" not in r.stdout, r.stdout
+
+
+def test_a_link_planted_at_the_reports_temporary_name_is_not_followed(runner_bin, run8):
+    """The temporary report is created new: exclusively and without following a link, so a symlink planted at its
+    name (here fixed by RUNNER_TEST_REPORT_SUFFIX, normally random) is never written through, and the run fails
+    cleanly instead."""
+    d, out, rec_path, rec, segs = run8
+    victim = d / "victim.txt"
+    victim.write_text("untouched")
+    rep = d / "audit.json"
+    try:
+        os.symlink(victim, d / "audit.json.partial-fixed")
+    except (OSError, NotImplementedError):
+        pytest.skip("no symlinks here")
+    env = dict(_env(), RUNNER_TEST_REPORT_SUFFIX="fixed")
+    r = subprocess.run([str(runner_bin), "attest", "replay", str(rec_path), "-t", "2", *_same_binary(rec), "--sample",
+                        "1", "--seed", SEED, "--report", str(rep)], cwd=ROOT, capture_output=True, text=True,
+                       timeout=600, env=env)
+    assert victim.read_text() == "untouched", "the report was written through the planted link"
+    assert r.returncode != 0 and "cannot write --report" in r.stderr, (r.returncode, r.stderr[-400:])
+    assert not rep.exists()
