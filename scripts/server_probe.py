@@ -9,11 +9,26 @@ path puts that directory on sys.path first.
 import contextlib
 import http.client
 import json
+import os
 import random
+import re
 import socket
 import sys
 import time
 import urllib.request
+
+
+def _worker_slice():
+    m = re.fullmatch(r"gw(\d+)", os.environ.get("PYTEST_XDIST_WORKER", ""))
+    if not m:
+        return 0, 1
+    idx = int(m.group(1))
+    try:
+        count = int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "0"))
+    except ValueError:
+        count = 0
+    stride = max(count, idx + 1, 32)
+    return idx % stride, stride
 
 
 def free_port():
@@ -26,13 +41,17 @@ def free_port():
 def low_free_port(avoid=()):
     """A port below every OS's ephemeral range that binds now, for a server a
     script starts and then polls (see self_connected below for why below).
-    Two processes can still draw the same one; wait_for_own_server is what
-    makes that an error instead of a measurement of the other's server."""
+    Disjoint across pytest-xdist workers when PYTEST_XDIST_WORKER is set;
+    wait_for_own_server also verifies the server pid."""
     rng = random.SystemRandom()
-    for _ in range(500):
-        port = rng.randint(20000, 32767)
-        if port in avoid:
-            continue
+    offset, stride = _worker_slice()
+    candidates = [p for p in range(20000 + offset, 32768, stride) if p not in avoid]
+    rng.shuffle(candidates)
+    if stride > 1:
+        fallback = [p for p in range(20000, 32768) if (p - 20000) % stride != offset and p not in avoid]
+        rng.shuffle(fallback)
+        candidates.extend(fallback[:250])
+    for port in candidates[:500]:
         with contextlib.closing(socket.socket()) as s:
             try:
                 s.bind(("127.0.0.1", port))
