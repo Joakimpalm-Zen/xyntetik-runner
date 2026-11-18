@@ -4235,6 +4235,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_chat_template_flag.py \
     tests/test_check_portability.py \
     tests/test_ci_contracts.py \
+    tests/test_ci_rerun_cancelled.py \
     tests/test_clef.py \
     tests/test_cli_files.py \
     tests/test_cli_lifecycle.py \

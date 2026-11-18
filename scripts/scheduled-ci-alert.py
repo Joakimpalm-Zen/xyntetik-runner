@@ -154,9 +154,35 @@ def failed_jobs(api, run_id):
     return out
 
 
-def report(run, jobs):
+def attempt1_rerun_reason(api, run):
+    """Job names from attempt 1 that ended cancelled with zero steps (R6.102)."""
+    if (run.get("run_attempt") or 1) < 2:
+        return []
+    jobs, page = [], 1
+    try:
+        while True:
+            d = api.call("GET", f"/actions/runs/{run['id']}/attempts/1/jobs?per_page=100&page={page}")
+            batch = d.get("jobs", [])
+            jobs.extend(batch)
+            if len(jobs) >= d.get("total_count", 0) or not batch:
+                break
+            page += 1
+    except (urllib.error.URLError, OSError):
+        return []
+    return [j["name"] for j in jobs
+            if j.get("conclusion") == "cancelled" and not (j.get("steps") or []) and j.get("name") != "pr-gate"]
+
+
+def report(run, jobs, attempt1_cancelled=()):
+    attempt = run.get("run_attempt") or 1
+    att = f", attempt {attempt}" if attempt > 1 else ""
     lines = [f"[{run['name']} run {run['id']}]({run['html_url']}) ended **{run['conclusion']}** "
-             f"(scheduled, created {run['created_at']}, commit {run['head_sha'][:12]})."]
+             f"(scheduled{att}, created {run['created_at']}, commit {run['head_sha'][:12]})."]
+    if attempt1_cancelled:
+        lines.append(f"\nAttempt 1 was rerun automatically because {', '.join(attempt1_cancelled)} "
+                     f"ended cancelled with zero steps executed; attempt {attempt} ended red too.")
+    elif attempt > 1:
+        lines.append(f"\nAttempt 1 was rerun (attempt {attempt} ended red).")
     if not jobs:
         lines.append("\nNo job ended red: the run itself was cancelled or failed to start.")
     for j in jobs:
@@ -193,7 +219,7 @@ def main(argv=None, api=None):
     title = TITLE.format(workflow=run["name"])
     issue = find_issue(api, a.label, title)
     if conclusion in RED:
-        body = report(run, failed_jobs(api, a.run_id))
+        body = report(run, failed_jobs(api, a.run_id), attempt1_rerun_reason(api, run))
         print(body)
         if issue:
             api.write("POST", f"/issues/{issue['number']}/comments", {"body": body})
