@@ -11,6 +11,7 @@ reason, where the platform's linker does not write PE images; never skipped on W
 """
 import os
 import pathlib
+import shlex
 import shutil
 import subprocess
 import sys
@@ -43,19 +44,27 @@ LINK = ["-lws2_32", "-lpsapi", "-static", "-Wl,--build-id"]
 @pytest.mark.skipif(sys.platform != "win32",
                     reason="the build-id derivation is a property of MinGW's PE linker; this host links Mach-O or ELF")
 def test_the_pe_build_id_follows_the_linked_content(tmp_path):
-    cc = os.environ.get("CC") or shutil.which("gcc") or shutil.which("cc")
-    assert cc, "no C compiler on PATH on a Windows host"
+    # CC is a command line, not a file name: CI's Windows job sets "cc -Werror -Wshadow". Split it (posix=False on
+    # Windows, so a backslash in a path stays a backslash) and keep its flags.
+    cc_line = os.environ.get("CC") or shutil.which("gcc") or shutil.which("cc")
+    assert cc_line, "no C compiler on PATH on a Windows host"
+    cc = shlex.split(cc_line, posix=os.name != "nt")
+    cc[0] = shutil.which(cc[0]) or cc[0]   # the compiler as a file CreateProcess can start
     (tmp_path / "prog.c").write_text(PROGRAM)
+
+    def step(cmd):
+        r = subprocess.run(cmd, cwd=tmp_path, capture_output=True, text=True, timeout=300)
+        assert r.returncode == 0, "step failed (exit %d): %s\n%s" % (r.returncode, " ".join(cmd), r.stdout + r.stderr)
 
     def obj(name, content):
         o = tmp_path / (name + ".o")
-        subprocess.run([cc, "-O2", "-I", str(ROOT / "src"), "-DCONTENT=%d" % content, "-c", str(tmp_path / "prog.c"),
-                        "-o", str(o)], check=True, cwd=tmp_path)
+        step([*cc, "-O2", "-I", str(ROOT / "src"), "-DCONTENT=%d" % content, "-c", str(tmp_path / "prog.c"), "-o",
+              str(o)])
         return o
 
     def link_and_read(o, name):
         exe = tmp_path / (name + ".exe")
-        subprocess.run([cc, str(o), "-o", str(exe), *LINK], check=True, cwd=tmp_path)
+        step([*cc, str(o), "-o", str(exe), *LINK])
         r = subprocess.run([str(exe)], capture_output=True, text=True, timeout=60)
         assert r.returncode == 0, ("the walker found no build id in its own image", name, r.returncode, r.stderr)
         return r.stdout.split()[0]
