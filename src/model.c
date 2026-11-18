@@ -14340,7 +14340,10 @@ static bool lbw_resident_begin(model_t *m, int T) {
             if (lw->r) {
                 if (!lw->ga) lw->ga = calloc((size_t)lw->r * n_in, sizeof(float));
                 if (!lw->gb) lw->gb = calloc((size_t)n_out * lw->r, sizeof(float));
-                if (!lw->ga || !lw->gb) return false;
+                if (!lw->ga || !lw->gb) {
+                    lbw_res_why("an attention site's gradient buffer could not be allocated");
+                    return false;
+                }
             }
             if (!gpu_train_site_push(m, l, 3 + w, lw->a, lw->b, lw->ga, lw->gb, lw->r, n_in,
                                      n_out, lw->scale)) {
@@ -14353,6 +14356,7 @@ static bool lbw_resident_begin(model_t *m, int T) {
         return false;
     }
     m->train_resident = true;
+    m->train_res_windows++;   // the record's resident_steps counts from it (main.c)
     return true;
 }
 // the end of a resident step: the attention sites' gradients, accumulated on

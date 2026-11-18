@@ -6103,6 +6103,7 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
         bool ok = true;
         if (model_full_on(&rt->m)) model_full_grad_zero(&rt->m);
         else model_lora_grad_zero(&rt->m);
+        long res_w0 = rt->m.train_res_windows;   // R8.24.1 B: did every window run resident
         for (int b = 0; ok && b < B; b++) {
             int r = (int)(st->cursor++ % n_ex);
             train_ex *ex = &exs[r];
@@ -6143,6 +6144,7 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
             tokens += ex->n;
         }
         if (!ok) { rc = 1; break; }
+        if (rt->m.train_res_windows - res_w0 == B) rt->m.train_res_steps++;
         double ml = wsum > 0 ? loss_sum / wsum : loss_sum;
         bool full = model_full_on(&rt->m);
         if (mean && wsum > 0) {
@@ -6587,10 +6589,11 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
                      "\"tensors_on_device\":%d,\"device_bytes\":%llu,"
                      "\"tensors_on_cpu\":%d,\"cpu_bytes\":%llu,"
                      "\"deltanet_device_calls\":%ld,\"deltanet_failed_calls\":%ld,"
-                     "\"attention_device_calls\":%ld,\"attention_failed_calls\":%ld},",
+                     "\"attention_device_calls\":%ld,\"attention_failed_calls\":%ld,"
+                     "\"resident_steps\":%ld},",
                (unsigned long long)bud, bud_set ? "--train-gpu-budget" : "free memory",
                on_dev, (unsigned long long)dev_b, on_cpu, (unsigned long long)cpu_b,
-               dn_dev, dn_failed, ab_dev, ab_failed);
+               dn_dev, dn_failed, ab_dev, ab_failed, rt->m.train_res_steps);
     }
     // R8.17: the held-out sets (rows and teacher hashed like the data), the
     // kill rule and the step a resumed run started from

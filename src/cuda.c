@@ -8917,7 +8917,8 @@ typedef struct {
     // input), dx across the backward's layers, and the backward's planes
     CUdeviceptr res_tape, res_dx, rb[15];
     size_t      res_tape_cap, res_dx_cap, rb_cap[15];
-    struct rtab { CUdeviceptr an, fn, qn, kn; } *res_tab;
+    struct rtab { CUdeviceptr an, fn, qn, kn; size_t an_c, fn_c, qn_c, kn_c; } *res_tab;
+    int         res_tab_n;              // its layers (gpu_train_free drops each)
     CUfunction  f_thead;                // R8.24.1 B5, the head
     CUfunction  f_tadam, f_tgnorm;      // R8.24.1 B7, AdamW and the gradient norms
     // R8.24.1 B6: the adapter at a site (k_tlora_t, _y, _tb, _ga, _gb, _dx)
@@ -9154,35 +9155,56 @@ bool gpu_train_init(model_t *m) {
     return true;
 }
 
+static void tg_drop(CUdeviceptr *buf, size_t *cap);
+// the resident step's frozen per-layer norm copies, and their table
+static void res_tab_drop(train_gpu_t *t) {
+    for (int l = 0; t->res_tab && l < t->res_tab_n; l++) {
+        struct rtab *r = &t->res_tab[l];
+        tg_drop(&r->an, &r->an_c);
+        tg_drop(&r->fn, &r->fn_c);
+        tg_drop(&r->qn, &r->qn_c);
+        tg_drop(&r->kn, &r->kn_c);
+    }
+    free(t->res_tab);
+    t->res_tab = NULL;
+    t->res_tab_n = 0;
+}
 void gpu_train_free(model_t *m) {
     train_gpu_t *t = m->train_gpu;
     if (!t) return;
     if (cu.CtxSetCurrent(t->ctx) == 0) {
         if (t->arena) cu.MemFree(t->arena);
-        if (t->d_dy) cu.MemFree(t->d_dy);
-        if (t->d_dx) cu.MemFree(t->d_dx);
-        for (int i = 0; i < GPU_MM_PARTS; i++)
-            if (t->d_yp[i]) cu.MemFree(t->d_yp[i]);
+        tg_drop(&t->d_dy, &t->cap_dy);
+        tg_drop(&t->d_dx, &t->cap_dx);
+        for (int i = 0; i < GPU_MM_PARTS; i++) tg_drop(&t->d_yp[i], &t->cap_yp[i]);
         for (int i = 0; i < t->n_site; i++) {
-            if (t->site[i].a) cu.MemFree(t->site[i].a);
-            if (t->site[i].b) cu.MemFree(t->site[i].b);
-            if (t->site[i].ga) cu.MemFree(t->site[i].ga);
-            if (t->site[i].gb) cu.MemFree(t->site[i].gb);
+            tg_drop(&t->site[i].a, &t->site[i].cap_a);
+            tg_drop(&t->site[i].b, &t->site[i].cap_b);
+            tg_drop(&t->site[i].ga, &t->site[i].cap_ga);
+            tg_drop(&t->site[i].gb, &t->site[i].cap_gb);
         }
-        for (int i = 0; i < 10; i++)
-            if (t->fb[i]) cu.MemFree(t->fb[i]);
+        for (size_t i = 0; i < sizeof t->fb / sizeof *t->fb; i++) tg_drop(&t->fb[i], &t->fb_cap[i]);
+        // the resident step's planes (R1, R2) and the frozen per-layer copies
+        for (size_t i = 0; i < sizeof t->rp / sizeof *t->rp; i++) tg_drop(&t->rp[i], &t->rp_cap[i]);
+        for (size_t i = 0; i < sizeof t->rb / sizeof *t->rb; i++) tg_drop(&t->rb[i], &t->rb_cap[i]);
+        tg_drop(&t->res_k, &t->res_k_cap);
+        tg_drop(&t->res_v, &t->res_v_cap);
+        tg_drop(&t->res_fr, &t->res_fr_cap);
+        tg_drop(&t->res_frl, &t->res_frl_cap);
+        tg_drop(&t->res_tape, &t->res_tape_cap);
+        tg_drop(&t->res_dx, &t->res_dx_cap);
+        res_tab_drop(t);
         for (int i = 0; i < t->n_pin; i++) cu.MemHostUnregister(t->pin_p[i]);
         for (int i = 0; i < GPU_TRAIN_HBUF; i++)
             if (t->hbuf[i]) cu.MemFreeHost(t->hbuf[i]);
-        for (int i = 0; i < DN_NBUF; i++)
-            if (t->dn[i]) cu.MemFree(t->dn[i]);
+        for (int i = 0; i < DN_NBUF; i++) tg_drop(&t->dn[i], &t->dn_cap[i]);
         for (int i = 0; i < t->n_dn_slot; i++) cu.MemFree(t->dn_slot[i].dev);
-        for (int i = 0; i < AB_NBUF; i++)
-            if (t->ab[i]) cu.MemFree(t->ab[i]);
+        for (int i = 0; i < AB_NBUF; i++) tg_drop(&t->ab[i], &t->ab_cap[i]);
         cu.MemFree(t->dummy);
         cu.ModuleUnload(t->mod);
     }
     cu.PrimaryCtxRelease(t->dev);
+    free(t->res_tab);   // the host table, if the context could not be made current
     free(t->site);
     free(t->pin_p);
     free(t->cache);
@@ -9655,15 +9677,26 @@ bool gpu_train_ffn_check(model_t *m, int act, const float *g, const float *u,
     return ok;
 }
 
+// the bytes the training contexts' scratch planes hold now (tg_scratch's, until
+// tg_drop): gpu_train_free must bring it back to 0 (#935: the resident planes
+// were never freed), and tests/test_lora_grad.c reads it after a free
+static size_t tg_live_bytes;
 static bool tg_scratch(CUdeviceptr *buf, size_t *cap, size_t need) {
     if (*cap >= need) return true;
-    if (*buf) cu.MemFree(*buf);
+    if (*buf) { cu.MemFree(*buf); tg_live_bytes -= *cap; }
     *buf = 0;
     *cap = 0;
     if (cu.MemAlloc(buf, need) != 0) return false;
     *cap = need;
+    tg_live_bytes += need;
     return true;
 }
+static void tg_drop(CUdeviceptr *buf, size_t *cap) {
+    if (*buf) { cu.MemFree(*buf); tg_live_bytes -= *cap; }
+    *buf = 0;
+    *cap = 0;
+}
+size_t gpu_train_scratch_bytes(void) { return tg_live_bytes; }
 
 // The tensor's device copy, uploaded on its first use and cached for the
 // run; 0 when it does not fit the budget (it then stays on the CPU, for the
@@ -10522,15 +10555,15 @@ bool gpu_train_res_begin(model_t *m, int T) {
     if (!t->res_tab) {
         t->res_tab = calloc((size_t)L, sizeof(*t->res_tab));
         if (!t->res_tab) return false;
+        t->res_tab_n = L;
         for (int l = 0; l < L; l++) {
             const layer_t *ly = &m->layers[l];
-            size_t c0 = 0, c1 = 0, c2 = 0, c3 = 0;
-            if (!res_up(&t->res_tab[l].an, &c0, ly->attn_norm_w, ly->attn_norm_w ? (size_t)E : 0) ||
-                !res_up(&t->res_tab[l].fn, &c1, ly->ffn_norm_w, ly->ffn_norm_w ? (size_t)E : 0) ||
-                !res_up(&t->res_tab[l].qn, &c2, ly->qnorm_w, ly->qnorm_w ? (size_t)hd : 0) ||
-                !res_up(&t->res_tab[l].kn, &c3, ly->knorm_w, ly->knorm_w ? (size_t)hd : 0)) {
-                free(t->res_tab);   // the device buffers stay with the context's scratch
-                t->res_tab = NULL;
+            struct rtab *r = &t->res_tab[l];
+            if (!res_up(&r->an, &r->an_c, ly->attn_norm_w, ly->attn_norm_w ? (size_t)E : 0) ||
+                !res_up(&r->fn, &r->fn_c, ly->ffn_norm_w, ly->ffn_norm_w ? (size_t)E : 0) ||
+                !res_up(&r->qn, &r->qn_c, ly->qnorm_w, ly->qnorm_w ? (size_t)hd : 0) ||
+                !res_up(&r->kn, &r->kn_c, ly->knorm_w, ly->knorm_w ? (size_t)hd : 0)) {
+                res_tab_drop(t);   // every layer's copies so far, then the table: the next step starts clean
                 return false;
             }
         }
