@@ -1614,7 +1614,9 @@ int plat_spawn_wait_stdin(const char *const argv[], const char *input, size_t n)
     }
     if (input) close(p[0]);
     int status = 0;
-    if (waitpid(pid, &status, 0) < 0) return -1;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) return -1;
+    }
     if (WIFEXITED(status)) return WEXITSTATUS(status) == 127 ? -1 : WEXITSTATUS(status);
     return -1;
 }
