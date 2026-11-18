@@ -1052,7 +1052,31 @@
         "backend": "cpu"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.20.0",
+          "date": "2026-11-18",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "fce00e8f565e133e67e16f0689fb05f756a78652",
+          "caps": {
+            "version": "1.20.0",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 16,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 5070"
+          },
+          "output_sha256": "5480f6cad63c85e2ed82faa650f5e47496d5e78e18d9c196bf500d9045cfba42",
+          "ran": "runner -m Trinity-Nano-Preview-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/trinity-nano-preview-q8_0.windows-x86_64-cuda.cpu.txt",
+          "build": {
+            "binary_sha256": "9073c7a06807fa1392a7fa12cb2058522ad600009420d361bc093d36bc7f06c0",
+            "compiler": "16.2.0",
+            "commit": "fce00e8f565e133e67e16f0689fb05f756a78652",
+            "dirty": false
+          }
+        },
         "cuda": {
           "kind": "limit",
           "reason": "afmoe (gated attention with sparse MoE) has no CUDA path; CUDA refuses it and the file runs on the CPU.",
@@ -1073,8 +1097,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.7.1",
-        "date": "2026-10-30"
+        "runner_version": "1.20.0",
+        "date": "2026-11-18"
       },
       "transitions": [
         {
@@ -7373,7 +7397,31 @@
         "backend": "metal"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.20.0",
+          "date": "2026-11-18",
+          "device_class": "windows-x86_64-cuda",
+          "result": "pass",
+          "commit": "fce00e8f565e133e67e16f0689fb05f756a78652",
+          "caps": {
+            "version": "1.20.0",
+            "os": "windows",
+            "arch": "x86_64",
+            "cpu_cores": 16,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA GeForce RTX 5070"
+          },
+          "output_sha256": "16ee8166ecb8972e7308b12c4ac90ba6ea15b074e94182b3db73887942b67359",
+          "ran": "runner -m MiniCPM5-2B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.windows-x86_64-cuda.cpu.txt",
+          "build": {
+            "binary_sha256": "9073c7a06807fa1392a7fa12cb2058522ad600009420d361bc093d36bc7f06c0",
+            "compiler": "16.2.0",
+            "commit": "fce00e8f565e133e67e16f0689fb05f756a78652",
+            "dirty": false
+          }
+        },
         "cuda": {
           "kind": "gate",
           "runner_version": "1.19.1",
@@ -7428,8 +7476,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.19.1",
-        "date": "2026-11-16"
+        "runner_version": "1.20.0",
+        "date": "2026-11-18"
       },
       "transitions": [
         {
