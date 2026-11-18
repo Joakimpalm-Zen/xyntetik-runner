@@ -212,6 +212,20 @@ endif
 # read it first in every unit. The system headers it includes then come
 # before a source's own feature macros, so the two compat.c sets
 # (sched_getaffinity on Linux, rand_s on Windows) are given here too.
+# R6.85: a Windows build takes the portable math by default. The Windows C
+# runtime's expf and logf differ in their last bits between ucrtbase
+# versions, so one runner.exe gave two hosts two replies; the portable
+# functions are the same bits on every host. Linux and macOS keep the C
+# library's (their default build is one libm per binary). PORTABLE_MATH=0
+# opts out, PORTABLE_MATH=1 opts in anywhere; `override` because a release
+# sets CFLAGS on make's command line. T3=1 is portable whatever this says.
+PORTABLE_MATH_DEFAULT_Windows = 1
+PORTABLE_MATH ?= $(or $(PORTABLE_MATH_DEFAULT_$(BUILD_OS)),0)
+ifeq ($(PORTABLE_MATH),1)
+ifeq ($(filter -DRUNNER_PORTABLE_MATH,$(CFLAGS)),)
+override CFLAGS += -DRUNNER_PORTABLE_MATH
+endif
+endif
 PMATH_FEATURES_Linux = -D_GNU_SOURCE
 PMATH_FEATURES_Windows = -D_CRT_RAND_S=
 ifneq ($(filter -DRUNNER_PORTABLE_MATH,$(CFLAGS)),)

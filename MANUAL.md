@@ -1856,6 +1856,24 @@ to 1.6.1 on an affected host. Compiler/libc build settings change, so replay
 remains bound to the exact binary and the 1.6.1 Golden count is unmeasured.
 The independently built container has a separate Debian build baseline.
 
+### Windows builds take the portable math (default since R6.85)
+
+On Windows the default build replaces the C runtime's `expf`, `logf`,
+`sinf`, `cosf`, `tanhf` and `powf` with `src/pmath.h`'s portable functions,
+as `make T3=1` does, and keeps the rest of the default build (fast-math and
+each ISA's own reduction order). The reason: the C runtime's functions
+differ in their last bits between `ucrtbase` versions, so one `runner.exe`
+gave two Windows hosts two different replies. Linux and macOS keep the C
+library's functions.
+
+```sh
+make PORTABLE_MATH=0   # Windows: the C runtime's math, as before R6.85
+make PORTABLE_MATH=1   # Linux or macOS: the portable math in a default build
+```
+
+`make test-portable-imports` checks that no object imports the six, and the
+Windows CI job runs it at the release's own flags.
+
 ### Container image
 
 Each release publishes a CPU image - the same binary on a distroless glibc base,
