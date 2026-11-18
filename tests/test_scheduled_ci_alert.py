@@ -30,9 +30,10 @@ RUN_ID = str(RECORDED["run"]["id"])
 class FakeApi(alert.Api):
     """Answers from recorded responses; records every write."""
 
-    def __init__(self, run, jobs, issues=(), label=True, log=LOG, dry_run=False):
+    def __init__(self, run, jobs, issues=(), label=True, log=LOG, dry_run=False, attempt1_jobs=None):
         super().__init__("o/r", "token", dry_run, out=io.StringIO())
         self.run, self.jobs, self.issues, self.label, self.log = run, jobs, list(issues), label, log
+        self.attempt1_jobs = attempt1_jobs
         self.writes = []
 
     def call(self, method, path, body=None, raw=False):
@@ -41,6 +42,10 @@ class FakeApi(alert.Api):
             return {}
         if path == f"/actions/runs/{self.run['id']}":
             return self.run
+        if path.startswith(f"/actions/runs/{self.run['id']}/attempts/1/jobs"):
+            if self.attempt1_jobs is None:
+                raise urllib.error.HTTPError(path, 404, "Not Found", {}, None)
+            return self.attempt1_jobs
         if path.startswith(f"/actions/runs/{self.run['id']}/jobs"):
             return self.jobs
         if path.startswith("/actions/jobs/") and path.endswith("/logs"):
@@ -244,3 +249,16 @@ def test_a_redirect_on_the_same_host_keeps_the_token():
         assert srv.seen == [("api", "Bearer secret"), ("api", "Bearer secret")]
     finally:
         srv.close()
+
+
+def test_a_red_second_attempt_explains_the_automatic_rerun():
+    a1 = json.loads((ROOT / "tests" / "fixtures" / "ci-rerun-cancelled" /
+                     "run-44310758378-schedule-cancelled.json").read_text(encoding="utf-8"))
+    run2 = dict(RECORDED["run"], conclusion="failure", event="schedule", name="ci", run_attempt=2)
+    api = FakeApi(run2, RECORDED["jobs"], attempt1_jobs=a1["jobs"])
+    assert main(api) == 0
+    body = api.writes[0][2]["body"]
+    assert "attempt 2" in body
+    assert "Attempt 1 was rerun automatically" in body
+    assert "macos-suite-python, macos-suite-gates-batch" in body
+    assert "zero steps executed" in body
