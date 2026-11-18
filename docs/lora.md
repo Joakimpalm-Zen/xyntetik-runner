@@ -809,6 +809,25 @@ flipped byte.
 
 **Limits first:** cross-machine replay works only for strict `T3=1` CPU dense LoRA cross-entropy records (`"determinism":"cpu-t3-exact"`, 27% to 41% slower on Apple Silicon at 4B); GPU records (`gpu-within-tolerance`) are refused, `cpu-same-binary` records require `--allow-same-binary` with the exact `build.binary_sha256`, the auditor must hold the base GGUF and training data, and replay proves training provenance rather than adapter quality. Pre-flight checks the signature (`--trust-key`), `runner` version, build compatibility, and every input sha256 before training begins, exiting `0` (`VERIFIED <path> sha256 <hex>`) or `2` (`MISMATCH <field>: ...`).
 
+### Segment replay (an audit of part of a run)
+
+```sh
+./runner attest replay adapter.gguf.train.json --segment 40..60
+```
+
+**Limits first:**
+- **A sampled audit is probabilistic.** A segment re-run proves that segment only: an unchecked segment is unproven. If an auditor re-runs s of a run's M segments and k of them are false, the audit misses every false one with probability C(M-k, s) / C(M, s); for one false segment, it catches it with probability s/M.
+- **The sample is the auditor's, drawn after the record is fixed,** from the auditor's own randomness. A trainer who knows which segments will be checked can make only those honest.
+- **What prior work showed:** proof-of-learning (Jia et al., IEEE S&P 2021) re-executes chosen training segments and accepts them within a tolerance. Zhang et al. (IEEE S&P 2022) and Fang et al. (EuroS&P 2023) forged checkpoint chains, cheaper than training, that pass inside that tolerance. A segment here must match byte for byte (adapter and optimizer state), which removes the tolerance those forgeries used. It does not remove the sampling gap: a forged segment no auditor re-runs still passes.
+- **The same scope as a whole replay:** exact across machines only for strict `T3=1` CPU records; same-binary otherwise (`--allow-same-binary`). A record of a run with a teacher, DPO, `--train-full` or a resumed run is refused by name.
+
+A run with `--save-every K` writes a checkpoint every K steps and at its last, and its record lists each one (`checkpoints`: step, rows consumed, the sha256 of the adapter and of its `.optim` sidecar). A chain over them, `checkpoint_chain`, starts from `h0`, a hash of the record's own bytes before the chain, so the list cannot be moved to a record of another base, data or recipe. `--segment A..B` takes two of those steps (A may be 0, the run's start):
+1. it checks the chain, and that the step-A files beside the record are the ones the record names, before anything trains;
+2. it resumes there with the record's whole recipe, so the learning-rate schedule is the run's;
+3. it stops after step B and compares every checkpoint in between, byte for byte.
+
+Measured on 2026-11-18 (T3 build): runs resumed from a checkpoint are the uninterrupted run byte for byte at every later checkpoint, with warmup and a cosine schedule, at another thread count, with an eval set, and on Qwen3-0.6B. `tests/test_train_segments.py` keeps the fixture case as a gate in CI's T3 job.
+
 ### Exact unlearning (a retrain with a receipt)
 
 ```sh

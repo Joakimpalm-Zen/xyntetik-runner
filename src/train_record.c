@@ -787,6 +787,132 @@ static bool unlearn_audit_check(const train_record_opts *o, jv *rec, const char 
     return true;
 }
 
+// R17.9 step 4: attest replay RECORD --segment A..B re-runs steps A+1..B from
+// the step-A checkpoint beside the record and compares every checkpoint the
+// segment writes with the record's. Before anything trains: the modes segments
+// do not cover, refused by name; the segment's shape; the record's
+// checkpoints and their chain, whose head is recomputed from the entries and
+// whose h_0 from the record's own bytes before the chain fields (the record
+// read once, bounded, by read_bounded_record); then the start files, hashed
+// before the resume parses them. Each refusal says what it saw.
+static bool seg_refuse(int *rc, int code, const char *what) {
+    fputs("error: --segment: ", stderr);
+    fputs(what, stderr);
+    fputc('\n', stderr);
+    *rc = code;
+    return false;
+}
+
+static const char *seg_find(const char *buf, size_t n, const char *mark) {
+    size_t m = strlen(mark);
+    for (size_t i = 0; i + m <= n; i++)
+        if (buf[i] == mark[0] && memcmp(buf + i, mark, m) == 0) return buf + i;
+    return NULL;
+}
+
+static bool segment_precheck(const train_record_opts *o, jv *rec, const char *rbuf, size_t rlen,
+                             const char *rec_path, cli_replay *rp, int *rc) {
+    if (jv_get(rec, "teacher"))
+        return seg_refuse(rc, 2, "a record of a run with a teacher (distillation) is not replayed by segments");
+    if (jv_get(rec, "dpo") || !strcmp(jv_str(jv_get(rec, "objective"), ""), "dpo"))
+        return seg_refuse(rc, 2, "a DPO record is not replayed by segments");
+    if (jv_get(rec, "variant") || jv_get(rec, "full_weight"))
+        return seg_refuse(rc, 2, "a --train-full record is not replayed by segments");
+    if (jv_get(rec, "resumed_at_step"))
+        return seg_refuse(rc, 2, "a record of a resumed run is not replayed by segments: replay the run it resumed");
+    const char *s = o->replay_segment;
+    char *e1 = NULL, *e2 = NULL;
+    long a = strtol(s, &e1, 10), b = -1;
+    if (e1 != s && strncmp(e1, "..", 2) == 0) b = strtol(e1 + 2, &e2, 10);
+    if (e1 == s || b < 0 || e2 == e1 + 2 || *e2 || a < 0 || a > INT_MAX || b > INT_MAX)
+        return seg_refuse(rc, 1, "wants A..B: two checkpoint steps the record names (A may be 0, the run's start)");
+    if (b <= a) return seg_refuse(rc, 1, "the segment ends before it starts");
+    jv *cks = jv_get(rec, "checkpoints"), *ch = jv_get(rec, "checkpoint_chain");
+    if (!cks || cks->type != J_ARR || cks->n < 1 || !ch || ch->type != J_OBJ)
+        return seg_refuse(rc, 2, "the record names no checkpoints (a run without --save-every, or older than segment records)");
+    if (cks->n > (int)(sizeof rp->seg_ck / sizeof rp->seg_ck[0]))
+        return seg_refuse(rc, 2, "the record names more checkpoints than a segment replay takes (256)");
+    const char *h0 = jv_str(jv_get(ch, "h0"), NULL), *head = jv_str(jv_get(ch, "head"), NULL);
+    if (strcmp(jv_str(jv_get(ch, "basis"), ""), "xyntetik.runner.train.chain.v1") != 0 ||
+        !envelope_is_sha256_hex(h0) || !envelope_is_sha256_hex(head))
+        return !replay_fail(rc, "checkpoint_chain", "a v1 chain with a hex h0 and head", "invalid");
+    char h[65], line[512];
+    memcpy(h, h0, sizeof h);
+    for (int i = 0; i < cks->n; i++) {
+        jv *c = cks->items[i];
+        int step = 0;
+        double cur = 0;
+        const char *ad = c ? jv_str(jv_get(c, "adapter_sha256"), NULL) : NULL;
+        const char *op = c ? jv_str(jv_get(c, "optim_sha256"), NULL) : NULL;
+        if (!c || c->type != J_OBJ || !record_int(c, "step", 1, INT_MAX, &step) ||
+            !record_num(c, "cursor", 0, 9007199254740992.0, &cur) || cur != trunc(cur) ||
+            !envelope_is_sha256_hex(ad) || !envelope_is_sha256_hex(op) ||
+            (i > 0 && step <= rp->seg_ck[i - 1].step))
+            return !replay_fail(rc, "checkpoints", "ascending {step, cursor, adapter_sha256, optim_sha256}",
+                                "invalid");
+        rp->seg_ck[i].step = step;
+        rp->seg_ck[i].cursor = (long long)cur;
+        memcpy(rp->seg_ck[i].adapter, ad, 65);
+        memcpy(rp->seg_ck[i].optim, op, 65);
+        int n = snprintf(line, sizeof line, "%s|%d|%lld|%s|%s", h, step, (long long)cur, ad, op);
+        envelope_data_sha256(line, (size_t)n, h);
+    }
+    rp->seg_n = cks->n;
+    if (strcmp(h, head) != 0) return !replay_fail(rc, "checkpoint_chain.head", head, h);
+    const char *at = seg_find(rbuf, rlen, ",\"checkpoints\":[");
+    if (!at) return !replay_fail(rc, "checkpoint_chain.h0", h0, "no chain fields in the record's bytes");
+    size_t bl = (size_t)(at - rbuf);
+    char *body = malloc(bl + 1);
+    if (!body) return seg_refuse(rc, 1, "out of memory");
+    memcpy(body, rbuf, bl);
+    body[bl] = '}';
+    char bh[65], hh[65];
+    envelope_data_sha256(body, bl + 1, bh);
+    free(body);
+    int n = snprintf(line, sizeof line, "xyntetik.runner.train.chain.v1|%s", bh);
+    envelope_data_sha256(line, (size_t)n, hh);
+    if (strcmp(hh, h0) != 0) return !replay_fail(rc, "checkpoint_chain.h0", h0, hh);
+    int ia = -1, ib = -1, steps = 0;
+    for (int i = 0; i < rp->seg_n; i++) {
+        if (rp->seg_ck[i].step == a) ia = i;
+        if (rp->seg_ck[i].step == b) ib = i;
+    }
+    char msg[128];
+    if ((a != 0 && ia < 0) || ib < 0) {
+        snprintf(msg, sizeof msg, "step %ld is not a checkpoint the record names", a != 0 && ia < 0 ? a : b);
+        return seg_refuse(rc, 1, msg);
+    }
+    // the run wrote them every K steps and at its last: the replay writes the same
+    int every = rp->seg_ck[0].step;
+    if (!record_int(rec, "steps", 1, INT_MAX, &steps))
+        return !replay_fail(rc, "steps", "integer", "invalid");
+    for (int i = 0; i < rp->seg_n; i++)
+        if (rp->seg_ck[i].step != (i + 1) * every && !(i == rp->seg_n - 1 && rp->seg_ck[i].step == steps))
+            return seg_refuse(rc, 2, "the record's checkpoints are not every K steps and the last");
+    rp->seg_every = every;
+    if (a > 0) {
+        const char *ap = jv_str(jv_get(jv_get(rec, "adapter"), "path"), "");
+        char name[320], opt[4200], have[65] = "", have_o[65] = "";
+        if (!safe_relname(ap, 255) || !fmt_checked(name, sizeof name, "%s.step-%05ld", ap, a) ||
+            !relocate_local(name, rec_path, rp->seg_start, sizeof rp->seg_start) ||
+            !fmt_checked(opt, sizeof opt, "%s.optim", rp->seg_start))
+            return !replay_fail(rc, "adapter.path", "a safe base name", ap);
+        bool ha = envelope_cited_sha256(rp->seg_start, have), ho = envelope_cited_sha256(opt, have_o);
+        if (!ha || !ho || strcmp(have, rp->seg_ck[ia].adapter) != 0 || strcmp(have_o, rp->seg_ck[ia].optim) != 0) {
+            fputs("error: --segment: ", stderr);
+            envelope_print_safe(stderr, !ha || strcmp(have, rp->seg_ck[ia].adapter) != 0 ? rp->seg_start : opt,
+                                0, "?", false);
+            fprintf(stderr, " is not the checkpoint the record names (step %ld)\n", a);
+            *rc = 2;
+            return false;
+        }
+    }
+    rp->segment = true;
+    rp->seg_a = (int)a;
+    rp->seg_b = (int)b;
+    return true;
+}
+
 bool train_record_prepare(const train_record_host *host, train_record_opts *o, cli_replay *rp, int *rc) {
     // R17.9(c): attest unlearn is a replay of the record after its unlearn
     // checks; --unlearn reads the parent record here for its recipe, retrains
@@ -807,6 +933,11 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
         return true;
     }
     const char *caller_sign_key = o->sign_key;
+    if (o->replay_segment && !segment_precheck(o, rec, rbuf, rlen, rec_path, rp, rc)) {
+        free(rbuf);
+        jv_free(rec);
+        return true;
+    }
     if (retrain) o->replay_data = o->train_path;   // DATA1, hashed as the parent's data below
     bool ok = (retrain ? unlearn_check_eligible(o, rec, rc)
                        : replay_check_compat(host, o, rec, rbuf, rlen, &rp->want_t3_exact, rc)) &&
@@ -1081,6 +1212,18 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
                 *rc = 1;
                 ok = false;
             }
+        }
+    }
+    if (ok && rp->segment) {
+        // the segment's run: the record's recipe whole (its schedule spans
+        // every step), resumed at A, a checkpoint every K steps as the run
+        // wrote them, stopped after B
+        o->save_every = rp->seg_every;
+        o->replay_stop_at = rp->seg_b;
+        if (rp->seg_a > 0) {
+            o->train_resume = rp->seg_start;
+            o->lora_path = NULL;
+            o->replay_resumed_at = rp->want_resumed_at = rp->seg_a;
         }
     }
     jv_free(rec);

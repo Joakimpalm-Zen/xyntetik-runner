@@ -30,6 +30,12 @@ typedef struct {
     char  eval_specs[8][8256];
     char  kill_metric[128];
     char  tmp_out[4096];
+    // R17.9 step 4, attest replay --segment A..B: the record's checkpoints,
+    // checked against its chain, the step-A files beside it, and the segment
+    bool  segment;
+    int   seg_a, seg_b, seg_every, seg_n;
+    char  seg_start[4096];
+    struct { int step; long long cursor; char adapter[65], optim[65]; } seg_ck[256];
 } cli_replay;
 
 typedef struct {
@@ -46,6 +52,8 @@ typedef struct {
     const char *train_teacher, *lora_path, *train_resume;
     const char *trust_key, *sign_key, *stop_file, *train_lp_path;
     const char *replay_train, *replay_data;
+    const char *replay_segment;   // attest replay --segment A..B (R17.9 step 4)
+    int         replay_stop_at;   // the step a segment replay stops after
     const char *unlearn_parent, *unlearn_drop, *unlearn_audit;
     const char *unlearn_parent_data, *unlearn_dropped, *unlearn_retained;
     int         unlearn_count, unlearn_distinct;
