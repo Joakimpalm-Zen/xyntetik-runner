@@ -189,7 +189,7 @@ def test_replay_rejects_float_where_integer_is_read(runner_bin, fx, tmp_path):
 
 def test_unlearn_embedded_nul_byte_cannot_alias_rows(runner_bin, fx, tmp_path):
     """Embedded NUL in DATA1/D stopped strcmp at NUL, dropping unrelated rows."""
-    d = tmp_path / "nul"
+    d = tmp_path / "nul_row"
     d.mkdir()
     shutil.copy(fx / "base.gguf", d / "base.gguf")
     row_pub = b'{"prompt":"the runner","completion":" a\x00PUBLIC"}\n'
