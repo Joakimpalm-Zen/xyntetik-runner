@@ -303,7 +303,7 @@ jobs:
           - group: parsers
             targets: json_parse schema_compile sval_feed sval_trial jsonv_feed http_request tool_stream
           - group: files
-            targets: gguf_open tokenizer model_load gguf_split record_check session_read
+            targets: gguf_open tokenizer model_load gguf_split record_check session_read train_record
     steps:
       - uses: actions/checkout@v7
       - name: compiler
@@ -689,7 +689,7 @@ jobs:
           .venv/bin/python scripts/ci-run.py --timeout 1800 sanitized-cli -- \
             .venv/bin/python -m pytest -q --junitxml=.build/ci/sanitized-cli.xml \
             tests/test_cli_files.py tests/test_lineage.py tests/test_eval_record.py \
-            tests/test_moe_lora.py tests/test_merge.py tests/test_cached.py
+            tests/test_moe_lora.py tests/test_merge.py tests/test_cached.py tests/test_hostile_records.py
           .venv/bin/python scripts/check-junit.py --no-skips .build/ci/sanitized-cli.xml
       - name: hostile geometry and the valid fixtures under sanitizers
         # tests/test_hostile_geometry.py holds nine cases that need the
