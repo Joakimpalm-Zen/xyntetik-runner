@@ -4477,6 +4477,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_verify_gguf.py \
     tests/test_verify_tc_compat.py \
     tests/test_watermark.py \
+    tests/test_worktree_identity_hook.py \
     tests/test_write_stall_experiment.py \
     tests/test_xml_schema_fallback.py \
     tests/test_yarn_betas.py

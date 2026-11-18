@@ -1,5 +1,21 @@
 #!/bin/sh
 # Local half of the publication rule for file content (AGENTS.md): refuse a
-# commit whose staged additions name a host path or a machine or session.
-# Installed by `make hooks`; CI runs the same check on every pull request.
+# commit whose staged additions name a host path or a machine or session, and
+# refuse a commit in a linked worktree without its own worktree user.email (R6.103).
+# Installed by `make hooks`; CI runs the content check on every pull request.
+git_dir=$(cd "$(git rev-parse --git-dir)" 2>/dev/null && pwd -P)
+common_dir=$(cd "$(git rev-parse --git-common-dir)" 2>/dev/null && pwd -P)
+if [ -n "$git_dir" ] && [ -n "$common_dir" ] && [ "$git_dir" != "$common_dir" ]; then
+    wt_email=$(git config --worktree --get user.email 2>/dev/null || true)
+    if [ -z "$wt_email" ]; then
+        cat >&2 <<'EOF'
+error: refusing to commit in a linked worktree without its own user.email
+(otherwise git falls back to the repository or global identity).
+Run:
+  git config --worktree user.name <agent-name>
+  git config --worktree user.email <noreply-address>
+EOF
+        exit 1
+    fi
+fi
 exec python3 "$(git rev-parse --show-toplevel)/scripts/check-content-hygiene.py" --staged
