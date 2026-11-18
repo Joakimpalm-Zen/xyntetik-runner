@@ -1573,6 +1573,377 @@ static void b_add_checks(model_t *m) {
 #endif
     free(x); free(y); free(xh); free(xd);
 }
+
+// R8.24.1 B5 (G0): the device twin of the head (gpu_train_head_check:
+// k_thead) against the host's own code (model_head_fw_ref: apply_head_transforms
+// then train_row_lse; model_head_bw_ref: head_rows_bw's per-row adjoint).
+// Written before the kernel. A T3 build's host does exactly the written
+// operations (pmath's tanh, exp and log; float sums in index order, the LSE's
+// in double), which the twin reproduces, so memcmp on the adjoint rows, the
+// normalizers and the target logits (a NaN compares as a NaN), and an
+// unscored row must come back untouched. The default build's host takes the
+// C library's tanhf, expf and logf and may vectorize under -ffast-math; there,
+// and against the head in double in both builds, each adjoint element within
+// ((V + 16) 2^-23 + (1 + |largest z|) 2^-21) (|its value| + 2^-24 w), w the
+// row's |pos_w| |scale| (the sums' own error and the transforms' rounding
+// carried through exp), plus under a softcap 2^-21 of the value before its
+// slope (1 - th*th in float carries about 2^-23 absolute), the normalizer within 2^-20 (1 + |lse|) + (V + 16)
+// 2^-24, and the target logit within 2^-20 (1 + |z|); the device's subnormal
+// results read as zero in the default build.
+// The bound gates of B5 and B7 (the lead's rule): an error as a fraction of
+// its bound, 1e300 when a value is non-finite and its partner is not (two
+// non-finite values settled by class: NaN against NaN, an infinity by its
+// bits, since the device returns the canonical NaN), never a NaN compared.
+static int nf_same(float a, float b) {
+    if (b2_nan(a) || b2_nan(b)) return b2_nan(a) && b2_nan(b);
+    return !memcmp(&a, &b, 4);
+}
+static double gate_err(float dev, float host, double lim) {
+    if (b_nonfin(dev) || b_nonfin(host)) return nf_same(dev, host) ? 0.0 : 1e300;
+    double e = fabs((double)dev - (double)host) / lim;
+    return d_nonfin(e) ? 1e300 : e;
+}
+static double anchor_err(float dev, double ref, double lim) {
+    if (b_nonfin(dev) || d_nonfin(ref)) return (b_nonfin(dev) && d_nonfin(ref)) ? 0.0 : 1e300;
+    double e = fabs((double)dev - ref) / lim;
+    return d_nonfin(e) ? 1e300 : e;
+}
+// the planted-NaN control: both bound gates must fail a NaN in place of a value
+static void nan_control(const char *who, float host, double ref, double lim) {
+    float nan; uint32_t q = 0x7fc00000u; memcpy(&nan, &q, 4);
+    CHECK(gate_err(nan, host, lim) >= 1e300 && anchor_err(nan, ref, lim) >= 1e300,
+          "%s: the bound gates let a planted NaN pass", who);
+}
+static void b5_fill_row(float *x, int V, int kind) {
+    for (int i = 0; i < V; i++) {
+        float v = frnd() * 8.0f;
+        switch (kind) {
+        case 1: v = 0.25f; break;                                   // a flat row
+        case 2: v = (i & 1) ? -0.0f : 0.0f; break;
+        case 3: v = frnd() * 80.0f; break;                          // wide logits
+        case 4: v = i == V / 3 ? 60.0f : frnd(); break;             // one peak
+        case 5: v = frnd() * 1.0e4f; break;                         // far past a softcap
+        default: break;
+        }
+        x[i] = v;
+    }
+}
+static void b5_check(model_t *m, int V, int rows, int pad, float ls, float cap, int n_sup,
+                     int weighted) {
+    int stride = V + pad;
+    size_t span = (size_t)(rows - 1) * stride + V;
+    float *z0 = malloc(sizeof(float) * span), *zd = malloc(sizeof(float) * span);
+    for (size_t i = 0; i < span; i++) z0[i] = 1234.5f;   // the padding, which must survive
+    for (int r = 0; r < rows; r++) b5_fill_row(z0 + (size_t)r * stride, V, r % 6);
+    int32_t sup[3] = { 3 % V, V / 2, V - 1 };
+    int32_t *tg = malloc(sizeof(int32_t) * rows);
+    float *pw = weighted ? malloc(sizeof(float) * rows) : NULL;
+    for (int r = 0; r < rows; r++) {
+        tg[r] = (int32_t)(rnd32() % (uint32_t)V);
+        if (pw) pw[r] = 0.25f + 1.5f * (frnd() * 0.5f + 0.5f);
+    }
+    if (rows > 2) tg[1] = -1;                         // an unscored row
+    if (rows > 3 && n_sup) tg[2] = sup[1];            // a suppressed target
+    memcpy(zd, z0, sizeof(float) * span);
+    double *lsed = calloc(rows, sizeof(double));
+    float *ztd = calloc(rows, sizeof(float));
+    thead_args a = { V, rows, stride, n_sup, ls, cap };
+    bool ok = gpu_train_head_check(m, &a, zd, tg, pw, sup, lsed, ztd);
+    CHECK(ok, "head twin V %d: declined (no kernel in this PTX?)", V);
+    size_t bad = 0, hbad = 0, abad = 0;
+    double wh = 0, wa = 0;
+    float *zh = malloc(sizeof(float) * V), *ph = malloc(sizeof(float) * V);
+    double *zx = malloc(sizeof(double) * V), *ex = malloc(sizeof(double) * V);
+    for (int r = 0; ok && r < rows; r++) {
+        const float *x = z0 + (size_t)r * stride;
+        float *d = zd + (size_t)r * stride;
+        if (tg[r] < 0) {
+            if (memcmp(x, d, sizeof(float) * V) && !bad++)
+                fprintf(stderr, "FAIL: head twin touched the unscored row %d\n", r);
+            continue;
+        }
+        for (int i = V; r < rows - 1 && i < stride; i++)   // the last row has no padding after it
+            if (d[i] != 1234.5f && !bad++) fprintf(stderr, "FAIL: head twin wrote past V\n");
+        memcpy(zh, x, sizeof(float) * V);
+        float zth;
+        double lseh = model_head_fw_ref(zh, V, ls, cap, sup, n_sup, tg[r], &zth);
+        memcpy(ph, x, sizeof(float) * V);
+        bool okb = model_head_bw_ref(ph, V, 1, ls, cap, sup, n_sup, &tg[r], pw ? &pw[r] : NULL);
+        CHECK(okb, "head twin: the host's head_rows_bw failed");
+        // the head in double
+        double lsx = ls != 0.0f ? ls : 1.0, mx = -1e300, sum = 0, zmax = 0;
+        for (int i = 0; i < V; i++) {
+            double v = (double)x[i] * lsx;
+            if (cap > 0) v = cap * tanh(v / cap);
+            zx[i] = v;
+        }
+        for (int k = 0; k < n_sup; k++) zx[sup[k]] = -1e30;
+        for (int i = 0; i < V; i++) {
+            if (zx[i] > mx) mx = zx[i];
+            if (fabs(zx[i]) > zmax && zx[i] > -1e29) zmax = fabs(zx[i]);
+        }
+        for (int i = 0; i < V; i++) { ex[i] = exp(zx[i] - mx); sum += ex[i]; }
+        double lsex = mx + log(sum), wrow = (pw ? fabs(pw[r]) : 1.0) * fabs(lsx);
+        double k1 = (V + 16) * 0x1p-23 + (1.0 + zmax) * 0x1p-21;
+#ifdef RUNNER_PORTABLE_MATH
+        if ((memcmp(&lseh, &lsed[r], 8) || memcmp(&zth, &ztd[r], 4)) && !bad++)
+            fprintf(stderr, "FAIL: head twin's lse or target logit differs from the T3 host at V %d "
+                    "row %d: lse %.17g/%.17g z %.9g/%.9g\n", V, r, lsed[r], lseh, ztd[r], zth);
+#else
+        double llim = 0x1p-20 * (1 + fabs(lseh)) + (V + 16) * 0x1p-24;
+        double el = d_nonfin(lsed[r]) || d_nonfin(lseh) ? (memcmp(&lsed[r], &lseh, 8) ? 1e300 : 0)
+                                                          : fabs(lsed[r] - lseh) / llim;
+        if ((d_nonfin(el) || el > 1.0 || gate_err(ztd[r], zth, 0x1p-20 * (1 + fabs(zth))) > 1.0) && !hbad++)
+            fprintf(stderr, "FAIL: head twin's lse or target logit is off the default host at V %d "
+                    "row %d: lse %.9g/%.9g z %.9g/%.9g\n", V, r, lsed[r], lseh, ztd[r], zth);
+#endif
+        double la = d_nonfin(lsed[r]) || d_nonfin(lsex) ? 1e300
+                    : fabs(lsed[r] - lsex) / (0x1p-20 * (1 + fabs(lsex)) + (V + 16) * 0x1p-24);
+        if ((d_nonfin(la) || la > 1.0) && !abad++)
+            fprintf(stderr, "FAIL: head twin's lse is not the double one at V %d row %d: %.9g (%.9g)\n",
+                    V, r, lsed[r], lsex);
+        for (int i = 0; i < V; i++) {
+            double p = ex[i] / sum - (i == tg[r] ? 1.0 : 0.0);
+            p *= pw ? pw[r] : 1.0;
+            for (int k = 0; k < n_sup; k++) if (i == sup[k]) p = 0.0;
+            double pre = p;   // before the softcap's slope: 1 - th*th in float carries ~2^-23 absolute
+            if (cap > 0) { double t = tanh((double)x[i] * lsx / cap); p *= 1.0 - t * t; }
+            p *= lsx;
+            double lim = k1 * (fabs(p) + 0x1p-24 * wrow) + (cap > 0 ? fabs(pre * lsx) * 0x1p-21 : 0.0) + 1e-37;
+            float hv = ph[i], dv = d[i];
+#ifdef RUNNER_PORTABLE_MATH
+            bool same = b2_nan(hv) || b2_nan(dv) ? b2_nan(hv) && b2_nan(dv) : !memcmp(&hv, &dv, 4);
+            if (!same && !bad++)
+                fprintf(stderr, "FAIL: head twin differs from the T3 host at V %d row %d [%d]: "
+                        "%.9g/%.9g\n", V, r, i, dv, hv);
+#else
+            float ev = b2_ftz(dv);
+            double e = gate_err(ev, hv, lim);
+            if (e > wh && e < 1e300) wh = e;
+            if (e > 2.0 && !hbad++)
+                fprintf(stderr, "FAIL: head twin is off the default build's host at V %d row %d [%d]: "
+                        "%.9g/%.9g\n", V, r, i, ev, hv);
+#endif
+            double q = anchor_err(dv, p, lim);
+            if (q > wa && q < 1e300) wa = q;
+            if (q > 1.0 && !abad++)
+                fprintf(stderr, "FAIL: head twin is not the double head at V %d row %d [%d]: %.9g "
+                        "(%.9g)\n", V, r, i, dv, p);
+        }
+    }
+    if (ok) nan_control("head twin", 0.5f, 0.5, 1e-6);
+    CHECK(!bad, "head twin V %d rows %d scale %g cap %g sup %d: %zu values differ from the T3 host's "
+          "bits", V, rows, ls, cap, n_sup, bad);
+    CHECK(!hbad, "head twin V %d: %zu values off the default build's host (worst %.3g of the bound, "
+          "allowed 2)", V, hbad, wh);
+    CHECK(!abad, "head twin V %d: %zu values off the head in double (worst %.3g of the bound)",
+          V, abad, wa);
+    if (ok)
+        printf("head twin V %6d rows %2d pad %d scale %-4g cap %-3g sup %d%s: host %s; against the "
+               "head in double %.3g of the bound\n", V, rows, pad, ls, cap, n_sup,
+               pw ? " weighted" : "", 
+#ifdef RUNNER_PORTABLE_MATH
+               "T3 (memcmp)",
+#else
+               "default (bound, subnormals flushed)",
+#endif
+               wa);
+    free(z0); free(zd); free(tg); free(pw); free(lsed); free(ztd); free(zh); free(ph); free(zx);
+    free(ex);
+}
+static void b5_checks(model_t *m) {
+    b5_check(m, 151936, 6, 0, 1.0f, 0.0f, 0, 1);    // Qwen3's vocabulary, the recipe's head
+    b5_check(m, 151936, 128, 0, 1.0f, 0.0f, 0, 1);  // and the recipe's T 128 rows at once
+    b5_check(m, 32000, 8, 3, 1.0f, 0.0f, 0, 0);     // no weights, a padded stride
+    b5_check(m, 32000, 7, 0, 1.5f, 30.0f, 3, 1);    // scale, softcap and suppressed ids
+    b5_check(m, 257, 13, 1, 0.0f, 0.0f, 3, 1);      // a block's edge; scale 0 reads as none
+    b5_check(m, 1, 3, 0, 1.0f, 0.0f, 0, 1);         // one token
+    b5_check(m, 1025, 6, 0, 0.7f, 15.0f, 0, 0);     // a softcap without suppression
+}
+
+// R8.24.1 B7 (G0): the device twins of AdamW (gpu_train_adam_check: k_tadam)
+// and of the step log's gradient norms (gpu_train_gnorm_check: k_tgnorm)
+// against the host's own code (model_adam_ref: adam_buf;
+// model_grad_norms_ref: model_lora_grad_norms on adapters with the same
+// gradients). Written before the kernels. A T3 build's host does the written
+// operations, so memcmp on th, m and v and on the max and mean (as doubles).
+// The default build's host may contract and vectorize under -ffast-math (its
+// sqrtf may be a reciprocal estimate refined); there, and against the update
+// in double in both builds, each th within 2^-20 (|th| + lr), each m within
+// 2^-21 (|m| + |g|), each v within 2^-21 (|v| + g^2), and the norms within
+// 2^-32 relative (a double sum of 3e5 terms may carry n 2^-53 ~ 3e-11 of its
+// own); the device's subnormals read as zero in the default build.
+// A non-finite gradient must fail both, and the norms come back only then.
+static void b7_adam_check(model_t *m, size_t n, int edges) {   // edges 2: the cancellation case
+    float *th = malloc(sizeof(float) * n), *g = malloc(sizeof(float) * n);
+    float *mo = malloc(sizeof(float) * n), *vo = malloc(sizeof(float) * n);
+    for (size_t i = 0; i < n; i++) {
+        th[i] = frnd(); g[i] = frnd() * 1e-2f; mo[i] = frnd() * 1e-3f;
+        vo[i] = (frnd() * 0.5f + 0.5f) * 1e-5f;
+    }
+    if (edges && n > 8) {
+        g[0] = 0.0f; g[1] = -0.0f; g[2] = 1.0e19f; g[3] = 1.0e-30f; mo[4] = 0.0f; vo[4] = 0.0f;
+        uint32_t q = 0x7fc00001u; memcpy(&g[5], &q, 4); th[6] = 0.0f; g[7] = -3.0e18f;
+    }
+    // the cancellation case (edges 2): the moment term made to cancel three
+    // quarters of wd*th, so the sum's ulp is under the product's and the
+    // weight-decay step's rounding shows; wd not a power of two (else wd*th is
+    // exact) and lr large enough that a unit of the sum moves th
+    float lr = edges == 2 ? 32.0f : 1e-4f, b1 = 0.9f, b2 = 0.999f, eps = 1e-8f;
+    float wd = edges == 2 ? 0.3f : 0.01f;
+    float bc1 = 1.0f - powf(b1, 3.0f), bc2 = 1.0f - powf(b2, 3.0f);
+    if (edges == 2)
+        for (size_t i = 0; i < n; i++) {
+            g[i] = 0.0f;
+            vo[i] = bc2 / b2;                       // vh = 1: the denominator is 1 + eps
+            mo[i] = -0.75f * wd * th[i] * bc1 / b1; // mh = b1 m / bc1 ~ -0.75 wd th
+        }
+    float *th_h = malloc(sizeof(float) * n), *mo_h = malloc(sizeof(float) * n), *vo_h = malloc(sizeof(float) * n);
+    float *th_d = malloc(sizeof(float) * n), *mo_d = malloc(sizeof(float) * n), *vo_d = malloc(sizeof(float) * n);
+    memcpy(th_h, th, 4 * n); memcpy(mo_h, mo, 4 * n); memcpy(vo_h, vo, 4 * n);
+    memcpy(th_d, th, 4 * n); memcpy(mo_d, mo, 4 * n); memcpy(vo_d, vo, 4 * n);
+    model_adam_ref(th_h, g, mo_h, vo_h, n, lr, b1, b2, eps, wd, bc1, bc2);
+    tadam_args a = { (uint64_t)n, lr, b1, b2, eps, wd, bc1, bc2 };
+    bool ok = gpu_train_adam_check(m, &a, th_d, g, mo_d, vo_d);
+    CHECK(ok, "adam twin n %zu: declined (no kernel in this PTX?)", n);
+    size_t bad = 0, hbad = 0, abad = 0, nonfin_diff = 0;
+    double wa = 0;
+    for (size_t i = 0; ok && i < n; i++) {
+        double gd = g[i];
+        double md = (double)b1 * mo[i] + (1.0 - (double)b1) * gd;
+        double vd = (double)b2 * vo[i] + (1.0 - (double)b2) * gd * gd;
+        double td = th[i] - lr * ((md / bc1) / (sqrt(vd / bc2) + eps) + wd * (double)th[i]);
+        double lt = 0x1p-20 * (fabs(td) + lr) + 1e-37, lm = 0x1p-21 * (fabs(md) + fabs(gd)) + 1e-37;
+        double lv = 0x1p-21 * (fabs(vd) + gd * gd) + 1e-37;
+        float D[3] = { th_d[i], mo_d[i], vo_d[i] }, H[3] = { th_h[i], mo_h[i], vo_h[i] };
+#ifdef RUNNER_PORTABLE_MATH
+        for (int k = 0; k < 3; k++) {
+            bool same = b2_nan(H[k]) || b2_nan(D[k]) ? b2_nan(H[k]) && b2_nan(D[k]) : !memcmp(&H[k], &D[k], 4);
+            if (!same && !bad++)
+                fprintf(stderr, "FAIL: adam twin differs from the T3 host at [%zu] (%d): %.9g/%.9g\n",
+                        i, k, D[k], H[k]);
+        }
+#else
+        for (int k = 0; k < 3; k++) D[k] = b2_ftz(D[k]);
+        double L3[3] = { lt, lm, lv };
+        if (b_nonfin(g[i])) {   // a non-finite input: only T3 gates it (the default host is not IEEE there)
+            for (int k = 0; k < 3; k++) if (!nf_same(D[k], H[k])) { nonfin_diff++; break; }
+            continue;
+        }
+        for (int k = 0; k < 3; k++)
+            if (gate_err(D[k], H[k], L3[k]) > 1.0 && !hbad++)
+                fprintf(stderr, "FAIL: adam twin is off the default build's host at [%zu] (%d): %.9g/%.9g\n",
+                        i, k, D[k], H[k]);
+#endif
+        if (!d_nonfin(td) && !d_nonfin(vd) && !b2_nan(g[i])) {
+            double e = anchor_err(th_d[i], td, lt), e2 = anchor_err(mo_d[i], md, lm), e3 = anchor_err(vo_d[i], vd, lv);
+            if (e2 > e) e = e2;
+            if (e3 > e) e = e3;
+            if (e > wa) wa = e;
+            if (e > 1.0 && !abad++)
+                fprintf(stderr, "FAIL: adam twin is not the update in double at [%zu]: th %.9g (%.9g) m %.9g "
+                        "(%.9g) v %.9g (%.9g)\n", i, th_d[i], td, mo_d[i], md, vo_d[i], vd);
+        }
+    }
+    if (ok) nan_control("adam twin", 0.5f, 0.5, 1e-6);
+    CHECK(!bad, "adam twin n %zu: %zu values differ from the T3 host's bits", n, bad);
+    CHECK(!hbad, "adam twin n %zu: %zu values off the default build's host", n, hbad);
+    CHECK(!abad, "adam twin n %zu: %zu values off the update in double (worst %.3g of the bound)", n, abad, wa);
+    if (ok)
+        printf("adam twin n %7zu%s: host %s; against the update in double %.3g of the bound; "
+               "non-finite inputs differing (no verdict outside T3): %zu\n", n,
+               edges == 2 ? " cancel" : edges ? " edges" : "",
+#ifdef RUNNER_PORTABLE_MATH
+               "T3 (memcmp)",
+#else
+               "default (bound, subnormals flushed)",
+#endif
+               wa, nonfin_diff);
+    free(th); free(g); free(mo); free(vo); free(th_h); free(mo_h); free(vo_h); free(th_d); free(mo_d); free(vo_d);
+}
+static void b7_gnorm_check(model_t *m, int L, int r, int nan_at) {
+    // the recipe's projections (Qwen3-4B: hidden 2560, q 4096, kv 1024, ffn 9728)
+    const int NI[7] = { 2560, 2560, 2560, 4096, 2560, 2560, 9728 };
+    const int NO[7] = { 4096, 1024, 1024, 2560, 9728, 9728, 2560 };
+    size_t total = 0;
+    for (int l = 0; l < L; l++)
+        for (int s = 0; s < 7; s++)
+            if (!(l == 1) && !(l % 5 == 2 && s == 1)) total += (size_t)r * (NI[s] + NO[s]);
+    float *arena = malloc(sizeof(float) * total);
+    float **ga = calloc((size_t)L * 7, sizeof(float *)), **gb = calloc((size_t)L * 7, sizeof(float *));
+    uint64_t *off = malloc(sizeof(uint64_t) * L * 14), *len = malloc(sizeof(uint64_t) * L * 14);
+    int *lseg = malloc(sizeof(int) * (L + 1)), nseg = 0;
+    size_t pos = 0;
+    for (int l = 0; l < L; l++) {
+        lseg[l] = nseg;
+        for (int s = 0; s < 7; s++) {
+            if (l == 1 || (l % 5 == 2 && s == 1)) continue;   // a layer and some slots with no adapter
+            size_t na = (size_t)r * NI[s], nb = (size_t)NO[s] * r;
+            ga[l * 7 + s] = arena + pos; off[nseg] = pos; len[nseg++] = na; pos += na;
+            gb[l * 7 + s] = arena + pos; off[nseg] = pos; len[nseg++] = nb; pos += nb;
+        }
+    }
+    lseg[L] = nseg;
+    for (size_t i = 0; i < total; i++) arena[i] = frnd() * (i % 1013 == 0 ? 3.0f : 1e-3f);
+    if (nan_at >= 0) { uint32_t q = 0x7fc00000u; memcpy(&arena[(size_t)nan_at % total], &q, 4); }
+    double mxh = -1, mnh = -1, mxd = -2, mnd = -2;
+    int nin[7], nout[7];
+    for (int s = 0; s < 7; s++) { nin[s] = NI[s]; nout[s] = NO[s]; }
+    bool fh = model_grad_norms_ref(L, r, nin, nout, ga, gb, &mxh, &mnh);
+    bool fd = false;
+    bool ok = gpu_train_gnorm_check(m, arena, total, off, len, nseg, lseg, L, &mxd, &mnd, &fd);
+    CHECK(ok, "gnorm twin L %d: declined (no kernel in this PTX?)", L);
+    if (ok) {
+        CHECK(fh == fd, "gnorm twin L %d: finite %d on the device, %d on the host", L, fd, fh);
+        if (fh && fd) {
+            // the anchor: each layer's sum compensated in double
+            double amx = 0, asum = 0; int layers = 0;
+            for (int l = 0; l < L; l++) {
+                if (lseg[l] == lseg[l + 1]) continue;
+                double s = 0, c = 0;
+                for (int k = lseg[l]; k < lseg[l + 1]; k++)
+                    for (uint64_t i = 0; i < len[k]; i++) {
+                        double y = (double)arena[off[k] + i] * arena[off[k] + i] - c, t = s + y;
+                        c = (t - s) - y; s = t;
+                    }
+                double nr = sqrt(s);
+                if (nr > amx) amx = nr;
+                asum += nr; layers++;
+            }
+            double amn = asum / layers;
+#ifdef RUNNER_PORTABLE_MATH
+            CHECK(!memcmp(&mxh, &mxd, 8) && !memcmp(&mnh, &mnd, 8), "gnorm twin L %d: max %.17g/%.17g "
+                  "mean %.17g/%.17g differ from the T3 host's bits", L, mxd, mxh, mnd, mnh);
+#else
+            CHECK(!d_nonfin(mxd) && !d_nonfin(mnd) && fabs(mxd - mxh) <= 0x1p-32 * mxh &&
+                  fabs(mnd - mnh) <= 0x1p-32 * mnh, "gnorm twin L %d: "
+                  "max %.17g/%.17g mean %.17g/%.17g off the default build's host", L, mxd, mxh, mnd, mnh);
+#endif
+            CHECK(!d_nonfin(mxd) && !d_nonfin(mnd) && fabs(mxd - amx) <= 0x1p-32 * amx &&
+                  fabs(mnd - amn) <= 0x1p-32 * amn, "gnorm twin L %d: "
+                  "max %.17g (%.17g) mean %.17g (%.17g) off the compensated sums", L, mxd, amx, mnd, amn);
+        }
+        printf("gnorm twin L %2d r %d%s: host %s; finite %d/%d; max %.9g mean %.9g\n", L, r,
+               nan_at >= 0 ? " one NaN" : "",
+#ifdef RUNNER_PORTABLE_MATH
+               "T3 (memcmp)",
+#else
+               "default (bound 2^-32)",
+#endif
+               fd, fh, mxd, mnd);
+    }
+    free(arena); free(ga); free(gb); free(off); free(len); free(lseg);
+}
+static void b7_checks(model_t *m) {
+    b7_adam_check(m, 100003, 1);
+    b7_adam_check(m, 1, 0);
+    b7_adam_check(m, 257, 1);
+    b7_adam_check(m, 4099, 2);       // the weight-decay step's rounding made visible
+    b7_gnorm_check(m, 36, 8, -1);     // the recipe: 36 layers, rank 8, every projection
+    b7_gnorm_check(m, 3, 1, -1);
+    b7_gnorm_check(m, 36, 8, 123457); // a NaN gradient fails both
+}
+
 int main(void) {
     f16_init();
     model_t m;
@@ -1881,6 +2252,8 @@ int main(void) {
     b8_checks(&m);
     b_add_checks(&m);
     b4_checks(&m);
+    b5_checks(&m);
+    b7_checks(&m);
     gpu_train_free(&m);
     free(keep_pinned);
     for (size_t k = 0; k < sizeof(keep) / sizeof(*keep); k++) free(keep[k]);

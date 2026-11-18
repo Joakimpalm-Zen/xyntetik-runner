@@ -409,6 +409,28 @@ bool   gpu_train_add_check(model_t *m, const tadd_args *a, float *x, const float
 // no kernel in this PTX, or a shape or kind it does not take.
 bool   gpu_train_attn_fw_check(model_t *m, const tattn_args *a, const void *kc,
                                const void *vc, const float *q, float *ao);
+// R8.24.1 B5, the kernel gate's entry: the device twin of the head (k_thead)
+// over a->rows host rows of a->V logits a->stride apart, in place: for each
+// row with targets[r] >= 0, lse[r] and z_target[r] (the transformed row's
+// normalizer and target logit) and the row's adjoint (pos_w[r] its weight,
+// pos_w may be NULL; suppress: a->n_suppress ids). false: no context or no
+// kernel in this PTX.
+bool   gpu_train_head_check(model_t *m, const thead_args *a, float *z, const int32_t *targets,
+                            const float *pos_w, const int32_t *suppress, double *lse,
+                            float *z_target);
+// R8.24.1 B7, the kernel gates' entries: the device twin of adam_buf (k_tadam)
+// over a->n host parameters, th, mo and vo in place; and of the step log's
+// gradient norms (k_tgnorm) over host gradients g: layer l's segments are
+// layer_seg[l] .. layer_seg[l + 1] - 1, segment k the seg_len[k] floats at
+// g + seg_off[k], in the host's table order (slots ascending, A then B). Out:
+// the max and mean over the layers that have a segment of the square root
+// of each layer's double sum of squares, and *finite. false: no context or
+// no kernel in this PTX.
+bool   gpu_train_adam_check(model_t *m, const tadam_args *a, float *th, const float *g,
+                            float *mo, float *vo);
+bool   gpu_train_gnorm_check(model_t *m, const float *g, size_t n_g, const uint64_t *seg_off,
+                             const uint64_t *seg_len, int n_seg, const int *layer_seg,
+                             int n_layer, double *max_out, double *mean_out, bool *finite);
 bool   gpu_train_ffn_check(model_t *m, int act, const float *g, const float *u,
                            const float *dh, float *h, float *dg, float *du, int n);
 // R8.24.1 B6, the kernel gate's entry: the device twins of one site's adapter

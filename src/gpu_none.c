@@ -252,6 +252,25 @@ bool gpu_train_kv_store_check(model_t *m, const tkv_args *a, const float *src,
     (void)m; (void)a; (void)src; (void)dst;
     return false;
 }
+bool gpu_train_adam_check(model_t *m, const tadam_args *a, float *th, const float *g,
+                          float *mo, float *vo) {
+    (void)m; (void)a; (void)th; (void)g; (void)mo; (void)vo;
+    return false;
+}
+bool gpu_train_gnorm_check(model_t *m, const float *g, size_t n_g, const uint64_t *seg_off,
+                           const uint64_t *seg_len, int n_seg, const int *layer_seg,
+                           int n_layer, double *max_out, double *mean_out, bool *finite) {
+    (void)m; (void)g; (void)n_g; (void)seg_off; (void)seg_len; (void)n_seg; (void)layer_seg;
+    (void)n_layer; (void)max_out; (void)mean_out; (void)finite;
+    return false;
+}
+bool gpu_train_head_check(model_t *m, const thead_args *a, float *z, const int32_t *targets,
+                          const float *pos_w, const int32_t *suppress, double *lse,
+                          float *z_target) {
+    (void)m; (void)a; (void)z; (void)targets; (void)pos_w; (void)suppress; (void)lse;
+    (void)z_target;
+    return false;
+}
 bool gpu_train_attn_fw_check(model_t *m, const tattn_args *a, const void *kc,
                              const void *vc, const float *q, float *ao) {
     (void)m; (void)a; (void)kc; (void)vc; (void)q; (void)ao;

@@ -8918,6 +8918,8 @@ typedef struct {
     CUdeviceptr res_tape, res_dx, rb[15];
     size_t      res_tape_cap, res_dx_cap, rb_cap[15];
     struct rtab { CUdeviceptr an, fn, qn, kn; } *res_tab;
+    CUfunction  f_thead;                // R8.24.1 B5, the head
+    CUfunction  f_tadam, f_tgnorm;      // R8.24.1 B7, AdamW and the gradient norms
     // R8.24.1 B6: the adapter at a site (k_tlora_t, _y, _tb, _ga, _gb, _dx)
     CUfunction  f_tlora[6];
     // R8.24.1 B: the device-resident FFN. The FFN sites' adapters for a
@@ -9058,6 +9060,10 @@ bool gpu_train_init(model_t *m) {
             cu.FuncSetAttribute(t->f_tattn, CU_FUNC_ATTR_MAX_DYN_SMEM, optin - st) == 0)
             t->tattn_dyn = optin - st;
     }
+    if (cu.ModuleGetFunction(&t->f_thead, t->mod, "k_thead") != 0) t->f_thead = NULL;
+    if (cu.ModuleGetFunction(&t->f_tadam, t->mod, "k_tadam") != 0 ||
+        cu.ModuleGetFunction(&t->f_tgnorm, t->mod, "k_tgnorm") != 0)
+        t->f_tadam = t->f_tgnorm = NULL;
     {
         static const char *const LN[6] = { "k_tlora_t", "k_tlora_y", "k_tlora_tb",
                                            "k_tlora_ga", "k_tlora_gb", "k_tlora_dx" };
@@ -9479,6 +9485,103 @@ bool gpu_train_kv_store_check(model_t *m, const tkv_args *a, const float *src,
               cu.MemcpyDtoH(dst, dd, nd) == 0;
     if (ds) cu.MemFree(ds);
     if (dd) cu.MemFree(dd);
+    return ok;
+}
+
+// R8.24.1 B7 (kernels_train.cuh k_tadam, k_tgnorm): AdamW a thread an
+// element; the norms one block, a thread a layer (at most TGNORM_MAX_LAYERS).
+#define TADAM_THREADS 256
+#define TGNORM_MAX_LAYERS 1024
+bool gpu_train_adam_check(model_t *m, const tadam_args *a, float *th, const float *g,
+                          float *mo, float *vo) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->f_tadam || a->n < 1 || cu.CtxSetCurrent(t->ctx) != 0) return false;
+    size_t nb = sizeof(float) * (size_t)a->n;
+    CUdeviceptr d[4] = {0};   // th, g, m, v
+    bool ok = true;
+    for (int i = 0; i < 4 && ok; i++) ok = cu.MemAlloc(&d[i], nb) == 0;
+    ok = ok && cu.MemcpyHtoD(d[0], th, nb) == 0 && cu.MemcpyHtoD(d[1], g, nb) == 0 &&
+         cu.MemcpyHtoD(d[2], mo, nb) == 0 && cu.MemcpyHtoD(d[3], vo, nb) == 0;
+    if (ok) {
+        tadam_args aa = *a;
+        void *p[] = { &d[0], &d[1], &d[2], &d[3], &aa };
+        unsigned blocks = (unsigned)((a->n + TADAM_THREADS - 1) / TADAM_THREADS);
+        ok = cu.LaunchKernel(t->f_tadam, blocks, 1, 1, TADAM_THREADS, 1, 1, 0, NULL, p,
+                             NULL) == 0 && cu.CtxSynchronize() == 0 &&
+             cu.MemcpyDtoH(th, d[0], nb) == 0 && cu.MemcpyDtoH(mo, d[2], nb) == 0 &&
+             cu.MemcpyDtoH(vo, d[3], nb) == 0;
+    }
+    for (int i = 0; i < 4; i++)
+        if (d[i]) cu.MemFree(d[i]);
+    return ok;
+}
+bool gpu_train_gnorm_check(model_t *m, const float *g, size_t n_g, const uint64_t *seg_off,
+                           const uint64_t *seg_len, int n_seg, const int *layer_seg,
+                           int n_layer, double *max_out, double *mean_out, bool *finite) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->f_tgnorm || n_g < 1 || n_seg < 1 || n_layer < 1 ||
+        n_layer > TGNORM_MAX_LAYERS || cu.CtxSetCurrent(t->ctx) != 0)
+        return false;
+    CUdeviceptr d[5] = {0};   // g, seg_off, seg_len, layer_seg, out (max, mean, finite)
+    size_t sz[5] = { sizeof(float) * n_g, sizeof(uint64_t) * (size_t)n_seg,
+                     sizeof(uint64_t) * (size_t)n_seg, sizeof(int) * (size_t)(n_layer + 1),
+                     sizeof(double) * 3 };
+    bool ok = true;
+    for (int i = 0; i < 5 && ok; i++) ok = cu.MemAlloc(&d[i], sz[i]) == 0;
+    ok = ok && cu.MemcpyHtoD(d[0], g, sz[0]) == 0 && cu.MemcpyHtoD(d[1], seg_off, sz[1]) == 0 &&
+         cu.MemcpyHtoD(d[2], seg_len, sz[2]) == 0 && cu.MemcpyHtoD(d[3], layer_seg, sz[3]) == 0;
+    double out[3] = { 0, 0, 0 };
+    if (ok) {
+        int nl = n_layer;
+        void *p[] = { &d[0], &d[1], &d[2], &d[3], &nl, &d[4] };
+        ok = cu.LaunchKernel(t->f_tgnorm, 1, 1, 1, (unsigned)n_layer, 1, 1,
+                             (unsigned)(sizeof(double) * (size_t)n_layer + sizeof(int) * (size_t)n_layer),
+                             NULL, p, NULL) == 0 && cu.CtxSynchronize() == 0 &&
+             cu.MemcpyDtoH(out, d[4], sizeof out) == 0;
+    }
+    for (int i = 0; i < 5; i++)
+        if (d[i]) cu.MemFree(d[i]);
+    if (ok) { *max_out = out[0]; *mean_out = out[1]; *finite = out[2] != 0.0; }
+    return ok;
+}
+
+// R8.24.1 B5 (kernels_train.cuh k_thead): a block a row.
+#define THEAD_THREADS 256
+// R8.24.1 B5, for the kernel gate: the rows, targets, weights and suppressed
+// ids sent, the head run, the rows (adjoints in place), the normalizers and
+// the target logits brought back. false: no context or no kernel in this PTX.
+bool gpu_train_head_check(model_t *m, const thead_args *a, float *z, const int32_t *targets,
+                          const float *pos_w, const int32_t *suppress, double *lse,
+                          float *z_target) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->f_thead || a->V < 1 || a->rows < 1 || a->stride < a->V ||
+        a->n_suppress < 0 || cu.CtxSetCurrent(t->ctx) != 0)
+        return false;
+    size_t nz = sizeof(float) * ((size_t)(a->rows - 1) * a->stride + a->V);
+    size_t nr = (size_t)a->rows;
+    CUdeviceptr d[7] = {0};   // z, th, targets, pos_w, suppress, lse, z_target
+    size_t sz[7] = { nz, a->softcap > 0 ? nz : 0, sizeof(int32_t) * nr,
+                     pos_w ? sizeof(float) * nr : 0,
+                     sizeof(int32_t) * (size_t)a->n_suppress, sizeof(double) * nr,
+                     sizeof(float) * nr };
+    bool ok = true;
+    for (int i = 0; i < 7 && ok; i++)
+        if (sz[i]) ok = cu.MemAlloc(&d[i], sz[i]) == 0;
+    ok = ok && cu.MemcpyHtoD(d[0], z, nz) == 0 &&
+         cu.MemcpyHtoD(d[2], targets, sz[2]) == 0 &&
+         (!pos_w || cu.MemcpyHtoD(d[3], pos_w, sz[3]) == 0) &&
+         (!a->n_suppress || cu.MemcpyHtoD(d[4], suppress, sz[4]) == 0) &&
+         cu.MemsetD8(d[5], 0, sz[5]) == 0 && cu.MemsetD8(d[6], 0, sz[6]) == 0;
+    if (ok) {
+        thead_args aa = *a;
+        void *p[] = { &d[0], &d[1], &d[2], &d[3], &d[4], &d[5], &d[6], &aa };
+        ok = cu.LaunchKernel(t->f_thead, (unsigned)a->rows, 1, 1, THEAD_THREADS, 1, 1, 0,
+                             NULL, p, NULL) == 0 && cu.CtxSynchronize() == 0 &&
+             cu.MemcpyDtoH(z, d[0], nz) == 0 && cu.MemcpyDtoH(lse, d[5], sz[5]) == 0 &&
+             cu.MemcpyDtoH(z_target, d[6], sz[6]) == 0;
+    }
+    for (int i = 0; i < 7; i++)
+        if (d[i]) cu.MemFree(d[i]);
     return ok;
 }
 

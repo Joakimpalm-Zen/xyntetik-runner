@@ -17473,3 +17473,115 @@ void model_matmul(model_t *m, float *y, int y_stride, const gguf_tensor *w,
                   const float *bias, int n_batch) {
     matvec_b(m->tp, y, y_stride, w, x, x_stride, n_in, n_out, bias, n_batch);
 }
+
+// R8.24.1 B5: the head through the host's own code, for the device twin's
+// gate. model_head_fw_ref: apply_head_transforms on one row of V logits in
+// place, then train_row_lse as the taped forward's loss reads it; *z_target
+// is the transformed target logit. model_head_bw_ref: head_rows_bw's
+// per-row adjoint without a teacher, on rows of V logits in place, through
+// head_rows_bw itself (its product into dhn and the out-norm adjoint run on a
+// placeholder head of width 4 and are discarded); row r's target is
+// targets[r] and its weight pos_w[r] (pos_w may be NULL).
+double model_head_fw_ref(float *logits, int V, float logit_scale, float softcap,
+                         const int32_t *suppress, int n_suppress, int target,
+                         float *z_target) {
+    model_t mm;
+    memset(&mm, 0, sizeof(mm));
+    mm.n_vocab = V;
+    mm.logit_scale = logit_scale;
+    mm.logit_softcap = softcap;
+    mm.suppress = (int32_t *)suppress;
+    mm.n_suppress = n_suppress;
+    apply_head_transforms(&mm, logits);
+    *z_target = logits[target];
+    return train_row_lse(logits, V);
+}
+bool model_head_bw_ref(float *probs, int V, int rows, float logit_scale, float softcap,
+                       const int32_t *suppress, int n_suppress, const int32_t *targets,
+                       const float *pos_w) {
+    enum { E = 4 };
+    model_t mm;
+    memset(&mm, 0, sizeof(mm));
+    mm.n_embd = E;
+    mm.n_vocab = V;
+    mm.logit_scale = logit_scale;
+    mm.logit_softcap = softcap;
+    mm.suppress = (int32_t *)suppress;
+    mm.n_suppress = n_suppress;
+    mm.rms_eps = 1e-6f;
+    float *w = calloc((size_t)E * V, sizeof(float));
+    float *tape = calloc((size_t)rows * E, sizeof(float)), *onw = malloc(sizeof(float) * E);
+    float *dhn = calloc((size_t)rows * E, sizeof(float)), *dx = calloc((size_t)rows * E, sizeof(float));
+    int32_t *toks = calloc((size_t)rows + 1, sizeof(int32_t));
+    int *tmap = malloc(sizeof(int) * (size_t)rows);
+    float *thb = softcap > 0 ? malloc(sizeof(float) * (size_t)rows * V) : NULL;
+    bool ok = w && tape && onw && dhn && dx && toks && tmap && (softcap <= 0 || thb);
+    gguf_tensor out;
+    memset(&out, 0, sizeof(out));
+    if (ok) {
+        for (int i = 0; i < E; i++) onw[i] = 1.0f;
+        for (int r = 0; r < rows; r++) { tmap[r] = r; toks[r + 1] = targets[r]; }
+        out.type = T_F32;
+        out.n_dims = 2;
+        out.ne[0] = E;
+        out.ne[1] = (uint64_t)V;
+        out.data = w;
+        out.nbytes = sizeof(float) * (uint64_t)E * (uint64_t)V;
+        out.scale = 1.0f;
+        mm.output = &out;
+        mm.out_norm_w = onw;
+        mm.tape = tape;
+        mm.tape_T = rows;
+        ok = head_rows_bw(&mm, toks, rows, pos_w, NULL, probs, thb, dhn, tmap, rows, dx);
+    }
+    free(w); free(tape); free(onw); free(dhn); free(dx); free(toks); free(tmap); free(thb);
+    return ok;
+}
+
+// R8.24.1 B7: AdamW and the step log's gradient norms through the host's own
+// code, for the device twins' gate. model_adam_ref: adam_buf over n
+// parameters. model_grad_norms_ref: model_lora_grad_norms on a model of
+// n_layer layers whose seven projection slots (attn_q .. ffn_down) carry an
+// adapter of rank r on a placeholder base of n_in[s] x n_out[s], with the
+// gradients ga[l*7+s] ([r][n_in]) and gb[l*7+s] ([n_out][r]); a NULL ga
+// leaves that slot without an adapter. false: a gradient is not finite.
+void model_adam_ref(float *th, const float *g, float *mo, float *vo, size_t n, float lr,
+                    float b1, float b2, float eps, float wd, float bc1, float bc2) {
+    adam_buf(th, g, mo, vo, n, lr, b1, b2, eps, wd, bc1, bc2);
+}
+bool model_grad_norms_ref(int n_layer, int r, const int *n_in, const int *n_out,
+                          float *const *ga, float *const *gb, double *max_out,
+                          double *mean_out) {
+    model_t mm;
+    memset(&mm, 0, sizeof(mm));
+    mm.n_layer = n_layer;
+    mm.layers = calloc((size_t)n_layer, sizeof(layer_t));
+    mm.lora = calloc((size_t)n_layer * LW_SLOTS, sizeof(struct lora_w));
+    gguf_tensor *base = calloc(7, sizeof(gguf_tensor));
+    if (!mm.layers || !mm.lora || !base) {
+        free(mm.layers); free(mm.lora); free(base);
+        return false;
+    }
+    for (int s = 0; s < 7; s++) {
+        base[s].type = T_F32;
+        base[s].n_dims = 2;
+        base[s].ne[0] = (uint64_t)n_in[s];
+        base[s].ne[1] = (uint64_t)n_out[s];
+    }
+    for (int l = 0; l < n_layer; l++) {
+        layer_t *ly = &mm.layers[l];
+        ly->wq = &base[LW_Q]; ly->wk = &base[LW_K]; ly->wv = &base[LW_V];
+        ly->wo = &base[LW_O]; ly->w_gate = &base[LW_GATE]; ly->w_up = &base[LW_UP];
+        ly->w_down = &base[LW_DOWN];
+        for (int s = 0; s < 7; s++) {
+            struct lora_w *lw = &mm.lora[(size_t)l * LW_SLOTS + s];
+            if (!ga[l * 7 + s]) continue;
+            lw->r = r;
+            lw->ga = ga[l * 7 + s];
+            lw->gb = gb[l * 7 + s];
+        }
+    }
+    bool ok = model_lora_grad_norms(&mm, max_out, mean_out);
+    free(mm.layers); free(mm.lora); free(base);
+    return ok;
+}
