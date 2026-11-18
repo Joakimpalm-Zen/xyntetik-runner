@@ -365,3 +365,28 @@ def test_a_sample_refuses_by_name(runner_bin, run8, fixture):
         assert r.returncode != 0 and "between 1 and 4" in r.stdout + r.stderr, (n, r.stdout + r.stderr)
     r = _sample(runner_bin, rec_path, rec, "--seed", SEED, "--segment", "2..4")
     assert r.returncode != 0 and "--seed is the auditor's seed of --sample" in r.stderr, r.stderr
+
+
+def test_a_report_never_overwrites_the_record_or_a_start_file(runner_bin, run8):
+    """--report is written beside its target and moved over it whole; it replaces an earlier sample report, and
+    refuses any file that is not one (the record, a checkpoint), which stays as it was."""
+    d, out, rec_path, rec, segs = run8
+    for victim in (rec_path, _ck(out, 2)):
+        before = victim.read_bytes()
+        r = _sample(runner_bin, rec_path, rec, "--sample", 1, "--seed", SEED, "--report", victim)
+        assert r.returncode != 0 and "not a sample report" in r.stderr, (victim, r.stdout + r.stderr)
+        assert victim.read_bytes() == before, victim
+    rep = d / "audit.json"
+    for _ in range(2):   # a second run replaces the first report
+        r = _sample(runner_bin, rec_path, rec, "--sample", 1, "--seed", SEED, "--report", rep)
+        assert r.returncode == 0 and json.loads(rep.read_text())["verdict"] == "VERIFIED", r.stdout + r.stderr
+    assert not list(d.glob("audit.json.*")), list(d.glob("audit.json.*"))
+
+
+def test_a_sample_checks_the_record_once_before_it_draws(runner_bin, run8):
+    """The record's own checks (schema, signature, determinism) run once, before the draw: an unsigned record
+    with --trust-key is refused there, not once per drawn segment."""
+    d, out, rec_path, rec, segs = run8
+    r = _sample(runner_bin, rec_path, rec, "--sample", 3, "--seed", SEED, "--trust-key", "a" * 64)
+    assert r.returncode == 2 and r.stdout.count("MISMATCH signature") == 1, (r.stdout + r.stderr)[-600:]
+    assert "sample: drawn" not in r.stdout, r.stdout
