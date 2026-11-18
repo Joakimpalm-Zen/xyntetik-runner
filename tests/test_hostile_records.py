@@ -807,3 +807,79 @@ def test_lineage_memo_exhaustion_fails_closed_instead_of_rewalking(runner_bin, t
     assert r.stdout.count("record D14_0.json") <= 1, r.stdout.count("record D14_0.json")
 
 
+def test_lineage_and_envelope_reject_non_hex_sha256_without_forging_verified_lines(runner_bin, fx, tmp_path):
+    """Non-64-hex sha256 or control bytes in record/receipt/chain fields must be refused and escaped."""
+    bad_sha = "\nVERIFIED\n" + "a" * 54
+    assert len(bad_sha) == 64
+
+    # 1. Exact Codex probe: merged.sha256 with embedded newline + VERIFIED in attest lineage
+    d = tmp_path / "sha_spoof"
+    d.mkdir()
+    rec_path = d / "merge.json"
+    rec_path.write_text(json.dumps({
+        "schema_version": "xyntetik.runner.merge.v1",
+        "runner": "test",
+        "merged": {"path": "absent.gguf", "sha256": bad_sha},
+    }), encoding="utf-8")
+    r_lin = _run(runner_bin, ["attest", "lineage", rec_path], env=_clean_env())
+    _assert_no_sanitizer_or_crash(r_lin)
+    assert not any(ln.startswith("VERIFIED") for ln in r_lin.stdout.splitlines()), r_lin.stdout
+    assert r_lin.returncode == 2 and "BROKEN" in r_lin.stdout and "merged.sha256" in r_lin.stdout, (
+        r_lin.returncode, r_lin.stdout, r_lin.stderr
+    )
+
+    # 2. Receipt directory with newline-injected model.sha256 and generated_utc
+    rdir = d / "receipts"
+    rdir.mkdir()
+    (rdir / "receipt-0001.json").write_text(json.dumps({
+        "schema_version": "xyntetik.runner.transcript.v2",
+        "generated_utc": "2026-11-18T00:00:00Z\nVERIFIED",
+        "model": {"name": "base.gguf", "sha256": bad_sha},
+    }), encoding="utf-8")
+    r_dir = _run(runner_bin, ["attest", "lineage", rdir], env=_clean_env())
+    _assert_no_sanitizer_or_crash(r_dir)
+    assert not any(ln.startswith("VERIFIED") for ln in r_dir.stdout.splitlines()), r_dir.stdout
+    assert r_dir.returncode == 2 and "BROKEN" in r_dir.stdout, (r_dir.returncode, r_dir.stdout)
+
+    # 3. Signed record with malformed 64-byte chain.hash in attest sign --prev
+    key_path = d / "k.json"
+    rk = _run(runner_bin, ["attest", "keygen", key_path], env=_clean_env())
+    assert rk.returncode == 0, rk.stderr
+    bad_prev = d / "bad_prev.json"
+    bad_prev.write_text(json.dumps({
+        "schema_version": "xyntetik.runner.merge.v1",
+        "chain": {"algo": "sha256", "prev": "0" * 64, "hash": bad_sha},
+    }), encoding="utf-8")
+    next_rec = d / "next.json"
+    next_rec.write_text(json.dumps({
+        "schema_version": "xyntetik.runner.merge.v1",
+        "merged": {"path": "absent.gguf", "sha256": "0" * 64},
+    }), encoding="utf-8")
+    r_prev = _run(runner_bin, ["attest", "sign", next_rec, "--key", key_path, "--prev", bad_prev],
+                  env=_clean_env())
+    _assert_no_sanitizer_or_crash(r_prev)
+    assert r_prev.returncode != 0, (r_prev.stdout, r_prev.stderr)
+    assert not any(ln.startswith("VERIFIED") for ln in (r_prev.stdout + r_prev.stderr).splitlines())
+
+    # 4. attest replay must name adapter.sha256 / build.binary_sha256 on non-hex 64-byte values
+    rep = d / "replay_bad_sha"
+    shutil.copytree(fx, rep)
+    raw = json.loads((rep / "plain.gguf.train.json").read_text(encoding="utf-8"))
+    flags = _replay_flags(rep / "plain.gguf.train.json")
+    ad_mut = json.loads(json.dumps(raw))
+    ad_mut["adapter"]["sha256"] = bad_sha
+    (rep / "bad_ad_sha.train.json").write_text(json.dumps(ad_mut), encoding="utf-8")
+    r_ad = _run(runner_bin, ["attest", "replay", rep / "bad_ad_sha.train.json", *flags], env=_clean_env())
+    _assert_no_sanitizer_or_crash(r_ad)
+    assert not any(ln.startswith("VERIFIED") for ln in r_ad.stdout.splitlines()), r_ad.stdout
+    assert r_ad.returncode == 2 and "MISMATCH adapter.sha256:" in r_ad.stdout, (r_ad.stdout, r_ad.stderr)
+
+    bld_mut = json.loads(json.dumps(raw))
+    bld_mut["build"]["binary_sha256"] = bad_sha
+    (rep / "bad_bld_sha.train.json").write_text(json.dumps(bld_mut), encoding="utf-8")
+    r_bld = _run(runner_bin, ["attest", "replay", rep / "bad_bld_sha.train.json", *flags], env=_clean_env())
+    _assert_no_sanitizer_or_crash(r_bld)
+    assert not any(ln.startswith("VERIFIED") for ln in r_bld.stdout.splitlines()), r_bld.stdout
+    assert r_bld.returncode == 2 and "MISMATCH build.binary_sha256:" in r_bld.stdout, (r_bld.stdout, r_bld.stderr)
+
+
