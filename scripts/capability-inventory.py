@@ -55,7 +55,7 @@ SOURCE_RULES = [
     ("substrate", {"gguf", "tokenizer", "unicode_classes", "unicode_nfc", "npy", "json",
                    "compat", "arch"}),
     ("production", {"quantize", "derive", "dpo", "tdn_args"}),
-    ("proof", {"receipts", "bundle", "provenance", "envelope", "lineage", "oms", "ecdsa",
+    ("proof", {"receipts", "bundle", "provenance", "envelope", "lineage", "train_record", "oms", "ecdsa",
                "ed25519", "mldsa", "watermark", "build_arch", "micro_sched"}),
     ("desktop", {"tray", "tray_win", "tray_macos", "tray_stub", "instances"}),
     ("shared", {"main", "model", "completion", "runner"}),

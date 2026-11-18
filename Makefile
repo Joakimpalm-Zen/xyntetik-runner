@@ -492,7 +492,7 @@ $(OBJDIR)/metal.o: src/metal.m $(HDR) src/kernels_metal.h src/kernels_tensor_met
 
 SRC = src/gguf.c src/compat.c $(QUANTS_OBJ) src/instances.c src/tokenizer.c src/model.c src/sample.c src/dpo.c \
       src/vramreg.c src/npy.c \
-      src/template.c src/jsonmode.c $(SCHEMA_SRC) $(QUANTIZE_OBJ) src/engine.c src/decide.c src/clef.c src/json.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/http.c src/registry.c src/provenance.c src/lineage.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c src/session.c src/scheduler.c src/completion.c src/api_responses.c src/api_anthropic.c src/server.c src/hfhub.c src/bundle.c \
+      src/template.c src/jsonmode.c $(SCHEMA_SRC) $(QUANTIZE_OBJ) src/engine.c src/decide.c src/clef.c src/json.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/http.c src/registry.c src/provenance.c src/lineage.c src/train_record.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c src/session.c src/scheduler.c src/completion.c src/api_responses.c src/api_anthropic.c src/server.c src/hfhub.c src/bundle.c \
       src/derive.c src/main.c $(GPU_SRC) $(TRAY_SRC)
 
 # Cross-compile a static riscv64 binary with zig (no toolchain install;
@@ -4550,7 +4550,7 @@ test-makefile-sane:
 		exit 1; \
 	}; \
 	if grep -q 'system(' src/tray.c src/tray_*.c src/tray_*.m; then echo "FAIL: tray launches through a shell"; exit 1; fi; \
-	for f in src/model.c src/engine.c src/completion.c src/server.c src/scheduler.c src/registry.c src/provenance.c src/lineage.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c src/session.c src/api_responses.c src/api_anthropic.c src/template.c $(SCHEMA_SRC) src/jsonmode.c src/tokenizer.c src/sample.c src/envelope.c src/oms.c src/http.c src/json.c src/gguf.c; do \
+	for f in src/model.c src/engine.c src/completion.c src/server.c src/scheduler.c src/registry.c src/provenance.c src/lineage.c src/train_record.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c src/session.c src/api_responses.c src/api_anthropic.c src/template.c $(SCHEMA_SRC) src/jsonmode.c src/tokenizer.c src/sample.c src/envelope.c src/oms.c src/http.c src/json.c src/gguf.c; do \
 	  $(CC) -fsyntax-only -std=gnu11 -Werror=vla -DRUNNER_GPU_CUDA -I src $$f 2>/dev/null || { \
 	    echo "FAIL: $$f declares a variable-length stack array (the forward runs on 512 KB server threads; size by file values goes on the heap)"; exit 1; }; done; \
 	tline=$$($(MAKE) -Bn --no-print-directory T3=1 CFLAGS="-O3 -ffast-math" runner | grep -- ' src/model.c '); \
