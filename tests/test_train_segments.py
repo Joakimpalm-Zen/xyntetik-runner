@@ -120,3 +120,72 @@ def test_resumed_runs_are_the_straight_run_byte_for_byte_in_a_t3_build(runner_bi
     _run(runner_bin, [*[x if x != "3e-3" else "2e-3" for x in _recipe(fixture, 8, 1)], *sched, "-t", 2,
                       "--train-out", ctl])
     assert _sha(ctl) != _sha(straight)
+
+
+# ---- attest replay RECORD --segment A..B: re-run steps A+1..B from the step-A checkpoint beside the record ----
+
+def _attest(exe, args):
+    return subprocess.run([str(exe), "attest", "replay", *map(str, args)], cwd=ROOT, capture_output=True, text=True,
+                          timeout=600, env=_env())
+
+
+def _same_binary(rec):
+    return ["--allow-same-binary"] if rec.get("determinism") == "cpu-same-binary" else []
+
+
+@pytest.fixture
+def run6(runner_bin, fixture):
+    out = fixture / "a.gguf"
+    _run(runner_bin, [*_recipe(fixture, 6, 2), "-t", 2, "--train-out", out])
+    rec_path = pathlib.Path(str(out) + ".train.json")
+    return fixture, out, rec_path, json.loads(rec_path.read_text())
+
+
+def test_a_segment_replays_from_its_checkpoint_and_verifies(runner_bin, run6):
+    d, out, rec_path, rec = run6
+    r = _attest(runner_bin, [rec_path, "--segment", "2..4", "-t", 2, *_same_binary(rec)])
+    assert r.returncode == 0, (r.stdout + r.stderr)[-800:]
+    assert "VERIFIED segment 2..4" in r.stdout, r.stdout
+    r = _attest(runner_bin, [rec_path, "--segment", "0..2", "-t", 2, *_same_binary(rec)])   # from the run's start
+    assert r.returncode == 0 and "VERIFIED segment 0..2" in r.stdout, (r.stdout + r.stderr)[-800:]
+
+
+def test_a_start_file_that_is_not_the_recorded_checkpoint_is_refused_before_training(runner_bin, run6):
+    d, out, rec_path, rec = run6
+    start = _ck(out, 2)
+    start.write_bytes(start.read_bytes() + b"\0")
+    r = _attest(runner_bin, [rec_path, "--segment", "2..4", "-t", 2, *_same_binary(rec)])
+    assert r.returncode == 2 and "is not the checkpoint the record names" in r.stdout + r.stderr, r.stdout + r.stderr
+    assert "train:" not in r.stderr                    # refused before any step ran
+
+
+def test_an_edited_entry_or_a_moved_chain_is_refused(runner_bin, run6):
+    d, out, rec_path, rec = run6
+    text = rec_path.read_text()
+    bad = json.loads(text)
+    bad["checkpoints"][1]["adapter_sha256"] = "0" * 64
+    rec_path.write_text(json.dumps(bad))
+    r = _attest(runner_bin, [rec_path, "--segment", "2..4", "-t", 2, *_same_binary(rec)])
+    assert r.returncode == 2 and "checkpoint_chain" in r.stdout + r.stderr, r.stdout + r.stderr
+    rec_path.write_text(text.replace('"lr":', '"lr":1', 1))   # the chain moved to another recipe: h_0 differs
+    r = _attest(runner_bin, [rec_path, "--segment", "2..4", "-t", 2, *_same_binary(rec)])
+    assert r.returncode == 2 and "h0" in r.stdout + r.stderr, r.stdout + r.stderr
+
+
+def test_a_segment_that_is_not_two_recorded_checkpoints_is_refused_by_name(runner_bin, run6):
+    d, out, rec_path, rec = run6
+    for seg, why in (("2..3", "not a checkpoint"), ("4..2", "ends before it starts"), ("2", "A..B")):
+        r = _attest(runner_bin, [rec_path, "--segment", seg, "-t", 2, *_same_binary(rec)])
+        assert r.returncode != 0 and why in r.stdout + r.stderr, (seg, r.stdout + r.stderr)
+
+
+def test_a_teacher_dpo_or_full_record_is_refused_for_segments_by_name(runner_bin, run6):
+    d, out, rec_path, rec = run6
+    text = rec_path.read_text()
+    for field, value, name in (("teacher", {"path": "t"}, "a teacher"), ("dpo", {"path": "p"}, "DPO"),
+                               ("variant", {"path": "v", "sha256": "0" * 64}, "--train-full")):
+        r0 = json.loads(text)
+        r0[field] = value
+        rec_path.write_text(json.dumps(r0))
+        r = _attest(runner_bin, [rec_path, "--segment", "2..4", "-t", 2, *_same_binary(rec)])
+        assert r.returncode == 2 and name in r.stdout + r.stderr, (field, r.stdout + r.stderr)
