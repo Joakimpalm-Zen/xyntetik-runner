@@ -2480,6 +2480,7 @@ typedef struct {
     const char *recipe_flag;   // the first R8.17 flag given, for refusals
     bool train_gpu;            // R8.19 --train-gpu: every product on CUDA
     bool train_full;           // R8.25.2 --train-full: every dense projection, no adapter
+    bool train_scales;         // R4.41 experiment --train-scales: per-block fp16 scales
     bool train_kv_f32;         // R8.25.2 --train-kv-f32: an f32 KV cache for a training run
     bool kv_f32_cli;           // R6.32 --kv f32: the same cache for any run, CPU only
     uint64_t train_gpu_budget; // --train-gpu-budget BYTES (0: the free memory)
@@ -2730,6 +2731,7 @@ static const cli_opt CLI_OPTS[] = {
     { "--weight-decay", NULL, OPT_FLOAT, false, OPT_AT(float, weight_decay), OPT_NONE, 0, 1 },
     { "--train-gpu", NULL, OPT_FLAG, false, OPT_AT(bool, train_gpu), OPT_NONE, 0, 0 },
     { "--train-full", NULL, OPT_FLAG, true, OPT_AT(bool, train_full), OPT_NONE, 0, 0 },
+    { "--train-scales", NULL, OPT_FLAG, false, OPT_AT(bool, train_scales), OPT_NONE, 0, 0 },
     { "--train-resume", NULL, OPT_STR, true, OPT_AT(const char *, train_resume), OPT_NONE, 0, 0 },
     { "--eval-every", NULL, OPT_INT, true, OPT_AT(int, eval_every), OPT_NONE, 1, INT_MAX },
     { "--stop-file", NULL, OPT_STR, true, OPT_AT(const char *, stop_file), OPT_NONE, 0, 0 },
@@ -5315,6 +5317,14 @@ static bool train_adam_step(cli_opts *o, cli_run *rt, int step, double lr) {
         fprintf(stderr, "error: cannot allocate optimizer state\n");
         return false;
     }
+    if (model_scales_on(&rt->m)) {
+        if (model_scales_adam_step(&rt->m, (float)lr, (float)TRAIN_ADAM_BETA1,
+                                   (float)TRAIN_ADAM_BETA2, (float)TRAIN_ADAM_EPS,
+                                   o->weight_decay, step))
+            return true;
+        fprintf(stderr, "error: cannot allocate optimizer state\n");
+        return false;
+    }
     if (model_lora_adam_step(&rt->m, (float)lr, (float)TRAIN_ADAM_BETA1,
                              (float)TRAIN_ADAM_BETA2, (float)TRAIN_ADAM_EPS,
                              o->weight_decay, step))
@@ -5348,11 +5358,36 @@ static bool train_full_prepare(cli_opts *o, cli_run *rt) {
     return true;
 }
 
+static bool train_scales_prepare(cli_opts *o, cli_run *rt) {
+    const char *no = o->train_full ? "--train-full" : o->dpo_path ? "--train-dpo"
+                   : o->lora_path ? "--lora" : o->train_resume ? "--train-resume"
+                   : o->save_every > 0 ? "--save-every"
+                   : o->stop_file ? "--stop-file" : NULL;
+    if (no) {
+        fprintf(stderr, "error: --train-scales does not take %s yet\n", no);
+        return false;
+    }
+    char why[512] = "";
+    if (!model_scales_train_init(&rt->m, why, sizeof why)) {
+        fprintf(stderr, "error: --train-scales: %s\n", why);
+        return false;
+    }
+    uint64_t params = 0;
+    int n = model_scales_count(&rt->m, &params);
+    fprintf(stderr, "train: scale recovery, %d projection matrices (%llu scale parameters)\n",
+            n, (unsigned long long)params);
+    return true;
+}
+
 static bool train_prepare(cli_opts *o, cli_run *rt) {
     if (o->train_kv_f32 && (o->train_gpu || rt->m.gpu || !rt->m.kv_f32)) {
         fprintf(stderr, "error: --train-kv-f32 keeps an f32 KV cache on the CPU path only "
                 "(run with --gpu off, without --train-gpu, without --kv q8, k8v4 or fp4, on a model "
                 "without tied V)\n");
+        return false;
+    }
+    if (o->train_full && o->train_scales) {
+        fprintf(stderr, "error: --train-full and --train-scales cannot be combined\n");
         return false;
     }
     if (o->train_full && !rt->m.gpu) return train_full_prepare(o, rt);
@@ -5364,7 +5399,9 @@ static bool train_prepare(cli_opts *o, cli_run *rt) {
                 "--gpu off\n");
         return false;
     }
-    if (!rt->m.lora) {
+    if (o->train_scales) {
+        if (!train_scales_prepare(o, rt)) return false;
+    } else if (!rt->m.lora) {
         uint64_t iseed = o->seed_given ? o->seed : 0;
         if (!model_lora_train_init(&rt->m, o->lora_rank,
                                    2.0f * (float)o->lora_rank, iseed))
@@ -6060,6 +6097,7 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
         long tokens = 0;
         bool ok = true;
         if (model_full_on(&rt->m)) model_full_grad_zero(&rt->m);
+        else if (model_scales_on(&rt->m)) model_scales_grad_zero(&rt->m);
         else model_lora_grad_zero(&rt->m);
         for (int b = 0; ok && b < B; b++) {
             int r = (int)(st->cursor++ % n_ex);
@@ -6103,12 +6141,15 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
         if (!ok) { rc = 1; break; }
         double ml = wsum > 0 ? loss_sum / wsum : loss_sum;
         bool full = model_full_on(&rt->m);
+        bool scales = model_scales_on(&rt->m);
         if (mean && wsum > 0) {
             if (full) model_full_grad_scale(&rt->m, (float)(1.0 / wsum));
+            else if (scales) model_scales_grad_scale(&rt->m, (float)(1.0 / wsum));
             else model_lora_grad_scale(&rt->m, (float)(1.0 / wsum));
         }
         double gmax = 0, gmean = 0;
         if (!fp_finite_f64(ml) || !(full ? model_full_grad_norms(&rt->m, &gmax, &gmean)
+                                         : scales ? model_scales_grad_norms(&rt->m, &gmax, &gmean)
                                          : model_lora_grad_norms(&rt->m, &gmax, &gmean))) {
             fprintf(stderr, "error: step %d: the loss or a gradient is not finite; "
                     "the adapter stays as step %d left it\n", step, step - 1);
@@ -6171,7 +6212,7 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
                 break;
             }
             if (!pass) {
-                if (!o->replay_train && !train_checkpoint(o, rt, st, ev, true)) { rc = 1; break; }
+                if (!o->replay_train && !model_scales_on(&rt->m) && !train_checkpoint(o, rt, st, ev, true)) { rc = 1; break; }
                 printf("{\"killed\":{\"step\":%d,\"metric\":", step);
                 fput_json_str(stdout, o->kill_metric);
                 printf(",\"baseline\":%.6f,"
@@ -6342,6 +6383,7 @@ static const char *train_determinism(const cli_opts *o, const cli_run *rt,
     if (o->dpo_path) { exact = false; train_reason(why, "objective dpo: its loss calls the C library's double exp and log1p"); }
     if (tt) { exact = false; train_reason(why, "objective kl-to-teacher: its loss calls the C library's double exp and log"); }
     if (model_full_on(&rt->m)) { exact = false; train_reason(why, "--train-full: no cross-ISA check of full-weight training"); }
+    if (model_scales_on(&rt->m)) { exact = false; train_reason(why, "--train-scales: no cross-ISA check of scale recovery"); }
     if (rt->m.n_expert) { exact = false; train_reason(why, "mixture of experts: no cross-ISA check"); }
     if (train_has_recurrent(&rt->m)) { exact = false; train_reason(why, "recurrent layers: log1pf and erff outside pmath.h"); }
     if (!model_canon_gaps(&rt->m, gaps, sizeof gaps) || gaps[0]) {
@@ -6488,6 +6530,11 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
         sb_fmt(&rec, ",\"full_weight\":{\"tensors\":%d,\"params\":%llu,\"read_type\":\"f32\","
                "\"slots\":\"attn q k v o, ffn gate up down\"}", fn, (unsigned long long)fp);
     }
+    if (model_scales_on(&rt->m)) {
+        uint64_t sp = 0;
+        int sn = model_scales_count(&rt->m, &sp);
+        sb_fmt(&rec, ",\"scale_recovery\":{\"tensors\":%d,\"params\":%llu}", sn, (unsigned long long)sp);
+    }
     sb_fmt(&rec,
             ",\"seed\":%llu,\"lora_rank\":%d,\"alpha\":%g,\"lora_scale\":%g,"
             "\"lr\":%g,\"steps\":%d,\"ctx\":%d,"
@@ -6574,7 +6621,7 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
         free(rec.s);
         return false;
     }
-    sb_lit(&rec, model_full_on(&rt->m) ? "\"variant\":{\"path\":\"" : "\"adapter\":{\"path\":\"");
+    sb_lit(&rec, (model_full_on(&rt->m) || model_scales_on(&rt->m)) ? "\"variant\":{\"path\":\"" : "\"adapter\":{\"path\":\"");
     sb_esc(&rec, plat_path_base(o->train_out), strlen(plat_path_base(o->train_out)));
     sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, asha);
     sb_lit(&rec, "\"}}\n");
@@ -6669,9 +6716,16 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
             rc = 1;
         }
     }
-    if (!rc && !((model_full_on(&rt->m) || model_lora_save(&rt->m, o->train_out)) &&
+    if (!rc && model_scales_on(&rt->m)) {
+        bool w = model_scales_write(&rt->m, load_path, o->train_out, fwhy, sizeof fwhy);
+        if (!w) {
+            fprintf(stderr, "error: --train-scales: %s\n", fwhy);
+            rc = 1;
+        }
+    }
+    if (!rc && !((model_full_on(&rt->m) || model_scales_on(&rt->m) || model_lora_save(&rt->m, o->train_out)) &&
                  (o->replay_train != NULL ||
-                  ((!sidecar || train_optim_save(o->train_out, rt, &st, ev, o->n_eval)) &&
+                  ((!sidecar || model_scales_on(&rt->m) || train_optim_save(o->train_out, rt, &st, ev, o->n_eval)) &&
                    train_record(o, rt, load_path, from.s, o->train_teacher ? &tt : NULL,
                                 ev, resumed_at, resume_optim_sha, wctx, eot_id,
                                 first_loss, last_loss)))))
@@ -6679,7 +6733,7 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
     if (!rc && !o->replay_train)
         fprintf(stderr, "train: done — first-step loss %.4f, last-step "
                 "%.4f, %s -> %s\n", first_loss, last_loss,
-                model_full_on(&rt->m) ? "variant" : "adapter", o->train_out);
+                (model_full_on(&rt->m) || model_scales_on(&rt->m)) ? "variant" : "adapter", o->train_out);
     free(from.s);
     train_evals_free(ev, o->n_eval);
     train_teacher_close(&tt);

@@ -19,6 +19,7 @@
 
 #include <math.h>
 #include "pmath.h"
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -5851,4 +5852,93 @@ static void tpool_run_locked(tpool *tp, tp_fn fn, void *ctx, int n_items) {
         pthread_mutex_unlock(&tp->mu);
         return;
     }
+}
+
+// ------------------------------------------------ R4.41 block-scale helpers
+
+static const scale_qinfo g_scale_info[] = {
+    { T_Q3_K,  QK_K, (int)sizeof(block_q3_K),  (int)offsetof(block_q3_K, d),  -1 },
+    { T_Q4_K,  QK_K, (int)sizeof(block_q4_K),  (int)offsetof(block_q4_K, d),  (int)offsetof(block_q4_K, dmin) },
+    { T_Q5_K,  QK_K, (int)sizeof(block_q5_K),  (int)offsetof(block_q5_K, d),  (int)offsetof(block_q5_K, dmin) },
+    { T_Q6_K,  QK_K, (int)sizeof(block_q6_K),  (int)offsetof(block_q6_K, d),  -1 },
+    { T_IQ3_S, QK_K, (int)sizeof(block_iq3_s), (int)offsetof(block_iq3_s, d), -1 },
+};
+
+const scale_qinfo *quants_scale_info(int type) {
+    for (size_t i = 0; i < sizeof g_scale_info / sizeof g_scale_info[0]; i++)
+        if (g_scale_info[i].type == type) return &g_scale_info[i];
+    return NULL;
+}
+
+static inline void scale_write_f16_raw(uint8_t *dst, int off, f16_t h) {
+    memcpy(dst + off, &h, sizeof h);
+}
+
+static inline f16_t scale_read_f16_raw(const uint8_t *src, int off) {
+    f16_t h;
+    memcpy(&h, src + off, sizeof h);
+    return h;
+}
+
+void scale_block_read(const scale_qinfo *si, const void *blk,
+                      float *d0_out, float *m0_out) {
+    const uint8_t *b = (const uint8_t *)blk;
+    if (d0_out) *d0_out = f16_to_f32(scale_read_f16_raw(b, si->off_d));
+    if (m0_out) *m0_out = si->off_dmin >= 0 ? f16_to_f32(scale_read_f16_raw(b, si->off_dmin)) : 0.0f;
+}
+
+void scale_block_units(const scale_qinfo *si, const void *blk,
+                       float *unit_a, float *unit_b) {
+    uint8_t tmp[256];
+    memcpy(tmp, blk, (size_t)si->blk_bytes);
+    if (unit_a) {
+        scale_write_f16_raw(tmp, si->off_d, (f16_t)0x3c00u);   // +1.0 in fp16
+        if (si->off_dmin >= 0) scale_write_f16_raw(tmp, si->off_dmin, (f16_t)0x0000u);
+        dequant_row(si->type, tmp, unit_a, si->blk_elems);
+    }
+    if (unit_b) {
+        if (si->off_dmin >= 0) {
+            scale_write_f16_raw(tmp, si->off_d, (f16_t)0x0000u);
+            scale_write_f16_raw(tmp, si->off_dmin, (f16_t)0x3c00u);   // +1.0 in fp16; includes minus sign
+            dequant_row(si->type, tmp, unit_b, si->blk_elems);
+        } else {
+            memset(unit_b, 0, sizeof(float) * (size_t)si->blk_elems);
+        }
+    }
+}
+
+void scale_block_reconstruct(const scale_qinfo *si, const void *orig_blk,
+                             float delta_d, float delta_m, float *dst) {
+    dequant_row(si->type, orig_blk, dst, si->blk_elems);
+    if (delta_d == 0.0f && (si->off_dmin < 0 || delta_m == 0.0f)) return;
+    float d0 = 0.0f, m0 = 0.0f;
+    scale_block_read(si, orig_blk, &d0, &m0);
+    float ua[QK_K], ub[QK_K];
+    scale_block_units(si, orig_blk, delta_d != 0.0f ? ua : NULL,
+                      (si->off_dmin >= 0 && delta_m != 0.0f) ? ub : NULL);
+    float dd = delta_d != 0.0f ? d0 * expm1f(delta_d) : 0.0f;
+    float dm = (si->off_dmin >= 0 && delta_m != 0.0f) ? m0 * expm1f(delta_m) : 0.0f;
+    if (dd != 0.0f)
+        for (int i = 0; i < si->blk_elems; i++) dst[i] = fmaf(dd, ua[i], dst[i]);
+    if (dm != 0.0f)
+        for (int i = 0; i < si->blk_elems; i++) dst[i] = fmaf(dm, ub[i], dst[i]);
+}
+
+bool scale_block_patch(const scale_qinfo *si, const void *orig_blk,
+                       float delta_d, float delta_m, void *dst_blk) {
+    if (dst_blk != orig_blk) memcpy(dst_blk, orig_blk, (size_t)si->blk_bytes);
+    uint8_t *dst = (uint8_t *)dst_blk;
+    if (delta_d != 0.0f) {
+        float d0 = f16_to_f32(scale_read_f16_raw(dst, si->off_d));
+        float dn = d0 * expf(delta_d);
+        if (!fp_finite_f32(dn) || fabsf(dn) > 65504.0f) return false;
+        scale_write_f16_raw(dst, si->off_d, f32_to_f16(dn));
+    }
+    if (si->off_dmin >= 0 && delta_m != 0.0f) {
+        float m0 = f16_to_f32(scale_read_f16_raw(dst, si->off_dmin));
+        float mn = m0 * expf(delta_m);
+        if (!fp_finite_f32(mn) || fabsf(mn) > 65504.0f) return false;
+        scale_write_f16_raw(dst, si->off_dmin, f32_to_f16(mn));
+    }
+    return true;
 }

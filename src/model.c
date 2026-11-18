@@ -7017,6 +7017,7 @@ void model_free(model_t *m) {
     if (m) { free(m->micro_steps); m->micro_steps = NULL; }   // R3.72
     gpu_free(m); // nulls kcache/vcache if the GPU owned them
     gpu_train_free(m);
+    model_scales_free(m);
     model_full_free(m);
     model_lora_free(m);
     free(m->moe_host);
@@ -10815,11 +10816,92 @@ static void lora_apply_tp(tpool *tp, const struct lora_w *lw, float *y, int ys,
     tpool_run(tp, la_rows, &j, nb);
 }
 
+// ---- R4.41 experiment: per-block scale recovery ----------------------------
+// Holds continuous fp32 log-scale perturbations (d_new = d0 * exp(theta_d))
+// for a single K-quant or IQ3_S tensor; integer codes stay mmap'd in orig.
+struct scale_w {
+    gguf_tensor *t;
+    const scale_qinfo *si;
+    const uint8_t *orig;
+    uint64_t off;
+    int n_in, n_out, n_blk_row;
+    int64_t n_blocks;
+    float *theta_d, *grad_d, *m1_d, *m2_d;
+    float *theta_m, *grad_m, *m1_m, *m2_m;
+};
+
+typedef struct {
+    const struct scale_w *sw;
+    float *y;
+    const float *x;
+    int ys, xs, n_in, n_out, nb;
+} sfw_job;
+
+static void scale_fw_rows(void *ctx, int o0, int o1) {
+    sfw_job *J = ctx;
+    const struct scale_w *sw = J->sw;
+    const scale_qinfo *si = sw->si;
+    int C = sw->n_blk_row;
+    bool has_min = si->off_dmin >= 0;
+    float ua[256], ub[256];
+    for (int o = o0; o < o1; o++) {
+        for (int c = 0; c < C; c++) {
+            int64_t b = (int64_t)o * C + c;
+            float thd = sw->theta_d[b];
+            float thm = has_min ? sw->theta_m[b] : 0.0f;
+            if (thd == 0.0f && thm == 0.0f) continue;
+            const uint8_t *blk = sw->orig + (size_t)b * (size_t)si->blk_bytes;
+            float d0 = 0.0f, m0 = 0.0f;
+            scale_block_read(si, blk, &d0, &m0);
+            float dd = thd != 0.0f ? d0 * expm1f(thd) : 0.0f;
+            float dm = (has_min && thm != 0.0f) ? m0 * expm1f(thm) : 0.0f;
+            if (dd == 0.0f && dm == 0.0f) continue;
+            scale_block_units(si, blk, dd != 0.0f ? ua : NULL, dm != 0.0f ? ub : NULL);
+            int i0 = c * 256;
+            for (int t = 0; t < J->nb; t++) {
+                const float *xt = J->x + (size_t)t * J->xs + i0;
+                float acc = 0.0f;
+                if (dd != 0.0f) {
+                    float sA = 0.0f;
+                    for (int k = 0; k < 256; k++) sA = fmaf(ua[k], xt[k], sA);
+                    acc = fmaf(dd, sA, acc);
+                }
+                if (dm != 0.0f) {
+                    float sB = 0.0f;
+                    for (int k = 0; k < 256; k++) sB = fmaf(ub[k], xt[k], sB);
+                    acc = fmaf(dm, sB, acc);
+                }
+                J->y[(size_t)t * J->ys + o] += acc;
+            }
+        }
+    }
+}
+
+static void scale_apply_tp(tpool *tp, const struct scale_w *sw, float *y, int ys,
+                           const float *xin, int xs, int n_in, int n_out, int nb) {
+    if (!sw->theta_d || sw->n_in != n_in || sw->n_out != n_out) return;
+    // Fast skip when every theta in this tensor is zero (e.g., step 0 or frozen FD checks).
+    bool any = false;
+    bool has_min = sw->si->off_dmin >= 0;
+    for (int64_t b = 0; b < sw->n_blocks; b++) {
+        if (sw->theta_d[b] != 0.0f || (has_min && sw->theta_m[b] != 0.0f)) {
+            any = true;
+            break;
+        }
+    }
+    if (!any) return;
+    sfw_job j = { sw, y, xin, ys, xs, n_in, n_out, nb };
+    tpool_run(tp, scale_fw_rows, &j, n_out);
+}
+
 // hook macro: cheap NULL check first, layer/slot lookup second
 #define LORA_HOOK(slot, y, ys, xin, xs, nin, nout, nb) \
     do { if (m->lora && l < m->n_layer) \
              lora_apply_tp(m->tp, &m->lora[(size_t)l * LW_SLOTS + (slot)], \
                            (y), (ys), (xin), (xs), (nin), (nout), (nb)); \
+         if (m->scales && l < m->n_layer) \
+             scale_apply_tp(m->tp, &m->scales[(size_t)l * LW_SLOTS + (slot)], \
+                            (y), (ys), (xin), (xs), (nin), (nout), (nb)); \
     } while (0)
 
 static void lora_hook(model_t *m, int l, int slot, float *y, int ys,
@@ -11583,6 +11665,75 @@ static void full_site_grad(model_t *m, int l, int slot, const float *xin,
     tpool_run(m->tp, fwg_rows, &j, n_out);
 }
 
+typedef struct {
+    struct scale_w *sw;
+    const float *x, *dy;
+    float *dxin;
+    int n_in, n_out, nb;
+} sbw_job;
+
+// Column-block worker: owns grad_d/grad_m at (o, c) and dxin[:, 256*c : 256*(c+1)]
+// disjointly, summing t ascending for grads and o ascending for dxin, so bytes
+// never depend on thread count.
+static void scale_bw_cols(void *ctx, int c0, int c1) {
+    sbw_job *J = ctx;
+    struct scale_w *sw = J->sw;
+    const scale_qinfo *si = sw->si;
+    int C = sw->n_blk_row;
+    bool has_min = si->off_dmin >= 0;
+    float ua[256], ub[256];
+    for (int c = c0; c < c1; c++) {
+        int i0 = c * 256;
+        for (int o = 0; o < J->n_out; o++) {
+            int64_t b = (int64_t)o * C + c;
+            const uint8_t *blk = sw->orig + (size_t)b * (size_t)si->blk_bytes;
+            scale_block_units(si, blk, ua, has_min ? ub : NULL);
+            float d0 = 0.0f, m0 = 0.0f;
+            scale_block_read(si, blk, &d0, &m0);
+            float thd = sw->theta_d[b];
+            float thm = has_min ? sw->theta_m[b] : 0.0f;
+            float d_cur = thd != 0.0f ? d0 * expf(thd) : d0;
+            float m_cur = (has_min && thm != 0.0f) ? m0 * expf(thm) : m0;
+            float dd = thd != 0.0f ? d0 * expm1f(thd) : 0.0f;
+            float dm = (has_min && thm != 0.0f) ? m0 * expm1f(thm) : 0.0f;
+            float acc_d = 0.0f, acc_m = 0.0f;
+            for (int t = 0; t < J->nb; t++) {
+                const float *xt = J->x + (size_t)t * J->n_in + i0;
+                float dyt = J->dy[(size_t)t * J->n_out + o];
+                float sA = 0.0f;
+                for (int k = 0; k < 256; k++) sA = fmaf(ua[k], xt[k], sA);
+                acc_d = fmaf(dyt, sA, acc_d);
+                if (has_min) {
+                    float sB = 0.0f;
+                    for (int k = 0; k < 256; k++) sB = fmaf(ub[k], xt[k], sB);
+                    acc_m = fmaf(dyt, sB, acc_m);
+                }
+                if (dd != 0.0f || dm != 0.0f) {
+                    float *dxt = J->dxin + (size_t)t * J->n_in + i0;
+                    if (dd != 0.0f) {
+                        float sdy = dyt * dd;
+                        for (int k = 0; k < 256; k++) dxt[k] = fmaf(sdy, ua[k], dxt[k]);
+                    }
+                    if (dm != 0.0f) {
+                        float smy = dyt * dm;
+                        for (int k = 0; k < 256; k++) dxt[k] = fmaf(smy, ub[k], dxt[k]);
+                    }
+                }
+            }
+            sw->grad_d[b] = fmaf(d_cur, acc_d, sw->grad_d[b]);
+            if (has_min) sw->grad_m[b] = fmaf(m_cur, acc_m, sw->grad_m[b]);
+        }
+    }
+}
+
+static void scale_site_bw(model_t *m, int l, int slot, const float *xin,
+                          const float *dy, float *dxin, int n_in, int n_out, int nb) {
+    struct scale_w *sw = &m->scales[(size_t)l * LW_SLOTS + slot];
+    if (!sw->theta_d || sw->n_in != n_in || sw->n_out != n_out) return;
+    sbw_job j = { sw, xin, dy, dxin, n_in, n_out, nb };
+    tpool_run(m->tp, scale_bw_cols, &j, sw->n_blk_row);
+}
+
 // adapter backward at one projection site, batched over the window: given
 // dy (grad wrt the site's output, nb rows) and xin (the site's input, nb
 // rows), accumulate dA/dB and add both the adapter's and the FROZEN
@@ -11598,6 +11749,7 @@ static bool lora_site_bw(model_t *m, int l, int slot, const gguf_tensor *w,
     // full-weight training: the dense gradient at this site (R8.25.2); dxin
     // above already went through the read copy, the straight-through path
     if (m->full) full_site_grad(m, l, slot, xin, dy, n_in, n_out, nb);
+    if (m->scales) scale_site_bw(m, l, slot, xin, dy, dxin, n_in, n_out, nb);
     struct lora_w *lw = m->lora ? &m->lora[(size_t)l * LW_SLOTS + slot] : NULL;
     if (!lw || !lw->r) return true;
     if (!lw->ga) lw->ga = calloc((size_t)lw->r * n_in, sizeof(float));
@@ -11643,9 +11795,12 @@ static bool matvec_t0(model_t *m, const gguf_tensor *w, const float *dy,
 // n_in / n_out apart
 static void lora_site_fw(model_t *m, int l, int slot, float *y,
                          const float *xin, int n_in, int n_out, int nb) {
-    if (!m->lora) return;
-    lora_apply_tp(m->tp, &m->lora[(size_t)l * LW_SLOTS + slot], y, n_out, xin,
-                  n_in, n_in, n_out, nb);
+    if (m->lora)
+        lora_apply_tp(m->tp, &m->lora[(size_t)l * LW_SLOTS + slot], y, n_out, xin,
+                      n_in, n_in, n_out, nb);
+    if (m->scales)
+        scale_apply_tp(m->tp, &m->scales[(size_t)l * LW_SLOTS + slot], y, n_out,
+                       xin, n_in, n_in, n_out, nb);
 }
 
 // transpose of rope_apply's per-pair rotation (the ms factor rides inside
@@ -13767,8 +13922,8 @@ bool model_lora_backward(model_t *m, const int32_t *toks, int T,
 // window of 2..n_ctx tokens, and a model the backward covers.
 static bool lora_backward_admit(model_t *m, int T) {
     char why[128];
-    if (!m->lora && !m->full) {
-        fprintf(stderr, "error: backward needs a loaded adapter (--lora) or --train-full\n");
+    if (!m->lora && !m->full && !m->scales) {
+        fprintf(stderr, "error: backward needs a loaded adapter (--lora), --train-full, or --train-scales\n");
         return false;
     }
     if (T < 2 || T > m->n_ctx) {
@@ -14330,7 +14485,7 @@ static const int full_slots[] = { LW_Q, LW_K, LW_V, LW_O, LW_GATE, LW_UP, LW_DOW
 bool model_full_on(const model_t *m) { return m->full != NULL; }
 
 bool model_has_training_state(const model_t *m) {
-    if (m->full || m->tape || m->bw_dk_share || m->bw_dv_share || m->bw_ple || m->train_gpu) return true;
+    if (m->full || m->scales || m->tape || m->bw_dk_share || m->bw_dv_share || m->bw_ple || m->train_gpu) return true;
     if (!m->lora) return false;
     for (size_t k = 0; k < (size_t)m->n_layer * LW_SLOTS; k++) {
         const struct lora_w *w = &m->lora[k];
@@ -14577,6 +14732,269 @@ bool model_full_write(model_t *m, const char *src_path, const char *out_path,
 #endif
         ok = ok && fwrite(f->master, 1, nbytes, out) == nbytes;
         if (!ok) snprintf(why, cap, "cannot write %s", f->t->name);
+    }
+    ok = (fclose(out) == 0) && ok;
+    if (ok && !plat_replace_file(tmp, out_path)) {
+        snprintf(why, cap, "cannot replace %s", out_path);
+        ok = false;
+    }
+    if (!ok) plat_remove(tmp);
+    return ok;
+}
+
+// ---- R4.41 experiment: per-block fp16 scale recovery (K-quants + IQ3_S) ---
+
+bool model_scales_on(const model_t *m) { return m && m->scales != NULL; }
+
+void model_scales_free(model_t *m) {
+    if (!m || !m->scales) return;
+    for (size_t k = 0; k < (size_t)m->n_layer * LW_SLOTS; k++) {
+        struct scale_w *sw = &m->scales[k];
+        free(sw->theta_d); free(sw->grad_d); free(sw->m1_d); free(sw->m2_d);
+        free(sw->theta_m); free(sw->grad_m); free(sw->m1_m); free(sw->m2_m);
+    }
+    free(m->scales);
+    m->scales = NULL;
+}
+
+bool model_scales_train_init(model_t *m, char *why, size_t cap) {
+    if (m->gpu) { snprintf(why, cap, "a GPU-resident model (run --gpu off)"); return false; }
+    if (m->lora) { snprintf(why, cap, "an adapter is attached, and scale recovery runs alone"); return false; }
+    if (m->full) { snprintf(why, cap, "--train-full is active"); return false; }
+    if (m->gf.n_maps > 1 || !m->gf.map) { snprintf(why, cap, "a split or unmapped GGUF"); return false; }
+    if (!lora_bw_supported(m, why, cap)) return false;
+    m->scales = calloc((size_t)m->n_layer * LW_SLOTS, sizeof *m->scales);
+    if (!m->scales) { snprintf(why, cap, "out of memory"); return false; }
+    const uint8_t *base = (const uint8_t *)m->gf.map;
+    int n = 0;
+    for (int l = 0; l < m->n_layer; l++) {
+        for (int s = 0; s < LW_SLOTS; s++) {
+            gguf_tensor *t = lora_slot_base(m, l, s);
+            if (!t || t->n_dims != 2 || t->scale != 1.0f) continue;
+            const scale_qinfo *si = quants_scale_info((int)t->type);
+            if (!si || (t->ne[0] % (uint64_t)si->blk_elems) != 0) continue;
+            struct scale_w *sw = &m->scales[(size_t)l * LW_SLOTS + s];
+            sw->t = t;
+            sw->si = si;
+            sw->orig = (const uint8_t *)t->data;
+            sw->off = (uint64_t)(sw->orig - base);
+            sw->n_in = (int)t->ne[0];
+            sw->n_out = (int)t->ne[1];
+            sw->n_blk_row = sw->n_in / si->blk_elems;
+            sw->n_blocks = (int64_t)sw->n_out * (int64_t)sw->n_blk_row;
+            sw->theta_d = calloc((size_t)sw->n_blocks, sizeof(float));
+            sw->grad_d  = calloc((size_t)sw->n_blocks, sizeof(float));
+            if (!sw->theta_d || !sw->grad_d) {
+                snprintf(why, cap, "out of memory");
+                model_scales_free(m);
+                return false;
+            }
+            if (si->off_dmin >= 0) {
+                sw->theta_m = calloc((size_t)sw->n_blocks, sizeof(float));
+                sw->grad_m  = calloc((size_t)sw->n_blocks, sizeof(float));
+                if (!sw->theta_m || !sw->grad_m) {
+                    snprintf(why, cap, "out of memory");
+                    model_scales_free(m);
+                    return false;
+                }
+            }
+            n++;
+        }
+    }
+    if (!n) {
+        snprintf(why, cap, "no K-quant (q3_k, q4_k, q5_k, q6_k) or iq3_s projection to recover");
+        model_scales_free(m);
+        return false;
+    }
+    return true;
+}
+
+int model_scales_count(const model_t *m, uint64_t *params) {
+    int n = 0;
+    uint64_t p = 0;
+    for (size_t k = 0; m->scales && k < (size_t)m->n_layer * LW_SLOTS; k++) {
+        const struct scale_w *sw = &m->scales[k];
+        if (!sw->theta_d) continue;
+        n++;
+        p += (uint64_t)sw->n_blocks * (sw->si->off_dmin >= 0 ? 2u : 1u);
+    }
+    if (params) *params = p;
+    return n;
+}
+
+void model_scales_grad_zero(model_t *m) {
+    for (size_t k = 0; m->scales && k < (size_t)m->n_layer * LW_SLOTS; k++) {
+        struct scale_w *sw = &m->scales[k];
+        if (sw->grad_d) memset(sw->grad_d, 0, sizeof(float) * (size_t)sw->n_blocks);
+        if (sw->grad_m) memset(sw->grad_m, 0, sizeof(float) * (size_t)sw->n_blocks);
+    }
+}
+
+void model_scales_grad_scale(model_t *m, float f) {
+    for (size_t k = 0; m->scales && k < (size_t)m->n_layer * LW_SLOTS; k++) {
+        struct scale_w *sw = &m->scales[k];
+        if (sw->grad_d)
+            for (int64_t i = 0; i < sw->n_blocks; i++) sw->grad_d[i] *= f;
+        if (sw->grad_m)
+            for (int64_t i = 0; i < sw->n_blocks; i++) sw->grad_m[i] *= f;
+    }
+}
+
+bool model_scales_grad_norms(model_t *m, double *max_out, double *mean_out) {
+    double mx = 0.0, sum = 0.0;
+    int nl = 0;
+    for (int l = 0; m->scales && l < m->n_layer; l++) {
+        double ss = 0.0;
+        bool any = false;
+        for (int s = 0; s < LW_SLOTS; s++) {
+            const struct scale_w *sw = &m->scales[(size_t)l * LW_SLOTS + s];
+            if (!sw->grad_d) continue;
+            any = true;
+            for (int64_t i = 0; i < sw->n_blocks; i++) {
+                if (!fp_finite_f32(sw->grad_d[i])) return false;
+                ss += (double)sw->grad_d[i] * (double)sw->grad_d[i];
+            }
+            if (sw->grad_m) {
+                for (int64_t i = 0; i < sw->n_blocks; i++) {
+                    if (!fp_finite_f32(sw->grad_m[i])) return false;
+                    ss += (double)sw->grad_m[i] * (double)sw->grad_m[i];
+                }
+            }
+        }
+        if (!any) continue;
+        if (!fp_finite_f64(ss)) return false;
+        double nrm = sqrt(ss);
+        if (nrm > mx) mx = nrm;
+        sum += nrm;
+        nl++;
+    }
+    if (max_out) *max_out = mx;
+    if (mean_out) *mean_out = nl ? sum / nl : 0.0;
+    return true;
+}
+
+typedef struct {
+    struct scale_w *sw;
+    float lr, b1, b2, eps, wd, bc1, bc2;
+} sad_job;
+
+static void sad_chunks(void *ctx, int c0, int c1) {
+    sad_job *J = ctx;
+    struct scale_w *sw = J->sw;
+    for (int c = c0; c < c1; c++) {
+        size_t i0 = (size_t)c * FULL_ADAM_CHUNK;
+        size_t nb = (size_t)sw->n_blocks;
+        size_t i1 = i0 + FULL_ADAM_CHUNK < nb ? i0 + FULL_ADAM_CHUNK : nb;
+        adam_buf(sw->theta_d + i0, sw->grad_d + i0, sw->m1_d + i0, sw->m2_d + i0, i1 - i0,
+                 J->lr, J->b1, J->b2, J->eps, J->wd, J->bc1, J->bc2);
+        for (size_t i = i0; i < i1; i++) {
+            float v = sw->theta_d[i];
+            if (v < -16.0f) sw->theta_d[i] = -16.0f;
+            else if (v > 16.0f) sw->theta_d[i] = 16.0f;
+        }
+        if (sw->theta_m) {
+            adam_buf(sw->theta_m + i0, sw->grad_m + i0, sw->m1_m + i0, sw->m2_m + i0, i1 - i0,
+                     J->lr, J->b1, J->b2, J->eps, J->wd, J->bc1, J->bc2);
+            for (size_t i = i0; i < i1; i++) {
+                float v = sw->theta_m[i];
+                if (v < -16.0f) sw->theta_m[i] = -16.0f;
+                else if (v > 16.0f) sw->theta_m[i] = 16.0f;
+            }
+        }
+    }
+}
+
+bool model_scales_adam_step(model_t *m, float lr, float beta1, float beta2,
+                            float eps, float wd, int step) {
+    if (!m->scales) return true;
+    for (size_t k = 0; k < (size_t)m->n_layer * LW_SLOTS; k++) {
+        struct scale_w *sw = &m->scales[k];
+        if (!sw->theta_d) continue;
+        size_t nb = (size_t)sw->n_blocks;
+        if (!adam_state(&sw->m1_d, nb) || !adam_state(&sw->m2_d, nb)) return false;
+        if (sw->theta_m && (!adam_state(&sw->m1_m, nb) || !adam_state(&sw->m2_m, nb)))
+            return false;
+    }
+    float bc1 = 1.0f - powf(beta1, (float)step);
+    float bc2 = 1.0f - powf(beta2, (float)step);
+    for (size_t k = 0; k < (size_t)m->n_layer * LW_SLOTS; k++) {
+        struct scale_w *sw = &m->scales[k];
+        if (!sw->theta_d) continue;
+        sad_job j = { sw, lr, beta1, beta2, eps, wd, bc1, bc2 };
+        int chunks = (int)(((size_t)sw->n_blocks + FULL_ADAM_CHUNK - 1) / FULL_ADAM_CHUNK);
+        tpool_run(m->tp, sad_chunks, &j, chunks);
+    }
+    return true;
+}
+
+float *model_scales_param(model_t *m, int layer, int slot, int which, int64_t *count) {
+    if (!m->scales || layer < 0 || layer >= m->n_layer || slot < 0 || slot >= LW_SLOTS)
+        return NULL;
+    const struct scale_w *sw = &m->scales[(size_t)layer * LW_SLOTS + slot];
+    float *p = which == 0 ? sw->theta_d : which == 1 ? sw->theta_m : NULL;
+    if (!p) return NULL;
+    if (count) *count = sw->n_blocks;
+    return p;
+}
+
+float *model_scales_grad(model_t *m, int layer, int slot, int which, int64_t *count) {
+    if (!m->scales || layer < 0 || layer >= m->n_layer || slot < 0 || slot >= LW_SLOTS)
+        return NULL;
+    const struct scale_w *sw = &m->scales[(size_t)layer * LW_SLOTS + slot];
+    float *g = which == 0 ? sw->grad_d : which == 1 ? sw->grad_m : NULL;
+    if (!g) return NULL;
+    if (count) *count = sw->n_blocks;
+    return g;
+}
+
+bool model_scales_write(model_t *m, const char *src_path, const char *out_path,
+                        char *why, size_t cap) {
+    if (!m->scales) { snprintf(why, cap, "no scale-recovery state"); return false; }
+    char tmp[4096];
+    snprintf(tmp, sizeof tmp, "%s.tmp", out_path);
+    FILE *in = plat_fopen(src_path, "rb");
+    FILE *out = in ? plat_fopen(tmp, "wb") : NULL;
+    if (!in || !out) {
+        snprintf(why, cap, "cannot open %s", in ? tmp : src_path);
+        if (in) fclose(in);
+        return false;
+    }
+    bool ok = true;
+    char *buf = malloc(1 << 20);
+    for (size_t r; ok && buf && (r = fread(buf, 1, 1 << 20, in)) > 0;)
+        ok = fwrite(buf, 1, r, out) == r;
+    ok = ok && buf && !ferror(in);
+    free(buf);
+    fclose(in);
+    for (size_t k = 0; ok && k < (size_t)m->n_layer * LW_SLOTS; k++) {
+        const struct scale_w *sw = &m->scales[k];
+        if (!sw->theta_d) continue;
+        const scale_qinfo *si = sw->si;
+        size_t row_bytes = (size_t)sw->n_blk_row * (size_t)si->blk_bytes;
+        uint8_t *row_buf = malloc(row_bytes);
+        if (!row_buf) { snprintf(why, cap, "out of memory"); ok = false; break; }
+#ifdef _WIN32
+        ok = _fseeki64(out, (__int64)sw->off, SEEK_SET) == 0;
+#else
+        ok = fseeko(out, (off_t)sw->off, SEEK_SET) == 0;
+#endif
+        for (int o = 0; ok && o < sw->n_out; o++) {
+            for (int c = 0; ok && c < sw->n_blk_row; c++) {
+                int64_t b = (int64_t)o * sw->n_blk_row + c;
+                const uint8_t *src_blk = sw->orig + (size_t)b * (size_t)si->blk_bytes;
+                uint8_t *dst_blk = row_buf + (size_t)c * (size_t)si->blk_bytes;
+                float thm = sw->theta_m ? sw->theta_m[b] : 0.0f;
+                if (!scale_block_patch(si, src_blk, sw->theta_d[b], thm, dst_blk)) {
+                    snprintf(why, cap, "%s block %lld overflows fp16 scale", sw->t->name, (long long)b);
+                    ok = false;
+                }
+            }
+            if (ok && fwrite(row_buf, 1, row_bytes, out) != row_bytes) {
+                snprintf(why, cap, "cannot write %s", sw->t->name);
+                ok = false;
+            }
+        }
+        free(row_buf);
     }
     ok = (fclose(out) == 0) && ok;
     if (ok && !plat_replace_file(tmp, out_path)) {

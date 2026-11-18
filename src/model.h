@@ -556,6 +556,9 @@ typedef struct {
     // AdamW state, one per dense projection, in place of an adapter; the
     // projection tensors themselves are the read copy (NULL when off)
     struct full_w *full;
+    // R4.41 experiment: [n_layer][LW_SLOTS] per-block fp16 scale deltas
+    // (d_new = d0 * exp(theta_d)) over frozen K-quant/IQ3_S codes.
+    struct scale_w *scales;
     // D3 activation tape: [n_layer+1][tape_T][n_embd] layer-entry residual
     // streams (+ the final pre-norm hidden), recorded by solo forwards when
     // non-NULL. Owned by model_lora_backward for the duration of one call.
@@ -1346,6 +1349,22 @@ void   model_full_free(model_t *m);
 // norm to PREFIX.norms.json, and the whole gradient of each tensor named in
 // `full` (comma-separated GGUF names) to PREFIX.NAME.f32
 bool   model_full_dump(const model_t *m, const char *prefix, const char *full);
+
+// ---- R4.41 experiment: per-block scale recovery (K-quants + IQ3_S) -------
+bool   model_scales_train_init(model_t *m, char *why, size_t cap);
+bool   model_scales_on(const model_t *m);
+void   model_scales_free(model_t *m);
+void   model_scales_grad_zero(model_t *m);
+void   model_scales_grad_scale(model_t *m, float f);
+bool   model_scales_grad_norms(model_t *m, double *max_out, double *mean_out);
+bool   model_scales_adam_step(model_t *m, float lr, float beta1, float beta2,
+                              float eps, float wd, int step);
+int    model_scales_count(const model_t *m, uint64_t *params);
+bool   model_scales_write(model_t *m, const char *src_path, const char *out_path,
+                          char *why, size_t cap);
+// test hooks: parameter / gradient buffer for (layer, slot, which: 0=d, 1=dmin)
+float *model_scales_param(model_t *m, int layer, int slot, int which, int64_t *count);
+float *model_scales_grad(model_t *m, int layer, int slot, int which, int64_t *count);
 bool   model_lora_train_init(model_t *m, int rank, float alpha,
                              uint64_t seed);
 // R8.24.1: --train-gpu's forward scratch registered with the training

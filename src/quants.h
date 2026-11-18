@@ -267,4 +267,27 @@ void   i8_dot_force(int on);
 unsigned long i8_dot_dispatches(void);
 unsigned long vec_dot_multi_calls(void);   // route gate: calls into vec_dot_multi
 
+// R4.41 experiment: per-block fp16 scale decomposition and patching for K-quants
+// (Q3_K, Q4_K, Q5_K, Q6_K) plus IQ3_S (which shares the exact same unit layout).
+// Every covered block dequantizes as d * A (+ dmin * B when off_dmin >= 0),
+// where A and B depend only on the frozen integer codes and are recovered by
+// calling dequant_row with d/dmin patched to 1.0/0.0.
+typedef struct {
+    int type;
+    int blk_elems;   // elements per block (256)
+    int blk_bytes;   // encoded bytes per block
+    int off_d;       // byte offset of fp16 d within a block
+    int off_dmin;    // byte offset of fp16 dmin within a block, or -1
+} scale_qinfo;
+
+const scale_qinfo *quants_scale_info(int type);
+void scale_block_read(const scale_qinfo *si, const void *blk,
+                      float *d0_out, float *m0_out);
+void scale_block_units(const scale_qinfo *si, const void *blk,
+                       float *unit_a, float *unit_b);
+void scale_block_reconstruct(const scale_qinfo *si, const void *orig_blk,
+                             float delta_d, float delta_m, float *dst);
+bool scale_block_patch(const scale_qinfo *si, const void *orig_blk,
+                       float delta_d, float delta_m, void *dst_blk);
+
 #endif // RUNNER_QUANTS_H

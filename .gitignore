@@ -107,6 +107,10 @@ test-choice-mass
 test-choice-mass.exe
 test-lookup-draft
 test-lookup-draft.exe
+test-scale-grad
+test-scale-grad.exe
+test-scale-*.gguf
+test-scale-*.json
 test-moe-tol
 test-moe-tol.exe
 test-moe-fixture.*.gguf

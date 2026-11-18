@@ -32,6 +32,8 @@ STATE, GROUPS, VHEADS, CONV = 8, 2, 4, 4
 if os.environ.get("ORNITH_TEST_STATE"):
     STATE = int(os.environ["ORNITH_TEST_STATE"])
     E = STATE * VHEADS
+if os.environ.get("ORNITH_TEST_FF"):
+    FF = int(os.environ["ORNITH_TEST_FF"])
 VOCAB = ["<unk>", "<s>", "</s>"] + [f"<0x{i:02X}>" for i in range(256)]
 TTYPE = [2, 3, 3] + [6] * 256
 

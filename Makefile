@@ -265,6 +265,7 @@ TEST_LORA_GRAD = $(TEST_BATCH:test-batch%=test-lora-grad%)
 TEST_FULL_GRAD = $(TEST_BATCH:test-batch%=test-full-grad%)
 TEST_DPO_GRAD = $(TEST_BATCH:test-batch%=test-dpo-grad%)
 TEST_KD_GRAD = $(TEST_BATCH:test-batch%=test-kd-grad%)
+TEST_SCALE_GRAD = $(TEST_BATCH:test-batch%=test-scale-grad%)
 TEST_MVT = $(TEST_BATCH:test-batch%=test-mvt%)
 TEST_TRAIN_GPU = $(TEST_BATCH:test-batch%=test-train-gpu%)
 TEST_MVCANON = $(TEST_BATCH:test-batch%=test-mvcanon%)
@@ -1257,6 +1258,36 @@ TEST_KD_GRAD_SRC = tests/test_kd_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_KD_GRAD): $(TEST_KD_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-granite.gguf test-lora-granite.full.gguf test-gemma4.gguf test-lora-gemma4.full.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_KD_GRAD_SRC) -o $@ $(LDFLAGS)
+
+# R4.41 Phase 0 gates (a) and (b): K-quant (+ IQ3_S) scale decomposition,
+# in-place byte-exact writer, and directional KD gradient on dense qwen3 & qwen35.
+TEST_SCALE_GRAD_SRC = tests/test_scale_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
+                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o \
+                  $(OBJDIR)/vramreg.o $(GPU_OBJ)
+test-scale-qwen3-src.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
+	$(PYTHON) scripts/make-test-model.py test-scale-qwen3-src.gguf --wide --arch qwen3 --qk-norm
+test-scale-qwen3-q3k.gguf: $(OBJDIR)/$(RUNNER_EXE) test-scale-qwen3-src.gguf
+	./$(OBJDIR)/$(RUNNER_EXE) -m test-scale-qwen3-src.gguf --quantize $@ --quant q3_k > /dev/null
+test-scale-qwen3-q4k.gguf: $(OBJDIR)/$(RUNNER_EXE) test-scale-qwen3-src.gguf
+	./$(OBJDIR)/$(RUNNER_EXE) -m test-scale-qwen3-src.gguf --quantize $@ --quant q4_k > /dev/null
+test-scale-qwen3-q5k.gguf: $(OBJDIR)/$(RUNNER_EXE) test-scale-qwen3-src.gguf
+	./$(OBJDIR)/$(RUNNER_EXE) -m test-scale-qwen3-src.gguf --quantize $@ --quant q5_k > /dev/null
+test-scale-qwen3-q6k.gguf: $(OBJDIR)/$(RUNNER_EXE) test-scale-qwen3-src.gguf
+	./$(OBJDIR)/$(RUNNER_EXE) -m test-scale-qwen3-src.gguf --quantize $@ --quant q6_k > /dev/null
+test-scale-iq3s.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
+	$(PYTHON) scripts/make-test-model.py test-scale-iq3s.gguf --wide --quant iq3_s
+test-scale-qwen35-src.gguf: scripts/make-test-ornith.py $(GGUF_FIXTURE_LIB)
+	ORNITH_TEST_STATE=64 ORNITH_TEST_FF=256 $(PYTHON) scripts/make-test-ornith.py $@
+test-scale-qwen35-q4k.gguf: $(OBJDIR)/$(RUNNER_EXE) test-scale-qwen35-src.gguf
+	./$(OBJDIR)/$(RUNNER_EXE) -m test-scale-qwen35-src.gguf --quantize $@ --quant q4_k > /dev/null
+test-scale-qwen35-q6k.gguf: $(OBJDIR)/$(RUNNER_EXE) test-scale-qwen35-src.gguf
+	./$(OBJDIR)/$(RUNNER_EXE) -m test-scale-qwen35-src.gguf --quantize $@ --quant q6_k > /dev/null
+$(TEST_SCALE_GRAD): $(TEST_SCALE_GRAD_SRC) $(HDR) test.gguf test-scale-qwen3-q3k.gguf test-scale-qwen3-q4k.gguf test-scale-qwen3-q5k.gguf test-scale-qwen3-q6k.gguf test-scale-iq3s.gguf test-scale-qwen35-q4k.gguf test-scale-qwen35-q6k.gguf
+	$(CC) $(CFLAGS) -I src $(TEST_SCALE_GRAD_SRC) -o $@ $(LDFLAGS)
+
+test-r441: $(OBJDIR)/$(RUNNER_EXE) $(TEST_SCALE_GRAD)
+	./$(TEST_SCALE_GRAD)
+	$(PYTHON) -m pytest tests/test_scale_train.py -v
 
 test-lora-q8.full.gguf: test-q8.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-lora.py test-q8.gguf test-lora-q8
