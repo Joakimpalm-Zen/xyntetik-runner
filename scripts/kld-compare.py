@@ -38,20 +38,20 @@ import urllib.request
 # the shared probes live beside this script; a test that loads this file by
 # path has not put the directory on sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from server_probe import require_served, wait_for_own_server  # noqa: E402
+from server_probe import BIND_ATTEMPTS, port_flag_given, require_served, start_own_server  # noqa: E402
 
 
-def start_server(runner, model, port, threads=0, ctx=0):
-    cmd = [runner, "-m", model, "--serve", "--no-tray",
-           "--port", str(port), "--gpu", "off"]
-    # server-mode passthrough (the lab, 2026-09-23)
-    if threads > 0:
-        cmd += ["-t", str(threads)]
-    if ctx > 0:
-        cmd += ["-c", str(ctx)]
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    wait_for_own_server(proc, port, model)
-    return proc
+def start_server(runner, model, port, threads=0, ctx=0, attempts=BIND_ATTEMPTS, avoid=()):
+    def _spawn(p):
+        cmd = [runner, "-m", model, "--serve", "--no-tray",
+               "--port", str(p), "--gpu", "off"]
+        # server-mode passthrough (the lab, 2026-09-23)
+        if threads > 0:
+            cmd += ["-t", str(threads)]
+        if ctx > 0:
+            cmd += ["-c", str(ctx)]
+        return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return start_own_server(_spawn, port, model, attempts=attempts, avoid=avoid)
 
 
 def query(endpoint, model_name, prompt):
@@ -120,6 +120,8 @@ def main(argv):
     ap.add_argument("--stride", type=int, default=1, help="compare every Nth word boundary")
     ap.add_argument("--port-a", type=int, default=28601)
     ap.add_argument("--port-b", type=int, default=28602)
+    ap.add_argument("--retry-ports", action="store_true",
+                    help="on a port conflict with another server, stop the child and retry on a fresh port")
     ap.add_argument("--threads", type=int, default=0,
                     help="server mode: -t for both served runners")
     ap.add_argument("--ctx", type=int, default=0,
@@ -129,6 +131,7 @@ def main(argv):
 
     procs = []
     try:
+        port_a = None
         if args.endpoint_a:
             ep_a = args.endpoint_a
             if not args.model_name_a:
@@ -140,8 +143,11 @@ def main(argv):
             if not args.model_name_a:
                 args.model_name_a = os.path.basename(args.model_a)
             print(f"starting server A: {args.model_a}", file=sys.stderr)
-            procs.append(start_server(args.runner, args.model_a, args.port_a, args.threads, args.ctx))
-            ep_a = f"http://127.0.0.1:{args.port_a}"
+            attempts_a = 1 if (port_flag_given(argv, "--port-a") and not args.retry_ports) else BIND_ATTEMPTS
+            proc_a, port_a = start_server(args.runner, args.model_a, args.port_a,
+                                          args.threads, args.ctx, attempts=attempts_a)
+            procs.append(proc_a)
+            ep_a = f"http://127.0.0.1:{port_a}"
         if args.endpoint_b:
             ep_b = args.endpoint_b
             if not args.model_name_b:
@@ -153,8 +159,12 @@ def main(argv):
             if not args.model_name_b:
                 args.model_name_b = os.path.basename(args.model_b)
             print(f"starting server B: {args.model_b}", file=sys.stderr)
-            procs.append(start_server(args.runner, args.model_b, args.port_b, args.threads, args.ctx))
-            ep_b = f"http://127.0.0.1:{args.port_b}"
+            attempts_b = 1 if (port_flag_given(argv, "--port-b") and not args.retry_ports) else BIND_ATTEMPTS
+            avoid = (port_a,) if port_a is not None else ()
+            proc_b, port_b = start_server(args.runner, args.model_b, args.port_b,
+                                          args.threads, args.ctx, attempts=attempts_b, avoid=avoid)
+            procs.append(proc_b)
+            ep_b = f"http://127.0.0.1:{port_b}"
 
         require_served(ep_a, args.model_name_a, "a")
 
