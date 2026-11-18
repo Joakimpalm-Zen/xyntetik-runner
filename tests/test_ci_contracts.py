@@ -863,6 +863,7 @@ class PlatformDetection(unittest.TestCase):
                 self.assert_portable(self.model_compile(uname, [self.RELEASE_CFLAGS + " -DRUNNER_PORTABLE_MATH"]),
                                      True)
 
+    @unittest.skipIf(os.name == "nt", "a Windows default build is portable: make test's own run is this case")
     def test_the_sampler_check_reads_a_portable_default_builds_digest(self):
         """R6.85: on Windows the default build is portable, so test_sample_nan's default binary names itself
         "portable" in its digest line. scripts/check-sample-nan.sh read only "digest default:", found nothing and
