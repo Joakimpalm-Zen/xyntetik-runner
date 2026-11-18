@@ -306,6 +306,43 @@ void envelope_data_sha256(const void *data, size_t n, char hex[65]) {
     hex[64] = 0;
 }
 
+bool envelope_is_sha256_hex(const char *s) {
+    if (!s) return false;
+    size_t i = 0;
+    for (; i < 64 && s[i]; i++)
+        if (hex_digit_value((unsigned char)s[i]) < 0) return false;
+    return i == 64 && s[i] == '\0';
+}
+
+void envelope_print_safe(FILE *out, const char *s, size_t max_chars,
+                         const char *fallback, bool ellipsis) {
+    if (!s) {
+        const char *fb = fallback ? fallback : "missing";
+        for (size_t i = 0; fb[i]; i++) {
+            unsigned char c = (unsigned char)fb[i];
+            fputc((c < 0x20 || c == 0x7f) ? '?' : (int)c, out);
+        }
+        return;
+    }
+    size_t i = 0;
+    for (; s[i] && (max_chars == 0 || i < max_chars); i++) {
+        unsigned char c = (unsigned char)s[i];
+        fputc((c < 0x20 || c == 0x7f) ? '?' : (int)c, out);
+    }
+    if (ellipsis && max_chars > 0 && s[i]) fputs("...", out);
+}
+
+static void copy_safe_str(char *dst, size_t cap, const char *s, const char *fallback) {
+    if (!cap) return;
+    const char *src = s ? s : (fallback ? fallback : "");
+    size_t i = 0;
+    for (; src[i] && i + 1 < cap; i++) {
+        unsigned char c = (unsigned char)src[i];
+        dst[i] = (c < 0x20 || c == 0x7f) ? '?' : (char)c;
+    }
+    dst[i] = 0;
+}
+
 // ---- notarized inference D1: the transcript writer -------------------------
 // The record body is built in memory first because the chain hash covers the
 // exact serialized bytes: hash the buffer, then write buffer + chain in one
@@ -471,14 +508,15 @@ void transcript_model_source(const char *path, const char *source) {
 
 bool transcript_write(const transcript_info *ti) {
     char msha[65] = "", bsha[65] = "", asha[65] = "";
-    if (ti->model_sha256 && strlen(ti->model_sha256) == 64) {
+    if (envelope_is_sha256_hex(ti->model_sha256)) {
         memcpy(msha, ti->model_sha256, 65);
     } else if (!envelope_file_sha256(ti->model_path, msha)) {
-        fprintf(stderr, "error: transcript: cannot hash model %s\n",
-                ti->model_path);
+        fputs("error: transcript: cannot hash model ", stderr);
+        envelope_print_safe(stderr, ti->model_path, 0, "?", false);
+        fputc('\n', stderr);
         return false;
     }
-    if (ti->binary_sha256 && strlen(ti->binary_sha256) == 64) {
+    if (envelope_is_sha256_hex(ti->binary_sha256)) {
         memcpy(bsha, ti->binary_sha256, 65);
     } else if (!ti->executable_path ||
                !envelope_file_sha256(ti->executable_path, bsha)) {
@@ -486,8 +524,9 @@ bool transcript_write(const transcript_info *ti) {
         return false;
     }
     if (ti->adapter_path && !envelope_file_sha256(ti->adapter_path, asha)) {
-        fprintf(stderr, "error: transcript: cannot hash adapter %s\n",
-                ti->adapter_path);
+        fputs("error: transcript: cannot hash adapter ", stderr);
+        envelope_print_safe(stderr, ti->adapter_path, 0, "?", false);
+        fputc('\n', stderr);
         return false;
     }
     char utc[32] = "";
@@ -671,7 +710,7 @@ bool transcript_write(const transcript_info *ti) {
         // every byte before its own key, chain included, so a verifier
         // checks it with the file bytes alone (like the chain hash).
         char prev[65];
-        if (ti->prev_hash && strlen(ti->prev_hash) == 64)
+        if (envelope_is_sha256_hex(ti->prev_hash))
             memcpy(prev, ti->prev_hash, 65);
         else
             snprintf(prev, sizeof prev, "%064d", 0);
@@ -682,8 +721,9 @@ bool transcript_write(const transcript_info *ti) {
             signkey k;
             uint8_t sig[SIGN_SIG_MAX];
             if (!signkey_load(ti->sign_key_path, &k)) {
-                fprintf(stderr, "error: transcript: cannot load signing key %s\n",
-                        ti->sign_key_path);
+                fputs("error: transcript: cannot load signing key ", stderr);
+                envelope_print_safe(stderr, ti->sign_key_path, 0, "?", false);
+                fputc('\n', stderr);
                 ok = false;
             } else {
                 // sign the bytes written so far: re-read is avoided by
@@ -732,8 +772,9 @@ bool transcript_write(const transcript_info *ti) {
     if (ok) ok = plat_replace_file(tmp, ti->out_path);
     if (!ok) {
         plat_remove(tmp);
-        fprintf(stderr, "error: transcript: failed writing %s\n",
-                ti->out_path);
+        fputs("error: transcript: failed writing ", stderr);
+        envelope_print_safe(stderr, ti->out_path, 0, "?", false);
+        fputc('\n', stderr);
     }
     free(tmp);
     free(w.b);
@@ -950,6 +991,11 @@ static bool sidecar_matches_artifact(jv *m, const char *model_path,
                                      char *out, int cap) {
     const char *want = jv_str(jv_get(jv_get(m, "artifact"), "sha256"), "");
     if (!want[0]) return true;   // no sha declared: hash nothing, behave as before
+    if (!envelope_is_sha256_hex(want)) {
+        snprintf(out, (size_t)cap,
+                 "envelope: sidecar artifact.sha256 is malformed — ignored");
+        return false;
+    }
     char have[65];
     if (!envelope_file_sha256(model_path, have)) {
         snprintf(out, (size_t)cap,
@@ -1013,9 +1059,11 @@ static int classify(jv *m, const char *runtime_version, const char *backend,
         // A manifest whose schema we do not understand is not evidence for THIS
         // runner — we cannot judge it, so it is indeterminate (not the same as a
         // measurement that came back inconclusive).
+        char sschema[128];
+        copy_safe_str(sschema, sizeof sschema, schema[0] ? schema : "(missing)", "(missing)");
         snprintf(out, (size_t)cap,
                  "envelope: manifest schema %s not recognised (indeterminate)",
-                 schema[0] ? schema : "(missing)");
+                 sschema);
         return ENV_INDETERMINATE;
     }
     if (ver_match && back_match) {
@@ -1038,18 +1086,23 @@ static int classify(jv *m, const char *runtime_version, const char *backend,
             return ENV_EXPERIMENTAL;
         }
         // Matching runtime but a verdict we do not recognise: we cannot judge it.
+        char sverdict[128];
+        copy_safe_str(sverdict, sizeof sverdict, verdict[0] ? verdict : "(missing)", "(missing)");
         snprintf(out, (size_t)cap,
                  "envelope: measured for %s / %s but its verdict %s is "
                  "unrecognised (indeterminate)", rv, backend,
-                 verdict[0] ? verdict : "(missing)");
+                 sverdict);
         return ENV_INDETERMINATE;
     }
     // Exact-match only: a manifest measured on a different version or backend
     // does not describe this configuration — foreign, so indeterminate here.
+    char sm_ver[128], sm_back[64];
+    copy_safe_str(sm_ver, sizeof sm_ver, m_ver[0] ? m_ver : "(unknown)", "(unknown)");
+    copy_safe_str(sm_back, sizeof sm_back, m_back[0] ? m_back : "(unknown)", "(unknown)");
     snprintf(out, (size_t)cap,
              "envelope: measured on %s / %s, not this runtime (%s / %s) "
              "— indeterminate here",
-             m_ver[0] ? m_ver : "(unknown)", m_back[0] ? m_back : "(unknown)",
+             sm_ver, sm_back,
              rv, backend ? backend : "(unknown)");
     return ENV_INDETERMINATE;
 }
@@ -1069,8 +1122,10 @@ static void outside_reason(jv *m, char *out, int cap) {
             // call must not be added to the offset: `written` has to stay a
             // real length or the next iteration indexes out of the buffer and
             // the `written == 0` test below reads a lie. Clamp to what landed.
+            char skey[128];
+            copy_safe_str(skey, sizeof skey, checks->keys[i], "");
             int n = snprintf(out + written, (size_t)(cap - written),
-                             "%s%s", written ? ", " : "", checks->keys[i]);
+                             "%s%s", written ? ", " : "", skey);
             if (n < 0) break;
             bool truncated = n >= cap - written;
             written += truncated ? cap - written - 1 : n;
@@ -1122,7 +1177,9 @@ static void append_tool_calling(jv *m, char *out, int cap) {
     if (ss && ss->type == J_OBJ) {
         const char *q = jv_str(jv_get(ss, "held_to_quant"), "");
         if (q[0]) {
-            summary_add(parts, sizeof parts, &p, "%sschema-shape@%s", sep, q);
+            char sq[64];
+            copy_safe_str(sq, sizeof sq, q, "");
+            summary_add(parts, sizeof parts, &p, "%sschema-shape@%s", sep, sq);
             sep = ", ";
         }
     }
@@ -1130,7 +1187,9 @@ static void append_tool_calling(jv *m, char *out, int cap) {
     if (at && at->type == J_OBJ) {
         const char *g = jv_str(jv_get(at, "gate"), "");
         if (g[0]) {
-            summary_add(parts, sizeof parts, &p, "%sagent-torture %s", sep, g);
+            char sg[64];
+            copy_safe_str(sg, sizeof sg, g, "");
+            summary_add(parts, sizeof parts, &p, "%sagent-torture %s", sep, sg);
             sep = ", ";
         }
     }
@@ -1139,8 +1198,10 @@ static void append_tool_calling(jv *m, char *out, int cap) {
         const char *fam = jv_str(jv_get(nt, "tool_family"), "");
         if (fam[0]) {
             bool native = jv_bool(jv_get(nt, "native"), false);
+            char sfam[64];
+            copy_safe_str(sfam, sizeof sfam, fam, "");
             summary_add(parts, sizeof parts, &p, "%s%s %s", sep,
-                        native ? "native" : "non-native", fam);
+                        native ? "native" : "non-native", sfam);
             sep = ", ";
         }
     }
@@ -1151,10 +1212,12 @@ static void append_tool_calling(jv *m, char *out, int cap) {
     int len = (int)strlen(out);
     int rem = cap > len ? cap - len : 0;
     const char *gate = jv_str(jv_get(tc, "gate"), "");
-    if (gate[0])
+    if (gate[0]) {
+        char sgate[64];
+        copy_safe_str(sgate, sizeof sgate, gate, "");
         snprintf(out + len, (size_t)rem,
-                 "\nenvelope: tool-calling gate=%s — %s", gate, parts);
-    else
+                 "\nenvelope: tool-calling gate=%s — %s", sgate, parts);
+    } else
         snprintf(out + len, (size_t)rem,
                  "\nenvelope: tool-calling — %s", parts);
 }
@@ -1294,30 +1357,39 @@ bool record_chain_hash(const char *path, char hex[65]) {
     if (!buf) return false;
     jv *j = json_parse(buf, n);
     const char *h = j ? jv_str(jv_get(jv_get(j, "chain"), "hash"), NULL) : NULL;
-    bool ok = h && strlen(h) == 64;
+    bool ok = envelope_is_sha256_hex(h);
     if (ok) memcpy(hex, h, 65);
     jv_free(j);
     free(buf);
     return ok;
 }
 
+static void record_sign_err(const char *path, const char *msg) {
+    fputs("error: sign-record: ", stderr);
+    envelope_print_safe(stderr, path, 0, "?", false);
+    fputs(msg, stderr);
+    fputc('\n', stderr);
+}
+
 bool record_sign(const char *path, const char *sign_key_path, const char *prev_path) {
     size_t n = 0;
     char *buf = record_read(path, &n);
     if (!buf) {
-        fprintf(stderr, "error: sign-record: cannot read %s\n", path);
+        fputs("error: sign-record: cannot read ", stderr);
+        envelope_print_safe(stderr, path, 0, "?", false);
+        fputc('\n', stderr);
         return false;
     }
     // an already-signed record is refused: signing twice would bury the
     // first signature inside a body the second one covers
     jv *j = json_parse(buf, n);
     if (!j || j->type != J_OBJ) {
-        fprintf(stderr, "error: sign-record: %s is not a JSON object\n", path);
+        record_sign_err(path, " is not a JSON object");
         jv_free(j); free(buf);
         return false;
     }
     if (jv_get(j, "signature") || jv_get(j, "chain")) {
-        fprintf(stderr, "error: sign-record: %s already carries a chain or signature\n", path);
+        record_sign_err(path, " already carries a chain or signature");
         jv_free(j); free(buf);
         return false;
     }
@@ -1325,7 +1397,7 @@ bool record_sign(const char *path, const char *sign_key_path, const char *prev_p
     while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r' || buf[n - 1] == ' ' ||
                      buf[n - 1] == '\t')) n--;
     if (n < 2 || buf[n - 1] != '}') {
-        fprintf(stderr, "error: sign-record: %s does not end in a closing brace\n", path);
+        record_sign_err(path, " does not end in a closing brace");
         free(buf);
         return false;
     }
@@ -1334,13 +1406,13 @@ bool record_sign(const char *path, const char *sign_key_path, const char *prev_p
     while (tail_n > 0 && (buf[tail_n - 1] == '\n' || buf[tail_n - 1] == '\r' ||
                           buf[tail_n - 1] == ' ' || buf[tail_n - 1] == '\t')) tail_n--;
     if (tail_n == 0 || buf[tail_n - 1] == '{') {
-        fprintf(stderr, "error: sign-record: %s is an empty object; nothing to sign\n", path);
+        record_sign_err(path, " is an empty object; nothing to sign");
         free(buf);
         return false;
     }
     char prev[65] = "";
     if (prev_path && !record_chain_hash(prev_path, prev)) {
-        fprintf(stderr, "error: sign-record: %s carries no chain hash to link to\n", prev_path);
+        record_sign_err(prev_path, " carries no valid chain.hash to link to");
         free(buf);
         return false;
     }
@@ -1353,7 +1425,9 @@ bool record_sign(const char *path, const char *sign_key_path, const char *prev_p
     if (cl < 0 || cl >= (int)sizeof chain_obj) { free(buf); return false; }
     signkey k;
     if (!signkey_load(sign_key_path, &k)) {
-        fprintf(stderr, "error: sign-record: cannot load signing key %s\n", sign_key_path);
+        fputs("error: sign-record: cannot load signing key ", stderr);
+        envelope_print_safe(stderr, sign_key_path, 0, "?", false);
+        fputc('\n', stderr);
         free(buf);
         return false;
     }
@@ -1390,7 +1464,11 @@ bool record_sign(const char *path, const char *sign_key_path, const char *prev_p
     }
     memset(&k, 0, sizeof k);
     free(pkh); free(sigh); free(buf);
-    if (!ok) fprintf(stderr, "error: sign-record: cannot write %s\n", path);
+    if (!ok) {
+        fputs("error: sign-record: cannot write ", stderr);
+        envelope_print_safe(stderr, path, 0, "?", false);
+        fputc('\n', stderr);
+    }
     return ok;
 }
 
@@ -1414,7 +1492,9 @@ int record_check(const char *path, const char *trust_hex) {
     size_t n = 0;
     char *buf = record_read(path, &n);
     if (!buf) {
-        printf("UNVERIFIABLE: cannot read %s\n", path);
+        fputs("UNVERIFIABLE: cannot read ", stdout);
+        envelope_print_safe(stdout, path, 0, "?", false);
+        putchar('\n');
         return 2;
     }
     char pub[SIGN_PUBHEX_CAP] = "";
@@ -1424,16 +1504,34 @@ int record_check(const char *path, const char *trust_hex) {
     char chain[65] = "";
     record_chain_hash(path, chain);
     free(buf);
-    if (st == RSIG_NONE) { printf("UNSIGNED: %s\n", path); return 1; }
+    if (st == RSIG_NONE) {
+        fputs("UNSIGNED: ", stdout);
+        envelope_print_safe(stdout, path, 0, "?", false);
+        putchar('\n');
+        return 1;
+    }
     if (st != RSIG_OK) {
-        printf(tail_ok ? "BAD SIGNATURE: %s\n"
-                       : "BAD SIGNATURE: %s carries bytes after its signature\n", path);
+        fputs("BAD SIGNATURE: ", stdout);
+        envelope_print_safe(stdout, path, 0, "?", false);
+        fputs(tail_ok ? "\n" : " carries bytes after its signature\n", stdout);
         return 2;
     }
     if (trust_hex && *trust_hex && strcmp(trust_hex, pub) != 0) {
-        printf("UNTRUSTED KEY: %s signed by %s, expected %s\n", path, pub, trust_hex);
+        fputs("UNTRUSTED KEY: ", stdout);
+        envelope_print_safe(stdout, path, 0, "?", false);
+        fputs(" signed by ", stdout);
+        envelope_print_safe(stdout, pub, 0, "?", false);
+        fputs(", expected ", stdout);
+        envelope_print_safe(stdout, trust_hex, 0, "?", false);
+        putchar('\n');
         return 2;
     }
-    printf("OK: %s signed by %s chain %s\n", path, pub, chain);
+    fputs("OK: ", stdout);
+    envelope_print_safe(stdout, path, 0, "?", false);
+    fputs(" signed by ", stdout);
+    envelope_print_safe(stdout, pub, 0, "?", false);
+    fputs(" chain ", stdout);
+    envelope_print_safe(stdout, chain, 0, "", false);
+    putchar('\n');
     return 0;
 }

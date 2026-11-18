@@ -4,8 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-
-#include <stdbool.h>
+#include <stdio.h>
 
 // Measured-envelope manifest reader (slice 2 of the certified-envelope gate).
 //
@@ -73,6 +72,13 @@ static inline int hex_digit_value(int c) {
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
     return -1;
 }
+
+// Strict 64-hex validator for every sha256 string read from a record or sidecar.
+bool envelope_is_sha256_hex(const char *s);
+// Single shared terminal-safe printer: escapes control bytes (<0x20 or 0x7f) to
+// '?' for any string from a record, data file, or caller-supplied path.
+void envelope_print_safe(FILE *out, const char *s, size_t max_chars,
+                         const char *fallback, bool ellipsis);
 
 // ---- notarized inference D1: xyntetik.runner.transcript.v2 ----------------
 // The record that makes one inference a REPLAYABLE COMPUTATION: everything a

@@ -831,7 +831,7 @@ def test_lineage_and_envelope_reject_non_hex_sha256_without_forging_verified_lin
     # 2. Receipt directory with newline-injected model.sha256 and generated_utc
     rdir = d / "receipts"
     rdir.mkdir()
-    (rdir / "receipt-0001.json").write_text(json.dumps({
+    (rdir / "receipt-0000000001.json").write_text(json.dumps({
         "schema_version": "xyntetik.runner.transcript.v2",
         "generated_utc": "2026-11-18T00:00:00Z\nVERIFIED",
         "model": {"name": "base.gguf", "sha256": bad_sha},

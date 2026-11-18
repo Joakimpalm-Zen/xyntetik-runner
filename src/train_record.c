@@ -83,26 +83,13 @@ bool train_env_is_secret(const char *name, size_t n) {
     return false;
 }
 
-static void print_safe_to(FILE *out, const char *s) {
-    if (!s) { fputs("missing", out); return; }
-    for (int i = 0; s[i] && i < 128; i++) {
-        unsigned char c = (unsigned char)s[i];
-        fputc((c < 0x20 || c == 0x7f) ? '?' : (int)c, out);
-    }
-    if (strlen(s) > 128) fputs("...", out);
-}
-
-static void print_safe_value(const char *s) {
-    print_safe_to(stdout, s);
-}
-
 static bool replay_fail(int *rc, const char *field, const char *want, const char *got) {
     fputs("MISMATCH ", stdout);
-    print_safe_value(field);
+    envelope_print_safe(stdout, field, 128, "missing", true);
     fputs(": expected ", stdout);
-    print_safe_value(want);
+    envelope_print_safe(stdout, want, 128, "missing", true);
     fputs(", got ", stdout);
-    print_safe_value(got);
+    envelope_print_safe(stdout, got, 128, "missing", true);
     putchar('\n');
     *rc = 2;
     return true;
@@ -139,16 +126,9 @@ static bool relocate_local(const char *cited, const char *citing, char *buf, siz
     return fmt_checked(buf, cap, "%.*s%s", dn, citing, cited);
 }
 
-static bool is_sha256_hex(const char *s) {
-    if (!s || strlen(s) != 64) return false;
-    for (int i = 0; i < 64; i++)
-        if (hex_digit_value((unsigned char)s[i]) < 0) return false;
-    return true;
-}
-
 static bool replay_check_sha_opt(const char *field, const char *path, const char *want,
                                  bool nofollow, int *rc) {
-    if (!is_sha256_hex(want)) return !replay_fail(rc, field, "64-hex sha256", want);
+    if (!envelope_is_sha256_hex(want)) return !replay_fail(rc, field, "64-hex sha256", want);
     char got[65] = "";
     bool ok = path && *path &&
               (nofollow ? envelope_cited_regular_sha256(path, got) : envelope_cited_sha256(path, got));
@@ -419,6 +399,8 @@ static bool replay_check_compat(const train_record_host *host, const train_recor
         bool xok = exe && envelope_file_sha256(exe, cur_sha);
         free(exe);
         const char *want_sha = jv_str(jv_get(bld, "binary_sha256"), "");
+        if (!envelope_is_sha256_hex(want_sha))
+            return !replay_fail(rc, "build.binary_sha256", "64-hex sha256", want_sha);
         if (!xok || strcmp(cur_sha, want_sha) != 0)
             return !replay_fail(rc, "build.binary_sha256", want_sha, xok ? cur_sha : "unreadable");
     }
@@ -605,7 +587,9 @@ static const char *unlearn_record_eligible(jv *rec) {
 static bool unlearn_check_eligible(const train_record_opts *o, jv *rec, int *rc) {
     const char *why = unlearn_record_eligible(rec);
     if (!why) return true;
-    fprintf(stderr, "error: --unlearn: %s %s\n", o->unlearn_parent, why);
+    fputs("error: --unlearn: ", stderr);
+    envelope_print_safe(stderr, o->unlearn_parent, 0, "?", false);
+    fprintf(stderr, " %s\n", why);
     *rc = 1;
     return false;
 }
@@ -617,10 +601,19 @@ static bool unlearn_check_eligible(const train_record_opts *o, jv *rec, int *rc)
 static bool unlearn_prepare(train_record_opts *o, jv *rec, int *rc) {
     char have[65] = "";
     const char *want = jv_str(jv_get(jv_get(rec, "data"), "sha256"), "");
+    if (!envelope_is_sha256_hex(want)) {
+        fputs("error: --unlearn: parent record has invalid data.sha256: ", stderr);
+        envelope_print_safe(stderr, want, 128, "missing", true);
+        fputc('\n', stderr);
+        *rc = 1;
+        return false;
+    }
     if (!envelope_file_sha256(o->train_path, have) || strcmp(have, want)) {
-        fprintf(stderr, "error: --unlearn: %s is not the parent's data (sha256 %s, the record names ",
-                o->train_path, have[0] ? have : "unreadable");
-        print_safe_to(stderr, want);
+        fputs("error: --unlearn: ", stderr);
+        envelope_print_safe(stderr, o->train_path, 0, "?", false);
+        fprintf(stderr, " is not the parent's data (sha256 %s, the record names ",
+                have[0] ? have : "unreadable");
+        envelope_print_safe(stderr, want, 128, "missing", true);
         fputs(")\n", stderr);
         *rc = 1;
         return false;
@@ -629,21 +622,28 @@ static bool unlearn_prepare(train_record_opts *o, jv *rec, int *rc) {
     char swhy[512];
     if (!unlearn_split(o->train_path, o->unlearn_drop, &kept, &o->unlearn_count, &o->unlearn_distinct,
                        swhy, sizeof swhy)) {
-        fprintf(stderr, "error: --unlearn: %s\n", swhy);
+        fputs("error: --unlearn: ", stderr);
+        envelope_print_safe(stderr, swhy, 0, "failed", false);
+        fputc('\n', stderr);
         free(kept.s);
         *rc = 1;
         return false;
     }
     if (kept.n == 0) {
-        fprintf(stderr, "error: --unlearn: %s drops every row of %s: nothing is left to train on\n",
-                o->unlearn_drop, o->train_path);
+        fputs("error: --unlearn: ", stderr);
+        envelope_print_safe(stderr, o->unlearn_drop, 0, "?", false);
+        fputs(" drops every row of ", stderr);
+        envelope_print_safe(stderr, o->train_path, 0, "?", false);
+        fputs(": nothing is left to train on\n", stderr);
         free(kept.s);
         *rc = 1;
         return false;
     }
     static char path[4200];
     if (!fmt_checked(path, sizeof path, "%s.retained.jsonl", o->train_out)) {
-        fprintf(stderr, "error: --unlearn: retained path exceeds buffer for %s\n", o->train_out);
+        fputs("error: --unlearn: retained path exceeds buffer for ", stderr);
+        envelope_print_safe(stderr, o->train_out, 0, "?", false);
+        fputc('\n', stderr);
         free(kept.s);
         *rc = 1;
         return false;
@@ -653,7 +653,9 @@ static bool unlearn_prepare(train_record_opts *o, jv *rec, int *rc) {
     if (f && fclose(f) != 0) ok = false;
     free(kept.s);
     if (!ok) {
-        fprintf(stderr, "error: --unlearn: cannot write %s\n", path);
+        fputs("error: --unlearn: cannot write ", stderr);
+        envelope_print_safe(stderr, path, 0, "?", false);
+        fputc('\n', stderr);
         *rc = 1;
         return false;
     }
@@ -719,7 +721,7 @@ static bool unlearn_audit_check(const train_record_opts *o, jv *rec, const char 
         return !replay_fail(rc, "unlearn.parent_record", "eligible weighted-cross-entropy LoRA .jsonl run", p_why);
     }
     const char *pdata_raw = jv_str(jv_get(jv_get(parent, "data"), "sha256"), NULL);
-    if (!is_sha256_hex(pdata_raw)) {
+    if (!envelope_is_sha256_hex(pdata_raw)) {
         replay_fail(rc, "unlearn.parent_data.sha256", "64-hex sha256", pdata_raw);
         jv_free(parent);
         return false;
@@ -736,6 +738,16 @@ static bool unlearn_audit_check(const train_record_opts *o, jv *rec, const char 
     };
     const char *pbase = jv_str(jv_get(jv_get(parent, "base"), "sha256"), "");
     const char *rbase = jv_str(jv_get(jv_get(rec, "base"), "sha256"), "");
+    if (!envelope_is_sha256_hex(pbase)) {
+        replay_fail(rc, "unlearn.parent.base.sha256", "64-hex sha256", pbase);
+        jv_free(parent);
+        return false;
+    }
+    if (!envelope_is_sha256_hex(rbase)) {
+        replay_fail(rc, "base.sha256", "64-hex sha256", rbase);
+        jv_free(parent);
+        return false;
+    }
     bool same_ok = parent && !strcmp(pbase, rbase);
     const char *differs = same_ok ? NULL : "base.sha256";
     for (size_t i = 0; same_ok && i < sizeof same / sizeof *same; i++)
@@ -764,6 +776,7 @@ static bool unlearn_audit_check(const train_record_opts *o, jv *rec, const char 
     envelope_data_sha256(kept.s, kept.n, got);
     free(kept.s);
     const char *want = jv_str(jv_get(jv_get(rec, "data"), "sha256"), "");
+    if (!envelope_is_sha256_hex(want)) return !replay_fail(rc, "data.sha256", "64-hex sha256", want);
     if (strcmp(got, want)) return !replay_fail(rc, "unlearn.retained", want, got);
     if (c != count || dd != distinct) {
         char w[64], g[64];
@@ -787,7 +800,9 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
     size_t rlen = 0;
     jv *rec = read_bounded_record(rec_path, !retrain, err, sizeof err, &rbuf, &rlen);
     if (!rec) {
-        fprintf(stderr, "error: %s\n", err[0] ? err : rec_path);
+        fputs("error: ", stderr);
+        envelope_print_safe(stderr, err[0] ? err : rec_path, 0, "?", false);
+        fputc('\n', stderr);
         *rc = 1;
         return true;
     }
@@ -835,9 +850,12 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
 
     const char *out_name = ok ? jv_str(jv_get(out_v, "path"), NULL) : NULL;
     const char *out_sha = ok ? jv_str(jv_get(out_v, "sha256"), NULL) : NULL;
-    if (ok && (!safe_relname(out_name, 255) || !is_sha256_hex(out_sha)))
+    if (ok && !safe_relname(out_name, 255))
         ok = !replay_fail(rc, rp->is_full ? "variant.path" : "adapter.path",
-                          "safe basename and 64-hex sha256", out_name);
+                          "safe basename", out_name);
+    if (ok && !envelope_is_sha256_hex(out_sha))
+        ok = !replay_fail(rc, rp->is_full ? "variant.sha256" : "adapter.sha256",
+                          "64-hex sha256", out_sha);
     if (ok && (!fmt_checked(rp->want_out_path, sizeof rp->want_out_path, "%s", out_name) ||
                !fmt_checked(rp->want_out_sha, sizeof rp->want_out_sha, "%s", out_sha)))
         ok = !replay_fail(rc, rp->is_full ? "variant.path" : "adapter.path", "path fitting limit", "too long");

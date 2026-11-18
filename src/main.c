@@ -3318,7 +3318,11 @@ static bool cli_resolve_trust_key(cli_opts *o) {
     }
     bool ok = *hex && strlen(hex) < sizeof keybuf;
     if (ok) { strcpy(keybuf, hex); o->trust_key = keybuf; }
-    else fprintf(stderr, "error: --trust-key %s: the file holds no key\n", o->trust_key);
+    else {
+        fputs("error: --trust-key ", stderr);
+        envelope_print_safe(stderr, o->trust_key, 0, "?", false);
+        fputs(": the file holds no key\n", stderr);
+    }
     if (j) jv_free(j);
     free(data);
     return ok;
@@ -3554,8 +3558,10 @@ static bool run_record_utility(const cli_opts *o, int *rc) {
         }
         oms_sign_info si;
         if (!oms_sign_file(o->sign_model, o->model_key, out, &si)) { *rc = 1; return true; }
-        printf("signed: %s (%s/%s, %d file%s, subject sha256 %s, key hint %s)\n",
-               out, si.curve, si.hash, si.n_resources,
+        fputs("signed: ", stdout);
+        envelope_print_safe(stdout, out, 0, "?", false);
+        printf(" (%s/%s, %d file%s, subject sha256 %s, key hint %s)\n",
+               si.curve, si.hash, si.n_resources,
                si.n_resources == 1 ? "" : "s", si.subject_digest, si.key_hint);
         *rc = 0;
         return true;
@@ -3585,15 +3591,17 @@ static bool run_record_utility(const cli_opts *o, int *rc) {
         bool ok = wm_key_write(o->watermark_keygen, key, id);
         memset(key, 0, sizeof key);
         if (!ok) {
-            fprintf(stderr, "error: --watermark-keygen: cannot create %s (an "
-                    "existing key is never overwritten)\n", o->watermark_keygen);
+            fputs("error: --watermark-keygen: cannot create ", stderr);
+            envelope_print_safe(stderr, o->watermark_keygen, 0, "?", false);
+            fputs(" (an existing key is never overwritten)\n", stderr);
             *rc = 1;
             return true;
         }
         printf("{\"schema_version\":\"xyntetik.runner.watermark_key.v1\","
                "\"key_id\":\"%s\"}\n", id);
-        fprintf(stderr, "watermark key -> %s (keep it private; receipts name it "
-                "by its id %s)\n", o->watermark_keygen, id);
+        fputs("watermark key -> ", stderr);
+        envelope_print_safe(stderr, o->watermark_keygen, 0, "?", false);
+        fprintf(stderr, " (keep it private; receipts name it by its id %s)\n", id);
         *rc = 0;
         return true;
     }
@@ -3610,7 +3618,9 @@ static bool cli_watermark_setup(const cli_opts *o, wm_key *wmk, bool *wm_on,
     if (o->watermark_path) {
         char werr[256];
         if (!wm_key_load(o->watermark_path, wmk, werr, sizeof werr)) {
-            fprintf(stderr, "error: --watermark: %s\n", werr);
+            fputs("error: --watermark: ", stderr);
+            envelope_print_safe(stderr, werr, 0, "?", false);
+            fputc('\n', stderr);
             *rc = 1;
             return true;
         }
@@ -3625,7 +3635,9 @@ static bool cli_watermark_setup(const cli_opts *o, wm_key *wmk, bool *wm_on,
         size_t dn = 0;
         char *dbuf = text_file_read(o->detect_path, &dn);
         if (!dbuf) {
-            fprintf(stderr, "error: --detect-watermark: cannot read %s\n", o->detect_path);
+            fputs("error: --detect-watermark: cannot read ", stderr);
+            envelope_print_safe(stderr, o->detect_path, 0, "?", false);
+            fputc('\n', stderr);
             *rc = 1;
             return true;
         }
@@ -3639,8 +3651,9 @@ static bool cli_watermark_setup(const cli_opts *o, wm_key *wmk, bool *wm_on,
             int32_t *all = pt && ot ? malloc(sizeof *all * (size_t)(np + no + 1)) : NULL;
             int drc = 3;
             if (!all) {
-                fprintf(stderr, "error: --detect-watermark: %s has malformed token "
-                        "arrays\n", o->detect_path);
+                fputs("error: --detect-watermark: ", stderr);
+                envelope_print_safe(stderr, o->detect_path, 0, "?", false);
+                fputs(" has malformed token arrays\n", stderr);
             } else {
                 memcpy(all, pt, sizeof *all * (size_t)np);
                 memcpy(all + np, ot, sizeof *all * (size_t)no);
@@ -3657,16 +3670,18 @@ static bool cli_watermark_setup(const cli_opts *o, wm_key *wmk, bool *wm_on,
         jv_free(dj);
         if (!o->model_path) {
             free(dbuf);
-            fprintf(stderr, "error: --detect-watermark: %s is not a transcript "
-                    "record; scoring a text needs -m MODEL (its tokenizer)\n",
-                    o->detect_path);
+            fputs("error: --detect-watermark: ", stderr);
+            envelope_print_safe(stderr, o->detect_path, 0, "?", false);
+            fputs(" is not a transcript record; scoring a text needs -m MODEL (its tokenizer)\n",
+                  stderr);
             *rc = 1;
             return true;
         }
         if (memchr(dbuf, '\0', dn)) {   // the text would end there unseen
             free(dbuf);
-            fprintf(stderr, "error: --detect-watermark: %s contains a NUL byte\n",
-                    o->detect_path);
+            fputs("error: --detect-watermark: ", stderr);
+            envelope_print_safe(stderr, o->detect_path, 0, "?", false);
+            fputs(" contains a NUL byte\n", stderr);
             *rc = 1;
             return true;
         }
@@ -3798,19 +3813,24 @@ static int run_keygen(const cli_opts *o) {
     bool exists = false;
     if (!signkey_write(o->keygen_path, o->keygen_algo, seed, pub, &exists)) {
         memset(seed, 0, sizeof seed);
-        if (exists)
-            fprintf(stderr, "error: --keygen: %s already exists; a signing key is "
-                    "never replaced. Name another path, or remove the file "
-                    "yourself to retire that key\n", o->keygen_path);
-        else
-            fprintf(stderr, "error: --keygen: cannot write %s\n", o->keygen_path);
+        if (exists) {
+            fputs("error: --keygen: ", stderr);
+            envelope_print_safe(stderr, o->keygen_path, 0, "?", false);
+            fputs(" already exists; a signing key is never replaced. Name "
+                  "another path, or remove the file yourself to retire that key\n", stderr);
+        } else {
+            fputs("error: --keygen: cannot write ", stderr);
+            envelope_print_safe(stderr, o->keygen_path, 0, "?", false);
+            fputc('\n', stderr);
+        }
         return 1;
     }
     memset(seed, 0, sizeof seed);
     printf("{\"schema_version\":\"xyntetik.runner.signkey.v1\",\"algo\":\"%s\","
            "\"public_key\":\"%s\"}\n", o->keygen_algo, pub);
-    fprintf(stderr, "signing key -> %s (keep it private; the %s public key is %s)\n",
-            o->keygen_path, o->keygen_algo, pub);
+    fputs("signing key -> ", stderr);
+    envelope_print_safe(stderr, o->keygen_path, 0, "?", false);
+    fprintf(stderr, " (keep it private; the %s public key is %s)\n", o->keygen_algo, pub);
     return 0;
 }
 
@@ -4893,10 +4913,18 @@ static bool cli_require_eval_ok(const cli_opts *o, const char *load_path) {
     if (o->require_eval) {
         char why[512];
         if (!lineage_require_eval(load_path, o->require_eval, o->trust_key, why, sizeof why)) {
-            fprintf(stderr, "error: --require-eval %s: %s\n", o->require_eval, why);
+            fputs("error: --require-eval ", stderr);
+            envelope_print_safe(stderr, o->require_eval, 0, "?", false);
+            fputs(": ", stderr);
+            envelope_print_safe(stderr, why, 0, "?", false);
+            fputc('\n', stderr);
             return false;
         }
-        fprintf(stderr, "eval: %s.eval.%s.json passes for this file\n", load_path, o->require_eval);
+        fputs("eval: ", stderr);
+        envelope_print_safe(stderr, load_path, 0, "?", false);
+        fputs(".eval.", stderr);
+        envelope_print_safe(stderr, o->require_eval, 0, "?", false);
+        fputs(".json passes for this file\n", stderr);
     }
     return true;
 }
@@ -6865,7 +6893,9 @@ static int run_replay_train(cli_opts *o, cli_run *rt, const cli_replay *rp,
                     rp->want_out_sha, got_sha);
         return rc;
     }
-    printf("VERIFIED %s sha256 %s\n", rp->want_out_path, got_sha);
+    fputs("VERIFIED ", stdout);
+    envelope_print_safe(stdout, rp->want_out_path, 0, "?", false);
+    printf(" sha256 %s\n", got_sha);
     return 0;
 }
 
