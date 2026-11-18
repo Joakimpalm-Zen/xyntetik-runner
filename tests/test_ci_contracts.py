@@ -141,6 +141,43 @@ class CommandGate(unittest.TestCase):
             workflow.write_text("  targets: probe probe\n")
             self.assertNotEqual(run(), 0)
 
+    def _roster_tree(self, td, make_text):
+        root = pathlib.Path(td)
+        for d in ("scripts", "tests/fuzz", ".github/workflows"):
+            (root / d).mkdir(parents=True)
+        script = root / "scripts/check-ci-roster.py"
+        script.write_bytes((ROOT / "scripts/check-ci-roster.py").read_bytes())
+        for name in ("test_a.py", "test_lane.py", "test_own.py"):
+            (root / "tests" / name).write_text("")
+        (root / "tests/fuzz/fuzz_probe.c").write_text("")
+        (root / ".github/workflows/ci.yml").write_text("  targets: probe\n")
+        (root / "Makefile").write_text("FUZZ_TARGETS = probe\n" + make_text)
+        p = subprocess.run([sys.executable, str(script)], capture_output=True, text=True)
+        return p.returncode, p.stdout + p.stderr
+
+    def test_roster_wants_exact_membership_of_the_two_root_lists(self):
+        """A root test named only on another lane's line is not in the root batch: the check must refuse it
+        (#938's tests/test_build_math.py ran on the Metal lane alone). And a file in ROOT_PYTEST_EXCLUDE must be
+        named by a target that runs it, or the exclusion is a way to run nothing."""
+        lists = ("ROOT_PYTEST_TESTS = \\\n    tests/test_a.py\n\n"
+                 "ROOT_PYTEST_EXCLUDE = \\\n    tests/test_own.py\n\n"
+                 "test:\n\tpython -m pytest $(ROOT_PYTEST_TESTS)\n")
+        own = "test-own:\n\tpython -m pytest tests/test_own.py\n"
+        lane = "test-lane:\n\tpython -m pytest tests/test_kv.py tests/test_lane.py\n"
+        with tempfile.TemporaryDirectory() as td:   # named only on another lane's line
+            rc, out = self._roster_tree(td, lists + own + lane)
+            self.assertNotEqual(rc, 0, out)
+            self.assertIn("tests/test_lane.py", out)
+        with tempfile.TemporaryDirectory() as td:   # the live control: in a list, it passes
+            rc, out = self._roster_tree(td, lists.replace("tests/test_a.py\n", "tests/test_a.py \\\n"
+                                                          "    tests/test_lane.py\n") + own)
+            self.assertEqual(rc, 0, out)
+        with tempfile.TemporaryDirectory() as td:   # excluded, and no target runs it
+            rc, out = self._roster_tree(td, lists.replace("tests/test_a.py\n", "tests/test_a.py \\\n"
+                                                          "    tests/test_lane.py\n"))
+            self.assertNotEqual(rc, 0, out)
+            self.assertIn("tests/test_own.py", out)
+
     def test_roster_catches_a_device_target_no_lane_runs(self):
         """A test-cuda-* target outside cuda-gate.sh's DEVICE_STEPS, or a
         test-metal-* target test-metal does not call, is a gate nothing runs;
@@ -169,6 +206,121 @@ class CommandGate(unittest.TestCase):
             self.assertNotEqual(run(base + "test-metal:\n\ttrue\n", "a:test-cuda-a"), 0)
             self.assertEqual(run(base + "DEVICE_OPT_IN = test-metal-b\n", "a:test-cuda-a"), 0)
             self.assertNotEqual(run(base + metal, "a:test-cuda-a z:test-cuda-typo"), 0)
+
+    def test_roster_catches_a_forgotten_root_test_not_in_list_or_exclusions(self):
+        """Every tests/test_*.py at tests/ root must be in ROOT_PYTEST_TESTS or
+        ROOT_PYTEST_EXCLUDE, one per line and sorted, not merely mentioned elsewhere."""
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            for d in ("scripts", "tests/fuzz", ".github/workflows"):
+                (root / d).mkdir(parents=True)
+            script = root / "scripts/check-ci-roster.py"
+            script.write_bytes((ROOT / "scripts/check-ci-roster.py").read_bytes())
+            (root / "tests/fuzz/fuzz_probe.c").write_text("")
+            (root / ".github/workflows/ci.yml").write_text("  targets: probe\n")
+            for name in ("test_alpha.py", "test_beta.py", "test_forgotten.py"):
+                (root / "tests" / name).write_text("")
+            make = root / "Makefile"
+
+            def run(body):
+                make.write_text(body)
+                return subprocess.run([sys.executable, str(script)], capture_output=True, text=True)
+
+            forgotten_body = (
+                "FUZZ_TARGETS = probe\n"
+                "ROOT_PYTEST_TESTS = \\\n"
+                "    tests/test_alpha.py\n"
+                "ROOT_PYTEST_EXCLUDE = \\\n"
+                "    tests/test_beta.py\n"
+                "test-python:\n\t$(PYTHON) -m pytest $(ROOT_PYTEST_TESTS)\n"
+                "test-beta:\n\t$(PYTHON) -m pytest tests/test_beta.py\n"
+                "test-forgotten:\n\t$(PYTHON) -m pytest tests/test_forgotten.py\n"
+            )
+            r = run(forgotten_body)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("tests/test_forgotten.py", r.stdout + r.stderr)
+
+            in_list_body = (
+                "FUZZ_TARGETS = probe\n"
+                "ROOT_PYTEST_TESTS = \\\n"
+                "    tests/test_alpha.py \\\n"
+                "    tests/test_forgotten.py\n"
+                "ROOT_PYTEST_EXCLUDE = \\\n"
+                "    tests/test_beta.py\n"
+                "test-python:\n\t$(PYTHON) -m pytest $(ROOT_PYTEST_TESTS)\n"
+                "test-beta:\n\t$(PYTHON) -m pytest tests/test_beta.py\n"
+            )
+            r = run(in_list_body)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+            in_exclude_body = (
+                "FUZZ_TARGETS = probe\n"
+                "ROOT_PYTEST_TESTS = \\\n"
+                "    tests/test_alpha.py\n"
+                "ROOT_PYTEST_EXCLUDE = \\\n"
+                "    tests/test_beta.py \\\n"
+                "    tests/test_forgotten.py\n"
+                "test-python:\n\t$(PYTHON) -m pytest $(ROOT_PYTEST_TESTS)\n"
+                "test-beta:\n\t$(PYTHON) -m pytest tests/test_beta.py\n"
+                "test-forgotten:\n\t$(PYTHON) -m pytest tests/test_forgotten.py\n"
+            )
+            r = run(in_exclude_body)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+            unsorted_body = (
+                "FUZZ_TARGETS = probe\n"
+                "ROOT_PYTEST_TESTS = \\\n"
+                "    tests/test_forgotten.py \\\n"
+                "    tests/test_alpha.py\n"
+                "ROOT_PYTEST_EXCLUDE = \\\n"
+                "    tests/test_beta.py\n"
+                "test-python:\n\t$(PYTHON) -m pytest $(ROOT_PYTEST_TESTS)\n"
+                "test-beta:\n\t$(PYTHON) -m pytest tests/test_beta.py\n"
+            )
+            self.assertNotEqual(run(unsorted_body).returncode, 0)
+
+            same_line_body = (
+                "FUZZ_TARGETS = probe\n"
+                "ROOT_PYTEST_TESTS = \\\n"
+                "    tests/test_alpha.py tests/test_forgotten.py\n"
+                "ROOT_PYTEST_EXCLUDE = \\\n"
+                "    tests/test_beta.py\n"
+                "test-python:\n\t$(PYTHON) -m pytest $(ROOT_PYTEST_TESTS)\n"
+                "test-beta:\n\t$(PYTHON) -m pytest tests/test_beta.py\n"
+            )
+            self.assertNotEqual(run(same_line_body).returncode, 0)
+
+            overlap_body = (
+                "FUZZ_TARGETS = probe\n"
+                "ROOT_PYTEST_TESTS = \\\n"
+                "    tests/test_alpha.py \\\n"
+                "    tests/test_beta.py \\\n"
+                "    tests/test_forgotten.py\n"
+                "ROOT_PYTEST_EXCLUDE = \\\n"
+                "    tests/test_beta.py\n"
+                "test-python:\n\t$(PYTHON) -m pytest $(ROOT_PYTEST_TESTS)\n"
+                "test-beta:\n\t$(PYTHON) -m pytest tests/test_beta.py\n"
+            )
+            self.assertNotEqual(run(overlap_body).returncode, 0)
+
+            stale_body = (
+                "FUZZ_TARGETS = probe\n"
+                "ROOT_PYTEST_TESTS = \\\n"
+                "    tests/test_alpha.py \\\n"
+                "    tests/test_forgotten.py \\\n"
+                "    tests/test_nonexistent.py\n"
+                "ROOT_PYTEST_EXCLUDE = \\\n"
+                "    tests/test_beta.py\n"
+                "test-python:\n\t$(PYTHON) -m pytest $(ROOT_PYTEST_TESTS)\n"
+                "test-beta:\n\t$(PYTHON) -m pytest tests/test_beta.py\n"
+            )
+            self.assertNotEqual(run(stale_body).returncode, 0)
+
+    def test_makefile_root_pytest_list_is_one_per_line_and_sorted(self):
+        make = (ROOT / "Makefile").read_text()
+        for var in ("ROOT_PYTEST_TESTS", "ROOT_PYTEST_EXCLUDE"):
+            self.assertRegex(make, rf"(?m)^{var}\s*=\s*\\\s*$")
+        self.assertIn("$(ROOT_PYTEST_TESTS)", make)
 
     def test_fpclass_check_refuses_a_raw_class_test(self):
         """A raw isnan()/isfinite() in a -ffast-math unit is refused (clang
@@ -834,6 +986,45 @@ class PlatformDetection(unittest.TestCase):
                 tsan = next(x for x in self.make_n("test-decide-race-gpu", uname)
                             if "-o test-decide-race-gpu-bin" in x)
                 self.assertNotIn("-fsanitize=thread", tsan)
+
+    # R6.85: the release's own command-line CFLAGS (.github/workflows/release.yml)
+    RELEASE_CFLAGS = "CFLAGS=-O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=x86-64-v3"
+
+    def model_compile(self, uname, args=()):
+        return next(x for x in self.make_n("runner", uname, args) if " -c src/model.c " in x).split()
+
+    def assert_portable(self, words, portable):
+        has = "-DRUNNER_PORTABLE_MATH" in words and "src/pmath.h" in words
+        self.assertEqual(has, portable, " ".join(words))
+
+    @unittest.skipIf(os.name == "nt", "stubs uname with a POSIX script")
+    def test_a_windows_default_build_takes_the_portable_math(self):
+        """R6.85: the Windows C runtime's expf and logf differ in their last bits between ucrtbase versions, so
+        one runner.exe gave two hosts two replies. A Windows build takes src/pmath.h's functions by default, also
+        when a release sets CFLAGS on make's command line; PORTABLE_MATH=0 opts out. Linux and macOS keep the C
+        library's (the live control: the same check sees the define when it is given by hand)."""
+        win = self.WINDOWS_UNAMES[0]
+        self.assert_portable(self.model_compile(win), True)
+        self.assert_portable(self.model_compile(win, [self.RELEASE_CFLAGS]), True)
+        self.assert_portable(self.model_compile(win, ["PORTABLE_MATH=0"]), False)
+        self.assert_portable(self.model_compile(win, [self.RELEASE_CFLAGS, "PORTABLE_MATH=0"]), False)
+        for uname in ("Linux", "Darwin"):
+            with self.subTest(uname=uname):
+                self.assert_portable(self.model_compile(uname), False)
+                self.assert_portable(self.model_compile(uname, [self.RELEASE_CFLAGS]), False)
+                self.assert_portable(self.model_compile(uname, [self.RELEASE_CFLAGS + " -DRUNNER_PORTABLE_MATH"]),
+                                     True)
+
+    @unittest.skipIf(os.name == "nt", "a Windows default build is portable: make test's own run is this case")
+    def test_the_sampler_check_reads_a_portable_default_builds_digest(self):
+        """R6.85: on Windows the default build is portable, so test_sample_nan's default binary names itself
+        "portable" in its digest line. scripts/check-sample-nan.sh read only "digest default:", found nothing and
+        failed every Windows run. Run here with PORTABLE_MATH=1, as a Windows default is built; the plain run (the
+        default build named "default") is make test's own."""
+        p = subprocess.run(["make", "test-sample-nan", "PORTABLE_MATH=1", "PYTHON=" + sys.executable], cwd=ROOT,
+                           capture_output=True, text=True, timeout=900)
+        self.assertEqual(p.returncode, 0, (p.stdout + p.stderr)[-800:])
+        self.assertIn("sample-nan: ok", p.stdout)
 
     @unittest.skipIf(os.name == "nt", "stubs uname with a POSIX script")
     def test_posix_uname_keeps_its_branch(self):

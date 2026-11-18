@@ -28,6 +28,7 @@
     "stop_sequences": true,
     "usage_cached_tokens": true
   },
+  "math": "<redacted>",
   "models": [
     {
       "id": "<redacted>",

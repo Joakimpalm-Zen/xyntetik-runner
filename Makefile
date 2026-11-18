@@ -212,6 +212,20 @@ endif
 # read it first in every unit. The system headers it includes then come
 # before a source's own feature macros, so the two compat.c sets
 # (sched_getaffinity on Linux, rand_s on Windows) are given here too.
+# R6.85: a Windows build takes the portable math by default. The Windows C
+# runtime's expf and logf differ in their last bits between ucrtbase
+# versions, so one runner.exe gave two hosts two replies; the portable
+# functions are the same bits on every host. Linux and macOS keep the C
+# library's (their default build is one libm per binary). PORTABLE_MATH=0
+# opts out, PORTABLE_MATH=1 opts in anywhere; `override` because a release
+# sets CFLAGS on make's command line. T3=1 is portable whatever this says.
+PORTABLE_MATH_DEFAULT_Windows = 1
+PORTABLE_MATH ?= $(or $(PORTABLE_MATH_DEFAULT_$(BUILD_OS)),0)
+ifeq ($(PORTABLE_MATH),1)
+ifeq ($(filter -DRUNNER_PORTABLE_MATH,$(CFLAGS)),)
+override CFLAGS += -DRUNNER_PORTABLE_MATH
+endif
+endif
 PMATH_FEATURES_Linux = -D_GNU_SOURCE
 PMATH_FEATURES_Windows = -D_CRT_RAND_S=
 ifneq ($(filter -DRUNNER_PORTABLE_MATH,$(CFLAGS)),)
@@ -493,7 +507,7 @@ $(OBJDIR)/metal.o: src/metal.m $(HDR) src/kernels_metal.h src/kernels_tensor_met
 
 SRC = src/gguf.c src/compat.c $(QUANTS_OBJ) src/instances.c src/tokenizer.c src/model.c src/sample.c src/dpo.c \
       src/vramreg.c src/npy.c \
-      src/template.c src/jsonmode.c $(SCHEMA_SRC) $(QUANTIZE_OBJ) src/engine.c src/decide.c src/clef.c src/json.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/http.c src/registry.c src/provenance.c src/lineage.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c src/session.c src/scheduler.c src/completion.c src/api_responses.c src/api_anthropic.c src/server.c src/hfhub.c src/bundle.c \
+      src/template.c src/jsonmode.c $(SCHEMA_SRC) $(QUANTIZE_OBJ) src/engine.c src/decide.c src/clef.c src/json.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/http.c src/registry.c src/provenance.c src/lineage.c src/train_record.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c src/session.c src/scheduler.c src/completion.c src/api_responses.c src/api_anthropic.c src/server.c src/hfhub.c src/bundle.c \
       src/derive.c src/main.c $(GPU_SRC) $(TRAY_SRC)
 
 # Cross-compile a static riscv64 binary with zig (no toolchain install;
@@ -886,9 +900,13 @@ $(TEST_SPLIT_GUARD): $(TEST_SPLIT_GUARD_SRC) $(HDR)
 # resident path, forced to a different split, must be reported loudly. The
 # harness self-skips (exit 0, says so) without a GPU backend; when it does
 # run, the report line is the gate — delete the guard and this goes red.
+# A harness that itself fails (a crash, or a missing device R6.90's gate
+# turns into a failure) prints its log too: under set -e the bare call ended
+# the recipe before any cat, and the failure came with no output at all.
 test-split-guard: $(TEST_SPLIT_GUARD) test.gguf
-	@set -e; \
-	./$(TEST_SPLIT_GUARD) $(ASAN_MODEL) > split-guard.out 2>&1; \
+	@set -e; rc=0; \
+	./$(TEST_SPLIT_GUARD) $(ASAN_MODEL) > split-guard.out 2>&1 || rc=$$?; \
+	if [ $$rc -ne 0 ]; then echo "FAIL: the split-guard harness exited $$rc"; cat split-guard.out; exit 1; fi; \
 	if grep -q "^skip:" split-guard.out; then cat split-guard.out; exit 0; fi; \
 	grep -q "re-decided the CPU/GPU split without a file identity" split-guard.out || { \
 		echo "FAIL: forced split disagreement produced no loud report"; \
@@ -4205,11 +4223,300 @@ test-gates-batch: runner $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_ATTN_SPLIT) test.
 # (lease interop), test-tc-tol (TC eligibility, iquants), test-gpu-identity
 # (iquants), test-lora-grad (DeltaNet autograd), the manifest-less runner
 # (Windows console tests).
+# Root pytest files run by test-python, one file per line and sorted
+# (R6.96) so concurrent PRs adding tests stop colliding on one line.
+ROOT_PYTEST_TESTS = \
+    tests/test_act_trace.py \
+    tests/test_adapt_info.py \
+    tests/test_adapter_routing.py \
+    tests/test_adapter_signature.py \
+    tests/test_agent_torture.py \
+    tests/test_agent_transcripts.py \
+    tests/test_agents_worktrees.py \
+    tests/test_apertus.py \
+    tests/test_apertus_thinking.py \
+    tests/test_arch_admission.py \
+    tests/test_attn_dec_repeat.py \
+    tests/test_attn_wide_repeat.py \
+    tests/test_batch_bench.py \
+    tests/test_batch_rows_match_cpu.py \
+    tests/test_bench_corpus.py \
+    tests/test_bench_json.py \
+    tests/test_build_math.py \
+    tests/test_bundle.py \
+    tests/test_cached.py \
+    tests/test_cancel_handles.py \
+    tests/test_cancel_route.py \
+    tests/test_canon_gaps.py \
+    tests/test_caps.py \
+    tests/test_cert_greedy_identity.py \
+    tests/test_certify_envelope.py \
+    tests/test_chat_template_flag.py \
+    tests/test_check_portability.py \
+    tests/test_ci_contracts.py \
+    tests/test_clef.py \
+    tests/test_cli_files.py \
+    tests/test_cli_lifecycle.py \
+    tests/test_cli_smokes.py \
+    tests/test_cli_surface.py \
+    tests/test_closure_provenance.py \
+    tests/test_comment_only_check.py \
+    tests/test_commit_hygiene.py \
+    tests/test_compare_llamacpp.py \
+    tests/test_compat_matrix.py \
+    tests/test_competitor_freshness.py \
+    tests/test_completion_sequences.py \
+    tests/test_completion_token_ids.py \
+    tests/test_confirm_below.py \
+    tests/test_context_full.py \
+    tests/test_coverage_inventory.py \
+    tests/test_cpu_cuda_margin.py \
+    tests/test_cpu_i8_prefill.py \
+    tests/test_cuda_act_probe.py \
+    tests/test_cuda_buffer_lifetime.py \
+    tests/test_cuda_fit_full_offload.py \
+    tests/test_cuda_fit_hybrid.py \
+    tests/test_cuda_fit_ring.py \
+    tests/test_cuda_iq_grids.py \
+    tests/test_cuda_plan_runs.py \
+    tests/test_cuda_rec_slots.py \
+    tests/test_cuda_tensor_roles.py \
+    tests/test_cuda_upload_report.py \
+    tests/test_decide.py \
+    tests/test_decide_calibrate.py \
+    tests/test_deltanet_autograd.py \
+    tests/test_depth_slice.py \
+    tests/test_derive.py \
+    tests/test_device_evidence.py \
+    tests/test_difftok.py \
+    tests/test_doc_counts.py \
+    tests/test_doctor.py \
+    tests/test_documented_controls.py \
+    tests/test_draft_defaults.py \
+    tests/test_draft_k_defaults.py \
+    tests/test_draft_lookup.py \
+    tests/test_draft_recurrent_refeed.py \
+    tests/test_draft_required.py \
+    tests/test_echo_logprobs.py \
+    tests/test_embeddings_pooling.py \
+    tests/test_envelope_gate.py \
+    tests/test_envelope_swap.py \
+    tests/test_eseries.py \
+    tests/test_eval_record.py \
+    tests/test_evidence_pack.py \
+    tests/test_exclusive_bounds.py \
+    tests/test_expect_resident.py \
+    tests/test_family_fixtures.py \
+    tests/test_fidelity_index.py \
+    tests/test_fit_check.py \
+    tests/test_fit_matches_load.py \
+    tests/test_flint.py \
+    tests/test_full_train.py \
+    tests/test_gate_scripts.py \
+    tests/test_gemma4_untyped_fallback.py \
+    tests/test_gen_quality_metrics.py \
+    tests/test_generation_fault_framing.py \
+    tests/test_gguf_blockorder.py \
+    tests/test_gguf_truncated.py \
+    tests/test_glibc_release.py \
+    tests/test_gold_logits.py \
+    tests/test_gpu_declines.py \
+    tests/test_gpu_split_order.py \
+    tests/test_granite.py \
+    tests/test_health_requests.py \
+    tests/test_hermes_json_families.py \
+    tests/test_hf_fetch.py \
+    tests/test_hf_spec_bounds.py \
+    tests/test_hostile_geometry.py \
+    tests/test_hostile_records.py \
+    tests/test_hub_upload_check.py \
+    tests/test_hybrid_admission.py \
+    tests/test_idle_coexistence.py \
+    tests/test_ignore_eos_request.py \
+    tests/test_iquants.py \
+    tests/test_k2_horizon.py \
+    tests/test_kld_compare.py \
+    tests/test_kld_margin.py \
+    tests/test_known_kwargs.py \
+    tests/test_kv_dump.py \
+    tests/test_kv_f32.py \
+    tests/test_kv_quality.py \
+    tests/test_kv_reachable.py \
+    tests/test_kv_ring.py \
+    tests/test_kv_snapshots.py \
+    tests/test_lease_interop.py \
+    tests/test_lfm2.py \
+    tests/test_lineage.py \
+    tests/test_lineage_unlearn.py \
+    tests/test_load_prefetch.py \
+    tests/test_loop_guard.py \
+    tests/test_lora.py \
+    tests/test_lora_identity_alpha.py \
+    tests/test_lora_qwen35.py \
+    tests/test_merge.py \
+    tests/test_metal_attn_gqa.py \
+    tests/test_metal_attn_tile.py \
+    tests/test_metal_batch_tiles.py \
+    tests/test_metal_coverage.py \
+    tests/test_metal_iq_kernels.py \
+    tests/test_metal_kv_grow.py \
+    tests/test_metal_kv_restores.py \
+    tests/test_metal_memory.py \
+    tests/test_metal_microbatch_profile.py \
+    tests/test_metal_moe_batch.py \
+    tests/test_metal_mv_default.py \
+    tests/test_metal_split_budget.py \
+    tests/test_metal_split_layout.py \
+    tests/test_mistral3.py \
+    tests/test_model_id_long_name.py \
+    tests/test_model_tiers.py \
+    tests/test_moe_hot.py \
+    tests/test_moe_lora.py \
+    tests/test_moe_mm_flips.py \
+    tests/test_moe_prune_plan.py \
+    tests/test_moe_replay.py \
+    tests/test_mtp_admission.py \
+    tests/test_mtp_consume.py \
+    tests/test_muse_auto_toolchoice.py \
+    tests/test_muse_glimmer.py \
+    tests/test_mv_fuse.py \
+    tests/test_named_contexts.py \
+    tests/test_native_xml_routing.py \
+    tests/test_nemotron_hetero_moe.py \
+    tests/test_nemotron_latent_moe.py \
+    tests/test_nonfinite_records.py \
+    tests/test_nonfinite_responses.py \
+    tests/test_nvfp4_scale.py \
+    tests/test_oms.py \
+    tests/test_ornith_cpu.py \
+    tests/test_ornith_reference.py \
+    tests/test_owned_fields.py \
+    tests/test_package_manifests.py \
+    tests/test_parent_pid.py \
+    tests/test_pattern_automaton.py \
+    tests/test_phi3_rope.py \
+    tests/test_phys_footprint.py \
+    tests/test_port_in_use.py \
+    tests/test_prefix_budget.py \
+    tests/test_prefix_scored.py \
+    tests/test_prompt_file_crlf.py \
+    tests/test_provenance.py \
+    tests/test_pull.py \
+    tests/test_quant_fidelity.py \
+    tests/test_queued_load_disconnect.py \
+    tests/test_qwen35_kv_rows.py \
+    tests/test_qwen35moe.py \
+    tests/test_qwen36_preserve_thinking.py \
+    tests/test_qwen3_coder_tools.py \
+    tests/test_reasoning_budget.py \
+    tests/test_reasoning_reserve.py \
+    tests/test_reasoning_sampling.py \
+    tests/test_reasoning_start.py \
+    tests/test_receipts.py \
+    tests/test_recommend.py \
+    tests/test_record_sign.py \
+    tests/test_release_check.py \
+    tests/test_remove_sublayer.py \
+    tests/test_repeat_count.py \
+    tests/test_repeated_tool_calls.py \
+    tests/test_request_disconnect.py \
+    tests/test_rerank.py \
+    tests/test_responses_store.py \
+    tests/test_retired_switches.py \
+    tests/test_rewind_under_refused_prefix.py \
+    tests/test_rollout_identity.py \
+    tests/test_sampling_defaults.py \
+    tests/test_scheduled_ci_alert.py \
+    tests/test_schema_annotations.py \
+    tests/test_schema_close_api.py \
+    tests/test_schema_refs.py \
+    tests/test_score.py \
+    tests/test_score_route.py \
+    tests/test_seams_say_so.py \
+    tests/test_serve_receipts.py \
+    tests/test_server_banner.py \
+    tests/test_server_log_kept.py \
+    tests/test_server_penalty_exemptions.py \
+    tests/test_server_sessions.py \
+    tests/test_server_shared_pool.py \
+    tests/test_session_images.py \
+    tests/test_shadow_mode_flag.py \
+    tests/test_sign_model.py \
+    tests/test_site_tiers.py \
+    tests/test_soak_serve.py \
+    tests/test_spark2_5.py \
+    tests/test_spec_gpu.py \
+    tests/test_spec_telemetry.py \
+    tests/test_split_gguf.py \
+    tests/test_stop_latency.py \
+    tests/test_stop_replay.py \
+    tests/test_stop_specials.py \
+    tests/test_stream_utf8.py \
+    tests/test_stress_context.py \
+    tests/test_stress_models.py \
+    tests/test_switches_documented.py \
+    tests/test_tc_clef_promotion.py \
+    tests/test_tc_gate_eligibility.py \
+    tests/test_tc_route_label.py \
+    tests/test_tc_spark_promotion.py \
+    tests/test_template_conformance_token_only.py \
+    tests/test_template_kwargs.py \
+    tests/test_think_replay.py \
+    tests/test_tiedv.py \
+    tests/test_tier_smoke.py \
+    tests/test_token_divergence.py \
+    tests/test_tokenizer_corpus.py \
+    tests/test_tool_choice_boundary.py \
+    tests/test_tool_info.py \
+    tests/test_tool_replay.py \
+    tests/test_tool_schema_validity.py \
+    tests/test_tooluse_shifted.py \
+    tests/test_top_logprobs_keys.py \
+    tests/test_torture_compare.py \
+    tests/test_train.py \
+    tests/test_train_kv_refusal.py \
+    tests/test_train_recipe.py \
+    tests/test_train_replay.py \
+    tests/test_train_segments.py \
+    tests/test_train_teacher.py \
+    tests/test_train_unlearn.py \
+    tests/test_transcript.py \
+    tests/test_tray_not_raised_on_refusal.py \
+    tests/test_tray_not_raised_without_console.py \
+    tests/test_truncation_benchmark.py \
+    tests/test_ttl_releases_draft.py \
+    tests/test_turn_mark.py \
+    tests/test_turn_write_guard.py \
+    tests/test_type_plan.py \
+    tests/test_type_plan_by_sensitivity.py \
+    tests/test_type_plan_size.py \
+    tests/test_unicode_classes.py \
+    tests/test_unload_honesty.py \
+    tests/test_utf8_io.py \
+    tests/test_verify_gguf.py \
+    tests/test_verify_tc_compat.py \
+    tests/test_watermark.py \
+    tests/test_write_stall_experiment.py \
+    tests/test_xml_schema_fallback.py \
+    tests/test_yarn_betas.py
+# Root tests/test_*.py excluded from ROOT_PYTEST_TESTS (each runs via
+# its own Makefile target or fixture block instead of the root batch):
+#   tests/test_attn_knobs.py     test (after generating test-attn/*.gguf)
+#   tests/test_deepseek2.py      test-deepseek2
+#   tests/test_moe.py            test-moe / test-cuda-gated
+#   tests/test_prune_experts.py  test-prune-experts
+#   tests/test_weight_io_bench.py test-weight-io-bench
+ROOT_PYTEST_EXCLUDE = \
+    tests/test_attn_knobs.py \
+    tests/test_deepseek2.py \
+    tests/test_moe.py \
+    tests/test_prune_experts.py \
+    tests/test_weight_io_bench.py
 test-python: test-python-deps runner runner-turn-guard test.gguf $(TMPL_CONF_RENDER) $(DIFFTOK) $(TEST_INSTANCES) $(TEST_TC_TOL) $(TEST_GPU_ID) $(TEST_LORA_GRAD) $(RUNNER_NO_MANIFEST) \
              test.gguf test-lora.full.gguf test-moe-train.moe4-train.gguf test-es.gguf
 	@[ -f test-moe-fixture.moe4.gguf ] || $(PYTHON) scripts/make-test-moe.py test-moe-fixture > /dev/null
 	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/
-	RUNNER_REQUIRE_TURN_GUARD=1 $(ROOT_PYTEST_ENV) $(PYTHON) scripts/ci-run.py --timeout $(ROOT_PYTEST_TIMEOUT) root-pytest -- $(PYTHON) -m pytest $(PYTEST_XDIST) $(ROOT_PYTEST_ARGS) --durations=25 -ra --junitxml=.build/ci/root.xml -q tests/test_ci_contracts.py tests/test_commit_hygiene.py tests/test_template_kwargs.py tests/test_known_kwargs.py tests/test_attn_dec_repeat.py tests/test_attn_wide_repeat.py tests/test_moe_hot.py tests/test_check_portability.py tests/test_cuda_act_probe.py tests/test_fit_check.py tests/test_fit_matches_load.py tests/test_owned_fields.py tests/test_recommend.py tests/test_cached.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_nemotron_latent_moe.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_context_full.py tests/test_hf_fetch.py tests/test_pull.py tests/test_hub_upload_check.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_metal_mv_default.py tests/test_metal_microbatch_profile.py tests/test_metal_batch_tiles.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_scheduled_ci_alert.py tests/test_glibc_release.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_gguf_truncated.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_recurrent_refeed.py tests/test_draft_lookup.py tests/test_draft_k_defaults.py tests/test_cuda_plan_runs.py tests/test_cuda_fit_hybrid.py tests/test_cuda_rec_slots.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_moe_replay.py tests/test_act_trace.py tests/test_mistral3.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_queued_load_disconnect.py tests/test_score.py tests/test_score_route.py tests/test_cpu_i8_prefill.py tests/test_decide.py tests/test_clef.py tests/test_lfm2.py tests/test_qwen35moe.py tests/test_qwen36_preserve_thinking.py tests/test_spark2_5.py tests/test_flint.py tests/test_k2_horizon.py tests/test_yarn_betas.py tests/test_hf_spec_bounds.py tests/test_doc_counts.py tests/test_lora.py tests/test_train_kv_refusal.py tests/test_full_train.py tests/test_lora_qwen35.py tests/test_train.py tests/test_train_teacher.py tests/test_train_recipe.py tests/test_train_replay.py tests/test_train_unlearn.py tests/test_deltanet_autograd.py tests/test_rollout_identity.py tests/test_merge.py tests/test_lineage.py tests/test_eval_record.py tests/test_moe_lora.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_model_tiers.py tests/test_site_tiers.py tests/test_tier_smoke.py tests/test_template_conformance_token_only.py tests/test_difftok.py tests/test_unicode_classes.py tests/test_gemma4_untyped_fallback.py tests/test_xml_schema_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_phi3_rope.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_type_plan_by_sensitivity.py tests/test_derive.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_tray_not_raised_without_console.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_gpu_split_order.py tests/test_metal_split_layout.py tests/test_cuda_tensor_roles.py tests/test_cuda_buffer_lifetime.py tests/test_cuda_upload_report.py tests/test_tooluse_shifted.py tests/test_reasoning_budget.py tests/test_reasoning_sampling.py tests/test_loop_guard.py tests/test_model_id_long_name.py tests/test_gguf_blockorder.py tests/test_schema_close_api.py tests/test_embeddings_pooling.py tests/test_batch_rows_match_cpu.py tests/test_apertus_thinking.py tests/test_comment_only_check.py tests/test_nonfinite_responses.py tests/test_nonfinite_records.py tests/test_provenance.py tests/test_rerank.py tests/test_echo_logprobs.py tests/test_top_logprobs_keys.py tests/test_repeated_tool_calls.py tests/test_named_contexts.py tests/test_responses_store.py tests/test_adapter_routing.py tests/test_bundle.py tests/test_serve_receipts.py tests/test_adapter_signature.py tests/test_sign_model.py tests/test_agent_transcripts.py tests/test_stop_replay.py tests/test_think_replay.py tests/test_watermark.py tests/test_kv_snapshots.py tests/test_kv_f32.py tests/test_session_images.py tests/test_canon_gaps.py tests/test_qwen35_kv_rows.py tests/test_prefix_budget.py tests/test_parent_pid.py tests/test_lease_interop.py tests/test_gold_logits.py tests/test_mv_fuse.py tests/test_stream_utf8.py tests/test_tool_schema_validity.py tests/test_schema_refs.py tests/test_doctor.py tests/test_metal_attn_tile.py tests/test_metal_attn_gqa.py tests/test_server_sessions.py tests/test_confirm_below.py tests/test_evidence_pack.py tests/test_closure_provenance.py tests/test_reasoning_reserve.py tests/test_hermes_json_families.py tests/test_adapt_info.py tests/test_expect_resident.py tests/test_health_requests.py tests/test_ignore_eos_request.py tests/test_server_shared_pool.py tests/test_completion_token_ids.py tests/test_cli_smokes.py tests/test_utf8_io.py tests/test_cli_lifecycle.py tests/test_cli_surface.py tests/test_completion_sequences.py tests/test_reasoning_start.py tests/test_generation_fault_framing.py tests/test_stop_latency.py tests/test_agent_torture.py tests/test_torture_compare.py tests/test_competitor_freshness.py tests/test_write_stall_experiment.py tests/test_idle_coexistence.py tests/test_family_fixtures.py tests/test_bench_corpus.py tests/test_turn_write_guard.py tests/test_metal_memory.py tests/test_server_log_kept.py tests/test_port_in_use.py tests/test_draft_defaults.py tests/test_tc_spark_promotion.py tests/test_tc_clef_promotion.py tests/test_tc_route_label.py tests/test_verify_tc_compat.py tests/test_cuda_fit_ring.py tests/test_cuda_fit_full_offload.py tests/test_cancel_route.py tests/test_soak_serve.py tests/test_phys_footprint.py tests/test_tool_replay.py tests/test_nemotron_hetero_moe.py tests/test_gate_scripts.py tests/test_prompt_file_crlf.py tests/test_cancel_handles.py tests/test_package_manifests.py tests/test_fidelity_index.py tests/test_schema_annotations.py tests/test_pattern_automaton.py tests/test_metal_split_budget.py tests/test_repeat_count.py tests/test_seams_say_so.py tests/test_metal_kv_grow.py tests/test_metal_kv_restores.py tests/test_retired_switches.py tests/test_documented_controls.py tests/test_switches_documented.py tests/test_exclusive_bounds.py tests/test_kv_dump.py tests/test_prefix_scored.py
+	RUNNER_REQUIRE_TURN_GUARD=1 $(ROOT_PYTEST_ENV) $(PYTHON) scripts/ci-run.py --timeout $(ROOT_PYTEST_TIMEOUT) root-pytest -- $(PYTHON) -m pytest $(PYTEST_XDIST) $(ROOT_PYTEST_ARGS) --durations=25 -ra --junitxml=.build/ci/root.xml -q $(ROOT_PYTEST_TESTS)
 
 # The python half again, against the ASan+UBSan build (R6.68.21): `make
 # debug`, copied over ./runner for the run (RUNNER_COPY_FROM, so the
@@ -4356,7 +4663,7 @@ FUZZ_TIME    ?= 20
 FUZZ_RSS_MB  ?= 2048
 FUZZ_TARGETS = json_parse schema_compile sval_feed sval_trial jsonv_feed \
                gguf_open http_request tokenizer model_load gguf_split \
-               tool_stream record_check session_read
+               tool_stream record_check session_read train_record
 # -O1 -g: libFuzzer wants speed but ASan reports want frames.
 # No -march=native and no -ffast-math: the point here is defined behaviour,
 # and UBSan must abort rather than warn or the run cannot gate anything.
@@ -4381,6 +4688,7 @@ FUZZ_SRC_gguf_split     = src/gguf.c src/compat.c src/quants.c
 FUZZ_SRC_tool_stream    = src/template.c src/gguf.c src/tokenizer.c $(SCHEMA_SRC) src/jsonmode.c \
                           src/json.c src/compat.c src/quants.c
 FUZZ_SRC_record_check   = src/envelope.c src/ed25519.c $(MLDSA_SRC) src/json.c src/compat.c
+FUZZ_SRC_train_record   = src/train_record.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/json.c src/compat.c
 # session.c's writer half calls the engine, so its reader links the server's
 # whole source set, as the thread-sanitizer gates do
 FUZZ_SRC_session_read   = $(filter-out tests/test_swap_race.c $(GPU_SRC),$(TEST_SWAP_RACE_SRC)) src/gpu_none.c
@@ -4419,8 +4727,10 @@ FUZZ_ARGS_gguf_split = -max_len=1048576
 # a model's turn is kilobytes; the split-point property is found on short ones
 FUZZ_ARGS_tool_stream = -max_len=4096 -dict=tests/fuzz/tool_stream.dict
 FUZZ_ARGS_record_check = -max_len=16384 -dict=tests/fuzz/record.dict
+FUZZ_ARGS_train_record = -max_len=32768 -dict=tests/fuzz/train_record.dict
 FUZZ_ARGS_session_read = -max_len=65536
 FUZZ_ENV_record_check = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=.build/fuzz-findings/record_check/asan UBSAN_OPTIONS=halt_on_error=1:log_path=.build/fuzz-findings/record_check/ubsan
+FUZZ_ENV_train_record = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=.build/fuzz-findings/train_record/asan UBSAN_OPTIONS=halt_on_error=1:log_path=.build/fuzz-findings/train_record/ubsan
 FUZZ_ENV_session_read = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=.build/fuzz-findings/session_read/asan UBSAN_OPTIONS=halt_on_error=1:log_path=.build/fuzz-findings/session_read/ubsan
 FUZZ_ENV_model_load = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=.build/fuzz-findings/model_load/asan UBSAN_OPTIONS=halt_on_error=1:log_path=.build/fuzz-findings/model_load/ubsan
 FUZZ_ENV_gguf_split = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=.build/fuzz-findings/gguf_split/asan UBSAN_OPTIONS=halt_on_error=1:log_path=.build/fuzz-findings/gguf_split/ubsan
@@ -4499,7 +4809,7 @@ PTXAS ?= $(if $(findstring /,$(NVCC)),$(dir $(NVCC))ptxas,ptxas)
 ptx: src/kernels.cu src/kernels_sm80.cu src/kernels_tc2.cuh src/kernels_tc2_iq.cuh \
      src/kernels_iq4_table.cuh src/kernels_iq_grids.cuh src/kernels_iq_stage.cuh src/iq_decode.h \
      src/kernels_kq_stage.cuh src/kernels_tc2_kq.cuh src/kq_stage.h src/kernels_train.cuh src/kernel_args.h \
-     src/tdn_args.h src/kernels_i8.cuh
+     src/tdn_args.h src/train_args.h src/kernels_i8.cuh
 	$(NVCC) $(if $(NVCC_CCBIN),-ccbin $(NVCC_CCBIN)) -ptx -arch=compute_75 -O3 -o src/kernels.ptx src/kernels.cu
 	$(NVCC) $(if $(NVCC_CCBIN),-ccbin $(NVCC_CCBIN)) -ptx -arch=compute_80 -O3 -o src/kernels_sm80.ptx src/kernels_sm80.cu
 	python3 scripts/embed-ptx.py || python scripts/embed-ptx.py
@@ -4569,7 +4879,7 @@ test-makefile-sane:
 		exit 1; \
 	}; \
 	if grep -q 'system(' src/tray.c src/tray_*.c src/tray_*.m; then echo "FAIL: tray launches through a shell"; exit 1; fi; \
-	for f in src/model.c src/engine.c src/completion.c src/server.c src/scheduler.c src/registry.c src/provenance.c src/lineage.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c src/session.c src/api_responses.c src/api_anthropic.c src/template.c $(SCHEMA_SRC) src/jsonmode.c src/tokenizer.c src/sample.c src/envelope.c src/oms.c src/http.c src/json.c src/gguf.c; do \
+	for f in src/model.c src/engine.c src/completion.c src/server.c src/scheduler.c src/registry.c src/provenance.c src/lineage.c src/train_record.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c src/session.c src/api_responses.c src/api_anthropic.c src/template.c $(SCHEMA_SRC) src/jsonmode.c src/tokenizer.c src/sample.c src/envelope.c src/oms.c src/http.c src/json.c src/gguf.c; do \
 	  $(CC) -fsyntax-only -std=gnu11 -Werror=vla -DRUNNER_GPU_CUDA -I src $$f 2>/dev/null || { \
 	    echo "FAIL: $$f declares a variable-length stack array (the forward runs on 512 KB server threads; size by file values goes on the heap)"; exit 1; }; done; \
 	tline=$$($(MAKE) -Bn --no-print-directory T3=1 CFLAGS="-O3 -ffast-math" runner | grep -- ' src/model.c '); \

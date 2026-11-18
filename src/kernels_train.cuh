@@ -1050,3 +1050,446 @@ k_tab_dkv(const float *q, const float *dao, const float *P, const float *DS,
         *vo = dva;
     }
 }
+
+// ---- R8.24.1 B1: a gated FFN's activation and its adjoint, host-chain twins
+// (model.c gated_act's SiLU, silu_d, act_f; kernel_args.h tffn_args). The exp
+// is src/pmath.h's pm_exp_d / p_expf operation for operation, in double with
+// every multiply and add rounded on its own (no contraction), and the float
+// expressions keep the host's order: so a T3 build's host (strict float,
+// pmath) computes these very bits, and test-train-gpu holds them to it with
+// memcmp. Elementwise, so batch-invariant.
+static __device__ __forceinline__ double tw_ldexp2(double x, int k) {
+    while (k > 1000) { x = __dmul_rn(x, 0x1p1000); k -= 1000; }
+    while (k < -1000) { x = __dmul_rn(x, 0x1p-1000); k += 1000; }
+    return __dmul_rn(x, __longlong_as_double((long long)(k + 1023) << 52));
+}
+static __device__ __forceinline__ double tw_exp_d(double x) {
+    if (x != x) return x;
+    if (x > 709.0) return __longlong_as_double(0x7ff0000000000000LL);
+    if (x < -745.0) return 0.0;
+    const double ln2_hi = 6.93147180369123816490e-01;
+    const double ln2_lo = 1.90821492927058770002e-10;
+    const double inv_ln2 = 1.44269504088896338700e+00;
+    double kd = __dmul_rn(x, inv_ln2);
+    int k = __double2int_rz(kd >= 0 ? __dadd_rn(kd, 0.5) : __dsub_rn(kd, 0.5));
+    double r = __dsub_rn(__dsub_rn(x, __dmul_rn((double)k, ln2_hi)),
+                         __dmul_rn((double)k, ln2_lo));
+    double p = 1.0 / 6227020800.0;
+    p = __dadd_rn(__dmul_rn(p, r), 1.0 / 479001600.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0 / 39916800.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0 / 3628800.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0 / 362880.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0 / 40320.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0 / 5040.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0 / 720.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0 / 120.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0 / 24.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0 / 6.0);
+    p = __dadd_rn(__dmul_rn(p, r), 0.5);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0);
+    return tw_ldexp2(p, k);
+}
+static __device__ __forceinline__ float tw_expf(float x) {
+    return __double2float_rn(tw_exp_d((double)x));
+}
+// silu_f: 0 below -80, else g / (1 + exp(-g))
+static __device__ __forceinline__ float tw_silu(float g) {
+    return g < -80.0f ? 0.0f : __fdiv_rn(g, __fadd_rn(1.0f, tw_expf(-g)));
+}
+// silu_d: 0 below -80, else sg * (1 + g * (1 - sg)), sg = 1 / (1 + exp(-g))
+static __device__ __forceinline__ float tw_silu_d(float g) {
+    if (g < -80.0f) return 0.0f;
+    float sg = __fdiv_rn(1.0f, __fadd_rn(1.0f, tw_expf(-g)));
+    return __fmul_rn(sg, __fadd_rn(1.0f, __fmul_rn(g, __fsub_rn(1.0f, sg))));
+}
+
+// h = gated_act(ACT_SILU, g, u): 0 below -80, else (g / (1 + exp(-g))) * u
+extern "C" __global__ void k_tffn_fw(const float *g, const float *u, float *h,
+                                     tffn_args a) {
+    int i = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (i >= a.n) return;
+    float gi = g[i];
+#ifdef RUNNER_TFFN_MUTANT   // never set in the committed PTX: the cutoff moved onto -80 itself
+    h[i] = gi <= -80.0f ? 0.0f : __fmul_rn(tw_silu(gi), u[i]);
+#else
+    h[i] = gi < -80.0f ? 0.0f : __fmul_rn(tw_silu(gi), u[i]);
+#endif
+}
+
+// dg = dh * u * act_d(g) (left to right), du = dh * act_f(g)
+extern "C" __global__ void k_tffn_bw(const float *g, const float *u,
+                                     const float *dh, float *dg, float *du,
+                                     tffn_args a) {
+    int i = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (i >= a.n) return;
+    float gi = g[i], d = dh[i];
+    dg[i] = __fmul_rn(__fmul_rn(d, u[i]), tw_silu_d(gi));
+    du[i] = __fmul_rn(d, tw_silu(gi));
+}
+
+// ---- R8.24.1 B6: the adapter at a projection site, host-chain twins
+// (kernel_args.h tlora_args). Every element is one thread running the host's
+// chain: lora_apply's t[k] (fmaf over i ascending from 0) and y[j] (fmaf over
+// k ascending from 0, then fmaf(s, acc, y)); lsb_proj's tb (fmaf over j) and
+// tf (the same chain as t); lsb_ga's and lsb_gb's elements (fmaf over t
+// ascending from the stored value, the factor s*tb or s*dy rounded first);
+// lsb_dx's (fmaf over k from 0, then fmaf(s, acc, dx)). No arithmetic but
+// those fmafs and the two products, so the default build's host (explicit
+// fmaf there too) and this agree bit for bit on normal numbers.
+
+// t[b][k] = sum_i A[k][i] x[b][i]  (forward t, and the backward's tf)
+extern "C" __global__ void k_tlora_t(const float *A, const float *x, float *t,
+                                     tlora_args a) {
+    int e = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (e >= a.nb * a.r) return;
+    int b = e / a.r, k = e % a.r;
+    const float *ar = A + (ulong64)k * a.n_in, *xr = x + (ulong64)b * a.x_stride;
+    float acc = 0.0f;
+    for (int i = 0; i < a.n_in; i++) acc = __fmaf_rn(ar[i], xr[i], acc);
+    t[(ulong64)b * a.r + k] = acc;
+}
+
+// y[b][j] = fmaf(s, sum_k B[j][k] t[b][k], y[b][j])
+extern "C" __global__ void k_tlora_y(const float *B, const float *t, float *y,
+                                     tlora_args a) {
+    int e = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (e >= a.nb * a.n_out) return;
+    int b = e / a.n_out, j = e % a.n_out;
+    const float *br = B + (ulong64)j * a.r, *tr = t + (ulong64)b * a.r;
+    float acc = 0.0f;
+    for (int k = 0; k < a.r; k++) acc = __fmaf_rn(br[k], tr[k], acc);
+    float *yo = y + (ulong64)b * a.y_stride + j;
+#ifdef RUNNER_TLORA_MUTANT   // never set in the committed PTX: the scale's step unfused
+    *yo = __fadd_rn(__fmul_rn(a.s, acc), *yo);
+#else
+    *yo = __fmaf_rn(a.s, acc, *yo);
+#endif
+}
+
+// tb[b][k] = sum_j B[j][k] dy[b][j]  (lsb_proj's first chain)
+extern "C" __global__ void k_tlora_tb(const float *B, const float *dy, float *tb,
+                                      tlora_args a) {
+    int e = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (e >= a.nb * a.r) return;
+    int b = e / a.r, k = e % a.r;
+    const float *dr = dy + (ulong64)b * a.y_stride;
+    float acc = 0.0f;
+    for (int j = 0; j < a.n_out; j++) acc = __fmaf_rn(B[(ulong64)j * a.r + k], dr[j], acc);
+    tb[(ulong64)b * a.r + k] = acc;
+}
+
+// ga[k][i]: for t ascending, fmaf(s*tb[t][k], x[t][i], ga)  (lsb_ga)
+extern "C" __global__ void k_tlora_ga(const float *tb, const float *x, float *ga,
+                                      tlora_args a) {
+    int e = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (e >= a.r * a.n_in) return;
+    int k = e / a.n_in, i = e % a.n_in;
+    float acc = ga[e];
+    for (int t = 0; t < a.nb; t++)
+        acc = __fmaf_rn(__fmul_rn(a.s, tb[(ulong64)t * a.r + k]),
+                        x[(ulong64)t * a.x_stride + i], acc);
+    ga[e] = acc;
+}
+
+// gb[j][k]: for t ascending, fmaf(s*dy[t][j], tf[t][k], gb)  (lsb_gb)
+extern "C" __global__ void k_tlora_gb(const float *dy, const float *tf, float *gb,
+                                      tlora_args a) {
+    int e = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (e >= a.n_out * a.r) return;
+    int j = e / a.r, k = e % a.r;
+    float acc = gb[e];
+    for (int t = 0; t < a.nb; t++)
+        acc = __fmaf_rn(__fmul_rn(a.s, dy[(ulong64)t * a.y_stride + j]),
+                        tf[(ulong64)t * a.r + k], acc);
+    gb[e] = acc;
+}
+
+// dx[b][i] = fmaf(s, sum_k A[k][i] tb[b][k], dx[b][i])  (lsb_dx)
+extern "C" __global__ void k_tlora_dx(const float *A, const float *tb, float *dx,
+                                      tlora_args a) {
+    int e = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (e >= a.nb * a.n_in) return;
+    int b = e / a.n_in, i = e % a.n_in;
+    const float *tr = tb + (ulong64)b * a.r;
+    float acc = 0.0f;
+    for (int k = 0; k < a.r; k++) acc = __fmaf_rn(A[(ulong64)k * a.n_in + i], tr[k], acc);
+    float *xo = dx + (ulong64)b * a.x_stride + i;
+    *xo = __fmaf_rn(a.s, acc, *xo);
+}
+// ---- R8.24.1 B2: rmsnorm and its adjoint, host-chain twins (kernel_args.h
+// trn_args; model.c rmsnorm and rmsnorm_bw). One block a row: thread 0 runs
+// the row's chains serially in the host's index order (the forward's ss a
+// multiply and an add per element, as rmsnorm writes ss += x*x; the
+// adjoint's ss and dot fmaf chains, as rmsnorm_bw writes them), then every
+// thread writes its elements, each the host's expression left to right,
+// never contracted. r = 1 / sqrtf(ss / n + eps) is correctly rounded on both
+// sides (__fsqrt_rn, __fdiv_rn), so a T3 host and these agree bit for bit; a
+// NaN comes back as the device's canonical NaN. The serial chain is a few
+// microseconds a row at n 2560, small next to the products.
+// RUNNER_TRN_MUTANT (never set in the committed PTX) swaps the forward's
+// multiply-add for an fmaf: the gate's mutant, which test-train-gpu must fail.
+#define TRN_THREADS 128
+
+extern "C" __global__ void __launch_bounds__(TRN_THREADS)
+k_trn_fw(const float *x, const float *w, float *y, trn_args a) {
+    __shared__ float rs;
+    int row = (int)blockIdx.x, n = a.n;
+    if (row >= a.rows) return;
+    const float *xr = x + (ulong64)row * a.x_stride;
+    float *yr = y + (ulong64)row * a.y_stride;
+    if (threadIdx.x == 0) {
+        float ss = 0.0f;
+        for (int i = 0; i < n; i++)
+#ifdef RUNNER_TRN_MUTANT
+            ss = __fmaf_rn(xr[i], xr[i], ss);
+#else
+            ss = __fadd_rn(ss, __fmul_rn(xr[i], xr[i]));
+#endif
+        rs = __fdiv_rn(1.0f, __fsqrt_rn(__fadd_rn(__fdiv_rn(ss, (float)n), a.eps)));
+    }
+    __syncthreads();
+    float r = rs;
+    for (int i = (int)threadIdx.x; i < n; i += (int)blockDim.x)
+        yr[i] = w ? __fmul_rn(__fmul_rn(xr[i], r), w[i]) : __fmul_rn(xr[i], r);
+}
+
+// dx[i] += r * w[i] * dy[i] - c * x[i], c = r * r * r / n * dot (w NULL: 1)
+extern "C" __global__ void __launch_bounds__(TRN_THREADS)
+k_trn_bw(const float *x, const float *w, const float *dy, float *dx, trn_args a) {
+    __shared__ float rs, cs;
+    int row = (int)blockIdx.x, n = a.n;
+    if (row >= a.rows) return;
+    const float *xr = x + (ulong64)row * a.x_stride;
+    const float *dyr = dy + (ulong64)row * a.dy_stride;
+    float *dxr = dx + (ulong64)row * a.dx_stride;
+    if (threadIdx.x == 0) {
+        float ss = 0.0f, dot = 0.0f;
+        for (int i = 0; i < n; i++) ss = __fmaf_rn(xr[i], xr[i], ss);
+        float r = __fdiv_rn(1.0f, __fsqrt_rn(__fadd_rn(__fdiv_rn(ss, (float)n), a.eps)));
+        for (int i = 0; i < n; i++)
+            dot = __fmaf_rn(w ? __fmul_rn(w[i], dyr[i]) : __fmul_rn(1.0f, dyr[i]), xr[i], dot);
+        rs = r;
+        cs = __fmul_rn(__fdiv_rn(__fmul_rn(__fmul_rn(r, r), r), (float)n), dot);
+    }
+    __syncthreads();
+    float r = rs, c = cs;
+    for (int i = (int)threadIdx.x; i < n; i += (int)blockDim.x) {
+        float rw = w ? __fmul_rn(r, w[i]) : __fmul_rn(r, 1.0f);
+        dxr[i] = __fadd_rn(dxr[i], __fsub_rn(__fmul_rn(rw, dyr[i]), __fmul_rn(c, xr[i])));
+    }
+}
+
+// ---- R8.24.1 B3: rope and its adjoint, host-chain twins (kernel_args.h
+// trope_args; model.c rope_apply and rope_unapply). One thread a (position,
+// pair j): the angle pos * fr[j] in float, its sin and cos as src/pmath.h's
+// pm_sincos_d computes them (ported 1:1 below: double add, sub and mul, the
+// same reduction by pi/2 and the same Taylor polynomials, never contracted),
+// each rounded once to float and multiplied by mscale, then the pair rotated
+// in every head (forward x0*c - x1*s, x0*s + x1*c; adjoint x0*c + x1*s,
+// -x0*s + x1*c). A T3 host calls pmath's sinf and cosf, so the two agree bit
+// for bit; a default build's host calls the C library's. NaN in, NaN out.
+// RUNNER_TROPE_MUTANT (never set in the committed PTX) fuses the forward's
+// x0*c - x1*s into an fmaf: the gate's mutant.
+#define TROPE_THREADS 128
+
+static __device__ __forceinline__ void tw_sincos_d(double x, double *sn, double *cs) {
+    const double pio2_hi = 1.57079632679489655800e+00;
+    const double pio2_lo = 6.12323399573676603587e-17;
+    if (!(x < 1e15 && x > -1e15)) {
+        if (!(x == x) || x > 1.7976931348623157e308 || x < -1.7976931348623157e308) {
+            *sn = *cs = __longlong_as_double(0x7ff8000000000000LL);
+            return;
+        }
+        x = fmod(x, 6.28318530717958647693);   // exact in IEEE 754, as on the host
+    }
+    double kd = __dmul_rn(x, 6.36619772367581382433e-01);
+    long long k = (long long)(kd >= 0 ? __dadd_rn(kd, 0.5) : __dsub_rn(kd, 0.5));
+    double r = __dsub_rn(__dsub_rn(x, __dmul_rn((double)k, pio2_hi)),
+                         __dmul_rn((double)k, pio2_lo));
+    double r2 = __dmul_rn(r, r);
+    double s = -1.0 / 1307674368000.0;
+    s = __dadd_rn(__dmul_rn(s, r2), 1.0 / 6227020800.0);
+    s = __dsub_rn(__dmul_rn(s, r2), 1.0 / 39916800.0);
+    s = __dadd_rn(__dmul_rn(s, r2), 1.0 / 362880.0);
+    s = __dsub_rn(__dmul_rn(s, r2), 1.0 / 5040.0);
+    s = __dadd_rn(__dmul_rn(s, r2), 1.0 / 120.0);
+    s = __dsub_rn(__dmul_rn(s, r2), 1.0 / 6.0);
+    s = __dadd_rn(__dmul_rn(s, r2), 1.0);
+    s = __dmul_rn(s, r);
+    double c = 1.0 / 20922789888000.0;
+    c = __dsub_rn(__dmul_rn(c, r2), 1.0 / 87178291200.0);
+    c = __dadd_rn(__dmul_rn(c, r2), 1.0 / 479001600.0);
+    c = __dsub_rn(__dmul_rn(c, r2), 1.0 / 3628800.0);
+    c = __dadd_rn(__dmul_rn(c, r2), 1.0 / 40320.0);
+    c = __dsub_rn(__dmul_rn(c, r2), 1.0 / 720.0);
+    c = __dadd_rn(__dmul_rn(c, r2), 1.0 / 24.0);
+    c = __dsub_rn(__dmul_rn(c, r2), 0.5);
+    c = __dadd_rn(__dmul_rn(c, r2), 1.0);
+    switch (k & 3) {
+        case 0:  *sn = s;  *cs = c;  break;
+        case 1:  *sn = c;  *cs = -s; break;
+        case 2:  *sn = -s; *cs = -c; break;
+        default: *sn = -c; *cs = s;  break;
+    }
+}
+
+extern "C" __global__ void __launch_bounds__(TROPE_THREADS)
+k_trope(float *v, const float *fr, trope_args a) {
+    long long g = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (g >= (long long)a.T * a.half_dim) return;
+    int t = (int)(g / a.half_dim), j = (int)(g % a.half_dim);
+    float ang = __fmul_rn(__int2float_rn(a.t0 + t), fr[j]);
+    double sd, cd;
+    tw_sincos_d((double)ang, &sd, &cd);
+    float c = __fmul_rn(__double2float_rn(cd), a.mscale);
+    float s = __fmul_rn(__double2float_rn(sd), a.mscale);
+    float *row = v + (ulong64)t * a.stride;
+    for (int h = 0; h < a.n_heads; h++) {
+        float *p = row + (ulong64)h * a.head_dim;
+        float *p0 = a.neox ? p + j : p + 2 * j;
+        float *p1 = a.neox ? p + j + a.half_dim : p0 + 1;
+        float x0 = *p0, x1 = *p1;
+        if (a.adjoint) {
+            *p0 = __fadd_rn(__fmul_rn(x0, c), __fmul_rn(x1, s));
+            *p1 = __fadd_rn(__fmul_rn(-x0, s), __fmul_rn(x1, c));
+        } else {
+#ifdef RUNNER_TROPE_MUTANT
+            *p0 = __fmaf_rn(x0, c, -__fmul_rn(x1, s));
+#else
+            *p0 = __fsub_rn(__fmul_rn(x0, c), __fmul_rn(x1, s));
+#endif
+            *p1 = __fadd_rn(__fmul_rn(x0, s), __fmul_rn(x1, c));
+        }
+    }
+}
+
+
+// ---- R8.24.1 B8: the training K/V store (kernel_args.h tkv_args), a twin of
+// the forward's store for the cache kinds 0 (f16) and 3 (f32). The f16 rounding
+// is fp16.h's f32_to_f16_soft line for line, integers only, so every one of the
+// 2^32 inputs lands on the host's bits. (Kernel arguments here stay small and
+// are read whole: a larger struct only partly read makes nvcc annotate its
+// loads with a pragma that kernels_ptx.h's pinned .version 7.8 rejects in the
+// driver's JIT, which ptxas offline does not catch.)
+static __device__ __forceinline__ unsigned short tw_f32_to_f16(float f) {
+    unsigned int u = __float_as_uint(f);
+    unsigned int sign = (u >> 16) & 0x8000u;
+    int exp = (int)((u >> 23) & 0xFFu) - 127 + 15;
+    unsigned int mant = u & 0x7FFFFFu;
+    if (exp >= 31) {
+        if (exp == 143 && mant)
+            return (unsigned short)(sign | 0x7C00u | (mant >> 13) | 0x0200u);
+        return (unsigned short)(sign | 0x7C00u);
+    }
+    if (exp <= 0) {
+        if (exp < -10) return (unsigned short)sign;
+        mant |= 0x800000u;
+        unsigned int shift = (unsigned int)(14 - exp);
+        unsigned int h = mant >> shift;
+        unsigned int rem = mant & ((1u << shift) - 1);
+        unsigned int half = 1u << (shift - 1);
+        if (rem > half || (rem == half && (h & 1))) h++;
+        return (unsigned short)(sign | h);
+    }
+    unsigned int h = ((unsigned int)exp << 10) | (mant >> 13);
+    unsigned int rem = mant & 0x1FFFu;
+    if (rem > 0x1000u || (rem == 0x1000u && (h & 1))) h++;
+    return (unsigned short)(sign | h);
+}
+
+// dst row r, element i: src[r][i] in the cache's kind
+extern "C" __global__ void k_tkv_store(const float *src, unsigned char *dst, tkv_args a) {
+    int e = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (e >= a.rows * a.n) return;
+    int r = e / a.n, i = e % a.n;
+    float v = src[(ulong64)r * a.src_stride + i];
+    unsigned char *row = dst + (ulong64)r * a.row_bytes;
+    if (a.kind == 3) ((float *)row)[i] = v;
+    else ((unsigned short *)row)[i] = tw_f32_to_f16(v);
+}
+// ---- R8.24.1 B4: the forward's attention over the training K/V rows, a
+// host-chain twin of model.c's attn_run as the recompute calls it (one
+// attn_job a position: attn_scores, softmax, attn_values; kernel_args.h
+// tattn_args). One block a (position t, head h), the span s = t0 .. t (t0
+// the window start, attn_window_start):
+// - scores, one thread a key s: q . k_s as the host's chain over the head's
+//   channels ascending from 0 (multiply, then add), then times scale;
+// - softmax over the span, as model.c softmax: the max by thread 0 in key
+//   order (x > mx, so a NaN keeps the host's answer), exp(x - mx) a key a
+//   thread (pmath's exp, tw_expf), their sum by thread 0 in key order, then
+//   each divided by it;
+// - values, one thread a channel i: the chain over the span ascending from
+//   0, p_s * v_s[i] added a key at a time.
+// Every chain is the host's, never contracted, so a T3 host and this agree
+// bit for bit. K and V rows are f16 (kind 0) or f32 (kind 3).
+// RUNNER_TATTN_MUTANT (never set in the committed PTX) fuses the value
+// chain's multiply-add into an fmaf: the gate's mutant.
+#define TATTN_THREADS 128
+#define TATTN_MAX_HD 512
+
+static __device__ __forceinline__ float tattn_kv(const uchar *row, int kind, int i) {
+    return kind == 3 ? ((const float *)row)[i]
+                     : __half2float(((const __half *)row)[i]);
+}
+
+extern "C" __global__ void __launch_bounds__(TATTN_THREADS)
+k_tattn(const uchar *kc, const uchar *vc, const float *q, float *ao, tattn_args a) {
+    extern __shared__ float att[];          // the span's scores, then probabilities
+    __shared__ float qs[TATTN_MAX_HD], mxs, sums;
+    int b = (int)blockIdx.x, h = (int)blockIdx.y, tid = (int)threadIdx.x, hd = a.hd;
+    int kvh = h / a.kv_mul;
+    if (b >= a.T || h >= a.n_head || (kvh + 1) * hd > a.kv_dim) return;
+    int t = a.pos0 + b;   // the query's position: its window and keys are absolute rows
+    int t0 = a.swa > 0 && t - a.swa + 1 > 0 ? t - a.swa + 1 : 0, span = t - t0 + 1;
+    int ek = a.kind_k == 3 ? 4 : 2, ev = a.kind_v == 3 ? 4 : 2;
+    for (int i = tid; i < hd; i += TATTN_THREADS) qs[i] = q[(ulong64)b * a.q_dim + h * hd + i];
+    __syncthreads();
+    for (int k = tid; k < span; k += TATTN_THREADS) {
+        const uchar *kr = kc + (ulong64)(t0 + k) * a.k_row_b + (ulong64)kvh * hd * ek;
+        float s = 0.0f;
+        for (int i = 0; i < hd; i++) s = __fadd_rn(s, __fmul_rn(qs[i], tattn_kv(kr, a.kind_k, i)));
+        att[k] = __fmul_rn(s, a.scale);
+    }
+    __syncthreads();
+    if (tid == 0) {
+        float mx = att[0];
+        for (int k = 1; k < span; k++) if (att[k] > mx) mx = att[k];
+        mxs = mx;
+    }
+    __syncthreads();
+    float mx = mxs;
+    for (int k = tid; k < span; k += TATTN_THREADS) att[k] = tw_expf(__fsub_rn(att[k], mx));
+    __syncthreads();
+    if (tid == 0) {
+        float s = 0.0f;
+        for (int k = 0; k < span; k++) s = __fadd_rn(s, att[k]);
+        sums = s;
+    }
+    __syncthreads();
+    float sum = sums;
+    for (int k = tid; k < span; k += TATTN_THREADS) att[k] = __fdiv_rn(att[k], sum);
+    __syncthreads();
+    for (int i = tid; i < hd; i += TATTN_THREADS) {
+        float o = 0.0f;
+        for (int k = 0; k < span; k++) {
+            const uchar *vr = vc + (ulong64)(t0 + k) * a.v_row_b + (ulong64)kvh * hd * ev;
+#ifdef RUNNER_TATTN_MUTANT
+            o = __fmaf_rn(att[k], tattn_kv(vr, a.kind_v, i), o);
+#else
+            o = __fadd_rn(o, __fmul_rn(att[k], tattn_kv(vr, a.kind_v, i)));
+#endif
+        }
+        ao[(ulong64)b * a.q_dim + h * hd + i] = o;
+    }
+}
+
+// ---- R8.24.1 B, R0 of the resident step: the residual add (kernel_args.h
+// tadd_args), a twin of layer_branch_out's x += y: one IEEE add an element.
+extern "C" __global__ void k_tadd(float *x, const float *y, tadd_args a) {
+    int e = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (e >= a.rows * a.n) return;
+    int r = e / a.n, i = e % a.n;
+    float *p = x + (ulong64)r * a.x_stride + i;
+    *p = __fadd_rn(*p, y[(ulong64)r * a.y_stride + i]);
+}

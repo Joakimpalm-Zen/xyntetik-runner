@@ -92,6 +92,7 @@ static struct {
     // optional: a kernel asking for more than 48 KB of dynamic shared
     // memory (TC2) opts in through it; absent, that kernel stays unused
     CUresult (*FuncSetAttribute)(CUfunction, int, int);
+    CUresult (*FuncGetAttribute)(int *, int, CUfunction);   // optional (R8.24.1 B4)
     // optional: page-locked host staging (X3's KV gather); absent, pageable
     CUresult (*MemAllocHost)(void **, size_t);
     CUresult (*MemFreeHost)(void *);
@@ -208,6 +209,7 @@ static bool cu_load_now(void) {
     cu.CtxSynchronize    = dl_sym(cu.lib, "cuCtxSynchronize");
     cu.GetErrorString    = dl_sym(cu.lib, "cuGetErrorString");
     cu.FuncSetAttribute  = dl_sym(cu.lib, "cuFuncSetAttribute");
+    cu.FuncGetAttribute  = dl_sym(cu.lib, "cuFuncGetAttribute");
     cu.MemAllocHost      = sym2("cuMemAllocHost");
     cu.MemFreeHost       = dl_sym(cu.lib, "cuMemFreeHost");
     cu.MemHostRegister   = sym2("cuMemHostRegister");
@@ -804,6 +806,8 @@ enum { MD_THREADS = 512, MD_GMAX = 16, MD_NJ = 8, MD_TK = 32 };
 #define MD_SMEM_MAX (4 * (MD_GMAX * (640 + 4) + MD_TK * 321 + MD_GMAX * MD_TK + MD_GMAX))
 #define CU_DEV_ATTR_CC_MAJOR 75       // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR
 #define CU_DEV_ATTR_CC_MINOR 76       // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR
+#define CU_DEV_ATTR_SMEM_OPTIN 97     // CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN
+#define CU_FUNC_ATTR_STATIC_SMEM 1    // CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES
 #define TC_N    64   // tensor-core GEMM token tile (keep in sync)
 
 // flash-decoding KV split count — must match ATTN_SPLITS in kernels.cu; fixed
@@ -8892,6 +8896,46 @@ typedef struct {
     bool        dn_noted;
     double      t_dn;             // RUNNER_TRAIN_PROF: wall inside the calls
     long        n_dn, n_dn_failed;   // the record: calls run, calls failed
+    // R8.24.1 B1: a gated FFN's activation and its adjoint, host-chain twins
+    CUfunction  f_tffn_fw, f_tffn_bw;
+    CUfunction  f_trn_fw, f_trn_bw;     // R8.24.1 B2, rmsnorm and its adjoint
+    CUfunction  f_trope;                // R8.24.1 B3, rope and its adjoint
+    CUfunction  f_tkv;                  // R8.24.1 B8, the training K/V store
+    CUfunction  f_tattn;                // R8.24.1 B4, the forward's attention
+    int         tattn_dyn;              // the dynamic shared memory k_tattn may take, bytes
+    CUfunction  f_tadd;                 // R8.24.1 B R0, the residual add
+    // R8.24.1 B R1, the resident forward round: its planes (a round's rows),
+    // the step's training K/V rows, and the frozen per-layer norm weights and
+    // the rope tables on the device
+    CUdeviceptr rp[9];
+    size_t      rp_cap[9];
+    CUdeviceptr res_k, res_v, res_fr, res_frl;
+    size_t      res_k_cap, res_v_cap, res_fr_cap, res_frl_cap;
+    int         res_T;
+    double      t_res;                  // the resident rounds' wall time (the profile's device share)
+    // R2: the step's tape on the device ([n_layer][T][n_embd], each layer's
+    // input), dx across the backward's layers, and the backward's planes
+    CUdeviceptr res_tape, res_dx, rb[15];
+    size_t      res_tape_cap, res_dx_cap, rb_cap[15];
+    struct rtab { CUdeviceptr an, fn, qn, kn; size_t an_c, fn_c, qn_c, kn_c; } *res_tab;
+    int         res_tab_n;              // its layers (gpu_train_free drops each)
+    // R8.24.1 B6: the adapter at a site (k_tlora_t, _y, _tb, _ga, _gb, _dx)
+    CUfunction  f_tlora[6];
+    // R8.24.1 B: the device-resident FFN. The FFN sites' adapters for a
+    // backward (A, B, ga, gb per layer and site: gate, up, down), and one set
+    // of planes the layers reuse in turn (FB_*); model_need is every tensor's
+    // bytes, which the arena must hold for the device FFN to run
+    struct tsite {
+        CUdeviceptr a, b, ga, gb;
+        size_t cap_a, cap_b, cap_ga, cap_gb;
+        int r, n_in, n_out;
+        float s;
+        bool live;
+    } *site;
+    int         n_site;
+    CUdeviceptr fb[12];
+    size_t      fb_cap[12];
+    size_t      model_need;
     // the attention backward (k_tab_p, k_tab_dq, k_tab_dkv) and its buffers
     CUfunction  f_tab_p, f_tab_dq, f_tab_dkv;
     CUdeviceptr ab[AB_NBUF];
@@ -8991,6 +9035,39 @@ bool gpu_train_init(model_t *m) {
         cu.ModuleGetFunction(&t->f_tab_dq, t->mod, "k_tab_dq") != 0 ||
         cu.ModuleGetFunction(&t->f_tab_dkv, t->mod, "k_tab_dkv") != 0)
         t->f_tab_p = t->f_tab_dq = t->f_tab_dkv = NULL;
+    if (cu.ModuleGetFunction(&t->f_tffn_fw, t->mod, "k_tffn_fw") != 0 ||
+        cu.ModuleGetFunction(&t->f_tffn_bw, t->mod, "k_tffn_bw") != 0)
+        t->f_tffn_fw = t->f_tffn_bw = NULL;
+    if (cu.ModuleGetFunction(&t->f_trn_fw, t->mod, "k_trn_fw") != 0 ||
+        cu.ModuleGetFunction(&t->f_trn_bw, t->mod, "k_trn_bw") != 0)
+        t->f_trn_fw = t->f_trn_bw = NULL;
+    if (cu.ModuleGetFunction(&t->f_trope, t->mod, "k_trope") != 0) t->f_trope = NULL;
+    if (cu.ModuleGetFunction(&t->f_tkv, t->mod, "k_tkv_store") != 0) t->f_tkv = NULL;
+    if (cu.ModuleGetFunction(&t->f_tadd, t->mod, "k_tadd") != 0) t->f_tadd = NULL;
+    if (cu.ModuleGetFunction(&t->f_tattn, t->mod, "k_tattn") != 0) t->f_tattn = NULL;
+    // k_tattn (the second reader's F1): its scores take 4 bytes a key of dynamic
+    // shared memory beside its own static arrays (qs and two scalars, about
+    // 2 KiB), and 12288 keys, the attention scope's largest span, are 48 KiB of
+    // scores: past a block's default 48 KiB together. Opt in to the device's
+    // per-block maximum less the kernel's static use (Turing's 64 KiB, the
+    // minimum, holds it); a span past what the device gives declines.
+    t->tattn_dyn = 48 * 1024 - 4096;   // without the attributes: under the default, with room
+    if (t->f_tattn && cu.FuncGetAttribute && cu.FuncSetAttribute && cu.DeviceGetAttribute) {
+        int st = 0, optin = 0;
+        if (cu.FuncGetAttribute(&st, CU_FUNC_ATTR_STATIC_SMEM, t->f_tattn) == 0 &&
+            cu.DeviceGetAttribute(&optin, CU_DEV_ATTR_SMEM_OPTIN, t->dev) == 0 && optin > st &&
+            cu.FuncSetAttribute(t->f_tattn, CU_FUNC_ATTR_MAX_DYN_SMEM, optin - st) == 0)
+            t->tattn_dyn = optin - st;
+    }
+    {
+        static const char *const LN[6] = { "k_tlora_t", "k_tlora_y", "k_tlora_tb",
+                                           "k_tlora_ga", "k_tlora_gb", "k_tlora_dx" };
+        for (int i = 0; i < 6; i++)
+            if (cu.ModuleGetFunction(&t->f_tlora[i], t->mod, LN[i]) != 0) {
+                for (int k = 0; k < 6; k++) t->f_tlora[k] = NULL;
+                break;
+            }
+    }
     if (cu.ModuleGetFunction(&t->f_tdn_fw, t->mod, "k_tdn_fw") != 0 ||
         cu.ModuleGetFunction(&t->f_tdn_bw, t->mod, "k_tdn_bw") != 0)
         t->f_tdn_fw = t->f_tdn_bw = NULL;
@@ -9049,6 +9126,7 @@ bool gpu_train_init(model_t *m) {
     for (uint64_t i = 0; i < m->gf.n_tensors; i++)
         need += ((size_t)m->gf.tensors[i].nbytes + 255) & ~(size_t)255;
     if (!m->gf.n_tensors) need = t->vram_budget;
+    t->model_need = need;
     t->arena_size = need < t->vram_budget ? need : t->vram_budget;
     if (t->arena_size && cu.MemAlloc(&t->arena, t->arena_size) != 0) {
         fprintf(stderr, "error: --train-gpu could not reserve %llu bytes "
@@ -9071,27 +9149,57 @@ bool gpu_train_init(model_t *m) {
     return true;
 }
 
+static void tg_drop(CUdeviceptr *buf, size_t *cap);
+// the resident step's frozen per-layer norm copies, and their table
+static void res_tab_drop(train_gpu_t *t) {
+    for (int l = 0; t->res_tab && l < t->res_tab_n; l++) {
+        struct rtab *r = &t->res_tab[l];
+        tg_drop(&r->an, &r->an_c);
+        tg_drop(&r->fn, &r->fn_c);
+        tg_drop(&r->qn, &r->qn_c);
+        tg_drop(&r->kn, &r->kn_c);
+    }
+    free(t->res_tab);
+    t->res_tab = NULL;
+    t->res_tab_n = 0;
+}
 void gpu_train_free(model_t *m) {
     train_gpu_t *t = m->train_gpu;
     if (!t) return;
     if (cu.CtxSetCurrent(t->ctx) == 0) {
         if (t->arena) cu.MemFree(t->arena);
-        if (t->d_dy) cu.MemFree(t->d_dy);
-        if (t->d_dx) cu.MemFree(t->d_dx);
-        for (int i = 0; i < GPU_MM_PARTS; i++)
-            if (t->d_yp[i]) cu.MemFree(t->d_yp[i]);
+        tg_drop(&t->d_dy, &t->cap_dy);
+        tg_drop(&t->d_dx, &t->cap_dx);
+        for (int i = 0; i < GPU_MM_PARTS; i++) tg_drop(&t->d_yp[i], &t->cap_yp[i]);
+        for (int i = 0; i < t->n_site; i++) {
+            tg_drop(&t->site[i].a, &t->site[i].cap_a);
+            tg_drop(&t->site[i].b, &t->site[i].cap_b);
+            tg_drop(&t->site[i].ga, &t->site[i].cap_ga);
+            tg_drop(&t->site[i].gb, &t->site[i].cap_gb);
+        }
+        for (size_t i = 0; i < sizeof t->fb / sizeof *t->fb; i++) tg_drop(&t->fb[i], &t->fb_cap[i]);
+        // the resident step's planes (R1, R2) and the frozen per-layer copies
+        for (size_t i = 0; i < sizeof t->rp / sizeof *t->rp; i++) tg_drop(&t->rp[i], &t->rp_cap[i]);
+        for (size_t i = 0; i < sizeof t->rb / sizeof *t->rb; i++) tg_drop(&t->rb[i], &t->rb_cap[i]);
+        tg_drop(&t->res_k, &t->res_k_cap);
+        tg_drop(&t->res_v, &t->res_v_cap);
+        tg_drop(&t->res_fr, &t->res_fr_cap);
+        tg_drop(&t->res_frl, &t->res_frl_cap);
+        tg_drop(&t->res_tape, &t->res_tape_cap);
+        tg_drop(&t->res_dx, &t->res_dx_cap);
+        res_tab_drop(t);
         for (int i = 0; i < t->n_pin; i++) cu.MemHostUnregister(t->pin_p[i]);
         for (int i = 0; i < GPU_TRAIN_HBUF; i++)
             if (t->hbuf[i]) cu.MemFreeHost(t->hbuf[i]);
-        for (int i = 0; i < DN_NBUF; i++)
-            if (t->dn[i]) cu.MemFree(t->dn[i]);
+        for (int i = 0; i < DN_NBUF; i++) tg_drop(&t->dn[i], &t->dn_cap[i]);
         for (int i = 0; i < t->n_dn_slot; i++) cu.MemFree(t->dn_slot[i].dev);
-        for (int i = 0; i < AB_NBUF; i++)
-            if (t->ab[i]) cu.MemFree(t->ab[i]);
+        for (int i = 0; i < AB_NBUF; i++) tg_drop(&t->ab[i], &t->ab_cap[i]);
         cu.MemFree(t->dummy);
         cu.ModuleUnload(t->mod);
     }
     cu.PrimaryCtxRelease(t->dev);
+    free(t->res_tab);   // the host table, if the context could not be made current
+    free(t->site);
     free(t->pin_p);
     free(t->cache);
     free(t->dn_slot);
@@ -9175,15 +9283,319 @@ void *gpu_train_host_buf(model_t *m, int slot, size_t bytes) {
     return t->hbuf[slot];
 }
 
+// R8.24.1 B1: the twins on device rows (no sync): h = act(g)*u over n
+// floats, and dg = dh*u*act'(g), du = dh*act(g)
+static bool tffn_fw_launch(train_gpu_t *t, CUdeviceptr g, CUdeviceptr u,
+                           CUdeviceptr h, int n, int act) {
+    tffn_args a = { n, act };
+    void *p[] = { &g, &u, &h, &a };
+    return t->f_tffn_fw &&
+           cu.LaunchKernel(t->f_tffn_fw, (unsigned)((n + 255) / 256), 1, 1, 256,
+                           1, 1, 0, NULL, p, NULL) == 0;
+}
+static bool tffn_bw_launch(train_gpu_t *t, CUdeviceptr g, CUdeviceptr u,
+                           CUdeviceptr dh, CUdeviceptr dg, CUdeviceptr du,
+                           int n, int act) {
+    tffn_args a = { n, act };
+    void *p[] = { &g, &u, &dh, &dg, &du, &a };
+    return t->f_tffn_bw &&
+           cu.LaunchKernel(t->f_tffn_bw, (unsigned)((n + 255) / 256), 1, 1, 256,
+                           1, 1, 0, NULL, p, NULL) == 0;
+}
+
+// R8.24.1 B6: one of the adapter kernels over its element count (no sync)
+enum { TL_T, TL_Y, TL_TB, TL_GA, TL_GB, TL_DX };
+static bool tlora_launch(train_gpu_t *t, int which, CUdeviceptr p0, CUdeviceptr p1,
+                         CUdeviceptr p2, const tlora_args *a) {
+    if (!t->f_tlora[which]) return false;
+    long n = which == TL_T || which == TL_TB ? (long)a->nb * a->r
+           : which == TL_Y  ? (long)a->nb * a->n_out
+           : which == TL_GA ? (long)a->r * a->n_in
+           : which == TL_GB ? (long)a->n_out * a->r : (long)a->nb * a->n_in;
+    tlora_args av = *a;
+    void *p[] = { &p0, &p1, &p2, &av };
+    return cu.LaunchKernel(t->f_tlora[which], (unsigned)((n + 127) / 128), 1, 1, 128,
+                           1, 1, 0, NULL, p, NULL) == 0;
+}
+
+// R8.24.1 B6, for the kernel gate: one site's adapter on host arrays (sent,
+// run, brought back), the host's order of passes: y += s B (A x); tb = B^T dy;
+// tf = A x; ga, gb accumulate; dx += s A^T tb. x and dx rows n_in apart, y and
+// dy rows n_out apart. false: no context or no kernel in this PTX.
+bool gpu_train_lora_check(model_t *m, int r, int n_in, int n_out, int nb, float s,
+                          const float *A, const float *B, const float *x,
+                          const float *dy, float *y, float *ga, float *gb, float *dx) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->f_tlora[0] || r < 1 || nb < 1 || cu.CtxSetCurrent(t->ctx) != 0)
+        return false;
+    size_t sz[10] = { (size_t)r * n_in, (size_t)n_out * r, (size_t)nb * n_in,
+                      (size_t)nb * n_out, (size_t)nb * n_out, (size_t)r * n_in,
+                      (size_t)n_out * r, (size_t)nb * n_in, (size_t)nb * r,
+                      (size_t)nb * r };
+    const float *src[8] = { A, B, x, dy, y, ga, gb, dx };
+    CUdeviceptr d[10] = {0};
+    bool ok = true;
+    for (int i = 0; i < 10 && ok; i++) ok = cu.MemAlloc(&d[i], sizeof(float) * sz[i]) == 0;
+    for (int i = 0; i < 8 && ok; i++)
+        ok = cu.MemcpyHtoD(d[i], src[i], sizeof(float) * sz[i]) == 0;
+    tlora_args a = { n_in, n_out, r, nb, n_in, n_out, s };
+    // d: 0 A, 1 B, 2 x, 3 dy, 4 y, 5 ga, 6 gb, 7 dx, 8 t (then tf), 9 tb
+    ok = ok && tlora_launch(t, TL_T, d[0], d[2], d[8], &a) &&
+         tlora_launch(t, TL_Y, d[1], d[8], d[4], &a) &&
+         tlora_launch(t, TL_TB, d[1], d[3], d[9], &a) &&
+         tlora_launch(t, TL_T, d[0], d[2], d[8], &a) &&
+         tlora_launch(t, TL_GA, d[9], d[2], d[5], &a) &&
+         tlora_launch(t, TL_GB, d[3], d[8], d[6], &a) &&
+         tlora_launch(t, TL_DX, d[0], d[9], d[7], &a) &&
+         cu.CtxSynchronize() == 0 &&
+         cu.MemcpyDtoH(y, d[4], sizeof(float) * sz[4]) == 0 &&
+         cu.MemcpyDtoH(ga, d[5], sizeof(float) * sz[5]) == 0 &&
+         cu.MemcpyDtoH(gb, d[6], sizeof(float) * sz[6]) == 0 &&
+         cu.MemcpyDtoH(dx, d[7], sizeof(float) * sz[7]) == 0;
+    for (int i = 0; i < 10; i++)
+        if (d[i]) cu.MemFree(d[i]);
+    return ok;
+}
+
+// R8.24.1 B2 (kernels_train.cuh k_trn_fw / k_trn_bw): a block a row, its
+// chains run by one thread in the host's order, then the row's elements by
+// the block. TRN_THREADS is the kernels' __launch_bounds__.
+#define TRN_THREADS 128
+static bool trn_fw_launch(train_gpu_t *t, CUdeviceptr x, CUdeviceptr w,
+                          CUdeviceptr y, const trn_args *a) {
+    trn_args aa = *a;
+    void *p[] = { &x, &w, &y, &aa };
+    return t->f_trn_fw && a->rows > 0 &&
+           cu.LaunchKernel(t->f_trn_fw, (unsigned)a->rows, 1, 1, TRN_THREADS, 1, 1, 0,
+                           NULL, p, NULL) == 0;
+}
+static bool trn_bw_launch(train_gpu_t *t, CUdeviceptr x, CUdeviceptr w,
+                          CUdeviceptr dy, CUdeviceptr dx, const trn_args *a) {
+    trn_args aa = *a;
+    void *p[] = { &x, &w, &dy, &dx, &aa };
+    return t->f_trn_bw && a->rows > 0 &&
+           cu.LaunchKernel(t->f_trn_bw, (unsigned)a->rows, 1, 1, TRN_THREADS, 1, 1, 0,
+                           NULL, p, NULL) == 0;
+}
+
+// R8.24.1 B2, for the kernel gate: the forward into y and the adjoint added
+// into dx, on host rows (sent, run, brought back). false: no context or no
+// kernel in this PTX.
+bool gpu_train_rmsnorm_check(model_t *m, const trn_args *a, const float *x,
+                             const float *w, const float *dy, float *y, float *dx) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->f_trn_fw || !t->f_trn_bw || a->n < 1 || a->rows < 1 ||
+        cu.CtxSetCurrent(t->ctx) != 0)
+        return false;
+    size_t last = (size_t)(a->rows - 1);
+    size_t nx = sizeof(float) * (last * a->x_stride + a->n);
+    size_t ny = sizeof(float) * (last * a->y_stride + a->n);
+    size_t ndy = sizeof(float) * (last * a->dy_stride + a->n);
+    size_t ndx = sizeof(float) * (last * a->dx_stride + a->n);
+    size_t nw = sizeof(float) * (size_t)a->n;
+    CUdeviceptr d[5] = {0};   // x, w, y, dy, dx
+    size_t sz[5] = { nx, nw, ny, ndy, ndx };
+    bool ok = true;
+    for (int i = 0; i < 5 && ok; i++)
+        if (i != 1 || w) ok = cu.MemAlloc(&d[i], sz[i]) == 0;
+    ok = ok && cu.MemcpyHtoD(d[0], x, nx) == 0 && (!w || cu.MemcpyHtoD(d[1], w, nw) == 0) &&
+         cu.MemsetD8(d[2], 0, ny) == 0 && cu.MemcpyHtoD(d[3], dy, ndy) == 0 &&
+         cu.MemcpyHtoD(d[4], dx, ndx) == 0 &&
+         trn_fw_launch(t, d[0], d[1], d[2], a) && trn_bw_launch(t, d[0], d[1], d[3], d[4], a) &&
+         cu.CtxSynchronize() == 0 && cu.MemcpyDtoH(y, d[2], ny) == 0 &&
+         cu.MemcpyDtoH(dx, d[4], ndx) == 0;
+    for (int i = 0; i < 5; i++)
+        if (d[i]) cu.MemFree(d[i]);
+    return ok;
+}
+
+// R8.24.1 B3 (kernels_train.cuh k_trope): a thread a (position, pair), its
+// angle's sin and cos once, then the pair in every head.
+#define TROPE_THREADS 128
+static bool trope_launch(train_gpu_t *t, CUdeviceptr v, CUdeviceptr fr,
+                         const trope_args *a) {
+    trope_args aa = *a;
+    void *p[] = { &v, &fr, &aa };
+    size_t n = (size_t)a->T * (size_t)a->half_dim;
+    return t->f_trope && n > 0 &&
+           cu.LaunchKernel(t->f_trope, (unsigned)((n + TROPE_THREADS - 1) / TROPE_THREADS),
+                           1, 1, TROPE_THREADS, 1, 1, 0, NULL, p, NULL) == 0;
+}
+
+// R8.24.1 B3, for the kernel gate: the rows sent, rotated in place, brought
+// back. false: no context or no kernel in this PTX.
+bool gpu_train_rope_check(model_t *m, const trope_args *a, const float *fr, float *v) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->f_trope || a->T < 1 || a->half_dim < 1 || a->n_heads < 1 ||
+        cu.CtxSetCurrent(t->ctx) != 0)
+        return false;
+    size_t nv = sizeof(float) * ((size_t)(a->T - 1) * a->stride +
+                                 (size_t)a->n_heads * a->head_dim);
+    size_t nf = sizeof(float) * (size_t)a->half_dim;
+    CUdeviceptr dv = 0, df = 0;
+    bool ok = cu.MemAlloc(&dv, nv) == 0 && cu.MemAlloc(&df, nf) == 0 &&
+              cu.MemcpyHtoD(dv, v, nv) == 0 && cu.MemcpyHtoD(df, fr, nf) == 0 &&
+              trope_launch(t, dv, df, a) && cu.CtxSynchronize() == 0 &&
+              cu.MemcpyDtoH(v, dv, nv) == 0;
+    if (dv) cu.MemFree(dv);
+    if (df) cu.MemFree(df);
+    return ok;
+}
+
+// R8.24.1 B8 (kernels_train.cuh k_tkv_store): a thread an element.
+#define TKV_THREADS 256
+static bool tkv_launch(train_gpu_t *t, CUdeviceptr src, CUdeviceptr dst, const tkv_args *a) {
+    tkv_args aa = *a;
+    void *p[] = { &src, &dst, &aa };
+    size_t n = (size_t)a->rows * (size_t)a->n;
+    return t->f_tkv && n > 0 && n <= 0x7fffffffu &&   // the kernel indexes in int
+           cu.LaunchKernel(t->f_tkv, (unsigned)((n + TKV_THREADS - 1) / TKV_THREADS), 1, 1,
+                           TKV_THREADS, 1, 1, 0, NULL, p, NULL) == 0;
+}
+
+// R8.24.1 B R0 (kernels_train.cuh k_tadd): a thread an element.
+#define TADD_THREADS 256
+static bool tadd_launch(train_gpu_t *t, CUdeviceptr x, CUdeviceptr y, const tadd_args *a) {
+    tadd_args aa = *a;
+    void *p[] = { &x, &y, &aa };
+    size_t n = (size_t)a->rows * (size_t)a->n;
+    return t->f_tadd && n > 0 && n <= 0x7fffffffu &&
+           cu.LaunchKernel(t->f_tadd, (unsigned)((n + TADD_THREADS - 1) / TADD_THREADS), 1, 1,
+                           TADD_THREADS, 1, 1, 0, NULL, p, NULL) == 0;
+}
+// R8.24.1 B R0, for the kernel gate: x (host rows) += y, sent, run, brought
+// back. false: no context or no kernel in this PTX.
+bool gpu_train_add_check(model_t *m, const tadd_args *a, float *x, const float *y) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->f_tadd || a->rows < 1 || a->n < 1 || cu.CtxSetCurrent(t->ctx) != 0) return false;
+    size_t last = (size_t)(a->rows - 1);
+    size_t nx = sizeof(float) * (last * (size_t)a->x_stride + (size_t)a->n);
+    size_t ny = sizeof(float) * (last * (size_t)a->y_stride + (size_t)a->n);
+    CUdeviceptr dx = 0, dy = 0;
+    bool ok = cu.MemAlloc(&dx, nx) == 0 && cu.MemAlloc(&dy, ny) == 0 &&
+              cu.MemcpyHtoD(dx, x, nx) == 0 && cu.MemcpyHtoD(dy, y, ny) == 0 &&
+              tadd_launch(t, dx, dy, a) && cu.CtxSynchronize() == 0 &&
+              cu.MemcpyDtoH(x, dx, nx) == 0;
+    if (dx) cu.MemFree(dx);
+    if (dy) cu.MemFree(dy);
+    return ok;
+}
+
+// R8.24.1 B8, for the kernel gate: a->rows rows of a->n host floats stored
+// into dst's rows in the cache's kind (0 f16, 3 f32), dst sent first so the
+// bytes between rows come back as they went. false: no context, no kernel in
+// this PTX, or a kind the store does not cover.
+bool gpu_train_kv_store_check(model_t *m, const tkv_args *a, const float *src,
+                              unsigned char *dst) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->f_tkv || a->rows < 1 || a->n < 1 || (a->kind != 0 && a->kind != 3) ||
+        cu.CtxSetCurrent(t->ctx) != 0)
+        return false;
+    size_t last = (size_t)(a->rows - 1);
+    size_t ns = sizeof(float) * (last * (size_t)a->src_stride + (size_t)a->n);
+    size_t nd = last * (size_t)a->row_bytes + (size_t)a->n * (a->kind == 3 ? 4 : 2);
+    CUdeviceptr ds = 0, dd = 0;
+    bool ok = cu.MemAlloc(&ds, ns) == 0 && cu.MemAlloc(&dd, nd) == 0 &&
+              cu.MemcpyHtoD(ds, src, ns) == 0 && cu.MemcpyHtoD(dd, dst, nd) == 0 &&
+              tkv_launch(t, ds, dd, a) && cu.CtxSynchronize() == 0 &&
+              cu.MemcpyDtoH(dst, dd, nd) == 0;
+    if (ds) cu.MemFree(ds);
+    if (dd) cu.MemFree(dd);
+    return ok;
+}
+
+// R8.24.1 B4 (kernels_train.cuh k_tattn): a block a (position, head); the
+// span's probabilities in dynamic shared memory (T floats at most).
+#define TATTN_THREADS 128
+#define TATTN_MAX_HD 512
+static bool tattn_launch(train_gpu_t *t, CUdeviceptr kc, CUdeviceptr vc, CUdeviceptr q,
+                         CUdeviceptr ao, const tattn_args *a) {
+    tattn_args aa = *a;
+    void *p[] = { &kc, &vc, &q, &ao, &aa };
+    // the scores of the longest span a query of this launch reads: its
+    // window where one applies, else every row up to the chunk's last
+    size_t rows = (size_t)a->pos0 + (size_t)a->T;
+    size_t span = a->swa > 0 && (size_t)a->swa < rows ? (size_t)a->swa : rows;
+    size_t dyn = sizeof(float) * span;
+    return t->f_tattn && dyn <= (size_t)t->tattn_dyn &&
+           cu.LaunchKernel(t->f_tattn, (unsigned)a->T, (unsigned)a->n_head, 1, TATTN_THREADS,
+                           1, 1, (unsigned)dyn, NULL, p, NULL) == 0;
+}
+
+// R8.24.1 B4, for the kernel gate: K, V and q sent, the attention run, ao
+// brought back. false: no context, no kernel in this PTX, or a shape or kind
+// the kernel does not take (f16 and f32 rows; head width and span within its
+// shared memory).
+bool gpu_train_attn_fw_check(model_t *m, const tattn_args *a, const void *kc,
+                             const void *vc, const float *q, float *ao) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->f_tattn || a->T < 1 || a->hd < 1 || a->hd > TATTN_MAX_HD ||
+        a->kv_mul < 1 || a->n_head % a->kv_mul || a->pos0 < 0 || a->pos0 + a->T > 12288 ||
+        (a->kind_k != 0 && a->kind_k != 3) || (a->kind_v != 0 && a->kind_v != 3) ||
+        cu.CtxSetCurrent(t->ctx) != 0)
+        return false;
+    size_t rows = (size_t)a->pos0 + (size_t)a->T;   // every key a query of the chunk reads
+    size_t nk = rows * a->k_row_b, nv = rows * a->v_row_b;
+    size_t nq = sizeof(float) * (size_t)a->T * (size_t)a->q_dim;
+    CUdeviceptr d[4] = {0};   // K, V, q, ao
+    size_t sz[4] = { nk, nv, nq, nq };
+    bool ok = true;
+    for (int i = 0; i < 4 && ok; i++) ok = cu.MemAlloc(&d[i], sz[i]) == 0;
+    ok = ok && cu.MemcpyHtoD(d[0], kc, nk) == 0 && cu.MemcpyHtoD(d[1], vc, nv) == 0 &&
+         cu.MemcpyHtoD(d[2], q, nq) == 0 && cu.MemsetD8(d[3], 0, nq) == 0 &&
+         tattn_launch(t, d[0], d[1], d[2], d[3], a) && cu.CtxSynchronize() == 0 &&
+         cu.MemcpyDtoH(ao, d[3], nq) == 0;
+    for (int i = 0; i < 4; i++)
+        if (d[i]) cu.MemFree(d[i]);
+    return ok;
+}
+
+// R8.24.1 B1, for the kernel gate: the twins over n host floats (sent, run,
+// brought back). false: no context, no kernel in this PTX, or an activation
+// the twins do not cover (ACT_SILU only).
+bool gpu_train_ffn_check(model_t *m, int act, const float *g, const float *u,
+                         const float *dh, float *h, float *dg, float *du, int n) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->f_tffn_fw || !t->f_tffn_bw || act != ACT_SILU || n < 1 ||
+        cu.CtxSetCurrent(t->ctx) != 0)
+        return false;
+    size_t nb = sizeof(float) * (size_t)n;
+    CUdeviceptr d[6] = {0};
+    bool ok = true;
+    for (int i = 0; i < 6 && ok; i++) ok = cu.MemAlloc(&d[i], nb) == 0;
+    ok = ok && cu.MemcpyHtoD(d[0], g, nb) == 0 && cu.MemcpyHtoD(d[1], u, nb) == 0 &&
+         cu.MemcpyHtoD(d[2], dh, nb) == 0 &&
+         tffn_fw_launch(t, d[0], d[1], d[3], n, act) &&
+         tffn_bw_launch(t, d[0], d[1], d[2], d[4], d[5], n, act) &&
+         cu.CtxSynchronize() == 0 && cu.MemcpyDtoH(h, d[3], nb) == 0 &&
+         cu.MemcpyDtoH(dg, d[4], nb) == 0 && cu.MemcpyDtoH(du, d[5], nb) == 0;
+    for (int i = 0; i < 6; i++)
+        if (d[i]) cu.MemFree(d[i]);
+    return ok;
+}
+
+// the bytes the training contexts' scratch planes hold now (tg_scratch's, until
+// tg_drop): gpu_train_free must bring it back to 0 (#935: the resident planes
+// were never freed), and tests/test_lora_grad.c reads it after a free. Atomic:
+// one context's trainer calls these from its own thread, but nothing stops two
+// contexts in one process from doing so at once
+static _Atomic size_t tg_live_bytes;
 static bool tg_scratch(CUdeviceptr *buf, size_t *cap, size_t need) {
     if (*cap >= need) return true;
-    if (*buf) cu.MemFree(*buf);
+    if (*buf) { cu.MemFree(*buf); tg_live_bytes -= *cap; }
     *buf = 0;
     *cap = 0;
     if (cu.MemAlloc(buf, need) != 0) return false;
     *cap = need;
+    tg_live_bytes += need;
     return true;
 }
+static void tg_drop(CUdeviceptr *buf, size_t *cap) {
+    if (*buf) { cu.MemFree(*buf); tg_live_bytes -= *cap; }
+    *buf = 0;
+    *cap = 0;
+}
+size_t gpu_train_scratch_bytes(void) { return tg_live_bytes; }
 
 // The tensor's device copy, uploaded on its first use and cached for the
 // run; 0 when it does not fit the budget (it then stays on the CPU, for the
@@ -9226,6 +9638,9 @@ static CUdeviceptr tg_weights(train_gpu_t *t, const gguf_tensor *w) {
 static bool train_mvt(train_gpu_t *t, const gguf_tensor *w, const float *dy,
                       float *dx, int n_in, int n_out, int nb, bool dev,
                       bool zero);
+static bool tmvt_launch(train_gpu_t *t, const gguf_tensor *w, CUdeviceptr weights,
+                        CUdeviceptr d_dy, CUdeviceptr d_dx, int n_in, int n_out,
+                        int nb, bool dev);
 
 static bool train_mvt_call(model_t *m, const gguf_tensor *w, const float *dy,
                            float *dx, int n_in, int n_out, int nb, bool zero) {
@@ -9267,12 +9682,25 @@ static bool train_mvt(train_gpu_t *t, const gguf_tensor *w, const float *dy,
     if (cu.MemcpyHtoD(t->d_dy, dy, ny) != 0 ||
         (zero ? cu.MemsetD8(t->d_dx, 0, nx) : cu.MemcpyHtoD(t->d_dx, dx, nx)) != 0)
         return false;
+    double k0 = plat_now();
+    if (!tmvt_launch(t, w, weights, t->d_dy, t->d_dx, n_in, n_out, nb, dev) ||
+        cu.CtxSynchronize() != 0)
+        return false;
+    t->k_mvt += plat_now() - k0;
+    return cu.MemcpyDtoH(dx, t->d_dx, nx) == 0;
+}
+
+// One transposed product's launch, dy and dx on the device (no sync):
+// dx[t][i] += sum_j W[j][i] dy[t][j].
+// --train-gpu takes the register-blocked twins (k_tmvtr past 32 columns,
+// k_tmvtrn up to them); the assist (RUNNER_TRAIN_GPU=1) keeps k_tmvt, the
+// CPU chain's bits. RUNNER_TRAIN_MVT_KERNEL=chain takes k_tmvt in device
+// mode too, for comparison (read per call, like RUNNER_TRAIN_MM_KERNEL).
+static bool tmvt_launch(train_gpu_t *t, const gguf_tensor *w, CUdeviceptr weights,
+                        CUdeviceptr d_dy, CUdeviceptr d_dx, int n_in, int n_out,
+                        int nb, bool dev) {
     mv_args a = { n_in, n_out, 0, 0, nb, n_out, n_in };
-    void *p[] = { &weights, &t->d_dy, &t->d_dx, &a, &t->dummy };
-    // --train-gpu takes the register-blocked twins (k_tmvtr past 32 columns,
-    // k_tmvtrn up to them); the assist (RUNNER_TRAIN_GPU=1) keeps k_tmvt, the
-    // CPU chain's bits. RUNNER_TRAIN_MVT_KERNEL=chain takes k_tmvt in device
-    // mode too, for comparison (read per call, like RUNNER_TRAIN_MM_KERNEL).
+    void *p[] = { &weights, &d_dy, &d_dx, &a, &t->dummy };
     const char *ke = getenv("RUNNER_TRAIN_MVT_KERNEL");
     bool tile = dev && !(ke && !strcmp(ke, "chain")) && t->f_tmvtr[w->type] &&
                 t->f_tmvtrn[w->type];
@@ -9290,12 +9718,7 @@ static bool train_mvt(train_gpu_t *t, const gguf_tensor *w, const float *dy,
         rows = (unsigned)((nb + TV_TT - 1) / TV_TT);
         threads = TV_IT * TV_TT / 8;
     }
-    double k0 = plat_now();
-    if (cu.LaunchKernel(f, blocks, rows, 1, threads, 1, 1, 0, NULL, p, NULL) != 0 ||
-        cu.CtxSynchronize() != 0)
-        return false;
-    t->k_mvt += plat_now() - k0;
-    return cu.MemcpyDtoH(dx, t->d_dx, nx) == 0;
+    return cu.LaunchKernel(f, blocks, rows, 1, threads, 1, 1, 0, NULL, p, NULL) == 0;
 }
 
 static bool tg_host(float **buf, size_t *cap, size_t n) {
@@ -9342,7 +9765,7 @@ void gpu_train_prof(model_t *m, double *t_mm, long *n_mm, double *t_mvt,
 
 double gpu_train_dev_wall(model_t *m) {
     train_gpu_t *t = m->train_gpu;
-    return t ? t->t_mm + t->t_mvt + t->t_dn + t->t_ab : 0;
+    return t ? t->t_mm + t->t_mvt + t->t_dn + t->t_ab + t->t_res : 0;
 }
 
 // ------------------- R8.21: the DeltaNet recurrence of a training step
@@ -9561,34 +9984,24 @@ static bool tab_buf(train_gpu_t *t, int i, size_t need) {
     return tg_scratch(&t->ab[i], &t->ab_cap[i], need);
 }
 
-static bool train_attn_bw(train_gpu_t *t, const tab_args *a, const void *kc,
-                          const void *vc, const float *q, const float *dao,
-                          float *dq, float *dk, float *dv) {
-    if (cu.CtxSetCurrent(t->ctx) != 0) return false;
+// the score and softmax backward's kernels over device planes: K and V
+// rows, q, dao in; dq, dk, dv accumulated (their starting values as given).
+// The probabilities' scratch is the context's (AB_P, AB_DS). No sync.
+static bool attn_bw_core(train_gpu_t *t, const tab_args *a, CUdeviceptr K, CUdeviceptr V,
+                         CUdeviceptr Q, CUdeviceptr DAO, CUdeviceptr DQ, CUdeviceptr DK,
+                         CUdeviceptr DV) {
     size_t T = (size_t)a->T, H = (size_t)a->n_head;
-    size_t nk = T * a->k_row_b, nv = T * a->v_row_b;
-    size_t nq = sizeof(float) * T * (size_t)a->q_dim;
-    size_t nkv = sizeof(float) * T * (size_t)a->kv_dim;
     size_t tb = T < TAB_TB ? T : TAB_TB;
     size_t np = sizeof(float) * tb * H * T;
-    if (!tab_buf(t, AB_K, nk) || !tab_buf(t, AB_V, nv) || !tab_buf(t, AB_Q, nq) ||
-        !tab_buf(t, AB_DAO, nq) || !tab_buf(t, AB_DQ, nq) || !tab_buf(t, AB_DK, nkv) ||
-        !tab_buf(t, AB_DV, nkv) || !tab_buf(t, AB_P, np) || !tab_buf(t, AB_DS, np))
-        return false;
-    if (cu.MemcpyHtoD(t->ab[AB_K], kc, nk) != 0 || cu.MemcpyHtoD(t->ab[AB_V], vc, nv) != 0 ||
-        cu.MemcpyHtoD(t->ab[AB_Q], q, nq) != 0 || cu.MemcpyHtoD(t->ab[AB_DAO], dao, nq) != 0 ||
-        cu.MemcpyHtoD(t->ab[AB_DQ], dq, nq) != 0 || cu.MemcpyHtoD(t->ab[AB_DK], dk, nkv) != 0 ||
-        cu.MemcpyHtoD(t->ab[AB_DV], dv, nkv) != 0)
-        return false;
+    if (!tab_buf(t, AB_P, np) || !tab_buf(t, AB_DS, np)) return false;
+    CUdeviceptr P = t->ab[AB_P], DS = t->ab[AB_DS];
     tab_args aa = *a;
     unsigned nkvh = (unsigned)(a->n_head / a->kv_mul);
     for (int tb0 = 0; tb0 < a->T; tb0 += TAB_TB) {
         int tbn = a->T - tb0 < TAB_TB ? a->T - tb0 : TAB_TB;
-        void *pp[] = { &t->ab[AB_K], &t->ab[AB_V], &t->ab[AB_Q], &t->ab[AB_DAO],
-                       &t->ab[AB_P], &t->ab[AB_DS], &aa, &tb0 };
-        void *pq[] = { &t->ab[AB_K], &t->ab[AB_DS], &t->ab[AB_DQ], &aa, &tb0 };
-        void *pk[] = { &t->ab[AB_Q], &t->ab[AB_DAO], &t->ab[AB_P], &t->ab[AB_DS],
-                       &t->ab[AB_DK], &t->ab[AB_DV], &aa, &tb0, &tbn };
+        void *pp[] = { &K, &V, &Q, &DAO, &P, &DS, &aa, &tb0 };
+        void *pq[] = { &K, &DS, &DQ, &aa, &tb0 };
+        void *pk[] = { &Q, &DAO, &P, &DS, &DK, &DV, &aa, &tb0, &tbn };
         if (cu.LaunchKernel(t->f_tab_p, (unsigned)tbn, (unsigned)a->n_head, 1,
                             TAB_THREADS, 1, 1, 0, NULL, pp, NULL) != 0 ||
             cu.LaunchKernel(t->f_tab_dq, (unsigned)tbn, (unsigned)a->n_head, 1,
@@ -9597,6 +10010,29 @@ static bool train_attn_bw(train_gpu_t *t, const tab_args *a, const void *kc,
                             TAB_THREADS, 1, 1, 0, NULL, pk, NULL) != 0)
             return false;
     }
+    return true;
+}
+
+static bool train_attn_bw(train_gpu_t *t, const tab_args *a, const void *kc,
+                          const void *vc, const float *q, const float *dao,
+                          float *dq, float *dk, float *dv) {
+    if (cu.CtxSetCurrent(t->ctx) != 0) return false;
+    size_t T = (size_t)a->T;
+    size_t nk = T * a->k_row_b, nv = T * a->v_row_b;
+    size_t nq = sizeof(float) * T * (size_t)a->q_dim;
+    size_t nkv = sizeof(float) * T * (size_t)a->kv_dim;
+    if (!tab_buf(t, AB_K, nk) || !tab_buf(t, AB_V, nv) || !tab_buf(t, AB_Q, nq) ||
+        !tab_buf(t, AB_DAO, nq) || !tab_buf(t, AB_DQ, nq) || !tab_buf(t, AB_DK, nkv) ||
+        !tab_buf(t, AB_DV, nkv))
+        return false;
+    if (cu.MemcpyHtoD(t->ab[AB_K], kc, nk) != 0 || cu.MemcpyHtoD(t->ab[AB_V], vc, nv) != 0 ||
+        cu.MemcpyHtoD(t->ab[AB_Q], q, nq) != 0 || cu.MemcpyHtoD(t->ab[AB_DAO], dao, nq) != 0 ||
+        cu.MemcpyHtoD(t->ab[AB_DQ], dq, nq) != 0 || cu.MemcpyHtoD(t->ab[AB_DK], dk, nkv) != 0 ||
+        cu.MemcpyHtoD(t->ab[AB_DV], dv, nkv) != 0)
+        return false;
+    if (!attn_bw_core(t, a, t->ab[AB_K], t->ab[AB_V], t->ab[AB_Q], t->ab[AB_DAO], t->ab[AB_DQ],
+                      t->ab[AB_DK], t->ab[AB_DV]))
+        return false;
     // all three come back before any lands, so a failed copy leaves the
     // caller's sums as they were for the CPU to add into
     size_t nh = (nq + 2 * nkv) / sizeof(float);
@@ -9791,6 +10227,561 @@ unsigned gpu_train_mm_parts(model_t *m, const gpu_mm_part *p, int np,
     t->t_mm += plat_now() - t0;
     for (int s = 0; s < np; s++) t->n_mm += want >> s & 1;
     return want;
+}
+
+// ---- R8.24.1 B: the device-resident FFN of a gated SiLU layer
+// (B1 + B6 + the products). The planes FB_X (the normed input, n_embd wide),
+// FB_G, FB_U, FB_H (gate, up, activation), FB_Y (the down output, or the
+// backward's dbr), FB_DH, FB_DG, FB_DU (their gradients), FB_DX (dxn2), FB_T
+// (the adapter's t / tf and tb, 2 x nb x r).
+// FB_R, FB_NW: the layer driver's norm slot (the residual rows, the norm's
+// weight), filled only when the norm runs on the device
+enum { FB_X, FB_G, FB_U, FB_H, FB_Y, FB_DH, FB_DG, FB_DU, FB_DX, FB_T, FB_R, FB_NW };
+
+// Whether the device FFN can run: its kernels are in this PTX and the arena
+// holds every tensor (so it never changes which weights the device holds,
+// which decides the adapter's bits)
+bool gpu_train_ffn_dev_ok(model_t *m) {
+    train_gpu_t *t = m->train_gpu;
+    return t && t->f_tffn_fw && t->f_tffn_bw && t->f_tlora[0] &&
+           t->arena_size >= t->model_need;
+}
+
+static struct tsite *tg_site(train_gpu_t *t, int n_layer, int l, int which) {
+    if (!t->site) {
+        // a layer's sites: 0 gate, 1 up, 2 down (the FFN slot), 3 Q, 4 K, 5 V,
+        // 6 O (the resident step, R8.24.1 B R1)
+        t->site = calloc((size_t)n_layer * 7, sizeof(*t->site));
+        if (!t->site) return NULL;
+        t->n_site = n_layer * 7;
+    }
+    int i = l * 7 + which;
+    return i >= 0 && i < t->n_site ? &t->site[i] : NULL;
+}
+
+// A site's adapter for a backward: A, B and the gradients so far go up (the
+// gradients' chains continue from the host's values), r 0: no adapter there
+bool gpu_train_site_push(model_t *m, int l, int which, const float *a,
+                         const float *b, const float *ga, const float *gb,
+                         int r, int n_in, int n_out, float s) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || cu.CtxSetCurrent(t->ctx) != 0) return false;
+    struct tsite *st = tg_site(t, m->n_layer, l, which);
+    if (!st) return false;
+    st->live = false;
+    st->r = r;
+    if (!r) return true;
+    size_t na = sizeof(float) * (size_t)r * n_in, nb = sizeof(float) * (size_t)n_out * r;
+    if (!tg_scratch(&st->a, &st->cap_a, na) || !tg_scratch(&st->b, &st->cap_b, nb) ||
+        !tg_scratch(&st->ga, &st->cap_ga, na) || !tg_scratch(&st->gb, &st->cap_gb, nb))
+        return false;
+    if (cu.MemcpyHtoD(st->a, a, na) != 0 || cu.MemcpyHtoD(st->b, b, nb) != 0 ||
+        cu.MemcpyHtoD(st->ga, ga, na) != 0 || cu.MemcpyHtoD(st->gb, gb, nb) != 0)
+        return false;
+    st->n_in = n_in;
+    st->n_out = n_out;
+    st->s = s;
+    st->live = true;
+    return true;
+}
+
+// ... and its gradients back to the host at the backward's end
+bool gpu_train_site_pull(model_t *m, int l, int which, float *ga, float *gb) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || cu.CtxSetCurrent(t->ctx) != 0) return false;
+    struct tsite *st = tg_site(t, m->n_layer, l, which);
+    if (!st) return false;
+    if (!st->live) return st->r == 0;
+    st->live = false;
+    size_t na = sizeof(float) * (size_t)st->r * st->n_in;
+    size_t nb = sizeof(float) * (size_t)st->n_out * st->r;
+    return cu.CtxSynchronize() == 0 && cu.MemcpyDtoH(ga, st->ga, na) == 0 &&
+           cu.MemcpyDtoH(gb, st->gb, nb) == 0;
+}
+
+static bool fb_get(train_gpu_t *t, int i, size_t floats) {
+    return tg_scratch(&t->fb[i], &t->fb_cap[i], sizeof(float) * (floats ? floats : 1));
+}
+
+// the site's forward delta: y += s B (A x), x rows x_stride apart, y n_out
+static bool site_fw(train_gpu_t *t, const struct tsite *st, CUdeviceptr x, int x_stride,
+                    CUdeviceptr y, int nb) {
+    if (!st || !st->r) return true;
+    if (!st->live) return false;
+    tlora_args a = { st->n_in, st->n_out, st->r, nb, x_stride, st->n_out, st->s };
+    return tlora_launch(t, TL_T, st->a, x, t->fb[FB_T], &a) &&
+           tlora_launch(t, TL_Y, st->b, t->fb[FB_T], y, &a);
+}
+
+// the site's backward (lsb_proj, lsb_ga, lsb_gb, lsb_dx in that order)
+static bool site_bw(train_gpu_t *t, struct tsite *st, CUdeviceptr x, CUdeviceptr dy,
+                    CUdeviceptr dx, int nb) {
+    if (!st || !st->r) return true;
+    if (!st->live) return false;
+    tlora_args a = { st->n_in, st->n_out, st->r, nb, st->n_in, st->n_out, st->s };
+    CUdeviceptr tf = t->fb[FB_T], tb = t->fb[FB_T] + sizeof(float) * (size_t)nb * st->r;
+    return tlora_launch(t, TL_TB, st->b, dy, tb, &a) &&
+           tlora_launch(t, TL_T, st->a, x, tf, &a) &&
+           tlora_launch(t, TL_GA, tb, x, st->ga, &a) &&
+           tlora_launch(t, TL_GB, dy, tf, st->gb, &a) &&
+           tlora_launch(t, TL_DX, st->a, tb, dx, &a);
+}
+
+static bool fb_planes(train_gpu_t *t, int E, int nff, int nb, int r_max) {
+    size_t ne = (size_t)nb * E, nf = (size_t)nb * nff;
+    return fb_get(t, FB_X, ne) && fb_get(t, FB_G, nf) && fb_get(t, FB_U, nf) &&
+           fb_get(t, FB_H, nf) && fb_get(t, FB_Y, ne) && fb_get(t, FB_DH, nf) &&
+           fb_get(t, FB_DG, nf) && fb_get(t, FB_DU, nf) && fb_get(t, FB_DX, ne) &&
+           fb_get(t, FB_T, (size_t)2 * nb * (r_max > 0 ? r_max : 1));
+}
+
+static int site_rmax(train_gpu_t *t, int n_layer, int l) {
+    int r = 0;
+    for (int w = 0; w < 7; w++) {
+        struct tsite *st = tg_site(t, n_layer, l, w);
+        if (st && st->r > r) r = st->r;
+    }
+    return r;
+}
+
+// gate and up of FB_X, their adapters, the activation into FB_H (the
+// forward's order: both products, the gate's delta, the up's, act(g)*u)
+static bool ffn_front(train_gpu_t *t, int n_layer, int l, const gguf_tensor *wg,
+                      const gguf_tensor *wu, int E, int nff, int nb) {
+    CUdeviceptr pg = tg_weights(t, wg), pu = pg ? tg_weights(t, wu) : 0;
+    return pg && pu &&
+           tmm_launch(t, wg, pg, t->fb[FB_X], t->fb[FB_G], E, nff, nb) &&
+           tmm_launch(t, wu, pu, t->fb[FB_X], t->fb[FB_U], E, nff, nb) &&
+           site_fw(t, tg_site(t, n_layer, l, 0), t->fb[FB_X], E, t->fb[FB_G], nb) &&
+           site_fw(t, tg_site(t, n_layer, l, 1), t->fb[FB_X], E, t->fb[FB_U], nb) &&
+           tffn_fw_launch(t, t->fb[FB_G], t->fb[FB_U], t->fb[FB_H], nb * nff, ACT_SILU);
+}
+
+// R8.24.1 B: the taped forward's FFN of layer l on the device: x (n_embd of
+// each row, rows x_stride apart) in, the down output (with its adapter) into
+// y (rows y_stride apart). y may be x. false before y is touched. norm: x is
+// the residual and the FFN's RMS norm (weight nw, NULL the weightless form,
+// eps) runs first, on the device (B2's k_trn_fw: model.c rmsnorm's twin)
+static bool ffn_fw_core(model_t *m, int l, const gguf_tensor *wg, const gguf_tensor *wu,
+                        const gguf_tensor *wd, bool norm, const float *nw, float eps,
+                        const float *x, int x_stride, float *y, int y_stride, int E, int nff,
+                        int nb) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !wg || !wu || !wd || nb < 1 || (norm && !t->f_trn_fw) ||
+        cu.CtxSetCurrent(t->ctx) != 0)
+        return false;
+    double t0 = plat_now();
+    size_t ne = (size_t)nb * E;
+    int in = norm ? FB_R : FB_X;
+    if (!fb_planes(t, E, nff, nb, site_rmax(t, m->n_layer, l)) ||
+        (norm && (!fb_get(t, FB_R, ne) || !fb_get(t, FB_NW, (size_t)E))) ||
+        !tg_host(&t->h_x, &t->cap_hx, ne) || !tg_host(&t->h_y, &t->cap_hy, ne))
+        return false;
+    for (int b = 0; b < nb; b++)
+        memcpy(t->h_x + (size_t)b * E, x + (size_t)b * x_stride, sizeof(float) * (size_t)E);
+    CUdeviceptr pd = tg_weights(t, wd);
+    if (!pd || cu.MemcpyHtoD(t->fb[in], t->h_x, sizeof(float) * ne) != 0 ||
+        (norm && nw && cu.MemcpyHtoD(t->fb[FB_NW], nw, sizeof(float) * (size_t)E) != 0))
+        return false;
+    double k0 = plat_now();
+    trn_args na = { E, nb, E, E, E, E, eps };
+    if ((norm && !trn_fw_launch(t, t->fb[FB_R], nw ? t->fb[FB_NW] : 0, t->fb[FB_X], &na)) ||
+        !ffn_front(t, m->n_layer, l, wg, wu, E, nff, nb) ||
+        !tmm_launch(t, wd, pd, t->fb[FB_H], t->fb[FB_Y], nff, E, nb) ||
+        !site_fw(t, tg_site(t, m->n_layer, l, 2), t->fb[FB_H], nff, t->fb[FB_Y], nb) ||
+        cu.CtxSynchronize() != 0)
+        return false;
+    t->k_mm += plat_now() - k0;
+    if (cu.MemcpyDtoH(t->h_y, t->fb[FB_Y], sizeof(float) * ne) != 0) return false;
+    for (int b = 0; b < nb; b++)
+        memcpy(y + (size_t)b * y_stride, t->h_y + (size_t)b * E, sizeof(float) * (size_t)E);
+    t->t_mm += plat_now() - t0;
+    t->n_mm += 3;
+    return true;
+}
+bool gpu_train_ffn_fw(model_t *m, int l, const gguf_tensor *wg, const gguf_tensor *wu,
+                      const gguf_tensor *wd, const float *x, int x_stride, float *y,
+                      int y_stride, int E, int nff, int nb) {
+    return ffn_fw_core(m, l, wg, wu, wd, false, NULL, 0.0f, x, x_stride, y, y_stride, E,
+                       nff, nb);
+}
+// R8.24.1 B, the layer driver's first slot: the FFN's RMS norm and the FFN in
+// one call, x the residual rows (B2's kernel; false before y is touched)
+bool gpu_train_ffn_fw_norm(model_t *m, int l, const gguf_tensor *wg, const gguf_tensor *wu,
+                           const gguf_tensor *wd, const float *nw, float eps, const float *x,
+                           int x_stride, float *y, int y_stride, int E, int nff, int nb) {
+    return ffn_fw_core(m, l, wg, wu, wd, true, nw, eps, x, x_stride, y, y_stride, E, nff, nb);
+}
+
+// ---- R8.24.1 B, R1 of the resident step (out/r8241/B-resident-design.md):
+// a taped forward round on device planes. The round's rows go up once (x0,
+// after the host's embedding); every layer runs on the device, each op the
+// host's twin (B1, B2, B3, B4, B6, B8, k_tadd); the tape's rows and the
+// training K/V rows stay on the device for the resident backward (R2), the
+// final hidden comes down for the host's head. model.c decides the scope
+// (model_resident_why); a round that fails fails the step.
+enum { RP_X, RP_XN, RP_Q, RP_Q2, RP_K, RP_K2, RP_V, RP_AO, RP_OB, RP_N };
+
+// the device bytes the step's planes may take beside what is held now
+size_t gpu_train_res_avail(model_t *m) {
+    train_gpu_t *t = m->train_gpu;
+    size_t f = 0, tot = 0;
+    if (!t || !cu.MemGetInfo || cu.CtxSetCurrent(t->ctx) != 0 || cu.MemGetInfo(&f, &tot) != 0)
+        return 0;
+    const size_t margin = (size_t)256 << 20;   // the products' own scratch and the driver's
+    return f > margin ? f - margin : 0;
+}
+
+static bool res_up(CUdeviceptr *d, size_t *cap, const float *h, size_t n) {
+    return tg_scratch(d, cap, sizeof(float) * (n ? n : 1)) &&
+           (!h || !n || cu.MemcpyHtoD(*d, h, sizeof(float) * n) == 0);
+}
+
+// the step's planes: the training K/V rows for T positions, the norm weights
+// (frozen: uploaded once a run), this window's rope tables
+bool gpu_train_res_begin(model_t *m, int T) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || T < 1 || !t->f_trn_fw || !t->f_trope || !t->f_tkv || !t->f_tattn || !t->f_tadd ||
+        !t->f_tlora[0] || cu.CtxSetCurrent(t->ctx) != 0)
+        return false;
+    int L = m->n_layer, E = m->n_embd, hd = model_head_dim(m, 0);
+    size_t krb = model_k_row_bytes(m, 0), vrb = model_v_row_bytes(m, 0);
+    if (!tg_scratch(&t->res_k, &t->res_k_cap, (size_t)L * T * krb) ||
+        !tg_scratch(&t->res_v, &t->res_v_cap, (size_t)L * T * vrb) ||
+        !tg_scratch(&t->res_tape, &t->res_tape_cap, sizeof(float) * (size_t)L * T * E) ||
+        !tg_scratch(&t->res_dx, &t->res_dx_cap, sizeof(float) * (size_t)T * E))
+        return false;
+    if (!t->res_tab) {
+        t->res_tab = calloc((size_t)L, sizeof(*t->res_tab));
+        if (!t->res_tab) return false;
+        t->res_tab_n = L;
+        for (int l = 0; l < L; l++) {
+            const layer_t *ly = &m->layers[l];
+            struct rtab *r = &t->res_tab[l];
+            if (!res_up(&r->an, &r->an_c, ly->attn_norm_w, ly->attn_norm_w ? (size_t)E : 0) ||
+                !res_up(&r->fn, &r->fn_c, ly->ffn_norm_w, ly->ffn_norm_w ? (size_t)E : 0) ||
+                !res_up(&r->qn, &r->qn_c, ly->qnorm_w, ly->qnorm_w ? (size_t)hd : 0) ||
+                !res_up(&r->kn, &r->kn_c, ly->knorm_w, ly->knorm_w ? (size_t)hd : 0)) {
+                res_tab_drop(t);   // every layer's copies so far, then the table: the next step starts clean
+                return false;
+            }
+        }
+    }
+    int half = model_rope_dim(m, 0) / 2;
+    if (!res_up(&t->res_fr, &t->res_fr_cap, m->rope_inv_freq, m->rope_inv_freq ? (size_t)half : 0) ||
+        !res_up(&t->res_frl, &t->res_frl_cap, m->rope_inv_freq_local,
+                m->rope_inv_freq_local ? (size_t)half : 0))
+        return false;
+    t->res_T = T;
+    return true;
+}
+
+// one taped forward round of n rows at position pos, every layer on the
+// device: m->x (the round's embedded rows) in, the final hidden back in
+// m->x; each layer's input rows into the device's tape and its K/V rows
+// into the step's device rows. false: the step fails.
+bool gpu_train_res_round(model_t *m, int n, int pos) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->res_tab || n < 1 || pos < 0 || pos + n > t->res_T ||
+        cu.CtxSetCurrent(t->ctx) != 0)
+        return false;
+    double t0 = plat_now();
+    int L = m->n_layer, E = m->n_embd, T = t->res_T;
+    int hd = model_head_dim(m, 0), nh = m->n_head, nkv = model_n_head_kv(m, 0);
+    int q_dim = model_q_dim(m, 0), kv_dim = model_kv_dim(m, 0);
+    size_t ne = (size_t)n * E, nq = (size_t)n * q_dim, nk = (size_t)n * kv_dim;
+    size_t sz[RP_N] = { ne, ne, nq, nq, nk, nk, nk, nq, ne };
+    for (int i = 0; i < RP_N; i++)
+        if (!tg_scratch(&t->rp[i], &t->rp_cap[i], sizeof(float) * sz[i])) return false;
+    if (cu.MemcpyHtoD(t->rp[RP_X], m->x, sizeof(float) * ne) != 0) return false;
+    tadd_args xa = { n, E, E, E };
+    for (int l = 0; l < L; l++) {
+        const layer_t *ly = &m->layers[l];
+        int nff = ly->n_ff;
+        if (!fb_planes(t, E, nff, n, site_rmax(t, L, l))) return false;
+        // the tape's rows: the layer's input, kept on the device for the
+        // resident backward (R2: the host's tape keeps only its last plane)
+        if (cu.MemcpyDtoD(t->res_tape + sizeof(float) * ((size_t)l * T + pos) * E, t->rp[RP_X],
+                          sizeof(float) * ne) != 0)
+            return false;
+        // the attention's input norm, Q K V and their adapters
+        trn_args na = { E, n, E, E, E, E, m->rms_eps };
+        CUdeviceptr pq = tg_weights(t, ly->wq), pk = pq ? tg_weights(t, ly->wk) : 0;
+        CUdeviceptr pv = pk ? tg_weights(t, ly->wv) : 0;
+        if (!pv || !trn_fw_launch(t, t->rp[RP_X], t->res_tab[l].an, t->rp[RP_XN], &na) ||
+            !tmm_launch(t, ly->wq, pq, t->rp[RP_XN], t->rp[RP_Q], E, q_dim, n) ||
+            !site_fw(t, tg_site(t, L, l, 3), t->rp[RP_XN], E, t->rp[RP_Q], n) ||
+            !tmm_launch(t, ly->wk, pk, t->rp[RP_XN], t->rp[RP_K], E, kv_dim, n) ||
+            !site_fw(t, tg_site(t, L, l, 4), t->rp[RP_XN], E, t->rp[RP_K], n) ||
+            !tmm_launch(t, ly->wv, pv, t->rp[RP_XN], t->rp[RP_V], E, kv_dim, n) ||
+            !site_fw(t, tg_site(t, L, l, 5), t->rp[RP_XN], E, t->rp[RP_V], n))
+            return false;
+        // the Q and K norms (a row a head), then rope
+        CUdeviceptr q = t->rp[RP_Q], k = t->rp[RP_K];
+        if (ly->qnorm_w) {
+            trn_args qa = { hd, n * nh, hd, hd, hd, hd, m->rms_eps };
+            if (!trn_fw_launch(t, q, t->res_tab[l].qn, t->rp[RP_Q2], &qa)) return false;
+            q = t->rp[RP_Q2];
+        }
+        if (ly->knorm_w) {
+            trn_args ka = { hd, n * nkv, hd, hd, hd, hd, m->rms_eps };
+            if (!trn_fw_launch(t, k, t->res_tab[l].kn, t->rp[RP_K2], &ka)) return false;
+            k = t->rp[RP_K2];
+        }
+        if (model_layer_ropes(m, l)) {
+            CUdeviceptr fr = model_is_swa(m, l) ? (m->rope_inv_freq_local ? t->res_frl : 0)
+                                                : (m->rope_inv_freq ? t->res_fr : 0);
+            int half = model_rope_dim(m, l) / 2;
+            float ms = model_rope_mscale(m, l);
+            trope_args ra = { nh, hd, half, m->rope_neox, n, pos, q_dim, 0, ms };
+            trope_args rb = { nkv, hd, half, m->rope_neox, n, pos, kv_dim, 0, ms };
+            if (!fr || !trope_launch(t, q, fr, &ra) || !trope_launch(t, k, fr, &rb)) return false;
+        }
+        // the K/V store into the step's rows (the resident backward reads them there)
+        int kk = model_kv_kind_k(m), vk = model_kv_kind_v(m);
+        size_t krb = model_k_row_bytes(m, l), vrb = model_v_row_bytes(m, l);
+        CUdeviceptr kl = t->res_k + (size_t)l * T * krb, vl = t->res_v + (size_t)l * T * vrb;
+        CUdeviceptr dk = kl + (size_t)pos * krb, dv = vl + (size_t)pos * vrb;
+        tkv_args ka2 = { n, kv_dim, kv_dim, kk, (ka_u64)krb }, va2 = { n, kv_dim, kv_dim, vk, (ka_u64)vrb };
+        if (!tkv_launch(t, k, dk, &ka2) || !tkv_launch(t, t->rp[RP_V], dv, &va2)) return false;
+        // the attention over rows 0 .. pos + n - 1, O and its adapter, the add
+        tattn_args aa = { n, nh, nh / nkv, hd, q_dim, kv_dim, model_is_swa(m, l) ? m->swa_window : 0,
+                          (ka_u64)krb, (ka_u64)vrb, model_attn_scale(m, l), kk, vk, pos };
+        CUdeviceptr po = tg_weights(t, ly->wo);
+        if (!po || !tattn_launch(t, kl, vl, q, t->rp[RP_AO], &aa) ||
+            !tmm_launch(t, ly->wo, po, t->rp[RP_AO], t->rp[RP_OB], q_dim, E, n) ||
+            !site_fw(t, tg_site(t, L, l, 6), t->rp[RP_AO], q_dim, t->rp[RP_OB], n) ||
+            !tadd_launch(t, t->rp[RP_X], t->rp[RP_OB], &xa))
+            return false;
+        // the FFN: its norm, gate and up with their adapters and the
+        // activation, down and its adapter, the add
+        trn_args fa = { E, n, E, E, E, E, m->rms_eps };
+        CUdeviceptr pd = tg_weights(t, ly->w_down);
+        if (!pd || !trn_fw_launch(t, t->rp[RP_X], t->res_tab[l].fn, t->fb[FB_X], &fa) ||
+            !ffn_front(t, L, l, ly->w_gate, ly->w_up, E, nff, n) ||
+            !tmm_launch(t, ly->w_down, pd, t->fb[FB_H], t->fb[FB_Y], nff, E, n) ||
+            !site_fw(t, tg_site(t, L, l, 2), t->fb[FB_H], nff, t->fb[FB_Y], n) ||
+            !tadd_launch(t, t->rp[RP_X], t->fb[FB_Y], &xa))
+            return false;
+    }
+    bool ok = cu.CtxSynchronize() == 0 && cu.MemcpyDtoH(m->x, t->rp[RP_X], sizeof(float) * ne) == 0;
+    t->t_res += plat_now() - t0;   // its own bucket: the product calls' split stays theirs
+    return ok;
+}
+// ---- R8.24.1 B, R2 of the resident step: the backward over the device's
+// tape and K/V rows. dx (the head's adjoint, from the host) goes up once;
+// each layer recomputes its forward internals from its tape plane and runs
+// its backward on device planes, every op in the host's order (lbw_recompute,
+// lbw_ffn_and_output, lbw_attention, lbw_projections, lbw_input_grad), each
+// the host's twin; dx stays on the device across the layers. The sites'
+// gradients accumulate on the device and come back once (model.c pulls them).
+enum { RB_XN1, RB_Q, RB_QP, RB_KP, RB_AO, RB_OB, RB_XA, RB_DXA, RB_DAO, RB_DQ, RB_DQ2, RB_DK,
+       RB_DK2, RB_DV, RB_DXN1, RB_N };
+
+bool gpu_train_res_bw_begin(model_t *m, const float *dx, int T) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->res_tab || T != t->res_T || cu.CtxSetCurrent(t->ctx) != 0) return false;
+    return cu.MemcpyHtoD(t->res_dx, dx, sizeof(float) * (size_t)T * m->n_embd) == 0;
+}
+
+// layer l's backward: the step's dx (the gradient at the layer's output) in,
+// the gradient at its input out, both in the device's dx plane
+bool gpu_train_res_layer_bw(model_t *m, int l) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->res_tab || cu.CtxSetCurrent(t->ctx) != 0) return false;
+    double t0 = plat_now();
+    const layer_t *ly = &m->layers[l];
+    int L = m->n_layer, E = m->n_embd, T = t->res_T, nff = ly->n_ff;
+    int hd = model_head_dim(m, l), nh = m->n_head, nkv = model_n_head_kv(m, l);
+    int q_dim = model_q_dim(m, l), kv_dim = model_kv_dim(m, l);
+    size_t fe = sizeof(float) * (size_t)T * E, fq = sizeof(float) * (size_t)T * q_dim;
+    size_t fk = sizeof(float) * (size_t)T * kv_dim;
+    size_t sz[RB_N] = { fe, fq, fq, fk, fq, fe, fe, fe, fq, fq, fq, fk, fk, fk, fe };
+    for (int i = 0; i < RB_N; i++)
+        if (!tg_scratch(&t->rb[i], &t->rb_cap[i], sz[i])) return false;
+    if (!fb_planes(t, E, nff, T, site_rmax(t, L, l))) return false;
+    CUdeviceptr X = t->res_tape + sizeof(float) * (size_t)l * T * E, DX = t->res_dx;
+    CUdeviceptr pq = tg_weights(t, ly->wq), pk = pq ? tg_weights(t, ly->wk) : 0;
+    CUdeviceptr pv = pk ? tg_weights(t, ly->wv) : 0, po = pv ? tg_weights(t, ly->wo) : 0;
+    CUdeviceptr pg = po ? tg_weights(t, ly->w_gate) : 0, pu = pg ? tg_weights(t, ly->w_up) : 0;
+    CUdeviceptr pd = pu ? tg_weights(t, ly->w_down) : 0;
+    if (!pd) return false;
+    size_t krb = model_k_row_bytes(m, l), vrb = model_v_row_bytes(m, l);
+    CUdeviceptr kl = t->res_k + (size_t)l * T * krb, vl = t->res_v + (size_t)l * T * vrb;
+    int kk = model_kv_kind_k(m), vk = model_kv_kind_v(m);
+    int swa = model_is_swa(m, l) ? m->swa_window : 0;
+    float scale = model_attn_scale(m, l);
+    bool ropes = model_layer_ropes(m, l);
+    CUdeviceptr fr = model_is_swa(m, l) ? (m->rope_inv_freq_local ? t->res_frl : 0)
+                                        : (m->rope_inv_freq ? t->res_fr : 0);
+    int half = model_rope_dim(m, l) / 2;
+    float ms = model_rope_mscale(m, l);
+    if (ropes && !fr) return false;
+    // the attention backward's own bounds (gpu_train_attn_bw's on the slot path)
+    if (!t->f_tab_p || hd < 1 || hd > TAB_MAX_HD || nkv < 1 || nh % nkv) return false;
+    trn_args ne_a = { E, T, E, E, E, E, m->rms_eps };
+    tadd_args xa_a = { T, E, E, E };
+    // ---- the recompute (lbw_recompute): the attention norm, Q and its
+    // adapter, its norm and rope; K before its norm where the K norm's adjoint
+    // needs it; the attention over the cache's rows; O and its adapter; the
+    // residual; the FFN norm and front
+    CUdeviceptr Q = t->rb[RB_Q];
+    if (!trn_fw_launch(t, X, t->res_tab[l].an, t->rb[RB_XN1], &ne_a) ||
+        !tmm_launch(t, ly->wq, pq, t->rb[RB_XN1], Q, E, q_dim, T) ||
+        !site_fw(t, tg_site(t, L, l, 3), t->rb[RB_XN1], E, Q, T))
+        return false;
+    if (ly->qnorm_w) {   // qpre kept for the norm's adjoint, q normed from it
+        trn_args qa = { hd, T * nh, hd, hd, hd, hd, m->rms_eps };
+        if (cu.MemcpyDtoD(t->rb[RB_QP], Q, fq) != 0 ||
+            !trn_fw_launch(t, t->rb[RB_QP], t->res_tab[l].qn, Q, &qa))
+            return false;
+    }
+    trope_args rq = { nh, hd, half, m->rope_neox, T, 0, q_dim, 0, ms };
+    if (ropes && !trope_launch(t, Q, fr, &rq)) return false;
+    if (ly->knorm_w &&
+        (!tmm_launch(t, ly->wk, pk, t->rb[RB_XN1], t->rb[RB_KP], E, kv_dim, T) ||
+         !site_fw(t, tg_site(t, L, l, 4), t->rb[RB_XN1], E, t->rb[RB_KP], T)))
+        return false;
+    tattn_args aa = { T, nh, nh / nkv, hd, q_dim, kv_dim, swa, (ka_u64)krb, (ka_u64)vrb, scale,
+                      kk, vk, 0 };
+    trn_args fn_a = { E, T, E, E, E, E, m->rms_eps };
+    if (!tattn_launch(t, kl, vl, Q, t->rb[RB_AO], &aa) ||
+        !tmm_launch(t, ly->wo, po, t->rb[RB_AO], t->rb[RB_OB], q_dim, E, T) ||
+        !site_fw(t, tg_site(t, L, l, 6), t->rb[RB_AO], q_dim, t->rb[RB_OB], T) ||
+        cu.MemcpyDtoD(t->rb[RB_XA], X, fe) != 0 ||
+        !tadd_launch(t, t->rb[RB_XA], t->rb[RB_OB], &xa_a) ||
+        !trn_fw_launch(t, t->rb[RB_XA], t->res_tab[l].fn, t->fb[FB_X], &fn_a) ||
+        !ffn_front(t, L, l, ly->w_gate, ly->w_up, E, nff, T))
+        return false;
+    // ---- the FFN and its norm (lbw_ffn_and_output): the branch's gradient is
+    // dx itself (no residual scale, no sandwich norm in scope); down, the
+    // activation's adjoint, gate, up into dxn2; dxa = dx + the norm's adjoint
+    size_t nf = sizeof(float) * (size_t)T * nff;
+    if (cu.MemcpyDtoD(t->fb[FB_Y], DX, fe) != 0 || cu.MemsetD8(t->fb[FB_DH], 0, nf) != 0 ||
+        !tmvt_launch(t, ly->w_down, pd, t->fb[FB_Y], t->fb[FB_DH], nff, E, T, true) ||
+        !site_bw(t, tg_site(t, L, l, 2), t->fb[FB_H], t->fb[FB_Y], t->fb[FB_DH], T) ||
+        !tffn_bw_launch(t, t->fb[FB_G], t->fb[FB_U], t->fb[FB_DH], t->fb[FB_DG], t->fb[FB_DU],
+                        T * nff, ACT_SILU) ||
+        cu.MemsetD8(t->fb[FB_DX], 0, fe) != 0 ||
+        !tmvt_launch(t, ly->w_gate, pg, t->fb[FB_DG], t->fb[FB_DX], E, nff, T, true) ||
+        !site_bw(t, tg_site(t, L, l, 0), t->fb[FB_X], t->fb[FB_DG], t->fb[FB_DX], T) ||
+        !tmvt_launch(t, ly->w_up, pu, t->fb[FB_DU], t->fb[FB_DX], E, nff, T, true) ||
+        !site_bw(t, tg_site(t, L, l, 1), t->fb[FB_X], t->fb[FB_DU], t->fb[FB_DX], T) ||
+        cu.MemcpyDtoD(t->rb[RB_DXA], DX, fe) != 0 ||
+        !trn_bw_launch(t, t->rb[RB_XA], t->res_tab[l].fn, t->fb[FB_DX], t->rb[RB_DXA], &fn_a))
+        return false;
+    // ---- O: its transpose and its adapter's backward into dao (zero-started)
+    if (cu.MemsetD8(t->rb[RB_DAO], 0, fq) != 0 ||
+        !tmvt_launch(t, ly->wo, po, t->rb[RB_DXA], t->rb[RB_DAO], q_dim, E, T, true) ||
+        !site_bw(t, tg_site(t, L, l, 6), t->rb[RB_AO], t->rb[RB_DXA], t->rb[RB_DAO], T))
+        return false;
+    // ---- the attention's backward (lbw_attention) on the cache's rows
+    tab_args ta = { T, nh, nh / nkv, hd, q_dim, kv_dim, swa, (unsigned long long)krb,
+                    (unsigned long long)vrb, scale };
+    if (cu.MemsetD8(t->rb[RB_DQ], 0, fq) != 0 || cu.MemsetD8(t->rb[RB_DK], 0, fk) != 0 ||
+        cu.MemsetD8(t->rb[RB_DV], 0, fk) != 0 ||
+        !attn_bw_core(t, &ta, kl, vl, Q, t->rb[RB_DAO], t->rb[RB_DQ], t->rb[RB_DK], t->rb[RB_DV]))
+        return false;
+    t->n_ab++;   // the record's attention_device_calls, a layer's backward as on the slot path
+    // ---- the projections (lbw_projections): rope's adjoint on dq and dk, the
+    // Q and K norms' adjoints per head into fresh rows, then Q (zero-started
+    // dxn1), K and V: each transpose, then its adapter's backward
+    trope_args uq = { nh, hd, half, m->rope_neox, T, 0, q_dim, 1, ms };
+    trope_args uk = { nkv, hd, half, m->rope_neox, T, 0, kv_dim, 1, ms };
+    if (ropes && (!trope_launch(t, t->rb[RB_DQ], fr, &uq) || !trope_launch(t, t->rb[RB_DK], fr, &uk)))
+        return false;
+    CUdeviceptr dq = t->rb[RB_DQ], dk = t->rb[RB_DK];
+    if (ly->qnorm_w) {
+        trn_args qa = { hd, T * nh, hd, hd, hd, hd, m->rms_eps };
+        if (cu.MemsetD8(t->rb[RB_DQ2], 0, fq) != 0 ||
+            !trn_bw_launch(t, t->rb[RB_QP], t->res_tab[l].qn, dq, t->rb[RB_DQ2], &qa))
+            return false;
+        dq = t->rb[RB_DQ2];
+    }
+    if (ly->knorm_w) {
+        trn_args ka = { hd, T * nkv, hd, hd, hd, hd, m->rms_eps };
+        if (cu.MemsetD8(t->rb[RB_DK2], 0, fk) != 0 ||
+            !trn_bw_launch(t, t->rb[RB_KP], t->res_tab[l].kn, dk, t->rb[RB_DK2], &ka))
+            return false;
+        dk = t->rb[RB_DK2];
+    }
+    if (cu.MemsetD8(t->rb[RB_DXN1], 0, fe) != 0 ||
+        !tmvt_launch(t, ly->wq, pq, dq, t->rb[RB_DXN1], E, q_dim, T, true) ||
+        !site_bw(t, tg_site(t, L, l, 3), t->rb[RB_XN1], dq, t->rb[RB_DXN1], T) ||
+        !tmvt_launch(t, ly->wk, pk, dk, t->rb[RB_DXN1], E, kv_dim, T, true) ||
+        !site_bw(t, tg_site(t, L, l, 4), t->rb[RB_XN1], dk, t->rb[RB_DXN1], T) ||
+        !tmvt_launch(t, ly->wv, pv, t->rb[RB_DV], t->rb[RB_DXN1], E, kv_dim, T, true) ||
+        !site_bw(t, tg_site(t, L, l, 5), t->rb[RB_XN1], t->rb[RB_DV], t->rb[RB_DXN1], T))
+        return false;
+    // ---- the input (lbw_input_grad): dx = dxa + the attention norm's adjoint
+    if (cu.MemcpyDtoD(DX, t->rb[RB_DXA], fe) != 0 ||
+        !trn_bw_launch(t, X, t->res_tab[l].an, t->rb[RB_DXN1], DX, &ne_a))
+        return false;
+    t->t_res += plat_now() - t0;
+    return true;
+}
+
+// the end of a resident backward: every launch done (the sites' gradients
+// then come back through gpu_train_site_pull)
+bool gpu_train_res_bw_end(model_t *m) {
+    train_gpu_t *t = m->train_gpu;
+    return t && cu.CtxSetCurrent(t->ctx) == 0 && cu.CtxSynchronize() == 0;
+}
+// R8.24.1 B: the backward's recompute of layer l's FFN front: xn2 (T rows of
+// n_embd, packed) goes up and stays, with g, u and act(g)*u, for the sites
+bool gpu_train_ffn_recompute(model_t *m, int l, const gguf_tensor *wg,
+                             const gguf_tensor *wu, const float *xn2, int E, int nff,
+                             int T) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !wg || !wu || T < 1 || cu.CtxSetCurrent(t->ctx) != 0) return false;
+    double t0 = plat_now();
+    if (!fb_planes(t, E, nff, T, site_rmax(t, m->n_layer, l)) ||
+        cu.MemcpyHtoD(t->fb[FB_X], xn2, sizeof(float) * (size_t)T * E) != 0)
+        return false;
+    double k0 = plat_now();
+    if (!ffn_front(t, m->n_layer, l, wg, wu, E, nff, T)) return false;
+    t->k_mm += plat_now() - k0;
+    t->t_mm += plat_now() - t0;
+    t->n_mm += 2;
+    return true;
+}
+
+// R8.24.1 B: layer l's FFN sites backward on the device, in the host's order
+// (lbw_ffn_and_output): dbr (T packed rows) up; down: dh from zero by the
+// transposed product, the down adapter (x = act(g)*u); dg, du (B1); gate:
+// dxn2 from zero, the gate adapter (x = xn2); up: into dxn2, the up adapter;
+// dxn2 back. The sites' ga and gb accumulate on the device.
+bool gpu_train_ffn_bw(model_t *m, int l, const gguf_tensor *wg, const gguf_tensor *wu,
+                      const gguf_tensor *wd, const float *dbr, float *dxn2, int E,
+                      int nff, int T) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !wg || !wu || !wd || T < 1 || cu.CtxSetCurrent(t->ctx) != 0) return false;
+    double t0 = plat_now();
+    CUdeviceptr pg = tg_weights(t, wg), pu = pg ? tg_weights(t, wu) : 0;
+    CUdeviceptr pd = pu ? tg_weights(t, wd) : 0;
+    size_t ne = sizeof(float) * (size_t)T * E, nf = sizeof(float) * (size_t)T * nff;
+    if (!pd || cu.MemcpyHtoD(t->fb[FB_Y], dbr, ne) != 0) return false;
+    double k0 = plat_now();
+    bool ok = cu.MemsetD8(t->fb[FB_DH], 0, nf) == 0 &&
+              tmvt_launch(t, wd, pd, t->fb[FB_Y], t->fb[FB_DH], nff, E, T, true) &&
+              site_bw(t, tg_site(t, m->n_layer, l, 2), t->fb[FB_H], t->fb[FB_Y],
+                      t->fb[FB_DH], T) &&
+              tffn_bw_launch(t, t->fb[FB_G], t->fb[FB_U], t->fb[FB_DH], t->fb[FB_DG],
+                             t->fb[FB_DU], T * nff, ACT_SILU) &&
+              cu.MemsetD8(t->fb[FB_DX], 0, ne) == 0 &&
+              tmvt_launch(t, wg, pg, t->fb[FB_DG], t->fb[FB_DX], E, nff, T, true) &&
+              site_bw(t, tg_site(t, m->n_layer, l, 0), t->fb[FB_X], t->fb[FB_DG],
+                      t->fb[FB_DX], T) &&
+              tmvt_launch(t, wu, pu, t->fb[FB_DU], t->fb[FB_DX], E, nff, T, true) &&
+              site_bw(t, tg_site(t, m->n_layer, l, 1), t->fb[FB_X], t->fb[FB_DU],
+                      t->fb[FB_DX], T) &&
+              cu.CtxSynchronize() == 0;
+    if (!ok) return false;
+    t->k_mvt += plat_now() - k0;
+    if (cu.MemcpyDtoH(dxn2, t->fb[FB_DX], ne) != 0) return false;
+    t->t_mvt += plat_now() - t0;
+    t->n_mvt += 3;
+    return true;
 }
 
 // Discrete VRAM: the hidden states and per-row logits live device-side and
