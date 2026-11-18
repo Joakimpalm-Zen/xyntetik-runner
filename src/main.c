@@ -7074,6 +7074,13 @@ static bool unlearn_prepare(cli_opts *o, jv *rec, int *rc) {
         *rc = 1;
         return false;
     }
+    if (kept.n == 0) {
+        fprintf(stderr, "error: --unlearn: %s drops every row of %s: nothing is left to train on\n",
+                o->unlearn_drop, o->train_path);
+        free(kept.s);
+        *rc = 1;
+        return false;
+    }
     static char path[4200];
     snprintf(path, sizeof path, "%s.retained.jsonl", o->train_out);
     FILE *f = plat_fopen(path, "wb");
@@ -7087,6 +7094,31 @@ static bool unlearn_prepare(cli_opts *o, jv *rec, int *rc) {
     }
     o->unlearn_retained = path;
     return true;
+}
+
+// Two JSON values the same: type, number, string, bool, and objects and arrays
+// member for member (an absent value is the same only as another absent one).
+static bool jv_same(const jv *a, const jv *b) {
+    if (!a || !b) return a == b;
+    if (a->type != b->type) return false;
+    switch (a->type) {
+    case J_NULL: return true;
+    case J_BOOL: return a->b == b->b;
+    case J_NUM:  return a->num_text || b->num_text
+                      ? a->num_text && b->num_text && !strcmp(a->num_text, b->num_text)
+                      : a->num == b->num;
+    case J_STR:  return !strcmp(a->str, b->str);
+    case J_ARR:
+        if (a->n != b->n) return false;
+        for (int i = 0; i < a->n; i++) if (!jv_same(a->items[i], b->items[i])) return false;
+        return true;
+    case J_OBJ:
+        if (a->n != b->n) return false;
+        for (int i = 0; i < a->n; i++)
+            if (!jv_same(a->items[i], jv_get((jv *)b, a->keys[i]))) return false;
+        return true;
+    }
+    return false;
 }
 
 // attest unlearn: the record's unlearn object against the files the auditor
@@ -7108,7 +7140,26 @@ static bool unlearn_audit_check(const cli_opts *o, jv *rec, const char *rec_path
     free(pb);
     char pdata[65] = "";
     snprintf(pdata, sizeof pdata, "%s", jv_str(jv_get(jv_get(parent, "data"), "sha256"), ""));
+    // the same base and the same recipe as the parent: every field replay reads
+    // to train, the switches and the model overrides. Otherwise a from-scratch
+    // run under another recipe, given an unlearn block, would replay to its own
+    // bytes and verify.
+    static const char *const same[] = {
+        "objective", "lora_rank", "alpha", "lora_scale", "lr", "steps", "ctx", "seed", "kv_cache",
+        "no_bos", "end_of_turn", "eot_id", "adamw", "recipe", "model_overrides", "environment",
+    };
+    const char *pbase = jv_str(jv_get(jv_get(parent, "base"), "sha256"), "");
+    const char *rbase = jv_str(jv_get(jv_get(rec, "base"), "sha256"), "");
+    bool same_ok = parent && !strcmp(pbase, rbase);
+    const char *differs = same_ok ? NULL : "base.sha256";
+    for (size_t i = 0; same_ok && i < sizeof same / sizeof *same; i++)
+        if (!jv_same(jv_get(parent, same[i]), jv_get(rec, same[i]))) { same_ok = false; differs = same[i]; }
     jv_free(parent);
+    if (!same_ok) {
+        char field[64];
+        snprintf(field, sizeof field, "unlearn.%s", differs);
+        return !replay_fail(rc, field, "the parent's", "another");
+    }
     if (!replay_check_sha("unlearn.parent_data.sha256", o->unlearn_parent_data, pdata, rc)) return false;
     if (!replay_check_sha("unlearn.dropped_sha256", o->unlearn_dropped,
                           jv_str(jv_get(un, "dropped_sha256"), NULL), rc))
