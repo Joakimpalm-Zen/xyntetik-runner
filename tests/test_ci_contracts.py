@@ -141,6 +141,43 @@ class CommandGate(unittest.TestCase):
             workflow.write_text("  targets: probe probe\n")
             self.assertNotEqual(run(), 0)
 
+    def _roster_tree(self, td, make_text):
+        root = pathlib.Path(td)
+        for d in ("scripts", "tests/fuzz", ".github/workflows"):
+            (root / d).mkdir(parents=True)
+        script = root / "scripts/check-ci-roster.py"
+        script.write_bytes((ROOT / "scripts/check-ci-roster.py").read_bytes())
+        for name in ("test_a.py", "test_lane.py", "test_own.py"):
+            (root / "tests" / name).write_text("")
+        (root / "tests/fuzz/fuzz_probe.c").write_text("")
+        (root / ".github/workflows/ci.yml").write_text("  targets: probe\n")
+        (root / "Makefile").write_text("FUZZ_TARGETS = probe\n" + make_text)
+        p = subprocess.run([sys.executable, str(script)], capture_output=True, text=True)
+        return p.returncode, p.stdout + p.stderr
+
+    def test_roster_wants_exact_membership_of_the_two_root_lists(self):
+        """A root test named only on another lane's line is not in the root batch: the check must refuse it
+        (#938's tests/test_build_math.py ran on the Metal lane alone). And a file in ROOT_PYTEST_EXCLUDE must be
+        named by a target that runs it, or the exclusion is a way to run nothing."""
+        lists = ("ROOT_PYTEST_TESTS = \\\n    tests/test_a.py\n\n"
+                 "ROOT_PYTEST_EXCLUDE = \\\n    tests/test_own.py\n\n"
+                 "test:\n\tpython -m pytest $(ROOT_PYTEST_TESTS)\n")
+        own = "test-own:\n\tpython -m pytest tests/test_own.py\n"
+        lane = "test-lane:\n\tpython -m pytest tests/test_kv.py tests/test_lane.py\n"
+        with tempfile.TemporaryDirectory() as td:   # named only on another lane's line
+            rc, out = self._roster_tree(td, lists + own + lane)
+            self.assertNotEqual(rc, 0, out)
+            self.assertIn("tests/test_lane.py", out)
+        with tempfile.TemporaryDirectory() as td:   # the live control: in a list, it passes
+            rc, out = self._roster_tree(td, lists.replace("tests/test_a.py\n", "tests/test_a.py \\\n"
+                                                          "    tests/test_lane.py\n") + own)
+            self.assertEqual(rc, 0, out)
+        with tempfile.TemporaryDirectory() as td:   # excluded, and no target runs it
+            rc, out = self._roster_tree(td, lists.replace("tests/test_a.py\n", "tests/test_a.py \\\n"
+                                                          "    tests/test_lane.py\n"))
+            self.assertNotEqual(rc, 0, out)
+            self.assertIn("tests/test_own.py", out)
+
     def test_roster_catches_a_device_target_no_lane_runs(self):
         """A test-cuda-* target outside cuda-gate.sh's DEVICE_STEPS, or a
         test-metal-* target test-metal does not call, is a gate nothing runs;
