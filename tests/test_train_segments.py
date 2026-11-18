@@ -319,12 +319,20 @@ def test_a_sample_is_drawn_from_the_seed_and_the_record_and_verifies(runner_bin,
 
 
 def test_another_seed_is_another_draw_and_os_prints_its_seed(runner_bin, run8):
+    """The draw is the seed's: for each seed the command draws what the Python recomputation draws, and over 16
+    fixed seeds the draws are not all one segment for this record's head (that they were would be about one chance
+    in 4^15). Two seeds with different draws are chosen from the recomputation, so the check never rests on two
+    particular seeds disagreeing by chance. --seed os prints a 64-hex seed whose draw is the recomputation's."""
     d, out, rec_path, rec, segs = run8
     head = rec["checkpoint_chain"]["head"]
-    other = "f" * 32
-    assert _draw(SEED, head, 4, 1) != _draw(other, head, 4, 1) or _draw(SEED, head, 4, 2) != _draw(other, head, 4, 2)
-    r = _sample(runner_bin, rec_path, rec, "--sample", 1, "--seed", other)
-    assert r.returncode == 0 and "sample: drawn %s\n" % segs[_draw(other, head, 4, 1)[0]] in r.stdout, r.stdout
+    seeds = ["%032x" % (0x9e3779b97f4a7c15 * i) for i in range(1, 17)]
+    first = {}
+    for sd in seeds:
+        first.setdefault(_draw(sd, head, 4, 1)[0], sd)
+    assert len(first) > 1, ("16 seeds drew one segment", head)
+    for j, sd in list(first.items())[:2]:
+        r = _sample(runner_bin, rec_path, rec, "--sample", 1, "--seed", sd)
+        assert r.returncode == 0 and "sample: drawn %s\n" % segs[j] in r.stdout, (sd, r.stdout)
     r = _sample(runner_bin, rec_path, rec, "--sample", 1, "--seed", "os")
     assert r.returncode == 0, (r.stdout + r.stderr)[-600:]
     seed = r.stdout.split(", seed ")[1].split(",")[0]
