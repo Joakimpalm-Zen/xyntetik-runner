@@ -116,10 +116,66 @@ static const char *const INPUT_KEYS[] = {
 // a chain past it is BROKEN, whatever kind its links are.
 #define LINEAGE_MAX_DEPTH 32
 
-// worst: 0 verified, 1 unsigned, 2 broken. The records on the path walked now,
-// by sha256, so a record that is its own ancestor is a cycle, not a loop the
-// depth bound has to stop.
-typedef struct { int worst; int sp; char path[LINEAGE_MAX_DEPTH + 2][65]; } walk_state;
+typedef struct {
+    char *path;
+    char rsha[65];
+    char want_out[65];
+    int worst;
+    int max_depth_rel;
+} lineage_seen_node;
+
+// worst: 0 verified, 1 unsigned, 2 broken. `path` holds active ancestors by
+// sha256 so cycles fail immediately; completed non-cyclic subtrees are memoized
+// in `seen` to avoid exponential diamond re-walks.
+typedef struct {
+    int worst;
+    int sp;
+    char path[LINEAGE_MAX_DEPTH + 2][65];
+    int max_depth;
+    bool saw_cycle;
+    lineage_seen_node *seen;
+    int n_seen;
+    int cap_seen;
+} walk_state;
+
+static void walk_state_free(walk_state *w) {
+    for (int i = 0; i < w->n_seen; i++) free(w->seen[i].path);
+    free(w->seen);
+    w->seen = NULL;
+    w->n_seen = w->cap_seen = 0;
+}
+
+static const lineage_seen_node *walk_seen_find(const walk_state *w, const char *rec_path,
+                                               const char *rsha, const char *want_out_sha) {
+    const char *wo = want_out_sha ? want_out_sha : "";
+    for (int i = 0; i < w->n_seen; i++) {
+        if (strcmp(w->seen[i].rsha, rsha) == 0 &&
+            strcmp(w->seen[i].want_out, wo) == 0 &&
+            strcmp(w->seen[i].path, rec_path) == 0)
+            return &w->seen[i];
+    }
+    return NULL;
+}
+
+static void walk_seen_add(walk_state *w, const char *rec_path, const char *rsha,
+                          const char *want_out_sha, int worst, int max_depth_rel) {
+    if (w->n_seen >= 4096 || walk_seen_find(w, rec_path, rsha, want_out_sha)) return;
+    if (w->n_seen == w->cap_seen) {
+        int nc = w->cap_seen ? w->cap_seen * 2 : 32;
+        lineage_seen_node *g = realloc(w->seen, (size_t)nc * sizeof *g);
+        if (!g) return;
+        w->seen = g;
+        w->cap_seen = nc;
+    }
+    char *pdup = strdup(rec_path);
+    if (!pdup) return;
+    lineage_seen_node *node = &w->seen[w->n_seen++];
+    node->path = pdup;
+    snprintf(node->rsha, sizeof node->rsha, "%s", rsha);
+    snprintf(node->want_out, sizeof node->want_out, "%s", want_out_sha ? want_out_sha : "");
+    node->worst = worst;
+    node->max_depth_rel = max_depth_rel;
+}
 
 static void note(walk_state *w, int level) { if (level > w->worst) w->worst = level; }
 
@@ -283,6 +339,7 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
                         const char *want_out_sha, const char *trust_hex,
                         int depth, walk_state *w) {
     indent(depth);
+    if (depth > w->max_depth) w->max_depth = depth;
     if (depth > LINEAGE_MAX_DEPTH) {
         printf("BROKEN: the chain is longer than %d links\n", LINEAGE_MAX_DEPTH);
         note(w, 2);
@@ -297,6 +354,7 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
     for (int i = 0; i < w->sp; i++)
         if (!strcmp(w->path[i], rsha)) {
             printf("BROKEN: record %s is its own ancestor (a cycle)\n", rec_path);
+            w->saw_cycle = true;
             note(w, 2);
             return;
         }
@@ -306,6 +364,28 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
         note(w, 2);
         return;
     }
+    const lineage_seen_node *cached = walk_seen_find(w, rec_path, rsha, want_out_sha);
+    if (cached) {
+        if (depth + cached->max_depth_rel > LINEAGE_MAX_DEPTH) {
+            printf("BROKEN: the chain is longer than %d links\n", LINEAGE_MAX_DEPTH);
+            note(w, 2);
+            return;
+        }
+        int leaf_d = depth + cached->max_depth_rel;
+        if (leaf_d > w->max_depth) w->max_depth = leaf_d;
+        const char *cname = strrchr(rec_path, '/');
+        cname = cname ? cname + 1 : rec_path;
+        printf("already verified earlier in walk (%s, status %s)\n", cname,
+               cached->worst == 0 ? "VERIFIED" : cached->worst == 1 ? "UNSIGNED" : "BROKEN");
+        note(w, cached->worst);
+        return;
+    }
+    int prev_worst = w->worst;
+    int prev_max_depth = w->max_depth;
+    bool prev_cycle = w->saw_cycle;
+    w->worst = 0;
+    w->max_depth = depth;
+    w->saw_cycle = false;
     jv *rec = read_json(rec_path);
     const char *out_key = NULL;
     const char *step = rec ? step_of(rec, &out_key) : NULL;
@@ -313,6 +393,9 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
         printf("BROKEN: %s is not a lineage record\n", rec_path);
         note(w, 2);
         jv_free(rec);
+        if (prev_worst > w->worst) w->worst = prev_worst;
+        if (prev_max_depth > w->max_depth) w->max_depth = prev_max_depth;
+        if (prev_cycle) w->saw_cycle = true;
         return;
     }
     jv *out = jv_get(rec, out_key);
@@ -388,6 +471,14 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
     }
     if (w->sp > 0) w->sp--;
     jv_free(rec);
+    int sub_worst = w->worst;
+    int rel_depth = w->max_depth - depth;
+    if (rel_depth < 0) rel_depth = 0;
+    if (!w->saw_cycle)
+        walk_seen_add(w, rec_path, rsha, want_out_sha, sub_worst, rel_depth);
+    if (prev_worst > w->worst) w->worst = prev_worst;
+    if (prev_max_depth > w->max_depth) w->max_depth = prev_max_depth;
+    if (prev_cycle) w->saw_cycle = true;
 }
 
 // --lineage DIR on a --receipts directory (R17.4): which model and adapter
@@ -477,7 +568,9 @@ static int walk_receipts_dir(const char *dir, const char *trust_hex) {
     printf("RESULT: %s\n", w.worst == 0 ? "VERIFIED (every link consistent and signed)"
                          : w.worst == 1 ? "CONSISTENT, NOT ALL SIGNED"
                                         : "BROKEN");
-    return w.worst;
+    int worst = w.worst;
+    walk_state_free(&w);
+    return worst;
 }
 
 int lineage_walk(const char *start, const char *trust_hex) {
@@ -512,7 +605,9 @@ int lineage_walk(const char *start, const char *trust_hex) {
         printf("RESULT: %s\n", w.worst == 0 ? "VERIFIED (every link consistent and signed)"
                              : w.worst == 1 ? "CONSISTENT, NOT ALL SIGNED"
                                             : "BROKEN");
-        return w.worst;
+        int worst = w.worst;
+        walk_state_free(&w);
+        return worst;
     }
     if (probe && step_of(probe, &ok_key)) {
         snprintf(rec, sizeof rec, "%s", start);
@@ -540,5 +635,7 @@ int lineage_walk(const char *start, const char *trust_hex) {
     printf("RESULT: %s\n", w.worst == 0 ? "VERIFIED (every link consistent and signed)"
                          : w.worst == 1 ? "CONSISTENT, NOT ALL SIGNED"
                                         : "BROKEN");
-    return w.worst;
+    int worst = w.worst;
+    walk_state_free(&w);
+    return worst;
 }
