@@ -144,8 +144,8 @@
         },
         "windows-x86_64-cuda/cpu": {
           "path": "tests/compatibility/tier-smoke/trinity-nano-preview-q8_0.windows-x86_64-cuda.cpu.txt",
-          "sha256": "b26e284a3452dbbafff6653a45966966cb5d9e42ba9503bd01d202f7b224ea96",
-          "bytes": 215,
+          "sha256": "5480f6cad63c85e2ed82faa650f5e47496d5e78e18d9c196bf500d9045cfba42",
+          "bytes": 218,
           "finish_reason": "length",
           "completion_tokens": 48,
           "spec": {
@@ -161,9 +161,18 @@
             }
           },
           "pinned": {
-            "date": "2026-10-29",
-            "runner_version": "1.7.1",
-            "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b"
+            "date": "2026-11-18",
+            "runner_version": "1.20.0",
+            "commit": "fce00e8f565e133e67e16f0689fb05f756a78652",
+            "build": {
+              "binary_sha256": "9073c7a06807fa1392a7fa12cb2058522ad600009420d361bc093d36bc7f06c0",
+              "compiler": "16.2.0",
+              "commit": "fce00e8f565e133e67e16f0689fb05f756a78652",
+              "dirty": false,
+              "compiler_line": "gcc.exe (Rev6, Built by MSYS2 project) 16.2.0, MSYS2 UCRT64",
+              "make": "make CFLAGS=\"-O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=x86-64-v3\" (the release workflow's line; the Makefile adds -DRUNNER_PORTABLE_MATH on Windows)",
+              "portable_math": true
+            }
           }
         }
       }
@@ -1726,7 +1735,7 @@
         },
         "windows-x86_64-cuda/cpu": {
           "path": "tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.windows-x86_64-cuda.cpu.txt",
-          "sha256": "4ed9b06a2b3a14c9ddadca6bd1e3f16b9b5d582060a860bf3a72db043ec67e0a",
+          "sha256": "16ee8166ecb8972e7308b12c4ac90ba6ea15b074e94182b3db73887942b67359",
           "bytes": 196,
           "finish_reason": "length",
           "completion_tokens": 48,
@@ -1743,9 +1752,18 @@
             }
           },
           "pinned": {
-            "date": "2026-10-29",
-            "runner_version": "1.7.1",
-            "commit": "771924318c514db96ab780a93fc09b99a2c2fdbf"
+            "date": "2026-11-18",
+            "runner_version": "1.20.0",
+            "commit": "fce00e8f565e133e67e16f0689fb05f756a78652",
+            "build": {
+              "binary_sha256": "9073c7a06807fa1392a7fa12cb2058522ad600009420d361bc093d36bc7f06c0",
+              "compiler": "16.2.0",
+              "commit": "fce00e8f565e133e67e16f0689fb05f756a78652",
+              "dirty": false,
+              "compiler_line": "gcc.exe (Rev6, Built by MSYS2 project) 16.2.0, MSYS2 UCRT64",
+              "make": "make CFLAGS=\"-O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=x86-64-v3\" (the release workflow's line; the Makefile adds -DRUNNER_PORTABLE_MATH on Windows)",
+              "portable_math": true
+            }
           }
         },
         "windows-x86_64-cuda/cuda": {

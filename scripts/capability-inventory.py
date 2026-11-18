@@ -47,15 +47,15 @@ SOURCE_RULES = [
     ("execution", {"cuda", "metal", "gpu", "gpu_none", "engine", "scheduler", "quants",
                    "quants_iq_grids", "tpool", "act", "dn_eps", "fp16", "fpclass", "fpenv",
                    "iq_decode", "kernel_args", "kq_stage", "metal_admission", "pmath",
-                   "pm_order", "softmax", "upload_report", "gpu_tables"}),
+                   "pm_order", "softmax", "upload_report", "gpu_tables", "train_args"}),
     ("runtime", {"server", "server_int", "http", "api", "api_anthropic", "api_responses",
                  "schema", "schema_int", "schema_tools", "jsre", "jsonmode", "sample", "template",
                  "registry", "session", "respstore", "kvsnap", "decide", "clef", "vramreg",
                  "hfhub", "model_roster"}),
     ("substrate", {"gguf", "tokenizer", "unicode_classes", "unicode_nfc", "npy", "json",
-                   "compat", "arch"}),
+                   "compat", "arch", "pe_buildid"}),
     ("production", {"quantize", "derive", "dpo", "tdn_args"}),
-    ("proof", {"receipts", "bundle", "provenance", "envelope", "lineage", "oms", "ecdsa",
+    ("proof", {"receipts", "bundle", "provenance", "envelope", "lineage", "train_record", "oms", "ecdsa",
                "ed25519", "mldsa", "watermark", "build_arch", "micro_sched"}),
     ("desktop", {"tray", "tray_win", "tray_macos", "tray_stub", "instances"}),
     ("shared", {"main", "model", "completion", "runner"}),
@@ -133,7 +133,7 @@ RECORD_RULES = {
                 "score"},
     "production": {"train", "merge", "quant", "derive", "eval", "context-surgery"},
     "proof": {"transcript", "verify", "bundle", "envelope", "evidence-pack", "signkey",
-              "watermark_key", "watermark.key_id", "watermark_detect"},
+              "watermark_key", "watermark.key_id", "watermark_detect", "train.chain"},
 }
 
 PYTHON_RULES = {"runtime": {"xyntetik_runner"}, "shadow": {"xyntetik_runner.shadow"}}

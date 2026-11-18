@@ -3,6 +3,15 @@
 #define RUNNER_H
 
 #define RUNNER_VERSION "1.20.0"
+// R6.85: which transcendental functions this binary computes with, for --caps
+// and the server's build fields: "portable" (src/pmath.h: a Windows default,
+// T3=1 or PORTABLE_MATH=1) or "libc" (the C library's, whose last bits vary by
+// platform and C runtime version)
+#ifdef RUNNER_PORTABLE_MATH
+#define RUNNER_BUILD_MATH "portable"
+#else
+#define RUNNER_BUILD_MATH "libc"
+#endif
 #define RUNNER_CUDA_NVCC_ARCH "compute_75"
 #define RUNNER_CUDA_PTX_TARGET "sm_75"
 #define RUNNER_CUDA_MIN_CC "7.5"

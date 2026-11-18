@@ -152,4 +152,18 @@ and `make hooks` installs the same check as a local `commit-msg` hook.
 - Merge only with CI green (`gh pr merge <n> --merge --delete-branch`). Tag
   a release only after `main` is green and `make release-check` passes.
 - Never leave finished work unmerged: a branch is merged, or its decline is
-  written down.
+  written down. Remove a linked worktree when its PR merges; check and prune
+  worktrees (anything but ignored/build outputs keeps the tree) with
+  `scripts/agents-worktrees.sh [--remove-merged] [--dry-run] [REPO]`. Note that
+  `--remove-merged` also removes a baseline checkout at an old commit of
+  `main` (a detached worktree kept for comparison); `git worktree lock <path>`
+  keeps one.
+- For a large sibling repository (`<repo>` holding multi-gigabyte research
+  trees), never create a full worktree; use a cone sparse checkout:
+  ```sh
+  git -C <repo> worktree add --no-checkout -b <branch> ../wt-<name> origin/main
+  git -C wt-<name> sparse-checkout set --cone <folder> [<folder>...]
+  git -C wt-<name> checkout
+  git -C wt-<name> config --worktree user.name <Agent>
+  git -C wt-<name> config --worktree user.email <agent>@users.noreply.github.com
+  ```
