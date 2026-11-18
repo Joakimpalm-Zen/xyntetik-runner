@@ -6,6 +6,43 @@ import re
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def parse_make_file_list(make, var_name):
+    """Parse a one-file-per-line sorted Makefile variable (or None if absent)."""
+    lines = make.splitlines()
+    header = re.compile(rf"^{re.escape(var_name)}\s*=\s*(.*)$")
+    for idx, line in enumerate(lines):
+        m = header.match(line)
+        if not m:
+            continue
+        rest = m.group(1).strip()
+        if rest not in ("", "\\"):
+            raise SystemExit(f"{var_name}: expected '\\' with each entry on its own line")
+        if rest == "":
+            return []
+        entries = []
+        pos = idx + 1
+        while pos < len(lines):
+            raw = lines[pos]
+            cont = raw.endswith("\\")
+            body = raw[:-1] if cont else raw
+            tokens = body.split()
+            if len(tokens) != 1:
+                raise SystemExit(
+                    f"{var_name}: expected one file per line, got {len(tokens)} on line {pos + 1}")
+            entries.append(tokens[0])
+            pos += 1
+            if not cont:
+                break
+        else:
+            raise SystemExit(f"{var_name}: trailing backslash at end of Makefile")
+        if len(entries) != len(set(entries)):
+            raise SystemExit(f"{var_name}: contains duplicate entries")
+        if entries != sorted(entries):
+            raise SystemExit(f"{var_name}: entries must stay sorted")
+        return entries
+    return None
+
+
 def main():
     make = (ROOT / "Makefile").read_text()
     workflows = "\n".join(p.read_text() for p in (ROOT / ".github/workflows").glob("*.yml"))
@@ -17,6 +54,30 @@ def main():
     actual = {p.relative_to(ROOT).as_posix() for p in (ROOT / "tests").glob("test_*.py")}
     if not actual:
         raise SystemExit("root test inventory is empty; no execution coverage was checked")
+    root_tests = parse_make_file_list(make, "ROOT_PYTEST_TESTS")
+    root_exclude = parse_make_file_list(make, "ROOT_PYTEST_EXCLUDE")
+    if root_tests is not None or root_exclude is not None:
+        if root_tests is None or root_exclude is None:
+            raise SystemExit("Makefile must define both ROOT_PYTEST_TESTS and ROOT_PYTEST_EXCLUDE")
+        if not re.search(r"\$\(ROOT_PYTEST_TESTS\)", recipes):
+            raise SystemExit("ROOT_PYTEST_TESTS is defined in Makefile but never executed in a recipe")
+        test_set = set(root_tests)
+        exclude_set = set(root_exclude)
+        overlap = sorted(test_set & exclude_set)
+        if overlap:
+            raise SystemExit("tests listed in both ROOT_PYTEST_TESTS and ROOT_PYTEST_EXCLUDE: "
+                             + ", ".join(overlap))
+        stale = sorted((test_set | exclude_set) - actual)
+        if stale:
+            raise SystemExit("ROOT_PYTEST_TESTS / ROOT_PYTEST_EXCLUDE name missing files: "
+                             + ", ".join(stale))
+        forgotten = sorted(actual - (test_set | exclude_set))
+        if forgotten:
+            raise SystemExit("root tests missing from ROOT_PYTEST_TESTS and ROOT_PYTEST_EXCLUDE: "
+                             + ", ".join(forgotten))
+        named |= test_set
+    elif re.search(r"\$\(ROOT_PYTEST_TESTS\)", recipes):
+        raise SystemExit("Makefile executes $(ROOT_PYTEST_TESTS) without defining ROOT_PYTEST_TESTS")
     missing = sorted(actual - named)
     if missing:
         raise SystemExit("root tests have no Makefile/workflow entry: " + ", ".join(missing))

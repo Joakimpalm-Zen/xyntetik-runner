@@ -170,6 +170,121 @@ class CommandGate(unittest.TestCase):
             self.assertEqual(run(base + "DEVICE_OPT_IN = test-metal-b\n", "a:test-cuda-a"), 0)
             self.assertNotEqual(run(base + metal, "a:test-cuda-a z:test-cuda-typo"), 0)
 
+    def test_roster_catches_a_forgotten_root_test_not_in_list_or_exclusions(self):
+        """Every tests/test_*.py at tests/ root must be in ROOT_PYTEST_TESTS or
+        ROOT_PYTEST_EXCLUDE, one per line and sorted, not merely mentioned elsewhere."""
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            for d in ("scripts", "tests/fuzz", ".github/workflows"):
+                (root / d).mkdir(parents=True)
+            script = root / "scripts/check-ci-roster.py"
+            script.write_bytes((ROOT / "scripts/check-ci-roster.py").read_bytes())
+            (root / "tests/fuzz/fuzz_probe.c").write_text("")
+            (root / ".github/workflows/ci.yml").write_text("  targets: probe\n")
+            for name in ("test_alpha.py", "test_beta.py", "test_forgotten.py"):
+                (root / "tests" / name).write_text("")
+            make = root / "Makefile"
+
+            def run(body):
+                make.write_text(body)
+                return subprocess.run([sys.executable, str(script)], capture_output=True, text=True)
+
+            forgotten_body = (
+                "FUZZ_TARGETS = probe\n"
+                "ROOT_PYTEST_TESTS = \\\n"
+                "    tests/test_alpha.py\n"
+                "ROOT_PYTEST_EXCLUDE = \\\n"
+                "    tests/test_beta.py\n"
+                "test-python:\n\t$(PYTHON) -m pytest $(ROOT_PYTEST_TESTS)\n"
+                "test-beta:\n\t$(PYTHON) -m pytest tests/test_beta.py\n"
+                "test-forgotten:\n\t$(PYTHON) -m pytest tests/test_forgotten.py\n"
+            )
+            r = run(forgotten_body)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("tests/test_forgotten.py", r.stdout + r.stderr)
+
+            in_list_body = (
+                "FUZZ_TARGETS = probe\n"
+                "ROOT_PYTEST_TESTS = \\\n"
+                "    tests/test_alpha.py \\\n"
+                "    tests/test_forgotten.py\n"
+                "ROOT_PYTEST_EXCLUDE = \\\n"
+                "    tests/test_beta.py\n"
+                "test-python:\n\t$(PYTHON) -m pytest $(ROOT_PYTEST_TESTS)\n"
+                "test-beta:\n\t$(PYTHON) -m pytest tests/test_beta.py\n"
+            )
+            r = run(in_list_body)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+            in_exclude_body = (
+                "FUZZ_TARGETS = probe\n"
+                "ROOT_PYTEST_TESTS = \\\n"
+                "    tests/test_alpha.py\n"
+                "ROOT_PYTEST_EXCLUDE = \\\n"
+                "    tests/test_beta.py \\\n"
+                "    tests/test_forgotten.py\n"
+                "test-python:\n\t$(PYTHON) -m pytest $(ROOT_PYTEST_TESTS)\n"
+                "test-beta:\n\t$(PYTHON) -m pytest tests/test_beta.py\n"
+                "test-forgotten:\n\t$(PYTHON) -m pytest tests/test_forgotten.py\n"
+            )
+            r = run(in_exclude_body)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+            unsorted_body = (
+                "FUZZ_TARGETS = probe\n"
+                "ROOT_PYTEST_TESTS = \\\n"
+                "    tests/test_forgotten.py \\\n"
+                "    tests/test_alpha.py\n"
+                "ROOT_PYTEST_EXCLUDE = \\\n"
+                "    tests/test_beta.py\n"
+                "test-python:\n\t$(PYTHON) -m pytest $(ROOT_PYTEST_TESTS)\n"
+                "test-beta:\n\t$(PYTHON) -m pytest tests/test_beta.py\n"
+            )
+            self.assertNotEqual(run(unsorted_body).returncode, 0)
+
+            same_line_body = (
+                "FUZZ_TARGETS = probe\n"
+                "ROOT_PYTEST_TESTS = \\\n"
+                "    tests/test_alpha.py tests/test_forgotten.py\n"
+                "ROOT_PYTEST_EXCLUDE = \\\n"
+                "    tests/test_beta.py\n"
+                "test-python:\n\t$(PYTHON) -m pytest $(ROOT_PYTEST_TESTS)\n"
+                "test-beta:\n\t$(PYTHON) -m pytest tests/test_beta.py\n"
+            )
+            self.assertNotEqual(run(same_line_body).returncode, 0)
+
+            overlap_body = (
+                "FUZZ_TARGETS = probe\n"
+                "ROOT_PYTEST_TESTS = \\\n"
+                "    tests/test_alpha.py \\\n"
+                "    tests/test_beta.py \\\n"
+                "    tests/test_forgotten.py\n"
+                "ROOT_PYTEST_EXCLUDE = \\\n"
+                "    tests/test_beta.py\n"
+                "test-python:\n\t$(PYTHON) -m pytest $(ROOT_PYTEST_TESTS)\n"
+                "test-beta:\n\t$(PYTHON) -m pytest tests/test_beta.py\n"
+            )
+            self.assertNotEqual(run(overlap_body).returncode, 0)
+
+            stale_body = (
+                "FUZZ_TARGETS = probe\n"
+                "ROOT_PYTEST_TESTS = \\\n"
+                "    tests/test_alpha.py \\\n"
+                "    tests/test_forgotten.py \\\n"
+                "    tests/test_nonexistent.py\n"
+                "ROOT_PYTEST_EXCLUDE = \\\n"
+                "    tests/test_beta.py\n"
+                "test-python:\n\t$(PYTHON) -m pytest $(ROOT_PYTEST_TESTS)\n"
+                "test-beta:\n\t$(PYTHON) -m pytest tests/test_beta.py\n"
+            )
+            self.assertNotEqual(run(stale_body).returncode, 0)
+
+    def test_makefile_root_pytest_list_is_one_per_line_and_sorted(self):
+        make = (ROOT / "Makefile").read_text()
+        for var in ("ROOT_PYTEST_TESTS", "ROOT_PYTEST_EXCLUDE"):
+            self.assertRegex(make, rf"(?m)^{var}\s*=\s*\\\s*$")
+        self.assertIn("$(ROOT_PYTEST_TESTS)", make)
+
     def test_fpclass_check_refuses_a_raw_class_test(self):
         """A raw isnan()/isfinite() in a -ffast-math unit is refused (clang
         22 folds them under -ffinite-math-only); the helper, the exempt
