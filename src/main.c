@@ -6791,6 +6791,8 @@ static bool replay_fail(int *rc, const char *field, const char *want, const char
     return train_record_fail(rc, field, want, got);
 }
 
+static int run_replay_sample(cli_opts *o, const train_record_host *host, const train_record_opts *to);
+
 static bool cli_prepare_replay_train(cli_opts *o, cli_replay *rp, int *rc) {
     if (o->replay_segment && (!o->replay_train || o->unlearn_audit)) {
         fprintf(stderr, "error: --segment is an option of runner attest replay RECORD\n");
@@ -6861,6 +6863,12 @@ static bool cli_prepare_replay_train(cli_opts *o, cli_replay *rp, int *rc) {
         },
     };
     for (int i = 0; i < 8; i++) to.eval_spec[i] = o->eval_spec[i];
+    // R17.9 step 4b: --sample draws and replays its segments itself, after
+    // the record's own checks with these options
+    if (o->sample_given || o->audit_seed || o->audit_report) {
+        *rc = run_replay_sample(o, &host, &to);
+        return true;
+    }
     bool ret = train_record_prepare(&host, &to, rp, rc);
     o->model_path = to.model_path;
     o->train_path = to.train_path;
@@ -8754,13 +8762,22 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
 #define SAMPLE_ALGO "xyntetik.runner.train.sample.v1"
 typedef struct { char h[65]; int j; } sample_rank;
 static int sample_rank_cmp(const void *a, const void *b) {
-    return strcmp(((const sample_rank *)a)->h, ((const sample_rank *)b)->h);
+    // a total order: the hash, then the index (two equal hashes would
+    // otherwise leave qsort's order to the C library)
+    const sample_rank *x = a, *y = b;
+    int c = strcmp(x->h, y->h);
+    return c ? c : (x->j > y->j) - (x->j < y->j);
 }
 static int sample_int_cmp(const void *a, const void *b) {
     return *(const int *)a - *(const int *)b;
 }
 
-static int run_replay_sample(cli_opts *o, int argc, char **argv) {
+static int g_cli_argc;
+static char **g_cli_argv;
+
+static int run_replay_sample(cli_opts *o, const train_record_host *host, const train_record_opts *to) {
+    int argc = g_cli_argc;
+    char **argv = g_cli_argv;
     if (!o->sample_given) {
         fprintf(stderr, "error: --seed is the auditor's seed of --sample (runner attest replay RECORD --sample s "
                 "--seed S), and --report its report; the sampler's seed is -s\n");
@@ -8802,7 +8819,7 @@ static int run_replay_sample(cli_opts *o, int argc, char **argv) {
     }
     int bounds[257], m = 0, rc = 0;
     char head[65] = "";
-    if (!train_record_sample_plan(o->replay_train, bounds, 257, &m, head, &rc)) return rc ? rc : 1;
+    if (!train_record_sample_plan(host, to, bounds, 257, &m, head, &rc)) return rc ? rc : 1;
     int s = o->replay_sample;
     if (s < 1 || s > m) {
         fprintf(stderr, "error: --sample %d: s must be between 1 and %d, the record's segments\n", s, m);
@@ -8847,25 +8864,49 @@ static int run_replay_sample(cli_opts *o, int argc, char **argv) {
     cargv[cn++] = "--segment";
     cargv[cn++] = segarg;
     cargv[cn] = NULL;
-    int verdict[256], bad = 0;
+    int verdict[256], bad = 0, errs = 0;
     for (int i = 0; i < s; i++) {
         snprintf(segarg, sizeof segarg, "%d..%d", bounds[drawn[i]], bounds[drawn[i] + 1]);
         verdict[i] = plat_spawn_wait(cargv);
         fflush(stdout);
-        if (verdict[i] != 0) bad++;
+        if (verdict[i] == 2) bad++;
+        else if (verdict[i] != 0) errs++;   // the child could not finish: no verdict on that segment
     }
     free(cargv);
     free(exe);
     double missed = (double)(m - s) / (double)m;
-    if (bad == 0) printf("VERIFIED sample: %d of %d segments, byte for byte\n", s, m);
-    else printf("MISMATCH sample: %d of the %d drawn segments did not verify\n", bad, s);
+    const char *word = errs ? "ERROR" : bad ? "MISMATCH" : "VERIFIED";
+    if (errs) printf("ERROR sample: %d of the %d drawn segments could not be replayed (no verdict on them)%s\n",
+                     errs, s, bad ? ", and others did not verify" : "");
+    else if (bad) printf("MISMATCH sample: %d of the %d drawn segments did not verify\n", bad, s);
+    else printf("VERIFIED sample: %d of %d segments, byte for byte\n", s, m);
     printf("sample: bound: if k of the %d segments are false, %d random segments miss all of them with probability "
            "C(%d-k,%d)/C(%d,%d); one false segment is missed with probability %.4g. It holds for a seed drawn at "
            "random after the record was fixed and kept from its author; it proves nothing about the segments not "
            "drawn, and an auditor who always picks the same segment proves that segment only.\n",
            m, s, m, s, m, s, missed);
     if (o->audit_report) {
-        FILE *f = plat_fopen(o->audit_report, "wb");
+        // never over a file that is not a sample report (the record, a
+        // checkpoint, anything else): read its head first
+        static const char want[] = "{\"schema_version\":\"xyntetik.runner.sample.v1\"";
+        FILE *old = plat_fopen(o->audit_report, "rb");
+        if (old) {
+            char hb[sizeof want] = "";
+            size_t got = fread(hb, 1, sizeof want - 1, old);
+            fclose(old);
+            if (got != sizeof want - 1 || memcmp(hb, want, sizeof want - 1) != 0) {
+                fputs("error: --report ", stderr);
+                envelope_print_safe(stderr, o->audit_report, 0, "?", false);
+                fputs(" exists and is not a sample report: refusing to overwrite it\n", stderr);
+                return 1;
+            }
+        }
+        char tmp[4200];
+        if (snprintf(tmp, sizeof tmp, "%s.partial-%ld", o->audit_report, plat_pid_self()) >= (int)sizeof tmp) {
+            fprintf(stderr, "error: --report path too long\n");
+            return 1;
+        }
+        FILE *f = plat_fopen(tmp, "wb");
         bool wok = f != NULL;
         if (f) {
             fprintf(f, "{\"schema_version\":\"xyntetik.runner.sample.v1\",\"algorithm\":\"%s\",\"record\":", SAMPLE_ALGO);
@@ -8875,23 +8916,25 @@ static int run_replay_sample(cli_opts *o, int argc, char **argv) {
             for (int i = 0; i < s; i++)
                 fprintf(f, "%s{\"segment\":\"%d..%d\",\"verdict\":\"%s\"}", i ? "," : "", bounds[drawn[i]],
                         bounds[drawn[i] + 1], verdict[i] == 0 ? "VERIFIED" : verdict[i] == 2 ? "MISMATCH" : "ERROR");
-            fprintf(f, "],\"verdict\":\"%s\",\"one_false_missed\":%.4g}\n", bad ? "MISMATCH" : "VERIFIED", missed);
+            fprintf(f, "],\"verdict\":\"%s\",\"one_false_missed\":%.4g}\n", word, missed);
             wok = !ferror(f);
             wok = fclose(f) == 0 && wok;
         }
+        wok = wok && plat_replace_file(tmp, o->audit_report);
         if (!wok) {
+            plat_remove(tmp);
             fputs("error: cannot write --report ", stderr);
             envelope_print_safe(stderr, o->audit_report, 0, "?", false);
             fputc('\n', stderr);
             return 1;
         }
     }
-    for (int i = 0; i < s; i++)
-        if (verdict[i] != 0 && verdict[i] != 2) return 1;
-    return bad ? 2 : 0;
+    return errs ? 1 : bad ? 2 : 0;
 }
 
 static int cli_main(int argc, char **argv, char **owned_prompt, session_image *simg) {
+    g_cli_argc = argc;   // --sample passes them on to each segment's replay
+    g_cli_argv = argv;
     // the model, tokenizer and engine the modes run on, and what the load
     // decided about them; cli_cleanup frees them on every exit after the load
     cli_run rt_state;
@@ -8938,7 +8981,6 @@ static int cli_main(int argc, char **argv, char **owned_prompt, session_image *s
     if (run_record_utility(o, &rc)) return rc;
     cli_replay rp;
     memset(&rp, 0, sizeof rp);
-    if (o->sample_given || o->audit_seed || o->audit_report) return run_replay_sample(o, argc, argv);
     if (cli_prepare_replay_train(o, &rp, &rc)) return rc;
     // R1.8.1: one key for everything this process marks, replays or scores
     wm_key wmk;

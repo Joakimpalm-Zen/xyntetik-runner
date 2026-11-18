@@ -946,7 +946,9 @@ static bool seg_chain(jv *rec, const char *rbuf, size_t rlen, cli_replay *rp, in
 // refused by name, the chain checked whole. bounds[0] is 0 (the run's start),
 // bounds[1..m] the checkpoint steps; head is the chain's head. Each drawn
 // segment is then replayed by --segment, which checks the rest.
-bool train_record_sample_plan(const char *rec_path, int *bounds, int cap, int *m, char head[65], int *rc) {
+bool train_record_sample_plan(const train_record_host *host, const train_record_opts *o, int *bounds, int cap,
+                               int *m, char head[65], int *rc) {
+    const char *rec_path = o->replay_train;
     char err[512] = "";
     char *rbuf = NULL;
     size_t rlen = 0;
@@ -958,8 +960,12 @@ bool train_record_sample_plan(const char *rec_path, int *bounds, int cap, int *m
         *rc = 1;
         return false;
     }
+    // the record's own checks first (schema, signature, determinism,
+    // environment), once, before any segment is drawn
     cli_replay *rp = calloc(1, sizeof *rp);
-    bool ok = rp && seg_modes_ok(rec, rc) && seg_chain(rec, rbuf, rlen, rp, rc);
+    bool t3 = false;
+    bool ok = rp && replay_check_compat(host, o, rec, rbuf, rlen, &t3, rc) && replay_check_environment(host, rec, rc) &&
+              seg_modes_ok(rec, rc) && seg_chain(rec, rbuf, rlen, rp, rc);
     if (ok && rp->seg_n + 1 > cap) ok = seg_refuse(rc, 2, "the record names more segments than a sample takes");
     if (ok) {
         bounds[0] = 0;
