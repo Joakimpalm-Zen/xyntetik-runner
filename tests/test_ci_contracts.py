@@ -835,6 +835,34 @@ class PlatformDetection(unittest.TestCase):
                             if "-o test-decide-race-gpu-bin" in x)
                 self.assertNotIn("-fsanitize=thread", tsan)
 
+    # R6.85: the release's own command-line CFLAGS (.github/workflows/release.yml)
+    RELEASE_CFLAGS = "CFLAGS=-O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=x86-64-v3"
+
+    def model_compile(self, uname, args=()):
+        return next(x for x in self.make_n("runner", uname, args) if " -c src/model.c " in x).split()
+
+    def assert_portable(self, words, portable):
+        has = "-DRUNNER_PORTABLE_MATH" in words and "src/pmath.h" in words
+        self.assertEqual(has, portable, " ".join(words))
+
+    @unittest.skipIf(os.name == "nt", "stubs uname with a POSIX script")
+    def test_a_windows_default_build_takes_the_portable_math(self):
+        """R6.85: the Windows C runtime's expf and logf differ in their last bits between ucrtbase versions, so
+        one runner.exe gave two hosts two replies. A Windows build takes src/pmath.h's functions by default, also
+        when a release sets CFLAGS on make's command line; PORTABLE_MATH=0 opts out. Linux and macOS keep the C
+        library's (the live control: the same check sees the define when it is given by hand)."""
+        win = self.WINDOWS_UNAMES[0]
+        self.assert_portable(self.model_compile(win), True)
+        self.assert_portable(self.model_compile(win, [self.RELEASE_CFLAGS]), True)
+        self.assert_portable(self.model_compile(win, ["PORTABLE_MATH=0"]), False)
+        self.assert_portable(self.model_compile(win, [self.RELEASE_CFLAGS, "PORTABLE_MATH=0"]), False)
+        for uname in ("Linux", "Darwin"):
+            with self.subTest(uname=uname):
+                self.assert_portable(self.model_compile(uname), False)
+                self.assert_portable(self.model_compile(uname, [self.RELEASE_CFLAGS]), False)
+                self.assert_portable(self.model_compile(uname, [self.RELEASE_CFLAGS + " -DRUNNER_PORTABLE_MATH"]),
+                                     True)
+
     @unittest.skipIf(os.name == "nt", "stubs uname with a POSIX script")
     def test_posix_uname_keeps_its_branch(self):
         linux = self.runner_link("Linux")
