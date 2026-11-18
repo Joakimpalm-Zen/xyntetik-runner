@@ -133,7 +133,7 @@ RECORD_RULES = {
                 "score"},
     "production": {"train", "merge", "quant", "derive", "eval", "context-surgery"},
     "proof": {"transcript", "verify", "bundle", "envelope", "evidence-pack", "signkey",
-              "watermark_key", "watermark.key_id", "watermark_detect"},
+              "watermark_key", "watermark.key_id", "watermark_detect", "train.chain"},
 }
 
 PYTHON_RULES = {"runtime": {"xyntetik_runner"}, "shadow": {"xyntetik_runner.shadow"}}

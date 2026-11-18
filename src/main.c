@@ -2492,6 +2492,8 @@ typedef struct {
     const char *keygen_algo, *lineage_path, *require_eval;
     const char *sign_record, *record_prev, *check_record;
     const char *replay_train, *replay_data;
+    const char *replay_segment;   // attest replay --segment A..B (R17.9 step 4)
+    int replay_stop_at;           // a segment replay stops after this step
     // R17.9(c): --unlearn PARENT --drop D (a retrain without D's rows), and
     // attest unlearn RECORD --parent-data DATA1 --dropped D (its audit)
     const char *unlearn_parent, *unlearn_drop, *unlearn_audit, *unlearn_parent_data, *unlearn_dropped;
@@ -2554,6 +2556,10 @@ typedef struct {
     char sampling[256];           // the effective sampler, as the load line says
     double load_s;
     char prev_hash[65];           // --transcript-prev's chain hash, read before the load
+    // R17.9 step 4: the numbered checkpoints this run wrote, for the record's
+    // checkpoints and checkpoint_chain (train_checkpoint fills it)
+    struct train_ckpt { int step; long long cursor; char adapter[65], optim[65]; } *ckpt;
+    int n_ckpt, cap_ckpt;
 } cli_run;
 
 static void cli_opts_init(cli_opts *o) {
@@ -2656,6 +2662,7 @@ static const cli_opt CLI_OPTS[] = {
     { "--sign-record", NULL, OPT_STR, false, OPT_AT(const char *, sign_record), OPT_NONE, 0, 0 },
     { "--check-record", NULL, OPT_STR, false, OPT_AT(const char *, check_record), OPT_NONE, 0, 0 },
     { "--replay-train", NULL, OPT_STR, false, OPT_AT(const char *, replay_train), OPT_NONE, 0, 0 },
+    { "--segment", NULL, OPT_STR, false, OPT_AT(const char *, replay_segment), OPT_NONE, 0, 0 },
     { "--replay-data", NULL, OPT_STR, false, OPT_AT(const char *, replay_data), OPT_NONE, 0, 0 },
     { "--unlearn", NULL, OPT_STR, false, OPT_AT(const char *, unlearn_parent), OPT_NONE, 0, 0 },
     { "--drop", NULL, OPT_STR, false, OPT_AT(const char *, unlearn_drop), OPT_NONE, 0, 0 },
@@ -6048,7 +6055,26 @@ static bool train_checkpoint(cli_opts *o, cli_run *rt, const train_state *st,
     if (snprintf(path, sizeof path, "%s.step-%05d", o->train_out, st->step) >=
         (int)sizeof path)
         return false;
-    return model_lora_save(&rt->m, path) && train_optim_save(path, rt, st, ev, o->n_eval);
+    if (!model_lora_save(&rt->m, path) || !train_optim_save(path, rt, st, ev, o->n_eval)) return false;
+    // R17.9 step 4: what the record commits to, hashed from the files as written
+    char opath[4200];
+    if (rt->n_ckpt == rt->cap_ckpt) {
+        int cap = rt->cap_ckpt ? rt->cap_ckpt * 2 : 16;
+        void *p = realloc(rt->ckpt, sizeof *rt->ckpt * (size_t)cap);
+        if (!p) return false;
+        rt->ckpt = p;
+        rt->cap_ckpt = cap;
+    }
+    struct train_ckpt *c = &rt->ckpt[rt->n_ckpt];
+    c->step = st->step;
+    c->cursor = st->cursor;
+    snprintf(opath, sizeof opath, "%s.optim", path);
+    if (!envelope_file_sha256(path, c->adapter) || !envelope_file_sha256(opath, c->optim)) {
+        fprintf(stderr, "error: cannot hash checkpoint %s for the provenance record\n", path);
+        return false;
+    }
+    rt->n_ckpt++;
+    return true;
 }
 
 // The kill rule's verdict beside the adapter: OUT.killed.json when the run
@@ -6218,6 +6244,7 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
             rc = 1;
             break;
         }
+        if (o->replay_stop_at > 0 && step >= o->replay_stop_at) break;   // a segment replay's B
         if (o->kill_at && step == o->kill_at) {
             train_eval_set *k = NULL;
             for (int e = 0; e < o->n_eval; e++)
@@ -6609,7 +6636,34 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
     sb_lit(&rec, model_full_on(&rt->m) ? "\"variant\":{\"path\":\"" : "\"adapter\":{\"path\":\"");
     sb_esc(&rec, plat_path_base(o->train_out), strlen(plat_path_base(o->train_out)));
     sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, asha);
-    sb_lit(&rec, "\"}}\n");
+    sb_lit(&rec, "\"}");
+    // R17.9 step 4: the checkpoints this run wrote and a chain over them, bound
+    // to this record: h_0 hashes the record's bytes so far (closed with "}"),
+    // so the chain cannot be moved to a run of another base, data or recipe;
+    // h_i = sha256("h_{i-1}|step|cursor|adapter|optim"), hex text throughout
+    if (rt->n_ckpt > 0 && !rec.failed) {
+        char body[65], h[65];
+        sb_lit(&rec, "}");
+        envelope_data_sha256(rec.s, rec.n, body);
+        rec.n--;                                         // the "}" again, the chain follows
+        rec.s[rec.n] = 0;
+        char line[512];
+        int n = snprintf(line, sizeof line, "xyntetik.runner.train.chain.v1|%s", body);
+        envelope_data_sha256(line, (size_t)n, h);
+        sb_fmt(&rec, ",\"checkpoints\":[");
+        char h0[65];
+        memcpy(h0, h, sizeof h0);
+        for (int i = 0; i < rt->n_ckpt; i++) {
+            const struct train_ckpt *c = &rt->ckpt[i];
+            sb_fmt(&rec, "%s{\"step\":%d,\"cursor\":%lld,\"adapter_sha256\":\"%s\",\"optim_sha256\":\"%s\"}",
+                   i ? "," : "", c->step, c->cursor, c->adapter, c->optim);
+            n = snprintf(line, sizeof line, "%s|%d|%lld|%s|%s", h, c->step, c->cursor, c->adapter, c->optim);
+            envelope_data_sha256(line, (size_t)n, h);
+        }
+        sb_fmt(&rec, "],\"checkpoint_chain\":{\"basis\":\"xyntetik.runner.train.chain.v1\",\"h0\":\"%s\","
+               "\"head\":\"%s\"}", h0, h);
+    }
+    sb_lit(&rec, "}\n");
     bool ok = write_record(o->train_out, ".train.json", "train", &rec, o->sign_key);
     free(rec.s);
     return ok;
@@ -6717,6 +6771,11 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
     train_teacher_close(&tt);
     train_examples_free(exs, n_ex);
     dpo_pairs_free(pairs, n_pair);
+    if (!o->replay_train) {      // R17.9 step 4: the record has what it needs (a replay compares them)
+        free(rt->ckpt);
+        rt->ckpt = NULL;
+        rt->n_ckpt = rt->cap_ckpt = 0;
+    }
     model_debug_time_report();   // RUNNER_DEBUG_TIME: the forwards' stages
     return rc;
 }
@@ -6726,6 +6785,11 @@ static bool replay_fail(int *rc, const char *field, const char *want, const char
 }
 
 static bool cli_prepare_replay_train(cli_opts *o, cli_replay *rp, int *rc) {
+    if (o->replay_segment && (!o->replay_train || o->unlearn_audit)) {
+        fprintf(stderr, "error: --segment is an option of runner attest replay RECORD\n");
+        *rc = 1;
+        return true;
+    }
     const train_record_host host = {
         .runner_version = RUNNER_VERSION,
         .build_flavor = RUNNER_BUILD_FLAVOR,
@@ -6746,6 +6810,7 @@ static bool cli_prepare_replay_train(cli_opts *o, cli_replay *rp, int *rc) {
         .stop_file = o->stop_file,
         .train_lp_path = o->train_lp_path,
         .replay_train = o->replay_train,
+        .replay_segment = o->replay_segment,
         .replay_data = o->replay_data,
         .unlearn_parent = o->unlearn_parent,
         .unlearn_drop = o->unlearn_drop,
@@ -6817,6 +6882,7 @@ static bool cli_prepare_replay_train(cli_opts *o, cli_replay *rp, int *rc) {
     o->train_ctx = to.train_ctx;
     o->replay_resumed_at = to.replay_resumed_at;
     o->save_every = to.save_every;
+    o->replay_stop_at = to.replay_stop_at;
     o->lr_schedule = to.lr_schedule;
     o->lr_warmup = to.lr_warmup;
     o->train_batch = to.train_batch;
@@ -6837,6 +6903,59 @@ static bool cli_prepare_replay_train(cli_opts *o, cli_replay *rp, int *rc) {
     if (!ret && (o->replay_train || o->unlearn_parent)) o->mp.gpu_mode = GPU_OFF;
     for (int i = 0; i < 8; i++) o->eval_spec[i] = to.eval_spec[i];
     return ret;
+}
+
+// R17.9 step 4: a segment replay's verdict. Every checkpoint the segment wrote
+// (steps A+1..B, every K steps as the record's run wrote them) against the
+// record's entry for that step, adapter and .optim bytes by sha256; then the
+// replay's files go.
+static int replay_segment_verdict(cli_run *rt, const cli_replay *rp, int trc) {
+    int rc = trc, want = 0, got = 0;
+    for (int i = 0; i < rp->seg_n; i++)
+        if (rp->seg_ck[i].step > rp->seg_a && rp->seg_ck[i].step <= rp->seg_b) want++;
+    for (int i = 0; rc == 0 && i < rt->n_ckpt; i++) {
+        const struct train_ckpt *c = &rt->ckpt[i];
+        if (c->step <= rp->seg_a || c->step > rp->seg_b) continue;
+        int j = 0;
+        while (j < rp->seg_n && rp->seg_ck[j].step != c->step) j++;
+        char field[64];
+        if (j == rp->seg_n) {
+            snprintf(field, sizeof field, "checkpoint step %d", c->step);
+            replay_fail(&rc, field, "a step the record names", "an extra checkpoint");
+        } else if (strcmp(c->adapter, rp->seg_ck[j].adapter) != 0) {
+            snprintf(field, sizeof field, "checkpoints[step %d].adapter_sha256", c->step);
+            replay_fail(&rc, field, rp->seg_ck[j].adapter, c->adapter);
+        } else if (strcmp(c->optim, rp->seg_ck[j].optim) != 0) {
+            snprintf(field, sizeof field, "checkpoints[step %d].optim_sha256", c->step);
+            replay_fail(&rc, field, rp->seg_ck[j].optim, c->optim);
+        } else {
+            got++;
+        }
+    }
+    for (int i = 0; i < rt->n_ckpt; i++) {
+        char p[4200];
+        snprintf(p, sizeof p, "%s.step-%05d", rp->tmp_out, rt->ckpt[i].step);
+        plat_remove(p);
+        snprintf(p, sizeof p, "%s.step-%05d.optim", rp->tmp_out, rt->ckpt[i].step);
+        plat_remove(p);
+    }
+    char p[4200];
+    snprintf(p, sizeof p, "%s.optim", rp->tmp_out);
+    plat_remove(p);
+    plat_remove(rp->tmp_out);
+    free(rt->ckpt);
+    rt->ckpt = NULL;
+    rt->n_ckpt = rt->cap_ckpt = 0;
+    if (rc == 0 && got != want) {
+        char wb[32], gb[32];
+        snprintf(wb, sizeof wb, "%d", want);
+        snprintf(gb, sizeof gb, "%d", got);
+        replay_fail(&rc, "checkpoints in the segment", wb, gb);
+    }
+    if (rc != 0) return rc;
+    printf("VERIFIED segment %d..%d: steps %d to %d, %d checkpoint%s, adapter and optimizer state byte for byte\n",
+           rp->seg_a, rp->seg_b, rp->seg_a + 1, rp->seg_b, got, got == 1 ? "" : "s");
+    return 0;
 }
 
 static int run_replay_train(cli_opts *o, cli_run *rt, const cli_replay *rp,
@@ -6880,6 +6999,7 @@ static int run_replay_train(cli_opts *o, cli_run *rt, const cli_replay *rp,
         }
     }
     int trc = run_train(o, rt, tmpl_override, load_path);
+    if (rp->segment) return replay_segment_verdict(rt, rp, trc);
     if (trc != 0) {
         plat_remove(rp->tmp_out);
         return trc;

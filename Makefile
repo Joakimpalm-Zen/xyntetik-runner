@@ -4457,6 +4457,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_train_kv_refusal.py \
     tests/test_train_recipe.py \
     tests/test_train_replay.py \
+    tests/test_train_segments.py \
     tests/test_train_teacher.py \
     tests/test_train_unlearn.py \
     tests/test_transcript.py \
