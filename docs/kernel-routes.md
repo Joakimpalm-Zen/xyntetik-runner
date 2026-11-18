@@ -83,14 +83,21 @@ the fresh slot's bits.
   refused and their snapshots never found, and the rows are fed again.
 - Rows are kept apart by their route identity (`engine_prompt_route`): the
   receipt's route record of the model (backend and device, layer split, host
-  experts, KV, build, codegen, the CPU's activation), the switches set (every
+  experts, KV, the build profile and codegen, the compiler's version and the
+  source revision, the CPU's activation), the switches set (every
   `RUNNER_` variable outside the inert set, as a training record reads them)
   and the prompt pass. On the CPU `-b 2` and up are one pass and `-b 1` the
   decode route; a GPU run's width is part of its route. `engine_feed` takes
   its pass from the same function. The store's keys, the automatic
   snapshot's name, a session image and a slot's own rows carry it, so rows of
-  another route are fed again. The model key never keyed GPU presence or the
-  switches; this does.
+  another route are fed again. The model key never keyed GPU presence, the
+  switches or the build; this does. It is computed once at load and again
+  only after a transition (a device's runtime or KV-grow fallback to the
+  CPU). Rows across a transition, even one during a feed, are of no one
+  route: never published, pinned or exported.
+- After every new build (another revision or compiler), persisted stores and
+  automatic snapshots are misses and session images resume their own rows
+  only.
 - A recurrent entry is published only when it ends where the slot stands: its
   fold is the slot's own, so an entry capped at the mark is not stored.
 - Rows loaded from disk whose provenance this process cannot vouch for are

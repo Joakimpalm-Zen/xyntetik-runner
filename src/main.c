@@ -8930,6 +8930,13 @@ static int cli_main(int argc, char **argv, char **owned_prompt, session_image *s
 
     if (!cli_chat_flags_ok(o)) return 1;
     if (run_record_utility(o, &rc)) return rc;
+    {
+        // R3.60: the source this binary was built from is part of every row's
+        // route identity (the receipt prints the same)
+        bool dirty = false;
+        const char *rev = provenance_build_commit(&dirty);
+        model_route_set_build(rev ? rev : "", dirty);
+    }
     cli_replay rp;
     memset(&rp, 0, sizeof rp);
     if (cli_prepare_replay_train(o, &rp, &rc)) return rc;

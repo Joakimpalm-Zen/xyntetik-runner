@@ -753,6 +753,15 @@ typedef struct {
                              // Decided by the first instance to upload a given
                              // file and reused by every instance sharing it, so
                              // parallel slots cannot end up on different splits.
+    // R3.60: the route identity, kept once computed (model_route_hash) with
+    // what it was computed for; a transition (a device falling back to the
+    // CPU, model_route_transition) makes the next call recompute it
+    uint64_t    route_hash;
+    const void *route_gpu;
+    int         route_layers;
+    unsigned    route_epoch, route_hash_epoch;
+    bool        route_known;
+    int         test_route_flip_at;   // RUNNER_TEST_ROUTE_FLIP_AT at load: a forced transition there, -1 none
     void  *gpu;              // active GPU backend context (NULL = CPU path).
                              // Runtime fallback clears this without implying
                              // that backend-owned resources may be released.
@@ -1981,5 +1990,11 @@ bool     runner_switch_counts(const char *name, size_t n);
 // computed in this process (for the tests)
 int      model_route_text(const model_t *m, char *out, size_t cap);
 uint64_t model_route_hash_count(void);
+// a runtime change of the route (a fallback); the next model_route_hash
+// computes the identity again
+void     model_route_transition(model_t *m);
+// the source the binary was built from, as the receipt prints it (once, at
+// start; a library that names none hashes "")
+void     model_route_set_build(const char *revision, bool dirty);
 
 #endif // RUNNER_MODEL_H

@@ -2588,6 +2588,16 @@ bool model_load(model_t *m, const char *path, const model_params *p) {
         return false;
     }
     model_debug_geometry(m);
+    // R3.60: this model's own route, read now (its load-time facts, the
+    // switches), after a shared load copied the prototype's cache and seam
+    m->route_known = false;
+    m->route_epoch = 0;
+    m->test_route_flip_at = -1;
+    {
+        const char *f = getenv("RUNNER_TEST_ROUTE_FLIP_AT");
+        if (f && *f) m->test_route_flip_at = atoi(f);
+    }
+    (void)model_route_hash(m);
     if (p->mlock && gguf_mapped_size(&m->gf)) {
         uint64_t hot = 0, cold = 0;
         int rc = weights_lock(m, &hot, &cold);
@@ -8264,6 +8274,15 @@ static uint64_t route_fnv(uint64_t h, const char *s) {
 }
 
 static _Atomic uint64_t g_route_hashes;   // computations, for the tests
+static char g_route_revision[64];
+static bool g_route_dirty;
+
+void model_route_set_build(const char *revision, bool dirty) {
+    snprintf(g_route_revision, sizeof g_route_revision, "%s", revision ? revision : "");
+    g_route_dirty = dirty;
+}
+
+void model_route_transition(model_t *m) { if (m) m->route_epoch++; }
 
 uint64_t model_route_hash_count(void) { return g_route_hashes; }
 
@@ -8273,13 +8292,21 @@ int model_route_text(const model_t *m, char *out, size_t cap) {
     route_facts r;
     memset(&r, 0, sizeof r);
     route_collect(m, &r);
-    return snprintf(out, cap, "%s|%s|%d/%d/%d/%d/%d|%s|%s|%s|%s|%s|%s", r.backend ? r.backend : "",
+    // the build is the profile and architecture (route_build), the compiler
+    // that built this code and the source revision the receipt prints
+    return snprintf(out, cap, "%s|%s|%d/%d/%d/%d/%d|%s|%s|%s|%s|%s|%s|%s|%s%s", r.backend ? r.backend : "",
                     r.device, r.gpu_layers, r.n_layer, r.moe_layers, r.moe_host, r.moe_hot,
                     r.kv ? r.kv : "", r.detail ? r.detail : "", r.build ? r.build : "",
-                    r.codegen ? r.codegen : "", r.cpu_act ? r.cpu_act : "", r.weights);
+                    r.codegen ? r.codegen : "", r.cpu_act ? r.cpu_act : "", r.weights,
+                    __VERSION__, g_route_revision, g_route_dirty ? "+dirty" : "");
 }
 
 uint64_t model_route_hash(const model_t *m) {
+    // load-time facts, kept: the device, the split, the switches and the
+    // build do not change while the model lives, except by a transition
+    if (m->route_known && m->route_gpu == m->gpu && m->route_layers == m->gpu_layers &&
+        m->route_hash_epoch == m->route_epoch)
+        return m->route_hash;
     g_route_hashes++;
     char text[1024];
     model_route_text(m, text, sizeof text);
@@ -8291,6 +8318,15 @@ uint64_t model_route_hash(const model_t *m) {
         if (eq && runner_switch_counts(*e, (size_t)(eq - *e))) sw ^= route_fnv(0xcbf29ce484222325ull, *e);
     }
     h ^= sw; h *= 0x100000001b3ull;
+    // a transition is a route change by definition: rows across it are of no
+    // one route, even where the facts read back the same
+    h ^= m->route_epoch; h *= 0x100000001b3ull;
+    model_t *w = (model_t *)m;   // the cache only; the model is not changed
+    w->route_hash = h;
+    w->route_gpu = m->gpu;
+    w->route_layers = m->gpu_layers;
+    w->route_hash_epoch = m->route_epoch;
+    w->route_known = true;
     return h;
 }
 
@@ -16081,6 +16117,7 @@ static bool gpu_fallback_fails(void) {
 // one gpu_disable here): a runtime failure, or (R3.68) a KV grow that does not
 // fit, which is planned and so not marked as a lost device.
 static void gpu_release_to_cpu(model_t *m, const char *why, const char *then, bool lost) {
+    model_route_transition(m);   // R3.60: the rows from here are another route's
     if (gpu_fallback_fails()) {
         fprintf(stderr, "gpu: %s; RUNNER_GPU_FALLBACK=fail "
                 "ends the process (exit status 3)\n", why);
@@ -16148,6 +16185,12 @@ static float *forward_gpu_leading(model_t *m, const int32_t *tokens, int n,
                                   bool *done) {
     *start = 0;
     *done = false;
+    // R3.60: RUNNER_TEST_ROUTE_FLIP_AT forces, on the CPU, the route change a
+    // device's fallback makes here, once, at the forward that crosses it
+    if (m->test_route_flip_at >= 0 && pos + n > m->test_route_flip_at) {
+        m->test_route_flip_at = -1;
+        model_route_transition(m);
+    }
     if (m->gpu) {
         // R3.68: the device's KV rows for this forward, grown first
         char kv_why[256];

@@ -398,10 +398,21 @@ uint64_t engine_prompt_route(const engine *e) {
 
 // A slot's rows are of the route that wrote them: rows of another route (a
 // device that fell back to the CPU, gpu_disable) serve no later request.
-static void stamp_rows(engine *e) {
+static uint64_t stamp_rows(engine *e) {
     uint64_t r = engine_prompt_route(e);
     if (e->pos > 0 && e->rows_route != r) e->scored_from = 0;
     e->rows_route = r;
+    return r;
+}
+
+// after a feed: a route that changed during it (a device's fallback) left
+// rows of no one route, which serve no later request and are never published,
+// pinned or exported
+static void unstamp_if_moved(engine *e, uint64_t before) {
+    uint64_t now = engine_prompt_route(e);
+    if (now == before) return;
+    e->scored_from = 0;
+    e->rows_route = now;
 }
 
 void engine_mark_scored(engine *e, int pos) {
@@ -934,6 +945,7 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
     bool recur_here = model_has_recurrent(e->m);
     const uint64_t route = engine_prompt_route(e);
     if (!e->hist || n < PFX_MIN_TOKENS || e->pos < n || ((ring || recur_here) && e->pos != n)) return;
+    if (e->rows_route != route) return;   // rows of another route (a fallback since they were written)
 
     pthread_mutex_lock(&PFX.mu);
     pfx_defaults();
@@ -1082,7 +1094,7 @@ int prefix_context_pin(engine *e, const char *name, const int32_t *toks, int n) 
     // after engine_prefix_reuse, which rewinds to the mark and feeds the rest
     // as a prompt, so it never meets one; this keeps a direct caller from
     // pinning n tokens of which some are scored (a pin names exactly n).
-    if (e->scored_from < n) return PFX_CTX_MISMATCH;
+    if (e->scored_from < n || e->rows_route != engine_prompt_route(e)) return PFX_CTX_MISMATCH;
     size_t need = prefix_cache_entry_bytes(e->m, n);
     pfx_entry *ne = calloc(1, sizeof *ne);
     int32_t *nt = malloc(sizeof(int32_t) * (size_t)n);
@@ -1407,7 +1419,7 @@ int prefix_slot_export(const engine *e, int n, const char *path) {
     // server: the automatic preamble snapshot follows a chat request, which
     // never scores its prompt (echo and prompt_logprobs are the text API's),
     // after engine_prefix_reuse has fed the rows from the mark as a prompt.
-    if (e->scored_from < n) return PFX_CTX_MISMATCH;
+    if (e->scored_from < n || e->rows_route != engine_prompt_route(e)) return PFX_CTX_MISMATCH;
     // R4.40.1: a file says how many tokens it holds, and its loader takes the
     // LongRoPE set that length takes. Rows of a preamble inside a sequence
     // past the original context are on the long set whatever the preamble's
@@ -1754,17 +1766,20 @@ static float *engine_feed_inner(engine *e, const int32_t *toks, int n);
 // trainer's taped forward bit for bit, which the GRPO loop's -b 1 server is
 // held to (tests/test_rollout_identity.py, tests/test_kv_f32.py).
 float *engine_feed(engine *e, const int32_t *toks, int n) {
-    stamp_rows(e);
+    uint64_t r = stamp_rows(e);
     e->m->prefill_pass = engine_prompt_prefill(e);
     float *lg = engine_feed_inner(e, toks, n);
+    unstamp_if_moved(e, r);
     e->m->prefill_pass = false;
     return lg;
 }
 
 // the decode step's route: prefill_pass stays false (engine.h)
 float *engine_feed_solo(engine *e, int32_t tok) {
-    stamp_rows(e);
-    return engine_feed_inner(e, &tok, 1);
+    uint64_t r = stamp_rows(e);
+    float *lg = engine_feed_inner(e, &tok, 1);
+    unstamp_if_moved(e, r);
+    return lg;
 }
 
 static float *engine_feed_inner(engine *e, const int32_t *toks, int n) {

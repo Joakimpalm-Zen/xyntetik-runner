@@ -57,8 +57,8 @@
 //  10. A context imported from disk is forked only by a request naming it.
 //  11. ... and the prefix store does not persist it: its label would be lost.
 //  12. The route identity is the arithmetic, not the batch width alone: a
-//      switch that selects other prompt arithmetic (RUNNER_CPU_I8_PREFILL)
-//      is another route for the store and for a slot's own rows.
+//      switch that selects other prompt arithmetic (RUNNER_CPU_I8_PREFILL),
+//      read at load, is another route for the store.
 //  13. The route identity is computed once, not per feed: scoring a prompt one
 //      token a forward computes it at most twice.
 //  14. A route that changes during a feed (a device falling back to the CPU;
@@ -373,38 +373,35 @@ static void check_file(const char *path) {
     }
 
     // gate 12: a switch that selects other prompt arithmetic is another route.
-    // RUNNER_CPU_I8_PREFILL runs a prompt's wide matvecs on the int8 tiles; a
-    // store and a slot's rows made without it are not that route's. Live
-    // control: with the switch unset again, the store loads and the slot keeps
-    // its rows.
+    // RUNNER_CPU_I8_PREFILL runs a prompt's wide matvecs on the int8 tiles. A
+    // switch is a fact of the model's load, read once: a store made without it
+    // loads into no engine loaded with it. Live control: into one loaded
+    // without it, it loads. (A route that changes during a slot's life is
+    // gate 14's.)
     {
         int n12 = LENS[0];
         const char *store = "test-prefill-gate12.store";
         prefix_cache_clear();
         engine_reset(&s64.e);
-        bool fed12 = engine_feed(&s64.e, t, n12) != NULL;
-        if (fed12) engine_prefix_publish(&s64.e, t, n12, n12, 0.0);
+        if (engine_feed(&s64.e, t, n12)) engine_prefix_publish(&s64.e, t, n12, n12, 0.0);
         int saved12 = prefix_cache_save(store);
         prefix_cache_clear();
         env_set("RUNNER_CPU_I8_PREFILL", "1");
-        int other = saved12 > 0 ? prefix_cache_load(store, &s2.e) : -2;
-        int kept_other = fed12 ? engine_rewind_prompt(&s64.e, t, n12 + 6) : -2;
-        prefix_cache_clear();
+        slot si8;
+        bool opened = slot_open(&si8, path, 2);
         env_unset("RUNNER_CPU_I8_PREFILL");
-        engine_reset(&s64.e);
-        fed12 = engine_feed(&s64.e, t, n12) != NULL;
+        int other = opened && saved12 > 0 ? prefix_cache_load(store, &si8.e) : -2;
+        prefix_cache_clear();
         int same = saved12 > 0 ? prefix_cache_load(store, &s2.e) : -2;
-        int kept_same = fed12 ? engine_rewind_prompt(&s64.e, t, n12 + 6) : -2;
         prefix_cache_clear();
         remove(store);
+        if (opened) slot_close(&si8);
         if (saved12 > 0) {
             ck(other == 0, path, n12, "a store made without RUNNER_CPU_I8_PREFILL loads into no engine with it");
-            ck(same == saved12, path, n12, "live control: without the switch it loads");
+            ck(same == saved12, path, n12, "live control: into an engine without it, it loads");
         } else {
-            fprintf(stderr, "  gate 12: this model stores no prefix entry (a ring), store half skipped\n");
+            fprintf(stderr, "  gate 12: this model stores no prefix entry (a ring), skipped\n");
         }
-        ck(kept_other == 0, path, n12, "a slot's rows made without the switch are not kept under it");
-        ck(kept_same == n12, path, n12, "live control: without the switch the slot keeps its rows");
     }
 
     // gate 13: the identity is computed once, not per feed
@@ -457,6 +454,14 @@ static void check_file(const char *path) {
         char rt[1200];
         model_route_text(&s64.m, rt, sizeof rt);
         ck(strstr(rt, __VERSION__) != NULL, path, 0, "the route identity names the compiler's version");
+        // and the source revision the binary names (here a test's own)
+        model_route_set_build("0123456789abcdef0123456789abcdef01234567", true);
+        model_route_transition(&s64.m);
+        model_route_text(&s64.m, rt, sizeof rt);
+        ck(strstr(rt, "0123456789abcdef0123456789abcdef01234567+dirty") != NULL, path, 0,
+           "the route identity names the source revision and whether it was dirty");
+        model_route_set_build("", false);
+        model_route_transition(&s64.m);
     }
 
     ck(control5 == NLEN, path, CTX,
