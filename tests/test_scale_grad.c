@@ -425,6 +425,63 @@ static void verify_kd_grad(const char *path, const char *label, bool nonzero_ini
         double rel = fabs(fd - gv_expect) / mag;
         if (rel < best_rel) best_rel = rel;
     }
+    // Separate dmin (theta_m-only) directional FD check so dropping dmin cannot hide behind theta_d.
+    double m_sum = 0.0;
+    long m_cnt = 0;
+    for (int l = 0; l < m4.n_layer; l++)
+        for (int s = 0; s < LW_SLOTS; s++)
+            if (snap_m[l][s]) {
+                int64_t nb = 0;
+                (void)model_scales_param(&m4, l, s, 1, &nb);
+                for (int64_t i = 0; i < nb; i++) { m_sum += fabs((double)snap_m[l][s][i]); m_cnt++; }
+            }
+    if (m_cnt > 0) {
+        double m_thresh = m_sum / (double)m_cnt;
+        double m_expect = 0.0;
+        long m_sel = 0;
+        for (int l = 0; l < m4.n_layer; l++)
+            for (int s = 0; s < LW_SLOTS; s++)
+                if (snap_m[l][s]) {
+                    int64_t nb = 0;
+                    (void)model_scales_param(&m4, l, s, 1, &nb);
+                    for (int64_t i = 0; i < nb; i++) {
+                        double g = snap_m[l][s][i];
+                        if (fabs(g) > m_thresh) { m_expect += fabs(g); m_sel++; }
+                    }
+                }
+        double m_best = 1e30;
+        for (int ei = 0; ei < 5; ei++) {
+            float eps = eps_sweep[ei];
+            double lp = 0.0, lm = 0.0;
+            for (int sg = 0; sg < 2; sg++) {
+                float mul = sg == 0 ? eps : -eps;
+                for (int l = 0; l < m4.n_layer; l++)
+                    for (int s = 0; s < LW_SLOTS; s++)
+                        if (snap_m[l][s]) {
+                            int64_t nb = 0;
+                            float *pm = model_scales_param(&m4, l, s, 1, &nb);
+                            for (int64_t i = 0; i < nb; i++) {
+                                double g = snap_m[l][s][i];
+                                if (m_sel == 0)
+                                    pm[i] = p0_m[l][s][i] + mul;
+                                else if (fabs(g) > m_thresh)
+                                    pm[i] = p0_m[l][s][i] + mul * (g > 0 ? 1.0f : -1.0f);
+                                else
+                                    pm[i] = p0_m[l][s][i];
+                            }
+                        }
+                double L = run_kd(&m4, toks, w, &tch);
+                if (sg == 0) lp = L; else lm = L;
+            }
+            double slope = (lp - lm) / (2.0 * eps);
+            double denom = fmax(fabs(slope), fmax(fabs(m_expect), 1e-12));
+            double rel = fabs(slope - m_expect) / denom;
+            if (rel < m_best) m_best = rel;
+        }
+        CHECK(m_sel > 0 && m_best <= 1e-3,
+              "%s (%s): f32-KV dmin (theta_m-only) directional FD rel %.3e > 1e-3 (sel %ld)",
+              label, nonzero_init ? "nz" : "zero", m_best, m_sel);
+    }
     for (int l = 0; l < m4.n_layer; l++) {
         for (int s = 0; s < LW_SLOTS; s++) {
             if (!snap_d[l][s]) continue;
