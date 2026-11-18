@@ -54,6 +54,11 @@ def test_two_processes_of_one_dirty_binary_share_one_identity(runner_bin, tmp_pa
     assert _route(tmp_path / "one.img") == _route(tmp_path / "two.img"), \
         "two processes of one dirty binary named two route identities: no session resumes across processes"
     assert "no identity of its running image" not in p1.stderr, p1.stderr[-400:]
+    # the identity comes from the image in memory where the platform has one, never from a file a name can be
+    # raced on: Windows reads the PE build id from the loaded module's debug directory, macOS the LC_UUID; Linux
+    # hashes /proc/self/exe, which is the image's own inode whatever its path names
+    kind = {"win32": "pe-buildid", "darwin": "macho-uuid"}.get(sys.platform, "sha256:/proc/self/exe")
+    assert "image identity: " + kind in p1.stderr, p1.stderr[-400:]
 
 
 def test_a_dirty_process_keeps_its_own_identity_when_its_file_is_replaced(runner_bin, tmp_path):

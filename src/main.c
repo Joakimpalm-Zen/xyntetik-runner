@@ -9248,13 +9248,21 @@ static int cli_main(int argc, char **argv, char **owned_prompt, session_image *s
         if (dirty) {
             char sha[65];
 #if defined(__linux__)
+            const char *kind = "sha256:/proc/self/exe";
             if (envelope_file_sha256("/proc/self/exe", sha)) snprintf(bid, sizeof bid, "sha256:%s", sha);
 #elif defined(_WIN32)
+            const char *kind = "sha256:mapped-file";
             if (envelope_stream_sha256(plat_running_image_open(), sha)) snprintf(bid, sizeof bid, "sha256:%s", sha);
 #else
             (void)sha;
             if (!plat_running_image_id(bid, sizeof bid)) bid[0] = 0;
+            char kbuf[32];
+            snprintf(kbuf, sizeof kbuf, "%.*s", (int)strcspn(bid, ":"), bid);
+            const char *kind = kbuf;
 #endif
+            // the test seam names the kind of identity taken (tests/test_route_identity_running_image.py)
+            if (td && !strcmp(td, "1"))
+                fprintf(stderr, "runner: test: image identity: %s\n", bid[0] ? kind : "none");
             if (!bid[0])
                 fprintf(stderr, "runner: warning: this dirty build has no identity of its running image here, so "
                         "it reuses nothing another process persisted (prefix stores, automatic snapshots, "
