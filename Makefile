@@ -3608,7 +3608,25 @@ else
 	@echo "test-metal-kv-grow: NOT RUN, the Metal backend's growing KV cache (this host has no Metal)"
 endif
 
-test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) $(TEST_MICRO_SCHED) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
+# R6.91: the sampler gives a NaN logit no mass, in the default, a portable and a
+# strict (T3 float flags) build: tests/test_sample_nan.c compiled three ways and
+# checked by scripts/check-sample-nan.sh, whose control is the finite picks of
+# main's sampler at SN_BASE.
+SN_EXT := $(if $(filter %.exe,$(RUNNER_EXE)),.exe,)
+# a portable build has the compiler read pmath.h first in every unit (R6.86)
+SN_PMATH := -include src/pmath.h $(if $(filter Linux,$(BUILD_OS)),-D_GNU_SOURCE,) \
+            $(if $(filter Windows,$(BUILD_OS)),-D_CRT_RAND_S=,)
+SN_PORTABLE := $(CFLAGS) -DRUNNER_PORTABLE_MATH $(SN_PMATH)
+SN_STRICT := $(filter-out -ffast-math,$(CFLAGS)) -fno-fast-math -ffp-contract=off \
+             -DRUNNER_PORTABLE_MATH -DRUNNER_CANON_KERNELS -DRUNNER_T3_BUILD $(SN_PMATH)
+SN_BASE := 6e035a770e5952c873c6170c37e1a857985eb48f
+test-sample-nan: tests/test_sample_nan.c src/sample.c scripts/check-sample-nan.sh $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_sample_nan.c src/sample.c -o test-sample-nan-default$(SN_EXT) $(LDFLAGS)
+	$(CC) $(SN_PORTABLE) -I src tests/test_sample_nan.c src/sample.c -o test-sample-nan-portable$(SN_EXT) $(LDFLAGS)
+	$(CC) $(SN_STRICT) -I src tests/test_sample_nan.c src/sample.c -o test-sample-nan-strict$(SN_EXT) $(LDFLAGS)
+	sh scripts/check-sample-nan.sh "$(SN_EXT)" $(SN_BASE) $(CC) $(CFLAGS) -- $(LDFLAGS)
+
+test-gates-core: test-python-deps test-sample-nan $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) $(TEST_MICRO_SCHED) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) $(TEST_ATEM_OOM) $(TEST_TEMPLATE_FAMILIES) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_MLOCK) test-es-mlock.gguf $(TEST_WILLNEED) $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \

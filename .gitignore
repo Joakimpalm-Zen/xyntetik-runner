@@ -401,3 +401,10 @@ tests/conformance/out-sanitized/
 
 # examples/deterministic-ci downloads (a pinned release and model file)
 /.cache/
+
+# R6.91: tests/test_sample_nan.c three ways (make test-sample-nan)
+test-sample-nan-default
+test-sample-nan-portable
+test-sample-nan-strict
+test-sample-nan-*.exe
+/.sample-nan/
