@@ -12,8 +12,9 @@ if [ -n "$git_dir" ] && [ -n "$common_dir" ] && [ "$git_dir" != "$common_dir" ];
 error: refusing to commit in a linked worktree without its own user.email
 (otherwise git falls back to the repository or global identity).
 Run:
-  git config --worktree user.name <agent-name>
-  git config --worktree user.email <noreply-address>
+  git config --worktree user.name "<Agent>"
+  git config --worktree user.email "<noreply-email>"
+See AGENTS.md section 6 ("Version control").
 EOF
         exit 1
     fi

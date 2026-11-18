@@ -55,6 +55,7 @@ def test_linked_worktree_requires_worktree_email_and_main_is_unaffected(tmp_path
     assert bad.returncode != 0
     assert "git config --worktree user.name" in bad.stderr
     assert "git config --worktree user.email" in bad.stderr
+    assert "AGENTS.md section 6" in bad.stderr
     assert _git(wt, "rev-list", "--count", "HEAD").stdout.strip() == "1"
 
     # 2. Setting --worktree user.name and user.email lets the commit proceed as that identity.
