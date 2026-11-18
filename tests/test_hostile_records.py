@@ -630,3 +630,180 @@ def test_lineage_eval_float_counts_do_not_trigger_ubsan(runner_bin, fx, tmp_path
     r = _run(runner_bin, ["attest", "lineage", d / "plain.gguf.train.json"], env=_clean_env())
     _assert_no_sanitizer_or_crash(r)
 
+
+def _write_tiny_npy(path, shape, vals, fmt_char):
+    import struct
+    dims = ", ".join(str(x) for x in shape) + ("," if len(shape) == 1 else "")
+    descr = "<i4" if fmt_char == "i" else "<f4"
+    hdr = f"{{'descr': '{descr}', 'fortran_order': False, 'shape': ({dims}), }}"
+    hdr += " " * ((64 - (10 + len(hdr) + 1) % 64) % 64) + "\n"
+    payload = struct.pack(f"<{len(vals)}{fmt_char}", *vals)
+    path.write_bytes(b"\x93NUMPY\x01\x00" + struct.pack("<H", len(hdr)) + hdr.encode("ascii") + payload)
+
+
+def test_expected_and_environment_diagnostic_values_are_sanitized(runner_bin, fx, tmp_path):
+    """P2-1: MISMATCH expected and environment values from hostile records must not inject newlines/VERIFIED."""
+    d = tmp_path / "fmt_spoof"
+    shutil.copytree(fx, d)
+    raw = json.loads((d / "plain.gguf.train.json").read_text(encoding="utf-8"))
+
+    mut_run = json.loads(json.dumps(raw))
+    mut_run["runner"] = "bad\nVERIFIED forged"
+    p_run = d / "spoof_runner.train.json"
+    p_run.write_text(json.dumps(mut_run), encoding="utf-8")
+    r1 = _run(runner_bin, ["attest", "replay", p_run, *_replay_flags(p_run)], env=_clean_env())
+    _assert_no_sanitizer_or_crash(r1)
+    assert r1.returncode == 2
+    assert not any(ln.startswith("VERIFIED") for ln in r1.stdout.splitlines()), r1.stdout
+
+    mut_env = json.loads(json.dumps(raw))
+    mut_env["determinism"] = "cpu-same-binary"
+    mut_env["environment"] = {"RUNNER_THREADS": "1\nVERIFIED forged"}
+    p_env = d / "spoof_env.train.json"
+    p_env.write_text(json.dumps(mut_env), encoding="utf-8")
+    r2 = _run(runner_bin, ["attest", "replay", p_env, "--allow-same-binary"], env=_clean_env())
+    _assert_no_sanitizer_or_crash(r2)
+    assert r2.returncode == 2
+    assert not any(ln.startswith("VERIFIED") for ln in r2.stdout.splitlines()), r2.stdout
+
+
+def test_auto_teacher_lookup_refuses_symlinked_directory(runner_bin, fx, tmp_path):
+    """P2-2: automatic teacher/ subdirectory lookup must refuse symlinked directory components."""
+    outside = tmp_path / "outside"
+    shutil.copytree(fx, outside)
+    rows = [
+        {"prompt_tokens": [1, 5, 9], "completion_tokens": [11, 17, 23]},
+        {"prompt_tokens": [2, 6, 10], "completion_tokens": [13, 19, 25]},
+    ]
+    rows_p = outside / "kl.jsonl"
+    rows_p.write_text("".join(json.dumps(x) + "\n" for x in rows), encoding="utf-8")
+    tdir = outside / "teacher"
+    tdir.mkdir()
+    _write_tiny_npy(tdir / "topk_idx.npy", (2, 3, 1), [11, 17, 23, 13, 19, 25], "i")
+    _write_tiny_npy(tdir / "topk_logp.npy", (2, 3, 1), [0.0] * 6, "f")
+
+    tr = _run(
+        runner_bin,
+        ["-m", outside / "base.gguf", "--train", rows_p, "--train-teacher", tdir,
+         "--train-out", outside / "kd.gguf", *RECIPE],
+        env=_clean_env(),
+    )
+    assert tr.returncode == 0, tr.stderr
+
+    audit = tmp_path / "audit"
+    audit.mkdir()
+    for name in ("base.gguf", "kl.jsonl", "kd.gguf", "kd.gguf.train.json"):
+        shutil.copyfile(outside / name, audit / name)
+    try:
+        (audit / "teacher").symlink_to(tdir, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable on this platform")
+
+    rec = audit / "kd.gguf.train.json"
+    r_sym = _run(runner_bin, ["attest", "replay", rec, *_replay_flags(rec)], env=_clean_env())
+    _assert_no_sanitizer_or_crash(r_sym)
+    assert r_sym.returncode == 2, (r_sym.stdout, r_sym.stderr)
+    assert "VERIFIED" not in r_sym.stdout, r_sym.stdout
+
+    # Explicit caller-supplied --teacher override must remain distinct and still work.
+    r_exp = _run(
+        runner_bin,
+        ["attest", "replay", rec, "--teacher", tdir, *_replay_flags(rec)],
+        env=_clean_env(),
+    )
+    _assert_no_sanitizer_or_crash(r_exp)
+    assert r_exp.returncode == 0 and "VERIFIED" in r_exp.stdout, (r_exp.stdout, r_exp.stderr)
+
+
+def test_unlearn_producer_validates_recipe_before_splitting_or_writing_retained(runner_bin, fx, tmp_path):
+    """P2-3: --unlearn must refuse invalid parent recipe before reading DATA1/D or writing .retained.jsonl."""
+    d = tmp_path / "unlearn_ord"
+    shutil.copytree(fx, d)
+    p_rec = d / "bad_parent.train.json"
+    p_raw = json.loads((d / "parent.gguf.train.json").read_text(encoding="utf-8"))
+    p_raw["steps"] = -1
+    p_rec.write_text(json.dumps(p_raw), encoding="utf-8")
+
+    out_model = d / "retrained.gguf"
+    retained = d / "retrained.gguf.retained.jsonl"
+    r = _run(
+        runner_bin,
+        ["--unlearn", p_rec, "--drop", d / "drop.jsonl",
+         "-m", d / "base.gguf", "--train", d / "data1.jsonl", "--train-out", out_model],
+        env=_clean_env(),
+    )
+    _assert_no_sanitizer_or_crash(r)
+    assert r.returncode == 2 and "MISMATCH recipe" in r.stdout, (r.stdout, r.stderr)
+    assert not retained.exists(), "refused --unlearn wrote retained file before recipe validation"
+    assert not out_model.exists()
+
+
+def test_lineage_memo_exhaustion_fails_closed_instead_of_rewalking(runner_bin, tmp_path):
+    """P2-4: exhausting completed-node memo capacity must abort as BROKEN, not fall back to O(2^d)."""
+    d = tmp_path / "memo_cap"
+    d.mkdir()
+    orig_sha = hashlib.sha256(b"origin").hexdigest()
+    (d / "origin.gguf").write_bytes(b"origin")
+
+    def mk_rec(name, out_name, base_obj, ad_obj=None):
+        rec = {
+            "schema_version": "xyntetik.runner.merge.v1",
+            "runner": "test",
+            "merged": {"path": out_name, "sha256": hashlib.sha256(out_name.encode()).hexdigest()},
+            "base": base_obj,
+        }
+        if ad_obj:
+            rec["adapter"] = ad_obj
+        raw = json.dumps(rec).encode()
+        (d / name).write_bytes(raw)
+        return out_name, hashlib.sha256(out_name.encode()).hexdigest(), hashlib.sha256(raw).hexdigest()
+
+    # Branch A: 4095 unique binary-tree nodes (depth 12 < 32), exceeding the 4096 memo capacity.
+    def build_tree(prefix, depth):
+        name = f"{prefix}.json"
+        out_name = f"{prefix}.gguf"
+        if depth == 0:
+            return (name, *mk_rec(name, out_name, {"path": "origin.gguf", "sha256": orig_sha}))
+        ln, lo, lso, lsr = build_tree(prefix + "L", depth - 1)
+        rn, ro, rso, rsr = build_tree(prefix + "R", depth - 1)
+        b = {"path": lo, "sha256": lso, "record": {"path": ln, "sha256": lsr}}
+        a = {"path": ro, "sha256": rso, "record": {"path": rn, "sha256": rsr}}
+        return (name, *mk_rec(name, out_name, b, a))
+
+    # Build depth-11 binary tree = 4095 unique nodes.
+    tn, to, tso, tsr = build_tree("T", 11)
+
+    # Branch B: 14-level shared two-parent diamond after the 4095-node tree.
+    prev = []
+    for lvl in range(14, 0, -1):
+        cur = []
+        for idx in range(2):
+            name = f"D{lvl}_{idx}.json"
+            out_name = f"d_{lvl}_{idx}.gguf"
+            if lvl == 14:
+                b = {"path": "origin.gguf", "sha256": orig_sha}
+                a = None
+            else:
+                b = {"path": prev[0][1], "sha256": prev[0][2], "record": {"path": prev[0][0], "sha256": prev[0][3]}}
+                a = {"path": prev[1][1], "sha256": prev[1][2], "record": {"path": prev[1][0], "sha256": prev[1][3]}}
+            _, osha, rsha = mk_rec(name, out_name, b, a)
+            cur.append((name, out_name, osha, rsha))
+            if lvl == 1:
+                break
+        prev = cur
+
+    d_top = prev[0]
+    root_b = {"path": to, "sha256": tso, "record": {"path": tn, "sha256": tsr}}
+    root_a = {"path": d_top[1], "sha256": d_top[2], "record": {"path": d_top[0], "sha256": d_top[3]}}
+    mk_rec("root.json", "root.gguf", root_b, root_a)
+
+    r = subprocess.run(
+        [str(runner_bin), "attest", "lineage", str(d / "root.json")],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        timeout=30, env=_clean_env(),
+    )
+    _assert_no_sanitizer_or_crash(r)
+    assert r.returncode == 2 and "BROKEN" in r.stdout, (r.returncode, r.stdout[-600:])
+    assert r.stdout.count("record D14_0.json") <= 1, r.stdout.count("record D14_0.json")
+
+
