@@ -169,6 +169,26 @@ static bool replay_parent_dir(const char *path, char *out, size_t cap) {
     return fmt_checked(out, cap, "%.*s", (int)(s - path), path);
 }
 
+static bool safe_dir_nofollow(const char *dir) {
+    plat_stat_t st;
+    bool is_link = false;
+    return dir && *dir && plat_stat_nofollow(dir, &st, &is_link) == 0 && !is_link && S_ISDIR(st.st_mode);
+}
+
+static bool probe_teacher_subdir(const char *base_dir, const char *fname, char *out, size_t cap,
+                                 bool *saw_symlink) {
+    char tdir[4096];
+    if (!fmt_checked(tdir, sizeof tdir, "%s/teacher", base_dir)) return false;
+    plat_stat_t st;
+    bool is_link = false;
+    if (plat_stat_nofollow(tdir, &st, &is_link) == 0 && is_link) {
+        if (saw_symlink) *saw_symlink = true;
+        return false;
+    }
+    if (!safe_dir_nofollow(tdir)) return false;
+    return fmt_checked(out, cap, "%s/%s", tdir, fname) && record_regular_file_nofollow(out);
+}
+
 static bool replay_resolve_teacher(const train_record_opts *o, cli_replay *rp, jv *tch, int *rc) {
     jv *ti = jv_get(tch, "topk_idx"), *tl = jv_get(tch, "topk_logp");
     const char *inm = jv_str(jv_get(ti, "path"), NULL), *isha = jv_str(jv_get(ti, "sha256"), NULL);
@@ -187,17 +207,18 @@ static bool replay_resolve_teacher(const train_record_opts *o, cli_replay *rp, j
         if (!relocate_local(inm, o->replay_train, cand, sizeof cand))
             return !replay_fail(rc, "teacher", "valid local path", inm);
         if (!record_regular_file_nofollow(cand)) {
+            bool sym = false;
             if (replay_parent_dir(o->replay_train, rdir, sizeof rdir) &&
-                fmt_checked(sub, sizeof sub, "%s/teacher/%s", rdir, inm) &&
-                record_regular_file_nofollow(sub)) {
+                probe_teacher_subdir(rdir, inm, sub, sizeof sub, &sym)) {
                 if (!fmt_checked(idx_p, sizeof idx_p, "%s", sub))
                     return !replay_fail(rc, "teacher", "path fitting limit", "too long");
-            } else if (replay_parent_dir(rp->data_path, ddir, sizeof ddir) &&
-                       fmt_checked(sub, sizeof sub, "%s/teacher/%s", ddir, inm) &&
-                       record_regular_file_nofollow(sub)) {
+            } else if (!sym && replay_parent_dir(rp->data_path, ddir, sizeof ddir) &&
+                       probe_teacher_subdir(ddir, inm, sub, sizeof sub, &sym)) {
                 if (!fmt_checked(idx_p, sizeof idx_p, "%s", sub))
                     return !replay_fail(rc, "teacher", "path fitting limit", "too long");
             }
+            if (sym)
+                return !replay_fail(rc, "teacher", "regular non-symlink teacher directory", "symlink");
         }
         if (!idx_p[0] && !fmt_checked(idx_p, sizeof idx_p, "%s", cand))
             return !replay_fail(rc, "teacher", "path fitting limit", "too long");
