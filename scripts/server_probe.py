@@ -9,11 +9,26 @@ path puts that directory on sys.path first.
 import contextlib
 import http.client
 import json
+import os
 import random
+import re
 import socket
 import sys
 import time
 import urllib.request
+
+
+def _worker_slice():
+    m = re.fullmatch(r"gw(\d+)", os.environ.get("PYTEST_XDIST_WORKER", ""))
+    if not m:
+        return 0, 1
+    idx = int(m.group(1))
+    try:
+        count = int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "0"))
+    except ValueError:
+        count = 0
+    stride = max(count, idx + 1, 32)
+    return idx % stride, stride
 
 
 def free_port():
@@ -26,13 +41,28 @@ def free_port():
 def low_free_port(avoid=()):
     """A port below every OS's ephemeral range that binds now, for a server a
     script starts and then polls (see self_connected below for why below).
-    Two processes can still draw the same one; wait_for_own_server is what
-    makes that an error instead of a measurement of the other's server."""
+    Disjoint across pytest-xdist workers when PYTEST_XDIST_WORKER is set;
+    wait_for_own_server also verifies the server pid."""
     rng = random.SystemRandom()
+    offset, stride = _worker_slice()
+    tried = set(avoid)
+    slice_count = (32767 - (20000 + offset)) // stride + 1
+    for _ in range(min(250, slice_count)):
+        port = 20000 + offset + rng.randrange(slice_count) * stride
+        if port in tried:
+            continue
+        tried.add(port)
+        with contextlib.closing(socket.socket()) as s:
+            try:
+                s.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
     for _ in range(500):
         port = rng.randint(20000, 32767)
-        if port in avoid:
+        if port in tried:
             continue
+        tried.add(port)
         with contextlib.closing(socket.socket()) as s:
             try:
                 s.bind(("127.0.0.1", port))
@@ -110,14 +140,38 @@ def served_pid(port):
     return True, pid if isinstance(pid, int) else None
 
 
+BIND_ATTEMPTS = 5
+
+
+class PortConflictError(RuntimeError):
+    """Another process already answers on the requested loopback port."""
+
+
+def port_flag_given(argv, flag):
+    """True when CLI `argv` explicitly passed `flag` (e.g. `--port-a`)."""
+    prefix = flag + "="
+    return any(a == flag or a.startswith(prefix) for a in argv)
+
+
+def _foreign_port_error(port, pid, what):
+    return PortConflictError(
+        f"port {port} is served by another process (pid {pid}), not the runner "
+        f"started for {what}; stop it or pass another port")
+
+
 def wait_for_own_server(proc, port, what, tries=400):
     """Returns once the server answering on `port` is `proc`, the runner the
     caller started for `what`. A server that answers there and is another
     process is refused: taking it for the caller's own scored that server's
     model under the caller's file name (two comparisons at once, or an
-    earlier run still up). Raises RuntimeError; the process is stopped first."""
+    earlier run still up). Raises PortConflictError (a RuntimeError subclass)
+    on a foreign server or RuntimeError otherwise; the process is stopped first."""
     for _ in range(tries):
         if proc.poll() is not None:
+            if server_up(port):
+                answered, pid = served_pid(port)
+                if answered and pid is not None and pid != proc.pid:
+                    raise _foreign_port_error(port, pid, what)
             raise RuntimeError(f"runner exited early loading {what} (code {proc.returncode})")
         if server_up(port):
             answered, pid = served_pid(port)
@@ -126,9 +180,31 @@ def wait_for_own_server(proc, port, what, tries=400):
             if answered:
                 proc.kill()
                 proc.wait()
-                raise RuntimeError(
-                    f"port {port} is served by another process (pid {pid}), not the runner "
-                    f"started for {what}; stop it or pass another port")
+                raise _foreign_port_error(port, pid, what)
         time.sleep(0.5)
     proc.kill()
+    proc.wait()
     raise RuntimeError(f"server for {what} on port {port} did not come up")
+
+
+def start_own_server(spawn_fn, port, what, attempts=BIND_ATTEMPTS, avoid=()):
+    """Start `spawn_fn(port)` and wait for it to serve `port`, retrying on a
+    fresh low_free_port if another process owns the port (R6.107). Non-conflict
+    failures fail at once without retrying. Returns `(proc, actual_port)`."""
+    tried = set(avoid)
+    if port in tried:
+        port = low_free_port(avoid=tried)
+    for attempt in range(max(1, attempts)):
+        tried.add(port)
+        proc = spawn_fn(port)
+        try:
+            wait_for_own_server(proc, port, what)
+            return proc, port
+        except PortConflictError:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            if attempt == max(1, attempts) - 1:
+                raise
+            port = low_free_port(avoid=tried)
+    raise RuntimeError(f"server for {what} did not come up")
