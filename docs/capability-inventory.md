@@ -8,8 +8,8 @@ Every public surface of Runner and the one component that owns it. The component
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | Command line | 55 | 15 | 5 | 13 | 28 | 1 | 1 | 118 |
 | HTTP routes | 22 |  |  |  | 1 |  |  | 23 |
-| `RUNNER_*` switches | 26 | 103 | 10 | 17 |  |  | 7 | 163 |
-| Record formats | 8 |  |  | 6 | 11 |  |  | 25 |
+| `RUNNER_*` switches | 26 | 103 | 10 | 18 |  |  | 7 | 164 |
+| Record formats | 8 |  |  | 6 | 13 |  |  | 27 |
 | Python client | 14 |  |  |  |  | 25 |  | 39 |
 | TypeScript client | 18 |  |  |  | 7 |  |  | 25 |
 
@@ -36,7 +36,7 @@ Every path `src/server.c` matches. `{id}` stands for a trailing name or id.
 | Runtime | 22 | `/health`, `/metrics`, `/unload`, `/v1/capabilities`, `/v1/chat/completions`, `/v1/completions`, `/v1/decide`, `/v1/embeddings`, `/v1/messages`, `/v1/messages/count_tokens`, `/v1/models`, `/v1/rerank`, `/v1/responses`, `/v1/responses/{id}`, `/v1/runner/contexts`, `/v1/runner/contexts/{id}`, `/v1/runner/prefix-cache`, `/v1/runner/prefix-cache/clear`, `/v1/runner/requests/{id}`, `/v1/runner/sessions`, `/v1/runner/sessions/{id}`, `/v1/systemone` |
 | Proof | 1 | `/v1/runner/provenance` |
 
-## `RUNNER_*` switches (163)
+## `RUNNER_*` switches (164)
 
 Every switch read through `getenv` or an environment helper, without the `RUNNER_` prefix. A switch's owner is the component of the file that reads it, unless a name rule says otherwise. These are outside the compatibility promise ([versioning](versioning.md)); their classes are in the [deprecation review](deprecation-review-2026-11.md).
 
@@ -45,10 +45,10 @@ Every switch read through `getenv` or an environment helper, without the `RUNNER
 | Runtime | 26 | `CURL`, `HF_CACHE`, `MAX_QUEUE`, `PREFIX_CACHE_MB`, `PREFIX_CACHE_TTL`, `REPEAT_COUNT`, `REQUEST_TIMEOUT`, `RESPONSES_STORE_MB`, `RESPONSES_STORE_TTL`, `SAMPLE_STATS`, `SCHEMA_ALLOW_WS`, `SCHEMA_TRACE`, `SCORE_CHUNKED`, `SCORE_MICRO`, `TEST_DRAIN_GRACE_MS`, `TEST_DRAIN_HARD_MS`, `TEST_DRAIN_LATE_MS`, `TEST_IDENTITY_WAIT`, `TEST_REQUEST_TAIL_MS`, `TEST_ROUTE_FLIP_AT`, `TEST_SCRIPTED_REPLY`, `TEST_STREAM_OUT_CAP`, `TOOL_TRACE`, `TTL_POLL_S`, `VRAM_PRIORITY`, `VRAM_REGISTRY_DIR` |
 | Execution | 103 | `ACT_TRACE`, `ACT_TRACE_POS`, `ACT_TRACE_VALUES`, `ATTN_BATCH`, `CPU_I8`, `CPU_I8K`, `CPU_I8_PREFILL`, `CPU_MOE_DEFAULT`, `CPU_PROF`, `CUDA_ATTN_DEC`, `CUDA_ATTN_DUMP`, `CUDA_ATTN_TC`, `CUDA_ATTN_TC_WIDE`, `CUDA_ATTN_TILE`, `CUDA_GRAPH_OFF`, `CUDA_GRAPH_RECUR`, `CUDA_I8`, `CUDA_INIT_INJECT_FAILURE`, `CUDA_INJECT_FAILURE`, `CUDA_KV_GATHER`, `CUDA_PROFILE`, `CUDA_Q8X`, `CUDA_RECUR_SEQ`, `CUDA_ROUTE`, `CUDA_SM80`, `CUDA_TC`, `CUDA_TC2`, `CUDA_TC2_WIDE`, `CUDA_TC_NVFP4`, `CUDA_WINDOW`, `CUDA_XH_REUSE`, `DEBUG_ACT`, `DEBUG_MOE`, `DEBUG_ROUTE`, `DEBUG_TIME`, `DEBUG_TOKENS`, `DEBUG_VRAM`, `GPU_FALLBACK`, `GRAMMAR_FF`, `GRAMMAR_TRACE`, `KV_RECURRENT_ROWS`, `KV_RING`, `LAYER_SIM`, `METAL_ATTN_CHUNK`, `METAL_ATTN_COOP`, `METAL_ATTN_GQA`, `METAL_ATTN_TILE`, `METAL_ATTN_TILE_WIDE`, `METAL_ATT_BYTES`, `METAL_BATCH`, `METAL_BATCH_TILES`, `METAL_COL_TILE`, `METAL_FRONT`, `METAL_FUSE`, `METAL_INIT_INJECT_FAILURE`, `METAL_INJECT_BIND_FAILURE`, `METAL_INJECT_FAILURE`, `METAL_MAX_BUF`, `METAL_MM`, `METAL_MOE_BATCH`, `METAL_MOE_EM`, `METAL_MOE_MM`, `METAL_MOE_ROUTE_TRACE`, `METAL_MV`, `METAL_MV2`, `METAL_MVG`, `METAL_NAN_TRACE`, `METAL_STATS`, `METAL_TENSOR`, `METAL_TIMING`, `MLA_NAIVE`, `MOE_EAGER`, `MOE_GROUPED`, `MOE_HOT`, `MOE_HOT_PROF`, `MOE_PREFETCH`, `MOE_PROBE`, `MOE_REPLAY`, `MOE_TRACE`, `MOE_TWIN`, `MTP_DUMP`, `MV_FUSE`, `REQUIRE_GRAPH_CAPTURE`, `REWIND_TRACE`, `SPEC_BATCH`, `SPEC_PROF`, `SPEC_STATS`, `TEST_BATCH_REVERSE`, `TEST_DRAFT_SCOPE`, `TEST_KV_DUMP`, `TEST_METAL_HELD_AFTER_FREE`, `TEST_METAL_KV_GROW_FAILS_AT`, `TEST_METAL_KV_SKIP_GROW`, `TEST_METAL_KV_STEP`, `TEST_PREFILL_DELAY_MS`, `TEST_RAM_AVAILABLE_MB`, `TEST_ROPE_GRAPH_STALE`, `TEST_STEP_DELAY_MS`, `TEST_VRAM_FREE_MB`, `TIEDV`, `TIEDV_CHECK`, `TPOOL_SPIN`, `TURN_GUARD_SELFTEST` |
 | Model substrate | 10 | `ALLOW_UNKNOWN_ARCH`, `FILE_RMW_WRITE_FAIL`, `LORA_INSTALL_FAIL`, `PREFETCH`, `TEST_CGROUP_ROOT`, `TEST_LOAD_DELAY_MS`, `TEST_MLOCK_REFUSE`, `TEST_NO_CLOSE_RANGE`, `TEST_NO_FILE_ID`, `TEST_NO_INODE` |
-| Model production | 17 | `FORCE_REQUANT`, `GOLD_LOGITS`, `GOLD_PYTHON`, `LORA_ADAM_ALLOC_FAIL`, `QUANTIZE_INSTALL_FAIL`, `REQUANT_ONLY`, `TEST_BUILD_DIRTY`, `TEST_DERIVE_INTERVAL_FAIL`, `TRAIN_DEVICE_STEP`, `TRAIN_FULL_DUMP`, `TRAIN_FULL_DUMP_TENSORS`, `TRAIN_GPU`, `TRAIN_MM_KERNEL`, `TRAIN_MVT_KERNEL`, `TRAIN_PROF`, `TRAIN_RESIDENT`, `TRAIN_ROWS` |
+| Model production | 18 | `FORCE_REQUANT`, `GOLD_LOGITS`, `GOLD_PYTHON`, `LORA_ADAM_ALLOC_FAIL`, `QUANTIZE_INSTALL_FAIL`, `REQUANT_ONLY`, `TEST_BUILD_DIRTY`, `TEST_DERIVE_INTERVAL_FAIL`, `TEST_REPORT_SUFFIX`, `TRAIN_DEVICE_STEP`, `TRAIN_FULL_DUMP`, `TRAIN_FULL_DUMP_TENSORS`, `TRAIN_GPU`, `TRAIN_MM_KERNEL`, `TRAIN_MVT_KERNEL`, `TRAIN_PROF`, `TRAIN_RESIDENT`, `TRAIN_ROWS` |
 | Desktop | 7 | `TEST_INSTANCE_SWEEP_DELAY_MS`, `TEST_INSTANCE_SWEEP_MARKER`, `TEST_REGISTRY_READONLY`, `TEST_TRAY_CONFIG_INSTALL_FAIL`, `TEST_TRAY_OPENER`, `TEST_TRAY_SEND_CHUNK`, `UNVERIFIED_LEASE_TTL` |
 
-## Record formats (25)
+## Record formats (27)
 
 Every `xyntetik.runner.*` schema identifier, without the prefix.
 
@@ -56,7 +56,7 @@ Every `xyntetik.runner.*` schema identifier, without the prefix.
 |---|---:|---|
 | Runtime | 8 | `cached.v1`, `decision.v1`, `doctor.v1`, `kv_snapshot.v1`, `model-tiers.v1`, `score.v1`, `session.v1`, `session.v2` |
 | Model production | 6 | `context-surgery.v1`, `derive.v1`, `eval.v1`, `merge.v1`, `quant.v1`, `train.v1` |
-| Proof | 11 | `bundle.v1`, `envelope.v1`, `evidence-pack.v1`, `signkey.v1`, `train.chain.v1`, `transcript.v1`, `transcript.v2`, `verify.v1`, `watermark.key_id.v1`, `watermark_detect.v1`, `watermark_key.v1` |
+| Proof | 13 | `bundle.v1`, `envelope.v1`, `evidence-pack.v1`, `sample.v1`, `signkey.v1`, `train.chain.v1`, `train.sample.v1`, `transcript.v1`, `transcript.v2`, `verify.v1`, `watermark.key_id.v1`, `watermark_detect.v1`, `watermark_key.v1` |
 
 ## Python client (39)
 

@@ -791,8 +791,7 @@ static const char *seg_find(const char *buf, size_t n, const char *mark) {
     return NULL;
 }
 
-static bool segment_precheck(const train_record_opts *o, jv *rec, const char *rbuf, size_t rlen,
-                             const char *rec_path, cli_replay *rp, int *rc) {
+static bool seg_modes_ok(jv *rec, int *rc) {
     if (jv_get(rec, "teacher") || !strcmp(jv_str(jv_get(rec, "objective"), ""), "kl-to-teacher"))
         return seg_refuse(rc, 2, "a record of a run with a teacher (distillation) is not replayed by segments");
     if (jv_get(rec, "dpo") || !strcmp(jv_str(jv_get(rec, "objective"), ""), "dpo"))
@@ -801,6 +800,14 @@ static bool segment_precheck(const train_record_opts *o, jv *rec, const char *rb
         return seg_refuse(rc, 2, "a --train-full record is not replayed by segments");
     if (jv_get(rec, "resumed_at_step"))
         return seg_refuse(rc, 2, "a record of a resumed run is not replayed by segments: replay the run it resumed");
+    return true;
+}
+
+static bool seg_chain(jv *rec, const char *rbuf, size_t rlen, cli_replay *rp, int *rc);
+
+static bool segment_precheck(const train_record_opts *o, jv *rec, const char *rbuf, size_t rlen,
+                             const char *rec_path, cli_replay *rp, int *rc) {
+    if (!seg_modes_ok(rec, rc)) return false;
     const char *s = o->replay_segment;
     char *e1 = NULL, *e2 = NULL;
     long a = strtol(s, &e1, 10), b = -1;
@@ -808,6 +815,55 @@ static bool segment_precheck(const train_record_opts *o, jv *rec, const char *rb
     if (e1 == s || b < 0 || e2 == e1 + 2 || *e2 || a < 0 || a > INT_MAX || b > INT_MAX)
         return seg_refuse(rc, 1, "wants A..B: two checkpoint steps the record names (A may be 0, the run's start)");
     if (b <= a) return seg_refuse(rc, 1, "the segment ends before it starts");
+    if (!seg_chain(rec, rbuf, rlen, rp, rc)) return false;
+    int ia = -1, ib = -1;
+    for (int i = 0; i < rp->seg_n; i++) {
+        if (rp->seg_ck[i].step == a) ia = i;
+        if (rp->seg_ck[i].step == b) ib = i;
+    }
+    char msg[128];
+    if ((a != 0 && ia < 0) || ib < 0) {
+        snprintf(msg, sizeof msg, "step %ld is not a checkpoint the record names", a != 0 && ia < 0 ? a : b);
+        return seg_refuse(rc, 1, msg);
+    }
+    if (a > 0) {
+        const char *ap = jv_str(jv_get(jv_get(rec, "adapter"), "path"), "");
+        char name[320], opt[4200], have[65] = "", have_o[65] = "";
+        if (!safe_relname(ap, 255) || !fmt_checked(name, sizeof name, "%s.step-%05ld", ap, a) ||
+            !relocate_local(name, rec_path, rp->seg_start, sizeof rp->seg_start) ||
+            !fmt_checked(opt, sizeof opt, "%s.optim", rp->seg_start))
+            return !replay_fail(rc, "adapter.path", "a safe base name", ap);
+        // the record's other cited files' rule: a regular file by its base
+        // name, never a symlink (envelope_cited_regular_sha256: lstat, no-follow)
+        bool ha = envelope_cited_regular_sha256(rp->seg_start, have);
+        bool ho = envelope_cited_regular_sha256(opt, have_o);
+        if (!ha || !ho) {
+            fputs("error: --segment: ", stderr);
+            envelope_print_safe(stderr, !ha ? rp->seg_start : opt, 0, "?", false);
+            fprintf(stderr, " is missing or not a regular file (a symlink is not followed) (step %ld)\n", a);
+            *rc = 2;
+            return false;
+        }
+        if (strcmp(have, rp->seg_ck[ia].adapter) != 0 || strcmp(have_o, rp->seg_ck[ia].optim) != 0) {
+            fputs("error: --segment: ", stderr);
+            envelope_print_safe(stderr, strcmp(have, rp->seg_ck[ia].adapter) != 0 ? rp->seg_start : opt,
+                                0, "?", false);
+            fprintf(stderr, " is not the checkpoint the record names (step %ld)\n", a);
+            *rc = 2;
+            return false;
+        }
+    }
+    rp->segment = true;
+    rp->seg_a = (int)a;
+    rp->seg_b = (int)b;
+    return true;
+}
+
+// The record's checkpoints and their chain: each entry validated, the head
+// recomputed from h0 and the entries, h0 from the record's own bytes before
+// the chain fields, and the interval the run wrote them at (every K steps and
+// the last). Shared by --segment and --sample.
+static bool seg_chain(jv *rec, const char *rbuf, size_t rlen, cli_replay *rp, int *rc) {
     jv *cks = jv_get(rec, "checkpoints"), *ch = jv_get(rec, "checkpoint_chain");
     if (!cks || cks->type != J_ARR || cks->n < 1 || !ch || ch->type != J_OBJ)
         return seg_refuse(rc, 2, "the record names no checkpoints (a run without --save-every, or older than segment records)");
@@ -853,16 +909,7 @@ static bool segment_precheck(const train_record_opts *o, jv *rec, const char *rb
     int n = snprintf(line, sizeof line, "xyntetik.runner.train.chain.v1|%s", bh);
     envelope_data_sha256(line, (size_t)n, hh);
     if (strcmp(hh, h0) != 0) return !replay_fail(rc, "checkpoint_chain.h0", h0, hh);
-    int ia = -1, ib = -1, steps = 0;
-    for (int i = 0; i < rp->seg_n; i++) {
-        if (rp->seg_ck[i].step == a) ia = i;
-        if (rp->seg_ck[i].step == b) ib = i;
-    }
-    char msg[128];
-    if ((a != 0 && ia < 0) || ib < 0) {
-        snprintf(msg, sizeof msg, "step %ld is not a checkpoint the record names", a != 0 && ia < 0 ? a : b);
-        return seg_refuse(rc, 1, msg);
-    }
+    int steps = 0;
     // the run wrote them every K steps and at its last: the replay writes the same
     int every = rp->seg_ck[0].step;
     if (!record_int(rec, "steps", 1, INT_MAX, &steps))
@@ -872,37 +919,46 @@ static bool segment_precheck(const train_record_opts *o, jv *rec, const char *rb
             !(i == rp->seg_n - 1 && rp->seg_ck[i].step == steps))
             return seg_refuse(rc, 2, "the record's checkpoints are not every K steps and the last");
     rp->seg_every = every;
-    if (a > 0) {
-        const char *ap = jv_str(jv_get(jv_get(rec, "adapter"), "path"), "");
-        char name[320], opt[4200], have[65] = "", have_o[65] = "";
-        if (!safe_relname(ap, 255) || !fmt_checked(name, sizeof name, "%s.step-%05ld", ap, a) ||
-            !relocate_local(name, rec_path, rp->seg_start, sizeof rp->seg_start) ||
-            !fmt_checked(opt, sizeof opt, "%s.optim", rp->seg_start))
-            return !replay_fail(rc, "adapter.path", "a safe base name", ap);
-        // the record's other cited files' rule: a regular file by its base
-        // name, never a symlink (envelope_cited_regular_sha256: lstat, no-follow)
-        bool ha = envelope_cited_regular_sha256(rp->seg_start, have);
-        bool ho = envelope_cited_regular_sha256(opt, have_o);
-        if (!ha || !ho) {
-            fputs("error: --segment: ", stderr);
-            envelope_print_safe(stderr, !ha ? rp->seg_start : opt, 0, "?", false);
-            fprintf(stderr, " is missing or not a regular file (a symlink is not followed) (step %ld)\n", a);
-            *rc = 2;
-            return false;
-        }
-        if (strcmp(have, rp->seg_ck[ia].adapter) != 0 || strcmp(have_o, rp->seg_ck[ia].optim) != 0) {
-            fputs("error: --segment: ", stderr);
-            envelope_print_safe(stderr, strcmp(have, rp->seg_ck[ia].adapter) != 0 ? rp->seg_start : opt,
-                                0, "?", false);
-            fprintf(stderr, " is not the checkpoint the record names (step %ld)\n", a);
-            *rc = 2;
-            return false;
-        }
-    }
-    rp->segment = true;
-    rp->seg_a = (int)a;
-    rp->seg_b = (int)b;
     return true;
+}
+
+// R17.9 step 4b, --sample: the record's segments, for the draw. Read as a
+// replay reads it (bounded, no-follow), the modes segments do not cover
+// refused by name, the chain checked whole. bounds[0] is 0 (the run's start),
+// bounds[1..m] the checkpoint steps; head is the chain's head. Each drawn
+// segment is then replayed by --segment, which checks the rest.
+bool train_record_sample_plan(const train_record_host *host, const train_record_opts *o, int *bounds, int cap,
+                               int *m, char head[65], int *rc) {
+    const char *rec_path = o->replay_train;
+    char err[512] = "";
+    char *rbuf = NULL;
+    size_t rlen = 0;
+    jv *rec = read_bounded_record(rec_path, true, err, sizeof err, &rbuf, &rlen);
+    if (!rec) {
+        fputs("error: ", stderr);
+        envelope_print_safe(stderr, err[0] ? err : rec_path, 0, "?", false);
+        fputc('\n', stderr);
+        *rc = 1;
+        return false;
+    }
+    // the record's own checks first (schema, signature, determinism,
+    // environment), once, before any segment is drawn
+    cli_replay *rp = calloc(1, sizeof *rp);
+    bool t3 = false;
+    bool ok = rp && replay_check_compat(host, o, rec, rbuf, rlen, &t3, rc) && replay_check_environment(host, rec, rc) &&
+              seg_modes_ok(rec, rc) && seg_chain(rec, rbuf, rlen, rp, rc);
+    if (ok && rp->seg_n + 1 > cap) ok = seg_refuse(rc, 2, "the record names more segments than a sample takes");
+    if (ok) {
+        bounds[0] = 0;
+        for (int i = 0; i < rp->seg_n; i++) bounds[i + 1] = rp->seg_ck[i].step;
+        *m = rp->seg_n;
+        memcpy(head, jv_str(jv_get(jv_get(rec, "checkpoint_chain"), "head"), ""), 65);
+    }
+    if (!rp && *rc == 0) *rc = 1;
+    free(rp);
+    free(rbuf);
+    jv_free(rec);
+    return ok;
 }
 
 bool train_record_prepare(const train_record_host *host, train_record_opts *o, cli_replay *rp, int *rc) {

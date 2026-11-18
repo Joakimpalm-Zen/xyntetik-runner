@@ -206,6 +206,9 @@ bool        plat_random(uint8_t *out, size_t n);
 // XR_SSM_SERIAL. One rule for a training record's environment and a row's
 // route identity (compat.c).
 bool        runner_switch_counts(const char *name, size_t n);
+// a new file for writing: created exclusively, never through a link; NULL if the
+// name exists (R17.9 step 4b's --report)
+FILE       *plat_fopen_new(const char *path);
 // The last path component: what follows the last '/' or '\\' (both count on
 // every platform, so a path spelled the other platform's way still names
 // its file), or the whole string when it has neither.
