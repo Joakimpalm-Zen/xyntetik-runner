@@ -2655,31 +2655,14 @@ bool plat_running_image_id(char *out, size_t cap) {
 #elif defined(_WIN32)
 // R20, Windows: the build id the linker wrote (ld --build-id, the Makefile's
 // Windows LDFLAGS) into the image's CodeView debug record, read from the
-// loaded module's own PE headers in memory: no file and no name, so nothing
-// can be swapped under it. The id is derived from the linked content, so
-// another build has another one. False for an image linked without one.
+// loaded module in memory (no file, no name) by pe_buildid_walk, bounded by
+// the image size the loader reports. False for an image without one.
+#include "pe_buildid.h"
 bool plat_running_image_id(char *out, size_t cap) {
-    const uint8_t *img = (const uint8_t *)GetModuleHandleW(NULL);
-    if (!img || cap < 60) return false;
-    const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)img;
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
-    const IMAGE_NT_HEADERS *nt = (const IMAGE_NT_HEADERS *)(img + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE ||
-        nt->OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_DEBUG)
-        return false;
-    const IMAGE_DATA_DIRECTORY *dd = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
-    if (!dd->VirtualAddress || dd->Size < sizeof(IMAGE_DEBUG_DIRECTORY)) return false;
-    const IMAGE_DEBUG_DIRECTORY *dbg = (const IMAGE_DEBUG_DIRECTORY *)(img + dd->VirtualAddress);
-    for (DWORD i = 0; i < dd->Size / sizeof *dbg; i++) {
-        if (dbg[i].Type != IMAGE_DEBUG_TYPE_CODEVIEW || !dbg[i].AddressOfRawData || dbg[i].SizeOfData < 24)
-            continue;
-        const uint8_t *cv = img + dbg[i].AddressOfRawData;   // "RSDS", the 16-byte id, a 4-byte age
-        if (memcmp(cv, "RSDS", 4) != 0) continue;
-        int n = snprintf(out, cap, "pe-buildid:");
-        for (int k = 0; k < 20; k++) n += snprintf(out + n, cap - (size_t)n, "%02x", cv[4 + k]);
-        return true;
-    }
-    return false;
+    HMODULE h = GetModuleHandleW(NULL);
+    MODULEINFO mi;
+    if (!h || !GetModuleInformation(GetCurrentProcess(), h, &mi, sizeof mi)) return false;
+    return pe_buildid_walk((const uint8_t *)mi.lpBaseOfDll, (size_t)mi.SizeOfImage, out, cap);
 }
 #else
 bool plat_running_image_id(char *out, size_t cap) {

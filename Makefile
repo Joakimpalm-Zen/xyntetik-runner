@@ -3705,6 +3705,16 @@ endif
 
 # R6.91: the sampler gives a NaN logit no mass, in the default, a portable and a
 # strict (T3 float flags) build: tests/test_sample_nan.c compiled three ways and
+# R20: the PE build-id walker (src/pe_buildid.h) on crafted header buffers
+# (tests/test_pe_buildid.c): every inconsistency gives false, never a fault.
+# Under ASan and UBSan where the toolchain has them (MinGW has neither), so a
+# read past a buffer fails the test instead of passing by luck.
+PE_SAN := $(if $(filter Windows,$(BUILD_OS)),,-fsanitize=address,undefined -fno-omit-frame-pointer)
+.PHONY: test-pe-buildid
+test-pe-buildid: tests/test_pe_buildid.c src/pe_buildid.h
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) $(PE_SAN) -I src tests/test_pe_buildid.c -o test-pe-buildid$(if $(filter Windows,$(BUILD_OS)),.exe,)
+	./test-pe-buildid$(if $(filter Windows,$(BUILD_OS)),.exe,)
+
 # checked by scripts/check-sample-nan.sh, whose control is the finite picks of
 # main's sampler at SN_BASE.
 SN_EXT := $(if $(filter %.exe,$(RUNNER_EXE)),.exe,)
@@ -3722,7 +3732,7 @@ test-sample-nan: tests/test_sample_nan.c src/sample.c scripts/check-sample-nan.s
 	$(CC) $(SN_STRICT) -I src tests/test_sample_nan.c src/sample.c -o test-sample-nan-strict$(SN_EXT) $(LDFLAGS)
 	sh scripts/check-sample-nan.sh "$(SN_EXT)" $(SN_BASE) $(CC) $(CFLAGS) -- $(LDFLAGS)
 
-test-gates-core: test-python-deps test-sample-nan $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) $(TEST_MICRO_SCHED) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
+test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) $(TEST_MICRO_SCHED) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) $(TEST_ATEM_OOM) $(TEST_TEMPLATE_FAMILIES) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_MLOCK) test-es-mlock.gguf $(TEST_WILLNEED) $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
