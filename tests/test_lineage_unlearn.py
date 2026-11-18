@@ -87,12 +87,30 @@ def _record(name, parent=None, parent_sha=None):
     return rec
 
 
+def _continued(name, parent_rec, parent_out):
+    # a train record that continued the adapter parent_out, its record named by path alone (a from_adapter
+    # record link may carry no hash, a weakness of its own: R6.94), so a loop of records is possible
+    rec = _record(name)
+    rec["from_adapter"] = {"path": parent_out + ".gguf", "sha256": hashlib.sha256(parent_out.encode()).hexdigest(),
+                           "record": {"path": parent_rec}}
+    return rec
+
+
 def test_a_record_that_is_its_own_ancestor_is_broken_as_a_cycle(runner_bin, tmp_path):
-    # without a hash a link names its parent by path alone, so a loop is possible: x -> y -> x
-    (tmp_path / "x.json").write_text(json.dumps(_record("x", "y.json")))
-    (tmp_path / "y.json").write_text(json.dumps(_record("y", "x.json")))
+    # x continued y's adapter and y continued x's: x -> y -> x
+    (tmp_path / "x.json").write_text(json.dumps(_continued("x", "y.json", "y")))
+    (tmp_path / "y.json").write_text(json.dumps(_continued("y", "x.json", "x")))
     r = _run(runner_bin, ["attest", "lineage", tmp_path / "x.json"])
     assert r.returncode == 2 and "cycle" in r.stdout, r.stdout
+
+
+def test_an_unlearn_link_without_a_hash_is_broken(runner_bin, tmp_path):
+    """A link without a hash is not a link: an unlearn record whose parent_record names no sha256 is BROKEN, naming
+    the field, not walked as an unsigned parent."""
+    (tmp_path / "p.json").write_text(json.dumps(_record("p")))
+    (tmp_path / "c.json").write_text(json.dumps(_record("c", "p.json")))
+    r = _run(runner_bin, ["attest", "lineage", tmp_path / "c.json"])
+    assert r.returncode == 2 and "unlearn.parent_record has no sha256" in r.stdout, r.stdout
 
 
 def test_a_chain_longer_than_the_bound_is_broken(runner_bin, tmp_path):
