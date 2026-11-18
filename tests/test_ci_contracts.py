@@ -863,6 +863,16 @@ class PlatformDetection(unittest.TestCase):
                 self.assert_portable(self.model_compile(uname, [self.RELEASE_CFLAGS + " -DRUNNER_PORTABLE_MATH"]),
                                      True)
 
+    def test_the_sampler_check_reads_a_portable_default_builds_digest(self):
+        """R6.85: on Windows the default build is portable, so test_sample_nan's default binary names itself
+        "portable" in its digest line. scripts/check-sample-nan.sh read only "digest default:", found nothing and
+        failed every Windows run. Run here with PORTABLE_MATH=1, as a Windows default is built; the plain run (the
+        default build named "default") is make test's own."""
+        p = subprocess.run(["make", "test-sample-nan", "PORTABLE_MATH=1", "PYTHON=" + sys.executable], cwd=ROOT,
+                           capture_output=True, text=True, timeout=900)
+        self.assertEqual(p.returncode, 0, (p.stdout + p.stderr)[-800:])
+        self.assertIn("sample-nan: ok", p.stdout)
+
     @unittest.skipIf(os.name == "nt", "stubs uname with a POSIX script")
     def test_posix_uname_keeps_its_branch(self):
         linux = self.runner_link("Linux")
