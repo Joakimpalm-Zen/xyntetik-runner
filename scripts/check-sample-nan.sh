@@ -38,7 +38,7 @@ if git cat-file -e "$base:src/sample.c" 2>/dev/null; then
     git show "$base:src/sample.c" > "$out/base-sample.c"
     # shellcheck disable=SC2086
     $cc $cflags -I src tests/test_sample_nan.c "$out/base-sample.c" -o "$out/base$ext" $ldflags || exit 1
-    b=$("$out/base$ext" | sed -n 's/^digest default: .* \([0-9a-f]*\)$/\1/p')
+    b=$("$out/base$ext" --digest-only | sed -n 's/^digest default: .* \([0-9a-f]*\)$/\1/p')
     if [ "$b" != "$d" ]; then
         echo "sample-nan: the default build's finite picks moved: $d, main's sampler gives $b"; exit 1
     fi

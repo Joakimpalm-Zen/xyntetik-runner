@@ -136,6 +136,14 @@ static inline double logit_mass_d(float v, double top) { return fp_isnan(v) ? 0.
 
 static int pick_scaled(sampler *s, cand_t *c, int k, float norm_sum,
                        float r_pre, bool *fell_off) {
+    // No candidate: nothing to read and nothing to walk. The head path reaches
+    // here with k = 0 when no finite logit is admitted (every logit NaN, top-p
+    // or min-p on); it retreats on fell_off to the full sort, whose candidates
+    // always number at least one. Any other caller gets an error, not a token.
+    if (k < 1) {
+        if (fell_off) *fell_off = true;
+        return -2;
+    }
     float mx = c[0].p, sum = 0;
     for (int i = 0; i < k; i++) { c[i].p = logit_mass(c[i].p, mx); sum += c[i].p; }
     // every candidate NaN (cand_cmp sorts a NaN last, so c[0] is one only then):
@@ -194,7 +202,13 @@ static int pick_scaled(sampler *s, cand_t *c, int k, float norm_sum,
         if (!ok) return -2;   // allocation failure: an error, not a stop
     }
     float r = r_pre >= 0.0f ? r_pre : rng_f32(&s->rng), cum = 0;
-    int pick = c[k - 1].id;
+    // a walk whose shares sum short of r (an ULP of rounding) falls off the
+    // end: it lands on the last candidate that HAS mass, never a trailing
+    // NaN's zero (R6.91). With every candidate's mass above 0 that is c[k-1],
+    // as before.
+    int last = k - 1;
+    while (last > 0 && !(c[last].p > 0)) last--;
+    int pick = c[last].id;
     bool hit = false;
     for (int i = 0; i < k; i++) {
         cum += c[i].p;
@@ -484,7 +498,9 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
                 // can still run off it. Retreat to the exact full sort rather
                 // than return the head's last token, which is what the walk
                 // falls back to and would be silently wrong.
-                if (fell_off) { if (sample_stats()) fprintf(stderr, "[smp felloff]"); free(h); break; }
+                // (h is freed once, after the loop: freeing it here too was a
+                // double free on every retreat, R6.91)
+                if (fell_off) { if (sample_stats()) fprintf(stderr, "[smp felloff]"); break; }
                 if (sample_stats()) fprintf(stderr, "[smp fast m=%d]", m);
                 free(h);
                 return pick;

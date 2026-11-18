@@ -84,7 +84,12 @@ static float uni(float lo, float hi) {
     return lo + (hi - lo) * (float)((g_rng >> 40) & 0xffffff) / 16777216.0f;
 }
 
-int main(void) {
+static uint64_t control_digest(void);
+
+int main(int argc, char **argv) {
+    // --digest-only: the control alone, for main's sampler (which the NaN cases
+    // can crash, R6.91's review)
+    if (argc > 1 && !strcmp(argv[1], "--digest-only")) { control_digest(); return 0; }
     float nan = qnan();
     { float l[2] = { 0.0f, nan }; no_nan_pick("[0, NaN], top_k 2", l, 2, 2, 1.0f); }
     { float l[2] = { nan, 0.0f }; no_nan_pick("[NaN, 0], top_k 2", l, 2, 2, 1.0f); }
@@ -143,7 +148,17 @@ int main(void) {
         free(l);
         free(w);
     }
-    // the control: picks over finite logits, as a digest
+    control_digest();
+    return g_fail;
+}
+
+// the control: picks over finite logits, as a digest. Its own input stream,
+// from a fixed seed, so the cases above do not move it: the seed, less the
+// 5000 draws the first head case took when the digest was first recorded
+// (da1c250ddb339875 on Apple clang), so the inputs are those exactly.
+static uint64_t control_digest(void) {
+    g_rng = 0x243F6A8885A308D3ull;
+    for (int i = 0; i < 5000; i++) (void)uni(0.0f, 1.0f);
     uint64_t h = 0xcbf29ce484222325ull;
     static const struct { float temp; int top_k; float top_p, min_p; int n; } set[] = {
         { 1.0f, 0, 1.0f, 0.0f, 50 }, { 0.7f, 20, 0.95f, 0.0f, 300 }, { 1.0f, 64, 0.95f, 0.05f, 1000 },
@@ -168,5 +183,5 @@ int main(void) {
         free(l);
     }
     printf("digest %s: %d finite picks %016llx\n", BUILD_KIND, picks, (unsigned long long)h);
-    return g_fail;
+    return h;
 }
