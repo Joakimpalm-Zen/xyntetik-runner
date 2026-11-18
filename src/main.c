@@ -8906,14 +8906,20 @@ static int run_replay_sample(cli_opts *o, const train_record_host *host, const t
         // test can plant a file there (tests/test_train_segments.py)
         const char *tsuf = getenv("RUNNER_TEST_REPORT_SUFFIX");
         char suf[40];
-        snprintf(suf, sizeof suf, "%ld", plat_pid_self());
+        uint8_t rb[8] = { 0 };
+        if (!plat_random(rb, sizeof rb)) {
+            fprintf(stderr, "error: --report: the system's random source failed\n");
+            return 1;
+        }
+        for (int i = 0; i < 8; i++) snprintf(suf + 2 * i, 3, "%02x", rb[i]);   // unpredictable, not the pid
         if (tsuf && *tsuf && strlen(tsuf) < sizeof suf) snprintf(suf, sizeof suf, "%s", tsuf);
         if (snprintf(tmp, sizeof tmp, "%s.partial-%s", o->audit_report, suf) >= (int)sizeof tmp) {
             fprintf(stderr, "error: --report path too long\n");
             return 1;
         }
-        FILE *f = plat_fopen(tmp, "wb");
-        bool wok = f != NULL;
+        FILE *f = plat_fopen_new(tmp);   // exclusive, never through a link planted at the name
+        bool made = f != NULL;
+        bool wok = made;
         if (f) {
             fprintf(f, "{\"schema_version\":\"xyntetik.runner.sample.v1\",\"algorithm\":\"%s\",\"record\":", SAMPLE_ALGO);
             fput_json_str(f, plat_path_base(o->replay_train));
@@ -8928,7 +8934,7 @@ static int run_replay_sample(cli_opts *o, const train_record_host *host, const t
         }
         wok = wok && plat_replace_file(tmp, o->audit_report);
         if (!wok) {
-            plat_remove(tmp);
+            if (made) plat_remove(tmp);   // only a file this run made: never what was planted there
             fputs("error: cannot write --report ", stderr);
             envelope_print_safe(stderr, o->audit_report, 0, "?", false);
             fputc('\n', stderr);
