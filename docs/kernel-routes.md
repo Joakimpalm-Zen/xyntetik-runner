@@ -98,8 +98,9 @@ the fresh slot's bits.
 - A change of the recorded compiler version, source revision (with its dirty
   mark) or build profile makes persisted stores and automatic snapshots
   misses and session images resume their own rows only. An identical clean
-  rebuild need not miss. A dirty build's identity also holds its binary's
-  sha256, hashed once at start (R20): two dirty trees at one revision are two
+  rebuild need not miss. A dirty build's identity also holds the identity
+  of the image it runs, taken once at start (R20; Linux: the sha256 of
+  /proc/self/exe, macOS: the loaded image's LC_UUID, elsewhere per process): two dirty trees at one revision are two
   identities, and if the binary cannot be hashed, a value of that process
   alone, so nothing persisted is reused. The cost, on a dirty tree: every
   rebuild misses persisted stores and automatic snapshots, and session images

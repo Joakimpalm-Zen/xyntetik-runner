@@ -8272,7 +8272,7 @@ static char g_route_binary[80];
 
 void model_route_set_build(const char *revision, bool dirty, const char *binary_sha256) {
     if (!dirty) g_route_binary[0] = 0;
-    else if (binary_sha256 && strlen(binary_sha256) == 64)
+    else if (binary_sha256 && *binary_sha256 && strlen(binary_sha256) < sizeof g_route_binary)
         snprintf(g_route_binary, sizeof g_route_binary, "%s", binary_sha256);
     else
         snprintf(g_route_binary, sizeof g_route_binary, "process-%llx-%llx", (unsigned long long)plat_pid_self(),

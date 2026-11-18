@@ -9239,13 +9239,19 @@ static int cli_main(int argc, char **argv, char **owned_prompt, session_image *s
         if (td && !strcmp(td, "1")) dirty = true;
         const char *tw = getenv("RUNNER_TEST_IDENTITY_WAIT");
         for (int i = 0; tw && *tw && i < 600 && !plat_file_readable(tw); i++) plat_sleep_ms(100);
-        char bsha[65] = "";
+        // The identity of the image running, never of a file a path names now:
+        // on Linux the hash of /proc/self/exe (the image itself), on macOS the
+        // loaded image's LC_UUID, elsewhere none (a value of this process).
+        char bid[96] = "";
         if (dirty) {
-            char *exe = plat_executable_path();
-            if (!exe || !envelope_file_sha256(exe, bsha)) bsha[0] = 0;
-            free(exe);
+#if defined(__linux__)
+            char sha[65];
+            if (envelope_file_sha256("/proc/self/exe", sha)) snprintf(bid, sizeof bid, "sha256:%s", sha);
+#else
+            if (!plat_running_image_id(bid, sizeof bid)) bid[0] = 0;
+#endif
         }
-        model_route_set_build(rev ? rev : "", dirty, bsha[0] ? bsha : NULL);
+        model_route_set_build(rev ? rev : "", dirty, bid[0] ? bid : NULL);
     }
     cli_replay rp;
     memset(&rp, 0, sizeof rp);

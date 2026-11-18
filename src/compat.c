@@ -2625,3 +2625,36 @@ bool plat_file_identity(const char *path, uint64_t *size, uint64_t *ino,
     if (ctime) *ctime = stat_ctime_ns(&st);
     return true;
 }
+
+// R20: an identity of the image this process is RUNNING, not of the file a
+// path names now (which can have been replaced since the process started). On
+// macOS, the LC_UUID of the loaded main image, read from memory through dyld:
+// the linker derives it from the output, so another build has another one.
+// False where no such identity is had here (Linux hashes /proc/self/exe, the
+// image itself, in its caller; Windows and the rest have none).
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+bool plat_running_image_id(char *out, size_t cap) {
+    const struct mach_header_64 *h = (const struct mach_header_64 *)_dyld_get_image_header(0);
+    if (!h || h->magic != MH_MAGIC_64 || cap < 50) return false;
+    const uint8_t *p = (const uint8_t *)(h + 1);
+    for (uint32_t i = 0; i < h->ncmds; i++) {
+        const struct load_command *lc = (const struct load_command *)p;
+        if (lc->cmd == LC_UUID) {
+            const struct uuid_command *u = (const struct uuid_command *)lc;
+            int n = snprintf(out, cap, "macho-uuid:");
+            for (int k = 0; k < 16; k++) n += snprintf(out + n, cap - (size_t)n, "%02x", u->uuid[k]);
+            return true;
+        }
+        p += lc->cmdsize;
+    }
+    return false;
+}
+#else
+bool plat_running_image_id(char *out, size_t cap) {
+    if (cap) out[0] = 0;
+    return false;
+}
+#endif
+
