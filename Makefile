@@ -67,6 +67,9 @@ ifeq ($(BUILD_OS),Windows)
 # shell (otherwise it dies at load with STATUS_DLL_NOT_FOUND on libwinpthread-1.dll)
 CFLAGS += -Werror=format-truncation -Werror=cpp
 LDFLAGS += -lws2_32 -lpsapi -static   # psapi: QueryWorkingSetEx / GetProcessMemoryInfo
+# R20: a content-derived build id in the image's CodeView record, which a dirty
+# build's route identity reads from memory (compat.c plat_running_image_id)
+LDFLAGS += -Wl,--build-id
 # tray: gdi32 (icon painting) and comdlg32 (GetOpenFileName) are not in the
 # MinGW default lib set; shell32/advapi32 are but stay explicit for clarity
 LDFLAGS += -lshell32 -lgdi32 -lcomdlg32 -ladvapi32
@@ -3721,6 +3724,16 @@ endif
 
 # R6.91: the sampler gives a NaN logit no mass, in the default, a portable and a
 # strict (T3 float flags) build: tests/test_sample_nan.c compiled three ways and
+# R20: the PE build-id walker (src/pe_buildid.h) on crafted header buffers
+# (tests/test_pe_buildid.c): every inconsistency gives false, never a fault.
+# Under ASan and UBSan where the toolchain has them (MinGW has neither), so a
+# read past a buffer fails the test instead of passing by luck.
+PE_SAN := $(if $(filter Windows,$(BUILD_OS)),,-fsanitize=address,undefined -fno-omit-frame-pointer)
+.PHONY: test-pe-buildid
+test-pe-buildid: tests/test_pe_buildid.c src/pe_buildid.h
+	$(CC) $(filter-out -ffast-math,$(CFLAGS)) $(PE_SAN) -I src tests/test_pe_buildid.c -o test-pe-buildid$(if $(filter Windows,$(BUILD_OS)),.exe,)
+	./test-pe-buildid$(if $(filter Windows,$(BUILD_OS)),.exe,)
+
 # checked by scripts/check-sample-nan.sh, whose control is the finite picks of
 # main's sampler at SN_BASE.
 SN_EXT := $(if $(filter %.exe,$(RUNNER_EXE)),.exe,)
@@ -3738,7 +3751,7 @@ test-sample-nan: tests/test_sample_nan.c src/sample.c scripts/check-sample-nan.s
 	$(CC) $(SN_STRICT) -I src tests/test_sample_nan.c src/sample.c -o test-sample-nan-strict$(SN_EXT) $(LDFLAGS)
 	sh scripts/check-sample-nan.sh "$(SN_EXT)" $(SN_BASE) $(CC) $(CFLAGS) -- $(LDFLAGS)
 
-test-gates-core: test-python-deps test-sample-nan $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) $(TEST_MICRO_SCHED) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
+test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) $(TEST_MICRO_SCHED) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) $(TEST_ATEM_OOM) $(TEST_TEMPLATE_FAMILIES) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_MLOCK) test-es-mlock.gguf $(TEST_WILLNEED) $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
@@ -4396,6 +4409,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_package_manifests.py \
     tests/test_parent_pid.py \
     tests/test_pattern_automaton.py \
+    tests/test_pe_buildid_link.py \
     tests/test_phi3_rope.py \
     tests/test_phys_footprint.py \
     tests/test_port_in_use.py \
@@ -4427,6 +4441,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_retired_switches.py \
     tests/test_rewind_under_refused_prefix.py \
     tests/test_rollout_identity.py \
+    tests/test_route_identity_running_image.py \
     tests/test_sampling_defaults.py \
     tests/test_scheduled_ci_alert.py \
     tests/test_schema_annotations.py \
