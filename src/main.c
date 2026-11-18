@@ -6263,12 +6263,7 @@ static int train_environment(sbuf *json, char *names, size_t cap) {
     for (char **e = TRAIN_ENVIRON; e && *e; e++) {
         const char *eq = strchr(*e, '=');
         if (!eq || !train_env_counts(*e, (size_t)(eq - *e))) continue;
-        bool secret = false;
-        static const char *const words[] = { "KEY", "TOKEN", "SECRET", "PASS" };
-        for (size_t w = 0; w < sizeof words / sizeof *words; w++) {
-            const char *f = strstr(*e, words[w]);
-            if (f && f < eq) secret = true;
-        }
+        bool secret = train_env_is_secret(*e, (size_t)(eq - *e));
         if (json) {
             sb_lit(json, count ? ",\"" : "\"");
             sb_esc(json, *e, (size_t)(eq - *e));

@@ -64,6 +64,7 @@ typedef struct {
 } train_record_opts;
 
 bool train_env_counts(const char *name, size_t n);
+bool train_env_is_secret(const char *name, size_t n);
 bool train_record_num(jv *obj, const char *key, double min, double max, double *out);
 bool train_record_int(jv *obj, const char *key, int min, int max, int *out);
 bool train_record_fail(int *rc, const char *field, const char *want, const char *got);

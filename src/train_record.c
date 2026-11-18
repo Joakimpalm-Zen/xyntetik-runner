@@ -72,6 +72,16 @@ bool train_env_counts(const char *name, size_t n) {
     return n > 7 && !strncmp(name, "RUNNER_", 7) && !train_env_inert(name, n);
 }
 
+bool train_env_is_secret(const char *name, size_t n) {
+    static const char *const words[] = { "KEY", "TOKEN", "SECRET", "PASS" };
+    for (size_t w = 0; w < sizeof words / sizeof *words; w++) {
+        size_t wl = strlen(words[w]);
+        for (size_t i = 0; i + wl <= n; i++)
+            if (!memcmp(name + i, words[w], wl)) return true;
+    }
+    return false;
+}
+
 static void print_safe_value(const char *s) {
     if (!s) { fputs("missing", stdout); return; }
     for (int i = 0; s[i] && i < 128; i++) {
@@ -300,18 +310,34 @@ static bool replay_check_environment(const train_record_host *host, jv *rec, int
     if (want && want->type != J_OBJ) return !replay_fail(rc, "environment", "an object", "invalid");
     char wb[600], gb[600];
     for (int i = 0; want && i < want->n; i++) {
-        const char *v = jv_str(want->items[i], NULL), *here = getenv(want->keys[i]);
-        if (v && here && (!strcmp(v, here) || !strcmp(v, "(set)"))) continue;
-        snprintf(wb, sizeof wb, "%s=%s", want->keys[i], v ? v : "?");
-        snprintf(gb, sizeof gb, "%s %s", want->keys[i], here ? "set otherwise" : "unset");
+        const char *k = want->keys[i];
+        size_t kl = strlen(k);
+        if (strchr(k, '=') || !train_env_counts(k, kl)) {
+            snprintf(gb, sizeof gb, "%.200s not a training switch", k);
+            return !replay_fail(rc, "environment", "known training switches only", gb);
+        }
+        const char *v = jv_str(want->items[i], NULL), *here = getenv(k);
+        bool set_ok = v && !strcmp(v, "(set)") && train_env_is_secret(k, kl);
+        if (v && here && (!strcmp(v, here) || set_ok)) continue;
+        snprintf(wb, sizeof wb, "%.200s=%.200s", k, v ? v : "?");
+        snprintf(gb, sizeof gb, "%.200s %s", k, here ? "set otherwise" : "unset");
         return !replay_fail(rc, "environment", wb, gb);
     }
     for (char **e = host->environ_list; e && *e; e++) {
         const char *eq = strchr(*e, '=');
-        if (!eq || !train_env_counts(*e, (size_t)(eq - *e))) continue;   // the record's own rule
-        snprintf(gb, sizeof gb, "%.*s set", (int)(eq - *e), *e);
-        snprintf(wb, sizeof wb, "%.*s", (int)(eq - *e), *e);
-        if (!want || !jv_get(want, wb)) return !replay_fail(rc, "environment", "no such switch", gb);
+        if (!eq) continue;
+        size_t kl = (size_t)(eq - *e);
+        if (!train_env_counts(*e, kl)) continue;   // the record's own rule
+        char *kbuf = malloc(kl + 1);
+        if (!kbuf) { *rc = 1; return false; }
+        memcpy(kbuf, *e, kl);
+        kbuf[kl] = 0;
+        bool present = want && jv_get(want, kbuf) != NULL;
+        free(kbuf);
+        if (!present) {
+            snprintf(gb, sizeof gb, "%.*s set", (int)(kl > 500 ? 500 : kl), *e);
+            return !replay_fail(rc, "environment", "no such switch", gb);
+        }
     }
     return true;
 }
