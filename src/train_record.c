@@ -83,17 +83,25 @@ bool train_env_is_secret(const char *name, size_t n) {
     return false;
 }
 
-static void print_safe_value(const char *s) {
-    if (!s) { fputs("missing", stdout); return; }
+static void print_safe_to(FILE *out, const char *s) {
+    if (!s) { fputs("missing", out); return; }
     for (int i = 0; s[i] && i < 128; i++) {
         unsigned char c = (unsigned char)s[i];
-        putchar((c < 0x20 || c == 0x7f) ? '?' : (int)c);
+        fputc((c < 0x20 || c == 0x7f) ? '?' : (int)c, out);
     }
-    if (strlen(s) > 128) fputs("...", stdout);
+    if (strlen(s) > 128) fputs("...", out);
+}
+
+static void print_safe_value(const char *s) {
+    print_safe_to(stdout, s);
 }
 
 static bool replay_fail(int *rc, const char *field, const char *want, const char *got) {
-    printf("MISMATCH %s: expected %s, got ", field, want);
+    fputs("MISMATCH ", stdout);
+    print_safe_value(field);
+    fputs(": expected ", stdout);
+    print_safe_value(want);
+    fputs(", got ", stdout);
     print_safe_value(got);
     putchar('\n');
     *rc = 2;
@@ -587,8 +595,10 @@ static bool unlearn_prepare(train_record_opts *o, jv *rec, int *rc) {
     char have[65] = "";
     const char *want = jv_str(jv_get(jv_get(rec, "data"), "sha256"), "");
     if (!envelope_file_sha256(o->train_path, have) || strcmp(have, want)) {
-        fprintf(stderr, "error: --unlearn: %s is not the parent's data (sha256 %s, the record names %s)\n",
-                o->train_path, have[0] ? have : "unreadable", want);
+        fprintf(stderr, "error: --unlearn: %s is not the parent's data (sha256 %s, the record names ",
+                o->train_path, have[0] ? have : "unreadable");
+        print_safe_to(stderr, want);
+        fputs(")\n", stderr);
         *rc = 1;
         return false;
     }

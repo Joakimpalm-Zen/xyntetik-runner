@@ -58,9 +58,17 @@ static bool safe_local_name(const char *s) {
     if (!s || !*s || strlen(s) > 255) return false;
     if (!strcmp(s, ".") || !strcmp(s, "..")) return false;
     for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
-        if (*p < 0x20 || *p == 0x7f || *p == '/' || *p == '\\') return false;
+        if (*p < 0x20 || *p == 0x7f || *p == '/' || *p == '\\' || *p == ':') return false;
     }
     return true;
+}
+
+static void print_safe_lineage(const char *s, size_t max_chars) {
+    if (!s) { fputs("?", stdout); return; }
+    for (size_t i = 0; s[i] && i < max_chars; i++) {
+        unsigned char c = (unsigned char)s[i];
+        putchar((c < 0x20 || c == 0x7f) ? '?' : (int)c);
+    }
 }
 
 static bool cited_is_unsafe_file(const char *path) {
@@ -218,13 +226,14 @@ static void walk_evals(const char *file, const char *sha, const char *trust_hex,
         const char *pw = !pass || pass->type == J_NULL ? "no threshold set"
                        : pass->type == J_BOOL && pass->b ? "pass" : "FAIL";
         printf("eval %s: ", EVAL_KINDS[k]);
-        if (!strcmp(EVAL_KINDS[k], "fidelity"))
-            printf("vs %s, %d positions, top-1 %.1f%%, mean KL %.4g; %s",
-                   jv_str(jv_get(jv_get(ev, "reference"), "path"), "?"),
+        if (!strcmp(EVAL_KINDS[k], "fidelity")) {
+            fputs("vs ", stdout);
+            print_safe_lineage(jv_str(jv_get(jv_get(ev, "reference"), "path"), "?"), 255);
+            printf(", %d positions, top-1 %.1f%%, mean KL %.4g; %s",
                    lineage_safe_count(jv_get(m, "positions_scored"), 0, 0),
                    jv_num(jv_get(m, "top1_agreement_pct"), 0),
                    jv_num(jv_get(m, "mean_kld"), 0), pw);
-        else
+        } else
             printf("%d of %d tasks verified, %d aborts; %s",
                    lineage_safe_count(jv_get(m, "tasks_verified"), 0, 0),
                    lineage_safe_count(jv_get(m, "tasks_attempted"), 0, 0),
@@ -308,7 +317,9 @@ static void walk_input(const char *key, jv *in, const char *citing, const char *
     const char *file = lineage_relocate(path, citing, here, sizeof here);
     if (!file[0]) {
         indent(depth);
-        printf("%s: %s sha256 %s  BROKEN: unsafe path\n", key, path, s);
+        printf("%s: ", key);
+        print_safe_lineage(path, 255);
+        printf(" sha256 %s  BROKEN: unsafe path\n", s);
         note(w, 2);
         return;
     }
@@ -337,7 +348,9 @@ static void walk_input(const char *key, jv *in, const char *citing, const char *
     const char *lrec = lineage_relocate(lname, file, moved, sizeof moved);
     if (!lrec[0]) {
         indent(depth + 1);
-        printf("BROKEN: unsafe record path %s\n", lname);
+        fputs("BROKEN: unsafe record path ", stdout);
+        print_safe_lineage(lname, 255);
+        putchar('\n');
         note(w, 2);
         return;
     }
@@ -436,10 +449,14 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
     if (bs && (!rec_name || bs > rec_name)) rec_name = bs;
 #endif
     rec_name = rec_name ? rec_name + 1 : rec_path;
-    printf("%s -> %s sha256 %s  %s", step, out_path, s, verdict);
+    printf("%s -> ", step);
+    print_safe_lineage(out_path, 255);
+    printf(" sha256 %s  %s", s, verdict);
     if (sig == 0) printf(" (signed %.16s...)", pub);
     if (!on_disk) printf(" (output file not present; checked by its recorded hash)");
-    printf("  [runner %s, record %s]\n", jv_str(jv_get(rec, "runner"), "?"), rec_name);
+    fputs("  [runner ", stdout);
+    print_safe_lineage(jv_str(jv_get(rec, "runner"), "?"), 128);
+    printf(", record %s]\n", rec_name);
     if (w->sp < LINEAGE_MAX_DEPTH + 2) memcpy(w->path[w->sp++], rsha, sizeof rsha);
     for (size_t i = 0; i < sizeof INPUT_KEYS / sizeof INPUT_KEYS[0]; i++) {
         if (!strcmp(INPUT_KEYS[i], out_key)) continue;   // a train record's "adapter" is its output
@@ -456,10 +473,11 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
         const char *ppath = jv_str(jv_get(pr, "path"), "");
         const char *safe_p = safe_local_name(ppath) ? ppath : "<unsafe path>";
         indent(depth + 1);
-        printf("unlearned from: %s (dropped %d rows of %d lines, sha256 %.12s)\n", safe_p,
+        printf("unlearned from: %s (dropped %d rows of %d lines, sha256 ", safe_p,
                lineage_safe_count(jv_get(un, "dropped_count"), INT_MIN, -1),
-               lineage_safe_count(jv_get(un, "dropped_distinct"), INT_MIN, -1),
-               jv_str(jv_get(un, "dropped_sha256"), "?"));
+               lineage_safe_count(jv_get(un, "dropped_distinct"), INT_MIN, -1));
+        print_safe_lineage(jv_str(jv_get(un, "dropped_sha256"), "?"), 12);
+        fputs(")\n", stdout);
         // a link without a hash is not a link: nothing holds the parent named
         // to the record the unlearned run read
         const char *psha = jv_str(jv_get(pr, "sha256"), NULL);
