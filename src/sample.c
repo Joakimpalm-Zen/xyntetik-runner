@@ -125,10 +125,28 @@ static void top_sorted(const float *logits, float temp, int n, int m,
 // that the cumulative walk never reached `r` — only possible when a caller
 // hands in a candidate set that does not carry the whole mass, which is
 // precisely the case the fast path has to detect and retreat from.
+// R6.91: a NaN logit (a defect upstream) carries no mass, in every build: the
+// bit test, which -ffast-math cannot fold away, gives it a share of 0 before
+// any sum. A finite logit's mass is exactly the expf it always was, so the
+// picks for finite logits do not move. Before this, expf(NaN - mx) turned the
+// sum and every share NaN, the roulette walk never reached its draw, and a
+// strict build picked the NaN token.
+static inline float logit_mass(float v, float mx) { return fp_isnan(v) ? 0.0f : expf(v - mx); }
+static inline double logit_mass_d(float v, double top) { return fp_isnan(v) ? 0.0 : exp((double)v - top); }
+
 static int pick_scaled(sampler *s, cand_t *c, int k, float norm_sum,
                        float r_pre, bool *fell_off) {
     float mx = c[0].p, sum = 0;
-    for (int i = 0; i < k; i++) { c[i].p = expf(c[i].p - mx); sum += c[i].p; }
+    for (int i = 0; i < k; i++) { c[i].p = logit_mass(c[i].p, mx); sum += c[i].p; }
+    // every candidate NaN (cand_cmp sorts a NaN last, so c[0] is one only then):
+    // no logit is finite, there is no distribution to draw from, and the
+    // lowest id is returned, said once
+    if (!(sum > 0) && fp_isnan(mx)) {
+        static _Atomic int said;
+        if (!said++) fprintf(stderr, "sampler: every candidate logit is NaN; returning token %d\n", c[0].id);
+        if (fell_off) *fell_off = false;
+        return c[0].id;
+    }
     if (norm_sum > 0) sum = norm_sum;
     for (int i = 0; i < k; i++) c[i].p /= sum;
     // top-p
@@ -214,7 +232,7 @@ static int prefix_decide(sampler *s, cand_t *valid, int k, double top,
                          float *r_pre) {
     const double d = 1e-5;
     double V = 0;
-    for (int i = 0; i < k; i++) V += exp((double)valid[i].p - top);
+    for (int i = 0; i < k; i++) V += logit_mass_d(valid[i].p, top);
     double R = total - seen;
     if (!(R > 0)) R = 0;
     R += 1e-9 * total;   // the two sums were accumulated in different orders
@@ -224,7 +242,7 @@ static int prefix_decide(sampler *s, cand_t *valid, int k, double top,
         double lo = (double)s->top_p * V * (1 - d), cum = 0;
         for (int j = 0; j < k; j++) {
             double prev = cum;
-            cum += exp((double)valid[j].p - top);
+            cum += logit_mass_d(valid[j].p, top);
             if (cum >= hi) {
                 if (j > 0 && !(prev < lo)) return -3;
                 float keep = s->top_p;
@@ -248,7 +266,7 @@ static int prefix_decide(sampler *s, cand_t *valid, int k, double top,
     double lo = (double)*r_pre * V * (1 - d), cum = 0;
     for (int j = 0; j < k; j++) {
         double prev = cum;
-        cum += exp((double)valid[j].p - top);
+        cum += logit_mass_d(valid[j].p, top);
         if (cum > hi) {
             if (j > 0 && !(prev <= lo)) return -3;
             return valid[j].id;
@@ -402,14 +420,17 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
         // allocation failed: fall through to the full-sort path below
     }
     if (!ok && head_ok && s->temp > 0 && n_vocab >= 4096) {
-        float mx = logits[0] / temp;
-        for (int i = 1; i < n_vocab; i++) {
+        // the max over the finite logits (a NaN is never one, R6.91)
+        int i0 = 0;
+        while (i0 < n_vocab && fp_isnan(logits[i0])) i0++;
+        float mx = i0 < n_vocab ? logits[i0] / temp : 0.0f;
+        for (int i = i0 + 1; i < n_vocab; i++) {
             float v = logits[i] / temp;
-            if (v > mx) mx = v;
+            if (!fp_isnan(v) && v > mx) mx = v;
         }
         double total = 0;
         for (int i = 0; i < n_vocab; i++)
-            total += expf(logits[i] / temp - mx);
+            total += logit_mass(logits[i] / temp, mx);
         cand_t *h = malloc(sizeof(cand_t) * HEAD_CAP);
         if (h) {
             float t_log = logf(1.0f / 1024.0f);   // head: p >= p_max/1024
@@ -419,7 +440,7 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
                 double head_mass = 0;
                 for (int i = 0; i < n_vocab; i++) {
                     float v = logits[i] / temp;
-                    if (v - mx >= t_log) {
+                    if (!fp_isnan(v) && v - mx >= t_log) {   // a NaN is no candidate of the head
                         if (m == HEAD_CAP) { overflow = true; break; }
                         h[m++] = (cand_t){ v, i };
                         head_mass += expf(v - mx);
@@ -545,10 +566,10 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
             // bounds how much the unexamined entries can still carry
             top = c[0].p;
             for (int i = 0; i < n_vocab; i++)
-                total += expf(logits[i] / temp - c[0].p);
+                total += logit_mass(logits[i] / temp, c[0].p);
         }
         for (int i = checked; i < m && k < need; i++) {
-            if (open_ended) seen += exp((double)c[i].p - top);
+            if (open_ended) seen += logit_mass_d(c[i].p, top);
             if (ok(ud, c[i].id)) valid[k++] = c[i];
         }
         checked = m;
@@ -573,10 +594,10 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
             if (!(total > 0)) {   // the vocabulary's mass, once per pick
                 top = c[0].p;
                 for (int i = 0; i < n_vocab; i++)
-                    total += expf(logits[i] / temp - c[0].p);
+                    total += logit_mass(logits[i] / temp, c[0].p);
             }
             double seen_k = 0;
-            for (int i = 0; i < m; i++) seen_k += exp((double)c[i].p - top);
+            for (int i = 0; i < m; i++) seen_k += logit_mass_d(c[i].p, top);
             int pick = prefix_decide(s, valid, k, top, total, seen_k, c[m - 1].p,
                                      &r_pre);
             if (pick != -3) { free(c); free(valid); return pick; }
