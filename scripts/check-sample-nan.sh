@@ -28,7 +28,13 @@ if [ -x ./test-sample-nan-asan ]; then
         echo "sample-nan: the AddressSanitizer build failed"; exit 1
     fi
 fi
-d=$(sed -n 's/^digest default: .* \([0-9a-f]*\)$/\1/p' "$out/default.txt")
+# each binary's own digest line, whatever it names itself: a Windows default
+# build is portable (R6.85) and says so
+digest_of() { sed -n 's/^digest [a-z]*: .* \([0-9a-f]*\)$/\1/p' "$1"; }
+d=$(digest_of "$out/default.txt")
+if [ -z "$d" ]; then
+    echo "sample-nan: the default build printed no digest line"; exit 1
+fi
 for k in portable strict; do
     if ! grep -q " $d\$" "$out/$k.txt"; then
         echo "sample-nan: the $k build's finite picks differ from the default build's ($d)"; exit 1
@@ -38,7 +44,8 @@ if git cat-file -e "$base:src/sample.c" 2>/dev/null; then
     git show "$base:src/sample.c" > "$out/base-sample.c"
     # shellcheck disable=SC2086
     $cc $cflags -I src tests/test_sample_nan.c "$out/base-sample.c" -o "$out/base$ext" $ldflags || exit 1
-    b=$("$out/base$ext" --digest-only | sed -n 's/^digest default: .* \([0-9a-f]*\)$/\1/p')
+    "$out/base$ext" --digest-only > "$out/base.txt" || exit 1
+    b=$(digest_of "$out/base.txt")
     if [ "$b" != "$d" ]; then
         echo "sample-nan: the default build's finite picks moved: $d, main's sampler gives $b"; exit 1
     fi

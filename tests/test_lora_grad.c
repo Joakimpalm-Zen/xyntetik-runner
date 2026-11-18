@@ -272,6 +272,49 @@ int main(int argc, char **argv) {
     }
     printf("ok: loss %.6f, %d grad buffers byte-deterministic across runs\n",
            l1, nsnap);
+    // R8.24.1 B (#935): on a fixture in the resident step's scope, the resident
+    // step against the per-piece path (RUNNER_TRAIN_RESIDENT=0). Both are
+    // host-chain twins over the same device products, so in a T3 build every
+    // gradient and the loss agree by bits; this is the case for the shapes the
+    // 4B recipe's G1 never takes: the base fixture is Llama's (no Q/K norm,
+    // adjacent-pair rope), q8 and prope the same, qk with Q/K norms. A default
+    // build's per-piece path keeps host arithmetic of its own: bounded there.
+    if (m.train_dev && m.train_res_windows > 0) {
+        long w0 = m.train_res_windows;
+        putenv("RUNNER_TRAIN_RESIDENT=0");
+        double lp = run_backward(&m, toks);
+        putenv("RUNNER_TRAIN_RESIDENT=");
+        CHECK(m.train_res_windows == w0, "RUNNER_TRAIN_RESIDENT=0 still ran resident");
+        size_t diff = 0, tot = 0;
+        double worst = 0;
+        for (int i = 0; i < nsnap; i++) {
+            int cnt = 0;
+            const float *g = model_lora_gradbuf(&m, lay[i], slo[i], whi[i], &cnt);
+            if (!g || cnt != snap_n[i]) { CHECK(0, "grad buffer %d missing on the per-piece path", i); continue; }
+            float mx = 0;
+            for (int k = 0; k < cnt; k++) mx = fabsf(snap[i][k]) > mx ? fabsf(snap[i][k]) : mx;
+            for (int k = 0; k < cnt; k++, tot++) {
+                if (memcmp(&g[k], &snap[i][k], 4)) diff++;
+                double e = mx > 0 ? fabs((double)g[k] - (double)snap[i][k]) / mx : 0;
+                if (e > worst) worst = e;
+            }
+        }
+#ifdef RUNNER_T3_BUILD
+        bool same = diff == 0 && memcmp(&lp, &l1, sizeof lp) == 0;
+        CHECK(same, "resident and per-piece differ in a T3 build: %zu of %zu gradients, loss %.17g "
+              "against %.17g", diff, tot, l1, lp);
+        if (same)
+            printf("ok: resident step == per-piece path by bits (T3): %zu gradients and the loss\n", tot);
+#else
+        bool near = worst <= 1e-3 && fabs(lp - l1) <= 1e-4 * fabs(l1);
+        CHECK(near, "resident and per-piece: worst gradient gap %.3g of its buffer's largest, loss "
+              "%.17g against %.17g", worst, l1, lp);
+        if (near)
+            printf("ok: resident step against the per-piece path (default build, bounded): %zu of %zu "
+                   "gradients differ, worst %.3g of the buffer's largest\n", diff, tot, worst);
+#endif
+        run_backward(&m, toks);   // the checks below read the resident step's gradients
+    }
     // RUNNER_GRAD_DUMP=FILE: the loss, then per buffer its layer, slot, side
     // (0 A, 1 B) and count as int32 and its gradients as float32, for
     // tests/test_deltanet_autograd.py
@@ -559,6 +602,35 @@ int main(int argc, char **argv) {
               "(fd %.6g, analytic %.6g)", sl, best2, fd2b, an2);
     }
 
+    // #935 (R8.24.1 B): a freed training context holds no device plane. The
+    // resident step's planes (tape, K/V rows, dx, the round's and the
+    // backward's planes, the frozen norm copies) were never freed, so a process
+    // that trained, freed the model and trained again kept them on the device.
+    // The checks above ran many steps, some on the per-piece path, in this
+    // context: free it (nothing held), then twice a fresh context and one step
+    // each: the same bytes both times (the positive control: the count sees
+    // the planes), and nothing after each free.
+    if (m.train_dev) {
+        size_t held0 = gpu_train_scratch_bytes(), held[2] = { 0, 0 }, freed[3];
+        gpu_train_free(&m);
+        freed[0] = gpu_train_scratch_bytes();
+        for (int k = 0; k < 2; k++) {
+            bool again = gpu_train_init(&m);
+            CHECK(again, "the training context did not start again (%d)", k + 1);
+            m.train_dev = true;
+            if (again) run_backward(&m, toks);
+            held[k] = gpu_train_scratch_bytes();
+            gpu_train_free(&m);
+            freed[k + 1] = gpu_train_scratch_bytes();
+        }
+        CHECK(freed[0] == 0 && freed[1] == 0 && freed[2] == 0, "a freed training context still "
+              "holds device planes: %zu, %zu, %zu bytes", freed[0], freed[1], freed[2]);
+        CHECK(held0 > 0 && held[0] > 0 && held[1] == held[0], "the planes one step holds: %zu in "
+              "a fresh context, %zu in the next", held[0], held[1]);
+        printf("lora-grad: device planes %zu bytes after the checks, %zu after the free; a fresh "
+               "context's step %zu then %zu, %zu and %zu after each free\n", held0, freed[0],
+               held[0], held[1], freed[1], freed[2]);
+    }
     for (int i = 0; i < nsnap; i++) free(snap[i]);
     model_free(&m);
     printf(g_fail ? "lora-grad: FAILED\n" : "lora-grad: ok\n");

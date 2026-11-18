@@ -767,6 +767,14 @@ typedef struct {
                              // training step and of its evals on train_gpu
                              // (gpu_train_mm), tolerance-equivalent to the
                              // CPU, not its bytes (--train-gpu)
+    bool   train_resident;   // R8.24.1 B R1/R2: this step's taped forward and backward run resident
+    bool   train_res_failed; // a resident round failed: the step fails (the host holds no tape)
+    long   train_res_windows; // backward windows that ran resident (lbw_resident_begin)
+    long   train_res_steps;   // training steps every window of which ran resident (main.c),
+                              // the record's products.resident_steps
+    bool   train_dev_ffn;    // R8.24.1 B: within a device-mode backward, the
+                             // gated FFN (products, adapter, activation) runs
+                             // on the device (gpu_train_ffn_*)
     uint64_t train_gpu_budget; // --train-gpu-budget: the device bytes the
                              // weights may take, 0 = the free memory measured
                              // at the start; which weights fit decides the
@@ -1281,6 +1289,55 @@ bool      model_lora_use(model_t *m, const lora_set *ls);
 // and the backward's d/dg of act(g), dispatched on the activation kind
 float  model_ffn_act(int act, float g, float u);
 float  model_ffn_act_deriv(int act, float g);
+// R8.24.1 B1: dh*u*act'(g) and dh*act(g), the gate and up sites' expressions
+float  model_ffn_dg(int act, float dh, float u, float g);
+float  model_ffn_du(int act, float dh, float g);
+// R8.24.1 B2: one row through the host's rmsnorm (o = x*r*w, w NULL the
+// weightless form) and its adjoint (dx += r*w*dy - c*x), for the device twins' gate
+void   model_rmsnorm(float *o, const float *x, const float *w, int n, float eps);
+void   model_rmsnorm_bw(const float *x, const float *w, const float *dy, float *dx,
+                        int n, float eps);
+// R8.24.1 B3: one position's row through the host's rope_apply (adjoint 0)
+// or rope_unapply (adjoint 1), for the device twins' gate
+void   model_rope_ref(model_t *m, float *v, int n_heads, int pos, int layer, int adjoint);
+// R8.24.1 B4: the forward's attention over T positions through the host's
+// attn_run (causal, a sliding window of swa rows, 0 none), for the device twin's gate
+// R8.24.1 B, the resident step's scope (out/r8241/B-resident-design.md), by
+// shape. resident_shape: the facts the planes and the scope depend on, filled
+// from a model by model_resident_why or by hand in the gate. The widths are
+// each layer's largest; adapter_floats is the sum over every slot with an
+// adapter of r (n_in + n_out); avail the device bytes the planes may take
+// beside the weights.
+typedef struct {
+    int n_layer, n_embd, q_dim, kv_dim, n_ff, n_head, T, rank_max;
+    size_t k_row_b, v_row_b;
+    long long adapter_floats;
+    size_t avail;
+} resident_shape;
+// the device bytes the resident step's planes take: the tape, the training
+// K/V rows, the residual and dx, a layer's work planes, the attention
+// backward's probability blocks, the adapters with their gradients
+size_t model_resident_need(const resident_shape *rs);
+// NULL when the step's T, rank and planes are within the resident scope, else why
+const char *model_resident_shape_why(const resident_shape *rs);
+// NULL when layer l's shape is within the resident scope for a step of T rows, else why
+const char *model_resident_layer_why(const model_t *m, int l, int T);
+// NULL when the whole step of T rows can run resident within avail device
+// bytes beside the weights, else the first reason it runs the slot path
+const char *model_resident_why(const model_t *m, int T, size_t avail);
+// R8.24.1 B, the attention slots' scope by shape: NULL when layer l's
+// attention over n rows from pos can run through the device twin, else why not
+const char *model_attn_dev_why(const model_t *m, int l, int pos, int n, int hd, int n_kv,
+                               int q_dim, int out_stride);
+bool   model_attn_ref(int T, int n_head, int kv_mul, int hd, int swa, float scale,
+                      int kind_k, int kind_v, const void *kc, const void *vc,
+                      size_t k_row_b, size_t v_row_b, const float *q, float *ao);
+// R8.24.1 B6: one site's adapter through the host's code (lora_apply, then the
+// backward's four passes) on caller arrays, for the device twins' gate
+bool   model_lora_site_ref(int r, int n_in, int n_out, int nb, float s,
+                           const float *A, const float *B, const float *x,
+                           const float *dy, float *y, float *ga, float *gb,
+                           float *dx);
 // test hooks: the serving xIELU and the backward's derivative (R8.27)
 float  model_xielu(float x, float an, float ap, float b, float eps);
 float  model_xielu_deriv(float x, float an, float ap, float b, float eps);

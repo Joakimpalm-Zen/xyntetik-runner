@@ -34,8 +34,12 @@
 
 // `unsigned long long` rather than uint64_t: nvcc compiles kernels.cu without
 // the host's <stdint.h> in scope, and the two spellings are the same 8-byte
-// type with the same alignment on every platform this builds for.
+// type with the same alignment on every platform this builds for. Defined
+// once: train_args.h, which gpu.h includes alone, names it too.
+#ifndef RUNNER_KA_U64
+#define RUNNER_KA_U64
 typedef unsigned long long ka_u64;
+#endif
 
 typedef struct {
     int    n_in;
@@ -139,5 +143,9 @@ typedef struct {
 
 // The Gated DeltaNet recurrence of a training step: tdn_args.h
 #include "tdn_args.h"
+
+// ---- R8.24.1 list B: the device-resident --train-gpu step's kernels: in
+// train_args.h, which gpu.h includes without the structs above
+#include "train_args.h"
 
 #endif // RUNNER_KERNEL_ARGS_H

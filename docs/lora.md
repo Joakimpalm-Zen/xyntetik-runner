@@ -252,9 +252,44 @@ forward, the heads, the backward's recompute and its transposed products, for
 every weight type, with the weights uploaded once and cached for the run. On
 Qwen3.5 and Clef the Gated DeltaNet recurrence runs there too: the forward's,
 the recompute's and the backward through time, all through one step
-function, so the forward and the recompute see the same states. The CPU
-keeps the rest: norms, rope, attention, the adapter's own rank-r products
-and the optimizer.
+function, so the forward and the recompute see the same states. A dense
+gated SiLU FFN (Qwen3, Llama and their kin, without a post-FFN norm or
+per-layer embeddings) runs on the device whole when the device holds every
+tensor: its products, the adapter's products at its three projections and
+the activation, in the forward, the recompute and the backward. The run says
+so once on stderr, or why it stays on the host; `RUNNER_TRAIN_DEVICE_STEP=0`
+keeps it on the host for comparison.
+
+On such a model in the resident step's scope, the whole step's layers run on
+the device (R8.24.1): every taped forward round and the backward's recompute
+and adjoints, with the norms, rope, the attention and the adapters at all
+seven projections, on a tape and K/V rows kept on the device. The head's
+adjoint goes up once a step and the adapters' gradients come back once. The
+scope: every layer with its own Q, K, V and O and the same head widths, RMS
+norms without post norms, no biases on the attention's projections, adapters
+of rank 512 or less on the seven projections, a window of at most 12288
+rows, and the step's planes fitting on the device beside the weights.
+Outside it the run says once on stderr why, and the step takes the same
+kernels piece by piece, each layer's values passing through the host;
+`RUNNER_TRAIN_RESIDENT=0` keeps that path for comparison. A resident step
+that fails on the device fails the run, since the host holds no tape to
+resume from. The CPU keeps the head's loss and adjoint and the optimizer.
+
+Every one of these kernels is a host-chain twin: it computes each element as
+a strict build's host computes it (`make T3=1`: the host's order of
+operations, no contraction, the portable exp). A T3 build's `--train-gpu`
+adapter is therefore the one it was before, byte for byte (Qwen3-4B Q4_K_M,
+5 steps). A default build's adapter changed with R8.24.1, because its host
+had used the C library's `expf` and `-ffast-math` in the parts that moved;
+until the head and the optimizer move too, a default build's adapter is not
+a T3 build's, though both are within the tolerance below.
+
+On an RTX 5070 with 8 CPU threads (Qwen3-4B Q4_K_M, the ToolUse record's
+data, rank 8 on every projection, ctx 128; the median of steps 2 to 20,
+interleaved runs on 2026-11-18 at a3589d19, whose tree is 6d3a65d9's), a
+resident step takes 0.67 s, against
+1.79 s for Runner 1.20.0's (d9b54174), 1.37 s for main before R8.24.1's list
+B (cc7af33b) and 1.06 s on the per-piece path.
 
 It is what to use when the weight products dominate, which they do on large
 models. On an RTX 3070 beside 4 CPU threads, a Qwen2.5-7B Q4_K_M step took
@@ -275,8 +310,22 @@ GPU is not measured.
 
 The adapter is not the CPU run's byte for byte: the device products add in
 another order. It matches within rounding: on Qwen3.5-0.8B the losses matched
-to 1e-6 and the held-out evals to six digits after 6 steps. Within a run the
-results are deterministic, and the device's forward product gives every
+to 1e-6 and the held-out evals to six digits after 6 steps. That tolerance
+is a statement about the test fixtures (`tests/test_train.py`: 1e-4 over 4
+steps), not about long runs: a training run is a trajectory, and on a real
+model any two arithmetic variants drift apart at the 1e-3 level within a few
+steps. On Qwen3-4B Q4_K_M (the ToolUse record's data, rank 8, ctx 128, an RTX
+5070), each step's loss against a T3 CPU run's, relative:
+
+| Step | default CPU | default `--train-gpu` (main d9b54174) | T3 `--train-gpu` | default `--train-gpu` (R8.24.1, resident) |
+|---|---|---|---|---|
+| 1 (the forward alone) | 3.5e-4 | 2.9e-4 | 2.0e-4 | 1.9e-4 |
+| 2 | 2.3e-3 | 9.6e-4 | 1.1e-3 | 8.4e-4 |
+| 3 | 4.1e-3 | 2.8e-3 | 3.9e-3 | 2.4e-3 |
+| 4 | 0.0 | 9.5e-4 | 9.5e-4 | 9.5e-4 |
+| 5 | 1.7e-3 | 5.4e-4 | 6.9e-4 | 2.8e-4 |
+
+Within a run the results are deterministic, and the device's forward product gives every
 position the same value however the window is batched, which the backward
 needs. The gradient gates (`test-lora-grad`) run in this mode on a CUDA host,
 at a batching that would expose a product that depends on it. The record
@@ -284,7 +333,9 @@ at a batching that would expose a product that depends on it. The record
 with the budget and the weights it held, and on a Gated DeltaNet model the
 recurrence's calls on the device (`deltanet_device_calls`) and any that
 failed there and ran on the CPU instead (`deltanet_failed_calls`, which
-stderr also reports).
+stderr also reports). `resident_steps` counts the steps every window of which
+ran as a resident step; a run whose planes stop fitting partway takes the
+per-piece path for the rest, and the count says how many steps did not.
 
 The weights are cached as long as the device budget allows, and the rest
 train on the CPU, where a tensor's products take the CPU's order. So the
@@ -900,7 +951,9 @@ rule's verdict),
 `*.partial` (a write in progress, never installed on failure).
 
 **Environment.** `RUNNER_TRAIN_GPU=1` (the CUDA assist, same bytes; `--train-gpu`
-is the whole step on the GPU), `RUNNER_TRAIN_PROF=1`
+is the whole step on the GPU), `RUNNER_TRAIN_DEVICE_STEP=0` (`--train-gpu`
+keeps a gated FFN's adapter and activation on the host), `RUNNER_TRAIN_RESIDENT=0`
+(`--train-gpu` keeps a step in the resident scope on the per-piece path), `RUNNER_TRAIN_PROF=1`
 (per-step phase times on stderr, with each phase's device share under
 `--train-gpu`), `RUNNER_DEBUG_TIME=1` (the forward's stage times at the end
 of a run, under `--train-gpu` split into device and host), `RUNNER_TRAIN_ROWS=N` (positions the trained

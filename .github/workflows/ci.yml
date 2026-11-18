@@ -382,8 +382,8 @@ jobs:
       # gcc narrows (float)exp((double)f) into a call of expf, which pmath.h's
       # macros never see: the KD teacher's head did, found on Windows. The t3
       # job checks a strict build, where gcc narrows nothing.
-      - name: a portable build at the release's flags imports no C-runtime math
-        run: make CFLAGS="-O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=x86-64-v3 -DRUNNER_PORTABLE_MATH" test-portable-imports PYTHON=python3
+      - name: a Windows build at the release's own flags imports no C-runtime math (R6.85)
+        run: make CFLAGS="-O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=x86-64-v3" test-portable-imports PYTHON=python3
       - name: reject invalid CLI values
         run: |
           for args in '--port 70000' '--gpu typo' '--kv typo' '--reserve 101'; do
@@ -1068,12 +1068,13 @@ jobs:
   # core, whole files per worker.
   #
   # A fourth part, metal-pytest, is the suite's Metal pytest files
-  # (tests/test_metal_*.py) in one process, as the `macos` job ran them until
-  # R6.89; it runs on every pull request the `macos` job runs on, and is the
-  # only part a pull request runs. They are what macos-suite-python caught
-  # alone (test_metal_mv_default, 2026-10-31 and 2026-11-02), so a pull
-  # request keeps them; the python part runs the same files again daily,
-  # under xdist.
+  # (tests/test_metal_*.py) run across workers one file per worker
+  # (`-n auto --dist loadfile`, matching macos-suite-python); it runs on
+  # every pull request the `macos` job runs on, and is the only part a pull
+  # request runs. They are what macos-suite-python caught alone
+  # (test_metal_mv_default, 2026-10-31 and 2026-11-02), so a pull request
+  # keeps them all; --timeout 1800 gives >2x margin over the ~10-16 min
+  # serial hosted baseline.
   macos-suite:
     name: macos-suite-${{ matrix.part }}
     needs: changes
@@ -1109,7 +1110,7 @@ jobs:
           python3 scripts/make-test-model.py test.gguf
       - name: Metal pytest files
         if: matrix.part == 'metal-pytest'
-        run: .venv/bin/python scripts/ci-run.py --timeout 1200 metal-pytest -- .venv/bin/python -m pytest -q -ra --junitxml=.build/ci/metal-pytest.xml tests/test_metal_*.py
+        run: .venv/bin/python scripts/ci-run.py --timeout 1800 metal-pytest -- .venv/bin/python -m pytest -n auto --dist loadfile -q -ra --junitxml=.build/ci/metal-pytest.xml tests/test_metal_*.py
       - uses: actions/upload-artifact@v7
         if: always()
         with:
