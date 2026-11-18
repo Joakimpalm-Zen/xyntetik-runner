@@ -143,7 +143,7 @@ static void check_layer_tables_freed(void) {
 static void capture_report(const char *what, const char *action, id cb,
                            char *out, size_t cap) {
     int fds[2];
-    assert(pipe(fds) == 0);
+    assert(pipe(fds) == 0);   // portability: ok (macOS only: the file is built and run on Darwin alone)
     fflush(stderr);
     int saved = dup(STDERR_FILENO);
     assert(saved >= 0);
