@@ -263,12 +263,15 @@ def test_a_hostile_checkpoint_interval_is_refused_without_overflow(hostile_bin, 
 
 
 def test_the_record_is_checked_before_its_start_files(runner_bin, run6):
-    """The record's own checks (schema, signature, determinism) come before the segment's: a same-binary record
-    without --allow-same-binary is refused for that, never by the state of the files beside it."""
+    """The record's own checks (schema, signature, determinism) come before the segment's: an unsigned record
+    replayed with --trust-key is refused for its signature, never by the state of the files beside it. That holds
+    in every build, exact or same-binary, so CI's T3 job, which takes no skips, runs it. Where the record is
+    same-binary, its determinism refusal also comes first."""
     d, out, rec_path, rec = run6
-    if rec.get("determinism") != "cpu-same-binary":
-        pytest.skip("this build's record is exact across machines")
     _ck(out, 2).unlink()
-    r = _attest(runner_bin, [rec_path, "--segment", "2..4", "-t", 2])
-    assert r.returncode == 2 and "MISMATCH determinism" in r.stdout, (r.stdout + r.stderr)[-600:]
-    assert "is not the checkpoint" not in r.stderr, r.stderr
+    r = _attest(runner_bin, [rec_path, "--segment", "2..4", "-t", 2, *_same_binary(rec), "--trust-key", "a" * 64])
+    assert r.returncode == 2 and "MISMATCH signature" in r.stdout, (r.stdout + r.stderr)[-600:]
+    assert "is not the checkpoint" not in r.stderr and "not a regular file" not in r.stderr, r.stderr
+    if rec.get("determinism") == "cpu-same-binary":
+        r = _attest(runner_bin, [rec_path, "--segment", "2..4", "-t", 2])
+        assert r.returncode == 2 and "MISMATCH determinism" in r.stdout, (r.stdout + r.stderr)[-600:]
