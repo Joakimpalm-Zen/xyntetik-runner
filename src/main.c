@@ -1781,7 +1781,7 @@ static int run_fit_check(const char *path, int n_ctx_want,
     // would take (model.c: a GPU load's default batch follows total RAM)
     f.kv_ring_mode = mp->kv_ring;
     f.n_batch = mp->n_batch > 0 ? mp->n_batch
-              : mp->gpu_mode == GPU_AUTO ? model_batch_default_for(plat_ram_bytes()) : 64;
+              : model_batch_default(mp->gpu_mode, plat_ram_bytes());
     // R3.58: a load that keeps every expert bank on the host (--cpu-moe, or
     // nemotron_h_moe's CUDA default, model.c model_default_placement) is
     // charged as that load charges it. --cpu-moe N and auto keep only some
