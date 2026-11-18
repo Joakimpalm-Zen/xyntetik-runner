@@ -205,3 +205,44 @@ def test_xdist_worker_port_slices_are_disjoint(monkeypatch):
         assert p1 not in seen_proc.values()
         seen_proc[k] = p1
         seen_probe[k] = p2
+
+
+def test_real_server_banner_matches_process_listening_banner(model, tmp_path):
+    log = tmp_path / "banner.log"
+    with RunnerServer(EXE, model, extra_args=["--gpu", "off"], log_path=str(log)) as srv:
+        assert complete(srv.port) == 200
+    assert _process.listening_banner(srv.port).encode("ascii") in log.read_bytes()
+
+
+def test_slow_log_banner_still_succeeds_on_final_retry(tmp_path, monkeypatch):
+    """If a loaded host delays stderr banner visibility past CONFLICT_GRACE_S,
+    the final retry keeps the full start_timeout instead of failing."""
+    monkeypatch.setattr(_process, "CONFLICT_GRACE_S", 0.05)
+    conf_dir = str(ROOT / "tests" / "conformance")
+    laggy = tmp_path / "laggy.py"
+    laggy.write_text(
+        "import signal, socketserver, sys, threading, time\n"
+        "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+        f"sys.path.insert(0, {conf_dir!r})\n"
+        "from _process import listening_banner\n"
+        "p = int(sys.argv[sys.argv.index('--port') + 1])\n"
+        "class FastHTTP(HTTPServer):\n"
+        "  def server_bind(self):\n"
+        "    socketserver.TCPServer.server_bind(self)\n"
+        "    self.server_name, self.server_port = '127.0.0.1', self.server_address[1]\n"
+        "class H(BaseHTTPRequestHandler):\n"
+        "  def do_GET(self): self.send_response(200); self.end_headers(); self.wfile.write(b'{}')\n"
+        "  def log_message(self, *a): pass\n"
+        "srv = FastHTTP(('127.0.0.1', p), H)\n"
+        "def delayed():\n"
+        "  time.sleep(0.25)\n"
+        "  print(listening_banner(p), file=sys.stderr, flush=True)\n"
+        "threading.Thread(target=delayed, daemon=True).start()\n"
+        "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))\n"
+        "if hasattr(signal, 'SIGBREAK'): signal.signal(signal.SIGBREAK, lambda *_: sys.exit(0))\n"
+        "srv.serve_forever(poll_interval=0.05)\n",
+        encoding="utf-8",
+    )
+    with RunnerServer([sys.executable, str(laggy)], "unused.gguf", start_timeout=5.0) as srv:
+        assert srv._healthy is True
+        assert srv.proc.poll() is None

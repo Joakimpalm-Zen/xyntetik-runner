@@ -32,8 +32,17 @@ WINDOWS = os.name == "nt"
 # (The same mechanism ended a kld-compare CI run on 2026-10-23.)
 _PORT_LOW, _PORT_HIGH = 20000, 32767
 BIND_ATTEMPTS = 5
+CONFLICT_GRACE_S = 1.5
+# Single definition of the server's listening banner checked by RunnerServer and
+# emitted by stand-in runners (tests/fixtures/tier_smoke_fake_runner.py).
+LISTENING_BANNER_FMT = "server listening on http://127.0.0.1:{port}"
 # how much of the log an unclean stop quotes; the file itself is kept whole
 UNCLEAN_TAIL = 16000
+
+
+def listening_banner(port):
+    """Exact prefix printed by src/server.c on stderr before entering accept()."""
+    return LISTENING_BANNER_FMT.format(port=port)
 
 
 def _worker_slice():
@@ -57,13 +66,25 @@ def free_port():
     verifies its child's listening banner before accepting /health."""
     rng = random.SystemRandom()
     offset, stride = _worker_slice()
-    candidates = list(range(_PORT_LOW + offset, _PORT_HIGH + 1, stride))
-    rng.shuffle(candidates)
-    if stride > 1:
-        fallback = [p for p in range(_PORT_LOW, _PORT_HIGH + 1) if (p - _PORT_LOW) % stride != offset]
-        rng.shuffle(fallback)
-        candidates.extend(fallback[:250])
-    for port in candidates[:500]:
+    tried = set()
+    slice_count = (_PORT_HIGH - (_PORT_LOW + offset)) // stride + 1
+    for _ in range(min(250, slice_count)):
+        port = _PORT_LOW + offset + rng.randrange(slice_count) * stride
+        if port in tried:
+            continue
+        tried.add(port)
+        with contextlib.closing(socket.socket()) as s:
+            try:
+                s.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    span = _PORT_HIGH - _PORT_LOW + 1
+    for _ in range(500):
+        port = _PORT_LOW + rng.randrange(span)
+        if port in tried:
+            continue
+        tried.add(port)
         with contextlib.closing(socket.socket()) as s:
             try:
                 s.bind(("127.0.0.1", port))
@@ -186,8 +207,12 @@ class RunnerServer:
 
     def start(self):
         for attempt in range(BIND_ATTEMPTS):
+            # Cap early conflict retries at CONFLICT_GRACE_S, but never truncate
+            # the final attempt below start_timeout so slow log visibility on
+            # a loaded CI host cannot turn a slow start into a failure.
+            grace = CONFLICT_GRACE_S if attempt < BIND_ATTEMPTS - 1 else None
             try:
-                return self._start_once()
+                return self._start_once(conflict_grace=grace)
             except TransportError as e:
                 # Only a lost bind or a port conflict is a reason to try again:
                 # anything else is the failure a test is here to see.
@@ -211,10 +236,9 @@ class RunnerServer:
             self._log.flush()
         with open(path, "rb") as f:
             data = f.read()
-        needle = f"server listening on http://127.0.0.1:{self.port}".encode("ascii")
-        return needle in data
+        return listening_banner(self.port).encode("ascii") in data
 
-    def _start_once(self):
+    def _start_once(self, conflict_grace=CONFLICT_GRACE_S):
         self._started = True
         self._healthy = False
         self.port = free_port()
@@ -235,7 +259,7 @@ class RunnerServer:
         self.proc = subprocess.Popen(argv, stdout=self._log,
                                      stderr=subprocess.STDOUT, env=env,
                                      creationflags=NEW_GROUP)
-        conflict_seen = False
+        conflict_at = None
         deadline = time.monotonic() + self.start_timeout
         while time.monotonic() < deadline:
             if self.proc.poll() is not None:
@@ -249,11 +273,20 @@ class RunnerServer:
                 if self._own_banner_ready() and self.proc.poll() is None:
                     self._healthy = True
                     return self
-                conflict_seen = True
+                # src/server.c prints the listening banner to unbuffered stderr
+                # before entering accept(), so /health 200 without our banner
+                # is a foreign server. Bound retry waits to conflict_grace on
+                # early attempts, while keeping the full start_timeout on the
+                # final attempt (conflict_grace=None) in case a loaded CI host
+                # lags log visibility so a slow start never turns into failure.
+                if conflict_at is None:
+                    conflict_at = time.monotonic()
+                    if conflict_grace is not None:
+                        deadline = min(deadline, conflict_at + conflict_grace)
             time.sleep(0.05)
         tail = self._tail()
         self.stop()
-        if conflict_seen:
+        if conflict_at is not None:
             raise TransportError(
                 f"port conflict: another process answered /health on 127.0.0.1:{self.port} "
                 f"before this runner printed its listening banner",
