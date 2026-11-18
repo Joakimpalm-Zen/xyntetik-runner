@@ -210,9 +210,18 @@ static inline float p_expf(float x) {
     uint32_t xb;
     memcpy(&xb, &x, sizeof xb);
     uint32_t qb = xb | 0x00400000u;   // the NaN, quieted
-    float q;
-    memcpy(&q, &qb, sizeof q);
-    return (xb & 0x7fffffffu) > 0x7f800000u ? q : (float)e;
+    // The NaN select is a mask over the bits, not a ?:. gcc 13 sank the whole
+    // non-NaN computation into a ?:'s other arm and then did not if-convert
+    // it, so its exp loops stayed scalar (R6.106). Here both values are
+    // computed and the mask picks one: the same bits for every float.
+    float ef = (float)e;
+    uint32_t eb;
+    memcpy(&eb, &ef, sizeof eb);
+    uint32_t is_nan = 0u - (uint32_t)((xb & 0x7fffffffu) > 0x7f800000u);
+    uint32_t ob = (qb & is_nan) | (eb & ~is_nan);
+    float o;
+    memcpy(&o, &ob, sizeof o);
+    return o;
 }
 static inline float p_logf(float x)  { return (float)pm_log_d((double)x); }
 static inline float p_sinf(float x)  { double s, c; pm_sincos_d((double)x, &s, &c); return (float)s; }
