@@ -275,3 +275,93 @@ def test_the_record_is_checked_before_its_start_files(runner_bin, run6):
     if rec.get("determinism") == "cpu-same-binary":
         r = _attest(runner_bin, [rec_path, "--segment", "2..4", "-t", 2])
         assert r.returncode == 2 and "MISMATCH determinism" in r.stdout, (r.stdout + r.stderr)[-600:]
+
+
+# ---- attest replay RECORD --sample s --seed S: s random segments, drawn from the auditor's seed ----
+
+SAMPLE_ALGO = "xyntetik.runner.train.sample.v1"
+SEED = "0123456789abcdef0123456789abcdef"
+
+
+def _draw(seed, head, m, s):
+    """The draw as the docs define it: segment j ranked by sha256(algo|seed|head|j), the s lowest, ascending."""
+    rank = sorted(range(m), key=lambda j: hashlib.sha256(("%s|%s|%s|%d" % (SAMPLE_ALGO, seed, head, j)).encode())
+                  .hexdigest())
+    return sorted(rank[:s])
+
+
+@pytest.fixture
+def run8(runner_bin, fixture):
+    out = fixture / "a.gguf"
+    _run(runner_bin, [*_recipe(fixture, 8, 2), "-t", 2, "--train-out", out])
+    rec_path = pathlib.Path(str(out) + ".train.json")
+    rec = json.loads(rec_path.read_text())
+    bounds = [0] + [c["step"] for c in rec["checkpoints"]]
+    return fixture, out, rec_path, rec, ["%d..%d" % (bounds[j], bounds[j + 1]) for j in range(len(bounds) - 1)]
+
+
+def _sample(exe, rec_path, rec, *args):
+    return _attest(exe, [rec_path, "-t", 2, *_same_binary(rec), *args])
+
+
+def test_a_sample_is_drawn_from_the_seed_and_the_record_and_verifies(runner_bin, run8):
+    d, out, rec_path, rec, segs = run8
+    head = rec["checkpoint_chain"]["head"]
+    r = _sample(runner_bin, rec_path, rec, "--sample", 2, "--seed", SEED)
+    assert r.returncode == 0, (r.stdout + r.stderr)[-800:]
+    want = " ".join(segs[j] for j in _draw(SEED, head, 4, 2))
+    assert "sample: %s, seed %s, record head %s, 4 segments, 2 drawn" % (SAMPLE_ALGO, SEED, head) in r.stdout
+    assert "sample: drawn " + want + "\n" in r.stdout, r.stdout
+    assert r.stdout.count("VERIFIED segment ") == 2 and "VERIFIED sample: 2 of 4 segments" in r.stdout, r.stdout
+    # the bound, worded as one: random draws, nothing proved about the rest
+    assert "missed with probability 0.5" in r.stdout and "proves nothing about the segments not drawn" in r.stdout
+    assert "always picks the same segment proves that segment only" in r.stdout
+
+
+def test_another_seed_is_another_draw_and_os_prints_its_seed(runner_bin, run8):
+    d, out, rec_path, rec, segs = run8
+    head = rec["checkpoint_chain"]["head"]
+    other = "f" * 32
+    assert _draw(SEED, head, 4, 1) != _draw(other, head, 4, 1) or _draw(SEED, head, 4, 2) != _draw(other, head, 4, 2)
+    r = _sample(runner_bin, rec_path, rec, "--sample", 1, "--seed", other)
+    assert r.returncode == 0 and "sample: drawn %s\n" % segs[_draw(other, head, 4, 1)[0]] in r.stdout, r.stdout
+    r = _sample(runner_bin, rec_path, rec, "--sample", 1, "--seed", "os")
+    assert r.returncode == 0, (r.stdout + r.stderr)[-600:]
+    seed = r.stdout.split(", seed ")[1].split(",")[0]
+    assert len(seed) == 64 and int(seed, 16) >= 0, seed
+    assert "sample: drawn %s\n" % segs[_draw(seed, head, 4, 1)[0]] in r.stdout, r.stdout
+
+
+def test_a_draw_of_the_first_interval_replays_it_from_the_run_start(runner_bin, run8):
+    d, out, rec_path, rec, segs = run8
+    head = rec["checkpoint_chain"]["head"]
+    seed = next("%032x" % i for i in range(1000) if _draw("%032x" % i, head, 4, 1) == [0])   # forced
+    r = _sample(runner_bin, rec_path, rec, "--sample", 1, "--seed", seed)
+    assert r.returncode == 0 and "VERIFIED segment 0..2" in r.stdout, (r.stdout + r.stderr)[-600:]
+
+
+def test_a_sample_of_every_segment_replays_them_all_and_writes_a_report(runner_bin, run8):
+    d, out, rec_path, rec, segs = run8
+    rep = d / "audit.json"
+    r = _sample(runner_bin, rec_path, rec, "--sample", 4, "--seed", SEED, "--report", rep)
+    assert r.returncode == 0 and r.stdout.count("VERIFIED segment ") == 4, (r.stdout + r.stderr)[-600:]
+    j = json.loads(rep.read_text())
+    assert j["schema_version"] == "xyntetik.runner.sample.v1" and j["algorithm"] == SAMPLE_ALGO
+    assert j["seed"] == SEED and j["record_head"] == rec["checkpoint_chain"]["head"]
+    assert j["segments"] == 4 and j["drawn"] == [{"segment": s, "verdict": "VERIFIED"} for s in segs]
+    assert j["verdict"] == "VERIFIED" and j["one_false_missed"] == 0
+
+
+def test_a_sample_refuses_by_name(runner_bin, run8, fixture):
+    d, out, rec_path, rec, segs = run8
+    for args, why in (((), "--sample needs --seed"),
+                      (("--seed", "abcd"), "at least 128 bits"),
+                      (("--seed", "z" * 32), "hex"),
+                      (("--seed", SEED, "--segment", "2..4"), "not both"),):
+        r = _sample(runner_bin, rec_path, rec, "--sample", 1, *args)
+        assert r.returncode != 0 and why in r.stdout + r.stderr, (args, r.stdout + r.stderr)
+    for n in (0, 5):
+        r = _sample(runner_bin, rec_path, rec, "--sample", n, "--seed", SEED)
+        assert r.returncode != 0 and "between 1 and 4" in r.stdout + r.stderr, (n, r.stdout + r.stderr)
+    r = _sample(runner_bin, rec_path, rec, "--seed", SEED, "--segment", "2..4")
+    assert r.returncode != 0 and "--seed is the auditor's seed of --sample" in r.stderr, r.stderr
