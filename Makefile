@@ -67,6 +67,9 @@ ifeq ($(BUILD_OS),Windows)
 # shell (otherwise it dies at load with STATUS_DLL_NOT_FOUND on libwinpthread-1.dll)
 CFLAGS += -Werror=format-truncation -Werror=cpp
 LDFLAGS += -lws2_32 -lpsapi -static   # psapi: QueryWorkingSetEx / GetProcessMemoryInfo
+# R20: a content-derived build id in the image's CodeView record, which a dirty
+# build's route identity reads from memory (compat.c plat_running_image_id)
+LDFLAGS += -Wl,--build-id
 # tray: gdi32 (icon painting) and comdlg32 (GetOpenFileName) are not in the
 # MinGW default lib set; shell32/advapi32 are but stay explicit for clarity
 LDFLAGS += -lshell32 -lgdi32 -lcomdlg32 -ladvapi32

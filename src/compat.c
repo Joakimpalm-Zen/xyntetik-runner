@@ -2652,49 +2652,39 @@ bool plat_running_image_id(char *out, size_t cap) {
     }
     return false;
 }
+#elif defined(_WIN32)
+// R20, Windows: the build id the linker wrote (ld --build-id, the Makefile's
+// Windows LDFLAGS) into the image's CodeView debug record, read from the
+// loaded module's own PE headers in memory: no file and no name, so nothing
+// can be swapped under it. The id is derived from the linked content, so
+// another build has another one. False for an image linked without one.
+bool plat_running_image_id(char *out, size_t cap) {
+    const uint8_t *img = (const uint8_t *)GetModuleHandleW(NULL);
+    if (!img || cap < 60) return false;
+    const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)img;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+    const IMAGE_NT_HEADERS *nt = (const IMAGE_NT_HEADERS *)(img + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE ||
+        nt->OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_DEBUG)
+        return false;
+    const IMAGE_DATA_DIRECTORY *dd = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
+    if (!dd->VirtualAddress || dd->Size < sizeof(IMAGE_DEBUG_DIRECTORY)) return false;
+    const IMAGE_DEBUG_DIRECTORY *dbg = (const IMAGE_DEBUG_DIRECTORY *)(img + dd->VirtualAddress);
+    for (DWORD i = 0; i < dd->Size / sizeof *dbg; i++) {
+        if (dbg[i].Type != IMAGE_DEBUG_TYPE_CODEVIEW || !dbg[i].AddressOfRawData || dbg[i].SizeOfData < 24)
+            continue;
+        const uint8_t *cv = img + dbg[i].AddressOfRawData;   // "RSDS", the 16-byte id, a 4-byte age
+        if (memcmp(cv, "RSDS", 4) != 0) continue;
+        int n = snprintf(out, cap, "pe-buildid:");
+        for (int k = 0; k < 20; k++) n += snprintf(out + n, cap - (size_t)n, "%02x", cv[4 + k]);
+        return true;
+    }
+    return false;
+}
 #else
 bool plat_running_image_id(char *out, size_t cap) {
     if (cap) out[0] = 0;
     return false;
 }
 #endif
-
-// R20: the file of the image this process runs, open for reading, or NULL. On
-// Windows a running image cannot be overwritten, but it can be renamed and
-// another file put at its path, so the path GetModuleFileNameW names is not
-// trusted: the file is opened by the NT name the image is mapped from
-// (GetMappedFileNameW, which follows a rename) and kept only if the opened
-// handle's own NT path is that name. The caller hashes through the handle, so
-// a rename after the check changes nothing. NULL elsewhere (Linux hashes
-// /proc/self/exe, macOS reads the image's LC_UUID).
-FILE *plat_running_image_open(void) {
-#ifdef _WIN32
-    enum { WN = 32768 };
-    static const wchar_t root[] = L"\\\\?\\GLOBALROOT";
-    wchar_t *path = malloc(sizeof(wchar_t) * WN * 3);
-    if (!path) return NULL;
-    wchar_t *fin = path + WN, *mapped = path + 2 * WN;
-    FILE *f = NULL;
-    DWORD b = GetMappedFileNameW(GetCurrentProcess(), (LPVOID)GetModuleHandleW(NULL), mapped, WN);
-    HANDLE h = INVALID_HANDLE_VALUE;
-    if (b && b < WN - 32) {
-        wcscpy(path, root);
-        wcscat(path, mapped);
-        h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
-                        FILE_ATTRIBUTE_NORMAL, NULL);
-    }
-    if (h != INVALID_HANDLE_VALUE) {
-        DWORD a = GetFinalPathNameByHandleW(h, fin, WN, VOLUME_NAME_NT);
-        int fd = -1;
-        if (a && a < WN && _wcsicmp(fin, mapped) == 0)
-            fd = _open_osfhandle((intptr_t)h, _O_RDONLY | _O_BINARY);
-        if (fd < 0) CloseHandle(h);
-        else if (!(f = _fdopen(fd, "rb"))) _close(fd);
-    }
-    free(path);
-    return f;
-#else
-    return NULL;
-#endif
-}
 

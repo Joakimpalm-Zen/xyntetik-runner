@@ -9241,8 +9241,8 @@ static int cli_main(int argc, char **argv, char **owned_prompt, session_image *s
         for (int i = 0; tw && *tw && i < 600 && !plat_file_readable(tw); i++) plat_sleep_ms(100);
         // The identity of the image running, never of a file a path names now:
         // on Linux the hash of /proc/self/exe (the image itself), on macOS the
-        // loaded image's LC_UUID, on Windows the hash of the module's file checked
-        // against the image's mapping (plat_running_image_open), elsewhere none: a
+        // loaded image's LC_UUID, on Windows the PE build id in the loaded module's
+        // headers (plat_running_image_id: memory, no file), elsewhere none: a
         // value of this process, said once on stderr since it ends cross-process reuse.
         char bid[96] = "";
         if (dirty) {
@@ -9250,9 +9250,6 @@ static int cli_main(int argc, char **argv, char **owned_prompt, session_image *s
 #if defined(__linux__)
             const char *kind = "sha256:/proc/self/exe";
             if (envelope_file_sha256("/proc/self/exe", sha)) snprintf(bid, sizeof bid, "sha256:%s", sha);
-#elif defined(_WIN32)
-            const char *kind = "sha256:mapped-file";
-            if (envelope_stream_sha256(plat_running_image_open(), sha)) snprintf(bid, sizeof bid, "sha256:%s", sha);
 #else
             (void)sha;
             if (!plat_running_image_id(bid, sizeof bid)) bid[0] = 0;

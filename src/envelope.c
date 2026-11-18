@@ -247,12 +247,6 @@ static void sha256_final(sha256_ctx *c, uint8_t out[32]) {
 bool envelope_file_sha256(const char *path, char hex[65]) {
     FILE *f = plat_fopen(path, "rb");
     if (!f) return false;
-    return envelope_stream_sha256(f, hex);
-}
-
-// The sha256 of an open stream's bytes from where it stands to its end; closes it.
-bool envelope_stream_sha256(FILE *f, char hex[65]) {
-    if (!f) return false;
     sha256_ctx c;
     sha256_init(&c);
     uint8_t buf[1 << 16];
