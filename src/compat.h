@@ -201,6 +201,11 @@ char       *plat_read_file(const char *path, size_t max_bytes, size_t *n_out);
 bool        plat_file_size(FILE *f, uint64_t *out);   // 64-bit, position left at the start
 // n bytes from the operating system's random generator; false when it has none.
 bool        plat_random(uint8_t *out, size_t n);
+// R17.9 and R3.60: whether the variable `name` (n bytes) is a switch that may
+// change arithmetic: a RUNNER_ one outside the inert set, or XR_SSM_CHUNK /
+// XR_SSM_SERIAL. One rule for a training record's environment and a row's
+// route identity (compat.c).
+bool        runner_switch_counts(const char *name, size_t n);
 // a new file for writing: created exclusively, never through a link; NULL if the
 // name exists (R17.9 step 4b's --report)
 FILE       *plat_fopen_new(const char *path);

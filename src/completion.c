@@ -5141,14 +5141,16 @@ static float *turn_prefill(turn_result *t) {
         // what an earlier turn on this slot loaded is not this turn's
         e->snap_name[0] = 0;
         e->snap_origin[0] = 0;
+        e->reuse_ctx = q->ctx_id;   // R3.60: an imported context forks only for the request naming it
         t->reuse = engine_prefix_reuse(e, prep->toks, prep->n_prompt);
+        e->reuse_ctx = NULL;
         // R3.62: neither the slot nor the shared tier holds this request's
         // preamble (a new process, or an unloaded model): its snapshot, when
         // one is on disk, becomes the slot's rows, and the prompt extends
         // them. The slot's own rows, so no cache budget is involved.
         if (prep->preamble && t->reuse.keep < prep->preamble &&
             kvsnap_auto_load(e, prep->pre_name)) {
-            t->reuse = (prefix_reuse){ .keep = engine_rewind(e, prep->toks, prep->n_prompt) };
+            t->reuse = (prefix_reuse){ .keep = engine_rewind_prompt(e, prep->toks, prep->n_prompt) };
             if (t->reuse.keep >= prep->preamble) {
                 prep->pre_loaded = true;
                 prep->diag.context_id = prep->pre_name;
@@ -5158,7 +5160,7 @@ static float *turn_prefill(turn_result *t) {
         }
     }
     else if (q->cache_prompt)
-        t->reuse.keep = engine_rewind(e, prep->toks, prep->n_prompt);
+        t->reuse.keep = engine_rewind_prompt(e, prep->toks, prep->n_prompt);
     else
         engine_reset(e);
     t->keep = t->reuse.keep;

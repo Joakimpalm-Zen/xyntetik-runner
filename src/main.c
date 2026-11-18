@@ -8415,6 +8415,7 @@ static int run_resume(cli_opts *o, cli_run *rt, session_image *simg, const char 
     if (!why && !engine_state_load(&rt->e, simg->tokens, sm->n_tokens, simg->state))
         why = "this model's KV layout (a tied-V cache, or a ring with a gap below its "
               "span) cannot be resumed";
+    if (!why) session_restore_mark(&rt->e, sm);   // R3.60
     if (why) {
         fprintf(stderr, "error: --resume %s: %s\n", o->resume_path, why);
         session_image_free(simg);
@@ -8991,6 +8992,13 @@ static int cli_main(int argc, char **argv, char **owned_prompt, session_image *s
 
     if (!cli_chat_flags_ok(o)) return 1;
     if (run_record_utility(o, &rc)) return rc;
+    {
+        // R3.60: the source this binary was built from is part of every row's
+        // route identity (the receipt prints the same)
+        bool dirty = false;
+        const char *rev = provenance_build_commit(&dirty);
+        model_route_set_build(rev ? rev : "", dirty);
+    }
     cli_replay rp;
     memset(&rp, 0, sizeof rp);
     if (cli_prepare_replay_train(o, &rp, &rc)) return rc;

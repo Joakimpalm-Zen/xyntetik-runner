@@ -1461,6 +1461,7 @@ static void handle_session_resume(slot_t *s, sock_t fd, jv *req,
                           NULL, "session_unsupported");
         return;
     }
+    session_restore_mark(e, sm);   // R3.60: an older image's rows stay of unknown provenance
     e->ignore_eos = sm->ignore_eos;
     engine_gen_resume(e, sm->max_new, sm->n_prompt, sm->generated);
     float *lg = malloc(sizeof(float) * (size_t)s->m->n_vocab);

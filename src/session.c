@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -23,8 +24,13 @@
 #define O_BINARY 0
 #endif
 
-#define SESS_MAGIC "runner.session.1"
-#define SESS_SCHEMA "xyntetik.runner.session.v1"
+// R3.60: version 2 carries the route identity of the rows and the scored mark.
+// A reader of version 1 refuses it (it would ignore both and trust the rows);
+// this reader takes version 1 too, whose rows then serve their own resume only.
+#define SESS_MAGIC "runner.session.2"
+#define SESS_SCHEMA "xyntetik.runner.session.v2"
+#define SESS_MAGIC_V1 "runner.session.1"
+#define SESS_SCHEMA_V1 "xyntetik.runner.session.v1"
 
 // the image's bytes are built in memory and hashed as they are, then written
 // once: an image is at most one KV cache plus a logits row
@@ -94,8 +100,15 @@ bool session_write(const char *path, const engine *e, const session_meta *mt,
            (unsigned long long)mt->rng, mt->json_mode ? "true" : "false");
     if (mt->schema_sha256[0]) sb_fmt(&h, "\"%s\"", mt->schema_sha256);
     else sb_lit(&h, "null");
-    sb_fmt(&h, "},\"ignore_eos\":%s,\"runner\":\"%s\",\"binary_sha256\":\"%s\"}",
+    sb_fmt(&h, "},\"ignore_eos\":%s,\"runner\":\"%s\",\"binary_sha256\":\"%s\"",
            mt->ignore_eos ? "true" : "false", RUNNER_VERSION, mt->binary_sha256);
+    // R3.60: the rows' route identity and the scored mark, so a loaded image
+    // keeps them (the state bytes do not). Rows of no route this engine can
+    // name (a resume into another route) are all marked.
+    int mark = e->rows_route && e->rows_route != engine_prompt_route(e) ? 0 : e->scored_from;
+    sb_fmt(&h, ",\"route\":\"%016llx\"", (unsigned long long)engine_prompt_route(e));
+    if (mark == INT_MAX) sb_lit(&h, ",\"scored_from\":null}");
+    else sb_fmt(&h, ",\"scored_from\":%d}", mark);
     wbuf w = {0};
     uint32_t hl = (uint32_t)h.n, nt = (uint32_t)mt->n_tokens, nv = (uint32_t)n_vocab;
     uint64_t sl = sn;
@@ -184,7 +197,8 @@ bool session_read(const char *path, session_image *img) {
     const char *why = NULL;
     jv *h = NULL;
     size_t off = 0;
-    if (n < 16 + 4 + 32 || memcmp(b, SESS_MAGIC, 16) != 0) { why = "not a session image"; goto out; }
+    int version = n < 16 ? 0 : !memcmp(b, SESS_MAGIC, 16) ? 2 : !memcmp(b, SESS_MAGIC_V1, 16) ? 1 : 0;
+    if (n < 16 + 4 + 32 || !version) { why = "not a session image"; goto out; }
     {
         uint8_t d[32];
         envelope_data_sha256_raw(b, n - 32, d);
@@ -198,8 +212,8 @@ bool session_read(const char *path, session_image *img) {
     if (!image_holds(off, hl, n)) { why = "truncated"; goto out; }
     h = json_parse((const char *)b + off, hl);
     off += hl;
-    if (!h || strcmp(jv_str(jv_get(h, "schema_version"), ""), SESS_SCHEMA) != 0) {
-        why = "its header is not " SESS_SCHEMA; goto out;
+    if (!h || strcmp(jv_str(jv_get(h, "schema_version"), ""), version == 2 ? SESS_SCHEMA : SESS_SCHEMA_V1) != 0) {
+        why = version == 2 ? "its header is not " SESS_SCHEMA : "its header is not " SESS_SCHEMA_V1; goto out;
     }
     session_meta *m = &img->meta;
     jv *model = jv_get(h, "model"), *smp = jv_get(h, "sampler"), *con = jv_get(h, "constraint");
@@ -222,6 +236,12 @@ bool session_read(const char *path, session_image *img) {
     m->n_tokens = (int)jv_num(jv_get(h, "n_tokens"), -1);
     m->max_new = (int)jv_num(jv_get(h, "max_new"), -1);
     m->generated = (int)jv_num(jv_get(h, "generated"), -1);
+    // R3.60: only a version 2 image vouches for its rows (route and mark)
+    jv *sf = jv_get(h, "scored_from");
+    const char *route = jv_str(jv_get(h, "route"), "");
+    m->route = version == 2 && strlen(route) == 16 ? strtoull(route, NULL, 16) : 0;
+    m->mark_known = version == 2 && m->route && sf != NULL && (sf->type == J_NULL || sf->type == J_NUM);
+    m->scored_from = !m->mark_known || sf->type == J_NULL ? INT_MAX : (int)jv_num(sf, 0);
     m->temp = (float)jv_num(jv_get(smp, "temp"), 0);
     m->top_k = (int)jv_num(jv_get(smp, "top_k"), 0);
     m->top_p = (float)jv_num(jv_get(smp, "top_p"), 1);
@@ -339,4 +359,12 @@ bool sessions_configure(const char *dir) {
 
 const char *sessions_dir(void) {
     return g_sessions_dir[0] ? g_sessions_dir : NULL;
+}
+
+void session_restore_mark(engine *e, const session_meta *m) {
+    // the image's mark holds only for its own route: resumed into another, its
+    // rows serve that resume and are of unknown provenance after (the load's 0)
+    if (!m->mark_known || m->route != engine_prompt_route(e)) return;
+    e->scored_from = m->scored_from < 0 ? 0 : m->scored_from;
+    e->rows_route = m->route;
 }
