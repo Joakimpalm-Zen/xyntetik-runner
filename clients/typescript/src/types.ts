@@ -113,6 +113,8 @@ export interface Provenance {
   object: "runner.provenance";
   version: string;
   build_flavor?: string;
+  /** the transcendental functions it computes with: src/pmath.h's, or the C library's (R6.85) */
+  math?: "portable" | "libc";
   build: { binary_sha256: string | null; compiler: string;
            /** the git commit the binary was built from, and whether its
             *  tracked files differed from it; null outside git */
