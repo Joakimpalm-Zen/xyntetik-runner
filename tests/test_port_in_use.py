@@ -179,14 +179,16 @@ def test_a_slow_child_behind_a_standin_fails_start_with_port_conflict_and_stop_n
             def send_signal(self, sig): pass
             def wait(self, timeout): return -15
 
-        unhealthy = RunnerServer("unused", "unused")
-        unhealthy._started = True
-        unhealthy._healthy = False
-        unhealthy.proc = _DeadProc()
-        unhealthy.sample_rss = lambda: None
-        with pytest.raises(TransportError) as stop_exc:
-            unhealthy.stop(strict=True)
-        assert "never became healthy" in str(stop_exc.value)
+        for win_flag in (False, True):
+            monkeypatch.setattr(_process, "WINDOWS", win_flag)
+            unhealthy = RunnerServer("unused", "unused")
+            unhealthy._started = True
+            unhealthy._healthy = False
+            unhealthy.proc = _DeadProc()
+            unhealthy.sample_rss = lambda: None
+            with pytest.raises(TransportError) as stop_exc:
+                unhealthy.stop(strict=True)
+            assert "never became healthy" in str(stop_exc.value)
     finally:
         standin.shutdown()
         standin.server_close()

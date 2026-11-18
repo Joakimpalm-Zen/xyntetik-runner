@@ -323,7 +323,6 @@ class RunnerServer:
             return
         self.sample_rss()
         self.killed = False
-        asked = not WINDOWS
         if self.proc.poll() is None:
             asked = self._ask_to_stop()
             try:
@@ -334,6 +333,10 @@ class RunnerServer:
                 self.killed = True
                 self.proc.kill()
                 self.proc.wait(timeout=10)
+        else:
+            # Already dead before stop() was called (never terminated by us),
+            # so a nonzero exit is judged on Windows as well as POSIX.
+            asked = True
         self.exit_code = self.proc.returncode
         if self._log is not None:
             self._log.close()
