@@ -299,15 +299,19 @@ int main(int argc, char **argv) {
                 if (e > worst) worst = e;
             }
         }
-#ifdef RUNNER_PORTABLE_MATH
-        CHECK(diff == 0 && memcmp(&lp, &l1, sizeof lp) == 0, "resident and per-piece differ in a T3 "
-              "build: %zu of %zu gradients, loss %.17g against %.17g", diff, tot, l1, lp);
-        printf("ok: resident step == per-piece path by bits (T3): %zu gradients and the loss\n", tot);
+#ifdef RUNNER_T3_BUILD
+        bool same = diff == 0 && memcmp(&lp, &l1, sizeof lp) == 0;
+        CHECK(same, "resident and per-piece differ in a T3 build: %zu of %zu gradients, loss %.17g "
+              "against %.17g", diff, tot, l1, lp);
+        if (same)
+            printf("ok: resident step == per-piece path by bits (T3): %zu gradients and the loss\n", tot);
 #else
-        CHECK(worst <= 1e-3 && fabs(lp - l1) <= 1e-4 * fabs(l1), "resident and per-piece: worst "
-              "gradient gap %.3g of its buffer's largest, loss %.17g against %.17g", worst, l1, lp);
-        printf("ok: resident step against the per-piece path (default build, bounded): %zu of %zu "
-               "gradients differ, worst %.3g of the buffer's largest\n", diff, tot, worst);
+        bool near = worst <= 1e-3 && fabs(lp - l1) <= 1e-4 * fabs(l1);
+        CHECK(near, "resident and per-piece: worst gradient gap %.3g of its buffer's largest, loss "
+              "%.17g against %.17g", worst, l1, lp);
+        if (near)
+            printf("ok: resident step against the per-piece path (default build, bounded): %zu of %zu "
+                   "gradients differ, worst %.3g of the buffer's largest\n", diff, tot, worst);
 #endif
         run_backward(&m, toks);   // the checks below read the resident step's gradients
     }

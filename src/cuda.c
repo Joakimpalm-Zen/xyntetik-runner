@@ -9576,8 +9576,10 @@ bool gpu_train_ffn_check(model_t *m, int act, const float *g, const float *u,
 
 // the bytes the training contexts' scratch planes hold now (tg_scratch's, until
 // tg_drop): gpu_train_free must bring it back to 0 (#935: the resident planes
-// were never freed), and tests/test_lora_grad.c reads it after a free
-static size_t tg_live_bytes;
+// were never freed), and tests/test_lora_grad.c reads it after a free. Atomic:
+// one context's trainer calls these from its own thread, but nothing stops two
+// contexts in one process from doing so at once
+static _Atomic size_t tg_live_bytes;
 static bool tg_scratch(CUdeviceptr *buf, size_t *cap, size_t need) {
     if (*cap >= need) return true;
     if (*buf) { cu.MemFree(*buf); tg_live_bytes -= *cap; }

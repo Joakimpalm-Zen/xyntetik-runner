@@ -424,7 +424,7 @@ static void ffn_check(model_t *m) {
         float rdg = model_ffn_dg(ACT_SILU, dh[i], u[i], g[i]);
         float rdu = model_ffn_du(ACT_SILU, dh[i], g[i]);
         float vh = h[i], vdg = dg[i], vdu = du[i];
-#ifdef RUNNER_PORTABLE_MATH
+#ifdef RUNNER_T3_BUILD
         if (memcmp(&rh, &vh, 4) || memcmp(&rdg, &vdg, 4) || memcmp(&rdu, &vdu, 4)) {
             if (!bad++)
                 fprintf(stderr, "FAIL: ffn twin differs from the T3 host at [%d] g %.9g u %.9g dh "
@@ -445,7 +445,7 @@ static void ffn_check(model_t *m) {
         // non-finite by bits (a NaN edg passes every compare): equal bits pass, else it fails
         if (b_nonfin(vdg) || b_nonfin(rdg) || d_nonfin(edg)) edg = memcmp(&vdg, &rdg, 4) ? 1e300 : 0;
         if (edg > wdg) wdg = edg;
-#ifndef RUNNER_PORTABLE_MATH
+#ifndef RUNNER_T3_BUILD
         if ((f_ulps(vh, rh) > 4 || f_ulps(vdu, rdu) > 4 || edg > 1.0) && !hbad++)
             fprintf(stderr, "FAIL: ffn twin is off the default build's host at [%d] g %.9g u %.9g "
                     "dh %.9g: h %.9g/%.9g dg %.9g/%.9g du %.9g/%.9g\n", i, g[i], u[i], dh[i],
@@ -456,7 +456,7 @@ static void ffn_check(model_t *m) {
         float xh = g[i] < -80.0f ? 0.0f : (float)(gd / (1.0 + exp(-gd)) * u[i]);
         double xdg = g[i] < -80.0f ? 0.0 : (double)dh[i] * u[i] * (sgd * (1.0 + gd * (1.0 - sgd)));
         float xdu = g[i] < -80.0f ? 0.0f : (float)((double)dh[i] * (gd / (1.0 + exp(-gd))));
-#ifndef RUNNER_PORTABLE_MATH
+#ifndef RUNNER_T3_BUILD
         if (fabsf(xh) < FLT_MIN) xh = 0.0f;
         if (fabsf(xdu) < FLT_MIN) xdu = 0.0f;
 #endif
@@ -481,7 +481,7 @@ static void ffn_check(model_t *m) {
           "ulps worst, bound 4; dg %.3g of its bound)", hbad, n, (long long)wh, (long long)wdu, wdg);
     printf("ffn twin (SiLU) %d elements: host %s; worst against the host h %lld du %lld ulps, "
            "dg %.3g of its bound; against the double formula h %lld du %lld ulps, dg %.3g\n", n,
-#ifdef RUNNER_PORTABLE_MATH
+#ifdef RUNNER_T3_BUILD
            "T3 (memcmp)",
 #else
            "default (bound, subnormals flushed)",
@@ -534,7 +534,7 @@ static void lora_case(model_t *m, int r, int n_in, int n_out, int nb, int edge, 
         for (size_t i = 3; i < nx; i += 11) x[i] *= i % 3 ? 1e15f : 1e-15f;
         for (size_t i = 5; i < ny; i += 13) dy[i] *= i % 3 ? 1e12f : 1e-12f;
         for (size_t i = 1; i < na; i += 17) A[i] = i % 2 ? -0.0f : 0.0f;
-#ifdef RUNNER_PORTABLE_MATH
+#ifdef RUNNER_T3_BUILD
         for (size_t i = 2; i < nx; i += 19) x[i] = i % 2 ? 1e-40f : -1e-41f;
         for (size_t i = 4; i < ny; i += 23) dy[i] = 3e-39f;
 #endif
@@ -561,7 +561,7 @@ static void lora_case(model_t *m, int r, int n_in, int n_out, int nb, int edge, 
     if (okh && okd) {
         const struct { const char *nm; const float *h, *d; size_t n; } C[4] = {
             { "y", yh, yd, ny }, { "ga", gah, gad, na }, { "gb", gbh, gbd, nbb }, { "dx", dxh, dxd, nx } };
-#ifdef RUNNER_PORTABLE_MATH
+#ifdef RUNNER_T3_BUILD
         int c0 = 0;
 #else
         int c0 = 1;   // y: the bound below, against the host and the double
@@ -660,7 +660,7 @@ static int b2_nan(float f) {   // by bits: -ffast-math may fold isnan away
 }
 // a subnormal read as zero, as an FTZ process reads it; by bits, so a NaN
 // stays a NaN under -ffast-math (a float compare there need not)
-#ifndef RUNNER_PORTABLE_MATH
+#ifndef RUNNER_T3_BUILD
 static float b2_ftz(float f) {
     uint32_t u;
     memcpy(&u, &f, 4);
@@ -705,7 +705,7 @@ static void ffn_nonfinite_check(model_t *m) {
             bool same;
             if (b2_nan(r[j]) || b2_nan(d[j])) same = b2_nan(r[j]) && b2_nan(d[j]);
             else same = !memcmp(&r[j], &d[j], 4);
-#ifndef RUNNER_PORTABLE_MATH
+#ifndef RUNNER_T3_BUILD
             if (!same) bad++;   // reported, not gated: see above
             continue;
 #endif
@@ -719,7 +719,7 @@ static void ffn_nonfinite_check(model_t *m) {
             }
         }
     }
-#ifdef RUNNER_PORTABLE_MATH
+#ifdef RUNNER_T3_BUILD
     CHECK(!bad, "ffn twin, non-finite inputs: %zu outputs differ from the host's by class or bits", bad);
     if (ok && !bad)
         printf("ffn twin, non-finite inputs: %d combinations (%zu with an infinity or a NaN in), h dg du "
@@ -777,7 +777,7 @@ static void b2_check(model_t *m, int n, int rows, int stride, bool weighted) {
         bool anchor = kind != B2_NAN && ss < 3.0e38;
         for (int i = 0; i < n; i++) {
             float hf = yh[o + i], df = yd[o + i], hb = dxh[o + i], db = dxd[o + i];
-#ifdef RUNNER_PORTABLE_MATH
+#ifdef RUNNER_T3_BUILD
             bool same_f = b2_nan(hf) || b2_nan(df) ? b2_nan(hf) && b2_nan(df) : !memcmp(&hf, &df, 4);
             bool same_b = b2_nan(hb) || b2_nan(db) ? b2_nan(hb) && b2_nan(db) : !memcmp(&hb, &db, 4);
             if ((!same_f || !same_b) && !bad++)
@@ -827,7 +827,7 @@ static void b2_check(model_t *m, int n, int rows, int stride, bool weighted) {
         printf("rmsnorm twin n %4d rows %4d stride %4d %-10s: host %s; against the double "
                "formula y %.3g dx %.3g of the row's magnitude\n", n, rows, stride,
                w ? "weighted" : "weightless",
-#ifdef RUNNER_PORTABLE_MATH
+#ifdef RUNNER_T3_BUILD
                "T3 (memcmp)",
 #else
                "default (bound 2^-12, subnormals flushed)",
@@ -925,7 +925,7 @@ static void b3_check(model_t *m, int hd, int rd, int neox, int n_heads, int T, i
                 float x0 = v0[i0], x1 = v0[i1];
                 float h0 = vh[i0], h1 = vh[i1], d0 = vd[i0], d1 = vd[i1];
                 double mag = (fabs((double)x0) + fabs((double)x1)) * fabs((double)ms) + 1e-37;
-#ifdef RUNNER_PORTABLE_MATH
+#ifdef RUNNER_T3_BUILD
                 bool s0 = b2_nan(h0) || b2_nan(d0) ? b2_nan(h0) && b2_nan(d0) : !memcmp(&h0, &d0, 4);
                 bool s1 = b2_nan(h1) || b2_nan(d1) ? b2_nan(h1) && b2_nan(d1) : !memcmp(&h1, &d1, 4);
                 if ((!s0 || !s1) && !bad++)
@@ -979,7 +979,7 @@ static void b3_check(model_t *m, int hd, int rd, int neox, int n_heads, int T, i
         printf("rope twin %-7s hd %3d rd %3d neox %d heads %2d T %3d t0 %6d ms %.4g%s: host %s; "
                "against the double rotation %.3g of the pair's magnitude\n", what, hd, rd, neox,
                n_heads, T, t0, ms, odd_freqs ? " odd-freqs" : "",
-#ifdef RUNNER_PORTABLE_MATH
+#ifdef RUNNER_T3_BUILD
                "T3 (memcmp)",
 #else
                "default (bound 2^-20, subnormals flushed)",
@@ -1255,7 +1255,7 @@ static void b4_check(model_t *m, int T, int H, int kv_mul, int hd, int swa, floa
             for (int i = 0; i < hd; i++) {
                 size_t o = (size_t)t * sh.q_dim + (size_t)h * hd + i;
                 float hv = aoh[o], dv = aod[o - qoff];
-#ifdef RUNNER_PORTABLE_MATH
+#ifdef RUNNER_T3_BUILD
                 bool same = b2_nan(hv) || b2_nan(dv) ? b2_nan(hv) && b2_nan(dv) : !memcmp(&hv, &dv, 4);
                 if (!same && !bad++ && !plant)
                     fprintf(stderr, "FAIL: attn twin differs from the T3 host at T %d t %d h %d i %d: "
@@ -1300,7 +1300,7 @@ static void b4_check(model_t *m, int T, int H, int kv_mul, int hd, int swa, floa
         printf("attn twin T %3d H %2d kv_mul %d hd %3d swa %2d kind %d scale x%-4g%s rows %d..%d: "
                "host %s; against the double attention %.3g of the bound\n", T, H, kv_mul, hd, swa,
                kind, scale_mul, zero_q ? " zero-q" : "", pos0, T - 1,
-#ifdef RUNNER_PORTABLE_MATH
+#ifdef RUNNER_T3_BUILD
                "T3 (memcmp)",
 #else
                "default (bound, subnormals flushed)",
@@ -1548,7 +1548,7 @@ static void b_add_checks(model_t *m) {
                     fprintf(stderr, "FAIL: residual add twin wrote between rows at row %d [%d]\n", r, i);
                 continue;
             }
-#ifndef RUNNER_PORTABLE_MATH
+#ifndef RUNNER_T3_BUILD
             uint32_t ua, ub, ud;
             float fa = x[o], fb = y[(size_t)r * ys + i];
             memcpy(&ua, &fa, 4); memcpy(&ub, &fb, 4); memcpy(&ud, &d, 4);
@@ -1569,7 +1569,7 @@ static void b_add_checks(model_t *m) {
     if (ok && !bad)
         printf("residual add twin: %d rows of %d (%d boundary pairs, %d IEEE anchors) == host by bits%s\n",
                rows, n, nbv * nbv, na,
-#ifdef RUNNER_PORTABLE_MATH
+#ifdef RUNNER_T3_BUILD
                "");
 #else
                skipped ? "; the subnormal ones counted, not compared (this host flushes them)" : "");
