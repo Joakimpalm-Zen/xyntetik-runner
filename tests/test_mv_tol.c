@@ -41,6 +41,7 @@
 // because F32 has no fast kernel. A NAMED fixture without a suitable tensor
 // is an error, as is a named Metal fixture whose route never dispatches.
 #include "runner.h"
+#include "gate_gpu.h"
 
 #include <float.h>
 #include <math.h>
@@ -307,6 +308,7 @@ int main(int argc, char **argv) {
             return g_fail;
         }
 #endif
+        if (gate_no_device("mv-tol")) return 1;
         printf("  mv-fast vs scalar : the fast route never dispatched: it is "
                "Metal's (on CUDA and the CPU it never runs), or no offloaded "
                "tensor of a fast-capable type, or a CPU fallback. Skipping, not "

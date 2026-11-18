@@ -29,6 +29,7 @@
 // in this gate (a speculative verify through the microbatch found it).
 #include "runner.h"
 #include "compat.h"
+#include "gate_gpu.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -252,6 +253,7 @@ int main(int argc, char **argv) {
     f16_init();
     int r = run(path, 0);
     if (r == 2) {
+        if (gate_no_device("batch-identity")) return 1;
         printf("batch-identity: ok (skipped — no GPU backend for %s)\n", path);
         return 0;
     }

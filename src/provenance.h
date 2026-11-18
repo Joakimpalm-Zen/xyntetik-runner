@@ -77,5 +77,7 @@ bool provenance_envelope_state(int *state);
 // `model_id` is the id the server answers to for the resident model; it is
 // the caller's, because a registry name is chosen after the load.
 void provenance_render(sbuf *b, const char *model_id);
+// Git commit and dirty state stamped at build time (NULL / false when unstamped).
+const char *provenance_build_commit(bool *dirty);
 
 #endif

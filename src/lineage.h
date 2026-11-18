@@ -18,6 +18,10 @@
 // file, or one made before records existed).
 bool lineage_sidecar(const char *artifact, char *out, size_t cap);
 
+// Resolve CITED relative to CITING when CITED is a bare basename or missing
+// at its original path. Returns CITED or BUF.
+const char *lineage_relocate(const char *cited, const char *citing, char *buf, size_t cap);
+
 // Appends {"path":...,"sha256":...} for an input file, plus
 // "record":{"path":...,"sha256":...} when the input carries a sidecar record:
 // the link the walker follows. `sha` may be NULL (it is computed).

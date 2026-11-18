@@ -7,6 +7,7 @@ the stop file, per-step lr and gradient norms, and the refusal of a non-finite
 step. The headline gate is resume: a run stopped and continued writes the same
 adapter, byte for byte, as the run that never stopped.
 """
+import hashlib
 import json
 import math
 import os
@@ -143,6 +144,8 @@ def test_resume_is_byte_identical_to_the_uninterrupted_run(runner_bin, fx, tmp_p
     assert [key(l) for l in straight] == [key(l) for l in first + rest]
     rec = json.loads((tmp_path / "r2.gguf.train.json").read_text())
     assert rec["resumed_at_step"] == 3 and rec["adamw"]["weight_decay"] == 0
+    assert rec["resume_optim_sha256"] == hashlib.sha256(
+        (tmp_path / "r.gguf.step-00003.optim").read_bytes()).hexdigest()
 
 
 def test_resume_refuses_moments_of_another_adapter(runner_bin, fx, tmp_path):
@@ -268,3 +271,33 @@ def test_recipe_flags_need_train(runner_bin, fx, flag):
                         *flag], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        timeout=120)
     assert p.returncode != 0 and flag[0].encode() in p.stderr
+
+
+def test_resume_in_place_records_initial_optim_sha_and_teacher_determinism(runner_bin, fx, tmp_path):
+    """R17.9(a): in-place --train-resume hashes the starting .optim before
+    overwriting it, and --train-teacher holds single-build thread identity with
+    determinism marked cpu-same-binary."""
+    ckpt = tmp_path / "ckpt.gguf"
+    p1, _, _ = run(runner_bin, fx, ckpt, "--save-every", "2", steps=2)
+    ok(p1)
+    before_optim = hashlib.sha256(pathlib.Path(f"{ckpt}.optim").read_bytes()).hexdigest()
+    p2, _, _ = run(runner_bin, fx, ckpt, "--train-resume", str(ckpt), steps=4)
+    ok(p2)
+    after_optim = hashlib.sha256(pathlib.Path(f"{ckpt}.optim").read_bytes()).hexdigest()
+    rec = json.loads(pathlib.Path(f"{ckpt}.train.json").read_text())
+    assert rec["resume_optim_sha256"] == before_optim
+    assert rec["resume_optim_sha256"] != after_optim
+
+    t_outs = {}
+    for nt in ("1", "3"):
+        out = tmp_path / f"kd-t{nt}.gguf"
+        q = subprocess.run([str(runner_bin), "-m", str(fx / "base.gguf"), "--train",
+                            str(fx / "rows.jsonl"), "--train-teacher", str(fx / "teacher"),
+                            "--train-steps", "3", "--lr", "3e-3", "--train-out", str(out),
+                            "-t", nt, "--gpu", "off"],
+                           cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
+        ok(q)
+        t_outs[nt] = out
+    assert t_outs["1"].read_bytes() == t_outs["3"].read_bytes()
+    kd_rec = json.loads(pathlib.Path(f"{t_outs['1']}.train.json").read_text())
+    assert kd_rec["determinism"] == "cpu-same-binary"
