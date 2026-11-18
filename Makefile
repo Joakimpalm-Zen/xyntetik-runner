@@ -2227,6 +2227,7 @@ ifeq ($(BUILD_OS),Darwin)
 		    env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MV=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test.gguf -p "hello" -n 8 --temp 0 --gpu auto > metal-fallback.out 2> metal-fallback.err; \
 		cmp -s metal-cpu.out metal-fallback.out; \
 		grep -q "falling back to CPU" metal-fallback.err; \
+		test $$(grep -c "command buffer failed" metal-fallback.err) -eq 1; \
 		env RUNNER_METAL_INIT_INJECT_FAILURE=after-kv MallocScribble=1 MallocGuardEdges=1 \
 		    env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MV=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test.gguf -p "hello" -n 8 --temp 0 --gpu auto > metal-init-fallback.out 2> metal-init-fallback.err; \
 		cmp -s metal-cpu.out metal-init-fallback.out; \
