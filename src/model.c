@@ -8194,13 +8194,18 @@ typedef struct {
     int  gpu_layers, n_layer, moe_layers, moe_host, moe_hot;
 } route_facts;
 
+// The device's name, looked up once. R3.60 computes a route at every model
+// load, and loads run in parallel (tests/test_decide_race.c), so the first
+// lookup is made once for every thread, not raced.
+static char route_device_name[128];
+static pthread_once_t route_device_once = PTHREAD_ONCE_INIT;
+static void route_device_init(void) {
+    if (!gpu_available(route_device_name, sizeof route_device_name)) route_device_name[0] = 0;
+}
+
 static void route_collect(const model_t *m, route_facts *r) {
-    static char device[128];
-    static int device_known;
-    if (!device_known) {
-        if (!gpu_available(device, sizeof device)) device[0] = 0;
-        device_known = 1;
-    }
+    pthread_once(&route_device_once, route_device_init);
+    const char *device = route_device_name;
     r->backend = route_backend(m);
     snprintf(r->device, sizeof r->device, "%s", m->gpu ? device : "");
     r->gpu_layers = m->gpu ? m->gpu_layers : 0;

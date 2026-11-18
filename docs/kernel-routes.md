@@ -95,9 +95,11 @@ the fresh slot's bits.
   only after a transition (a device's runtime or KV-grow fallback to the
   CPU). Rows across a transition, even one during a feed, are of no one
   route: never published, pinned or exported.
-- After every new build (another revision or compiler), persisted stores and
-  automatic snapshots are misses and session images resume their own rows
-  only.
+- A change of the recorded compiler version, source revision (with its dirty
+  mark) or build profile makes persisted stores and automatic snapshots
+  misses and session images resume their own rows only. An identical clean
+  rebuild need not miss. Two dirty builds of one revision share a
+  fingerprint, as main shared everything (R20).
 - A recurrent entry is published only when it ends where the slot stands: its
   fold is the slot's own, so an entry capped at the mark is not stored.
 - Rows loaded from disk whose provenance this process cannot vouch for are
