@@ -627,6 +627,43 @@ static bool metal_command_failed(id<MTLCommandBuffer> cb) {
     return injected || cb.status == MTLCommandBufferStatusError;
 }
 
+// One-line cb.error diagnostic (R6.98): keeps domain, code, localizedDescription,
+// and optional command buffer label when MTLCommandBufferStatusError occurs,
+// flattening embedded line breaks so the runtime-failure output stays one line.
+static void metal_flat_copy(char *dst, size_t cap, const char *src) {
+    if (!cap) return;
+    if (!src) { dst[0] = '\0'; return; }
+    size_t j = 0;
+    for (size_t i = 0; src[i] && j + 1 < cap; i++) {
+        unsigned char c = (unsigned char)src[i];
+        dst[j++] = (c == '\n' || c == '\r' || c == '\t') ? ' ' : (char)c;
+    }
+    dst[j] = '\0';
+}
+
+static void metal_report_cb_error(const char *what, const char *action,
+                                  id<MTLCommandBuffer> cb) {
+    char detail[512] = "";
+    if (cb && cb.status == MTLCommandBufferStatusError) {
+        NSError *err = cb.error;
+        char dom[128], desc[256], lbl[128];
+        metal_flat_copy(dom, sizeof dom,
+                        err && err.domain ? err.domain.UTF8String : NULL);
+        metal_flat_copy(desc, sizeof desc,
+                        err && err.localizedDescription ? err.localizedDescription.UTF8String : NULL);
+        metal_flat_copy(lbl, sizeof lbl,
+                        cb.label && cb.label.length ? cb.label.UTF8String : NULL);
+        long code = err ? (long)err.code : 0;
+        const char *d = dom[0] ? dom : "unknown";
+        const char *m = desc[0] ? desc : "no description";
+        if (lbl[0])
+            snprintf(detail, sizeof detail, " (%s code=%ld: %s, label=%s)", d, code, m, lbl);
+        else
+            snprintf(detail, sizeof detail, " (%s code=%ld: %s)", d, code, m);
+    }
+    fprintf(stderr, "gpu: %s%s — %s\n", what, detail, action);
+}
+
 static id<MTLBuffer> new_f32_scratch(id<MTLDevice> dev, size_t n) {
     if (n > SIZE_MAX / sizeof(float)) return nil;
     return [dev newBufferWithLength:n * sizeof(float)
@@ -5418,7 +5455,7 @@ static float *metal_fwd_submit(metal_fwd *F, double t_enc0) {
                 (now - t_enc0) * 1e3);
     }
     if (metal_command_failed(F->cb)) {
-        fprintf(stderr, "gpu: command buffer failed — falling back to CPU\n");
+        metal_report_cb_error("command buffer failed", "falling back to CPU", F->cb);
         return NULL;
     }
     // A binding this encoder could not place makes every number it produced
@@ -5967,8 +6004,8 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         fprintf(stderr, "\n");
     }
     if (metal_command_failed(cb)) {
-        fprintf(stderr, "gpu: Metal microbatch command buffer failed — "
-                "falling back to sequential decode\n");
+        metal_report_cb_error("Metal microbatch command buffer failed",
+                              "falling back to sequential decode", cb);
         return false;
     }
     b->last_tiles = used_tiles;
