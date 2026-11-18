@@ -1052,25 +1052,7 @@
         "backend": "cpu"
       },
       "backends": {
-        "cpu": {
-          "kind": "gate",
-          "runner_version": "1.7.1",
-          "date": "2026-10-30",
-          "device_class": "windows-x86_64-cuda",
-          "result": "pass",
-          "commit": "64cdc0dc6bab6a100ae955b7c04107d3aa302259",
-          "caps": {
-            "version": "1.7.1",
-            "os": "windows",
-            "arch": "x86_64",
-            "cpu_cores": 8,
-            "gpu_backend": "cuda",
-            "gpu_name": "NVIDIA GeForce RTX 3070"
-          },
-          "output_sha256": "b26e284a3452dbbafff6653a45966966cb5d9e42ba9503bd01d202f7b224ea96",
-          "ran": "runner -m Trinity-Nano-Preview-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/trinity-nano-preview-q8_0.windows-x86_64-cuda.cpu.txt"
-        },
+        "cpu": null,
         "cuda": {
           "kind": "limit",
           "reason": "afmoe (gated attention with sparse MoE) has no CUDA path; CUDA refuses it and the file runs on the CPU.",
@@ -7391,25 +7373,7 @@
         "backend": "metal"
       },
       "backends": {
-        "cpu": {
-          "kind": "gate",
-          "runner_version": "1.7.1",
-          "date": "2026-10-29",
-          "device_class": "windows-x86_64-cuda",
-          "result": "pass",
-          "commit": "771924318c514db96ab780a93fc09b99a2c2fdbf",
-          "caps": {
-            "version": "1.7.1",
-            "os": "windows",
-            "arch": "x86_64",
-            "cpu_cores": 8,
-            "gpu_backend": "cuda",
-            "gpu_name": "NVIDIA GeForce RTX 3070"
-          },
-          "output_sha256": "4ed9b06a2b3a14c9ddadca6bd1e3f16b9b5d582060a860bf3a72db043ec67e0a",
-          "ran": "runner -m MiniCPM5-2B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.windows-x86_64-cuda.cpu.txt"
-        },
+        "cpu": null,
         "cuda": {
           "kind": "gate",
           "runner_version": "1.19.1",

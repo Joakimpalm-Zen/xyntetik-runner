@@ -457,12 +457,12 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>MiniCPM5</b>, 1 model: CPU ✅ · CUDA ✅ · Metal ✅ · Train ✅</summary>
+<summary><b>MiniCPM5</b>, 1 model: CPU 🟨 1 of 2 · CUDA ✅ · Metal ✅ · Train ✅</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td colspan="5"><b>MiniCPM5-2B (openbmb)</b></td></tr>
-<tr><td><a href="#minicpm5-2b-q4_k_m"><code>MiniCPM5-2B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.19.1<br>2026-11-16</td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.19.1<br>2026-11-16</td></tr>
+<tr><td><a href="#minicpm5-2b-q4_k_m"><code>MiniCPM5-2B-Q4_K_M.gguf</code></a></td><td></td><td nowrap>✅ 1.19.1<br>2026-11-16</td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.19.1<br>2026-11-16</td></tr>
 <tr><td><a href="#minicpm5-2b-q8_0"><code>MiniCPM5-2B-Q8_0.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
 </tbody>
 </table>
@@ -698,12 +698,12 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Trinity Nano</b>, 1 model: CPU ✅ · CUDA n/a · Metal n/a · Train n/a</summary>
+<summary><b>Trinity Nano</b>, 1 model: CPU - · CUDA n/a · Metal n/a · Train n/a</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td colspan="5"><b>Trinity Nano</b></td></tr>
-<tr><td><a href="#trinity-nano-preview-q8_0"><code>Trinity-Nano-Preview-Q8_0.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-30</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE router gating other than softmax</td></tr>
+<tr><td><a href="#trinity-nano-preview-q8_0"><code>Trinity-Nano-Preview-Q8_0.gguf</code></a></td><td></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE router gating other than softmax</td></tr>
 </tbody>
 </table>
 </details>
@@ -1826,7 +1826,7 @@ Text path, the publisher's Q4_K_M, which fails the fidelity bar: against the pub
 - **Still missing:** The Windows CUDA host's CPU and CUDA cells and the CPU-vs-CUDA check; task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only).
 - **Evidence:** [docs/compat-reports/1.7.1-2026-10-29-macos-arm64-minicpm5-2b-q4_k_m.json](compat-reports/1.7.1-2026-10-29-macos-arm64-minicpm5-2b-q4_k_m.json), [docs/compat-reports/minicpm5-2b-reference-2026-10-29/README.md](compat-reports/minicpm5-2b-reference-2026-10-29/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
 - **Validation run:** on macos-arm64-metal, metal backend; last run 1.7.1 on 2026-10-29.
-- **CPU:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `771924318c51`, output sha256 `4ed9b06a2b3a14c9`, [pin](../tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.windows-x86_64-cuda.cpu.txt)
+- **CPU:** ☐ not run
 - **CUDA:** ✅ v1.19.1 2026-11-16 on windows-x86_64-cuda at commit `9029a805ea90`, output sha256 `4ed9b06a2b3a14c9`, [pin](../tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.windows-x86_64-cuda.cuda.txt)
 - **Metal:** ✅ v1.7.1 2026-10-29 on macos-arm64-metal at commit `a83670a85fdc`, output sha256 `16ee8166ecb8972e`, [pin](../tests/compatibility/tier-smoke/minicpm5-2b-q4_k_m.macos-arm64-metal.metal.txt)
 - **LoRA training:** supported (runner 1.19.1, 2026-11-16).
@@ -2829,8 +2829,8 @@ Arcee's Q8_0 of Trinity Nano Preview, text path, CPU only by admission: the one 
 - **Context tested:** not recorded.
 - **Still missing:** Pinned output.
 - **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [docs/model-evidence.md](model-evidence.md).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.7.1 on 2026-10-30.
-- **CPU:** ✅ v1.7.1 2026-10-30 on windows-x86_64-cuda at commit `64cdc0dc6bab`, output sha256 `b26e284a3452dbba`, [pin](../tests/compatibility/tier-smoke/trinity-nano-preview-q8_0.windows-x86_64-cuda.cpu.txt)
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; no run recorded yet.
+- **CPU:** ☐ not run
 - **CUDA:** [n/a](../MANUAL.md#support-matrix): afmoe (gated attention with sparse MoE) has no CUDA path; CUDA refuses it and the file runs on the CPU.
 - **Metal:** [n/a](../MANUAL.md#support-matrix): afmoe (gated attention with sparse MoE) has no Metal path; Metal refuses it and the file runs on the CPU.
 - **LoRA training:** no: MoE router gating other than softmax (runner 1.7.1, 2026-10-30).
