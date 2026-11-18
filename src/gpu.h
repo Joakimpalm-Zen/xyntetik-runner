@@ -387,11 +387,17 @@ bool   gpu_train_kv_store_check(model_t *m, const tkv_args *a, const float *src,
 // device bytes its planes may take beside what is held now; its planes for a
 // step of T rows (the training K/V rows, the norm weights, the rope tables);
 // one taped forward round of n rows at pos on the device (m->x in, the final
-// hidden back in m->x, the host tape's and K/V cache's rows written as the
-// host's forward writes them). false: the caller runs the host's path.
+// hidden back in m->x, the tape's and the K/V rows kept on the device for the
+// resident backward). false: the step fails.
 size_t gpu_train_res_avail(model_t *m);
 bool   gpu_train_res_begin(model_t *m, int T);
 bool   gpu_train_res_round(model_t *m, int n, int pos);
+// R2: the resident backward. dx (the head's adjoint, T rows) up once; layer
+// l's backward on the device's tape and K/V rows, dx staying on the device;
+// every launch done. false: the step fails.
+bool   gpu_train_res_bw_begin(model_t *m, const float *dx, int T);
+bool   gpu_train_res_layer_bw(model_t *m, int l);
+bool   gpu_train_res_bw_end(model_t *m);
 // R8.24.1 B R0, the kernel gate's entry: the residual add's twin (k_tadd),
 // x (a->rows host rows, a->x_stride apart) += y (a->y_stride apart) in
 // place. false: no context or no kernel in this PTX.

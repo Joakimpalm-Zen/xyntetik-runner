@@ -240,6 +240,9 @@ bool gpu_train_rope_check(model_t *m, const trope_args *a, const float *fr, floa
 size_t gpu_train_res_avail(model_t *m) { (void)m; return 0; }
 bool gpu_train_res_begin(model_t *m, int T) { (void)m; (void)T; return false; }
 bool gpu_train_res_round(model_t *m, int n, int pos) { (void)m; (void)n; (void)pos; return false; }
+bool gpu_train_res_bw_begin(model_t *m, const float *dx, int T) { (void)m; (void)dx; (void)T; return false; }
+bool gpu_train_res_layer_bw(model_t *m, int l) { (void)m; (void)l; return false; }
+bool gpu_train_res_bw_end(model_t *m) { (void)m; return false; }
 bool gpu_train_add_check(model_t *m, const tadd_args *a, float *x, const float *y) {
     (void)m; (void)a; (void)x; (void)y;
     return false;

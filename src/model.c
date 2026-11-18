@@ -14151,7 +14151,8 @@ NUM_STAGE bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
         t_mv_exact = true;
         model_forward_batch(m, toks + t0, n, t0, false);
         t_mv_exact = ex;
-        ok = rows_logits(m, n, raw, false);
+        if (m->train_res_failed) ok = false;
+        ok = ok && rows_logits(m, n, raw, false);
         int nc = 0;
         for (int b = 0; ok && b < n; b++) {
             int t = t0 + b;
@@ -14215,6 +14216,18 @@ static bool lora_layers_bw(model_t *m, const int32_t *toks, int T, float *dx) {
         if (!scratch || !m->bw_ple) ok = false;
         else model_ple_prepass(m, toks, T, m->tape, m->bw_ple, scratch);
         free(scratch);
+    }
+    // R8.24.1 B R2: a resident step's backward runs every layer on the
+    // device's tape and K/V rows (no PLE, no shared K/V in its scope), dx up
+    // once; a failure fails the step (the host holds no tape to resume from)
+    if (ok && m->train_resident) {
+        ok = gpu_train_res_bw_begin(m, dx, T);
+        for (int l = L - 1; ok && l >= 0; l--) ok = gpu_train_res_layer_bw(m, l);
+        ok = ok && gpu_train_res_bw_end(m);
+        if (!ok) fprintf(stderr, "error: --train-gpu: the resident backward failed on the device\n");
+        free(m->bw_dk_share); free(m->bw_dv_share); free(m->bw_ple);
+        m->bw_dk_share = m->bw_dv_share = m->bw_ple = NULL;
+        return ok;
     }
     // layers in reverse
     for (int l = L - 1; ok && l >= 0; l--)
@@ -14317,6 +14330,7 @@ static void lbw_res_why(const char *why) {
 // keeps the slot path in a device step, for comparison.
 static bool lbw_resident_begin(model_t *m, int T) {
     m->train_resident = false;
+    m->train_res_failed = false;
     if (!m->train_dev_ffn) return false;
     const char *e = getenv("RUNNER_TRAIN_RESIDENT");
     if (e && e[0] == '0' && !e[1]) {
@@ -14348,7 +14362,20 @@ static bool lbw_resident_begin(model_t *m, int T) {
     }
     m->train_resident = true;
     return true;
-}static bool lbw_dev_ffn_end(model_t *m) {
+}// the end of a resident step: the attention sites' gradients, accumulated on
+// the device by the resident backward from the host's values, come back
+static bool lbw_resident_end(model_t *m) {
+    static const int slot[4] = { LW_Q, LW_K, LW_V, LW_O };
+    bool ok = true;
+    for (int l = 0; l < m->n_layer; l++)
+        for (int w = 0; w < 4; w++) {
+            struct lora_w *lw = &m->lora[(size_t)l * LW_SLOTS + slot[w]];
+            if (lw->r && !gpu_train_site_pull(m, l, 3 + w, lw->ga, lw->gb)) ok = false;
+        }
+    if (!ok) fprintf(stderr, "error: --train-gpu: an attention site's gradients did not come back\n");
+    return ok;
+}
+static bool lbw_dev_ffn_end(model_t *m) {
     m->train_dev_ffn = false;
     bool ok = true;
     for (int l = 0; l < m->n_layer; l++)
@@ -14413,6 +14440,7 @@ static bool lora_backward(model_t *m, const int32_t *toks, int T,
     free(dx);
     free(m->tape); m->tape = NULL; m->tape_T = 0;
     if (!lbw_dn_settle(m)) ok = false;
+    if (m->train_resident && !lbw_resident_end(m)) ok = false;
     m->train_resident = false;
     if (dffn && !lbw_dev_ffn_end(m)) ok = false;
     t_mv_dev = dev;
@@ -16571,9 +16599,13 @@ static float *forward_batch_run(model_t *m, const int32_t *tokens, int n, int po
     // rest of the step (the device's K/V rows would miss its rows)
     bool res = m->train_resident && t_mv_dev == m && !dbg && start == 0 && m->tape;
     if (res && !gpu_train_res_round(m, n, pos)) {
+        // the step's tape and K/V rows so far live on the device only (R2):
+        // the host's loop below keeps the forward's contract for this round,
+        // and the step fails (lora_taped_forward reads the flag)
         m->train_resident = false;
+        m->train_res_failed = true;
         res = false;
-        lbw_res_why("a round declined on the device; the rest of the step runs the slot path");
+        fprintf(stderr, "error: --train-gpu: a resident forward round failed on the device\n");
     }
     for (int l = start; !res && l < m->n_layer; l++)
         forward_layer(m, l, n, pos, dbg);

@@ -767,7 +767,8 @@ typedef struct {
                              // training step and of its evals on train_gpu
                              // (gpu_train_mm), tolerance-equivalent to the
                              // CPU, not its bytes (--train-gpu)
-    bool   train_resident;   // R8.24.1 B R1: this step's taped forward runs resident
+    bool   train_resident;   // R8.24.1 B R1/R2: this step's taped forward and backward run resident
+    bool   train_res_failed; // a resident round failed: the step fails (the host holds no tape)
     bool   train_dev_ffn;    // R8.24.1 B: within a device-mode backward, the
                              // gated FFN (products, adapter, activation) runs
                              // on the device (gpu_train_ffn_*)

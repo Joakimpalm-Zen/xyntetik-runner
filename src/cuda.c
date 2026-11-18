@@ -8912,6 +8912,10 @@ typedef struct {
     size_t      res_k_cap, res_v_cap, res_fr_cap, res_frl_cap;
     int         res_T;
     double      t_res;                  // the resident rounds' wall time (the profile's device share)
+    // R2: the step's tape on the device ([n_layer][T][n_embd], each layer's
+    // input), dx across the backward's layers, and the backward's planes
+    CUdeviceptr res_tape, res_dx, rb[15];
+    size_t      res_tape_cap, res_dx_cap, rb_cap[15];
     struct rtab { CUdeviceptr an, fn, qn, kn; } *res_tab;
     // R8.24.1 B6: the adapter at a site (k_tlora_t, _y, _tb, _ga, _gb, _dx)
     CUfunction  f_tlora[6];
@@ -9944,34 +9948,24 @@ static bool tab_buf(train_gpu_t *t, int i, size_t need) {
     return tg_scratch(&t->ab[i], &t->ab_cap[i], need);
 }
 
-static bool train_attn_bw(train_gpu_t *t, const tab_args *a, const void *kc,
-                          const void *vc, const float *q, const float *dao,
-                          float *dq, float *dk, float *dv) {
-    if (cu.CtxSetCurrent(t->ctx) != 0) return false;
+// the score and softmax backward's kernels over device planes: K and V
+// rows, q, dao in; dq, dk, dv accumulated (their starting values as given).
+// The probabilities' scratch is the context's (AB_P, AB_DS). No sync.
+static bool attn_bw_core(train_gpu_t *t, const tab_args *a, CUdeviceptr K, CUdeviceptr V,
+                         CUdeviceptr Q, CUdeviceptr DAO, CUdeviceptr DQ, CUdeviceptr DK,
+                         CUdeviceptr DV) {
     size_t T = (size_t)a->T, H = (size_t)a->n_head;
-    size_t nk = T * a->k_row_b, nv = T * a->v_row_b;
-    size_t nq = sizeof(float) * T * (size_t)a->q_dim;
-    size_t nkv = sizeof(float) * T * (size_t)a->kv_dim;
     size_t tb = T < TAB_TB ? T : TAB_TB;
     size_t np = sizeof(float) * tb * H * T;
-    if (!tab_buf(t, AB_K, nk) || !tab_buf(t, AB_V, nv) || !tab_buf(t, AB_Q, nq) ||
-        !tab_buf(t, AB_DAO, nq) || !tab_buf(t, AB_DQ, nq) || !tab_buf(t, AB_DK, nkv) ||
-        !tab_buf(t, AB_DV, nkv) || !tab_buf(t, AB_P, np) || !tab_buf(t, AB_DS, np))
-        return false;
-    if (cu.MemcpyHtoD(t->ab[AB_K], kc, nk) != 0 || cu.MemcpyHtoD(t->ab[AB_V], vc, nv) != 0 ||
-        cu.MemcpyHtoD(t->ab[AB_Q], q, nq) != 0 || cu.MemcpyHtoD(t->ab[AB_DAO], dao, nq) != 0 ||
-        cu.MemcpyHtoD(t->ab[AB_DQ], dq, nq) != 0 || cu.MemcpyHtoD(t->ab[AB_DK], dk, nkv) != 0 ||
-        cu.MemcpyHtoD(t->ab[AB_DV], dv, nkv) != 0)
-        return false;
+    if (!tab_buf(t, AB_P, np) || !tab_buf(t, AB_DS, np)) return false;
+    CUdeviceptr P = t->ab[AB_P], DS = t->ab[AB_DS];
     tab_args aa = *a;
     unsigned nkvh = (unsigned)(a->n_head / a->kv_mul);
     for (int tb0 = 0; tb0 < a->T; tb0 += TAB_TB) {
         int tbn = a->T - tb0 < TAB_TB ? a->T - tb0 : TAB_TB;
-        void *pp[] = { &t->ab[AB_K], &t->ab[AB_V], &t->ab[AB_Q], &t->ab[AB_DAO],
-                       &t->ab[AB_P], &t->ab[AB_DS], &aa, &tb0 };
-        void *pq[] = { &t->ab[AB_K], &t->ab[AB_DS], &t->ab[AB_DQ], &aa, &tb0 };
-        void *pk[] = { &t->ab[AB_Q], &t->ab[AB_DAO], &t->ab[AB_P], &t->ab[AB_DS],
-                       &t->ab[AB_DK], &t->ab[AB_DV], &aa, &tb0, &tbn };
+        void *pp[] = { &K, &V, &Q, &DAO, &P, &DS, &aa, &tb0 };
+        void *pq[] = { &K, &DS, &DQ, &aa, &tb0 };
+        void *pk[] = { &Q, &DAO, &P, &DS, &DK, &DV, &aa, &tb0, &tbn };
         if (cu.LaunchKernel(t->f_tab_p, (unsigned)tbn, (unsigned)a->n_head, 1,
                             TAB_THREADS, 1, 1, 0, NULL, pp, NULL) != 0 ||
             cu.LaunchKernel(t->f_tab_dq, (unsigned)tbn, (unsigned)a->n_head, 1,
@@ -9980,6 +9974,29 @@ static bool train_attn_bw(train_gpu_t *t, const tab_args *a, const void *kc,
                             TAB_THREADS, 1, 1, 0, NULL, pk, NULL) != 0)
             return false;
     }
+    return true;
+}
+
+static bool train_attn_bw(train_gpu_t *t, const tab_args *a, const void *kc,
+                          const void *vc, const float *q, const float *dao,
+                          float *dq, float *dk, float *dv) {
+    if (cu.CtxSetCurrent(t->ctx) != 0) return false;
+    size_t T = (size_t)a->T;
+    size_t nk = T * a->k_row_b, nv = T * a->v_row_b;
+    size_t nq = sizeof(float) * T * (size_t)a->q_dim;
+    size_t nkv = sizeof(float) * T * (size_t)a->kv_dim;
+    if (!tab_buf(t, AB_K, nk) || !tab_buf(t, AB_V, nv) || !tab_buf(t, AB_Q, nq) ||
+        !tab_buf(t, AB_DAO, nq) || !tab_buf(t, AB_DQ, nq) || !tab_buf(t, AB_DK, nkv) ||
+        !tab_buf(t, AB_DV, nkv))
+        return false;
+    if (cu.MemcpyHtoD(t->ab[AB_K], kc, nk) != 0 || cu.MemcpyHtoD(t->ab[AB_V], vc, nv) != 0 ||
+        cu.MemcpyHtoD(t->ab[AB_Q], q, nq) != 0 || cu.MemcpyHtoD(t->ab[AB_DAO], dao, nq) != 0 ||
+        cu.MemcpyHtoD(t->ab[AB_DQ], dq, nq) != 0 || cu.MemcpyHtoD(t->ab[AB_DK], dk, nkv) != 0 ||
+        cu.MemcpyHtoD(t->ab[AB_DV], dv, nkv) != 0)
+        return false;
+    if (!attn_bw_core(t, a, t->ab[AB_K], t->ab[AB_V], t->ab[AB_Q], t->ab[AB_DAO], t->ab[AB_DQ],
+                      t->ab[AB_DK], t->ab[AB_DV]))
+        return false;
     // all three come back before any lands, so a failed copy leaves the
     // caller's sums as they were for the CPU to add into
     size_t nh = (nq + 2 * nkv) / sizeof(float);
@@ -10364,10 +10381,9 @@ bool gpu_train_ffn_fw_norm(model_t *m, int l, const gguf_tensor *wg, const gguf_
 // a taped forward round on device planes. The round's rows go up once (x0,
 // after the host's embedding); every layer runs on the device, each op the
 // host's twin (B1, B2, B3, B4, B6, B8, k_tadd); the tape's rows and the
-// training K/V rows come down as mirrors for the host's backward (R2 drops
-// them), the final hidden for the host's head. model.c decides the scope
-// (model_resident_why) and falls back to the host for the rest of the step
-// when a round declines.
+// training K/V rows stay on the device for the resident backward (R2), the
+// final hidden comes down for the host's head. model.c decides the scope
+// (model_resident_why); a round that fails fails the step.
 enum { RP_X, RP_XN, RP_Q, RP_Q2, RP_K, RP_K2, RP_V, RP_AO, RP_OB, RP_N };
 
 // the device bytes the step's planes may take beside what is held now
@@ -10395,7 +10411,9 @@ bool gpu_train_res_begin(model_t *m, int T) {
     int L = m->n_layer, E = m->n_embd, hd = model_head_dim(m, 0);
     size_t krb = model_k_row_bytes(m, 0), vrb = model_v_row_bytes(m, 0);
     if (!tg_scratch(&t->res_k, &t->res_k_cap, (size_t)L * T * krb) ||
-        !tg_scratch(&t->res_v, &t->res_v_cap, (size_t)L * T * vrb))
+        !tg_scratch(&t->res_v, &t->res_v_cap, (size_t)L * T * vrb) ||
+        !tg_scratch(&t->res_tape, &t->res_tape_cap, sizeof(float) * (size_t)L * T * E) ||
+        !tg_scratch(&t->res_dx, &t->res_dx_cap, sizeof(float) * (size_t)T * E))
         return false;
     if (!t->res_tab) {
         t->res_tab = calloc((size_t)L, sizeof(*t->res_tab));
@@ -10424,9 +10442,8 @@ bool gpu_train_res_begin(model_t *m, int T) {
 
 // one taped forward round of n rows at position pos, every layer on the
 // device: m->x (the round's embedded rows) in, the final hidden back in
-// m->x; the host tape's rows of each layer's input and the host cache's K/V
-// rows written as the host's forward writes them. false: the caller runs
-// the round on the host (it rewrites everything this wrote).
+// m->x; each layer's input rows into the device's tape and its K/V rows
+// into the step's device rows. false: the step fails.
 bool gpu_train_res_round(model_t *m, int n, int pos) {
     train_gpu_t *t = m->train_gpu;
     if (!t || !t->res_tab || n < 1 || pos < 0 || pos + n > t->res_T ||
@@ -10446,9 +10463,10 @@ bool gpu_train_res_round(model_t *m, int n, int pos) {
         const layer_t *ly = &m->layers[l];
         int nff = ly->n_ff;
         if (!fb_planes(t, E, nff, n, site_rmax(t, L, l))) return false;
-        // the tape's rows: the layer's input, for the host's backward (R1)
-        if (m->tape && cu.MemcpyDtoH(m->tape + ((size_t)l * m->tape_T + pos) * E, t->rp[RP_X],
-                                     sizeof(float) * ne) != 0)
+        // the tape's rows: the layer's input, kept on the device for the
+        // resident backward (R2: the host's tape keeps only its last plane)
+        if (cu.MemcpyDtoD(t->res_tape + sizeof(float) * ((size_t)l * T + pos) * E, t->rp[RP_X],
+                          sizeof(float) * ne) != 0)
             return false;
         // the attention's input norm, Q K V and their adapters
         trn_args na = { E, n, E, E, E, E, m->rms_eps };
@@ -10483,17 +10501,13 @@ bool gpu_train_res_round(model_t *m, int n, int pos) {
             trope_args rb = { nkv, hd, half, m->rope_neox, n, pos, kv_dim, 0, ms };
             if (!fr || !trope_launch(t, q, fr, &ra) || !trope_launch(t, k, fr, &rb)) return false;
         }
-        // the K/V store into the step's rows, and the host cache's rows (R1)
+        // the K/V store into the step's rows (the resident backward reads them there)
         int kk = model_kv_kind_k(m), vk = model_kv_kind_v(m);
         size_t krb = model_k_row_bytes(m, l), vrb = model_v_row_bytes(m, l);
         CUdeviceptr kl = t->res_k + (size_t)l * T * krb, vl = t->res_v + (size_t)l * T * vrb;
         CUdeviceptr dk = kl + (size_t)pos * krb, dv = vl + (size_t)pos * vrb;
         tkv_args ka2 = { n, kv_dim, kv_dim, kk, (ka_u64)krb }, va2 = { n, kv_dim, kv_dim, vk, (ka_u64)vrb };
-        uint8_t *hk = (uint8_t *)m->kcache + model_k_byte_off(m, l) + (size_t)pos * krb;
-        uint8_t *hv = (uint8_t *)m->vcache + model_v_byte_off(m, l) + (size_t)pos * vrb;
-        if (!tkv_launch(t, k, dk, &ka2) || !tkv_launch(t, t->rp[RP_V], dv, &va2) ||
-            cu.MemcpyDtoH(hk, dk, (size_t)n * krb) != 0 || cu.MemcpyDtoH(hv, dv, (size_t)n * vrb) != 0)
-            return false;
+        if (!tkv_launch(t, k, dk, &ka2) || !tkv_launch(t, t->rp[RP_V], dv, &va2)) return false;
         // the attention over rows 0 .. pos + n - 1, O and its adapter, the add
         tattn_args aa = { n, nh, nh / nkv, hd, q_dim, kv_dim, model_is_swa(m, l) ? m->swa_window : 0,
                           (ka_u64)krb, (ka_u64)vrb, model_attn_scale(m, l), kk, vk, pos };
@@ -10517,6 +10531,162 @@ bool gpu_train_res_round(model_t *m, int n, int pos) {
     bool ok = cu.CtxSynchronize() == 0 && cu.MemcpyDtoH(m->x, t->rp[RP_X], sizeof(float) * ne) == 0;
     t->t_res += plat_now() - t0;   // its own bucket: the product calls' split stays theirs
     return ok;
+}
+// ---- R8.24.1 B, R2 of the resident step: the backward over the device's
+// tape and K/V rows. dx (the head's adjoint, from the host) goes up once;
+// each layer recomputes its forward internals from its tape plane and runs
+// its backward on device planes, every op in the host's order (lbw_recompute,
+// lbw_ffn_and_output, lbw_attention, lbw_projections, lbw_input_grad), each
+// the host's twin; dx stays on the device across the layers. The sites'
+// gradients accumulate on the device and come back once (model.c pulls them).
+enum { RB_XN1, RB_Q, RB_QP, RB_KP, RB_AO, RB_OB, RB_XA, RB_DXA, RB_DAO, RB_DQ, RB_DQ2, RB_DK,
+       RB_DK2, RB_DV, RB_DXN1, RB_N };
+
+bool gpu_train_res_bw_begin(model_t *m, const float *dx, int T) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->res_tab || T != t->res_T || cu.CtxSetCurrent(t->ctx) != 0) return false;
+    return cu.MemcpyHtoD(t->res_dx, dx, sizeof(float) * (size_t)T * m->n_embd) == 0;
+}
+
+// layer l's backward: the step's dx (the gradient at the layer's output) in,
+// the gradient at its input out, both in the device's dx plane
+bool gpu_train_res_layer_bw(model_t *m, int l) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->res_tab || cu.CtxSetCurrent(t->ctx) != 0) return false;
+    double t0 = plat_now();
+    const layer_t *ly = &m->layers[l];
+    int L = m->n_layer, E = m->n_embd, T = t->res_T, nff = ly->n_ff;
+    int hd = model_head_dim(m, l), nh = m->n_head, nkv = model_n_head_kv(m, l);
+    int q_dim = model_q_dim(m, l), kv_dim = model_kv_dim(m, l);
+    size_t fe = sizeof(float) * (size_t)T * E, fq = sizeof(float) * (size_t)T * q_dim;
+    size_t fk = sizeof(float) * (size_t)T * kv_dim;
+    size_t sz[RB_N] = { fe, fq, fq, fk, fq, fe, fe, fe, fq, fq, fq, fk, fk, fk, fe };
+    for (int i = 0; i < RB_N; i++)
+        if (!tg_scratch(&t->rb[i], &t->rb_cap[i], sz[i])) return false;
+    if (!fb_planes(t, E, nff, T, site_rmax(t, L, l))) return false;
+    CUdeviceptr X = t->res_tape + sizeof(float) * (size_t)l * T * E, DX = t->res_dx;
+    CUdeviceptr pq = tg_weights(t, ly->wq), pk = pq ? tg_weights(t, ly->wk) : 0;
+    CUdeviceptr pv = pk ? tg_weights(t, ly->wv) : 0, po = pv ? tg_weights(t, ly->wo) : 0;
+    CUdeviceptr pg = po ? tg_weights(t, ly->w_gate) : 0, pu = pg ? tg_weights(t, ly->w_up) : 0;
+    CUdeviceptr pd = pu ? tg_weights(t, ly->w_down) : 0;
+    if (!pd) return false;
+    size_t krb = model_k_row_bytes(m, l), vrb = model_v_row_bytes(m, l);
+    CUdeviceptr kl = t->res_k + (size_t)l * T * krb, vl = t->res_v + (size_t)l * T * vrb;
+    int kk = model_kv_kind_k(m), vk = model_kv_kind_v(m);
+    int swa = model_is_swa(m, l) ? m->swa_window : 0;
+    float scale = model_attn_scale(m, l);
+    bool ropes = model_layer_ropes(m, l);
+    CUdeviceptr fr = model_is_swa(m, l) ? (m->rope_inv_freq_local ? t->res_frl : 0)
+                                        : (m->rope_inv_freq ? t->res_fr : 0);
+    int half = model_rope_dim(m, l) / 2;
+    float ms = model_rope_mscale(m, l);
+    if (ropes && !fr) return false;
+    trn_args ne_a = { E, T, E, E, E, E, m->rms_eps };
+    tadd_args xa_a = { T, E, E, E };
+    // ---- the recompute (lbw_recompute): the attention norm, Q and its
+    // adapter, its norm and rope; K before its norm where the K norm's adjoint
+    // needs it; the attention over the cache's rows; O and its adapter; the
+    // residual; the FFN norm and front
+    CUdeviceptr Q = t->rb[RB_Q];
+    if (!trn_fw_launch(t, X, t->res_tab[l].an, t->rb[RB_XN1], &ne_a) ||
+        !tmm_launch(t, ly->wq, pq, t->rb[RB_XN1], Q, E, q_dim, T) ||
+        !site_fw(t, tg_site(t, L, l, 3), t->rb[RB_XN1], E, Q, T))
+        return false;
+    if (ly->qnorm_w) {   // qpre kept for the norm's adjoint, q normed from it
+        trn_args qa = { hd, T * nh, hd, hd, hd, hd, m->rms_eps };
+        if (cu.MemcpyDtoD(t->rb[RB_QP], Q, fq) != 0 ||
+            !trn_fw_launch(t, t->rb[RB_QP], t->res_tab[l].qn, Q, &qa))
+            return false;
+    }
+    trope_args rq = { nh, hd, half, m->rope_neox, T, 0, q_dim, 0, ms };
+    if (ropes && !trope_launch(t, Q, fr, &rq)) return false;
+    if (ly->knorm_w &&
+        (!tmm_launch(t, ly->wk, pk, t->rb[RB_XN1], t->rb[RB_KP], E, kv_dim, T) ||
+         !site_fw(t, tg_site(t, L, l, 4), t->rb[RB_XN1], E, t->rb[RB_KP], T)))
+        return false;
+    tattn_args aa = { T, nh, nh / nkv, hd, q_dim, kv_dim, swa, (ka_u64)krb, (ka_u64)vrb, scale,
+                      kk, vk, 0 };
+    trn_args fn_a = { E, T, E, E, E, E, m->rms_eps };
+    if (!tattn_launch(t, kl, vl, Q, t->rb[RB_AO], &aa) ||
+        !tmm_launch(t, ly->wo, po, t->rb[RB_AO], t->rb[RB_OB], q_dim, E, T) ||
+        !site_fw(t, tg_site(t, L, l, 6), t->rb[RB_AO], q_dim, t->rb[RB_OB], T) ||
+        cu.MemcpyDtoD(t->rb[RB_XA], X, fe) != 0 ||
+        !tadd_launch(t, t->rb[RB_XA], t->rb[RB_OB], &xa_a) ||
+        !trn_fw_launch(t, t->rb[RB_XA], t->res_tab[l].fn, t->fb[FB_X], &fn_a) ||
+        !ffn_front(t, L, l, ly->w_gate, ly->w_up, E, nff, T))
+        return false;
+    // ---- the FFN and its norm (lbw_ffn_and_output): the branch's gradient is
+    // dx itself (no residual scale, no sandwich norm in scope); down, the
+    // activation's adjoint, gate, up into dxn2; dxa = dx + the norm's adjoint
+    size_t nf = sizeof(float) * (size_t)T * nff;
+    if (cu.MemcpyDtoD(t->fb[FB_Y], DX, fe) != 0 || cu.MemsetD8(t->fb[FB_DH], 0, nf) != 0 ||
+        !tmvt_launch(t, ly->w_down, pd, t->fb[FB_Y], t->fb[FB_DH], nff, E, T, true) ||
+        !site_bw(t, tg_site(t, L, l, 2), t->fb[FB_H], t->fb[FB_Y], t->fb[FB_DH], T) ||
+        !tffn_bw_launch(t, t->fb[FB_G], t->fb[FB_U], t->fb[FB_DH], t->fb[FB_DG], t->fb[FB_DU],
+                        T * nff, ACT_SILU) ||
+        cu.MemsetD8(t->fb[FB_DX], 0, fe) != 0 ||
+        !tmvt_launch(t, ly->w_gate, pg, t->fb[FB_DG], t->fb[FB_DX], E, nff, T, true) ||
+        !site_bw(t, tg_site(t, L, l, 0), t->fb[FB_X], t->fb[FB_DG], t->fb[FB_DX], T) ||
+        !tmvt_launch(t, ly->w_up, pu, t->fb[FB_DU], t->fb[FB_DX], E, nff, T, true) ||
+        !site_bw(t, tg_site(t, L, l, 1), t->fb[FB_X], t->fb[FB_DU], t->fb[FB_DX], T) ||
+        cu.MemcpyDtoD(t->rb[RB_DXA], DX, fe) != 0 ||
+        !trn_bw_launch(t, t->rb[RB_XA], t->res_tab[l].fn, t->fb[FB_DX], t->rb[RB_DXA], &fn_a))
+        return false;
+    // ---- O: its transpose and its adapter's backward into dao (zero-started)
+    if (cu.MemsetD8(t->rb[RB_DAO], 0, fq) != 0 ||
+        !tmvt_launch(t, ly->wo, po, t->rb[RB_DXA], t->rb[RB_DAO], q_dim, E, T, true) ||
+        !site_bw(t, tg_site(t, L, l, 6), t->rb[RB_AO], t->rb[RB_DXA], t->rb[RB_DAO], T))
+        return false;
+    // ---- the attention's backward (lbw_attention) on the cache's rows
+    tab_args ta = { T, nh, nh / nkv, hd, q_dim, kv_dim, swa, (unsigned long long)krb,
+                    (unsigned long long)vrb, scale };
+    if (cu.MemsetD8(t->rb[RB_DQ], 0, fq) != 0 || cu.MemsetD8(t->rb[RB_DK], 0, fk) != 0 ||
+        cu.MemsetD8(t->rb[RB_DV], 0, fk) != 0 ||
+        !attn_bw_core(t, &ta, kl, vl, Q, t->rb[RB_DAO], t->rb[RB_DQ], t->rb[RB_DK], t->rb[RB_DV]))
+        return false;
+    // ---- the projections (lbw_projections): rope's adjoint on dq and dk, the
+    // Q and K norms' adjoints per head into fresh rows, then Q (zero-started
+    // dxn1), K and V: each transpose, then its adapter's backward
+    trope_args uq = { nh, hd, half, m->rope_neox, T, 0, q_dim, 1, ms };
+    trope_args uk = { nkv, hd, half, m->rope_neox, T, 0, kv_dim, 1, ms };
+    if (ropes && (!trope_launch(t, t->rb[RB_DQ], fr, &uq) || !trope_launch(t, t->rb[RB_DK], fr, &uk)))
+        return false;
+    CUdeviceptr dq = t->rb[RB_DQ], dk = t->rb[RB_DK];
+    if (ly->qnorm_w) {
+        trn_args qa = { hd, T * nh, hd, hd, hd, hd, m->rms_eps };
+        if (cu.MemsetD8(t->rb[RB_DQ2], 0, fq) != 0 ||
+            !trn_bw_launch(t, t->rb[RB_QP], t->res_tab[l].qn, dq, t->rb[RB_DQ2], &qa))
+            return false;
+        dq = t->rb[RB_DQ2];
+    }
+    if (ly->knorm_w) {
+        trn_args ka = { hd, T * nkv, hd, hd, hd, hd, m->rms_eps };
+        if (cu.MemsetD8(t->rb[RB_DK2], 0, fk) != 0 ||
+            !trn_bw_launch(t, t->rb[RB_KP], t->res_tab[l].kn, dk, t->rb[RB_DK2], &ka))
+            return false;
+        dk = t->rb[RB_DK2];
+    }
+    if (cu.MemsetD8(t->rb[RB_DXN1], 0, fe) != 0 ||
+        !tmvt_launch(t, ly->wq, pq, dq, t->rb[RB_DXN1], E, q_dim, T, true) ||
+        !site_bw(t, tg_site(t, L, l, 3), t->rb[RB_XN1], dq, t->rb[RB_DXN1], T) ||
+        !tmvt_launch(t, ly->wk, pk, dk, t->rb[RB_DXN1], E, kv_dim, T, true) ||
+        !site_bw(t, tg_site(t, L, l, 4), t->rb[RB_XN1], dk, t->rb[RB_DXN1], T) ||
+        !tmvt_launch(t, ly->wv, pv, t->rb[RB_DV], t->rb[RB_DXN1], E, kv_dim, T, true) ||
+        !site_bw(t, tg_site(t, L, l, 5), t->rb[RB_XN1], t->rb[RB_DV], t->rb[RB_DXN1], T))
+        return false;
+    // ---- the input (lbw_input_grad): dx = dxa + the attention norm's adjoint
+    if (cu.MemcpyDtoD(DX, t->rb[RB_DXA], fe) != 0 ||
+        !trn_bw_launch(t, X, t->res_tab[l].an, t->rb[RB_DXN1], DX, &ne_a))
+        return false;
+    t->t_res += plat_now() - t0;
+    return true;
+}
+
+// the end of a resident backward: every launch done (the sites' gradients
+// then come back through gpu_train_site_pull)
+bool gpu_train_res_bw_end(model_t *m) {
+    train_gpu_t *t = m->train_gpu;
+    return t && cu.CtxSetCurrent(t->ctx) == 0 && cu.CtxSynchronize() == 0;
 }
 // R8.24.1 B: the backward's recompute of layer l's FFN front: xn2 (T rows of
 // n_embd, packed) goes up and stays, with g, u and act(g)*u, for the sites
