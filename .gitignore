@@ -358,6 +358,20 @@ test-canon-kernels.exe
 runner-riscv64
 test-pmath
 test-pmath.exe
+test-pmath-expf
+test-pmath-expf.exe
+test-pmath-expf-default
+test-pmath-expf-default.exe
+bench-pmath-loops-bin
+bench-pmath-loops-bin.exe
+test-pmath-softmax
+test-pmath-softmax.exe
+test-pmath-callers-default
+test-pmath-callers-default.exe
+test-pmath-callers-portable
+test-pmath-callers-portable.exe
+test-pmath-callers-default.out
+test-pmath-callers-portable.out
 test-fpclass
 test-fpclass.exe
 test-act
@@ -401,3 +415,11 @@ tests/conformance/out-sanitized/
 
 # examples/deterministic-ci downloads (a pinned release and model file)
 /.cache/
+
+# R6.91: tests/test_sample_nan.c three ways (make test-sample-nan)
+test-sample-nan-default
+test-sample-nan-portable
+test-sample-nan-strict
+test-sample-nan-*.exe
+/.sample-nan/
+test-sample-nan-asan

@@ -12,6 +12,7 @@
 #include "envelope.h"
 #include "fpclass.h"
 #include "runner.h"
+#include "pm_order.h"   // PM_IN_ORDER: sums a portable build keeps in order (R6.86)
 
 // ------------------------------------------------------- python spellings
 //
@@ -551,7 +552,7 @@ static void softmax_inplace(float *x, int n) {
     float mx = x[0];
     for (int i = 1; i < n; i++) if (x[i] > mx) mx = x[i];
     float z = 0;
-    for (int i = 0; i < n; i++) { x[i] = expf(x[i] - mx); z += x[i]; }
+    for (int i = 0; i < n; i++) { x[i] = expf(x[i] - mx); z += x[i]; PM_IN_ORDER(z); }
     for (int i = 0; i < n; i++) x[i] /= z;
 }
 
