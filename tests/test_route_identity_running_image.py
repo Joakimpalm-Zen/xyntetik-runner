@@ -4,8 +4,9 @@ A dirty process A that is paused at start, and whose executable's path is replac
 its identity, must still carry A's own identity, never the replacement's. The test: A, marked dirty
 (RUNNER_TEST_BUILD_DIRTY=1), writes a session image whose header names its route identity, once run straight
 (the reference) and once paused before the identity (RUNNER_TEST_IDENTITY_WAIT) while its file is replaced, then
-resumed. Both images must name the same route. Skipped on Windows, where a dirty build's identity is a value of the
-process alone (no persisted reuse) and two runs never share one.
+resumed. Both images must name the same route. The swap renames A's file away and puts B at its path, which works
+on every platform (Windows refuses to overwrite a running image, not to rename it). And two straight runs of one
+dirty binary, two processes, must name one route, or no process resumes another's session.
 """
 import json
 import os
@@ -35,11 +36,30 @@ def _route(img):
     return json.loads(b[20:20 + hl])["route"]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="a dirty build's identity is per process on Windows")
+def _straight(a, args, env, out):
+    p = subprocess.run([str(a), *map(str, args), "--session-out", str(out)], capture_output=True, text=True,
+                       timeout=120, env=env)
+    assert p.returncode == 0, p.stderr[-400:]
+    return p
+
+
+def test_two_processes_of_one_dirty_binary_share_one_identity(runner_bin, tmp_path):
+    subprocess.run([sys.executable, str(ROOT / "scripts/make-test-model.py"), str(tmp_path / "m.gguf")],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("RUNNER_")}
+    env["RUNNER_TEST_BUILD_DIRTY"] = "1"
+    args = ["-m", tmp_path / "m.gguf", "-p", "hello", "-n", "2", "--temp", "0", "--gpu", "off", "-t", "2"]
+    p1 = _straight(runner_bin, args, env, tmp_path / "one.img")
+    _straight(runner_bin, args, env, tmp_path / "two.img")
+    assert _route(tmp_path / "one.img") == _route(tmp_path / "two.img"), \
+        "two processes of one dirty binary named two route identities: no session resumes across processes"
+    assert "no identity of its running image" not in p1.stderr, p1.stderr[-400:]
+
+
 def test_a_dirty_process_keeps_its_own_identity_when_its_file_is_replaced(runner_bin, tmp_path):
     subprocess.run([sys.executable, str(ROOT / "scripts/make-test-model.py"), str(tmp_path / "m.gguf")],
                    check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
-    a = tmp_path / "a-runner"
+    a = tmp_path / ("a-runner" + (".exe" if sys.platform == "win32" else ""))   # CreateProcess wants .exe
     shutil.copy2(runner_bin, a)
     env = {k: v for k, v in os.environ.items() if not k.startswith("RUNNER_")}
     env["RUNNER_TEST_BUILD_DIRTY"] = "1"
@@ -53,9 +73,8 @@ def test_a_dirty_process_keeps_its_own_identity_when_its_file_is_replaced(runner
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                          env=dict(env, RUNNER_TEST_IDENTITY_WAIT=str(go)))
     time.sleep(1.0)                                   # A is waiting before it takes its identity
-    other = tmp_path / "b-runner"
-    shutil.copy2(sys.executable, other)               # another binary, B
-    os.replace(other, a)                              # A's path now names B; A's running image is unchanged
+    os.replace(a, tmp_path / ("a-runner.moved" + a.suffix))       # A's file renamed away while A runs (allowed on Windows too)
+    shutil.copy2(sys.executable, a)                   # another binary, B, at A's path; A's running image is unchanged
     go.write_text("go")
     out, err = p.communicate(timeout=120)
     assert p.returncode == 0, err[-400:]
