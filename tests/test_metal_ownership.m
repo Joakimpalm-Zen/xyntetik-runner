@@ -1,5 +1,7 @@
 #include <assert.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 #include <malloc/malloc.h>
 
 #include "../src/metal.m"
@@ -124,8 +126,78 @@ static void check_layer_tables_freed(void) {
     malloc_destroy_zone(z);
 }
 
+@interface TestFailCB : NSObject
+@property (nonatomic) MTLCommandBufferStatus status;
+@property (nonatomic, retain) NSError *error;
+@property (nonatomic, copy) NSString *label;
+@end
+
+@implementation TestFailCB
+- (void)dealloc {
+    [_error release];
+    [_label release];
+    [super dealloc];
+}
+@end
+
+static void capture_report(const char *what, const char *action, id cb,
+                           char *out, size_t cap) {
+    int fds[2];
+    assert(pipe(fds) == 0);
+    fflush(stderr);
+    int saved = dup(STDERR_FILENO);
+    assert(saved >= 0);
+    assert(dup2(fds[1], STDERR_FILENO) >= 0);
+    close(fds[1]);
+
+    metal_report_cb_error(what, action, (id<MTLCommandBuffer>)cb);
+    fflush(stderr);
+
+    assert(dup2(saved, STDERR_FILENO) >= 0);
+    close(saved);
+
+    size_t n = 0;
+    ssize_t r;
+    while (n + 1 < cap && (r = read(fds[0], out + n, cap - 1 - n)) > 0)
+        n += (size_t)r;
+    out[n] = '\0';
+    close(fds[0]);
+}
+
+static void check_cb_error_reporting(void) {
+    char buf[1024];
+    TestFailCB *cb = [[TestFailCB alloc] init];
+    cb.status = MTLCommandBufferStatusError;
+    cb.error = [NSError errorWithDomain:@"MTLCommandBufferErrorDomain"
+                                   code:2
+                               userInfo:@{NSLocalizedDescriptionKey: @"host execution failed"}];
+    cb.label = @"prefill-1";
+
+    capture_report("command buffer failed", "falling back to CPU", cb, buf, sizeof buf);
+    assert(strchr(buf, '\n') == strrchr(buf, '\n') && strchr(buf, '\n') != NULL);
+    assert(strstr(buf, "MTLCommandBufferErrorDomain") != NULL);
+    assert(strstr(buf, "2") != NULL);
+    assert(strstr(buf, "host execution failed") != NULL);
+    assert(strstr(buf, "prefill-1") != NULL);
+    assert(strstr(buf, "falling back to CPU") != NULL);
+
+    cb.label = nil;
+    capture_report("command buffer failed", "falling back to CPU", cb, buf, sizeof buf);
+    assert(strstr(buf, "MTLCommandBufferErrorDomain") != NULL);
+    assert(strstr(buf, "2") != NULL);
+    assert(strstr(buf, "host execution failed") != NULL);
+    assert(strstr(buf, "label=") == NULL);
+
+    cb.status = MTLCommandBufferStatusCompleted;
+    cb.error = nil;
+    capture_report("command buffer failed", "falling back to CPU", cb, buf, sizeof buf);
+    assert(strcmp(buf, "gpu: command buffer failed — falling back to CPU\n") == 0);
+    [cb release];
+}
+
 int main(void) {
     check_layer_tables_freed();
+    check_cb_error_reporting();
 
     model_t m = {0};
     gpu_t *g = calloc(1, sizeof(*g));
