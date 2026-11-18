@@ -95,7 +95,14 @@ static const char *const INPUT_KEYS[] = {
     "base", "from_adapter", "adapter", "data", "prune_experts", "type_plan",
 };
 
-typedef struct { int worst; } walk_state;   // 0 verified, 1 unsigned, 2 broken
+// The deepest a walk goes, in printed links (an input and its record are two):
+// a chain past it is BROKEN, whatever kind its links are.
+#define LINEAGE_MAX_DEPTH 32
+
+// worst: 0 verified, 1 unsigned, 2 broken. The records on the path walked now,
+// by sha256, so a record that is its own ancestor is a cycle, not a loop the
+// depth bound has to stop.
+typedef struct { int worst; int sp; char path[LINEAGE_MAX_DEPTH + 2][65]; } walk_state;
 
 static void note(walk_state *w, int level) { if (level > w->worst) w->worst = level; }
 
@@ -240,13 +247,23 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
                         const char *want_out_sha, const char *trust_hex,
                         int depth, walk_state *w) {
     indent(depth);
-    if (depth > 32) { printf("BROKEN: chain deeper than 32 links (a loop?)\n"); note(w, 2); return; }
+    if (depth > LINEAGE_MAX_DEPTH) {
+        printf("BROKEN: the chain is longer than %d links\n", LINEAGE_MAX_DEPTH);
+        note(w, 2);
+        return;
+    }
     char rsha[65];
     if (!envelope_cited_sha256(rec_path, rsha)) {
         printf("BROKEN: record %s is missing\n", rec_path);
         note(w, 2);
         return;
     }
+    for (int i = 0; i < w->sp; i++)
+        if (!strcmp(w->path[i], rsha)) {
+            printf("BROKEN: record %s is its own ancestor (a cycle)\n", rec_path);
+            note(w, 2);
+            return;
+        }
     // the record must be the one the child recorded: altered later is broken
     if (want_rec_sha && strcmp(want_rec_sha, rsha) != 0) {
         printf("BROKEN: record %s changed after the next step recorded it\n", rec_path);
@@ -293,12 +310,29 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
     if (sig == 0) printf(" (signed %.16s...)", pub);
     if (!on_disk) printf(" (output file not present; checked by its recorded hash)");
     printf("  [runner %s, record %s]\n", jv_str(jv_get(rec, "runner"), "?"), rec_name);
+    if (w->sp < LINEAGE_MAX_DEPTH + 2) memcpy(w->path[w->sp++], rsha, sizeof rsha);
     for (size_t i = 0; i < sizeof INPUT_KEYS / sizeof INPUT_KEYS[0]; i++) {
         if (!strcmp(INPUT_KEYS[i], out_key)) continue;   // a train record's "adapter" is its output
         jv *in = jv_get(rec, INPUT_KEYS[i]);
         if (in && in->type == J_OBJ && jv_get(in, "sha256"))
             walk_input(INPUT_KEYS[i], in, rec_path, trust_hex, depth + 1, w, false);
     }
+    // R17.9: an unlearned adapter's parent record, cited by sha256 (runner
+    // --unlearn). It is walked as the record it names; its output is not an
+    // input here, so no output link is checked, only the record itself.
+    jv *pr = jv_get(jv_get(rec, "unlearn"), "parent_record");
+    if (pr && pr->type == J_OBJ) {
+        jv *un = jv_get(rec, "unlearn");
+        const char *ppath = jv_str(jv_get(pr, "path"), "");
+        indent(depth + 1);
+        printf("unlearned from: %s (dropped %d rows of %d lines, sha256 %.12s)\n", ppath,
+               (int)jv_num(jv_get(un, "dropped_count"), -1), (int)jv_num(jv_get(un, "dropped_distinct"), -1),
+               jv_str(jv_get(un, "dropped_sha256"), "?"));
+        char moved[4096];
+        walk_record(lineage_relocate(ppath, rec_path, moved, sizeof moved),
+                    jv_str(jv_get(pr, "sha256"), NULL), NULL, trust_hex, depth + 2, w);
+    }
+    if (w->sp > 0) w->sp--;
     jv_free(rec);
 }
 
