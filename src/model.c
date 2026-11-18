@@ -6118,8 +6118,15 @@ int model_batch_default_for(uint64_t total_ram) {
     return 512;
 }
 
-static int model_gpu_batch_default(void) {
-    return model_batch_default_for(plat_ram_bytes());
+// R3.74: the default prompt batch of a load in this GPU mode on a machine of
+// this much total RAM, the one rule both the load and main's preflight use.
+// --gpu auto takes the RAM rule. The CPU route (GPU_OFF: --gpu off, -ngl 0,
+// a session image's run) takes the same rule capped at 256: since R3.60 a
+// prompt's rows are the same bytes at any width, -b 256 read about 9% faster
+// than 64 on the CPU route, and 512 is not measured there.
+int model_batch_default(int gpu_mode, uint64_t total_ram) {
+    int b = model_batch_default_for(total_ram);
+    return gpu_mode == GPU_AUTO ? b : (b > 256 ? 256 : b);
 }
 
 // What this instance asks of the GPU split: the VRAM cap, a forced layer
@@ -6353,7 +6360,7 @@ static bool runtime_context(model_t *m, const model_params *p) {
         fprintf(stderr, "%s: context %d, the indexer's top_k (sparse attention runs "
                 "dense, which is exact up to it)\n", m->arch, n_ctx);
     m->n_ctx = n_ctx;
-    int batch_default = p->gpu_mode == GPU_AUTO ? model_gpu_batch_default() : 64;
+    int batch_default = model_batch_default(p->gpu_mode, plat_ram_bytes());
     m->n_batch = p->n_batch > 0 ? p->n_batch : batch_default;
     if (m->n_batch > n_ctx) m->n_batch = n_ctx;
     return true;

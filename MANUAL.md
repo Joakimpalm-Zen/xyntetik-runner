@@ -2751,7 +2751,7 @@ the tiles were slower, so the identity route keeps those widths. The gain depend
 |---|---|
 | `-n N` | Maximum generated tokens, default `256`; `-1` runs until EOS. |
 | `-c N` | Context length; default is the smaller of model maximum and 4096. Under `--reserve` the default is the auto-fit instead: the context the reservation leaves after the weights. `-c 0` says the same thing explicitly. |
-| `-b N` | Prompt batch size: `64` with `--gpu off`; otherwise `64`, `256` or `512` by total RAM (inside a container, its memory limit). Explicit `-b` overrides. [Details](#cli-b). |
+| `-b N` | Prompt batch size, by route and total RAM (inside a container, its memory limit): `64` below 6 GB, `256` below 12 GB, else `512`; the CPU route (`--gpu off`, `-ngl 0`, a session image's run) is capped at `256`. Explicit `-b` overrides. [Details](#cli-b). |
 | `-t N` | Worker threads; defaults to physical cores and is capped at `32`. Inside a container the default starts from the cgroup's CPU quota (`cpu.max`, rounded up) when that is below the CPUs the process may run on, so a container held to 26 CPUs on a 128-CPU host sizes for 26. The cap is measured, not assumed: decode PEAKS at 32 threads and regresses above it on many-core hardware (a 64-core Zen 5 box in 2026-08, and a 128-core sweep in 2026-08 where both models peaked at 32 while the previous default of 64 cost up to -41% decode and -55% prefill). Only machines with more than 64 logical CPUs are affected; below that the default is unchanged. An explicit `-t` is honoured up to 64. The default leaves the logical CPUs past the physical cores to the rest of the machine, and it is not the fastest setting everywhere (2026-10-20, one model file at a time, CPU only): on an Apple M1, 8 threads (performance and efficiency cores) read prompts 11-18% faster than the default 4 and decoded 2-11% faster; on a 4-core, 8-thread desktop CPU, 8 threads decoded 5-22% faster than 4; on 16 cores of a shared server, 32 threads read prompts 18-23% faster than 16 and decoded between 17% slower and 9% faster. A machine that runs nothing else can set `-t` to its logical CPU count; measure on the workload first. |
 | `-s N` | RNG seed; default is time-based. The seed is mixed through splitmix64 into the state the sampler starts from, as a request's `seed` is, so seeds 1, 2, 3 start unrelated streams from their first token. Every value, `0` included, is a seed. With `--serve`, each request that samples takes the next place in one server-wide order, and an unseeded one draws from the seed and that place, so the same requests in the same order sample the same output at any `--parallel`. A request's own `seed` wins; a greedy or refused request takes no place. |
 | `--think [on\|off\|auto]` | In interactive chat only: request the family's thinking prompt shape (`on`; bare `--think` is `on`), its non-thinking shape (`off`), or what the family's own reference template renders (`auto`, the default). Family support varies. [Details](#cli-think). |
@@ -2774,10 +2774,23 @@ the tiles were slower, so the identity route keeps those widths. The gain depend
 <a id="cli-b"></a>
 #### `-b N`
 
-Prompt batch size, default `64`. Unless `--gpu off` was given, the default is sized from
-**total** RAM instead: `512` at 12 GB or more, `256` at 6 GB or more, `64` below — so
-the tiled prefill GEMM gets more columns per dispatch (measured on Metal/Apple M1: +9% prompt
-tok/s at 512 over the flat 64 default). Total RAM rather than free RAM on purpose: batch
+Prompt batch size. The default is sized from **total** RAM, by route:
+
+| Route | below 6 GB | 6 to 12 GB | 12 GB or more | RAM unknown |
+|---|---|---|---|---|
+| `--gpu auto` (the default mode, also on a host with no GPU) | `64` | `256` | `512` | `512` |
+| the CPU route: `--gpu off`, `-ngl 0`, a session image's run | `64` | `256` | `256` | `256` |
+
+**Limits first:**
+- The CPU route stops at `256` because `512` is not measured there. `--gpu auto` on a CPU-only host of 12 GB
+  or more already runs `512` unmeasured (R3.75).
+- Windows is not measured yet.
+
+**Why the CPU route moved:** since R3.60 a prompt's rows are the same bytes at any width, so the batch changes
+speed and memory, not output. Before R3.74 it took a flat `64`, and `-b 256` read 9% faster than `64` there
+(an RTX 5070 host's CPU, Qwen3-4B, a 193-token prompt: 1.0907x, 95% interval [1.0790, 1.1069]) for 18 to 28 MiB
+more memory. On the GPU, more columns per dispatch pay too (Metal on an Apple M1: +9% prompt tok/s at `512`
+over a flat `64`). Total RAM rather than free RAM on purpose: batch
 size changes how reassociating prefill paths tile their sums, and a default read off the
 machine's ambient load would make "the same command" produce different tokens on a busy
 day. A fixed machine fact cannot. `-b` always overrides.

@@ -1801,6 +1801,9 @@ int model_gpu_window(uint64_t spare, uint64_t per_col, int instances,
 // Prompt-batch default from TOTAL RAM (a fixed machine fact, not the ambient
 // free figure — see the definition for why that distinction is determinism).
 int      model_batch_default_for(uint64_t total_ram);
+// R3.74: the default prompt batch for a GPU mode (GPU_AUTO, GPU_OFF) and a
+// total RAM figure: the rule both the load and main's preflight use
+int      model_batch_default(int gpu_mode, uint64_t total_ram);
 bool     model_load_prefetch_wanted(uint64_t mapped, uint64_t available,
                                     bool locked, bool moe_prefetch);
 bool     model_paging_note_wanted(uint64_t faults, int tokens);

@@ -4258,6 +4258,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_attn_dec_repeat.py \
     tests/test_attn_wide_repeat.py \
     tests/test_batch_bench.py \
+    tests/test_batch_default_widths.py \
     tests/test_batch_rows_match_cpu.py \
     tests/test_bench_corpus.py \
     tests/test_bench_json.py \
