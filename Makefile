@@ -4213,6 +4213,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_adapter_signature.py \
     tests/test_agent_torture.py \
     tests/test_agent_transcripts.py \
+    tests/test_agents_worktrees.py \
     tests/test_apertus.py \
     tests/test_apertus_thinking.py \
     tests/test_arch_admission.py \
