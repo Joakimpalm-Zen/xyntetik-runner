@@ -9,6 +9,7 @@ import contextlib
 import os
 import platform
 import random
+import re
 import signal
 import socket
 import subprocess
@@ -35,13 +36,34 @@ BIND_ATTEMPTS = 5
 UNCLEAN_TAIL = 16000
 
 
+def _worker_slice():
+    """Return (offset, stride) for pytest-xdist workers so parallel workers pick
+    ports from disjoint residue classes under -n auto."""
+    m = re.fullmatch(r"gw(\d+)", os.environ.get("PYTEST_XDIST_WORKER", ""))
+    if not m:
+        return 0, 1
+    idx = int(m.group(1))
+    try:
+        count = int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "0"))
+    except ValueError:
+        count = 0
+    stride = max(count, idx + 1, 32)
+    return idx % stride, stride
+
+
 def free_port():
-    """A port below the ephemeral ranges that binds now. Racy in principle:
-    two parallel workers can draw the same one. The server binds immediately
-    after, the loser exits, and start() takes another port."""
+    """A port below the ephemeral ranges that binds now. Disjoint across
+    pytest-xdist workers when PYTEST_XDIST_WORKER is set; RunnerServer still
+    verifies its child's listening banner before accepting /health."""
     rng = random.SystemRandom()
-    for _ in range(500):
-        port = rng.randint(_PORT_LOW, _PORT_HIGH)
+    offset, stride = _worker_slice()
+    candidates = list(range(_PORT_LOW + offset, _PORT_HIGH + 1, stride))
+    rng.shuffle(candidates)
+    if stride > 1:
+        fallback = [p for p in range(_PORT_LOW, _PORT_HIGH + 1) if (p - _PORT_LOW) % stride != offset]
+        rng.shuffle(fallback)
+        candidates.extend(fallback[:250])
+    for port in candidates[:500]:
         with contextlib.closing(socket.socket()) as s:
             try:
                 s.bind(("127.0.0.1", port))
@@ -135,6 +157,8 @@ class RunnerServer:
         self.peak_rss_kb = None
         self.exit_code = None
         self.killed = False
+        self._started = False
+        self._healthy = False
 
     @property
     def base_url(self):
@@ -165,18 +189,34 @@ class RunnerServer:
             try:
                 return self._start_once()
             except TransportError as e:
-                # Only a lost bind is a reason to try again: anything else is
-                # the failure a test is here to see.
-                if attempt == BIND_ATTEMPTS - 1 or "cannot bind" not in (e.context.get("log") or ""):
+                # Only a lost bind or a port conflict is a reason to try again:
+                # anything else is the failure a test is here to see.
+                log = (e.context.get("log") or "") if hasattr(e, "context") else ""
+                if attempt == BIND_ATTEMPTS - 1 or ("cannot bind" not in log and "port conflict" not in str(e)):
                     raise
-                self._log.close()
-                self._log = None
+                if self._log is not None:
+                    self._log.close()
+                    self._log = None
                 if self._own_log:
                     os.unlink(self._own_log)
                     self._own_log = None
         return self
 
+    def _own_banner_ready(self):
+        """True once this child's own log carries its listening banner for self.port."""
+        path = self.log_path or self._own_log
+        if not path or not os.path.exists(path):
+            return False
+        if self._log is not None:
+            self._log.flush()
+        with open(path, "rb") as f:
+            data = f.read()
+        needle = f"server listening on http://127.0.0.1:{self.port}".encode("ascii")
+        return needle in data
+
     def _start_once(self):
+        self._started = True
+        self._healthy = False
         self.port = free_port()
         argv = (list(self.exe) if isinstance(self.exe, list) else [self.exe]) + [
                 "-m", self.model, "--serve", "--no-tray",
@@ -195,6 +235,7 @@ class RunnerServer:
         self.proc = subprocess.Popen(argv, stdout=self._log,
                                      stderr=subprocess.STDOUT, env=env,
                                      creationflags=NEW_GROUP)
+        conflict_seen = False
         deadline = time.monotonic() + self.start_timeout
         while time.monotonic() < deadline:
             if self.proc.poll() is not None:
@@ -202,12 +243,25 @@ class RunnerServer:
                                      returncode=self.proc.returncode,
                                      argv=" ".join(argv), log=self._tail())
             if self._health_ok():
-                return self
+                # Prove the answerer is THIS child before believing /health:
+                # another worker/process may have bound self.port while our
+                # child is still loading (R6.107).
+                if self._own_banner_ready() and self.proc.poll() is None:
+                    self._healthy = True
+                    return self
+                conflict_seen = True
             time.sleep(0.05)
+        tail = self._tail()
         self.stop()
+        if conflict_seen:
+            raise TransportError(
+                f"port conflict: another process answered /health on 127.0.0.1:{self.port} "
+                f"before this runner printed its listening banner",
+                port=self.port, seconds=self.start_timeout,
+                argv=" ".join(argv), log=tail)
         raise TransportError("runner did not become healthy in time",
                              seconds=self.start_timeout, argv=" ".join(argv),
-                             log=self._tail())
+                             log=tail)
 
     def sample_rss(self):
         if self.proc and self.proc.poll() is None:
@@ -260,7 +314,10 @@ class RunnerServer:
             # attributed (R6.68.20).
             self.kept_log = self.log_path or self._own_log
             self._own_log = None
-            raise TransportError("runner exited uncleanly on stop",
+            why = "runner exited uncleanly on stop"
+            if self._started and not self._healthy:
+                why += " (never became healthy)"
+            raise TransportError(why,
                                  returncode=self.exit_code, log=self._tail(UNCLEAN_TAIL),
                                  log_file=self.kept_log)
         if self._own_log and not keep_log:
