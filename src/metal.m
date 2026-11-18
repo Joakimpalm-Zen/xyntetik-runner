@@ -3780,6 +3780,88 @@ void *gpu_train_host_buf(model_t *mm, int slot, size_t bytes) {
     return NULL;
 }
 
+bool gpu_train_rmsnorm_check(model_t *mm, const trn_args *a, const float *x,
+                             const float *w, const float *dy, float *y, float *dx) {
+    (void)mm; (void)a; (void)x; (void)w; (void)dy; (void)y; (void)dx;
+    return false;
+}
+bool gpu_train_rope_check(model_t *mm, const trope_args *a, const float *fr, float *v) {
+    (void)mm; (void)a; (void)fr; (void)v;
+    return false;
+}
+size_t gpu_train_res_avail(model_t *mm) { (void)mm; return 0; }
+size_t gpu_train_scratch_bytes(void) { return 0; }
+bool gpu_train_res_begin(model_t *mm, int T) { (void)mm; (void)T; return false; }
+bool gpu_train_res_round(model_t *mm, int n, int pos) { (void)mm; (void)n; (void)pos; return false; }
+bool gpu_train_res_bw_begin(model_t *mm, const float *dx, int T) { (void)mm; (void)dx; (void)T; return false; }
+bool gpu_train_res_layer_bw(model_t *mm, int l) { (void)mm; (void)l; return false; }
+bool gpu_train_res_bw_end(model_t *mm) { (void)mm; return false; }
+bool gpu_train_add_check(model_t *mm, const tadd_args *a, float *x, const float *y) {
+    (void)mm; (void)a; (void)x; (void)y;
+    return false;
+}
+bool gpu_train_kv_store_check(model_t *mm, const tkv_args *a, const float *src,
+                              unsigned char *dst) {
+    (void)mm; (void)a; (void)src; (void)dst;
+    return false;
+}
+bool gpu_train_attn_fw_check(model_t *mm, const tattn_args *a, const void *kc,
+                             const void *vc, const float *q, float *ao) {
+    (void)mm; (void)a; (void)kc; (void)vc; (void)q; (void)ao;
+    return false;
+}
+bool gpu_train_ffn_check(model_t *mm, int act, const float *g, const float *u,
+                         const float *dh, float *h, float *dg, float *du, int n) {
+    (void)mm; (void)act; (void)g; (void)u; (void)dh; (void)h; (void)dg; (void)du; (void)n;
+    return false;
+}
+bool gpu_train_lora_check(model_t *mm, int r, int n_in, int n_out, int nb, float s,
+                          const float *A, const float *B, const float *x,
+                          const float *dy, float *y, float *ga, float *gb, float *dx) {
+    (void)mm; (void)r; (void)n_in; (void)n_out; (void)nb; (void)s; (void)A; (void)B;
+    (void)x; (void)dy; (void)y; (void)ga; (void)gb; (void)dx;
+    return false;
+}
+bool gpu_train_ffn_dev_ok(model_t *mm) { (void)mm; return false; }
+bool gpu_train_site_push(model_t *mm, int l, int which, const float *a,
+                         const float *b, const float *ga, const float *gb,
+                         int r, int n_in, int n_out, float s) {
+    (void)mm; (void)l; (void)which; (void)a; (void)b; (void)ga; (void)gb;
+    (void)r; (void)n_in; (void)n_out; (void)s;
+    return false;
+}
+bool gpu_train_site_pull(model_t *mm, int l, int which, float *ga, float *gb) {
+    (void)mm; (void)l; (void)which; (void)ga; (void)gb;
+    return false;
+}
+bool gpu_train_ffn_fw_norm(model_t *mm, int l, const gguf_tensor *wg, const gguf_tensor *wu,
+                           const gguf_tensor *wd, const float *nw, float eps, const float *x,
+                           int x_stride, float *y, int y_stride, int E, int nff, int nb) {
+    (void)mm; (void)l; (void)wg; (void)wu; (void)wd; (void)nw; (void)eps; (void)x;
+    (void)x_stride; (void)y; (void)y_stride; (void)E; (void)nff; (void)nb;
+    return false;
+}
+bool gpu_train_ffn_fw(model_t *mm, int l, const gguf_tensor *wg, const gguf_tensor *wu,
+                      const gguf_tensor *wd, const float *x, int x_stride, float *y,
+                      int y_stride, int E, int nff, int nb) {
+    (void)mm; (void)l; (void)wg; (void)wu; (void)wd; (void)x; (void)x_stride; (void)y;
+    (void)y_stride; (void)E; (void)nff; (void)nb;
+    return false;
+}
+bool gpu_train_ffn_recompute(model_t *mm, int l, const gguf_tensor *wg,
+                             const gguf_tensor *wu, const float *xn2, int E, int nff,
+                             int T) {
+    (void)mm; (void)l; (void)wg; (void)wu; (void)xn2; (void)E; (void)nff; (void)T;
+    return false;
+}
+bool gpu_train_ffn_bw(model_t *mm, int l, const gguf_tensor *wg, const gguf_tensor *wu,
+                      const gguf_tensor *wd, const float *dbr, float *dxn2, int E,
+                      int nff, int T) {
+    (void)mm; (void)l; (void)wg; (void)wu; (void)wd; (void)dbr; (void)dxn2; (void)E;
+    (void)nff; (void)T;
+    return false;
+}
+
 void gpu_train_prof(model_t *mm, double *t_mm, long *n_mm, double *t_mvt,
                     long *n_mvt, double *k_mm, double *k_mvt) {
     (void)mm;

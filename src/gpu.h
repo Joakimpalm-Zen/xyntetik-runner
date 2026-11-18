@@ -3,6 +3,8 @@
 #define RUNNER_GPU_H
 
 #include "tdn_args.h"   // the training DeltaNet calls' shape
+#include "train_args.h" // the resident step's kernel arguments (R8.24.1 B); never
+                        // kernel_args.h here: metal.m keeps its own copies of its structs
 #include "model.h"
 #include <stdio.h>
 #include <string.h>
@@ -359,6 +361,99 @@ unsigned gpu_train_mm_parts(model_t *m, const gpu_mm_part *p, int np,
 enum { GPU_TRAIN_HBUF = 4 };
 bool   gpu_train_pin(model_t *m, void *p, size_t bytes);
 void  *gpu_train_host_buf(model_t *m, int slot, size_t bytes);
+// R8.24.1 B1, the kernel gate's entry: the device twins of a gated FFN's
+// activation and adjoint over n host floats, h = act(g)*u, dg = dh*u*act'(g),
+// du = dh*act(g) (model.c gated_act, act_d, act_f). false: no context, no
+// kernel in this PTX, or an activation they do not cover (ACT_SILU only).
+// R8.24.1 B2, the kernel gate's entry: the device twins of rmsnorm and its
+// adjoint (k_trn_fw, k_trn_bw) over a->rows rows of n host floats: y = the
+// forward of x, dx += the adjoint of dy (rows at the strides a gives). w: one
+// n-vector for every row, or NULL (the weightless form). false: no context or
+// no kernel in this PTX.
+bool   gpu_train_rmsnorm_check(model_t *m, const trn_args *a, const float *x,
+                               const float *w, const float *dy, float *y, float *dx);
+// R8.24.1 B3, the kernel gate's entry: the device twin of rope_apply
+// (a->adjoint 0) or rope_unapply (1), k_trope, over a->T host rows of v
+// (a->stride floats apart) in place; fr: the layer's a->half_dim inverse
+// frequencies. false: no context or no kernel in this PTX.
+bool   gpu_train_rope_check(model_t *m, const trope_args *a, const float *fr, float *v);
+// R8.24.1 B8, the kernel gate's entry: the device twin of the forward's K/V
+// store (k_tkv_store) over a->rows host rows of a->n floats (a->src_stride
+// apart) into dst's rows (a->row_bytes apart) in kind 0 (f16, fp16.h's
+// rounding) or 3 (f32). dst goes up first: the bytes between rows come back
+// unchanged. false: no context, no kernel in this PTX, or another kind.
+bool   gpu_train_kv_store_check(model_t *m, const tkv_args *a, const float *src,
+                                unsigned char *dst);
+// R8.24.1 B R1, the resident step (out/r8241/B-resident-design.md): the
+// device bytes its planes may take beside what is held now; its planes for a
+// step of T rows (the training K/V rows, the norm weights, the rope tables);
+// one taped forward round of n rows at pos on the device (m->x in, the final
+// hidden back in m->x, the tape's and the K/V rows kept on the device for the
+// resident backward). false: the step fails.
+size_t gpu_train_res_avail(model_t *m);
+// the bytes the training contexts' scratch planes hold now: 0 after every
+// gpu_train_free (#935: the resident planes were never freed)
+size_t gpu_train_scratch_bytes(void);
+bool   gpu_train_res_begin(model_t *m, int T);
+bool   gpu_train_res_round(model_t *m, int n, int pos);
+// R2: the resident backward. dx (the head's adjoint, T rows) up once; layer
+// l's backward on the device's tape and K/V rows, dx staying on the device;
+// every launch done. false: the step fails.
+bool   gpu_train_res_bw_begin(model_t *m, const float *dx, int T);
+bool   gpu_train_res_layer_bw(model_t *m, int l);
+bool   gpu_train_res_bw_end(model_t *m);
+// R8.24.1 B R0, the kernel gate's entry: the residual add's twin (k_tadd),
+// x (a->rows host rows, a->x_stride apart) += y (a->y_stride apart) in
+// place. false: no context or no kernel in this PTX.
+bool   gpu_train_add_check(model_t *m, const tadd_args *a, float *x, const float *y);
+// R8.24.1 B4, the kernel gate's entry: the device twin of the forward's
+// attention (k_tattn, attn_run for one (t, head) a block) over a->T positions:
+// q rows a->q_dim apart in, the K / V rows (a->k_row_b / v_row_b bytes apart,
+// kinds a->kind_k / kind_v: 0 f16, 3 f32) in, ao rows out. false: no context,
+// no kernel in this PTX, or a shape or kind it does not take.
+bool   gpu_train_attn_fw_check(model_t *m, const tattn_args *a, const void *kc,
+                               const void *vc, const float *q, float *ao);
+bool   gpu_train_ffn_check(model_t *m, int act, const float *g, const float *u,
+                           const float *dh, float *h, float *dg, float *du, int n);
+// R8.24.1 B6, the kernel gate's entry: the device twins of one site's adapter
+// on host arrays, in the host's order (lora_apply, then the backward's passes):
+// y += s B (A x); ga, gb accumulate; dx += s A^T (B^T dy). x, dx rows n_in
+// apart, y, dy rows n_out apart. false: no context or no kernel in this PTX.
+bool   gpu_train_lora_check(model_t *m, int r, int n_in, int n_out, int nb, float s,
+                            const float *A, const float *B, const float *x,
+                            const float *dy, float *y, float *ga, float *gb, float *dx);
+// R8.24.1 B: the device-resident FFN of a gated SiLU layer (the products, B1,
+// B6), for --train-gpu. gpu_train_ffn_dev_ok: its kernels are in this PTX and
+// the device holds every tensor. A backward pushes each FFN site's adapter
+// (which 0 gate, 1 up, 2 down; ga and gb continue from the host's values) and
+// pulls the gradients back at its end. gpu_train_ffn_fw: the taped forward's
+// FFN, x in, the down output into y (n_embd of each row, strides in floats;
+// false before y is touched). gpu_train_ffn_recompute: the backward's
+// recompute of the gate, up and act(g)*u of xn2, kept on the device for
+// gpu_train_ffn_bw: the three sites' backward in the host's order, dbr in,
+// dxn2 out (T packed rows).
+bool   gpu_train_ffn_dev_ok(model_t *m);
+bool   gpu_train_site_push(model_t *m, int l, int which, const float *a,
+                           const float *b, const float *ga, const float *gb,
+                           int r, int n_in, int n_out, float s);
+bool   gpu_train_site_pull(model_t *m, int l, int which, float *ga, float *gb);
+bool   gpu_train_ffn_fw(model_t *m, int l, const gguf_tensor *wg, const gguf_tensor *wu,
+                        const gguf_tensor *wd, const float *x, int x_stride, float *y,
+                        int y_stride, int E, int nff, int nb);
+// R8.24.1 B, the layer driver's first slot: as gpu_train_ffn_fw with x the
+// residual rows, the FFN's RMS norm (nw, NULL the weightless form, eps) run on
+// the device first (B2's k_trn_fw, model.c rmsnorm's twin). false before y is
+// touched: the caller then runs the host's norm and FFN.
+bool   gpu_train_ffn_fw_norm(model_t *m, int l, const gguf_tensor *wg, const gguf_tensor *wu,
+                             const gguf_tensor *wd, const float *nw, float eps,
+                             const float *x, int x_stride, float *y, int y_stride, int E,
+                             int nff, int nb);
+bool   gpu_train_ffn_recompute(model_t *m, int l, const gguf_tensor *wg,
+                               const gguf_tensor *wu, const float *xn2, int E, int nff,
+                               int T);
+bool   gpu_train_ffn_bw(model_t *m, int l, const gguf_tensor *wg, const gguf_tensor *wu,
+                        const gguf_tensor *wd, const float *dbr, float *dxn2, int E,
+                        int nff, int T);
 // RUNNER_TRAIN_PROF: seconds inside gpu_train_mm / gpu_train_mvt (transfers
 // and syncs included), their counts, and the kernels' share (the launch and
 // its sync) since the last call, which resets them
