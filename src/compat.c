@@ -18,6 +18,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <fcntl.h>
 #include <io.h>
 #include <psapi.h>
 
@@ -2626,6 +2627,50 @@ bool plat_file_identity(const char *path, uint64_t *size, uint64_t *ino,
     return true;
 }
 
+// R20: an identity of the image this process is RUNNING, not of the file a
+// path names now (which can have been replaced since the process started). On
+// macOS, the LC_UUID of the loaded main image, read from memory through dyld:
+// the linker derives it from the output, so another build has another one.
+// False where no such identity is had here (Linux hashes /proc/self/exe, the
+// image itself, in its caller; Windows and the rest have none).
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+bool plat_running_image_id(char *out, size_t cap) {
+    const struct mach_header_64 *h = (const struct mach_header_64 *)_dyld_get_image_header(0);
+    if (!h || h->magic != MH_MAGIC_64 || cap < 50) return false;
+    const uint8_t *p = (const uint8_t *)(h + 1);
+    for (uint32_t i = 0; i < h->ncmds; i++) {
+        const struct load_command *lc = (const struct load_command *)p;
+        if (lc->cmd == LC_UUID) {
+            const struct uuid_command *u = (const struct uuid_command *)lc;
+            int n = snprintf(out, cap, "macho-uuid:");
+            for (int k = 0; k < 16; k++) n += snprintf(out + n, cap - (size_t)n, "%02x", u->uuid[k]);
+            return true;
+        }
+        p += lc->cmdsize;
+    }
+    return false;
+}
+#elif defined(_WIN32)
+// R20, Windows: the build id the linker wrote (ld --build-id, the Makefile's
+// Windows LDFLAGS) into the image's CodeView debug record, read from the
+// loaded module in memory (no file, no name) by pe_buildid_walk, bounded by
+// the image size the loader reports. False for an image without one.
+#include "pe_buildid.h"
+bool plat_running_image_id(char *out, size_t cap) {
+    HMODULE h = GetModuleHandleW(NULL);
+    MODULEINFO mi;
+    if (!h || !GetModuleInformation(GetCurrentProcess(), h, &mi, sizeof mi)) return false;
+    return pe_buildid_walk((const uint8_t *)mi.lpBaseOfDll, (size_t)mi.SizeOfImage, out, cap);
+}
+#else
+bool plat_running_image_id(char *out, size_t cap) {
+    if (cap) out[0] = 0;
+    return false;
+}
+#endif
+
 // R17.9, shared since R3.60: the RUNNER_ variables that cannot change
 // arithmetic. Every other one a run starts with counts as a switch that may:
 // a training record names it, and it is part of a row's route identity. No
@@ -2653,6 +2698,7 @@ static const char *const RUNNER_SWITCH_INERT[] = {
     "RUNNER_TEST_REQUEST_TAIL_MS", "RUNNER_TEST_DRAIN_GRACE_MS", "RUNNER_TEST_DRAIN_HARD_MS",
     "RUNNER_TEST_DRAIN_LATE_MS", "RUNNER_TEST_INSTANCE_SWEEP_DELAY_MS",
     "RUNNER_TEST_KV_DUMP",     // prints a KV row's hash
+    "RUNNER_TEST_IDENTITY_WAIT",   // waits before the route identity is taken (R20)
     "RUNNER_TEST_REPORT_SUFFIX", // names --report's temporary file, written after the audit
 };
 
