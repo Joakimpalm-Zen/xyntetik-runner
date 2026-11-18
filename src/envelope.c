@@ -271,8 +271,18 @@ bool record_regular_file(const char *path) {
     return plat_stat(path, &st) == 0 && S_ISREG(st.st_mode);
 }
 
+bool record_regular_file_nofollow(const char *path) {
+    plat_stat_t st;
+    bool is_link = false;
+    return plat_stat_nofollow(path, &st, &is_link) == 0 && !is_link && S_ISREG(st.st_mode);
+}
+
 bool envelope_cited_sha256(const char *path, char hex[65]) {
     return record_regular_file(path) && envelope_file_sha256(path, hex);
+}
+
+bool envelope_cited_regular_sha256(const char *path, char hex[65]) {
+    return record_regular_file_nofollow(path) && envelope_file_sha256(path, hex);
 }
 
 void envelope_data_sha256_raw(const void *data, size_t n, uint8_t out[32]) {
@@ -1248,6 +1258,7 @@ bool envelope_gate(const char *model_path, const char *runtime_version,
 // replaced atomically; a failure leaves the original untouched.
 
 static char *record_read(const char *path, size_t *n_out) {
+    if (!record_regular_file(path)) return NULL;
     FILE *f = plat_fopen(path, "rb");
     if (!f) return NULL;
     size_t cap = 1 << 16, n = 0;

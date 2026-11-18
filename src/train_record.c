@@ -71,19 +71,58 @@ bool train_env_counts(const char *name, size_t n) {
     return n > 7 && !strncmp(name, "RUNNER_", 7) && !train_env_inert(name, n);
 }
 
+static void print_safe_value(const char *s) {
+    if (!s) { fputs("missing", stdout); return; }
+    for (int i = 0; s[i] && i < 128; i++) {
+        unsigned char c = (unsigned char)s[i];
+        putchar((c < 0x20 || c == 0x7f) ? '?' : (int)c);
+    }
+    if (strlen(s) > 128) fputs("...", stdout);
+}
+
 static bool replay_fail(int *rc, const char *field, const char *want, const char *got) {
-    printf("MISMATCH %s: expected %s, got %s\n", field, want, got ? got : "missing");
+    printf("MISMATCH %s: expected %s, got ", field, want);
+    print_safe_value(got);
+    putchar('\n');
     *rc = 2;
     return true;
 }
 
-static bool replay_check_sha(const char *field, const char *path, const char *want, int *rc) {
+static bool safe_relname(const char *s, size_t max_len) {
+    if (!s || !*s) return false;
+    if (!strcmp(s, ".") || !strcmp(s, "..")) return false;
+    size_t n = strlen(s);
+    if (n > max_len) return false;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c < 0x20 || c == 0x7f || c == '/' || c == '\\' || c == ':') return false;
+    }
+    return true;
+}
+
+static bool relocate_local(const char *cited, const char *citing, char *buf, size_t cap) {
+    if (!safe_relname(cited, 255)) return false;
+    const char *s = strrchr(citing, '/');
+    const char *b = strrchr(citing, '\\');
+    if (b && (!s || b > s)) s = b;
+    int dn = s ? (int)(s - citing + 1) : 0;
+    int n = snprintf(buf, cap, "%.*s%s", dn, citing, cited);
+    return n > 0 && (size_t)n < cap;
+}
+
+static bool replay_check_sha_opt(const char *field, const char *path, const char *want,
+                                 bool nofollow, int *rc) {
     if (!want || strlen(want) != 64) return !replay_fail(rc, field, "64-hex sha256", want);
     char got[65] = "";
-    if (!path || !*path || !envelope_cited_sha256(path, got))
-        return !replay_fail(rc, field, want, "missing or unreadable");
+    bool ok = path && *path &&
+              (nofollow ? envelope_cited_regular_sha256(path, got) : envelope_cited_sha256(path, got));
+    if (!ok) return !replay_fail(rc, field, want, "missing or unreadable");
     if (strcmp(got, want) != 0) return !replay_fail(rc, field, want, got);
     return true;
+}
+
+static bool replay_check_sha(const char *field, const char *path, const char *want, int *rc) {
+    return replay_check_sha_opt(field, path, want, false, rc);
 }
 
 static void replay_parent_dir(const char *path, char *out, size_t cap) {
@@ -98,33 +137,35 @@ static bool replay_resolve_teacher(const train_record_opts *o, cli_replay *rp, j
     jv *ti = jv_get(tch, "topk_idx"), *tl = jv_get(tch, "topk_logp");
     const char *inm = jv_str(jv_get(ti, "path"), NULL), *isha = jv_str(jv_get(ti, "sha256"), NULL);
     const char *lnm = jv_str(jv_get(tl, "path"), NULL), *lsha = jv_str(jv_get(tl, "sha256"), NULL);
-    if (!inm || !*inm || !lnm || !*lnm)
-        return !replay_fail(rc, "teacher", "topk_idx and topk_logp", "missing");
+    if (!safe_relname(inm, 255) || !safe_relname(lnm, 255))
+        return !replay_fail(rc, "teacher", "safe basenames for topk_idx and topk_logp", "invalid");
     char idx_p[8192] = "", logp_p[8192] = "";
-    if (o->train_teacher) {
+    bool explicit_dir = o->train_teacher != NULL;
+    if (explicit_dir) {
         snprintf(rp->teacher_dir, sizeof rp->teacher_dir, "%s", o->train_teacher);
-        snprintf(idx_p, sizeof idx_p, "%s/%s", rp->teacher_dir, plat_path_base(inm));
-        snprintf(logp_p, sizeof logp_p, "%s/%s", rp->teacher_dir, plat_path_base(lnm));
+        snprintf(idx_p, sizeof idx_p, "%s/%s", rp->teacher_dir, inm);
+        snprintf(logp_p, sizeof logp_p, "%s/%s", rp->teacher_dir, lnm);
     } else {
-        char probe[4096], sub[8192], rdir[4096], ddir[4096];
-        const char *cand = lineage_relocate(inm, o->replay_train, probe, sizeof probe);
-        if (!record_regular_file(cand)) {
+        char cand[4096], sub[8192], rdir[4096], ddir[4096];
+        if (!relocate_local(inm, o->replay_train, cand, sizeof cand))
+            return !replay_fail(rc, "teacher", "valid local path", inm);
+        if (!record_regular_file_nofollow(cand)) {
             replay_parent_dir(o->replay_train, rdir, sizeof rdir);
-            snprintf(sub, sizeof sub, "%s/teacher/%s", rdir, plat_path_base(inm));
-            if (record_regular_file(sub)) {
+            snprintf(sub, sizeof sub, "%s/teacher/%s", rdir, inm);
+            if (record_regular_file_nofollow(sub)) {
                 snprintf(idx_p, sizeof idx_p, "%s", sub);
             } else {
                 replay_parent_dir(rp->data_path, ddir, sizeof ddir);
-                snprintf(sub, sizeof sub, "%s/teacher/%s", ddir, plat_path_base(inm));
-                if (record_regular_file(sub)) snprintf(idx_p, sizeof idx_p, "%s", sub);
+                snprintf(sub, sizeof sub, "%s/teacher/%s", ddir, inm);
+                if (record_regular_file_nofollow(sub)) snprintf(idx_p, sizeof idx_p, "%s", sub);
             }
         }
         if (!idx_p[0]) snprintf(idx_p, sizeof idx_p, "%s", cand);
         replay_parent_dir(idx_p, rp->teacher_dir, sizeof rp->teacher_dir);
-        snprintf(logp_p, sizeof logp_p, "%s/%s", rp->teacher_dir, plat_path_base(lnm));
+        snprintf(logp_p, sizeof logp_p, "%s/%s", rp->teacher_dir, lnm);
     }
-    return replay_check_sha("teacher.topk_idx.sha256", idx_p, isha, rc) &&
-           replay_check_sha("teacher.topk_logp.sha256", logp_p, lsha, rc);
+    return replay_check_sha_opt("teacher.topk_idx.sha256", idx_p, isha, !explicit_dir, rc) &&
+           replay_check_sha_opt("teacher.topk_logp.sha256", logp_p, lsha, !explicit_dir, rc);
 }
 
 static bool replay_resolve_evals(const train_record_opts *o, cli_replay *rp, jv *rec, jv *kill_v, int *rc) {
@@ -137,25 +178,27 @@ static bool replay_resolve_evals(const train_record_opts *o, cli_replay *rp, jv 
         const char *lbl = jv_str(jv_get(e, "label"), NULL);
         const char *rpath = jv_str(jv_get(rw, "path"), NULL), *rsha = jv_str(jv_get(rw, "sha256"), NULL);
         char rbuf[4096];
-        const char *rf = rpath ? lineage_relocate(rpath, o->replay_train, rbuf, sizeof rbuf) : NULL;
-        if (!lbl || !*lbl || !replay_check_sha("evals.rows.sha256", rf, rsha, rc)) return false;
+        const char *rf = relocate_local(rpath, o->replay_train, rbuf, sizeof rbuf) ? rbuf : NULL;
+        if (!lbl || !*lbl || !replay_check_sha_opt("evals.rows.sha256", rf, rsha, true, rc)) return false;
         jv *ti = jv_get(e, "topk_idx"), *tl = jv_get(e, "topk_logp");
         char tdir[4096] = "";
         if (ti || tl) {
             const char *inm = jv_str(jv_get(ti, "path"), NULL), *isha = jv_str(jv_get(ti, "sha256"), NULL);
             const char *lnm = jv_str(jv_get(tl, "path"), NULL), *lsha = jv_str(jv_get(tl, "sha256"), NULL);
-            char ibuf[8192], lbuf[8192];   // the same size: ibuf takes lbuf whole (gcc's -Wformat-truncation)
-            const char *ip = inm ? lineage_relocate(inm, o->replay_train, ibuf, sizeof ibuf) : NULL;
-            if (ip && !record_regular_file(ip)) {
+            if (!safe_relname(inm, 255) || !safe_relname(lnm, 255))
+                return !replay_fail(rc, "evals.teacher", "safe basenames", "invalid");
+            char ibuf[8192], lbuf[8192];
+            const char *ip = relocate_local(inm, o->replay_train, ibuf, sizeof ibuf) ? ibuf : NULL;
+            if (ip && !record_regular_file_nofollow(ip)) {
                 char edir[4096];
                 replay_parent_dir(rf, edir, sizeof edir);
-                snprintf(lbuf, sizeof lbuf, "%s/%s", edir, plat_path_base(inm));
-                if (record_regular_file(lbuf)) { snprintf(ibuf, sizeof ibuf, "%s", lbuf); ip = ibuf; }
+                snprintf(lbuf, sizeof lbuf, "%s/%s", edir, inm);
+                if (record_regular_file_nofollow(lbuf)) { snprintf(ibuf, sizeof ibuf, "%s", lbuf); ip = ibuf; }
             }
-            if (!ip || !replay_check_sha("evals.topk_idx.sha256", ip, isha, rc)) return false;
+            if (!ip || !replay_check_sha_opt("evals.topk_idx.sha256", ip, isha, true, rc)) return false;
             replay_parent_dir(ip, tdir, sizeof tdir);
-            snprintf(lbuf, sizeof lbuf, "%s/%s", tdir, lnm ? plat_path_base(lnm) : "");
-            if (!replay_check_sha("evals.topk_logp.sha256", lbuf, lsha, rc)) return false;
+            snprintf(lbuf, sizeof lbuf, "%s/%s", tdir, lnm);
+            if (!replay_check_sha_opt("evals.topk_logp.sha256", lbuf, lsha, true, rc)) return false;
         }
         if (kill_v) {
             if (tdir[0]) snprintf(rp->eval_specs[i], sizeof rp->eval_specs[i], "%s=%s,%s", lbl, rf, tdir);
@@ -455,8 +498,8 @@ static bool unlearn_audit_check(const train_record_opts *o, jv *rec, const char 
     jv *pr = jv_get(un, "parent_record");
     const char *ppath = jv_str(jv_get(pr, "path"), NULL);
     char pbuf[4096];
-    const char *pf = ppath ? lineage_relocate(ppath, rec_path, pbuf, sizeof pbuf) : NULL;
-    if (!replay_check_sha("unlearn.parent_record.sha256", pf, jv_str(jv_get(pr, "sha256"), NULL), rc))
+    const char *pf = relocate_local(ppath, rec_path, pbuf, sizeof pbuf) ? pbuf : NULL;
+    if (!replay_check_sha_opt("unlearn.parent_record.sha256", pf, jv_str(jv_get(pr, "sha256"), NULL), true, rc))
         return false;
     size_t pn = 0;
     char *pb = plat_read_file(pf, MAX_INPUT_FILE, &pn);
@@ -520,7 +563,7 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
     const bool retrain = !o->replay_train && o->unlearn_parent;
     const char *rec_path = o->replay_train ? o->replay_train : o->unlearn_parent;
     if (!rec_path) return false;
-    if (!record_regular_file(rec_path)) {
+    if (!retrain ? !record_regular_file_nofollow(rec_path) : !record_regular_file(rec_path)) {
         fprintf(stderr, "error: cannot read %s\n", rec_path);
         *rc = 1;
         return true;
@@ -545,8 +588,9 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
     jv *out_v = ok ? jv_get(rec, rp->is_full ? "variant" : "adapter") : NULL;
     const char *out_name = jv_str(jv_get(out_v, "path"), NULL);
     const char *out_sha = jv_str(jv_get(out_v, "sha256"), NULL);
-    if (ok && (!out_name || !*out_name || !out_sha || strlen(out_sha) != 64))
-        ok = !replay_fail(rc, rp->is_full ? "variant.sha256" : "adapter.sha256", "64-hex sha256", out_sha);
+    if (ok && (!safe_relname(out_name, 511) || !out_sha || strlen(out_sha) != 64))
+        ok = !replay_fail(rc, rp->is_full ? "variant.path" : "adapter.path",
+                          "safe basename and 64-hex sha256", out_name);
     if (ok) {
         snprintf(rp->want_out_path, sizeof rp->want_out_path, "%s", out_name);
         snprintf(rp->want_out_sha, sizeof rp->want_out_sha, "%s", out_sha);
@@ -556,19 +600,29 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
     jv *base = ok ? jv_get(rec, "base") : NULL;
     jv *data = ok ? jv_get(rec, "data") : NULL;
     if (ok) {
-        const char *bp = o->model_path ? o->model_path
-                                       : lineage_relocate(jv_str(jv_get(base, "path"), ""),
-                                                          rec_path, rp->base_path, sizeof rp->base_path);
-        if (bp != rp->base_path) snprintf(rp->base_path, sizeof rp->base_path, "%s", bp);
-        ok = replay_check_sha("base.sha256", rp->base_path, jv_str(jv_get(base, "sha256"), NULL), rc);
+        bool explicit_m = o->model_path != NULL;
+        const char *bp = explicit_m ? o->model_path
+                                    : (relocate_local(jv_str(jv_get(base, "path"), ""),
+                                                      rec_path, rp->base_path, sizeof rp->base_path)
+                                       ? rp->base_path : NULL);
+        if (!bp) ok = !replay_fail(rc, "base.path", "safe basename", jv_str(jv_get(base, "path"), NULL));
+        else {
+            if (bp != rp->base_path) snprintf(rp->base_path, sizeof rp->base_path, "%s", bp);
+            ok = replay_check_sha_opt("base.sha256", rp->base_path, jv_str(jv_get(base, "sha256"), NULL), !explicit_m, rc);
+        }
         if (ok) o->model_path = rp->base_path;
     }
     if (ok) {
-        const char *dp = o->replay_data ? o->replay_data
-                                        : lineage_relocate(jv_str(jv_get(data, "path"), ""),
-                                                           rec_path, rp->data_path, sizeof rp->data_path);
-        if (dp != rp->data_path) snprintf(rp->data_path, sizeof rp->data_path, "%s", dp);
-        ok = replay_check_sha("data.sha256", rp->data_path, jv_str(jv_get(data, "sha256"), NULL), rc);
+        bool explicit_d = o->replay_data != NULL;
+        const char *dp = explicit_d ? o->replay_data
+                                    : (relocate_local(jv_str(jv_get(data, "path"), ""),
+                                                      rec_path, rp->data_path, sizeof rp->data_path)
+                                       ? rp->data_path : NULL);
+        if (!dp) ok = !replay_fail(rc, "data.path", "safe basename", jv_str(jv_get(data, "path"), NULL));
+        else {
+            if (dp != rp->data_path) snprintf(rp->data_path, sizeof rp->data_path, "%s", dp);
+            ok = replay_check_sha_opt("data.sha256", rp->data_path, jv_str(jv_get(data, "sha256"), NULL), !explicit_d, rc);
+        }
     }
 
     jv *res_v = jv_get(rec, "resumed_at_step");
@@ -583,21 +637,24 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
             *rc = 1;
             ok = false;
         }
+        const char *cli_f = o->train_resume ? o->train_resume : o->lora_path;
+        bool explicit_f = cli_f != NULL;
         const char *fp = !ok ? ""
-                       : o->train_resume ? o->train_resume
-                       : o->lora_path ? o->lora_path
-                       : lineage_relocate(jv_str(jv_get(from_v, "path"), ""),
-                                          rec_path, rp->from_path, sizeof rp->from_path);
+                       : explicit_f ? cli_f
+                       : (relocate_local(jv_str(jv_get(from_v, "path"), ""),
+                                         rec_path, rp->from_path, sizeof rp->from_path)
+                          ? rp->from_path : NULL);
+        if (ok && !fp) ok = !replay_fail(rc, "from_adapter.path", "safe basename", jv_str(jv_get(from_v, "path"), NULL));
         if (ok && fp != rp->from_path) snprintf(rp->from_path, sizeof rp->from_path, "%s", fp);
-        if (ok) ok = replay_check_sha("from_adapter.sha256", rp->from_path, jv_str(jv_get(from_v, "sha256"), NULL), rc);
+        if (ok) ok = replay_check_sha_opt("from_adapter.sha256", rp->from_path, jv_str(jv_get(from_v, "sha256"), NULL), !explicit_f, rc);
         if (ok && res_v) {
             int rs = 0;
             if (!record_int(rec, "resumed_at_step", 0, INT_MAX, &rs))
                 ok = !replay_fail(rc, "resumed_at_step", "integer", "invalid");
             char opt_p[4120];
             if (ok && snprintf(opt_p, sizeof opt_p, "%s.optim", rp->from_path) < (int)sizeof opt_p)
-                ok = replay_check_sha("resume_optim_sha256", opt_p,
-                                      jv_str(jv_get(rec, "resume_optim_sha256"), NULL), rc);
+                ok = replay_check_sha_opt("resume_optim_sha256", opt_p,
+                                          jv_str(jv_get(rec, "resume_optim_sha256"), NULL), !explicit_f, rc);
             if (ok) {
                 o->train_resume = rp->from_path;
                 o->lora_path = NULL;

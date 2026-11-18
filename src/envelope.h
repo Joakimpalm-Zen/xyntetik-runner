@@ -58,7 +58,9 @@ bool envelope_file_sha256(const char *path, char hex[65]);
 // record_regular_file says whether `path` is one; envelope_cited_sha256 is
 // envelope_file_sha256 for such a path, false for anything else.
 bool record_regular_file(const char *path);
+bool record_regular_file_nofollow(const char *path);
 bool envelope_cited_sha256(const char *path, char hex[65]);
+bool envelope_cited_regular_sha256(const char *path, char hex[65]);
 // sha256 of an in-memory buffer as lowercase hex (the transcript chain hash)
 void envelope_data_sha256(const void *data, size_t n, char hex[65]);
 // the same digest as raw bytes (signature inputs)
