@@ -208,10 +208,19 @@ def hostile_bin():
     return exe
 
 
-def test_a_symlinked_start_file_is_refused(runner_bin, hostile_bin, run6):
+@pytest.fixture
+def run6h(hostile_bin, fixture):
+    """run6 made by the binary the hostile cases attest with: a same-binary record replays only on its own."""
+    out = fixture / "a.gguf"
+    _run(hostile_bin, [*_recipe(fixture, 6, 2), "-t", 2, "--train-out", out])
+    rec_path = pathlib.Path(str(out) + ".train.json")
+    return fixture, out, rec_path, json.loads(rec_path.read_text())
+
+
+def test_a_symlinked_start_file_is_refused(hostile_bin, run6h):
     """The step-A files are opened as the record's other cited files are: a regular file by its base name, never
     a symlink, even to the right bytes."""
-    d, out, rec_path, rec = run6
+    d, out, rec_path, rec = run6h
     start = _ck(out, 2)
     elsewhere = d / "outside"
     elsewhere.mkdir()
@@ -241,10 +250,10 @@ def _with_checkpoints(text, steps, entries):
             ',"checkpoint_chain":{"basis":"xyntetik.runner.train.chain.v1","h0":"%s","head":"%s"}}\n' % (h0, h))
 
 
-def test_a_hostile_checkpoint_interval_is_refused_without_overflow(hostile_bin, run6):
+def test_a_hostile_checkpoint_interval_is_refused_without_overflow(hostile_bin, run6h):
     """Steps near INT_MAX: the interval check must not overflow int (UBSan aborts on it). A record whose second
     checkpoint is not twice its first is refused."""
-    d, out, rec_path, rec = run6
+    d, out, rec_path, rec = run6h
     c0 = rec["checkpoints"][0]
     entries = [dict(c0, step=1073741824), dict(c0, step=2147483646)]
     rec_path.write_text(_with_checkpoints(rec_path.read_text(), 2147483647, entries))

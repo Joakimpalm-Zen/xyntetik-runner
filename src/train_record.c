@@ -812,7 +812,7 @@ static const char *seg_find(const char *buf, size_t n, const char *mark) {
 
 static bool segment_precheck(const train_record_opts *o, jv *rec, const char *rbuf, size_t rlen,
                              const char *rec_path, cli_replay *rp, int *rc) {
-    if (jv_get(rec, "teacher"))
+    if (jv_get(rec, "teacher") || !strcmp(jv_str(jv_get(rec, "objective"), ""), "kl-to-teacher"))
         return seg_refuse(rc, 2, "a record of a run with a teacher (distillation) is not replayed by segments");
     if (jv_get(rec, "dpo") || !strcmp(jv_str(jv_get(rec, "objective"), ""), "dpo"))
         return seg_refuse(rc, 2, "a DPO record is not replayed by segments");
@@ -887,7 +887,8 @@ static bool segment_precheck(const train_record_opts *o, jv *rec, const char *rb
     if (!record_int(rec, "steps", 1, INT_MAX, &steps))
         return !replay_fail(rc, "steps", "integer", "invalid");
     for (int i = 0; i < rp->seg_n; i++)
-        if (rp->seg_ck[i].step != (i + 1) * every && !(i == rp->seg_n - 1 && rp->seg_ck[i].step == steps))
+        if ((long long)rp->seg_ck[i].step != (long long)(i + 1) * every &&
+            !(i == rp->seg_n - 1 && rp->seg_ck[i].step == steps))
             return seg_refuse(rc, 2, "the record's checkpoints are not every K steps and the last");
     rp->seg_every = every;
     if (a > 0) {
@@ -897,10 +898,20 @@ static bool segment_precheck(const train_record_opts *o, jv *rec, const char *rb
             !relocate_local(name, rec_path, rp->seg_start, sizeof rp->seg_start) ||
             !fmt_checked(opt, sizeof opt, "%s.optim", rp->seg_start))
             return !replay_fail(rc, "adapter.path", "a safe base name", ap);
-        bool ha = envelope_cited_sha256(rp->seg_start, have), ho = envelope_cited_sha256(opt, have_o);
-        if (!ha || !ho || strcmp(have, rp->seg_ck[ia].adapter) != 0 || strcmp(have_o, rp->seg_ck[ia].optim) != 0) {
+        // the record's other cited files' rule: a regular file by its base
+        // name, never a symlink (envelope_cited_regular_sha256: lstat, no-follow)
+        bool ha = envelope_cited_regular_sha256(rp->seg_start, have);
+        bool ho = envelope_cited_regular_sha256(opt, have_o);
+        if (!ha || !ho) {
             fputs("error: --segment: ", stderr);
-            envelope_print_safe(stderr, !ha || strcmp(have, rp->seg_ck[ia].adapter) != 0 ? rp->seg_start : opt,
+            envelope_print_safe(stderr, !ha ? rp->seg_start : opt, 0, "?", false);
+            fprintf(stderr, " is missing or not a regular file (a symlink is not followed) (step %ld)\n", a);
+            *rc = 2;
+            return false;
+        }
+        if (strcmp(have, rp->seg_ck[ia].adapter) != 0 || strcmp(have_o, rp->seg_ck[ia].optim) != 0) {
+            fputs("error: --segment: ", stderr);
+            envelope_print_safe(stderr, strcmp(have, rp->seg_ck[ia].adapter) != 0 ? rp->seg_start : opt,
                                 0, "?", false);
             fprintf(stderr, " is not the checkpoint the record names (step %ld)\n", a);
             *rc = 2;
@@ -933,15 +944,17 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
         return true;
     }
     const char *caller_sign_key = o->sign_key;
-    if (o->replay_segment && !segment_precheck(o, rec, rbuf, rlen, rec_path, rp, rc)) {
-        free(rbuf);
-        jv_free(rec);
-        return true;
-    }
     if (retrain) o->replay_data = o->train_path;   // DATA1, hashed as the parent's data below
     bool ok = (retrain ? unlearn_check_eligible(o, rec, rc)
                        : replay_check_compat(host, o, rec, rbuf, rlen, &rp->want_t3_exact, rc)) &&
               replay_check_environment(host, rec, rc) && replay_apply_overrides(o, rec, rc);
+    // R17.9 step 4: the segment's checks after the record's own (schema,
+    // signature, determinism, environment), before its bytes go
+    if (ok && o->replay_segment && !segment_precheck(o, rec, rbuf, rlen, rec_path, rp, rc)) {
+        free(rbuf);
+        jv_free(rec);
+        return true;
+    }
     free(rbuf);
     if (!ok && *rc == 0) *rc = 1;
     jv *fw_v = jv_get(rec, "full_weight");
