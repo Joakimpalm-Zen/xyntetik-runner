@@ -1034,6 +1034,15 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
     return !ok;
 }
 
+bool train_record_jv_same(const jv *a, const jv *b) {
+    return jv_same(a, b);
+}
+
+bool train_record_unlearn_split(const char *data1, const char *drop, sbuf *kept, int *count,
+                                int *distinct, char *why, size_t cap) {
+    return unlearn_split(data1, drop, kept, count, distinct, why, cap);
+}
+
 bool train_record_fail(int *rc, const char *field, const char *want, const char *got) {
     return replay_fail(rc, field, want, got);
 }

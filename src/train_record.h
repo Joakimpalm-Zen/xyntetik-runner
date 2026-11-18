@@ -69,6 +69,9 @@ bool train_env_counts(const char *name, size_t n);
 bool train_env_is_secret(const char *name, size_t n);
 bool train_record_num(jv *obj, const char *key, double min, double max, double *out);
 bool train_record_int(jv *obj, const char *key, int min, int max, int *out);
+bool train_record_jv_same(const jv *a, const jv *b);
+bool train_record_unlearn_split(const char *data1, const char *drop, sbuf *kept, int *count,
+                                int *distinct, char *why, size_t cap);
 bool train_record_fail(int *rc, const char *field, const char *want, const char *got);
 bool train_record_prepare(const train_record_host *host, train_record_opts *o, cli_replay *rp, int *rc);
 
