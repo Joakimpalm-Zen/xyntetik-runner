@@ -7,8 +7,10 @@ to them. macOS runs only what needs a Mac, in two jobs side by side: `macos`
 runs the Metal gates of `make test` as the one named target `make test-metal`
 and the server conformance suite on the Metal path, and
 `macos-suite-metal-pytest` runs the suite's Metal pytest files
-(`tests/test_metal_*.py`) in one process. They were one job until R6.89,
-which took 20 to 32 minutes on the hosted runners against a limit of 45.
+(`tests/test_metal_*.py`) under pytest-xdist (`-n auto --dist loadfile`,
+one file per worker, with `--timeout 1800`). They were inside `macos`
+until R6.89 (20 to 32 minutes against a limit of 45) and later ran in one
+process for 10 to 16 minutes against a 1200 s limit (R6.95).
 Windows runs the build, its platform-only steps, the client tests and the
 server conformance suite. The whole suite runs on Windows on every
 engine push to main, and on both platforms on the daily schedule and on
