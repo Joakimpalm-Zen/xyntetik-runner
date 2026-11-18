@@ -9,7 +9,7 @@ Every public surface of Runner and the one component that owns it. The component
 | Command line | 55 | 15 | 5 | 13 | 28 | 1 | 1 | 118 |
 | HTTP routes | 22 |  |  |  | 1 |  |  | 23 |
 | `RUNNER_*` switches | 24 | 103 | 10 | 17 |  |  | 7 | 161 |
-| Record formats | 7 |  |  | 6 | 11 |  |  | 24 |
+| Record formats | 7 |  |  | 6 | 13 |  |  | 26 |
 | Python client | 14 |  |  |  |  | 25 |  | 39 |
 | TypeScript client | 18 |  |  |  | 7 |  |  | 25 |
 
@@ -48,7 +48,7 @@ Every switch read through `getenv` or an environment helper, without the `RUNNER
 | Model production | 17 | `FORCE_REQUANT`, `GOLD_LOGITS`, `GOLD_PYTHON`, `LORA_ADAM_ALLOC_FAIL`, `QUANTIZE_INSTALL_FAIL`, `REQUANT_ONLY`, `TEST_BUILD_DIRTY`, `TEST_DERIVE_INTERVAL_FAIL`, `TRAIN_DEVICE_STEP`, `TRAIN_FULL_DUMP`, `TRAIN_FULL_DUMP_TENSORS`, `TRAIN_GPU`, `TRAIN_MM_KERNEL`, `TRAIN_MVT_KERNEL`, `TRAIN_PROF`, `TRAIN_RESIDENT`, `TRAIN_ROWS` |
 | Desktop | 7 | `TEST_INSTANCE_SWEEP_DELAY_MS`, `TEST_INSTANCE_SWEEP_MARKER`, `TEST_REGISTRY_READONLY`, `TEST_TRAY_CONFIG_INSTALL_FAIL`, `TEST_TRAY_OPENER`, `TEST_TRAY_SEND_CHUNK`, `UNVERIFIED_LEASE_TTL` |
 
-## Record formats (24)
+## Record formats (26)
 
 Every `xyntetik.runner.*` schema identifier, without the prefix.
 
@@ -56,7 +56,7 @@ Every `xyntetik.runner.*` schema identifier, without the prefix.
 |---|---:|---|
 | Runtime | 7 | `cached.v1`, `decision.v1`, `doctor.v1`, `kv_snapshot.v1`, `model-tiers.v1`, `score.v1`, `session.v1` |
 | Model production | 6 | `context-surgery.v1`, `derive.v1`, `eval.v1`, `merge.v1`, `quant.v1`, `train.v1` |
-| Proof | 11 | `bundle.v1`, `envelope.v1`, `evidence-pack.v1`, `signkey.v1`, `train.chain.v1`, `transcript.v1`, `transcript.v2`, `verify.v1`, `watermark.key_id.v1`, `watermark_detect.v1`, `watermark_key.v1` |
+| Proof | 13 | `bundle.v1`, `envelope.v1`, `evidence-pack.v1`, `sample.v1`, `signkey.v1`, `train.chain.v1`, `train.sample.v1`, `transcript.v1`, `transcript.v2`, `verify.v1`, `watermark.key_id.v1`, `watermark_detect.v1`, `watermark_key.v1` |
 
 ## Python client (39)
 
