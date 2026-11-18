@@ -9231,7 +9231,14 @@ static int cli_main(int argc, char **argv, char **owned_prompt, session_image *s
         // route identity (the receipt prints the same)
         bool dirty = false;
         const char *rev = provenance_build_commit(&dirty);
-        // R20: a dirty build is identified by its own bytes, hashed once here
+        // R20: a dirty build is identified by its own bytes, hashed once here.
+        // Test seams: RUNNER_TEST_BUILD_DIRTY=1 marks the build dirty (it can
+        // only add dirt), RUNNER_TEST_IDENTITY_WAIT=F waits, up to a minute,
+        // until F exists before the identity is taken.
+        const char *td = getenv("RUNNER_TEST_BUILD_DIRTY");
+        if (td && !strcmp(td, "1")) dirty = true;
+        const char *tw = getenv("RUNNER_TEST_IDENTITY_WAIT");
+        for (int i = 0; tw && *tw && i < 600 && !plat_file_readable(tw); i++) plat_sleep_ms(100);
         char bsha[65] = "";
         if (dirty) {
             char *exe = plat_executable_path();

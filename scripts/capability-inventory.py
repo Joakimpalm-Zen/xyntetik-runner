@@ -117,7 +117,7 @@ HTTP_RULES = {
 # components, needs a name rule.
 ENV_NAME_RULES = [
     ("production", re.compile(r"^(TRAIN_|LORA_ADAM_|GOLD_|TEST_BUILD_DIRTY$)")),
-    ("runtime", re.compile(r"^(SCHEMA_|PREFIX_CACHE_|REPEAT_COUNT$|SCORE_|TEST_SCRIPTED_REPLY$|TEST_ROUTE_FLIP_AT$|"
+    ("runtime", re.compile(r"^(SCHEMA_|PREFIX_CACHE_|REPEAT_COUNT$|SCORE_|TEST_SCRIPTED_REPLY$|TEST_ROUTE_FLIP_AT$|TEST_IDENTITY_WAIT$|"
                            r"TEST_STREAM_OUT_CAP$|VRAM_PRIORITY$)")),
     ("substrate", re.compile(r"^(ALLOW_UNKNOWN_ARCH|PREFETCH|TEST_LOAD_DELAY_MS|"
                              r"TEST_NO_FILE_ID|TEST_NO_INODE|LORA_INSTALL_FAIL)$")),
