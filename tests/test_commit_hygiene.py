@@ -44,7 +44,7 @@ def check(repo, *args):
 
 
 @pytest.mark.parametrize("role", ["AUTHOR", "COMMITTER"])
-@pytest.mark.parametrize("name", ["Codex", "Claude Code", "xyntetik-lab-agent", "Copilot",
+@pytest.mark.parametrize("name", ["Codex", "Claude Code", "Antigravity", "xyntetik-lab-agent", "Copilot",
                                   "ChatGPT", "GPT-6.1", "Gemini", "Cursor", "Devin",
                                   "Aider", "cOdEx"])
 def test_an_agent_commit_refuses_a_personal_email(tmp_path, role, name):
@@ -63,8 +63,9 @@ def test_an_agent_commit_refuses_a_personal_email(tmp_path, role, name):
 
 @pytest.mark.parametrize("role", ["AUTHOR", "COMMITTER"])
 @pytest.mark.parametrize("name,email", [
-    ("Codex", "claude-code@users.noreply.github.com"),
+    ("Codex", "267193182+codex@users.noreply.github.com"),
     ("Claude Code", "noreply@anthropic.com"),
+    ("Antigravity", "antigravity@noreply.xyntetik.com"),
     ("xyntetik-lab-agent", "agent@build.local"),
     ("GPT-6.1", "no-reply@example.org"),
     ("Gemini", "AGENT@BUILD.LOCAL"),

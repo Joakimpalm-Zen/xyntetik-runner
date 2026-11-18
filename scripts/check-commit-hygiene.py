@@ -54,7 +54,7 @@ TRAILER = re.compile(r"^Co-Authored-By:\s*(.*)$", re.I | re.M)
 AGENT_FORM = re.compile(r"^[A-Za-z][A-Za-z0-9 .+/-]* \([^()]+\) & Joakimpalm-Zen$")
 HUMAN_FORM = re.compile(r"^([^<>]+?)\s*<([^<>@\s]+@[^<>@\s]+)>$")
 AGENT_NAME = re.compile(
-    r"\b(claude|codex|copilot|chatgpt|gpt-?\d|gemini|cursor|devin|aider|xyntetik-lab-agent)\b",
+    r"\b(claude|codex|antigravity|copilot|chatgpt|gpt-?\d|gemini|cursor|devin|aider|xyntetik-lab-agent)\b",
     re.I)
 TOOL_IDENTITY = re.compile(
     r"anthropic\.com|openai\.com|Copilot@users\.noreply\.github\.com|"
@@ -156,6 +156,14 @@ def self_test() -> int:
         "docs: the NVIDIA\n" + "Black" + "well and Apple\n" + "M" + "1, wrapped\n",
     ]
     ok = all(problems(b) for b in bad) and not any(problems(g) for g in good)
+    for name, email in [
+        ("Claude Code", "noreply@anthropic.com"),
+        ("Codex", "267193182+codex@users.noreply.github.com"),
+        ("Antigravity", "antigravity@noreply.xyntetik.com"),
+    ]:
+        if identity_problems("author", name, email):
+            ok = False
+            print("  false positive identity:", name, email)
     if not ok:
         for b in bad:
             if not problems(b): print("  missed:", b.strip()[:80])
