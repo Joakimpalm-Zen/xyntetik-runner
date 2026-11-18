@@ -69,6 +69,15 @@ static void no_nan_pick(const char *what, const float *logits, int n, int top_k,
     }
 }
 
+// the sampler's own RNG step (src/sample.c: rng_next, rng_f32), to find the
+// state whose draw is the largest float below 1, the draw a walk that sums
+// short of 1 by an ULP falls off with
+static uint64_t xs(uint64_t x) { x ^= x << 13; x ^= x >> 7; x ^= x << 17; return x; }
+static uint64_t state_drawing_the_top(void) {
+    for (uint64_t x = 1;; x++)
+        if ((xs(x) >> 40) == 0xffffffu) return x;
+}
+
 static uint64_t g_rng = 0x243F6A8885A308D3ull;
 static float uni(float lo, float hi) {
     g_rng ^= g_rng << 13; g_rng ^= g_rng >> 7; g_rng ^= g_rng << 17;
@@ -91,6 +100,49 @@ int main(void) {
         free(l);
     }
 
+    // R6.91 review, P2: a walk whose shares sum short of 1 by an ULP falls off the
+    // end; it must land on the last candidate with mass, not a trailing NaN
+    {
+        uint64_t top = state_drawing_the_top();
+        enum { N = 101 };
+        float l[N], w[N];
+        int bad = -1, tried = 0;
+        for (int v = 0; v < 400 && bad < 0; v++) {
+            for (int i = 0; i < N - 1; i++) l[i] = uni(-3.0f, 3.0f);
+            l[N - 1] = nan;
+            memcpy(w, l, sizeof w);
+            sampler s = make(1.0f, N, 1.0f, 0.0f, top);
+            int t = sample_pick(&s, w, N, NULL, NULL);
+            tried++;
+            if (t == N - 1) bad = v;
+        }
+        if (bad >= 0) { printf("FAIL %s: a walk that fell off the end picked the trailing NaN (vector %d)\n", BUILD_KIND, bad); g_fail = 1; }
+        else printf("ok %s: %d walks drawn at the top of the range: none picked the trailing NaN\n", BUILD_KIND, tried);
+    }
+
+    // R6.91 review, P1: every logit NaN on the head path (a vocabulary of 4096 or
+    // more) with top-p or min-p on, and a NaN at index 0 there: no candidate
+    // set of size 0 may reach the walk, and the all-NaN answer is the lowest id
+    {
+        enum { V = 5000 };
+        float *l = malloc(sizeof(float) * V), *w = malloc(sizeof(float) * V);
+        for (int f = 0; f < 2; f++) {
+            for (int i = 0; i < V; i++) l[i] = nan;
+            for (uint64_t r = 1; r <= 50; r++) {
+                memcpy(w, l, sizeof(float) * V);
+                sampler s = make(1.0f, 0, f ? 1.0f : 0.95f, f ? 0.01f : 0.0f, r * 0x9E3779B97F4A7C15ull);
+                int t = sample_pick(&s, w, V, NULL, NULL);
+                if (t != 0) { printf("FAIL %s: all NaN, head path, %s: picked %d, not the lowest id\n", BUILD_KIND,
+                                     f ? "min-p" : "top-p", t); g_fail = 1; break; }
+            }
+        }
+        printf("ok %s: all NaN on the head path with top-p and with min-p: the lowest id\n", BUILD_KIND);
+        for (int i = 0; i < V; i++) l[i] = uni(-4.0f, 4.0f);
+        l[0] = nan;
+        no_nan_pick("a 5000-token vocabulary with a NaN at index 0 (the head path)", l, V, 0, 1.0f);
+        free(l);
+        free(w);
+    }
     // the control: picks over finite logits, as a digest
     uint64_t h = 0xcbf29ce484222325ull;
     static const struct { float temp; int top_k; float top_p, min_p; int n; } set[] = {

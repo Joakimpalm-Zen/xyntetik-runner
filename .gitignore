@@ -408,3 +408,4 @@ test-sample-nan-portable
 test-sample-nan-strict
 test-sample-nan-*.exe
 /.sample-nan/
+test-sample-nan-asan

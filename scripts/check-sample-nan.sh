@@ -19,7 +19,15 @@ for k in default portable strict; do
     ./test-sample-nan-$k$ext > "$out/$k.txt" || fail=1
     grep -E '^(FAIL|digest)' "$out/$k.txt"
 done
-if [ $fail != 0 ]; then echo "sample-nan: a build picked a NaN token"; exit 1; fi
+if [ $fail != 0 ]; then echo "sample-nan: a build picked a NaN token or stopped"; exit 1; fi
+# the default build under AddressSanitizer (not on Windows: MinGW has none), so a
+# read outside a candidate array fails here even where it reads harmless bytes
+if [ -x ./test-sample-nan-asan ]; then
+    if ! ./test-sample-nan-asan > "$out/asan.txt" 2>&1; then
+        grep -E 'ERROR: AddressSanitizer|#[0-3] |^FAIL' "$out/asan.txt" | head -8
+        echo "sample-nan: the AddressSanitizer build failed"; exit 1
+    fi
+fi
 d=$(sed -n 's/^digest default: .* \([0-9a-f]*\)$/\1/p' "$out/default.txt")
 for k in portable strict; do
     if ! grep -q " $d\$" "$out/$k.txt"; then

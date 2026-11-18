@@ -3623,6 +3623,7 @@ SN_BASE := 6e035a770e5952c873c6170c37e1a857985eb48f
 test-sample-nan: tests/test_sample_nan.c src/sample.c scripts/check-sample-nan.sh $(HDR)
 	$(CC) $(CFLAGS) -I src tests/test_sample_nan.c src/sample.c -o test-sample-nan-default$(SN_EXT) $(LDFLAGS)
 	$(CC) $(SN_PORTABLE) -I src tests/test_sample_nan.c src/sample.c -o test-sample-nan-portable$(SN_EXT) $(LDFLAGS)
+	$(if $(filter Windows,$(BUILD_OS)),,$(CC) $(CFLAGS) -fsanitize=address -fno-omit-frame-pointer -I src tests/test_sample_nan.c src/sample.c -o test-sample-nan-asan $(LDFLAGS))
 	$(CC) $(SN_STRICT) -I src tests/test_sample_nan.c src/sample.c -o test-sample-nan-strict$(SN_EXT) $(LDFLAGS)
 	sh scripts/check-sample-nan.sh "$(SN_EXT)" $(SN_BASE) $(CC) $(CFLAGS) -- $(LDFLAGS)
 
