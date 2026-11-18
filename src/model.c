@@ -8263,15 +8263,27 @@ static uint64_t route_fnv(uint64_t h, const char *s) {
     return h;
 }
 
-uint64_t model_route_hash(const model_t *m) {
+static _Atomic uint64_t g_route_hashes;   // computations, for the tests
+
+uint64_t model_route_hash_count(void) { return g_route_hashes; }
+
+// The facts the route identity hashes, as text: what a test and the PR's
+// limits can read. Returns the length written (or wanted).
+int model_route_text(const model_t *m, char *out, size_t cap) {
     route_facts r;
     memset(&r, 0, sizeof r);
     route_collect(m, &r);
-    uint64_t h = 0xcbf29ce484222325ull;
-    char num[96];
-    snprintf(num, sizeof num, "%d/%d/%d/%d/%d", r.gpu_layers, r.n_layer, r.moe_layers, r.moe_host, r.moe_hot);
-    const char *parts[] = { r.backend, r.device, num, r.kv, r.detail, r.build, r.codegen, r.cpu_act, r.weights };
-    for (size_t i = 0; i < sizeof parts / sizeof *parts; i++) h = route_fnv(h, parts[i]);
+    return snprintf(out, cap, "%s|%s|%d/%d/%d/%d/%d|%s|%s|%s|%s|%s|%s", r.backend ? r.backend : "",
+                    r.device, r.gpu_layers, r.n_layer, r.moe_layers, r.moe_host, r.moe_hot,
+                    r.kv ? r.kv : "", r.detail ? r.detail : "", r.build ? r.build : "",
+                    r.codegen ? r.codegen : "", r.cpu_act ? r.cpu_act : "", r.weights);
+}
+
+uint64_t model_route_hash(const model_t *m) {
+    g_route_hashes++;
+    char text[1024];
+    model_route_text(m, text, sizeof text);
+    uint64_t h = route_fnv(0xcbf29ce484222325ull, text);
     // the switches, read live and in any order: XOR of each one's own hash
     uint64_t sw = 0;
     for (char **e = ROUTE_ENVIRON; e && *e; e++) {

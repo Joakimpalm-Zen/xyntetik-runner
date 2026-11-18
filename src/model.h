@@ -1977,5 +1977,9 @@ uint64_t model_route_hash(const model_t *m);
 // Whether the variable `name` (n bytes) is a switch that may change arithmetic:
 // a RUNNER_ one outside the inert set, or XR_SSM_CHUNK / XR_SSM_SERIAL.
 bool     runner_switch_counts(const char *name, size_t n);
+// the facts model_route_hash hashes, as text, and how many times it has been
+// computed in this process (for the tests)
+int      model_route_text(const model_t *m, char *out, size_t cap);
+uint64_t model_route_hash_count(void);
 
 #endif // RUNNER_MODEL_H

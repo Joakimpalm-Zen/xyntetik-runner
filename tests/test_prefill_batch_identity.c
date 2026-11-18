@@ -59,6 +59,12 @@
 //  12. The route identity is the arithmetic, not the batch width alone: a
 //      switch that selects other prompt arithmetic (RUNNER_CPU_I8_PREFILL)
 //      is another route for the store and for a slot's own rows.
+//  13. The route identity is computed once, not per feed: scoring a prompt one
+//      token a forward computes it at most twice.
+//  14. A route that changes during a feed (a device falling back to the CPU;
+//      RUNNER_TEST_ROUTE_FLIP_AT forces it on the CPU) leaves rows of no one
+//      route: nothing is published, pinned or exported from them.
+//  15. The identity names the compiler's version (__VERSION__).
 #include "runner.h"
 
 // MinGW has no setenv/unsetenv; an empty value removes the variable there
@@ -399,6 +405,58 @@ static void check_file(const char *path) {
         }
         ck(kept_other == 0, path, n12, "a slot's rows made without the switch are not kept under it");
         ck(kept_same == n12, path, n12, "live control: without the switch the slot keeps its rows");
+    }
+
+    // gate 13: the identity is computed once, not per feed
+    {
+        int n13 = LENS[0];
+        prompt_scores ps13 = {0};
+        uint64_t before = model_route_hash_count();
+        bool scored13 = engine_score_prompt(&ref.e, t, n13, 0, &ps13) != NULL;
+        prompt_scores_free(&ps13);
+        uint64_t used = model_route_hash_count() - before;
+        if (used > 2) fprintf(stderr, "  scoring %d tokens computed the route %llu times\n", n13, (unsigned long long)used);
+        ck(scored13 && used <= 2, path, n13, "scoring a prompt computes the route identity at most twice");
+    }
+
+    // gate 14: a route change during a feed (forced on the CPU by
+    // RUNNER_TEST_ROUTE_FLIP_AT, read at load) leaves rows of no one route.
+    // Live control: the same slots without the seam publish and fork.
+    {
+        int n14 = LENS[0], at = n14 / 2;
+        char atv[16];
+        snprintf(atv, sizeof atv, "%d", at);
+        for (int flip = 1; flip >= 0; flip--) {
+            if (flip) env_set("RUNNER_TEST_ROUTE_FLIP_AT", atv);
+            slot fa, fb;
+            bool open14 = slot_open(&fa, path, 64) && slot_open(&fb, path, 64);
+            if (flip) env_unset("RUNNER_TEST_ROUTE_FLIP_AT");
+            if (!open14) { ck(0, path, n14, "gate 14 slots opened"); break; }
+            prefix_cache_clear();
+            engine_reset(&fa.e);
+            bool fed14 = engine_feed(&fa.e, t, n14) != NULL;
+            if (fed14) engine_prefix_publish(&fa.e, t, n14, n14, 0.0);
+            engine_reset(&fb.e);
+            prefix_reuse r14 = engine_prefix_reuse(&fb.e, t, n14 + 6);
+            int pinned14 = fed14 ? prefix_context_pin(&fa.e, "g14", t, n14) : -1;
+            if (flip) {
+                ck(fed14 && r14.keep == 0, path, n14, "rows across a route change are not published");
+                ck(pinned14 < 0 || pinned14 == PFX_CTX_UNSUPPORTED, path, n14, "rows across a route change are not pinned");
+            } else {
+                ck(fed14 && r14.keep > 0, path, n14, "live control: without the seam the rows are published and forked");
+            }
+            prefix_cache_clear();
+            slot_close(&fa);
+            slot_close(&fb);
+        }
+    }
+
+    // gate 15: the identity names the compiler's version: another compiler is
+    // another arithmetic
+    {
+        char rt[1200];
+        model_route_text(&s64.m, rt, sizeof rt);
+        ck(strstr(rt, __VERSION__) != NULL, path, 0, "the route identity names the compiler's version");
     }
 
     ck(control5 == NLEN, path, CTX,
