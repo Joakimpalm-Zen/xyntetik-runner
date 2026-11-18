@@ -84,6 +84,8 @@ test-sampler.exe
 test-shared-weights
 test-mlock
 test-willneed
+test-spawn-eintr
+test-spawn-eintr.exe
 test-shared-weights.exe
 test-bind
 test-bind.exe
