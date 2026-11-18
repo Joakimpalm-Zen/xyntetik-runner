@@ -1872,7 +1872,10 @@ make PORTABLE_MATH=1   # Linux or macOS: the portable math in a default build
 ```
 
 `make test-portable-imports` checks that no object imports the six, and the
-Windows CI job runs it at the release's own flags.
+Windows CI job runs it at the release's own flags. A binary says which math it
+has: `runner --caps` and the server's build fields (`/health`,
+`/v1/capabilities`) answer `"math": "portable"` or `"math": "libc"`.
+`runner --version` stays `runner X.Y.Z`, the line a release checks.
 
 ### Container image
 

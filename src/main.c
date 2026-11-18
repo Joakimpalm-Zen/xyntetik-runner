@@ -2239,7 +2239,7 @@ static int run_caps(void) {
     // figures describe the same moment
     plat_capacity cap;
     plat_capacity_get(&cap);
-    printf("{\"version\":\"%s\",\"os\":\"%s\",\"arch\":\"%s\",\"cpu_cores\":%d,"
+    printf("{\"version\":\"%s\",\"math\":\"" RUNNER_BUILD_MATH "\",\"os\":\"%s\",\"arch\":\"%s\",\"cpu_cores\":%d,"
            "\"ram_bytes\":%llu,\"ram_available_bytes\":%llu,",
            RUNNER_VERSION,
 #if defined(_WIN32)
