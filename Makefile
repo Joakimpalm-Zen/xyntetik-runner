@@ -3689,7 +3689,7 @@ test-gates-core test-gates-batch test-cuda-%: export RUNNER_REQUIRE_GRAPH_CAPTUR
 test-metal-kv-grow: runner test.gguf test-python-deps
 ifeq ($(UNAME_S),Darwin)
 	RUNNER_TEST_METAL_KV_STEP=16 $(PYTHON) -m pytest -q -p no:cacheprovider \
-	  tests/test_kv_snapshots.py tests/test_prefix_budget.py tests/test_named_contexts.py \
+	  tests/test_kv_snapshots.py tests/test_prefix_budget.py tests/test_named_contexts.py tests/test_train_segments.py \
 	  tests/test_server_sessions.py tests/test_metal_kv_grow.py tests/test_metal_kv_restores.py
 else
 	@echo "test-metal-kv-grow: NOT RUN, the Metal backend's growing KV cache (this host has no Metal)"
