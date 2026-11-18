@@ -3,6 +3,7 @@
 #include <float.h>
 #include <limits.h>
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -100,19 +101,35 @@ static bool safe_relname(const char *s, size_t max_len) {
     return true;
 }
 
+static bool fmt_checked(char *dst, size_t cap, const char *fmt, ...) RUNNER_PRINTF(3, 4);
+static bool fmt_checked(char *dst, size_t cap, const char *fmt, ...) {
+    if (!cap) return false;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(dst, cap, fmt, ap);
+    va_end(ap);
+    return n >= 0 && (size_t)n < cap;
+}
+
 static bool relocate_local(const char *cited, const char *citing, char *buf, size_t cap) {
     if (!safe_relname(cited, 255)) return false;
     const char *s = strrchr(citing, '/');
     const char *b = strrchr(citing, '\\');
     if (b && (!s || b > s)) s = b;
     int dn = s ? (int)(s - citing + 1) : 0;
-    int n = snprintf(buf, cap, "%.*s%s", dn, citing, cited);
-    return n > 0 && (size_t)n < cap;
+    return fmt_checked(buf, cap, "%.*s%s", dn, citing, cited);
+}
+
+static bool is_sha256_hex(const char *s) {
+    if (!s || strlen(s) != 64) return false;
+    for (int i = 0; i < 64; i++)
+        if (hex_digit_value((unsigned char)s[i]) < 0) return false;
+    return true;
 }
 
 static bool replay_check_sha_opt(const char *field, const char *path, const char *want,
                                  bool nofollow, int *rc) {
-    if (!want || strlen(want) != 64) return !replay_fail(rc, field, "64-hex sha256", want);
+    if (!is_sha256_hex(want)) return !replay_fail(rc, field, "64-hex sha256", want);
     char got[65] = "";
     bool ok = path && *path &&
               (nofollow ? envelope_cited_regular_sha256(path, got) : envelope_cited_sha256(path, got));
@@ -125,12 +142,12 @@ static bool replay_check_sha(const char *field, const char *path, const char *wa
     return replay_check_sha_opt(field, path, want, false, rc);
 }
 
-static void replay_parent_dir(const char *path, char *out, size_t cap) {
+static bool replay_parent_dir(const char *path, char *out, size_t cap) {
     const char *s = strrchr(path, '/');
     const char *b = strrchr(path, '\\');
     if (b && (!s || b > s)) s = b;
-    if (!s) snprintf(out, cap, ".");
-    else snprintf(out, cap, "%.*s", (int)(s - path), path);
+    if (!s) return fmt_checked(out, cap, ".");
+    return fmt_checked(out, cap, "%.*s", (int)(s - path), path);
 }
 
 static bool replay_resolve_teacher(const train_record_opts *o, cli_replay *rp, jv *tch, int *rc) {
@@ -139,30 +156,35 @@ static bool replay_resolve_teacher(const train_record_opts *o, cli_replay *rp, j
     const char *lnm = jv_str(jv_get(tl, "path"), NULL), *lsha = jv_str(jv_get(tl, "sha256"), NULL);
     if (!safe_relname(inm, 255) || !safe_relname(lnm, 255))
         return !replay_fail(rc, "teacher", "safe basenames for topk_idx and topk_logp", "invalid");
-    char idx_p[8192] = "", logp_p[8192] = "";
+    char idx_p[4096] = "", logp_p[4096] = "";
     bool explicit_dir = o->train_teacher != NULL;
     if (explicit_dir) {
-        snprintf(rp->teacher_dir, sizeof rp->teacher_dir, "%s", o->train_teacher);
-        snprintf(idx_p, sizeof idx_p, "%s/%s", rp->teacher_dir, inm);
-        snprintf(logp_p, sizeof logp_p, "%s/%s", rp->teacher_dir, lnm);
+        if (!fmt_checked(rp->teacher_dir, sizeof rp->teacher_dir, "%s", o->train_teacher) ||
+            !fmt_checked(idx_p, sizeof idx_p, "%s/%s", rp->teacher_dir, inm) ||
+            !fmt_checked(logp_p, sizeof logp_p, "%s/%s", rp->teacher_dir, lnm))
+            return !replay_fail(rc, "teacher", "path fitting limit", "too long");
     } else {
-        char cand[4096], sub[8192], rdir[4096], ddir[4096];
+        char cand[4096], sub[4096], rdir[4096], ddir[4096];
         if (!relocate_local(inm, o->replay_train, cand, sizeof cand))
             return !replay_fail(rc, "teacher", "valid local path", inm);
         if (!record_regular_file_nofollow(cand)) {
-            replay_parent_dir(o->replay_train, rdir, sizeof rdir);
-            snprintf(sub, sizeof sub, "%s/teacher/%s", rdir, inm);
-            if (record_regular_file_nofollow(sub)) {
-                snprintf(idx_p, sizeof idx_p, "%s", sub);
-            } else {
-                replay_parent_dir(rp->data_path, ddir, sizeof ddir);
-                snprintf(sub, sizeof sub, "%s/teacher/%s", ddir, inm);
-                if (record_regular_file_nofollow(sub)) snprintf(idx_p, sizeof idx_p, "%s", sub);
+            if (replay_parent_dir(o->replay_train, rdir, sizeof rdir) &&
+                fmt_checked(sub, sizeof sub, "%s/teacher/%s", rdir, inm) &&
+                record_regular_file_nofollow(sub)) {
+                if (!fmt_checked(idx_p, sizeof idx_p, "%s", sub))
+                    return !replay_fail(rc, "teacher", "path fitting limit", "too long");
+            } else if (replay_parent_dir(rp->data_path, ddir, sizeof ddir) &&
+                       fmt_checked(sub, sizeof sub, "%s/teacher/%s", ddir, inm) &&
+                       record_regular_file_nofollow(sub)) {
+                if (!fmt_checked(idx_p, sizeof idx_p, "%s", sub))
+                    return !replay_fail(rc, "teacher", "path fitting limit", "too long");
             }
         }
-        if (!idx_p[0]) snprintf(idx_p, sizeof idx_p, "%s", cand);
-        replay_parent_dir(idx_p, rp->teacher_dir, sizeof rp->teacher_dir);
-        snprintf(logp_p, sizeof logp_p, "%s/%s", rp->teacher_dir, lnm);
+        if (!idx_p[0] && !fmt_checked(idx_p, sizeof idx_p, "%s", cand))
+            return !replay_fail(rc, "teacher", "path fitting limit", "too long");
+        if (!replay_parent_dir(idx_p, rp->teacher_dir, sizeof rp->teacher_dir) ||
+            !fmt_checked(logp_p, sizeof logp_p, "%s/%s", rp->teacher_dir, lnm))
+            return !replay_fail(rc, "teacher", "path fitting limit", "too long");
     }
     return replay_check_sha_opt("teacher.topk_idx.sha256", idx_p, isha, !explicit_dir, rc) &&
            replay_check_sha_opt("teacher.topk_logp.sha256", logp_p, lsha, !explicit_dir, rc);
@@ -187,22 +209,27 @@ static bool replay_resolve_evals(const train_record_opts *o, cli_replay *rp, jv 
             const char *lnm = jv_str(jv_get(tl, "path"), NULL), *lsha = jv_str(jv_get(tl, "sha256"), NULL);
             if (!safe_relname(inm, 255) || !safe_relname(lnm, 255))
                 return !replay_fail(rc, "evals.teacher", "safe basenames", "invalid");
-            char ibuf[8192], lbuf[8192];
+            char ibuf[4096], lbuf[4096];
             const char *ip = relocate_local(inm, o->replay_train, ibuf, sizeof ibuf) ? ibuf : NULL;
             if (ip && !record_regular_file_nofollow(ip)) {
                 char edir[4096];
-                replay_parent_dir(rf, edir, sizeof edir);
-                snprintf(lbuf, sizeof lbuf, "%s/%s", edir, inm);
-                if (record_regular_file_nofollow(lbuf)) { snprintf(ibuf, sizeof ibuf, "%s", lbuf); ip = ibuf; }
+                if (!replay_parent_dir(rf, edir, sizeof edir) ||
+                    !fmt_checked(lbuf, sizeof lbuf, "%s/%s", edir, inm) ||
+                    (record_regular_file_nofollow(lbuf) && !fmt_checked(ibuf, sizeof ibuf, "%s", lbuf)))
+                    return !replay_fail(rc, "evals", "path fitting limit", "too long");
+                if (record_regular_file_nofollow(lbuf)) ip = ibuf;
             }
             if (!ip || !replay_check_sha_opt("evals.topk_idx.sha256", ip, isha, true, rc)) return false;
-            replay_parent_dir(ip, tdir, sizeof tdir);
-            snprintf(lbuf, sizeof lbuf, "%s/%s", tdir, lnm);
+            if (!replay_parent_dir(ip, tdir, sizeof tdir) ||
+                !fmt_checked(lbuf, sizeof lbuf, "%s/%s", tdir, lnm))
+                return !replay_fail(rc, "evals", "path fitting limit", "too long");
             if (!replay_check_sha_opt("evals.topk_logp.sha256", lbuf, lsha, true, rc)) return false;
         }
         if (kill_v) {
-            if (tdir[0]) snprintf(rp->eval_specs[i], sizeof rp->eval_specs[i], "%s=%s,%s", lbl, rf, tdir);
-            else         snprintf(rp->eval_specs[i], sizeof rp->eval_specs[i], "%s=%s", lbl, rf);
+            bool ok = tdir[0]
+                ? fmt_checked(rp->eval_specs[i], sizeof rp->eval_specs[i], "%s=%s,%s", lbl, rf, tdir)
+                : fmt_checked(rp->eval_specs[i], sizeof rp->eval_specs[i], "%s=%s", lbl, rf);
+            if (!ok) return !replay_fail(rc, "evals", "spec fitting limit", "too long");
         }
     }
     return true;
@@ -448,7 +475,12 @@ static bool unlearn_prepare(train_record_opts *o, jv *rec, int *rc) {
         return false;
     }
     static char path[4200];
-    snprintf(path, sizeof path, "%s.retained.jsonl", o->train_out);
+    if (!fmt_checked(path, sizeof path, "%s.retained.jsonl", o->train_out)) {
+        fprintf(stderr, "error: --unlearn: retained path exceeds buffer for %s\n", o->train_out);
+        free(kept.s);
+        *rc = 1;
+        return false;
+    }
     FILE *f = plat_fopen(path, "wb");
     bool ok = f && (kept.n == 0 || fwrite(kept.s, 1, kept.n, f) == kept.n);
     if (f && fclose(f) != 0) ok = false;
@@ -505,8 +537,14 @@ static bool unlearn_audit_check(const train_record_opts *o, jv *rec, const char 
     char *pb = plat_read_file(pf, MAX_INPUT_FILE, &pn);
     jv *parent = pb ? json_parse(pb, pn) : NULL;
     free(pb);
-    char pdata[65] = "";
-    snprintf(pdata, sizeof pdata, "%s", jv_str(jv_get(jv_get(parent, "data"), "sha256"), ""));
+    const char *pdata_raw = jv_str(jv_get(jv_get(parent, "data"), "sha256"), NULL);
+    if (!is_sha256_hex(pdata_raw)) {
+        replay_fail(rc, "unlearn.parent_data.sha256", "64-hex sha256", pdata_raw);
+        jv_free(parent);
+        return false;
+    }
+    char pdata[65];
+    memcpy(pdata, pdata_raw, 65);
     // the same base and the same recipe as the parent: every field replay reads
     // to train, the switches and the model overrides. Otherwise a from-scratch
     // run under another recipe, given an unlearn block, would replay to its own
@@ -588,13 +626,12 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
     jv *out_v = ok ? jv_get(rec, rp->is_full ? "variant" : "adapter") : NULL;
     const char *out_name = jv_str(jv_get(out_v, "path"), NULL);
     const char *out_sha = jv_str(jv_get(out_v, "sha256"), NULL);
-    if (ok && (!safe_relname(out_name, 511) || !out_sha || strlen(out_sha) != 64))
+    if (ok && (!safe_relname(out_name, 255) || !is_sha256_hex(out_sha)))
         ok = !replay_fail(rc, rp->is_full ? "variant.path" : "adapter.path",
                           "safe basename and 64-hex sha256", out_name);
-    if (ok) {
-        snprintf(rp->want_out_path, sizeof rp->want_out_path, "%s", out_name);
-        snprintf(rp->want_out_sha, sizeof rp->want_out_sha, "%s", out_sha);
-    }
+    if (ok && (!fmt_checked(rp->want_out_path, sizeof rp->want_out_path, "%s", out_name) ||
+               !fmt_checked(rp->want_out_sha, sizeof rp->want_out_sha, "%s", out_sha)))
+        ok = !replay_fail(rc, rp->is_full ? "variant.path" : "adapter.path", "path fitting limit", "too long");
 
     // Locate & hash every input before touching the model.
     jv *base = ok ? jv_get(rec, "base") : NULL;
@@ -605,11 +642,10 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
                                     : (relocate_local(jv_str(jv_get(base, "path"), ""),
                                                       rec_path, rp->base_path, sizeof rp->base_path)
                                        ? rp->base_path : NULL);
-        if (!bp) ok = !replay_fail(rc, "base.path", "safe basename", jv_str(jv_get(base, "path"), NULL));
-        else {
-            if (bp != rp->base_path) snprintf(rp->base_path, sizeof rp->base_path, "%s", bp);
+        if (!bp || (bp != rp->base_path && !fmt_checked(rp->base_path, sizeof rp->base_path, "%s", bp)))
+            ok = !replay_fail(rc, "base.path", "safe path fitting limit", jv_str(jv_get(base, "path"), NULL));
+        else
             ok = replay_check_sha_opt("base.sha256", rp->base_path, jv_str(jv_get(base, "sha256"), NULL), !explicit_m, rc);
-        }
         if (ok) o->model_path = rp->base_path;
     }
     if (ok) {
@@ -618,11 +654,10 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
                                     : (relocate_local(jv_str(jv_get(data, "path"), ""),
                                                       rec_path, rp->data_path, sizeof rp->data_path)
                                        ? rp->data_path : NULL);
-        if (!dp) ok = !replay_fail(rc, "data.path", "safe basename", jv_str(jv_get(data, "path"), NULL));
-        else {
-            if (dp != rp->data_path) snprintf(rp->data_path, sizeof rp->data_path, "%s", dp);
+        if (!dp || (dp != rp->data_path && !fmt_checked(rp->data_path, sizeof rp->data_path, "%s", dp)))
+            ok = !replay_fail(rc, "data.path", "safe path fitting limit", jv_str(jv_get(data, "path"), NULL));
+        else
             ok = replay_check_sha_opt("data.sha256", rp->data_path, jv_str(jv_get(data, "sha256"), NULL), !explicit_d, rc);
-        }
     }
 
     jv *res_v = jv_get(rec, "resumed_at_step");
@@ -644,15 +679,17 @@ bool train_record_prepare(const train_record_host *host, train_record_opts *o, c
                        : (relocate_local(jv_str(jv_get(from_v, "path"), ""),
                                          rec_path, rp->from_path, sizeof rp->from_path)
                           ? rp->from_path : NULL);
-        if (ok && !fp) ok = !replay_fail(rc, "from_adapter.path", "safe basename", jv_str(jv_get(from_v, "path"), NULL));
-        if (ok && fp != rp->from_path) snprintf(rp->from_path, sizeof rp->from_path, "%s", fp);
+        if (ok && (!fp || (fp != rp->from_path && !fmt_checked(rp->from_path, sizeof rp->from_path, "%s", fp))))
+            ok = !replay_fail(rc, "from_adapter.path", "safe path fitting limit", jv_str(jv_get(from_v, "path"), NULL));
         if (ok) ok = replay_check_sha_opt("from_adapter.sha256", rp->from_path, jv_str(jv_get(from_v, "sha256"), NULL), !explicit_f, rc);
         if (ok && res_v) {
             int rs = 0;
             if (!record_int(rec, "resumed_at_step", 0, INT_MAX, &rs))
                 ok = !replay_fail(rc, "resumed_at_step", "integer", "invalid");
             char opt_p[4120];
-            if (ok && snprintf(opt_p, sizeof opt_p, "%s.optim", rp->from_path) < (int)sizeof opt_p)
+            if (ok && !fmt_checked(opt_p, sizeof opt_p, "%s.optim", rp->from_path))
+                ok = !replay_fail(rc, "resume_optim_sha256", "path fitting limit", "too long");
+            else if (ok)
                 ok = replay_check_sha_opt("resume_optim_sha256", opt_p,
                                           jv_str(jv_get(rec, "resume_optim_sha256"), NULL), !explicit_f, rc);
             if (ok) {
