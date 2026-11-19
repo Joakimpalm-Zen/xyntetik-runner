@@ -2687,7 +2687,7 @@ static snode *tool_schema_compile(const tool_envelope *env, jv *final,
                          env->tools, env->kind == TCH_AUTO, only,
                          env->kind == TCH_AUTO ? final : NULL,
                          thinking,
-                         reasoning_open, err, cap);
+                         reasoning_open, env->parallel, err, cap);
     } else if (env->proto == TP_QWEN_XML) {
         schema = schema_compile_qwen_xml_turn(
             env->tools, env->kind == TCH_AUTO,

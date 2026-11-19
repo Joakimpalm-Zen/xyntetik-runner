@@ -2216,7 +2216,7 @@ static void test_a_value_may_spell_its_blocks_closing_tag(void) {
     }
 
     e.proto = TP_GEMMA4;
-    root = schema_compile_gemma4_turn(tools, false, NULL, NULL, false, false, err, sizeof err);
+    root = schema_compile_gemma4_turn(tools, false, NULL, NULL, false, false, false, err, sizeof err);
     assert(root);
     const char *g4 =
         "<|tool_call>call:write{n:2,text:<|\"|>the block ends with <tool_call|> always<|\"|>}<tool_call|>"
@@ -3029,11 +3029,58 @@ static void test_harmony_native_mapping_and_stream_boundaries(void) {
 // generic JSON envelope is that `env != NULL` is what buys constrained
 // decoding -- so these tests drive the same validator the sampler drives, and
 // the truncation case below is the project's headline claim on this family.
+// The declared OpenAI parallel envelope admits several calls in an auto
+// turn too. Gemma 4's native blocks are adjacent, with no separator.
+static void test_gemma4_auto_turn_allows_parallel_calls(void) {
+    jv *tools = parse(TOOLS);
+    char err[192];
+    const char *one = "<|tool_call>call:add{a:1,b:2}<tool_call|>";
+    struct { bool thinking, primed; const char *prefix; } starts[] = {
+        { false, false, "" },
+        { false, false, "Checking.\n" },
+        { true, false, "" },
+        { true, false, "<|channel>thought\nCheck both.<channel|>" },
+        { true, true, "Check both.<channel|>" },
+    };
+    for (int parallel = 0; parallel <= 1; parallel++) {
+        tool_envelope e;
+        assert(tool_envelope_build_ex(tools, NULL, NULL, parallel, &e,
+                                      err, sizeof err) == 1);
+        assert(e.kind == TCH_AUTO && e.parallel == (bool)parallel);
+        for (size_t k = 0; k < sizeof starts / sizeof *starts; k++) {
+            snode *root = schema_compile_gemma4_turn(tools, true, NULL, NULL,
+                starts[k].thinking, starts[k].primed, e.parallel, err, sizeof err);
+            assert(root);
+            for (int n = 1; n <= NATIVE_PARALLEL_MAX_CALLS + 1; n++) {
+                sbuf doc = {0};
+                sb_lit(&doc, starts[k].prefix);
+                for (int i = 0; i < n; i++) sb_lit(&doc, one);
+                sb_lit(&doc, "<turn|>");
+                assert(accepts(root, doc.s) ==
+                       (n <= (parallel ? NATIVE_PARALLEL_MAX_CALLS : 1)));
+                free(doc.s);
+            }
+            // A complete first call leaves the turn open to the next call
+            // or the model's stop token. Completion must not stop here.
+            sbuf first = {0};
+            sb_lit(&first, starts[k].prefix); sb_lit(&first, one);
+            sval v; sval_init(&v, root);
+            assert(sval_feed(&v, first.s, (int)first.n) && !v.done);
+            sb_lit(&first, "<|tool_call>call:undeclared{}<tool_call|>");
+            assert(!accepts(root, first.s));
+            free(first.s);
+            schema_free(root);
+        }
+        tool_envelope_free(&e);
+    }
+    jv_free(tools);
+}
+
 static void test_gemma4_native_turn_constrains_names_and_arguments(void) {
     jv *tools = parse(TOOLS);
     char err[192];
     snode *root = schema_compile_gemma4_turn(
-        tools, true, NULL, NULL, false, false, err, sizeof(err));
+        tools, true, NULL, NULL, false, false, false, err, sizeof(err));
     if (!root) fprintf(stderr, "gemma4 turn did not compile: %s\n", err);
     assert(root != NULL);
     assert(accepts(root,
@@ -3058,7 +3105,7 @@ static void test_gemma4_native_turn_constrains_names_and_arguments(void) {
     // tool_choice: "required" removes the prose branch entirely -- enforcement
     // IS the envelope, and this is the property that dies if gemma4 is taken
     // off the strict path to reach its native syntax
-    root = schema_compile_gemma4_turn(tools, false, NULL, NULL, false, false,
+    root = schema_compile_gemma4_turn(tools, false, NULL, NULL, false, false, false,
                                       err, sizeof(err));
     assert(root != NULL);
     assert(accepts(root, "<|tool_call>call:add{a:1,b:2}<tool_call|>"));
@@ -3066,7 +3113,7 @@ static void test_gemma4_native_turn_constrains_names_and_arguments(void) {
     schema_free(root);
 
     // tool_choice: {"name": "add"} leaves exactly one branch
-    root = schema_compile_gemma4_turn(tools, false, "add", NULL, false, false,
+    root = schema_compile_gemma4_turn(tools, false, "add", NULL, false, false, false,
                                       err, sizeof(err));
     assert(root != NULL);
     assert(accepts(root, "<|tool_call>call:add{a:1,b:2}<tool_call|>"));
@@ -3096,7 +3143,7 @@ static void test_gemma4_numbers_take_no_whitespace(void) {
         "\"required\":[\"values\",\"scale\",\"strict\"]}}}]");
     char err[192];
     snode *root = schema_compile_gemma4_turn(
-        tools, false, "sum_values", NULL, false, false, err, sizeof(err));
+        tools, false, "sum_values", NULL, false, false, false, err, sizeof(err));
     if (!root) fprintf(stderr, "gemma4 turn did not compile: %s\n", err);
     assert(root != NULL);
     assert(accepts(root,
@@ -3123,7 +3170,7 @@ static void test_gemma4_native_turn_preserves_optional_parameters(void) {
     );
     char err[192];
     snode *root = schema_compile_gemma4_turn(
-        tools, false, NULL, NULL, false, false, err, sizeof(err));
+        tools, false, NULL, NULL, false, false, false, err, sizeof(err));
     if (!root) fprintf(stderr, "optional gemma4 turn: %s\n", err);
     assert(root != NULL);
 
@@ -3171,7 +3218,7 @@ static void test_native_optional_member_property_ceiling(void) {
     schema_free(root);
 
     root = schema_compile_gemma4_turn(
-        tools, false, NULL, NULL, false, false, err, sizeof(err));
+        tools, false, NULL, NULL, false, false, false, err, sizeof(err));
     if (!root) fprintf(stderr, "wide gemma4 turn: %s\n", err);
     assert(root != NULL);
     assert(accepts(root,
@@ -3186,7 +3233,7 @@ static void test_gemma4_thought_block_precedes_either_branch(void) {
     jv *tools = parse(TOOLS);
     char err[192];
     snode *root = schema_compile_gemma4_turn(
-        tools, true, NULL, NULL, true, false, err, sizeof(err));
+        tools, true, NULL, NULL, true, false, false, err, sizeof(err));
     assert(root != NULL);
     assert(accepts(root,
         "<|channel>thought\nOslo needs a lookup.<channel|>"
@@ -3200,7 +3247,7 @@ static void test_gemma4_thought_block_precedes_either_branch(void) {
 
     // the continuation turn whose PROMPT already opened the thought: the
     // document starts inside it, so the grammar must not expect the opener
-    root = schema_compile_gemma4_turn(tools, true, NULL, NULL, true, true,
+    root = schema_compile_gemma4_turn(tools, true, NULL, NULL, true, true, false,
                                       err, sizeof(err));
     assert(root != NULL);
     assert(accepts(root, "Still cold.<channel|>It is -3 C.<turn|>"));
@@ -3219,7 +3266,7 @@ static void test_gemma4_truncated_call_still_parses(void) {
     jv *tools = parse(TOOLS);
     char err[192];
     snode *root = schema_compile_gemma4_turn(
-        tools, true, NULL, NULL, false, false, err, sizeof(err));
+        tools, true, NULL, NULL, false, false, false, err, sizeof(err));
     assert(root != NULL);
     const char *partial = "<|tool_call>call:get_weather{city:<|\"|>Os";
     sval v;
@@ -3327,7 +3374,7 @@ static void test_gemma4_structured_arguments_round_trip(void) {
         "\"required\":[\"payload\",\"tags\"]}}}]");
     char err[192];
     snode *root = schema_compile_gemma4_turn(tools, false, NULL, NULL, false,
-                                             false, err, sizeof(err));
+                                             false, false, err, sizeof(err));
     if (!root) fprintf(stderr, "gemma4 structured turn: %s\n", err);
     assert(root != NULL);
     // nested objects keep UNQUOTED keys and dictsort order (ok before x);
@@ -3366,7 +3413,7 @@ static void test_gemma4_zero_max_items_allows_only_empty_array(void) {
     );
     char err[192];
     snode *root = schema_compile_gemma4_turn(tools, false, NULL, NULL, false,
-                                             false, err, sizeof(err));
+                                             false, false, err, sizeof(err));
     if (!root) fprintf(stderr, "zero-item gemma4 array: %s\n", err);
     assert(root != NULL);
     assert(accepts(root,
@@ -3386,7 +3433,7 @@ static void test_gemma4_boolean_const_is_enforced(void) {
     );
     char err[192];
     snode *root = schema_compile_gemma4_turn(tools, false, NULL, NULL, false,
-                                             false, err, sizeof(err));
+                                             false, false, err, sizeof(err));
     assert(root != NULL);
     assert(accepts(root, "<|tool_call>call:set{enabled:true}<tool_call|>"));
     assert(!accepts(root, "<|tool_call>call:set{enabled:false}<tool_call|>"));
@@ -3403,7 +3450,7 @@ static void test_gemma4_string_const_is_enforced(void) {
     );
     char err[192];
     snode *root = schema_compile_gemma4_turn(tools, false, NULL, NULL, false,
-                                             false, err, sizeof(err));
+                                             false, false, err, sizeof(err));
     assert(root != NULL);
     assert(accepts(root,
         "<|tool_call>call:tag{name:<|\"|>fixed<|\"|>}<tool_call|>"));
@@ -3450,7 +3497,7 @@ static void test_gemma4_untyped_parameter_is_refused_not_guessed(void) {
     char err[192];
     err[0] = 0;
     snode *root = schema_compile_gemma4_turn(tools, true, NULL, NULL, false,
-                                             false, err, sizeof(err));
+                                             false, false, err, sizeof(err));
     assert(root == NULL);
     assert(strstr(err, "body") && strstr(err, "type"));
     jv_free(tools);
@@ -3488,7 +3535,7 @@ static void test_gemma4_nested_arrays_are_bounded_not_expanded(void) {
         jv *tools = g4_nested_array_tool(levels);
         err[0] = 0;
         snode *root = schema_compile_gemma4_turn(tools, false, NULL, NULL,
-                                                 false, false,
+                                                 false, false, false,
                                                  err, sizeof(err));
         assert(root == NULL);
         // six levels trips the depth ceiling first -- the innermost value sits
@@ -3509,7 +3556,7 @@ static void test_gemma4_nested_arrays_are_bounded_not_expanded(void) {
                 "{\"type\":\"integer\"}}}}}}}}}]");
     err[0] = 0;
     snode *root = schema_compile_gemma4_turn(bounded, false, NULL, NULL, false,
-                                             false, err, sizeof(err));
+                                             false, false, err, sizeof(err));
     if (!root) fprintf(stderr, "bounded gemma4 nesting: %s\n", err);
     assert(root != NULL);
     assert(accepts(root, "<|tool_call>call:f{x:[[[[1,2],[3]],[[4]]]]}"
@@ -3520,13 +3567,25 @@ static void test_gemma4_nested_arrays_are_bounded_not_expanded(void) {
     // and the ordinary two-level case every real tool uses stays legal
     jv *ordinary = g4_nested_array_tool(2);
     err[0] = 0;
-    root = schema_compile_gemma4_turn(ordinary, false, NULL, NULL, false, false,
+    root = schema_compile_gemma4_turn(ordinary, false, NULL, NULL, false, false, false,
                                       err, sizeof(err));
     if (!root) fprintf(stderr, "two-level gemma4 nesting: %s\n", err);
     assert(root != NULL);
     assert(accepts(root, "<|tool_call>call:f{x:[[1,2],[3]]}<tool_call|>"));
     schema_free(root);
     jv_free(ordinary);
+
+    // An auto turn still accepts the previously supported argument shape
+    // when copying its grammar for parallel calls would exceed the budget.
+    // The cap may shrink, but the parameter's type must not be weakened.
+    jv *large = g4_nested_array_tool(3);
+    root = schema_compile_gemma4_turn(large, true, NULL, NULL, false, false, true,
+                                      err, sizeof err);
+    assert(root);
+    assert(accepts(root, "<|tool_call>call:f{x:[[[1,2],[3]]]}<tool_call|>"));
+    assert(!accepts(root, "<|tool_call>call:f{x:[[[true]]]}<tool_call|>"));
+    schema_free(root);
+    jv_free(large);
 }
 
 // The same truncation property as tests/test_json_schema.c states for plain
@@ -3553,7 +3612,7 @@ static void test_native_truncation_closes_to_a_legal_turn(void) {
         { "harmony_req", schema_compile_harmony_turn(tools, false, NULL, NULL,
                              false, err, sizeof(err)) },
         { "gemma4",      schema_compile_gemma4_turn(tools, true, NULL, NULL,
-                             true, false, err, sizeof(err)) },
+                             true, false, false, err, sizeof(err)) },
         { "gemma4_par",  schema_compile_gemma4_parallel(tools, NULL, err,
                              sizeof(err)) },
     };
@@ -4617,7 +4676,7 @@ static void test_xml_parse_only_open_block_at_finish(void) {
 static void test_gemma4_prose_then_call(void) {
     jv *tools = parse("[{\"type\":\"function\",\"function\":{\"name\":\"bash\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}}]");
     char err[192];
-    snode *root = schema_compile_gemma4_turn(tools, true, NULL, NULL, false, false, err, sizeof err);
+    snode *root = schema_compile_gemma4_turn(tools, true, NULL, NULL, false, false, false, err, sizeof err);
     assert(root);
     const char *doc = "I will list the files.\n\n<|tool_call>call:bash{command:<|\"|>ls<|\"|>}<tool_call|>";
     assert(accepts(root, doc));
@@ -5008,6 +5067,7 @@ int main(void) {
     test_harmony_native_turn_constrains_channels_recipients_and_args();
     test_harmony_truncation_pairs_the_name_it_emits();
     test_harmony_native_mapping_and_stream_boundaries();
+    test_gemma4_auto_turn_allows_parallel_calls();
     test_gemma4_native_turn_constrains_names_and_arguments();
     test_gemma4_numbers_take_no_whitespace();
     test_gemma4_native_turn_preserves_optional_parameters();
