@@ -1459,6 +1459,9 @@ bool gpu_prefill_twin16(const model_t *m, int type) { (void)m; (void)type; retur
 int gpu_prefill_route(const model_t *m, int type, int batch, bool scaled) {
     (void)m; (void)type; (void)batch; (void)scaled; return GPU_PREFILL_NONE;
 }
+int gpu_prefill_route_shape(const model_t *m, int type, int n_in, int n_out, int batch, bool scaled) {
+    (void)m; (void)type; (void)n_in; (void)n_out; (void)batch; (void)scaled; return GPU_PREFILL_NONE;
+}
 static void count_tc_dispatch(int type) {
     g_tc_dispatches++;
     if (type >= 0 && type < MM_TYPE_N) g_tc_dispatches_type[type]++;
@@ -1556,6 +1559,7 @@ static _Atomic unsigned long g_gqa_dispatches;
 unsigned long gpu_attn_gqa_dispatches(void) { return g_gqa_dispatches; }
 // CUDA-only route; present so its gate links and reports 'never here'.
 unsigned long gpu_splitk_dispatches(void) { return 0; }
+unsigned long gpu_splitk_twin_dispatches(void) { return 0; }
 long gpu_live_buffers(void) { return -1; }
 const char *gpu_module_failure(void) { return NULL; }
 static bool metal_attn_gqa_on(void) {

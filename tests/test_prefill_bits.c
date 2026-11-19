@@ -56,11 +56,15 @@
 // twins of the plain batch-1 kernel. Its layer 0 is recurrent and stores no K
 // or V rows, so for a qwen4exp fixture the gate compares the product itself:
 // every BF16 tensor of at most 1,024 rows, through the device encoder's own
-// route (gpu_test_mv), at 2, 4, 8, 9, 17, 24 and 64 columns against 64 batch-1
+// route (gpu_test_mv), at 2, 4, 8, 9, 16, 17, 24 and 64 columns against 64 batch-1
 // calls, byte for byte per column. The tensors of the split-K shape are the
 // claim; the narrower ones never take split-K and are the live control, which
 // must be equal at every width, and gpu_splitk_dispatches shows which route
-// each call took. Fixtures (scripts/make-test-qwen4exp.py with
+// each call took. The route table (gpu_prefill_route_shape, the predicate
+// enc_mv asks) must send the split-K shape to split-K's twin
+// (k_mv_bf16_splitk_b, 2 to 16 columns a pass) or the batch-1 kernel per
+// column, never to BF16's plain tile. The 2,048 -> 512 mixers fill the
+// partials buffer exactly at 16 columns (512 rows x 8 splits x 16). Fixtures (scripts/make-test-qwen4exp.py with
 // QWEN4EXP_TEST_HC_BF16=1): QWEN4EXP_TEST_EMBD=512 for the mixers' 2,048 -> 16
 // and 2,048 -> 4, with QWEN4EXP_TEST_HC_LOWRANK=512 for 2,048 -> 512, and
 // QWEN4EXP_TEST_EMBD=256 for the 1,024-wide control.
@@ -87,7 +91,7 @@ static const int WIDTHS[] = { 9, 17, 24, 64 };
 // R6.62: a matvec of every BF16 tensor of at most 1,024 rows at SK_WIDTHS
 // columns against SK_MAX batch-1 calls (see the header). Returns 0 ok, 1
 // skipped (no CUDA device), -1 failure.
-static const int SK_WIDTHS[] = { 2, 4, 8, 9, 17, 24, 64 };
+static const int SK_WIDTHS[] = { 2, 4, 8, 9, 16, 17, 24, 64 };
 enum { SK_MAX = 64 };
 static int splitk_check(const char *path) {
     model_t m;
@@ -137,13 +141,28 @@ static int splitk_check(const char *path) {
         controls += !shape;
         for (size_t wi = 0; ok && wi < sizeof(SK_WIDTHS) / sizeof(SK_WIDTHS[0]); wi++) {
             int tn = SK_WIDTHS[wi];
-            unsigned long t0 = gpu_splitk_dispatches();
+            unsigned long t0 = gpu_splitk_dispatches(), tw0 = gpu_splitk_twin_dispatches();
             if (!gpu_test_mv(&m, w, x, yn, n_in, n_out, tn)) {
                 fprintf(stderr, "FAIL: %s: %s: a %d-column call failed\n", path, w->name, tn);
                 fail = 1;
                 break;
             }
-            unsigned long tsk = gpu_splitk_dispatches() - t0;
+            unsigned long tsk = gpu_splitk_dispatches() - t0, ttw = gpu_splitk_twin_dispatches() - tw0;
+            // the route table's answer for this shape, the question enc_mv asks (one predicate)
+            int rt = gpu_prefill_route_shape(&m, T_BF16, n_in, n_out, tn, false);
+            static const char *RT[] = { "none", "its own tile", "the twins", "the batch-1 kernel per column", "tile" };
+            const char *rts = rt >= 0 && rt <= GPU_PREFILL_TILE ? RT[rt] : "?";
+            if (shape && rt != GPU_PREFILL_PER_COLUMN && rt != GPU_PREFILL_TWINS) {
+                fprintf(stderr, "FAIL: %s: %s [%d -> %d]: the route table sends %d columns to %s; on split-K "
+                        "only split-K's twin or the batch-1 kernel per column is its bits\n", path, w->name,
+                        n_in, n_out, tn, rts);
+                fail = 1;
+            }
+            if (!shape && (rt == GPU_PREFILL_NONE || rt == GPU_PREFILL_TILE)) {
+                fprintf(stderr, "FAIL: %s: %s [%d -> %d]: the route table sends the control's %d columns to %s\n",
+                        path, w->name, n_in, n_out, tn, rts);
+                fail = 1;
+            }
             long d = 0;
             double mx = 0;
             for (size_t k = 0; k < (size_t)tn * n_out; k++) {
@@ -154,9 +173,9 @@ static int splitk_check(const char *path) {
                 if (e > mx) mx = e;
             }
             printf("  %s %s [%d -> %d] batch %2d vs batch 1: %ld of %d values differ, max |d| %.3e; "
-                   "split-K launches %lu at batch 1 (%d calls), %lu at batch %d\n",
+                   "split-K launches %lu at batch 1 (%d calls), %lu at batch %d (twin passes %lu); route table: %s\n",
                    shape ? "split-K shape" : "control", w->name, n_in, n_out, tn, d, tn * n_out, mx,
-                   s1, SK_MAX, tsk, tn);
+                   s1, SK_MAX, tsk, tn, ttw, rts);
             if (d) {
                 fprintf(stderr, "FAIL: %s: %s [%d -> %d]: a %d-column product is not %d batch-1 calls' "
                         "bits (%ld values, max |d| %.3e)%s\n", path, w->name, n_in, n_out, tn, tn, d, mx,

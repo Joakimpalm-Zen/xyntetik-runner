@@ -61,6 +61,9 @@ bool gpu_prefill_twin16(const model_t *m, int type) { (void)m; (void)type; retur
 int gpu_prefill_route(const model_t *m, int type, int batch, bool scaled) {
     (void)m; (void)type; (void)batch; (void)scaled; return GPU_PREFILL_NONE;
 }
+int gpu_prefill_route_shape(const model_t *m, int type, int n_in, int n_out, int batch, bool scaled) {
+    (void)m; (void)type; (void)n_in; (void)n_out; (void)batch; (void)scaled; return GPU_PREFILL_NONE;
+}
 unsigned long gpu_tc2_dispatches(void) { return 0; }
 unsigned long gpu_i8_dispatches(void) { return 0; }
 unsigned long gpu_tc2_reused(void) { return 0; }
@@ -100,6 +103,7 @@ unsigned long gpu_attn_tcw_mla_dispatches(void) { return 0; }
 unsigned long gpu_kv_gather_tokens(void) { return 0; }
 unsigned long gpu_attn_gqa_dispatches(void) { return 0; }
 unsigned long gpu_splitk_dispatches(void) { return 0; }
+unsigned long gpu_splitk_twin_dispatches(void) { return 0; }
 long gpu_live_buffers(void) { return -1; }
 const char *gpu_module_failure(void) { return NULL; }
 

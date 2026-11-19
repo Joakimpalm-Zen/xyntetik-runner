@@ -138,6 +138,9 @@ enum { GPU_PREFILL_NONE, GPU_PREFILL_TILE_TWIN, GPU_PREFILL_TWINS, GPU_PREFILL_P
        GPU_PREFILL_TILE };
 bool gpu_prefill_twin16(const model_t *m, int type);
 int  gpu_prefill_route(const model_t *m, int type, int batch, bool scaled);
+// the same question for a tensor of n_in x n_out (R6.62: a route can depend on
+// the shape, as BF16's split-K does on qwen4exp)
+int  gpu_prefill_route_shape(const model_t *m, int type, int n_in, int n_out, int batch, bool scaled);
 // of those, the ones the pipelined TC2 kernels ran (CUDA, RUNNER_CUDA_TC2)
 unsigned long gpu_tc2_dispatches(void);
 unsigned long gpu_tc2_reused(void);   // TC2 GEMMs that reused the previous GEMM's staging
@@ -273,6 +276,9 @@ unsigned long gpu_attn_gqa_dispatches(void);   // grouped-query decode groups (M
 // CUDA's BF16 split-K decode GEMV (k_mv_bf16_splitk) launches, so its gate
 // can prove the route ran; 0 on every other backend.
 unsigned long gpu_splitk_dispatches(void);
+// its width-classed twin (k_mv_bf16_splitk_b) launches, one per pass of up to
+// 16 prompt columns (R6.62); 0 on every other backend
+unsigned long gpu_splitk_twin_dispatches(void);
 // Device allocations the engine holds right now (every cuMemAlloc it made
 // and has not freed), or -1 where the backend does not count them. A model
 // loaded and freed must leave it where it was (tests/test_cuda_teardown.c).
