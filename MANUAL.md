@@ -5035,7 +5035,10 @@ Gemma 4's own format is call-first, but a turn asked for a word before
 acting writes the prose and then its native call: the prose branch of its
 turn grammar hands off to the call at `<|tool_call>call:` (the model's
 own control token is admitted there), and the demultiplexer and the buffered
-map read a call after prose. Prose before, between and after calls is kept
+map read a call after prose. With `tool_choice:"auto"`, the grammar permits
+one to eight native calls when `parallel_tool_calls` is true or absent;
+`false` permits one. The same bound applies after prose or a thought block.
+Prose before, between and after calls is kept
 as content on every protocol, buffered turns included (the buffered turn used
 to discard the words before a call on every protocol but Harmony), each
 block is its own `tool_calls` index, and the reasoning block is split into

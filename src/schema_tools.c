@@ -1960,6 +1960,28 @@ fail:
     return NULL;
 }
 
+static snode *g4_more_calls(jv *tools, const char *only, int remaining,
+                            int *budget, char *err, int errcap);
+
+// Every entry into the call branch carries the same bounded continuation:
+// directly, after thought, or after prose. All calls share the turn's budget.
+static snode *g4_calls(jv *tools, const char *only, bool lead, int max_calls,
+                       int *budget, char *err, int errcap) {
+    snode *seq = atem_seq(2);
+    snode *call = seq ? g4_call(tools, only, lead, budget, err, errcap) : NULL;
+    snode *tail = call ? g4_more_calls(tools, only, max_calls - 1,
+                                      budget, err, errcap) : NULL;
+    if (!seq || !call || !tail) {
+        schema_free(seq); schema_free(call); schema_free(tail);
+        if (!err[0]) snprintf(err, errcap, "out of memory compiling gemma4 calls");
+        return NULL;
+    }
+    seq->whitespace_significant = true;
+    atem_seq_add(seq, call);
+    atem_seq_add(seq, tail);
+    return seq;
+}
+
 // A visible answer: raw bytes up to the turn close. As a UNION alternative it
 // is the catch-all, which is exactly right -- gemma4 has no marker for "this
 // turn is prose", so anything not starting the native block is prose.
@@ -1973,11 +1995,13 @@ fail:
 // the model spell the opener with its own control token there
 // (constraint_spelling_ok).
 static snode *g4_final(jv *tools, const char *only_tool, jv *final_schema,
+                       int max_calls,
                        int *budget, char *err, int errcap) {
     if (final_schema) return compile_node(final_schema, err, errcap, 0);
     snode *n = atem_raw("<turn|>");
     if (!n) { snprintf(err, errcap, "out of memory compiling gemma4 answer"); return NULL; }
-    snode *call = tools ? g4_call(tools, only_tool, false, budget, err, errcap) : NULL;
+    snode *call = tools ? g4_calls(tools, only_tool, false, max_calls,
+                                  budget, err, errcap) : NULL;
     if (tools && !call) { schema_free(n); return NULL; }
     if (call) {
         n->lits = calloc(1, sizeof(*n->lits));
@@ -1994,10 +2018,12 @@ static snode *g4_final(jv *tools, const char *only_tool, jv *final_schema,
 }
 
 static snode *g4_body(jv *tools, bool allow_final, const char *only_tool,
-                      jv *final_schema, int *budget, char *err, int errcap) {
-    snode *call = g4_call(tools, only_tool, true, budget, err, errcap);
+                      jv *final_schema, int max_calls,
+                      int *budget, char *err, int errcap) {
+    snode *call = g4_calls(tools, only_tool, true, max_calls, budget, err, errcap);
     if (!call || !allow_final) return call;
-    snode *fin = g4_final(tools, only_tool, final_schema, budget, err, errcap);
+    snode *fin = g4_final(tools, only_tool, final_schema, max_calls,
+                          budget, err, errcap);
     snode *u = fin ? sn_new(SN_UNION) : NULL;
     if (u) u->alts = calloc(2, sizeof(*u->alts));
     if (!u || !u->alts) {
@@ -2013,10 +2039,10 @@ static snode *g4_body(jv *tools, bool allow_final, const char *only_tool,
     return u;
 }
 
-static snode *schema_compile_gemma4_turn_raw(jv *tools, bool allow_final,
-                                  const char *only_tool, jv *final_schema,
-                                  bool allow_reasoning, bool primed_reasoning,
-                                  char *err, int errcap) {
+static snode *g4_turn(jv *tools, bool allow_final,
+                       const char *only_tool, jv *final_schema,
+                       bool allow_reasoning, bool primed_reasoning,
+                       int max_calls, char *err, int errcap) {
     err[0] = 0;
     if (!tools || tools->type != J_ARR || tools->n <= 0 || tools->n > 60) {
         snprintf(err, errcap,
@@ -2034,7 +2060,7 @@ static snode *schema_compile_gemma4_turn_raw(jv *tools, bool allow_final,
     if (primed_reasoning) {
         snode *seq = atem_seq(2);
         snode *rest = seq ? g4_body(tools, allow_final, only_tool, final_schema,
-                                    &budget, err, errcap) : NULL;
+                                    max_calls, &budget, err, errcap) : NULL;
         if (!seq || !rest || !atem_seq_add(seq, atem_raw("<channel|>")) ||
             !atem_seq_add(seq, rest)) {
             if (seq && seq->n_props < 2) schema_free(rest);
@@ -2046,7 +2072,7 @@ static snode *schema_compile_gemma4_turn_raw(jv *tools, bool allow_final,
         return seq;
     }
     if (!allow_reasoning)
-        return g4_body(tools, allow_final, only_tool, final_schema, &budget,
+        return g4_body(tools, allow_final, only_tool, final_schema, max_calls, &budget,
                        err, errcap);
     // Thought and call blocks BOTH open with '<', so they cannot be two
     // alternatives of a union -- pick_alt would resolve on that byte and the
@@ -2069,7 +2095,7 @@ static snode *schema_compile_gemma4_turn_raw(jv *tools, bool allow_final,
     if (!enum_index(disc)) goto fail;
     thought = atem_seq(2);
     snode *after = thought ? g4_body(tools, allow_final, only_tool,
-                                     final_schema, &budget, err, errcap) : NULL;
+                                     final_schema, max_calls, &budget, err, errcap) : NULL;
     if (!thought || !after ||
         !atem_seq_add(thought, atem_raw("<channel|>")) ||
         !atem_seq_add(thought, after)) {
@@ -2077,7 +2103,7 @@ static snode *schema_compile_gemma4_turn_raw(jv *tools, bool allow_final,
         goto fail;
     }
     thought->whitespace_significant = true;
-    call = g4_call(tools, only_tool, false, &budget, err, errcap);
+    call = g4_calls(tools, only_tool, false, max_calls, &budget, err, errcap);
     if (!call) goto fail;
     choice->alts[choice->n_alts++] = thought; thought = NULL;
     choice->alts[choice->n_alts++] = call;    call = NULL;
@@ -2086,7 +2112,8 @@ static snode *schema_compile_gemma4_turn_raw(jv *tools, bool allow_final,
     if (!atem_seq_add(marked, choice)) goto fail;
     choice = NULL;
     if (!allow_final) return marked;
-    snode *fin = g4_final(tools, only_tool, final_schema, &budget, err, errcap);
+    snode *fin = g4_final(tools, only_tool, final_schema, max_calls,
+                          &budget, err, errcap);
     snode *u = fin ? sn_new(SN_UNION) : NULL;
     if (u) u->alts = calloc(2, sizeof(*u->alts));
     if (!u || !u->alts) {
@@ -2101,6 +2128,20 @@ fail:
     schema_free(thought); schema_free(call);
     schema_free(disc); schema_free(choice); schema_free(marked);
     return NULL;
+}
+
+static snode *schema_compile_gemma4_turn_raw(jv *tools, bool allow_final,
+                                  const char *only_tool, jv *final_schema,
+                                  bool allow_reasoning, bool primed_reasoning,
+                                  bool parallel, char *err, int errcap) {
+    // As in the required parallel grammar, reduce the call cap when copied
+    // argument grammars would exceed the shared expansion budget.
+    for (int max_calls = parallel ? NATIVE_PARALLEL_MAX_CALLS : 1; ; max_calls /= 2) {
+        snode *root = g4_turn(tools, allow_final, only_tool, final_schema,
+                              allow_reasoning, primed_reasoning, max_calls,
+                              err, errcap);
+        if (root || max_calls <= 1 || !strstr(err, "maxItems")) return root;
+    }
 }
 
 // Two calls back to back, the bounded multi-call form. gemma4 concatenates
@@ -2123,7 +2164,7 @@ static bool schema_qwen_xml_constrainable_raw(jv *tools, const char *only_tool,
 
 static bool schema_gemma4_constrainable_raw(jv *tools, char *err, int errcap) {
     snode *probe = schema_compile_gemma4_turn_raw(tools, true, NULL, NULL,
-                                              true, false, err, errcap);
+                                              true, false, false, err, errcap);
     if (!probe) return false;
     schema_free(probe);
     return true;
@@ -2170,22 +2211,8 @@ oom:
 
 static snode *g4_parallel_calls(jv *tools, const char *only_tool, int max_calls,
                                 char *err, int errcap) {
-    snode *root = atem_seq(2);
     int budget = G4_MAX_EXPANSIONS;
-    snode *first = root ? g4_call(tools, only_tool, true, &budget, err, errcap)
-                        : NULL;
-    snode *rest = first ? g4_more_calls(tools, only_tool, max_calls - 1,
-                                        &budget, err, errcap) : NULL;
-    if (!root || !first || !rest) {
-        schema_free(first); schema_free(rest); schema_free(root);
-        if (!err[0]) snprintf(err, errcap,
-                              "out of memory compiling parallel gemma4 turn");
-        return NULL;
-    }
-    root->whitespace_significant = true;
-    root->props[root->n_props++] = first;
-    root->props[root->n_props++] = rest;
-    return root;
+    return g4_calls(tools, only_tool, true, max_calls, &budget, err, errcap);
 }
 
 // A parallel gemma4 turn is one to NATIVE_PARALLEL_MAX_CALLS calls, each
@@ -2351,11 +2378,13 @@ snode *schema_compile_harmony_turn(struct jv *tools, bool allow_final, const cha
 
 snode *schema_compile_gemma4_turn(struct jv *tools, bool allow_final, const char *only_tool,
                                   struct jv *final_schema, bool allow_reasoning,
-                                  bool primed_reasoning, char *err, int errcap) {
+                                  bool primed_reasoning, bool parallel,
+                                  char *err, int errcap) {
     refd r;
     if (!refd_init(&r, tools, final_schema, err, errcap)) return NULL;
     snode *n = schema_compile_gemma4_turn_raw(r.tools, allow_final, only_tool, r.final,
-                                              allow_reasoning, primed_reasoning, err, errcap);
+                                              allow_reasoning, primed_reasoning, parallel,
+                                              err, errcap);
     refd_free(&r);
     return n;
 }
