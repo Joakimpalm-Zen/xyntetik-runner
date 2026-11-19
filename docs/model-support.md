@@ -51,6 +51,11 @@ A row leads with what it does and does not claim. A row for a model that ships
 a vision component Runner does not load starts with "Text path only", and an
 experimental row starts with "Experimental".
 
+A disclosed near-miss may be named here with its measured shortfall. A row
+that says "not admitted" records that result without claiming support or
+backend validation; it carries no gate cells. The gpt-oss publisher-file row
+and the keep-30 derivative's disclosure are separate file records.
+
 ## The envelope and the evidence bar
 
 Each row names the upstream checkpoint, the file with its sha256 and
@@ -326,10 +331,12 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>gpt-oss</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<summary><b>gpt-oss</b>, 2 models: CPU - · CUDA - · Metal - · Train -</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
+<tr><td colspan="5"><b>gpt-oss-20b</b></td></tr>
+<tr><td><a href="#gpt-oss-20b-mxfp4"><code>gpt-oss-20b-MXFP4.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
 <tr><td colspan="5"><b>gpt-oss-20b keep-30</b></td></tr>
 <tr><td><a href="#gpt-oss-20b-keep30-mxfp4"><code>gpt-oss-20b-keep30-MXFP4.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
 </tbody>
@@ -1199,6 +1206,17 @@ Text path only: NVIDIA's post-train of Gemma-4-E4B-it in the publisher's own Q4_
 - **LoRA adapter serving:** supported (runner 1.12.0, 2026-11-03).
 
 ### gpt-oss
+
+#### gpt-oss-20b
+
+<a id="gpt-oss-20b-mxfp4"></a>
+##### `gpt-oss-20b-MXFP4.gguf`
+
+not admitted: 0.0949 mean KLD in the chat frame (fails the 0.05 bar); 0.0709 on raw text (undecided). Measured publisher-file conversion, with both reads against the publisher's float32 reference; no gate cells.
+
+- **File:** `gpt-oss-20b-MXFP4.gguf` (sha256 `27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901`, 12,109,566,624 bytes, from [ggml-org/gpt-oss-20b-GGUF](https://huggingface.co/ggml-org/gpt-oss-20b-GGUF) at revision `41e8a94d15d6`).
+- **Licence:** `apache-2.0`, as the openai/gpt-oss-20b model card states it.
+- **Numerical anchor:** Against openai/gpt-oss-20b at 6cee5e81, float32 arithmetic, transformers 5.16.1, CPU: chat frame (534 positions), mean KLD 0.0949, 95% interval [0.0704, 0.1229], margin-qualified top-1 95.12% [92.99%, 97.03%], fails the 0.05 KLD bar; raw text (544 positions), 0.0709 [0.0471, 0.1001], 98.02% [96.81%, 99.05%], undecided under the interval rule. The earlier raw-text failure wording used the point-estimate bar. Both reads share main 92ef2e92's release-recipe build (binary sha256 prefix 50cca98c4747fd20), RUNNER_SCORE_CHUNKED=1, --gpu off, -c 4096. Paired on 534 shared positions, framed minus raw KLD +0.0233 [-0.0066, +0.0536], ratio 1.33 [0.93, 1.99]: no improvement in the point estimate, difference unresolved. Dense Qwen3-0.6B control in its own chat template, 540 shared positions: ratio 0.9717 [0.8418, 1.1256], both pass. llama.cpp read the same file at 0.0672 on raw text in the earlier record. [Both reads and scope](compat-reports/gpt-oss-20b-2026-11-19/README.md); [raw-text per-position record](compat-reports/gpt-oss-20b-2026-11-13/README.md).
 
 #### gpt-oss-20b keep-30
 
@@ -3112,5 +3130,6 @@ The record from when tiers applied (retired 2026-11-07), oldest first. Last vali
 | 2026-11-13 | [Apertus v1.5 8B (Swiss AI), a third party's text-only extraction, `apertus-v1.5-8b-text-q8_0.gguf`](#apertus-v1.5-8b-text-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.38.1) and a float32 reference measurement against the publisher's checkpoint; Apertus v1.5 after 2509, at the owner's request. Maintained on report. | none recorded |
 | 2026-11-13 | [Granite 4.0 H Micro (IBM), `granite-4.0-h-micro-Q8_0.gguf`](#granite-4.0-h-micro-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.7) and a float32 reference measurement against the publisher's checkpoint, so the Granite 4 h-series has a file with cells. Maintained on report. | none recorded |
 | 2026-11-13 | [Granite 4.0 H Micro (IBM), `granite-4.0-h-micro-Q4_K_M.gguf`](#granite-4.0-h-micro-q4_k_m-unsloth) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.7) and a float32 reference measurement against the publisher's checkpoint, so the Granite 4 h-series has a file with cells. Maintained on report. | none recorded |
+| 2026-11-19 | [gpt-oss-20b, `gpt-oss-20b-MXFP4.gguf`](#gpt-oss-20b-mxfp4) | Tier 2, maintained on report | Measured and not admitted: the chat-frame KLD interval is wholly above 0.05; the raw-text interval straddles it. Listed as a disclosed shortfall, with no gate cells. | none recorded |
 
 <!-- model-tiers:rows:end -->
