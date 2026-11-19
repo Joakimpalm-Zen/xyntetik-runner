@@ -24,6 +24,9 @@ import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import socketserver
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "conformance"))
+from _process import listening_banner  # noqa: E402
+
 
 class LoopbackServer(HTTPServer):
     """HTTPServer whose bind skips the reverse lookup of its own address.
@@ -128,6 +131,7 @@ if "--serve" in argv:
             pass
 
     server = LoopbackServer(("127.0.0.1", port), Handler)
+    print(listening_banner(port), file=sys.stderr, flush=True)
 
     def stop(*_):
         raise SystemExit(0)

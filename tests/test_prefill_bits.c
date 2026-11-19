@@ -49,6 +49,26 @@
 //         test-mxfp4-prefill.gguf test-bf16.gguf test-q50-prefill.gguf test-q51-prefill.gguf
 //         test-iq4nl-prefill.gguf test-nvfp4-prefill.gguf
 //
+// R6.62, split-K (qwen4exp): that architecture alone allocates BF16's split-K
+// partials, and there a BF16 tensor of at most 1,024 rows of at least 2,048
+// values decodes through k_mv_bf16_splitk at batch 1, while a prompt's product
+// of it takes the small-batch twins (2 to 8 columns) or k_mv_bf16_b (more), the
+// twins of the plain batch-1 kernel. Its layer 0 is recurrent and stores no K
+// or V rows, so for a qwen4exp fixture the gate compares the product itself:
+// every BF16 tensor of at most 1,024 rows, through the device encoder's own
+// route (gpu_test_mv), at 2, 4, 8, 9, 16, 17, 24 and 64 columns against 64 batch-1
+// calls, byte for byte per column. The tensors of the split-K shape are the
+// claim; the narrower ones never take split-K and are the live control, which
+// must be equal at every width, and gpu_splitk_dispatches shows which route
+// each call took. The route table (gpu_prefill_route_shape, the predicate
+// enc_mv asks) must send the split-K shape to split-K's twin
+// (k_mv_bf16_splitk_b, 2 to 16 columns a pass) or the batch-1 kernel per
+// column, never to BF16's plain tile. The 2,048 -> 512 mixers fill the
+// partials buffer exactly at 16 columns (512 rows x 8 splits x 16). Fixtures (scripts/make-test-qwen4exp.py with
+// QWEN4EXP_TEST_HC_BF16=1): QWEN4EXP_TEST_EMBD=512 for the mixers' 2,048 -> 16
+// and 2,048 -> 4, with QWEN4EXP_TEST_HC_LOWRANK=512 for 2,048 -> 512, and
+// QWEN4EXP_TEST_EMBD=256 for the 1,024-wide control.
+//
 // Without a CUDA device it says so and passes (nothing to compare).
 #include "runner.h"
 #include "gate_gpu.h"
@@ -67,6 +87,110 @@ static const char *TEXT =
     "was among the first in Europe designed with seismic loads in mind.";
 
 static const int WIDTHS[] = { 9, 17, 24, 64 };
+
+// R6.62: a matvec of every BF16 tensor of at most 1,024 rows at SK_WIDTHS
+// columns against SK_MAX batch-1 calls (see the header). Returns 0 ok, 1
+// skipped (no CUDA device), -1 failure.
+static const int SK_WIDTHS[] = { 2, 4, 8, 9, 16, 17, 24, 64 };
+enum { SK_MAX = 64 };
+static int splitk_check(const char *path) {
+    model_t m;
+    memset(&m, 0, sizeof(m));
+    model_params p;
+    memset(&p, 0, sizeof(p));
+    p.gpu_mode = GPU_AUTO;
+    p.n_threads = 4;
+    p.n_ctx = 64;
+    p.n_batch = SK_MAX;
+    if (!model_load(&m, path, &p)) { fprintf(stderr, "FAIL: %s: load failed\n", path); return -1; }
+    if (!m.gpu || m.gpu_layers <= 0) { model_free(&m); return 1; }
+    int fail = 0, shapes = 0, controls = 0;
+    for (uint64_t i = 0; i < m.gf.n_tensors; i++) {
+        gguf_tensor *w = &m.gf.tensors[i];
+        if (w->type != T_BF16 || w->n_dims != 2 || w->ne[1] > 1024) continue;
+        int n_in = (int)w->ne[0], n_out = (int)w->ne[1];
+        bool shape = n_in >= 2048;
+        float *x = malloc(sizeof(float) * (size_t)SK_MAX * n_in);
+        float *y1 = malloc(sizeof(float) * (size_t)SK_MAX * n_out);
+        float *yn = malloc(sizeof(float) * (size_t)SK_MAX * n_out);
+        if (!x || !y1 || !yn) { free(x); free(y1); free(yn); model_free(&m); return -1; }
+        uint32_t r = 0x9E3779B9u ^ (uint32_t)i;
+        for (size_t k = 0; k < (size_t)SK_MAX * n_in; k++) {
+            r ^= r << 13; r ^= r >> 17; r ^= r << 5;
+            x[k] = (float)((int)(r % 2001u) - 1000) / 1000.0f;
+        }
+        unsigned long s0 = gpu_splitk_dispatches();
+        bool ok = true;
+        for (int c = 0; c < SK_MAX && ok; c++)
+            ok = gpu_test_mv(&m, w, x + (size_t)c * n_in, y1 + (size_t)c * n_out, n_in, n_out, 1);
+        unsigned long s1 = gpu_splitk_dispatches() - s0;
+        if (!ok) { fprintf(stderr, "FAIL: %s: %s: the batch-1 calls failed\n", path, w->name); fail = 1; }
+        // the route evidence: the claim's tensors take split-K at batch 1, the controls never
+        if (ok && shape && s1 != SK_MAX) {
+            fprintf(stderr, "FAIL: %s: %s [%d -> %d]: %lu of %d batch-1 calls took split-K, so this "
+                    "context does not reach the route the gate is about\n", path, w->name, n_in, n_out,
+                    s1, SK_MAX);
+            fail = 1;
+        }
+        if (ok && !shape && s1 != 0) {
+            fprintf(stderr, "FAIL: %s: %s [%d -> %d]: the control took split-K (%lu calls)\n", path,
+                    w->name, n_in, n_out, s1);
+            fail = 1;
+        }
+        shapes += shape;
+        controls += !shape;
+        for (size_t wi = 0; ok && wi < sizeof(SK_WIDTHS) / sizeof(SK_WIDTHS[0]); wi++) {
+            int tn = SK_WIDTHS[wi];
+            unsigned long t0 = gpu_splitk_dispatches(), tw0 = gpu_splitk_twin_dispatches();
+            if (!gpu_test_mv(&m, w, x, yn, n_in, n_out, tn)) {
+                fprintf(stderr, "FAIL: %s: %s: a %d-column call failed\n", path, w->name, tn);
+                fail = 1;
+                break;
+            }
+            unsigned long tsk = gpu_splitk_dispatches() - t0, ttw = gpu_splitk_twin_dispatches() - tw0;
+            // the route table's answer for this shape, the question enc_mv asks (one predicate)
+            int rt = gpu_prefill_route_shape(&m, T_BF16, n_in, n_out, tn, false);
+            static const char *RT[] = { "none", "its own tile", "the twins", "the batch-1 kernel per column", "tile" };
+            const char *rts = rt >= 0 && rt <= GPU_PREFILL_TILE ? RT[rt] : "?";
+            if (shape && rt != GPU_PREFILL_PER_COLUMN && rt != GPU_PREFILL_TWINS) {
+                fprintf(stderr, "FAIL: %s: %s [%d -> %d]: the route table sends %d columns to %s; on split-K "
+                        "only split-K's twin or the batch-1 kernel per column is its bits\n", path, w->name,
+                        n_in, n_out, tn, rts);
+                fail = 1;
+            }
+            if (!shape && (rt == GPU_PREFILL_NONE || rt == GPU_PREFILL_TILE)) {
+                fprintf(stderr, "FAIL: %s: %s [%d -> %d]: the route table sends the control's %d columns to %s\n",
+                        path, w->name, n_in, n_out, tn, rts);
+                fail = 1;
+            }
+            long d = 0;
+            double mx = 0;
+            for (size_t k = 0; k < (size_t)tn * n_out; k++) {
+                if (memcmp(&yn[k], &y1[k], sizeof(float)) == 0) continue;
+                d++;
+                double e = (double)yn[k] - (double)y1[k];
+                if (e < 0) e = -e;
+                if (e > mx) mx = e;
+            }
+            printf("  %s %s [%d -> %d] batch %2d vs batch 1: %ld of %d values differ, max |d| %.3e; "
+                   "split-K launches %lu at batch 1 (%d calls), %lu at batch %d (twin passes %lu); route table: %s\n",
+                   shape ? "split-K shape" : "control", w->name, n_in, n_out, tn, d, tn * n_out, mx,
+                   s1, SK_MAX, tsk, tn, ttw, rts);
+            if (d) {
+                fprintf(stderr, "FAIL: %s: %s [%d -> %d]: a %d-column product is not %d batch-1 calls' "
+                        "bits (%ld values, max |d| %.3e)%s\n", path, w->name, n_in, n_out, tn, tn, d, mx,
+                        shape ? "" : "; this is the control, so the gate measures something else");
+                fail = 1;
+            }
+        }
+        free(x); free(y1); free(yn);
+    }
+    printf("prefill-bits: %s | split-K: %d tensors of the split-K shape, %d controls, %d layers on the GPU\n",
+           path, shapes, controls, m.gpu_layers);
+    if (!shapes && !controls) { fprintf(stderr, "FAIL: %s: no BF16 tensor of at most 1,024 rows\n", path); fail = 1; }
+    model_free(&m);
+    return fail ? -1 : 0;
+}
 
 typedef struct { unsigned char *k, *v; size_t bytes; } rows0;
 
@@ -208,6 +332,16 @@ int main(int argc, char **argv) {
         const char *path = argv[a];
         gguf_file gf;
         if (!gguf_open(&gf, path)) { fprintf(stderr, "FAIL: cannot open %s\n", path); fail = 1; continue; }
+        if (!strcmp(gguf_get_str(&gf, "general.architecture", ""), "qwen4exp")) {
+            gguf_close(&gf);
+            int rs = splitk_check(path);
+            if (rs == 1) {
+                if (gate_no_device("prefill-bits")) fail = 1;
+                else printf("prefill-bits: %s skipped (no CUDA device)\n", path);
+            } else if (rs < 0) fail = 1;
+            else ran++;
+            continue;
+        }
         tokenizer tk;
         if (!tokenizer_init(&tk, &gf)) { gguf_close(&gf); fprintf(stderr, "FAIL: tokenizer %s\n", path); fail = 1; continue; }
         static int32_t toks[MAX_TOK];

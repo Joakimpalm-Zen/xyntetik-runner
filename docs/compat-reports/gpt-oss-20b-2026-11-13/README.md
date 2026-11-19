@@ -90,3 +90,10 @@ refuses training ("FFN activation not in the backward (gpt-oss/apertus)"); adapt
 
 Nothing on the roster: no row, no cells, and the gpt-oss family line stays as it was. The manifest entry
 `gpt-oss-20b-mxfp4` keeps its checks; its notes gain one sentence naming this read.
+
+## Update 2026-11-19
+
+The [chat-frame read and interval-rule assessment](../gpt-oss-20b-2026-11-19/README.md)
+supersede the admission status above: chat-frame mean KLD 0.0949 fails; raw-text 0.0709 is undecided under the
+interval rule. A measured, not admitted publisher-file row now records both reads, with no gate cells.
+The original results and point-estimate verdict above describe the 2026-11-13 read.

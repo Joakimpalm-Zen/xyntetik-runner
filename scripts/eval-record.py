@@ -105,7 +105,7 @@ def fidelity(args):
         cmd = [sys.executable, str(ROOT / "scripts" / "kld-compare-raw.py"),
                "--model-a", args.model, "--model-b", args.reference,
                "--runner", args.runner, "--corpus", args.corpus,
-               "--port-a", str(port_a), "--port-b", str(port_b),
+               "--port-a", str(port_a), "--port-b", str(port_b), "--retry-ports",
                "--max-positions", str(args.max_positions), "--out", res_path]
         if args.threads:
             cmd += ["--threads", str(args.threads)]

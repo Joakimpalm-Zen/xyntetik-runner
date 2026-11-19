@@ -510,6 +510,7 @@ typedef struct {
     float *ssm_qkv, *ssm_z, *ssm_aux;     // qwen35 recurrent scratch
     float *ssm_cw;                         // qwen35 dequantized conv-kernel row
     float *ssm_conv_state, *ssm_state_mem; // qwen35 per-sequence recurrent state
+    size_t ssm_conv_floats, ssm_state_floats; // their sizes, for a state comparison (R3.78)
     bool   ssm_state_backend;  // the two above point into backend buffers (Metal)
     // R3.47: the slot of layer l's recurrent state in every per-layer fold
     // buffer (host, device, snapshots, the blob), -1 for a layer without one;
@@ -2054,6 +2055,6 @@ uint64_t model_route_hash_count(void);
 void     model_route_transition(model_t *m);
 // the source the binary was built from, as the receipt prints it (once, at
 // start; a library that names none hashes "")
-void     model_route_set_build(const char *revision, bool dirty);
+void     model_route_set_build(const char *revision, bool dirty, const char *binary_sha256);
 
 #endif // RUNNER_MODEL_H

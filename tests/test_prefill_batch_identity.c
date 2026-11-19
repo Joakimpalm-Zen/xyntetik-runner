@@ -65,6 +65,7 @@
 //      RUNNER_TEST_ROUTE_FLIP_AT forces it on the CPU) leaves rows of no one
 //      route: nothing is published, pinned or exported from them.
 //  15. The identity names the compiler's version (__VERSION__).
+//  16. Two dirty builds of one revision are two identities (R20).
 #include "runner.h"
 
 // MinGW has no setenv/unsetenv; an empty value removes the variable there
@@ -177,6 +178,52 @@ static float *feed_and_decode(slot *s, const int32_t *t, int n) {
     return out;
 }
 
+// gate 17 (R3.78): the recurrent STATE after a prompt, at the lengths whose
+// last -b 64 chunk has ONE row (65, 129, 193), against one pass (-b 512): the
+// SSD (or DeltaNet) state and the conv ring, byte for byte. The width claim
+// covers the state a recurrent layout carries into decode, not only its K/V
+// rows and logits. Layouts with no recurrent state skip it, saying so.
+static void check_recurrent_state(const char *path) {
+    static const int TAIL[3] = { 65, 129, 193 };
+    slot a, b;
+    if (!slot_open(&a, path, 64) || !slot_open(&b, path, 512)) {
+        fprintf(stderr, "FAIL: %s did not load\n", path);
+        g_fail = 1;
+        return;
+    }
+    if (!a.m.ssm_conv_floats && !a.m.ssm_state_floats) {
+        printf("skip: %s has no recurrent state (gate 17 compares it)\n", path);
+        slot_close(&a); slot_close(&b);
+        return;
+    }
+    int32_t t[CTX];
+    prompt_tokens(&a.m, t, CTX);
+    for (int i = 0; i < 3; i++) {
+        int n = TAIL[i];
+        engine_reset(&a.e);
+        engine_reset(&b.e);
+        ck(engine_feed(&a.e, t, n) && engine_feed(&b.e, t, n), path, n, "both batches fed (one-row tail)");
+        size_t ds = 0, dc = 0;
+        for (size_t k = 0; k < a.m.ssm_state_floats; k++)
+            ds += memcmp(&a.m.ssm_state_mem[k], &b.m.ssm_state_mem[k], 4) != 0;
+        for (size_t k = 0; k < a.m.ssm_conv_floats; k++)
+            dc += memcmp(&a.m.ssm_conv_state[k], &b.m.ssm_conv_state[k], 4) != 0;
+        if (ds || dc)
+            fprintf(stderr, "  %zu of %zu state floats and %zu of %zu conv-ring floats differ\n",
+                    ds, a.m.ssm_state_floats, dc, a.m.ssm_conv_floats);
+        ck(ds == 0 && dc == 0, path, n,
+           "a prompt ending in a one-row -b 64 chunk leaves one pass's recurrent state (-b 512)");
+    }
+    slot_close(&a);
+    slot_close(&b);
+}
+
+// R3.78: a layout that carries recurrent state (a conv ring, an SSD or
+// DeltaNet state) between positions
+static bool recurrent_layout(const model_t *m) {
+    return m->ssm_conv_floats || m->ssm_state_floats;
+}
+
 static void check_file(const char *path) {
     slot s64, s512, ref, s1, s2;
     int control5 = 0, control6 = 0;
@@ -284,8 +331,16 @@ static void check_file(const char *path) {
         int d7 = ok7 ? kv_diff(&ref.m, &s64.m, n2) : -1;
         if (d7 || kept7 != m7) fprintf(stderr, "  after scored tokens from %d: kept %d rows, %d (layer, position) rows differ\n",
                                        m7, kept7, d7);
-        ck(kept7 == m7 && d7 == 0, path, n,
-           "after scored tokens from m, a normal prompt keeps exactly the m rows below them and stores the cold feed's");
+        if (recurrent_layout(&s64.m)) {
+            // a recurrent layout keeps no rows on a rewind to an arbitrary
+            // mark (its state is not per position), so gate 7 cannot apply
+            if (i == 0)
+                printf("skip: %s: gate 7 (scored tokens, then a rewind to their mark): a recurrent layout keeps "
+                       "no rows there by design\n", path);
+        } else {
+            ck(kept7 == m7 && d7 == 0, path, n,
+               "after scored tokens from m, a normal prompt keeps exactly the m rows below them and stores the cold feed's");
+        }
     }
     // gate 8: the persisted prefix store keys an entry by its arithmetic class.
     // -b 1 writes a prompt's rows on the decode route, -b 2 and up as a
@@ -455,20 +510,52 @@ static void check_file(const char *path) {
         model_route_text(&s64.m, rt, sizeof rt);
         ck(strstr(rt, __VERSION__) != NULL, path, 0, "the route identity names the compiler's version");
         // and the source revision the binary names (here a test's own)
-        model_route_set_build("0123456789abcdef0123456789abcdef01234567", true);
+        model_route_set_build("0123456789abcdef0123456789abcdef01234567", true, NULL);
         model_route_transition(&s64.m);
         model_route_text(&s64.m, rt, sizeof rt);
         ck(strstr(rt, "0123456789abcdef0123456789abcdef01234567+dirty") != NULL, path, 0,
            "the route identity names the source revision and whether it was dirty");
-        model_route_set_build("", false);
+        model_route_set_build("", false, NULL);
         model_route_transition(&s64.m);
     }
 
-    ck(control5 == NLEN, path, CTX,
-       "live control: rows a scored prompt left, kept, are not the cold feed's");
-    ck(control6 == NLEN, path, CTX, "live control: the shared tier forks a prompt that was fed as one");
-    ck(control_live == NLEN, path, CTX,
-       "live control: the decode route stores different rows at every prompt");
+    // gate 16 (R20): two dirty builds of one revision are two binaries, and two
+    // route identities: a dirty build's identity holds its binary's sha256.
+    // Live control: two identical clean builds share one identity, whatever
+    // digest the binary has.
+    {
+        static const char *rev = "0123456789abcdef0123456789abcdef01234567";
+        static const char *da = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        static const char *db = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        char ra[1400], rb[1400], ca[1400], cb[1400];
+        model_route_set_build(rev, true, da);  model_route_text(&s64.m, ra, sizeof ra);
+        model_route_set_build(rev, true, db);  model_route_text(&s64.m, rb, sizeof rb);
+        model_route_set_build(rev, false, da); model_route_text(&s64.m, ca, sizeof ca);
+        model_route_set_build(rev, false, db); model_route_text(&s64.m, cb, sizeof cb);
+        model_route_set_build("", false, NULL);
+        model_route_transition(&s64.m);
+        ck(strcmp(ra, rb) != 0, path, 0, "two dirty builds of one revision are two route identities");
+        ck(strcmp(ca, cb) == 0, path, 0, "live control: two identical clean builds share one route identity");
+    }
+
+    if (recurrent_layout(&s64.m)) {
+        // gate 7 does not apply (above), so neither does its live control; the
+        // shared tier carries K/V rows, not the recurrent fold
+        printf("skip: %s: the live controls of gate 7 and of the shared tier's fork: a recurrent layout keeps "
+               "neither per-position rows on a rewind nor its fold in the shared tier\n", path);
+        // the decode route against the prompt route: a fixture this small may
+        // not separate them at every length; say how many it did
+        if (control_live != NLEN)
+            printf("note: %s: the decode route stored other rows at %d of %d lengths (the fixture does not "
+                   "separate the two routes at every length, so its width lines there are weaker)\n",
+                   path, control_live, NLEN);
+    } else {
+        ck(control5 == NLEN, path, CTX,
+           "live control: rows a scored prompt left, kept, are not the cold feed's");
+        ck(control6 == NLEN, path, CTX, "live control: the shared tier forks a prompt that was fed as one");
+        ck(control_live == NLEN, path, CTX,
+           "live control: the decode route stores different rows at every prompt");
+    }
     slot_close(&s64);
     slot_close(&s512);
     slot_close(&ref);
@@ -481,7 +568,10 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: %s <fixture.gguf>...\n", argv[0]);
         return 2;
     }
-    for (int i = 1; i < argc; i++) check_file(argv[i]);
+    for (int i = 1; i < argc; i++) {
+        check_file(argv[i]);
+        check_recurrent_state(argv[i]);
+    }
     if (g_fail) return 1;
     printf("prefill batch identity: all gates pass\n");
     return 0;

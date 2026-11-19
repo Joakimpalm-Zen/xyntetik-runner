@@ -84,6 +84,8 @@ test-sampler.exe
 test-shared-weights
 test-mlock
 test-willneed
+test-spawn-eintr
+test-spawn-eintr.exe
 test-shared-weights.exe
 test-bind
 test-bind.exe
@@ -418,6 +420,9 @@ tests/conformance/out-sanitized/
 # examples/deterministic-ci downloads (a pinned release and model file)
 /.cache/
 
+# R20: tests/test_pe_buildid.c (make test-pe-buildid)
+test-pe-buildid
+test-pe-buildid.exe
 # R6.91: tests/test_sample_nan.c three ways (make test-sample-nan)
 test-sample-nan-default
 test-sample-nan-portable

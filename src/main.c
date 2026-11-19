@@ -8997,7 +8997,41 @@ static int cli_main(int argc, char **argv, char **owned_prompt, session_image *s
         // route identity (the receipt prints the same)
         bool dirty = false;
         const char *rev = provenance_build_commit(&dirty);
-        model_route_set_build(rev ? rev : "", dirty);
+        // R20: a dirty build is identified by its own bytes, hashed once here.
+        // Test seams: RUNNER_TEST_BUILD_DIRTY=1 marks the build dirty (it can
+        // only add dirt), RUNNER_TEST_IDENTITY_WAIT=F waits, up to a minute,
+        // until F exists before the identity is taken.
+        const char *td = getenv("RUNNER_TEST_BUILD_DIRTY");
+        if (td && !strcmp(td, "1")) dirty = true;
+        const char *tw = getenv("RUNNER_TEST_IDENTITY_WAIT");
+        for (int i = 0; tw && *tw && i < 600 && !plat_file_readable(tw); i++) plat_sleep_ms(100);
+        // The identity of the image running, never of a file a path names now:
+        // on Linux the hash of /proc/self/exe (the image itself), on macOS the
+        // loaded image's LC_UUID, on Windows the PE build id in the loaded module's
+        // headers (plat_running_image_id: memory, no file), elsewhere none: a
+        // value of this process, said once on stderr since it ends cross-process reuse.
+        char bid[96] = "";
+        if (dirty) {
+            char sha[65];
+#if defined(__linux__)
+            const char *kind = "sha256:/proc/self/exe";
+            if (envelope_file_sha256("/proc/self/exe", sha)) snprintf(bid, sizeof bid, "sha256:%s", sha);
+#else
+            (void)sha;
+            if (!plat_running_image_id(bid, sizeof bid)) bid[0] = 0;
+            char kbuf[32];
+            snprintf(kbuf, sizeof kbuf, "%.*s", (int)strcspn(bid, ":"), bid);
+            const char *kind = kbuf;
+#endif
+            // the test seam names the kind of identity taken (tests/test_route_identity_running_image.py)
+            if (td && !strcmp(td, "1"))
+                fprintf(stderr, "runner: test: image identity: %s\n", bid[0] ? kind : "none");
+            if (!bid[0])
+                fprintf(stderr, "runner: warning: this dirty build has no identity of its running image here, so "
+                        "it reuses nothing another process persisted (prefix stores, automatic snapshots, "
+                        "sessions)\n");
+        }
+        model_route_set_build(rev ? rev : "", dirty, bid[0] ? bid : NULL);
     }
     cli_replay rp;
     memset(&rp, 0, sizeof rp);
