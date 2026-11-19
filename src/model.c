@@ -6634,6 +6634,8 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
         m->ssm_conv_state = calloc(nrec * (m->ssm.conv_kernel - 1) * conv_dim,
                                    sizeof(float));
         m->ssm_state_mem = calloc(nrec * m->ssm.v_heads * hv * hv, sizeof(float));
+        m->ssm_conv_floats = nrec * (m->ssm.conv_kernel - 1) * conv_dim;
+        m->ssm_state_floats = nrec * m->ssm.v_heads * hv * hv;
         // recurrent-state snapshot (tracer 4): same shape as the live buffers
         m->ssm_conv_snap = calloc(nrec * (m->ssm.conv_kernel - 1) * conv_dim,
                                   sizeof(float));
@@ -6663,6 +6665,8 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
         m->ssm_conv_state = calloc(nrec * (m->ssm.conv_kernel - 1) * conv_dim,
                                    sizeof(float));
         m->ssm_state_mem = calloc(nrec * nh * hd * ds, sizeof(float));
+        m->ssm_conv_floats = nrec * (m->ssm.conv_kernel - 1) * conv_dim;
+        m->ssm_state_floats = nrec * nh * hd * ds;
         // recurrent-state snapshot (tracer 4): same shape as the live buffers
         m->ssm_conv_snap = calloc(nrec * (m->ssm.conv_kernel - 1) * conv_dim,
                                   sizeof(float));
@@ -6685,6 +6689,7 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
         m->ssm_z   = malloc(sizeof(float) * (size_t)B * E);
         // one ring per short-convolution layer (model_rec_count, R3.47)
         m->ssm_conv_state = calloc(model_rec_count(m) * histn * E, sizeof(float));
+        m->ssm_conv_floats = model_rec_count(m) * histn * E;
         m->ssm_conv_snap  = calloc(model_rec_count(m) * histn * E, sizeof(float));
         m->ssm_state_mem  = calloc(1, sizeof(float));
         m->ssm_state_snap = calloc(1, sizeof(float));
@@ -9161,11 +9166,20 @@ void model_embd_transform(const model_t *m, float *row) {
 // whole block under the translation unit's -ffast-math setting on macOS.
 // Keep the compiler split explicit: GCC gets its function option and Clang
 // gets the documented compound-statement precise mode.
+//
+// Contraction off on both (R3.78): clang's precise mode already forbids
+// fusing a*b+c into one rounding, but GCC's no-fast-math alone left GNU C's
+// default -ffp-contract=fast, so on an FMA host the serial and the chunked
+// cores below fused their updates differently and their state differed in the
+// last bits on GCC builds only (the lab's Linux, CI's Windows: R3.76). The
+// attribute is the mechanism; gate 17 of tests/test_prefill_batch_identity.c
+// (the recurrent state after a prompt with a one-row last chunk, against one
+// pass) is what keeps the two cores bit-identical.
 #if defined(__clang__)
 #define SSM_PRECISE_ATTR
 #define SSM_PRECISE_SCOPE _Pragma("float_control(precise, on)")
 #elif defined(__GNUC__)
-#define SSM_PRECISE_ATTR __attribute__((optimize("no-fast-math")))
+#define SSM_PRECISE_ATTR __attribute__((optimize("no-fast-math", "fp-contract=off")))
 #define SSM_PRECISE_SCOPE
 #else
 #define SSM_PRECISE_ATTR
