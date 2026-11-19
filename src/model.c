@@ -6634,6 +6634,8 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
         m->ssm_conv_state = calloc(nrec * (m->ssm.conv_kernel - 1) * conv_dim,
                                    sizeof(float));
         m->ssm_state_mem = calloc(nrec * m->ssm.v_heads * hv * hv, sizeof(float));
+        m->ssm_conv_floats = nrec * (m->ssm.conv_kernel - 1) * conv_dim;
+        m->ssm_state_floats = nrec * m->ssm.v_heads * hv * hv;
         // recurrent-state snapshot (tracer 4): same shape as the live buffers
         m->ssm_conv_snap = calloc(nrec * (m->ssm.conv_kernel - 1) * conv_dim,
                                   sizeof(float));
@@ -6663,6 +6665,8 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
         m->ssm_conv_state = calloc(nrec * (m->ssm.conv_kernel - 1) * conv_dim,
                                    sizeof(float));
         m->ssm_state_mem = calloc(nrec * nh * hd * ds, sizeof(float));
+        m->ssm_conv_floats = nrec * (m->ssm.conv_kernel - 1) * conv_dim;
+        m->ssm_state_floats = nrec * nh * hd * ds;
         // recurrent-state snapshot (tracer 4): same shape as the live buffers
         m->ssm_conv_snap = calloc(nrec * (m->ssm.conv_kernel - 1) * conv_dim,
                                   sizeof(float));
@@ -6685,6 +6689,7 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
         m->ssm_z   = malloc(sizeof(float) * (size_t)B * E);
         // one ring per short-convolution layer (model_rec_count, R3.47)
         m->ssm_conv_state = calloc(model_rec_count(m) * histn * E, sizeof(float));
+        m->ssm_conv_floats = model_rec_count(m) * histn * E;
         m->ssm_conv_snap  = calloc(model_rec_count(m) * histn * E, sizeof(float));
         m->ssm_state_mem  = calloc(1, sizeof(float));
         m->ssm_state_snap = calloc(1, sizeof(float));
