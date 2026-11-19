@@ -2701,7 +2701,7 @@ static const char *const RUNNER_SWITCH_INERT[] = {
     "RUNNER_TEST_DRAIN_LATE_MS", "RUNNER_TEST_INSTANCE_SWEEP_DELAY_MS",
     "RUNNER_TEST_KV_DUMP",     // prints a KV row's hash
     "RUNNER_TEST_IDENTITY_WAIT",   // waits before the route identity is taken (R20)
-    "RUNNER_TEST_REPORT_SUFFIX", // names --report's temporary file, written after the audit
+    "RUNNER_TEST_PARTIAL_SUFFIX", // fixes atomic partial file's suffix for planted-symlink tests
 };
 
 bool runner_switch_counts(const char *name, size_t n) {
@@ -2737,4 +2737,25 @@ FILE *plat_fopen_new(const char *path) {
     if (!f) close(fd);
     return f;
 #endif
+}
+
+FILE *plat_fopen_partial(const char *path, const char *ext,
+                         char *tmp_out, size_t tmp_cap, bool *made_out) {
+    if (made_out) *made_out = false;
+    if (!path || !*path || !tmp_out || tmp_cap == 0) return NULL;
+    if (!ext || !*ext) ext = "partial";
+    const char *tsuf = getenv("RUNNER_TEST_PARTIAL_SUFFIX");
+    char suf[40];
+    if (tsuf && *tsuf && strlen(tsuf) < sizeof suf) {
+        snprintf(suf, sizeof suf, "%s", tsuf);
+    } else {
+        uint8_t rb[8] = { 0 };
+        if (!plat_random(rb, sizeof rb)) return NULL;
+        for (int i = 0; i < 8; i++) snprintf(suf + 2 * i, 3, "%02x", rb[i]);
+    }
+    int n = snprintf(tmp_out, tmp_cap, "%s.%s-%s", path, ext, suf);
+    if (n < 0 || (size_t)n >= tmp_cap) return NULL;
+    FILE *f = plat_fopen_new(tmp_out);
+    if (f && made_out) *made_out = true;
+    return f;
 }

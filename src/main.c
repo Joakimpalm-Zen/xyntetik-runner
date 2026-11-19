@@ -5978,8 +5978,8 @@ static bool train_optim_save(const char *adapter, cli_run *rt, const train_state
     if (!envelope_file_sha256(adapter, sha) ||
         snprintf(path, sizeof path, "%s.optim", adapter) >= (int)sizeof path)
         return false;
-    snprintf(tmp, sizeof tmp, "%s.partial", path);
-    FILE *f = plat_fopen(tmp, "wb");
+    bool made = false;
+    FILE *f = plat_fopen_partial(path, "partial", tmp, sizeof tmp, &made);
     if (!f) return false;
     uint32_t ver = 1;
     int32_t step = st->step, n = n_ev;
@@ -5995,7 +5995,7 @@ static bool train_optim_save(const char *adapter, cli_run *rt, const train_state
     ok = ok && model_lora_optim_write(&rt->m, f) && fflush(f) == 0 && !ferror(f);
     if (fclose(f) != 0) ok = false;
     if (!ok || !plat_replace_file(tmp, path)) {
-        plat_remove(tmp);
+        if (made) plat_remove(tmp);
         fprintf(stderr, "error: cannot write the optimizer state %s\n", path);
         return false;
     }
@@ -8903,23 +8903,10 @@ static int run_replay_sample(cli_opts *o, const train_record_host *host, const t
             }
         }
         char tmp[4200];
-        // RUNNER_TEST_REPORT_SUFFIX fixes the temporary name's suffix, so a
+        // RUNNER_TEST_PARTIAL_SUFFIX fixes the temporary name's suffix, so a
         // test can plant a file there (tests/test_train_segments.py)
-        const char *tsuf = getenv("RUNNER_TEST_REPORT_SUFFIX");
-        char suf[40];
-        uint8_t rb[8] = { 0 };
-        if (!plat_random(rb, sizeof rb)) {
-            fprintf(stderr, "error: --report: the system's random source failed\n");
-            return 1;
-        }
-        for (int i = 0; i < 8; i++) snprintf(suf + 2 * i, 3, "%02x", rb[i]);   // unpredictable, not the pid
-        if (tsuf && *tsuf && strlen(tsuf) < sizeof suf) snprintf(suf, sizeof suf, "%s", tsuf);
-        if (snprintf(tmp, sizeof tmp, "%s.partial-%s", o->audit_report, suf) >= (int)sizeof tmp) {
-            fprintf(stderr, "error: --report path too long\n");
-            return 1;
-        }
-        FILE *f = plat_fopen_new(tmp);   // exclusive, never through a link planted at the name
-        bool made = f != NULL;
+        bool made = false;
+        FILE *f = plat_fopen_partial(o->audit_report, "partial", tmp, sizeof tmp, &made);
         bool wok = made;
         if (f) {
             fprintf(f, "{\"schema_version\":\"xyntetik.runner.sample.v1\",\"algorithm\":\"%s\",\"record\":", SAMPLE_ALGO);

@@ -1224,11 +1224,12 @@ int prefix_cache_save(const char *path) {
     // write beside and rename, so a crash mid-write cannot leave a file that
     // passes its own digest over half a cache
     size_t path_n = strlen(path);
-    if (path_n > SIZE_MAX - sizeof(".partial")) return -1;
-    char *tmp = malloc(path_n + sizeof(".partial"));
+    if (path_n > SIZE_MAX - 64) return -1;
+    size_t tmp_cap = path_n + 64;
+    char *tmp = malloc(tmp_cap);
     if (!tmp) return -1;
-    snprintf(tmp, path_n + sizeof(".partial"), "%s.partial", path);
-    FILE *f = plat_fopen(tmp, "wb");
+    bool made = false;
+    FILE *f = plat_fopen_partial(path, "partial", tmp, tmp_cap, &made);
     if (!f) {
         fprintf(stderr, "prefix: cannot write %s\n", tmp);
         free(tmp);
@@ -1263,7 +1264,7 @@ int prefix_cache_save(const char *path) {
     ok = ok && wr(f, &digest, sizeof digest);
     if (fclose(f) != 0) ok = false;
     if (!ok || !plat_replace_file(tmp, path)) {
-        plat_remove(tmp);
+        if (made) plat_remove(tmp);
         fprintf(stderr, "prefix: failed to write %s\n", path);
         free(tmp);
         return -1;
@@ -1356,10 +1357,12 @@ int prefix_cache_load(const char *path, const engine *e) {
 static int pfx_write_one(const char *path, uint64_t key, const int32_t *toks, int32_t n,
                          const uint8_t *kv, uint64_t bytes) {
     size_t path_n = strlen(path);
-    char *tmp = malloc(path_n + sizeof(".partial"));
+    if (path_n > SIZE_MAX - 64) return PFX_CTX_IO;
+    size_t tmp_cap = path_n + 64;
+    char *tmp = malloc(tmp_cap);
     if (!tmp) return PFX_CTX_IO;
-    snprintf(tmp, path_n + sizeof(".partial"), "%s.partial", path);
-    FILE *f = plat_fopen(tmp, "wb");
+    bool made = false;
+    FILE *f = plat_fopen_partial(path, "partial", tmp, tmp_cap, &made);
     if (!f) {
         fprintf(stderr, "prefix: cannot write %s\n", tmp);
         free(tmp);
@@ -1378,7 +1381,7 @@ static int pfx_write_one(const char *path, uint64_t key, const int32_t *toks, in
     ok = ok && wr(f, &digest, sizeof digest);
     if (fclose(f) != 0) ok = false;
     if (!ok || !plat_replace_file(tmp, path)) {
-        plat_remove(tmp);
+        if (made) plat_remove(tmp);
         free(tmp);
         return PFX_CTX_IO;
     }

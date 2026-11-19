@@ -170,11 +170,11 @@ static bool write_self(void) {
     // refuses files does, on every platform
     if (getenv("RUNNER_TEST_REGISTRY_READONLY")) return false;
 #endif
-    char path[1200], tmp[1240];
+    char path[1200], tmp[1280];
     self_path(path, sizeof path);
     if (!path[0]) return false;
-    snprintf(tmp, sizeof tmp, "%s.tmp", path);
-    FILE *f = plat_fopen(tmp, "wb");
+    bool made = false;
+    FILE *f = plat_fopen_partial(path, "tmp", tmp, sizeof tmp, &made);
     if (!f) return false;
     fprintf(f,
         "{\"pid\": %ld, \"procstart\": %llu, \"started\": %lld, "
@@ -186,7 +186,7 @@ static bool write_self(void) {
     bool ok = fclose(f) == 0;
     // rename() cannot replace an existing file on Windows; this can
     ok = ok && plat_replace_file(tmp, path);
-    if (!ok) plat_remove(tmp);
+    if (!ok && made) plat_remove(tmp);
     return ok;
 }
 
@@ -216,14 +216,16 @@ static void sweep_stale(void) {
     plat_dir *dp = plat_opendir(d);
     if (!dp) return;
     for (const char *name; (name = plat_readdir(dp)) != NULL; ) {
-        size_t l = strlen(name);
-        if (l < 10 || strcmp(name + l - 9, ".json.tmp") != 0) continue;
-        char path[1300];
-        snprintf(path, sizeof path, "%s%c%s", d, lease_sep(), name);
+        if (name[0] < '0' || name[0] > '9') continue;
         char *end;
         long pid = strtol(name, &end, 10);
-        if (end == name || strcmp(end, ".json.tmp") != 0) continue;
-        if (pid > 0 && !instance_pid_alive(pid)) plat_remove(path);
+        if (end == name || pid <= 0) continue;
+        if (strcmp(end, ".json.tmp") != 0 && strncmp(end, ".json.tmp-", 10) != 0) continue;
+        if (!instance_pid_alive(pid)) {
+            char path[4096];
+            snprintf(path, sizeof path, "%s%c%s", d, lease_sep(), name);
+            plat_remove(path);
+        }
     }
     plat_closedir(dp);
 }

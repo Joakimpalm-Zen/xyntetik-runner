@@ -381,31 +381,39 @@ int main(int argc, char **argv) {
     instances_list_free(r, n);
 
     // 5b. a registering process sweeps what dead processes left: their
-    // records and the temporaries of a write that never reached its rename.
+    // records and the temporaries of a write that never reached its rename
+    // (both legacy `<pid>.json.tmp` and R6.101 `<pid>.json.tmp-<hex>`).
     // A machine that never runs the tray has no other reader to do it.
     {
         long deadpid = (long)getpid() + 2000000;
-        char dead[1300], deadtmp[1300], livetmp[1300];
+        char dead[1300], deadtmp[1300], deadtmph[1300], livetmp[1300], livetmph[1300];
         write_fake(dir, deadpid, "ghost.gguf");
         snprintf(dead, sizeof dead, "%s/%ld.json", dir, deadpid);
         snprintf(deadtmp, sizeof deadtmp, "%s/%ld.json.tmp", dir, deadpid);
-        // the parent, not this process: our own registration writes and
-        // renames `<our pid>.json.tmp`
+        snprintf(deadtmph, sizeof deadtmph, "%s/%ld.json.tmp-deadbeef01234567", dir, deadpid);
 #ifdef _WIN32
         livetmp[0] = 0;   // no getppid here; the dead-pid half still runs
+        livetmph[0] = 0;
 #else
         snprintf(livetmp, sizeof livetmp, "%s/%ld.json.tmp", dir, (long)getppid());
+        snprintf(livetmph, sizeof livetmph, "%s/%ld.json.tmp-0123456789abcdef", dir, (long)getppid());
 #endif
         FILE *f = fopen(deadtmp, "wb"); if (f) fclose(f);
+        f = fopen(deadtmph, "wb"); if (f) fclose(f);
         if (livetmp[0]) { f = fopen(livetmp, "wb"); if (f) fclose(f); }
+        if (livetmph[0]) { f = fopen(livetmph, "wb"); if (f) fclose(f); }
         CHECK(instances_register("cli", 0, NULL, NULL, 0), "register sweeps");
         await_sweep(dead);
         await_sweep(deadtmp);
+        await_sweep(deadtmph);
         f = fopen(dead, "rb");
         CHECK(f == NULL, "a dead process's record is swept at registration");
         if (f) fclose(f);
         f = fopen(deadtmp, "rb");
         CHECK(f == NULL, "a dead process's temporary is swept at registration");
+        if (f) fclose(f);
+        f = fopen(deadtmph, "rb");
+        CHECK(f == NULL, "a dead process's random-suffix temporary is swept at registration");
         if (f) fclose(f);
         if (livetmp[0]) {
             f = fopen(livetmp, "rb");
@@ -413,8 +421,48 @@ int main(int argc, char **argv) {
             if (f) fclose(f);
             remove(livetmp);
         }
+        if (livetmph[0]) {
+            f = fopen(livetmph, "rb");
+            CHECK(f != NULL, "a live process's random-suffix temporary is left alone");
+            if (f) fclose(f);
+            remove(livetmph);
+        }
         instances_unregister();
     }
+
+#ifndef _WIN32
+    // 5c. R6.101: a symlink planted at `<pid>.json.tmp-fixed` is refused, never followed.
+    {
+        char self[1300], lnk[1300], victim[1300];
+        snprintf(self, sizeof self, "%s/%ld.json", dir, (long)getpid());
+        snprintf(lnk, sizeof lnk, "%s/%ld.json.tmp-fixed", dir, (long)getpid());
+        snprintf(victim, sizeof victim, "%s/victim.txt", dir);
+        FILE *vf = fopen(victim, "wb");
+        if (vf) { fputs("untouched", vf); fclose(vf); }
+        remove(lnk);
+        remove(self);
+        if (symlink(victim, lnk) == 0) {
+            setenv_compat("RUNNER_TEST_PARTIAL_SUFFIX", "fixed");
+            bool ok = instances_register("cli", 0, NULL, NULL, 0);
+            unsetenv("RUNNER_TEST_PARTIAL_SUFFIX");
+            CHECK(!ok, "instances_register refuses a symlink planted at .tmp-fixed");
+            char got[64] = {0};
+            vf = fopen(victim, "rb");
+            if (vf) {
+                size_t gn = fread(got, 1, sizeof got - 1, vf);
+                got[gn] = 0;
+                fclose(vf);
+            }
+            CHECK(strcmp(got, "untouched") == 0, "planted symlink victim is untouched");
+            FILE *sf = fopen(self, "rb");
+            CHECK(sf == NULL, "failed registration writes no instance record");
+            if (sf) fclose(sf);
+            remove(lnk);
+            instances_unregister();
+        }
+        remove(victim);
+    }
+#endif
 
     // 6. corrupt record is swept, not fatal
     {

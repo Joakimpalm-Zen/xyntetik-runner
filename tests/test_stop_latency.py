@@ -160,6 +160,8 @@ def test_blocked_sweep_does_not_hold_start_or_exit(runner_bin, model, tmp_path):
     stale.write_text(json.dumps({"pid": dead.pid, "mode": "serve"}))
     temporary = records / f"{dead.pid}.json.tmp"
     temporary.touch()
+    temporary_hex = records / f"{dead.pid}.json.tmp-deadbeef01234567"
+    temporary_hex.touch()
     live = records / f"{os.getpid()}.json"
     live.write_text(json.dumps({"pid": os.getpid(), "mode": "cli"}))
     marker = tmp_path / "sweeper.pid"
@@ -198,11 +200,12 @@ def test_blocked_sweep_does_not_hold_start_or_exit(runner_bin, model, tmp_path):
         # including records left by both servers after they stopped.
         deadline = time.monotonic() + SWEEP_CLEANUP_TIMEOUT_S
         while time.monotonic() < deadline and (stale.exists() or temporary.exists() or
+                temporary_hex.exists() or
                 (records / f"{first.proc.pid}.json").exists() or
                 (records / f"{second.proc.pid}.json").exists()):
             time.sleep(0.02)
         assert sorted(p.name for p in records.glob("*.json")) == [live.name]
-        assert not temporary.exists()
+        assert not temporary.exists() and not temporary_hex.exists()
         worker = None  # successful cleanup needs no signal to an old helper PID
     finally:
         first.stop()

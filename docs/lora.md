@@ -990,7 +990,7 @@ row is in the [command-line reference](../MANUAL.md#command-line-reference).
 optimizer state), `ADAPTER.gguf.killed.json` / `.kill-check.json` (the kill
 rule's verdict),
 `MERGED.gguf.merge.json` (a merge record), `ADAPTER.gguf.sig` (an OMS bundle),
-`*.partial` (a write in progress, never installed on failure).
+`*.partial-*` (a write in progress with an unpredictable suffix, never installed on failure).
 
 **Environment.** `RUNNER_TRAIN_GPU=1` (the CUDA assist, same bytes; `--train-gpu`
 is the whole step on the GPU), `RUNNER_TRAIN_DEVICE_STEP=0` (`--train-gpu`
