@@ -130,18 +130,39 @@ def test_planted_symlink_refused_for_cli_outputs(runner_bin, fx, tmp_path):
     assert qrec3b.read_text() == '{"old":true}'
     assert not list(d3b.glob("q.gguf.partial*"))
 
-    # 3c. If sidecar replacement fails after installing the model (e.g. destination
-    # provenance path is a directory), cleanup removes the new model too so no
-    # mismatched or un-provenanced pair remains.
+    # 3c. If sidecar replacement fails after installing the model:
+    # - on POSIX where an empty directory at <out>.quant.json is removable by
+    #   remove(), the stale path is cleared and the new model is kept without
+    #   a record (exits 1 saying so);
+    # - if the stale path cannot be removed (non-empty directory), the new
+    #   model is removed as a last resort so no mismatched pair remains.
+    if sys.platform != "win32":
+        d3c_empty = tmp_path / "quantize_sidecar_empty_dir"
+        d3c_empty.mkdir()
+        qout3c_e = d3c_empty / "q.gguf"
+        (d3c_empty / "q.gguf.quant.json").mkdir()
+        r = subprocess.run([str(runner_bin), "-m", str(fx["model"]),
+                            "--quantize", str(qout3c_e), "--quant", "q8_0"],
+                           cwd=ROOT, capture_output=True, text=True, timeout=120,
+                           env=_clean_env())
+        assert r.returncode != 0, r.stderr
+        assert "the file has no record" in r.stderr, r.stderr
+        assert qout3c_e.is_file(), "new model should stay when stale sidecar was cleared"
+        assert not (d3c_empty / "q.gguf.quant.json").exists()
+        assert not list(d3c_empty.glob("*.partial*"))
+
     d3c = tmp_path / "quantize_sidecar_fail"
     d3c.mkdir()
     qout3c = d3c / "q.gguf"
     (d3c / "q.gguf.quant.json").mkdir()
+    (d3c / "q.gguf.quant.json" / "keep").write_text("x")
     r = subprocess.run([str(runner_bin), "-m", str(fx["model"]),
                         "--quantize", str(qout3c), "--quant", "q8_0"],
                        cwd=ROOT, capture_output=True, text=True, timeout=120, env=_clean_env())
     assert r.returncode != 0, r.stderr
-    assert not qout3c.exists(), "new model must be removed when sidecar install fails"
+    assert "stale record" in r.stderr, r.stderr
+    assert not qout3c.exists(), "new model must be removed when stale sidecar cannot be cleared"
+    assert (d3c / "q.gguf.quant.json" / "keep").exists()
     assert not list(d3c.glob("*.partial*"))
 
     # 4. --train adapter (model.c:model_lora_save)

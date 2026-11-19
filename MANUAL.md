@@ -696,7 +696,12 @@ and signature objects a receipt carries. Atomic file outputs (models, checkpoint
 receipts, signed records, snapshots, and `--report`) write to a new
 `PATH.partial-<16hex>` (or `PATH.tmp-<16hex>`) temporary beside the target and
 replace it cleanly; any leftover left by an interrupted process is unused and
-safe to delete.
+safe to delete. Model rewrites install the output and its provenance record
+together under a publish lock (when locking is not supported by the file
+system, one warning is printed and single-writer runs proceed unlocked); if
+installing the record fails after the output was replaced, any stale record is
+removed and the new output stays without a record (unless the stale record
+cannot be cleared either, in which case the output is removed as a last resort).
 
 ```sh
 ./runner train data.txt -m base.gguf --out a.gguf --sign-key key.json

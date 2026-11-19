@@ -24,6 +24,7 @@
 #include <windows.h>
 #include <io.h>
 #else
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 #endif
@@ -3374,6 +3375,78 @@ static void quantize_job_write_tensors(quantize_job *J, merge_set_t *ms) {
     if (J->tp) { tpool_destroy(J->tp); J->tp = NULL; }
 }
 
+static int default_remove_file(const char *path) {
+    return plat_remove(path);
+}
+
+static bool default_exists_file(const char *path) {
+    plat_stat_t st;
+    return plat_stat(path, &st) == 0;
+}
+
+static int default_lock_pub(const char *path, void **lock_out) {
+    return (int)plat_publish_lock(path, lock_out);
+}
+
+int quantize_publish_pair(const char *tmp_path, const char *out_path,
+                          const char *sidecar_tmp, const char *sidecar_out,
+                          bool *out_installed, const quantize_publish_ops *ops) {
+    quantize_publish_ops def = {
+        .install_out     = install_finished_file,
+        .replace_sidecar = plat_replace_file,
+        .remove_file     = default_remove_file,
+        .exists_file     = default_exists_file,
+        .lock_pub        = default_lock_pub,
+        .unlock_pub      = plat_publish_unlock,
+    };
+    const quantize_publish_ops *op = ops ? ops : &def;
+    if (out_installed) *out_installed = false;
+
+    void *pub_lock = NULL;
+    int lrc = op->lock_pub(out_path, &pub_lock);
+    if (lrc == PLAT_LOCK_ERROR) {
+        if (sidecar_tmp && sidecar_tmp[0]) op->remove_file(sidecar_tmp);
+        fprintf(stderr, "error: cannot lock %s for publish (destination unchanged)\n",
+                out_path);
+        return 1;
+    }
+    if (lrc == PLAT_LOCK_UNSUPPORTED) {
+        static bool warned_unsupported = false;
+        if (!warned_unsupported) {
+            warned_unsupported = true;
+            fprintf(stderr, "warning: file locking is not supported here; two concurrent "
+                    "writers to the same output are not protected (%s)\n", out_path);
+        }
+    }
+
+    if (op->install_out(tmp_path, out_path) != 0) {
+        if (sidecar_tmp && sidecar_tmp[0]) op->remove_file(sidecar_tmp);
+        op->unlock_pub(pub_lock);
+        fprintf(stderr, "error: wrote %s but could not install it as %s "
+                "(destination unchanged)\n", tmp_path, out_path);
+        return 1;
+    }
+    if (out_installed) *out_installed = true;
+
+    if (sidecar_tmp && sidecar_tmp[0] && !op->replace_sidecar(sidecar_tmp, sidecar_out)) {
+        op->remove_file(sidecar_tmp);
+        if (op->exists_file(sidecar_out) && op->remove_file(sidecar_out) != 0) {
+            op->remove_file(out_path);
+            op->unlock_pub(pub_lock);
+            fprintf(stderr, "error: provenance record %s could not be written or removed; "
+                    "removed %s so it does not sit beside a stale record\n",
+                    sidecar_out, out_path);
+            return 1;
+        }
+        op->unlock_pub(pub_lock);
+        fprintf(stderr, "error: output written; its provenance record could not be "
+                "written; the file has no record (%s)\n", out_path);
+        return 1;
+    }
+    op->unlock_pub(pub_lock);
+    return 0;
+}
+
 // The partial file closed and checked, a merge held to its survival floor,
 // the output installed over the destination.
 static int quantize_job_finish(quantize_job *J, const char *in_path,
@@ -3459,36 +3532,13 @@ static int quantize_job_finish(quantize_job *J, const char *in_path,
         }
     }
 
-    // Install the finished artifact and its staged sidecar under one publish
-    // lock so concurrent writers never hash each other's output or leave
-    // writer B's file beside writer A's provenance record.
-    void *pub_lock = NULL;
-    if (!plat_publish_lock(out_path, &pub_lock)) {
-        if (sidecar_tmp[0]) plat_remove(sidecar_tmp);
-        fprintf(stderr, "error: cannot lock %s for publish (destination unchanged)\n",
-                out_path);
-        return 1;
-    }
-    if (install_finished_file(J->tmp_path, out_path) != 0) {
-        if (sidecar_tmp[0]) plat_remove(sidecar_tmp);
-        plat_publish_unlock(pub_lock);
-        fprintf(stderr, "error: wrote %s but could not install it as %s "
-                "(destination unchanged)\n", J->tmp_path, out_path);
+    bool out_installed = false;
+    if (quantize_publish_pair(J->tmp_path, out_path, sidecar_tmp, sidecar_out,
+                              &out_installed, NULL) != 0) {
+        if (out_installed) J->tmp_created = false;
         return 1;
     }
     J->tmp_created = false;   // installed: it is the destination now
-    if (sidecar_tmp[0] && !plat_replace_file(sidecar_tmp, sidecar_out)) {
-        plat_remove(sidecar_tmp);
-        // Never leave a newly installed artifact beside an absent or
-        // previous-run sidecar (which would describe the wrong bytes).
-        plat_remove(sidecar_out);
-        plat_remove(out_path);
-        plat_publish_unlock(pub_lock);
-        fprintf(stderr, "error: cannot write %s provenance to %s\n",
-                prov_kind[0] ? prov_kind : "rewrite", sidecar_out);
-        return 1;
-    }
-    plat_publish_unlock(pub_lock);
 
     // Under a --type-plan the whole-file `target` decided nothing, so naming
     // it here described the output as a type no tensor was written in.

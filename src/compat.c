@@ -1804,12 +1804,12 @@ bool plat_replace_file(const char *tmp_path, const char *path) {
 #endif
 }
 
-bool plat_publish_lock(const char *path, void **lock_out) {
+plat_lock_status plat_publish_lock(const char *path, void **lock_out) {
     if (lock_out) *lock_out = NULL;
-    if (!path || !*path || !lock_out) return false;
+    if (!path || !*path || !lock_out) return PLAT_LOCK_ERROR;
 #ifdef _WIN32
     wchar_t *wp = utf8_to_wide(path);
-    if (!wp) return false;
+    if (!wp) return PLAT_LOCK_ERROR;
     DWORD need = GetFullPathNameW(wp, 0, NULL, NULL);
     wchar_t *full = need ? malloc((size_t)need * sizeof(wchar_t)) : NULL;
     const wchar_t *src = wp;
@@ -1827,14 +1827,14 @@ bool plat_publish_lock(const char *path, void **lock_out) {
     _snwprintf(name, sizeof name / sizeof name[0],
                L"Local\\xyntetik-runner-pub-%016llx", (unsigned long long)h);
     HANDLE m = CreateMutexW(NULL, FALSE, name);
-    if (!m) return false;
+    if (!m) return PLAT_LOCK_ERROR;
     DWORD w = WaitForSingleObject(m, INFINITE);
     if (w != WAIT_OBJECT_0 && w != WAIT_ABANDONED) {
         CloseHandle(m);
-        return false;
+        return PLAT_LOCK_ERROR;
     }
     *lock_out = (void *)m;
-    return true;
+    return PLAT_LOCK_OK;
 #else
     const char *sl = strrchr(path, '/');
     char dir_buf[4096];
@@ -1849,23 +1849,34 @@ bool plat_publish_lock(const char *path, void **lock_out) {
         }
     }
     int fd = open(dir, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return false;
+    if (fd < 0) return PLAT_LOCK_ERROR;
     while (flock(fd, LOCK_EX) < 0) {
         if (errno == EINTR) continue;
         int e = errno;
         close(fd);
         errno = e;
-        return false;
+        if (e == ENOLCK
+#ifdef EOPNOTSUPP
+            || e == EOPNOTSUPP
+#endif
+#ifdef ENOTSUP
+            || e == ENOTSUP
+#endif
+#ifdef ENOSYS
+            || e == ENOSYS
+#endif
+        ) return PLAT_LOCK_UNSUPPORTED;
+        return PLAT_LOCK_ERROR;
     }
     int *p = malloc(sizeof *p);
     if (!p) {
         flock(fd, LOCK_UN);
         close(fd);
-        return false;
+        return PLAT_LOCK_ERROR;
     }
     *p = fd;
     *lock_out = p;
-    return true;
+    return PLAT_LOCK_OK;
 #endif
 }
 
