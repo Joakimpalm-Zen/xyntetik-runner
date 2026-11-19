@@ -88,6 +88,16 @@ typedef struct {
     bool        force_requant;
 } quantize_report;
 const quantize_report *quantize_last_report(void);
+// Optional hook run once after the output temporary `tmp_path` is closed and
+// verified, before `out_path` is replaced: caller hashes `tmp_path` (not
+// `out_path`) and stages a companion sidecar partial (`sidecar_tmp` ->
+// `sidecar_out`) so both files install together under plat_publish_lock().
+// Consumed by the next quantize/merge/context-surgery call (or cleared on NULL).
+typedef bool (*quantize_stage_fn)(const char *tmp_path, const char *out_path,
+                                  char *sidecar_tmp, size_t sidecar_tmp_cap,
+                                  char *sidecar_out, size_t sidecar_out_cap,
+                                  char *kind_out, size_t kind_cap, void *ud);
+void  quantize_set_stage_sidecar(quantize_stage_fn fn, void *ud);
 // How many threads a rewrite quantizes rows on (1 until set). The file's bytes do not depend on it.
 void  quantize_set_threads(int n);
 // The least a --target-size plan can reach, from the header: see quantize.c.

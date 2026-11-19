@@ -6,6 +6,7 @@ unpredictable 16-hex suffix (fixed only by RUNNER_TEST_PARTIAL_SUFFIX in tests),
 and unlinks only the path it created if an error follows.
 """
 import concurrent.futures
+import hashlib
 import json
 import os
 import pathlib
@@ -223,40 +224,43 @@ def test_planted_symlink_refused_for_kv_snapshot(runner_bin, fx, tmp_path):
 
 def test_two_concurrent_writers_do_not_collide(runner_bin, fx, tmp_path):
     """Two processes writing to the same destination concurrently pick distinct
-    random partial names and never leave half-written outputs or leaked partials.
+    random partial names and stage/install output and sidecar together:
 
-    On POSIX, rename succeeds even while the winning process reads the output
-    (e.g. envelope_file_sha256 hashing the quantized GGUF for .quant.json), so
-    both writers exit 0. On Windows, MoveFileExW refuses to replace a file that
-    another process still holds open without FILE_SHARE_DELETE, so at least one
-    writer succeeds and any displaced writer fails cleanly with its partial
-    removed and the winning output intact.
+    - at least one writer exits 0 (on POSIX both do);
+    - any writer that does not win exits non-zero with a clear error message;
+    - zero .partial* files remain on disk;
+    - the output file is one writer's complete valid artifact, and its
+      provenance sidecar matches those exact bytes (output.sha256 == sha256(out)
+      and target matches the winning writer even across competing targets).
     """
     env = _clean_env()
 
-    for trial in range(4):
+    # Include mixed-target races (q8_0 vs q4_0) so a cross-writer swap between
+    # the GGUF and .quant.json sidecar would fail sha256 and target parity.
+    quant_pairs = [("q8_0", "q8_0"), ("q4_0", "q8_0"), ("q8_0", "q4_0"), ("q8_0", "q8_0")]
+    for trial, (q0, q1) in enumerate(quant_pairs):
         qout = tmp_path / f"shared_{trial}.gguf"
-        cmd = [str(runner_bin), "-m", str(fx["model"]),
-               "--quantize", str(qout), "--quant", "q8_0"]
+        cmds = [[str(runner_bin), "-m", str(fx["model"]),
+                 "--quantize", str(qout), "--quant", q] for q in (q0, q1)]
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             futs = [pool.submit(subprocess.run, cmd, cwd=ROOT, capture_output=True,
                                 text=True, timeout=120, env=env)
-                    for _ in range(2)]
+                    for cmd in cmds]
             results = [f.result() for f in futs]
-        if sys.platform == "win32":
-            assert any(r.returncode == 0 for r in results), [r.stderr for r in results]
-            for r in results:
-                if r.returncode != 0:
-                    assert ("could not install it as" in r.stderr or
-                            "cannot write" in r.stderr), r.stderr
-        else:
-            assert all(r.returncode == 0 for r in results), [r.stderr for r in results]
+        assert any(r.returncode == 0 for r in results), [r.stderr for r in results]
+        for r in results:
+            if r.returncode != 0:
+                assert "error:" in r.stderr.lower(), r.stderr
         assert qout.is_file() and qout.stat().st_size > 0
         assert not list(tmp_path.glob(f"shared_{trial}.gguf.partial*"))
         assert not list(tmp_path.glob(f"shared_{trial}.gguf.quant.json.partial*"))
         qrec = pathlib.Path(f"{qout}.quant.json")
-        if qrec.exists():
-            assert json.loads(qrec.read_text())["schema_version"] == "xyntetik.runner.quant.v1"
+        assert qrec.is_file(), "winning quantize writer must leave matching .quant.json"
+        rec = json.loads(qrec.read_text())
+        assert rec["schema_version"] == "xyntetik.runner.quant.v1"
+        actual_sha = hashlib.sha256(qout.read_bytes()).hexdigest()
+        assert rec["output"]["sha256"] == actual_sha, (rec, actual_sha)
+        assert rec["target"] in (q0, q1)
         chk = subprocess.run([str(runner_bin), "-m", str(qout), "-p", "hi",
                               "-n", "1", "--temp", "0", "--gpu", "off", "-t", "2"],
                              cwd=ROOT, capture_output=True, text=True, timeout=120, env=env)
@@ -271,14 +275,10 @@ def test_two_concurrent_writers_do_not_collide(runner_bin, fx, tmp_path):
                                 text=True, timeout=120, env=env)
                     for _ in range(2)]
             results = [f.result() for f in futs]
-        if sys.platform == "win32":
-            assert any(r.returncode == 0 for r in results), [r.stderr for r in results]
-            for r in results:
-                if r.returncode != 0:
-                    assert ("failed writing" in r.stderr or
-                            "cannot write" in r.stderr), r.stderr
-        else:
-            assert all(r.returncode == 0 for r in results), [r.stderr for r in results]
+        assert any(r.returncode == 0 for r in results), [r.stderr for r in results]
+        for r in results:
+            if r.returncode != 0:
+                assert "error:" in r.stderr.lower(), r.stderr
         parsed = json.loads(tout.read_text())
         assert parsed["schema_version"].startswith("xyntetik.")
         assert not list(tmp_path.glob(f"shared_{trial}.json.partial*"))

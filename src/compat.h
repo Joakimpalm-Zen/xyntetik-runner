@@ -348,6 +348,12 @@ bool plat_close_listed_descriptors(void);
 // needs MoveFileEx(..., REPLACE_EXISTING) for the same operation.
 bool        plat_replace_file(const char *tmp_path, const char *path);
 
+// Cross-process lock serializing installation of an output artifact and its
+// provenance sidecar as one unit (uses directory flock() on POSIX and a named
+// kernel mutex on Windows; creates no files on disk). NULL on best-effort fallback.
+void       *plat_publish_lock(const char *path);
+void        plat_publish_unlock(void *lock);
+
 // An openable path for the executable image of this process, independent of
 // argv[0] and the current working directory. Caller frees; NULL on failure.
 char       *plat_executable_path(void);

@@ -1804,6 +1804,72 @@ bool plat_replace_file(const char *tmp_path, const char *path) {
 #endif
 }
 
+void *plat_publish_lock(const char *path) {
+    if (!path || !*path) return NULL;
+#ifdef _WIN32
+    wchar_t *wp = utf8_to_wide(path);
+    if (!wp) return NULL;
+    DWORD need = GetFullPathNameW(wp, 0, NULL, NULL);
+    wchar_t *full = need ? malloc((size_t)need * sizeof(wchar_t)) : NULL;
+    const wchar_t *src = wp;
+    if (full && GetFullPathNameW(wp, need, full, NULL) > 0) src = full;
+    uint64_t h = 14695981039346656037ULL;
+    for (size_t i = 0; src[i]; i++) {
+        wchar_t c = src[i];
+        if (c >= L'A' && c <= L'Z') c = (wchar_t)(c + 32);
+        h ^= (uint64_t)(uint16_t)c;
+        h *= 1099511628211ULL;
+    }
+    free(full);
+    free(wp);
+    wchar_t name[64];
+    _snwprintf(name, sizeof name / sizeof name[0],
+               L"Local\\xyntetik-runner-pub-%016llx", (unsigned long long)h);
+    HANDLE m = CreateMutexW(NULL, FALSE, name);
+    if (!m) return NULL;
+    DWORD w = WaitForSingleObject(m, INFINITE);
+    if (w != WAIT_OBJECT_0 && w != WAIT_ABANDONED) {
+        CloseHandle(m);
+        return NULL;
+    }
+    return (void *)m;
+#else
+    const char *sl = strrchr(path, '/');
+    char dir_buf[4096];
+    const char *dir = ".";
+    if (sl) {
+        size_t dl = (size_t)(sl - path);
+        if (dl == 0) dir = "/";
+        else if (dl < sizeof dir_buf) {
+            memcpy(dir_buf, path, dl);
+            dir_buf[dl] = 0;
+            dir = dir_buf;
+        }
+    }
+    int fd = open(dir, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return NULL;
+    while (flock(fd, LOCK_EX) < 0 && errno == EINTR) {}
+    int *p = malloc(sizeof *p);
+    if (!p) { flock(fd, LOCK_UN); close(fd); return NULL; }
+    *p = fd;
+    return p;
+#endif
+}
+
+void plat_publish_unlock(void *lock) {
+    if (!lock) return;
+#ifdef _WIN32
+    HANDLE m = (HANDLE)lock;
+    ReleaseMutex(m);
+    CloseHandle(m);
+#else
+    int fd = *(int *)lock;
+    free(lock);
+    flock(fd, LOCK_UN);
+    close(fd);
+#endif
+}
+
 bool plat_random(uint8_t *out, size_t n) {
 #ifdef _WIN32
     for (size_t i = 0; i < n; i += 4) {

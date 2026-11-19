@@ -1287,6 +1287,13 @@ void quantize_set_threads(int n) { g_q_threads = n > 1 ? n : 1; }
 static quantize_report g_qrep;
 const quantize_report *quantize_last_report(void) { return &g_qrep; }
 
+static quantize_stage_fn g_stage_sidecar = NULL;
+static void             *g_stage_ud = NULL;
+void quantize_set_stage_sidecar(quantize_stage_fn fn, void *ud) {
+    g_stage_sidecar = fn;
+    g_stage_ud = ud;
+}
+
 bool quantize_set_imatrix(const char *path) {
     imatrix_free();
     if (!path) return true;
@@ -2266,7 +2273,8 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                        const char *prune_path, const char *type_plan_path,
                        const char *remove_spec,
                        merge_set_t *ms, uint32_t surgery_context,
-                       float surgery_factor, context_surgery_result *surgery_result);
+                       float surgery_factor, context_surgery_result *surgery_result,
+                       merge_survival *surv_out);
 
 // FTZ/DAZ are process-wide (set by the engine's -ffast-math startup); clear
 // them around the quantize so a subnormal block scale matches ggml, and
@@ -2277,7 +2285,7 @@ int quantize_gguf_plan(const char *in_path, const char *out_path, int target,
     fp_denormal_state fpst = fp_denormals_disable();
     memset(&g_qrep, 0, sizeof g_qrep);
     int rc = quantize_gguf_plan_inner(in_path, out_path, target, prune_path,
-                                      type_plan_path, remove_spec, NULL, 0, 0, NULL);
+                                      type_plan_path, remove_spec, NULL, 0, 0, NULL, NULL);
     fp_denormals_restore(fpst);
     return rc;
 }
@@ -2311,19 +2319,9 @@ int context_surgery_gguf(const char *in_path, const char *out_path,
     fp_denormal_state fpst = fp_denormals_disable();
     int rc = quantize_gguf_plan_inner(in_path, out_path, T_KEEP, NULL, NULL, NULL,
                                       NULL, target_context, target_factor,
-                                      result);
+                                      result, NULL);
     fp_denormals_restore(fpst);
-    if (rc != 0) return rc;
-    if (!tensor_payloads_equal(in_path, out_path)) {
-        fprintf(stderr, "error: context-surgery tensor-payload verification "
-                        "failed; refusing %s\n", out_path);
-        plat_remove(out_path);
-        return 1;
-    }
-    result->tensors_byte_identical = true;
-    fprintf(stderr, "context-surgery: independently reparsed tensor payloads "
-                    "are byte-identical\n");
-    return 0;
+    return rc;
 }
 
 // The adapter is resolved against a first open of the base, which then
@@ -2345,7 +2343,7 @@ int merge_lora_gguf(const char *in_path, const char *adapter_path,
     ms.min_retained = min_retained;
     fp_denormal_state fpst = fp_denormals_disable();
     int rc = quantize_gguf_plan_inner(in_path, out_path, target, NULL, NULL, NULL,
-                                      &ms, 0, 0, NULL);
+                                      &ms, 0, 0, NULL, surv);
     fp_denormals_restore(fpst);
     if (surv) *surv = ms.surv;
     merge_set_free(&ms);
@@ -3381,7 +3379,9 @@ static void quantize_job_write_tensors(quantize_job *J, merge_set_t *ms) {
 static int quantize_job_finish(quantize_job *J, const char *in_path,
                                const char *out_path, int target,
                                const char *type_plan_path,
-                               const merge_set_t *ms) {
+                               const merge_set_t *ms, uint32_t surgery_context,
+                               context_surgery_result *surgery_result,
+                               merge_survival *surv_out) {
     bool write_ok = wr_close(&J->w);
     // The source closes before the install: an in-place requant replaces
     // the very file the source maps.
@@ -3428,19 +3428,58 @@ static int quantize_job_finish(quantize_job *J, const char *in_path,
         }
     }
 
-    // Install the finished file only after the temp is complete. POSIX rename()
-    // atomically replaces an existing destination; Windows needs MoveFileEx
-    // with replace semantics (plat_replace_file). Never remove the destination first: if the final
-    // install fails, the caller must still have the previous model.
+    // Populate counts/survival and verify context-surgery payloads BEFORE staging
+    // the provenance sidecar or touching the destination.
+    g_qrep.converted = J->quantized;
+    g_qrep.kept = J->kept;
+    if (surv_out && ms) *surv_out = ms->surv;
+    if (surgery_context) {
+        if (!tensor_payloads_equal(in_path, J->tmp_path)) {
+            fprintf(stderr, "error: context-surgery tensor-payload verification "
+                            "failed; refusing %s\n", out_path);
+            return 1;
+        }
+        if (surgery_result) surgery_result->tensors_byte_identical = true;
+        fprintf(stderr, "context-surgery: independently reparsed tensor payloads "
+                        "are byte-identical\n");
+    }
+
+    char sidecar_tmp[4200] = "";
+    char sidecar_out[4096] = "";
+    char prov_kind[64] = "";
+    if (g_stage_sidecar) {
+        quantize_stage_fn fn = g_stage_sidecar;
+        void *ud = g_stage_ud;
+        g_stage_sidecar = NULL;
+        g_stage_ud = NULL;
+        if (!fn(J->tmp_path, out_path, sidecar_tmp, sizeof sidecar_tmp,
+                sidecar_out, sizeof sidecar_out, prov_kind, sizeof prov_kind, ud)) {
+            if (sidecar_tmp[0]) plat_remove(sidecar_tmp);
+            return 1;
+        }
+    }
+
+    // Install the finished artifact and its staged sidecar under one publish
+    // lock so concurrent writers never hash each other's output or leave
+    // writer B's file beside writer A's provenance record.
+    void *pub_lock = plat_publish_lock(out_path);
     if (install_finished_file(J->tmp_path, out_path) != 0) {
+        if (sidecar_tmp[0]) plat_remove(sidecar_tmp);
+        plat_publish_unlock(pub_lock);
         fprintf(stderr, "error: wrote %s but could not install it as %s "
                 "(destination unchanged)\n", J->tmp_path, out_path);
         return 1;
     }
     J->tmp_created = false;   // installed: it is the destination now
+    if (sidecar_tmp[0] && !plat_replace_file(sidecar_tmp, sidecar_out)) {
+        plat_remove(sidecar_tmp);
+        plat_publish_unlock(pub_lock);
+        fprintf(stderr, "error: cannot write %s provenance to %s\n",
+                prov_kind[0] ? prov_kind : "rewrite", sidecar_out);
+        return 1;
+    }
+    plat_publish_unlock(pub_lock);
 
-    g_qrep.converted = J->quantized;
-    g_qrep.kept = J->kept;
     // Under a --type-plan the whole-file `target` decided nothing, so naming
     // it here described the output as a type no tensor was written in.
     fprintf(stderr, "quantize: %s -> %s (%s): %llu tensors converted, %llu kept (%d thread%s)\n",
@@ -3478,6 +3517,9 @@ static int quantize_job_finish(quantize_job *J, const char *in_path,
                 "%.2f%% of the adapted bytes differ from the base written "
                 "alone\n", 100.0 * ms->surv.ret_num / ms->surv.ret_den,
                 100.0 * (double)ms->surv.bytes_changed / (double)ms->surv.bytes);
+    if (sidecar_out[0])
+        fprintf(stderr, "%s: provenance -> %s\n",
+                prov_kind[0] ? prov_kind : "rewrite", sidecar_out);
     return 0;
 }
 
@@ -3490,7 +3532,8 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                        const char *prune_path, const char *type_plan_path,
                        const char *remove_spec,
                        merge_set_t *ms, uint32_t surgery_context,
-                       float surgery_factor, context_surgery_result *surgery_result) {
+                       float surgery_factor, context_surgery_result *surgery_result,
+                       merge_survival *surv_out) {
     if (target != T_KEEP && !quantize_row_writable(target)) {
         fprintf(stderr, "error: quantize target must be q8_0, q4_0, q5_1, q3_k, "
                 "q4_k, q5_k, q6_k, iq4_nl, mxfp4, f16, or bf16\n");
@@ -3521,8 +3564,11 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     quantize_job_write_header(J);
     quantize_job_write_layout(J);
     quantize_job_write_tensors(J, ms);
-    rc = quantize_job_finish(J, in_path, out_path, target, type_plan_path, ms);
+    rc = quantize_job_finish(J, in_path, out_path, target, type_plan_path, ms,
+                             surgery_context, surgery_result, surv_out);
 done:
+    g_stage_sidecar = NULL;
+    g_stage_ud = NULL;
     quantize_job_release(J);
     return rc;
 }
