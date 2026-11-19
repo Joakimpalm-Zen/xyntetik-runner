@@ -421,53 +421,44 @@ static bool receipt_chain_hash(const char *path, char out[65]) {
 // backslashes). The sidecar name is length-derived instead of living behind a
 // fixed PATH_MAX-shaped buffer: an artifact we successfully wrote must not get
 // a silently truncated or missing provenance filename.
-static bool stage_record(const char *artifact, const char *suffix,
-                         const char *kind, const sbuf *doc,
-                         const char *sign_key,
-                         char *tmp_out, size_t tmp_cap,
-                         char *final_out, size_t final_cap) {
+static bool write_provenance(const char *artifact, const char *suffix,
+                             const char *kind, const sbuf *doc) {
     size_t an = strlen(artifact), sn = strlen(suffix);
-    if (doc->failed || an > SIZE_MAX - sn - 1 || an + sn >= final_cap ||
-        an + sn + 64 > tmp_cap) {
+    if (doc->failed || an > SIZE_MAX - sn - 1) {
         fprintf(stderr, "error: cannot build %s provenance record\n", kind);
         return false;
     }
-    memcpy(final_out, artifact, an);
-    memcpy(final_out + an, suffix, sn + 1);
-    bool made = false;
-    FILE *f = plat_fopen_partial(final_out, "partial", tmp_out, tmp_cap, &made);
+    char *path = malloc(an + sn + 1);
+    if (!path) {
+        fprintf(stderr, "error: cannot allocate %s provenance path\n", kind);
+        return false;
+    }
+    memcpy(path, artifact, an);
+    memcpy(path + an, suffix, sn + 1);
+    FILE *f = plat_fopen(path, "wb");
     bool ok = f && fwrite(doc->s, 1, doc->n, f) == doc->n &&
               fflush(f) == 0 && !ferror(f);
     if (f && fclose(f) != 0) ok = false;
-    if (ok && sign_key && !lineage_sign(tmp_out, sign_key)) {
-        ok = false;
-        fprintf(stderr, "error: cannot sign the %s record %s\n", kind, final_out);
-    } else if (!ok) {
-        fprintf(stderr, "error: cannot write %s provenance to %s\n", kind, final_out);
-    }
-    if (!ok) {
-        if (made) plat_remove(tmp_out);
-        tmp_out[0] = 0;
-        final_out[0] = 0;
-    }
+    if (ok) fprintf(stderr, "%s: provenance -> %s\n", kind, path);
+    else    fprintf(stderr, "error: cannot write %s provenance to %s\n",
+                    kind, path);
+    free(path);
     return ok;
 }
 
 // Write a step's provenance record and, when --sign-key was given, sign it in
-// place before moving into view (R17.1): the lineage walker reads both.
+// place (R17.1): the lineage walker reads both.
 static bool write_record(const char *artifact, const char *suffix,
                          const char *kind, const sbuf *doc, const char *sign_key) {
-    char final_path[4096], tmp[4200];
-    if (!stage_record(artifact, suffix, kind, doc, sign_key,
-                      tmp, sizeof tmp, final_path, sizeof final_path))
-        return false;
-    bool ok = plat_replace_file(tmp, final_path);
-    if (!ok) {
-        plat_remove(tmp);
-        fprintf(stderr, "error: cannot write %s provenance to %s\n", kind, final_path);
-    } else {
-        fprintf(stderr, "%s: provenance -> %s\n", kind, final_path);
-    }
+    if (!write_provenance(artifact, suffix, kind, doc)) return false;
+    size_t an = strlen(artifact), sn = strlen(suffix);
+    char *path = malloc(an + sn + 1);
+    if (!path) return false;
+    memcpy(path, artifact, an);
+    memcpy(path + an, suffix, sn + 1);
+    bool ok = lineage_sign(path, sign_key);
+    if (!ok) fprintf(stderr, "error: cannot sign the %s record %s\n", kind, path);
+    free(path);
     return ok;
 }
 
@@ -4544,50 +4535,6 @@ static void cli_tray_follow(const cli_opts *o) {
 #endif
 }
 
-typedef struct {
-    const cli_opts         *o;
-    const char             *load_path;
-    context_surgery_result *sr;
-} stage_context_ctx;
-
-static bool stage_context_sidecar(const char *tmp_path, const char *out_path,
-                                  char *sidecar_tmp, size_t sidecar_tmp_cap,
-                                  char *sidecar_out, size_t sidecar_out_cap,
-                                  char *kind_out, size_t kind_cap, void *ud) {
-    stage_context_ctx *ctx = ud;
-    const cli_opts *o = ctx->o;
-    char bsha[65] = "", osha[65] = "";
-    if (!envelope_file_sha256(ctx->load_path, bsha) ||
-        !envelope_file_sha256(tmp_path, osha)) {
-        fprintf(stderr, "error: cannot hash context-surgery artifacts "
-                "for the provenance record\n");
-        return false;
-    }
-    sbuf rec = {0};
-    sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.context-surgery.v1\","
-                 "\"runner\":\"");
-    sb_esc(&rec, RUNNER_VERSION, strlen(RUNNER_VERSION));
-    sb_lit(&rec, "\",\"base\":");
-    lineage_put_input(&rec, ctx->load_path, bsha);
-    sb_fmt(&rec, ",\"source\":{\"context_length\":%u,"
-                   "\"original_context_length\":%u,\"yarn_factor\":%.9g},",
-           ctx->sr->source_context, ctx->sr->original_context,
-           (double)ctx->sr->source_factor);
-    sb_fmt(&rec, "\"target\":{\"path\":\"");
-    sb_esc(&rec, plat_path_base(out_path), strlen(plat_path_base(out_path)));
-    sb_fmt(&rec, "\",\"sha256\":\"%s\",\"context_length\":%d,"
-                   "\"original_context_length\":%u,\"yarn_factor\":%.9g},",
-           osha, o->mp.n_ctx, ctx->sr->original_context, (double)o->mp.yarn_factor);
-    sb_fmt(&rec, "\"tensor_payloads_byte_identical\":%s}\n",
-           ctx->sr->tensors_byte_identical ? "true" : "false");
-    snprintf(kind_out, kind_cap, "context-surgery");
-    bool ok = stage_record(out_path, ".context.json", "context-surgery", &rec,
-                           o->sign_key, sidecar_tmp, sidecar_tmp_cap,
-                           sidecar_out, sidecar_out_cap);
-    free(rec.s);
-    return ok;
-}
-
 // --context-surgery: rewrite the file's context metadata for a longer
 // context under YaRN, and write its provenance record.
 static int run_context_surgery(const cli_opts *o, const char *load_path) {
@@ -4603,65 +4550,37 @@ static int run_context_surgery(const cli_opts *o, const char *load_path) {
         return 1;
     }
     context_surgery_result sr;
-    stage_context_ctx sctx = { .o = o, .load_path = load_path, .sr = &sr };
-    quantize_set_stage_sidecar(stage_context_sidecar, &sctx);
     int rc = context_surgery_gguf(load_path, o->context_out,
                                   (uint32_t)o->mp.n_ctx, o->mp.yarn_factor, &sr);
-    quantize_set_stage_sidecar(NULL, NULL);
-    return rc;
-}
-
-typedef struct {
-    const cli_opts *o;
-    merge_survival *sv;
-} stage_merge_ctx;
-
-static bool stage_merge_sidecar(const char *tmp_path, const char *out_path,
-                                char *sidecar_tmp, size_t sidecar_tmp_cap,
-                                char *sidecar_out, size_t sidecar_out_cap,
-                                char *kind_out, size_t kind_cap, void *ud) {
-    stage_merge_ctx *ctx = ud;
-    const cli_opts *o = ctx->o;
-    char bsha[65] = "", asha[65] = "", osha[65] = "";
-    if (!envelope_file_sha256(o->model_path, bsha) ||
-        !envelope_file_sha256(o->lora_path, asha) ||
-        !envelope_file_sha256(tmp_path, osha)) {
-        fprintf(stderr, "error: cannot hash every merge artifact for "
-                "the provenance record\n");
-        return false;
+    if (rc != 0) return rc;
+    char bsha[65] = "", osha[65] = "";
+    if (!envelope_file_sha256(load_path, bsha) ||
+        !envelope_file_sha256(o->context_out, osha)) {
+        fprintf(stderr, "error: cannot hash context-surgery artifacts "
+                "for the provenance record\n");
+        return 1;
     }
     sbuf rec = {0};
-    sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.merge.v1\","
+    sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.context-surgery.v1\","
                  "\"runner\":\"");
     sb_esc(&rec, RUNNER_VERSION, strlen(RUNNER_VERSION));
     sb_lit(&rec, "\",\"base\":");
-    lineage_put_input(&rec, o->model_path, bsha);
-    sb_lit(&rec, ",\"adapter\":");
-    lineage_put_input(&rec, o->lora_path, asha);
-    sb_fmt(&rec, ",\"lora_scale\":%g,\"target\":\"",
-           (double)o->lora_scale);
-    const char *target = o->quant_type ? o->quant_type : "keep";
-    sb_esc(&rec, target, strlen(target));
-    sb_lit(&rec, "\",\"merged\":{\"path\":\"");
-    sb_esc(&rec, plat_path_base(out_path), strlen(plat_path_base(out_path)));
-    sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, osha);
-    sb_lit(&rec, "\"}");
-    if (merge_survival_measured(ctx->sv)) {
-        sb_fmt(&rec, ",\"survival\":{\"adapted_bytes\":%llu,"
-               "\"bytes_changed\":%llu,\"delta_retained\":",
-               (unsigned long long)ctx->sv->bytes,
-               (unsigned long long)ctx->sv->bytes_changed);
-        sb_fix6(&rec, ctx->sv->ret_num / ctx->sv->ret_den);
-        sb_fmt(&rec, ",\"min_retained\":%s}",
-               o->merge_allow_erased ? "null" : MERGE_MIN_RETAINED_STR);
-    }
-    sb_lit(&rec, "}\n");
-    snprintf(kind_out, kind_cap, "merge");
-    bool ok = stage_record(out_path, ".merge.json", "merge", &rec,
-                           o->sign_key, sidecar_tmp, sidecar_tmp_cap,
-                           sidecar_out, sidecar_out_cap);
+    lineage_put_input(&rec, load_path, bsha);
+    sb_fmt(&rec, ",\"source\":{\"context_length\":%u,"
+                   "\"original_context_length\":%u,\"yarn_factor\":%.9g},",
+           sr.source_context, sr.original_context,
+           (double)sr.source_factor);
+    sb_fmt(&rec, "\"target\":{\"path\":\"");
+    sb_esc(&rec, plat_path_base(o->context_out), strlen(plat_path_base(o->context_out)));
+    sb_fmt(&rec, "\",\"sha256\":\"%s\",\"context_length\":%d,"
+                   "\"original_context_length\":%u,\"yarn_factor\":%.9g},",
+           osha, o->mp.n_ctx, sr.original_context, (double)o->mp.yarn_factor);
+    sb_fmt(&rec, "\"tensor_payloads_byte_identical\":%s}\n",
+           sr.tensors_byte_identical ? "true" : "false");
+    bool wrote = write_record(o->context_out, ".context.json",
+                              "context-surgery", &rec, o->sign_key);
     free(rec.s);
-    return ok;
+    return wrote ? 0 : 1;
 }
 
 // --merge-lora: fold an adapter into the base weights at the requested
@@ -4687,13 +4606,57 @@ static int run_merge_lora(const cli_opts *o) {
         return 1;
     }
     merge_survival sv = {0};
-    stage_merge_ctx mctx = { .o = o, .sv = &sv };
-    quantize_set_stage_sidecar(stage_merge_sidecar, &mctx);
     int rc = merge_lora_gguf(o->model_path, o->lora_path, o->lora_scale,
                              o->merge_out, tt,
                              o->merge_allow_erased ? -1.0f : MERGE_MIN_RETAINED,
                              &sv);
-    quantize_set_stage_sidecar(NULL, NULL);
+    if (rc == 0) {
+        // the D7 discipline extended to merged artifacts: the standalone
+        // blob stays auditable — base sha + adapter sha + config ->
+        // merged sha, machine-written beside the file
+        char bsha[65] = "", asha[65] = "", osha[65] = "";
+        if (!envelope_file_sha256(o->model_path, bsha) ||
+            !envelope_file_sha256(o->lora_path, asha) ||
+            !envelope_file_sha256(o->merge_out, osha)) {
+            fprintf(stderr, "error: cannot hash every merge artifact for "
+                    "the provenance record\n");
+            return 1;
+        }
+        sbuf rec = {0};
+        sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.merge.v1\","
+                     "\"runner\":\"");
+        sb_esc(&rec, RUNNER_VERSION, strlen(RUNNER_VERSION));
+        sb_lit(&rec, "\",\"base\":");
+        lineage_put_input(&rec, o->model_path, bsha);
+        sb_lit(&rec, ",\"adapter\":");
+        lineage_put_input(&rec, o->lora_path, asha);
+        sb_fmt(&rec, ",\"lora_scale\":%g,\"target\":\"",
+               (double)o->lora_scale);
+        const char *target = o->quant_type ? o->quant_type : "keep";
+        sb_esc(&rec, target, strlen(target));
+        sb_lit(&rec, "\",\"merged\":{\"path\":\"");
+        sb_esc(&rec, plat_path_base(o->merge_out), strlen(plat_path_base(o->merge_out)));
+        sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, osha);
+        sb_lit(&rec, "\"}");
+        // what the output grid kept of the delta (quants.h
+        // merge_survival); absent when no adapted tensor was rewritten
+        // delta_retained is null when not finite (R6.68.115), and the block
+        // is written whenever the merge measured it, a measure that is not a
+        // number included (merge_survival_measured, R6.68.116)
+        if (merge_survival_measured(&sv)) {
+            sb_fmt(&rec, ",\"survival\":{\"adapted_bytes\":%llu,"
+                   "\"bytes_changed\":%llu,\"delta_retained\":",
+                   (unsigned long long)sv.bytes,
+                   (unsigned long long)sv.bytes_changed);
+            sb_fix6(&rec, sv.ret_num / sv.ret_den);
+            sb_fmt(&rec, ",\"min_retained\":%s}",
+                   o->merge_allow_erased ? "null" : MERGE_MIN_RETAINED_STR);
+        }
+        sb_lit(&rec, "}\n");
+        if (!write_record(o->merge_out, ".merge.json", "merge", &rec, o->sign_key))
+            rc = 1;
+        free(rec.s);
+    }
     return rc;
 }
 
@@ -4718,76 +4681,6 @@ static bool same_file(const char *a, const char *b) {
 #else
     return strcmp(ca, cb) == 0;
 #endif
-}
-
-typedef struct {
-    const cli_opts *o;
-    const char     *bsha;
-    const char     *xsha;
-} stage_quantize_ctx;
-
-static bool stage_quantize_sidecar(const char *tmp_path, const char *out_path,
-                                   char *sidecar_tmp, size_t sidecar_tmp_cap,
-                                   char *sidecar_out, size_t sidecar_out_cap,
-                                   char *kind_out, size_t kind_cap, void *ud) {
-    stage_quantize_ctx *ctx = ud;
-    const cli_opts *o = ctx->o;
-    char osha[65] = "";
-    if (!envelope_file_sha256(tmp_path, osha)) {
-        fprintf(stderr, "error: cannot hash the rewrite's files for the "
-                "provenance record\n");
-        return false;
-    }
-    const char *target = o->quant_type ? o->quant_type
-                       : o->type_plan ? "plan"
-                       : (o->prune_experts || o->remove_sublayer) ? "keep" : "q4_0";
-    sbuf rec = {0};
-    sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.quant.v1\","
-                 "\"runner\":\"");
-    sb_esc(&rec, RUNNER_VERSION, strlen(RUNNER_VERSION));
-    sb_lit(&rec, "\",\"build\":{\"binary_sha256\":\"");
-    sb_lit(&rec, ctx->xsha);
-    sb_lit(&rec, "\"},\"base\":");
-    lineage_put_input(&rec, o->model_path, ctx->bsha);
-    sb_lit(&rec, ",\"target\":\"");
-    sb_esc(&rec, target, strlen(target));
-    sb_lit(&rec, "\"");
-    const quantize_report *qr = quantize_last_report();
-    sb_fmt(&rec, ",\"tensors\":{\"converted\":%llu,\"kept\":%llu}",
-           (unsigned long long)qr->converted, (unsigned long long)qr->kept);
-    if (qr->requant_only) {
-        sb_lit(&rec, ",\"requant_only\":\"");
-        sb_esc(&rec, qr->requant_only, strlen(qr->requant_only));
-        sb_lit(&rec, "\"");
-    }
-    if (qr->force_requant) sb_lit(&rec, ",\"force_requant\":true");
-    if (o->prune_experts) {
-        sb_lit(&rec, ",\"prune_experts\":");
-        lineage_put_input(&rec, o->prune_experts, NULL);
-    }
-    if (o->type_plan) {
-        sb_lit(&rec, ",\"type_plan\":");
-        lineage_put_input(&rec, o->type_plan, NULL);
-    }
-    if (o->imatrix) {   // R4.7.2: the calibration that shaped the rounding
-        sb_lit(&rec, ",\"imatrix\":");
-        lineage_put_input(&rec, o->imatrix, NULL);
-    }
-    if (o->remove_sublayer) {
-        sb_lit(&rec, ",\"remove_sublayer\":\"");
-        sb_esc(&rec, o->remove_sublayer, strlen(o->remove_sublayer));
-        sb_lit(&rec, "\"");
-    }
-    sb_lit(&rec, ",\"output\":{\"path\":\"");
-    sb_esc(&rec, plat_path_base(out_path), strlen(plat_path_base(out_path)));
-    sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, osha);
-    sb_lit(&rec, "\"}}\n");
-    snprintf(kind_out, kind_cap, "quantize");
-    bool ok = stage_record(out_path, ".quant.json", "quantize", &rec,
-                           o->sign_key, sidecar_tmp, sidecar_tmp_cap,
-                           sidecar_out, sidecar_out_cap);
-    free(rec.s);
-    return ok;
 }
 
 static int run_quantize(const cli_opts *o) {
@@ -4830,21 +4723,12 @@ static int run_quantize(const cli_opts *o) {
     // walked back (--lineage). The input is hashed before the rewrite: an
     // in-place one (-m F --quantize F) installs over it, and hashed after,
     // the record named the output as its own parent.
-    char bsha[65] = "", xsha[65] = "";
+    char bsha[65] = "", osha[65] = "", xsha[65] = "";
     if (!envelope_file_sha256(o->model_path, bsha)) {
         // the first open of the input: a missing file fails here, as the
         // rewrite's own open would
         fprintf(stderr, "error: cannot open %s to hash it for the rewrite's "
                 "provenance record\n", o->model_path);
-        quantize_set_imatrix(NULL);
-        return 1;
-    }
-    char *exe_path = plat_executable_path();
-    bool exe_ok = exe_path && envelope_file_sha256(exe_path, xsha);
-    free(exe_path);
-    if (!exe_ok) {
-        fprintf(stderr, "error: cannot hash the rewrite's files for the "
-                "provenance record\n");
         quantize_set_imatrix(NULL);
         return 1;
     }
@@ -4861,13 +4745,68 @@ static int run_quantize(const cli_opts *o) {
         quantize_set_imatrix(NULL);
         return 1;
     }
-    stage_quantize_ctx qctx = { .o = o, .bsha = bsha, .xsha = xsha };
-    quantize_set_stage_sidecar(stage_quantize_sidecar, &qctx);
     int qrc = quantize_gguf_plan(o->model_path, o->quant_out, tt, o->prune_experts,
                                  o->type_plan, o->remove_sublayer);
-    quantize_set_stage_sidecar(NULL, NULL);
     quantize_set_imatrix(NULL);
-    return qrc;
+    if (qrc != 0) return qrc;
+    char *exe_path = plat_executable_path();
+    bool hash_ok = envelope_file_sha256(o->quant_out, osha) &&
+                   exe_path && envelope_file_sha256(exe_path, xsha);
+    free(exe_path);
+    if (!hash_ok) {
+        fprintf(stderr, "error: cannot hash the rewrite's files for the "
+                "provenance record\n");
+        return 1;
+    }
+    const char *target = o->quant_type ? o->quant_type
+                       : o->type_plan ? "plan"
+                       : (o->prune_experts || o->remove_sublayer) ? "keep" : "q4_0";
+    sbuf rec = {0};
+    sb_lit(&rec, "{\"schema_version\":\"xyntetik.runner.quant.v1\","
+                 "\"runner\":\"");
+    sb_esc(&rec, RUNNER_VERSION, strlen(RUNNER_VERSION));
+    sb_lit(&rec, "\",\"build\":{\"binary_sha256\":\"");
+    sb_lit(&rec, xsha);
+    sb_lit(&rec, "\"},\"base\":");
+    lineage_put_input(&rec, o->model_path, bsha);
+    sb_lit(&rec, ",\"target\":\"");
+    sb_esc(&rec, target, strlen(target));
+    sb_lit(&rec, "\"");
+    // what the rewrite did beside what it was asked: a scope or a declined
+    // conversion leaves tensors at their type, and the target alone hid it
+    const quantize_report *qr = quantize_last_report();
+    sb_fmt(&rec, ",\"tensors\":{\"converted\":%llu,\"kept\":%llu}",
+           (unsigned long long)qr->converted, (unsigned long long)qr->kept);
+    if (qr->requant_only) {
+        sb_lit(&rec, ",\"requant_only\":\"");
+        sb_esc(&rec, qr->requant_only, strlen(qr->requant_only));
+        sb_lit(&rec, "\"");
+    }
+    if (qr->force_requant) sb_lit(&rec, ",\"force_requant\":true");
+    if (o->prune_experts) {
+        sb_lit(&rec, ",\"prune_experts\":");
+        lineage_put_input(&rec, o->prune_experts, NULL);
+    }
+    if (o->type_plan) {
+        sb_lit(&rec, ",\"type_plan\":");
+        lineage_put_input(&rec, o->type_plan, NULL);
+    }
+    if (o->imatrix) {   // R4.7.2: the calibration that shaped the rounding
+        sb_lit(&rec, ",\"imatrix\":");
+        lineage_put_input(&rec, o->imatrix, NULL);
+    }
+    if (o->remove_sublayer) {
+        sb_lit(&rec, ",\"remove_sublayer\":\"");
+        sb_esc(&rec, o->remove_sublayer, strlen(o->remove_sublayer));
+        sb_lit(&rec, "\"");
+    }
+    sb_lit(&rec, ",\"output\":{\"path\":\"");
+    sb_esc(&rec, plat_path_base(o->quant_out), strlen(plat_path_base(o->quant_out)));
+    sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, osha);
+    sb_lit(&rec, "\"}}\n");
+    bool wrote = write_record(o->quant_out, ".quant.json", "quantize", &rec, o->sign_key);
+    free(rec.s);
+    return wrote ? 0 : 1;
 }
 
 // Serve-only flags refused without --serve, and the receipt, KV snapshot

@@ -1804,96 +1804,6 @@ bool plat_replace_file(const char *tmp_path, const char *path) {
 #endif
 }
 
-plat_lock_status plat_publish_lock(const char *path, void **lock_out) {
-    if (lock_out) *lock_out = NULL;
-    if (!path || !*path || !lock_out) return PLAT_LOCK_ERROR;
-#ifdef _WIN32
-    wchar_t *wp = utf8_to_wide(path);
-    if (!wp) return PLAT_LOCK_ERROR;
-    DWORD need = GetFullPathNameW(wp, 0, NULL, NULL);
-    wchar_t *full = need ? malloc((size_t)need * sizeof(wchar_t)) : NULL;
-    const wchar_t *src = wp;
-    if (full && GetFullPathNameW(wp, need, full, NULL) > 0) src = full;
-    uint64_t h = 14695981039346656037ULL;
-    for (size_t i = 0; src[i]; i++) {
-        wchar_t c = src[i];
-        if (c >= L'A' && c <= L'Z') c = (wchar_t)(c + 32);
-        h ^= (uint64_t)(uint16_t)c;
-        h *= 1099511628211ULL;
-    }
-    free(full);
-    free(wp);
-    wchar_t name[64];
-    _snwprintf(name, sizeof name / sizeof name[0],
-               L"Local\\xyntetik-runner-pub-%016llx", (unsigned long long)h);
-    HANDLE m = CreateMutexW(NULL, FALSE, name);
-    if (!m) return PLAT_LOCK_ERROR;
-    DWORD w = WaitForSingleObject(m, INFINITE);
-    if (w != WAIT_OBJECT_0 && w != WAIT_ABANDONED) {
-        CloseHandle(m);
-        return PLAT_LOCK_ERROR;
-    }
-    *lock_out = (void *)m;
-    return PLAT_LOCK_OK;
-#else
-    const char *sl = strrchr(path, '/');
-    char dir_buf[4096];
-    const char *dir = ".";
-    if (sl) {
-        size_t dl = (size_t)(sl - path);
-        if (dl == 0) dir = "/";
-        else if (dl < sizeof dir_buf) {
-            memcpy(dir_buf, path, dl);
-            dir_buf[dl] = 0;
-            dir = dir_buf;
-        }
-    }
-    int fd = open(dir, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return PLAT_LOCK_ERROR;
-    while (flock(fd, LOCK_EX) < 0) {
-        if (errno == EINTR) continue;
-        int e = errno;
-        close(fd);
-        errno = e;
-        if (e == ENOLCK
-#ifdef EOPNOTSUPP
-            || e == EOPNOTSUPP
-#endif
-#ifdef ENOTSUP
-            || e == ENOTSUP
-#endif
-#ifdef ENOSYS
-            || e == ENOSYS
-#endif
-        ) return PLAT_LOCK_UNSUPPORTED;
-        return PLAT_LOCK_ERROR;
-    }
-    int *p = malloc(sizeof *p);
-    if (!p) {
-        flock(fd, LOCK_UN);
-        close(fd);
-        return PLAT_LOCK_ERROR;
-    }
-    *p = fd;
-    *lock_out = p;
-    return PLAT_LOCK_OK;
-#endif
-}
-
-void plat_publish_unlock(void *lock) {
-    if (!lock) return;
-#ifdef _WIN32
-    HANDLE m = (HANDLE)lock;
-    ReleaseMutex(m);
-    CloseHandle(m);
-#else
-    int fd = *(int *)lock;
-    free(lock);
-    flock(fd, LOCK_UN);
-    close(fd);
-#endif
-}
-
 bool plat_random(uint8_t *out, size_t n) {
 #ifdef _WIN32
     for (size_t i = 0; i < n; i += 4) {
@@ -2814,17 +2724,32 @@ FILE *plat_fopen_new(const char *path) {
     if (h == INVALID_HANDLE_VALUE) return NULL;
     int fd = _open_osfhandle((intptr_t)h, _O_WRONLY | _O_BINARY);
     if (fd < 0) {
+        int e = errno;
         CloseHandle(h);
+        plat_remove(path);
+        errno = e;
         return NULL;
     }
     FILE *f = _fdopen(fd, "wb");
-    if (!f) _close(fd);
+    if (!f) {
+        int e = errno;
+        _close(fd);
+        plat_remove(path);
+        errno = e;
+        return NULL;
+    }
     return f;
 #else
     int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
     if (fd < 0) return NULL;
     FILE *f = fdopen(fd, "wb");
-    if (!f) close(fd);
+    if (!f) {
+        int e = errno;
+        close(fd);
+        remove(path);
+        errno = e;
+        return NULL;
+    }
     return f;
 #endif
 }

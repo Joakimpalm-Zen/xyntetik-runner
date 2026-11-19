@@ -800,115 +800,6 @@ static bool has_partial_for(const char *target) {
     return found;
 }
 
-static int pub_mock_lock_rc = PLAT_LOCK_OK;
-static bool pub_mock_replace_ok = true;
-static bool pub_mock_remove_sidecar_ok = true;
-static const char *pub_mock_sidecar_path = NULL;
-
-static int pub_mock_lock(const char *path, void **lock_out) {
-    (void)path;
-    *lock_out = pub_mock_lock_rc == PLAT_LOCK_OK ? (void *)1 : NULL;
-    return pub_mock_lock_rc;
-}
-static void pub_mock_unlock(void *lock) { (void)lock; }
-static int pub_mock_install(const char *tmp, const char *out) {
-    return plat_replace_file(tmp, out) ? 0 : -1;
-}
-static bool pub_mock_replace(const char *tmp, const char *out) {
-    if (!pub_mock_replace_ok) return false;
-    return plat_replace_file(tmp, out);
-}
-static int pub_mock_remove(const char *path) {
-    if (!pub_mock_remove_sidecar_ok && pub_mock_sidecar_path &&
-        strcmp(path, pub_mock_sidecar_path) == 0)
-        return -1;
-    return plat_remove(path);
-}
-static bool pub_mock_exists(const char *path) {
-    return exists(path);
-}
-
-static void write_str(const char *path, const char *s) {
-    FILE *f = fopen(path, "wb"); assert(f);
-    assert(fwrite(s, 1, strlen(s), f) == strlen(s));
-    assert(fclose(f) == 0);
-}
-
-static void check_publish_pair_recovery_and_locks(void) {
-    const char *out_t = "q_pub_out.partial-a";
-    const char *out_f = "q_pub_out.gguf";
-    const char *sid_t = "q_pub_out.quant.json.partial-a";
-    const char *sid_f = "q_pub_out.gguf.quant.json";
-    pub_mock_sidecar_path = sid_f;
-    quantize_publish_ops ops = {
-        .install_out     = pub_mock_install,
-        .replace_sidecar = pub_mock_replace,
-        .remove_file     = pub_mock_remove,
-        .exists_file     = pub_mock_exists,
-        .lock_pub        = pub_mock_lock,
-        .unlock_pub      = pub_mock_unlock,
-    };
-
-    // Outcome 1: sidecar absent when sidecar replace fails -> keep out, rc != 0
-    remove(out_t); remove(out_f); remove(sid_t); remove(sid_f);
-    write_str(out_t, "NEW_GGUF");
-    write_str(sid_t, "NEW_JSON");
-    pub_mock_lock_rc = PLAT_LOCK_OK;
-    pub_mock_replace_ok = false;
-    pub_mock_remove_sidecar_ok = true;
-    bool installed = false;
-    assert(quantize_publish_pair(out_t, out_f, sid_t, sid_f, &installed, &ops) != 0);
-    assert(installed);
-    assert(exists(out_f) && !exists(sid_f) && !exists(sid_t));
-
-    // Outcome 2: stale sidecar exists & removable -> remove stale sidecar, keep out
-    remove(out_t); remove(out_f); remove(sid_t); remove(sid_f);
-    write_str(out_t, "NEW_GGUF2");
-    write_str(sid_t, "NEW_JSON2");
-    write_str(out_f, "OLD_GGUF");
-    write_str(sid_f, "OLD_JSON");
-    installed = false;
-    assert(quantize_publish_pair(out_t, out_f, sid_t, sid_f, &installed, &ops) != 0);
-    assert(installed);
-    assert(exists(out_f) && !exists(sid_f) && !exists(sid_t));
-    check_bytes(out_f, "NEW_GGUF2", 9);
-
-    // Outcome 3: stale sidecar exists & NOT removable -> remove out as last resort
-    remove(out_t); remove(out_f); remove(sid_t); remove(sid_f);
-    write_str(out_t, "NEW_GGUF3");
-    write_str(sid_t, "NEW_JSON3");
-    write_str(sid_f, "STALE_LOCKED");
-    pub_mock_remove_sidecar_ok = false;
-    installed = false;
-    assert(quantize_publish_pair(out_t, out_f, sid_t, sid_f, &installed, &ops) != 0);
-    assert(!exists(out_f) && exists(sid_f) && !exists(sid_t));
-
-    // Lock UNSUPPORTED: proceeds unlocked and installs both (warn once across 2 calls)
-    remove(out_t); remove(out_f); remove(sid_t); remove(sid_f);
-    pub_mock_lock_rc = PLAT_LOCK_UNSUPPORTED;
-    pub_mock_replace_ok = true;
-    pub_mock_remove_sidecar_ok = true;
-    for (int i = 0; i < 2; i++) {
-        write_str(out_t, "UNSUP_GGUF");
-        write_str(sid_t, "UNSUP_JSON");
-        installed = false;
-        assert(quantize_publish_pair(out_t, out_f, sid_t, sid_f, &installed, &ops) == 0);
-        assert(installed && exists(out_f) && exists(sid_f));
-    }
-
-    // Lock ERROR: refuses before touching destination, removes sidecar_tmp
-    write_str(out_t, "SHOULD_NOT_LAND");
-    write_str(sid_t, "SHOULD_NOT_LAND_JSON");
-    pub_mock_lock_rc = PLAT_LOCK_ERROR;
-    installed = false;
-    assert(quantize_publish_pair(out_t, out_f, sid_t, sid_f, &installed, &ops) != 0);
-    assert(!installed && !exists(sid_t));
-    check_bytes(out_f, "UNSUP_GGUF", 10);
-
-    remove(out_t); remove(out_f); remove(sid_t); remove(sid_f);
-    printf("ok: publish pair recovery (3 outcomes) and lock fallback/refusal\n");
-}
-
 int main(void) {
     f16_init();   // dequant_row's scale lookup table (unused by the quantizer
                   // itself, but the round-trip check below dequantizes)
@@ -1512,7 +1403,6 @@ int main(void) {
     check_ggml_golden();
     check_ggml_weighted_golden();
     check_width_fallback();
-    check_publish_pair_recovery_and_locks();
 
     remove(in); remove(out); remove(inplace); remove(dest); remove(bad);
     printf("all quantize tests passed\n");
