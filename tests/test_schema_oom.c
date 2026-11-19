@@ -392,14 +392,18 @@ static snode *n_harmony_required(jv *t, jv *f, char *e, int c) {
     (void)f; return schema_compile_harmony_turn(t, false, NULL, NULL, true, e, c);
 }
 static snode *n_gemma4(jv *t, jv *f, char *e, int c) {
-    return schema_compile_gemma4_turn(t, true, NULL, f, true, false, e, c);
+    return schema_compile_gemma4_turn(t, true, NULL, f, true, false, false, e, c);
 }
 static snode *n_gemma4_primed(jv *t, jv *f, char *e, int c) {
     (void)f;
-    return schema_compile_gemma4_turn(t, true, NULL, NULL, true, true, e, c);
+    return schema_compile_gemma4_turn(t, true, NULL, NULL, true, true, false, e, c);
 }
 static snode *n_gemma4_parallel(jv *t, jv *f, char *e, int c) {
     (void)f; return schema_compile_gemma4_parallel(t, NULL, e, c);
+}
+static snode *n_gemma4_auto_parallel(jv *t, jv *f, char *e, int c) {
+    (void)f; return schema_compile_gemma4_turn(t, true, NULL, NULL,
+                                             true, false, true, e, c);
 }
 // Qwen: the reasoning turn (thought or call, then the un-thought turn as
 // its continuation), the un-thought turn, and the parallel form.
@@ -455,7 +459,7 @@ static snode *n_harmony_named(jv *t, jv *f, char *e, int c) {
     (void)f; return schema_compile_harmony_turn(t, false, "add", NULL, false, e, c);
 }
 static snode *n_gemma4_named(jv *t, jv *f, char *e, int c) {
-    (void)f; return schema_compile_gemma4_turn(t, false, "add", NULL, false, false, e, c);
+    (void)f; return schema_compile_gemma4_turn(t, false, "add", NULL, false, false, false, e, c);
 }
 
 static const struct { const char *name; native_fn fn; } NATIVE[] = {
@@ -469,6 +473,7 @@ static const struct { const char *name; native_fn fn; } NATIVE[] = {
     { "gemma4",           n_gemma4 },
     { "gemma4_primed",    n_gemma4_primed },
     { "gemma4_parallel",  n_gemma4_parallel },
+    { "gemma4_auto_parallel", n_gemma4_auto_parallel },
     { "qwen",             n_qwen },
     { "qwen_no_think",    n_qwen_no_think },
     { "qwen_parallel",    n_qwen_parallel },
