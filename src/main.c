@@ -428,20 +428,33 @@ static bool write_provenance(const char *artifact, const char *suffix,
         fprintf(stderr, "error: cannot build %s provenance record\n", kind);
         return false;
     }
-    char *path = malloc(an + sn + 1);
-    if (!path) {
+    size_t plen = an + sn;
+    if (plen > SIZE_MAX - 64) {
+        fprintf(stderr, "error: cannot allocate %s provenance path\n", kind);
+        return false;
+    }
+    char *path = malloc(plen + 1);
+    size_t tmp_cap = plen + 64;
+    char *tmp = malloc(tmp_cap);
+    if (!path || !tmp) {
+        free(path);
+        free(tmp);
         fprintf(stderr, "error: cannot allocate %s provenance path\n", kind);
         return false;
     }
     memcpy(path, artifact, an);
     memcpy(path + an, suffix, sn + 1);
-    FILE *f = plat_fopen(path, "wb");
+    bool made = false;
+    FILE *f = plat_fopen_partial(path, "partial", tmp, tmp_cap, &made);
     bool ok = f && fwrite(doc->s, 1, doc->n, f) == doc->n &&
               fflush(f) == 0 && !ferror(f);
     if (f && fclose(f) != 0) ok = false;
+    if (ok) ok = plat_replace_file(tmp, path);
+    if (!ok && made) plat_remove(tmp);
     if (ok) fprintf(stderr, "%s: provenance -> %s\n", kind, path);
     else    fprintf(stderr, "error: cannot write %s provenance to %s\n",
                     kind, path);
+    free(tmp);
     free(path);
     return ok;
 }

@@ -223,7 +223,15 @@ def test_planted_symlink_refused_for_kv_snapshot(runner_bin, fx, tmp_path):
 
 def test_two_concurrent_writers_do_not_collide(runner_bin, fx, tmp_path):
     """Two processes writing to the same destination concurrently pick distinct
-    random partial names, never truncate each other, and leave zero partials."""
+    random partial names and never leave half-written outputs or leaked partials.
+
+    On POSIX, rename succeeds even while the winning process reads the output
+    (e.g. envelope_file_sha256 hashing the quantized GGUF for .quant.json), so
+    both writers exit 0. On Windows, MoveFileExW refuses to replace a file that
+    another process still holds open without FILE_SHARE_DELETE, so at least one
+    writer succeeds and any displaced writer fails cleanly with its partial
+    removed and the winning output intact.
+    """
     env = _clean_env()
 
     for trial in range(4):
@@ -235,9 +243,24 @@ def test_two_concurrent_writers_do_not_collide(runner_bin, fx, tmp_path):
                                 text=True, timeout=120, env=env)
                     for _ in range(2)]
             results = [f.result() for f in futs]
-        assert all(r.returncode == 0 for r in results), [r.stderr for r in results]
+        if sys.platform == "win32":
+            assert any(r.returncode == 0 for r in results), [r.stderr for r in results]
+            for r in results:
+                if r.returncode != 0:
+                    assert ("could not install it as" in r.stderr or
+                            "cannot write" in r.stderr), r.stderr
+        else:
+            assert all(r.returncode == 0 for r in results), [r.stderr for r in results]
         assert qout.is_file() and qout.stat().st_size > 0
         assert not list(tmp_path.glob(f"shared_{trial}.gguf.partial*"))
+        assert not list(tmp_path.glob(f"shared_{trial}.gguf.quant.json.partial*"))
+        qrec = pathlib.Path(f"{qout}.quant.json")
+        if qrec.exists():
+            assert json.loads(qrec.read_text())["schema_version"] == "xyntetik.runner.quant.v1"
+        chk = subprocess.run([str(runner_bin), "-m", str(qout), "-p", "hi",
+                              "-n", "1", "--temp", "0", "--gpu", "off", "-t", "2"],
+                             cwd=ROOT, capture_output=True, text=True, timeout=120, env=env)
+        assert chk.returncode == 0, chk.stderr
 
     for trial in range(4):
         tout = tmp_path / f"shared_{trial}.json"
@@ -248,7 +271,14 @@ def test_two_concurrent_writers_do_not_collide(runner_bin, fx, tmp_path):
                                 text=True, timeout=120, env=env)
                     for _ in range(2)]
             results = [f.result() for f in futs]
-        assert all(r.returncode == 0 for r in results), [r.stderr for r in results]
+        if sys.platform == "win32":
+            assert any(r.returncode == 0 for r in results), [r.stderr for r in results]
+            for r in results:
+                if r.returncode != 0:
+                    assert ("failed writing" in r.stderr or
+                            "cannot write" in r.stderr), r.stderr
+        else:
+            assert all(r.returncode == 0 for r in results), [r.stderr for r in results]
         parsed = json.loads(tout.read_text())
         assert parsed["schema_version"].startswith("xyntetik.")
         assert not list(tmp_path.glob(f"shared_{trial}.json.partial*"))

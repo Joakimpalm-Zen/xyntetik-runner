@@ -584,8 +584,8 @@ int main(int argc, char **argv) {
               "failed config install preserves the durable config");
         CHECK(strstr(saved, "edited-model.gguf") == NULL,
               "failed config install never publishes partial new state");
-        // Scan the config directory: no partial* temporary may remain.
-        char cfg_dir[600];
+        // Scan the config directory: no config.json.partial* temporary may remain.
+        char cfg_dir[sizeof cfg];
         snprintf(cfg_dir, sizeof cfg_dir, "%s", cfg);
         char *slash = strrchr(cfg_dir, '/');
         if (!slash) slash = strrchr(cfg_dir, '\\');
@@ -594,7 +594,7 @@ int main(int argc, char **argv) {
         plat_dir *dp = plat_opendir(cfg_dir);
         if (dp) {
             for (const char *nm; (nm = plat_readdir(dp)) != NULL; )
-                if (strstr(nm, "tray.json.partial") != NULL) has_partial = true;
+                if (strstr(nm, "config.json.partial") != NULL) has_partial = true;
             plat_closedir(dp);
         }
         CHECK(!has_partial, "failed config install removes its partial file");
