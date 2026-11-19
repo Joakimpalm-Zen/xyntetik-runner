@@ -1280,8 +1280,8 @@ static void usage_to(FILE *f, const char *prog) {
         "  -c N           context length (default: min(model max, 4096); under\n"
         "                 --reserve the default is the auto-fit instead, the\n"
         "                 context the reservation leaves after the weights)\n"
-        "  -b N           prompt batch size (default 64 with --gpu off;\n"
-        "                 otherwise auto-sized from free RAM: 64/256/512)\n"
+        "  -b N           prompt batch size (default by total RAM: 64 below 6 GB,\n"
+        "                 256 below 12 GB, else 512; --gpu off caps it at 256)\n"
         "  -t N           threads (default: physical cores, capped at 32)\n"
         "  -s N           RNG seed (default: time)\n"
         "  --think [on|off|auto]  in -i chat, request the family's thinking\n"
@@ -1781,7 +1781,7 @@ static int run_fit_check(const char *path, int n_ctx_want,
     // would take (model.c: a GPU load's default batch follows total RAM)
     f.kv_ring_mode = mp->kv_ring;
     f.n_batch = mp->n_batch > 0 ? mp->n_batch
-              : mp->gpu_mode == GPU_AUTO ? model_batch_default_for(plat_ram_bytes()) : 64;
+              : model_batch_default(mp->gpu_mode, plat_ram_bytes());
     // R3.58: a load that keeps every expert bank on the host (--cpu-moe, or
     // nemotron_h_moe's CUDA default, model.c model_default_placement) is
     // charged as that load charges it. --cpu-moe N and auto keep only some

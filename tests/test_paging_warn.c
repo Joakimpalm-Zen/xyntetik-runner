@@ -219,6 +219,21 @@ int main(int argc, char **argv) {
        model_batch_default_for((uint64_t)12 << 30) == 512,
        "the 6 GB and 12 GB boundaries land exactly where documented");
 
+    // R3.74: the CPU route (GPU_OFF: --gpu off, -ngl 0, a session image's
+    // run) takes the same rule, capped at 256 until 512 is measured there;
+    // --gpu auto keeps the rule as it is
+    ck(model_batch_default(GPU_OFF, (uint64_t)4 << 30) == 64,
+       "a 4 GB machine keeps the flat batch on the CPU route");
+    ck(model_batch_default(GPU_OFF, (uint64_t)8 << 30) == 256,
+       "an 8 GB machine batches 256 on the CPU route");
+    ck(model_batch_default(GPU_OFF, (uint64_t)16 << 30) == 256 &&
+       model_batch_default(GPU_OFF, 0) == 256,
+       "the CPU route is capped at 256 (512 is not measured there)");
+    ck(model_batch_default(GPU_AUTO, (uint64_t)8 << 30) == 256 &&
+       model_batch_default(GPU_AUTO, (uint64_t)16 << 30) == 512 &&
+       model_batch_default(GPU_AUTO, 0) == 512,
+       "--gpu auto keeps the RAM rule");
+
 
     if (g_fail) { fprintf(stderr, "paging-warn: FAILED\n"); return 1; }
     puts("paging-warn ok");
