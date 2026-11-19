@@ -9166,11 +9166,20 @@ void model_embd_transform(const model_t *m, float *row) {
 // whole block under the translation unit's -ffast-math setting on macOS.
 // Keep the compiler split explicit: GCC gets its function option and Clang
 // gets the documented compound-statement precise mode.
+//
+// Contraction off on both (R3.78): clang's precise mode already forbids
+// fusing a*b+c into one rounding, but GCC's no-fast-math alone left GNU C's
+// default -ffp-contract=fast, so on an FMA host the serial and the chunked
+// cores below fused their updates differently and their state differed in the
+// last bits on GCC builds only (the lab's Linux, CI's Windows: R3.76). The
+// attribute is the mechanism; gate 17 of tests/test_prefill_batch_identity.c
+// (the recurrent state after a prompt with a one-row last chunk, against one
+// pass) is what keeps the two cores bit-identical.
 #if defined(__clang__)
 #define SSM_PRECISE_ATTR
 #define SSM_PRECISE_SCOPE _Pragma("float_control(precise, on)")
 #elif defined(__GNUC__)
-#define SSM_PRECISE_ATTR __attribute__((optimize("no-fast-math")))
+#define SSM_PRECISE_ATTR __attribute__((optimize("no-fast-math", "fp-contract=off")))
 #define SSM_PRECISE_SCOPE
 #else
 #define SSM_PRECISE_ATTR
