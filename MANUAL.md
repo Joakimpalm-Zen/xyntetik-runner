@@ -692,7 +692,11 @@ tensors converted and kept, and `requant_only` and `force_requant` name the
 development switches when they scoped or forced the conversion. A record names every file by its base name, never by where it
 sat on the machine that made it, so it can be published beside the file.
 With `--sign-key` the record is signed in place, the same chain
-and signature objects a receipt carries.
+and signature objects a receipt carries. Atomic file outputs (models, checkpoints,
+receipts, signed records, snapshots, and `--report`) write to a new
+`PATH.partial-<16hex>` (or `PATH.tmp-<16hex>`) temporary beside the target and
+replace it cleanly; any leftover left by an interrupted process is unused and
+safe to delete.
 
 ```sh
 ./runner train data.txt -m base.gguf --out a.gguf --sign-key key.json

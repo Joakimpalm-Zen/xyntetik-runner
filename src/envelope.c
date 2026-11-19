@@ -710,11 +710,11 @@ bool transcript_write(const transcript_info *ti) {
     envelope_data_sha256(w.b, w.n, chain);
     if (ti->chain_out) memcpy(ti->chain_out, chain, 65);
 
-    size_t tl = strlen(ti->out_path) + sizeof ".partial";
+    size_t tl = strlen(ti->out_path) + 64;
     char *tmp = malloc(tl);
     if (!tmp) { free(w.b); return false; }
-    snprintf(tmp, tl, "%s.partial", ti->out_path);
-    FILE *f = plat_fopen(tmp, "wb");
+    bool made = false;
+    FILE *f = plat_fopen_partial(ti->out_path, "partial", tmp, tl, &made);
     bool ok = f != NULL;
     if (ok) {
         // The chain object closes the record; a signature, when a key was
@@ -783,7 +783,7 @@ bool transcript_write(const transcript_info *ti) {
     // "failed writing" while the .partial held a complete receipt
     if (ok) ok = plat_replace_file(tmp, ti->out_path);
     if (!ok) {
-        plat_remove(tmp);
+        if (made) plat_remove(tmp);
         fputs("error: transcript: failed writing ", stderr);
         envelope_print_safe(stderr, ti->out_path, 0, "?", false);
         fputc('\n', stderr);
@@ -1456,14 +1456,13 @@ bool record_sign(const char *path, const char *sign_key_path, const char *prev_p
     char *pkh = ok ? malloc(k.pk_n * 2 + 1) : NULL;
     char *sigh = ok ? malloc(k.sig_n * 2 + 1) : NULL;
     if (ok && (!pkh || !sigh)) ok = false;
-    char tmp_path[4096];
+    char tmp_path[4200];
+    bool made = false;
     if (ok) {
         bytes_to_hex(k.pk, k.pk_n, pkh);
         bytes_to_hex(sig, k.sig_n, sigh);
-        int tl = snprintf(tmp_path, sizeof tmp_path, "%s.partial", path);
-        ok = tl > 0 && tl < (int)sizeof tmp_path;
     }
-    FILE *f = ok ? plat_fopen(tmp_path, "wb") : NULL;
+    FILE *f = ok ? plat_fopen_partial(path, "partial", tmp_path, sizeof tmp_path, &made) : NULL;
     if (ok && !f) ok = false;
     if (ok) {
         ok = fwrite(buf, 1, body_n, f) == body_n &&
@@ -1472,7 +1471,7 @@ bool record_sign(const char *path, const char *sign_key_path, const char *prev_p
                      k.algo, pkh, sigh) > 0;
         ok = (fclose(f) == 0) && ok;
         if (ok) ok = plat_replace_file(tmp_path, path);
-        if (!ok) plat_remove(tmp_path);
+        if (!ok && made) plat_remove(tmp_path);
     }
     memset(&k, 0, sizeof k);
     free(pkh); free(sigh); free(buf);

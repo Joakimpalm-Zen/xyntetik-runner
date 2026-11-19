@@ -14957,10 +14957,10 @@ const float *model_full_master(const model_t *m, int layer, int slot) {
 bool model_full_write(model_t *m, const char *src_path, const char *out_path,
                       char *why, size_t cap) {
     if (!m->full) { snprintf(why, cap, "no full-weight training state"); return false; }
-    char tmp[4096];
-    snprintf(tmp, sizeof tmp, "%s.tmp", out_path);
+    char tmp[4200];
+    bool made = false;
     FILE *in = plat_fopen(src_path, "rb");
-    FILE *out = in ? plat_fopen(tmp, "wb") : NULL;
+    FILE *out = in ? plat_fopen_partial(out_path, "tmp", tmp, sizeof tmp, &made) : NULL;
     if (!in || !out) {
         snprintf(why, cap, "cannot open %s", in ? tmp : src_path);
         if (in) fclose(in);
@@ -14990,7 +14990,7 @@ bool model_full_write(model_t *m, const char *src_path, const char *out_path,
         snprintf(why, cap, "cannot replace %s", out_path);
         ok = false;
     }
-    if (!ok) plat_remove(tmp);
+    if (!ok && made) plat_remove(tmp);
     return ok;
 }
 
@@ -15228,17 +15228,18 @@ static bool lora_write_gguf(model_t *m, FILE *f) {
 bool model_lora_save(model_t *m, const char *path) {
     if (!m->lora) return false;
     size_t pn = strlen(path);
-    if (pn > SIZE_MAX - sizeof(".partial")) {
+    if (pn > SIZE_MAX - 64) {
         fprintf(stderr, "error: adapter path is too long\n");
         return false;
     }
-    char *tmp_path = malloc(pn + sizeof(".partial"));
+    size_t tmp_cap = pn + 64;
+    char *tmp_path = malloc(tmp_cap);
     if (!tmp_path) {
         fprintf(stderr, "error: cannot allocate adapter checkpoint path\n");
         return false;
     }
-    snprintf(tmp_path, pn + sizeof(".partial"), "%s.partial", path);
-    FILE *f = plat_fopen(tmp_path, "wb");
+    bool made = false;
+    FILE *f = plat_fopen_partial(path, "partial", tmp_path, tmp_cap, &made);
     if (!f) {
         fprintf(stderr, "error: cannot write %s\n", tmp_path);
         free(tmp_path);
@@ -15247,14 +15248,14 @@ bool model_lora_save(model_t *m, const char *path) {
     bool ok = lora_write_gguf(m, f) && fflush(f) == 0 && !ferror(f);
     if (fclose(f) != 0) ok = false;
     if (!ok) {
-        plat_remove(tmp_path);
+        if (made) plat_remove(tmp_path);
         fprintf(stderr, "error: failed writing adapter %s "
                 "(destination left untouched)\n", path);
         free(tmp_path);
         return false;
     }
     if (install_lora_file(tmp_path, path) != 0) {
-        plat_remove(tmp_path);
+        if (made) plat_remove(tmp_path);
         fprintf(stderr, "error: wrote %s but could not install it as %s "
                 "(destination unchanged)\n", tmp_path, path);
         free(tmp_path);

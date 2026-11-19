@@ -584,12 +584,84 @@ int main(int argc, char **argv) {
               "failed config install preserves the durable config");
         CHECK(strstr(saved, "edited-model.gguf") == NULL,
               "failed config install never publishes partial new state");
-        char partial[800];
-        snprintf(partial, sizeof partial, "%s.partial-%ld", cfg, (long)getpid());
-        cf = fopen(partial, "rb");
-        CHECK(cf == NULL, "failed config install removes its partial file");
-        if (cf) fclose(cf);
+        // Scan the config directory: no config.json.partial* temporary may remain.
+        char cfg_dir[sizeof cfg];
+        snprintf(cfg_dir, sizeof cfg_dir, "%s", cfg);
+        char *slash = strrchr(cfg_dir, '/');
+        if (!slash) slash = strrchr(cfg_dir, '\\');
+        if (slash) *slash = 0;
+        bool has_partial = false;
+        plat_dir *dp = plat_opendir(cfg_dir);
+        if (dp) {
+            for (const char *nm; (nm = plat_readdir(dp)) != NULL; )
+                if (strstr(nm, "config.json.partial") != NULL) has_partial = true;
+            plat_closedir(dp);
+        }
+        CHECK(!has_partial, "failed config install removes its partial file");
     }
+
+#ifndef _WIN32
+    // R6.101: a symlink planted at `<cfg>.partial-fixed` is refused, never followed.
+    {
+        char lnk[800], victim[800];
+        snprintf(lnk, sizeof lnk, "%s.partial-fixed", cfg);
+        snprintf(victim, sizeof victim, "%s/tray-victim.txt", g_home);
+        FILE *vf = fopen(victim, "wb");
+        if (vf) { fputs("untouched", vf); fclose(vf); }
+        remove(lnk);
+        if (symlink(victim, lnk) == 0) {
+            setenv_compat("RUNNER_TEST_PARTIAL_SUFFIX", "fixed");
+            tray_menu_act(TRAY_ACT_PICK_MODEL, 0, alt);
+            unsetenv("RUNNER_TEST_PARTIAL_SUFFIX");
+            char got[64] = {0};
+            vf = fopen(victim, "rb");
+            if (vf) {
+                size_t gn = fread(got, 1, sizeof got - 1, vf);
+                got[gn] = 0;
+                fclose(vf);
+            }
+            CHECK(strcmp(got, "untouched") == 0,
+                  "cfg_save refuses a symlink planted at .partial-fixed");
+            n = tray_menu_build(items, 128);
+            CHECK(menu_has(items, n, "fake-model.gguf"),
+                  "cfg_save symlink refusal preserves durable config");
+            remove(lnk);
+        }
+
+        // Legacy-name case (no RUNNER_TEST_PARTIAL_SUFFIX): succeeds without
+        // touching `<cfg>.partial-<pid>` or overwriting its canary.
+        snprintf(lnk, sizeof lnk, "%s.partial-%ld", cfg, (long)getpid());
+        remove(lnk);
+        vf = fopen(victim, "wb");
+        if (vf) { fputs("untouched", vf); fclose(vf); }
+        if (symlink(victim, lnk) == 0) {
+            unsetenv("RUNNER_TEST_PARTIAL_SUFFIX");
+            tray_menu_act(TRAY_ACT_PICK_MODEL, 0, alt);
+            char got[64] = {0};
+            vf = fopen(victim, "rb");
+            if (vf) {
+                size_t gn = fread(got, 1, sizeof got - 1, vf);
+                got[gn] = 0;
+                fclose(vf);
+            }
+            CHECK(strcmp(got, "untouched") == 0,
+                  "legacy .partial-<pid> symlink canary untouched");
+            struct stat lst;
+            CHECK(lstat(lnk, &lst) == 0 && S_ISLNK(lst.st_mode),
+                  "legacy .partial-<pid> remains a symlink");
+            n = tray_menu_build(items, 128);
+            CHECK(menu_has(items, n, "edited-model.gguf"),
+                  "cfg_save succeeds onto config when legacy partial symlink present");
+            remove(lnk);
+            // Restore durable model back to fake-model.gguf without spawning.
+            remove(mdl);
+            tray_menu_act(TRAY_ACT_PICK_MODEL, 0, mdl);
+            FILE *mf = fopen(mdl, "wb");
+            if (mf) { fputs("x", mf); fclose(mf); }
+        }
+        remove(victim);
+    }
+#endif
 
     // 2a-bis. a configured model that no longer exists on disk must read as
     // MISSING, never as a crash. Publishing a checkpoint and reclaiming the

@@ -279,6 +279,10 @@ test-stream-out
 test-stream-out.exe
 test-prefix-persist
 test-prefix-persist.exe
+test-kvsnap-replace
+test-kvsnap-replace.exe
+test-partial-fdopen
+test-partial-fdopen.exe
 test-server-restart
 test-server-restart.exe
 test-tokenizer-merge

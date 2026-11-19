@@ -207,8 +207,14 @@ bool        plat_random(uint8_t *out, size_t n);
 // route identity (compat.c).
 bool        runner_switch_counts(const char *name, size_t n);
 // a new file for writing: created exclusively, never through a link; NULL if the
-// name exists (R17.9 step 4b's --report)
+// name exists
 FILE       *plat_fopen_new(const char *path);
+// a new temporary file beside `path` ("%s.%s-%s", ext defaults to "partial")
+// with an unpredictable 16-hex suffix (fixed only by RUNNER_TEST_PARTIAL_SUFFIX
+// in tests), opened via plat_fopen_new(). *made_out (when non-NULL) is set
+// true iff a FILE* is returned so callers unlink only what this call created.
+FILE       *plat_fopen_partial(const char *path, const char *ext,
+                               char *tmp_out, size_t tmp_cap, bool *made_out);
 // The last path component: what follows the last '/' or '\\' (both count on
 // every platform, so a path spelled the other platform's way still names
 // its file), or the whole string when it has neither.

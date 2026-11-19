@@ -132,18 +132,40 @@ static int run_case(const qcase *c, const char *out) {
     }
 }
 
-static void remove_outputs(const char *out) {
-    char p[1100];
+static bool has_partial_in(const char *work, const char *out) {
+    char pfx[1100];
+    snprintf(pfx, sizeof pfx, "%s.partial", plat_path_base(out));
+    size_t pn = strlen(pfx);
+    plat_dir *dp = plat_opendir(work);
+    if (!dp) return false;
+    bool found = false;
+    for (const char *nm; (nm = plat_readdir(dp)) != NULL; ) {
+        if (strncmp(nm, pfx, pn) == 0) { found = true; break; }
+    }
+    plat_closedir(dp);
+    return found;
+}
+
+static void remove_outputs(const char *work, const char *out) {
+    char pfx[1100], p[2200];
     remove(out);
-    snprintf(p, sizeof p, "%s.partial", out);
-    remove(p);
+    snprintf(pfx, sizeof pfx, "%s.partial", plat_path_base(out));
+    size_t pn = strlen(pfx);
+    plat_dir *dp = plat_opendir(work);
+    if (!dp) return;
+    for (const char *nm; (nm = plat_readdir(dp)) != NULL; ) {
+        if (strncmp(nm, pfx, pn) == 0) {
+            snprintf(p, sizeof p, "%s/%s", work, nm);
+            remove(p);
+        }
+    }
+    plat_closedir(dp);
 }
 
 static void sweep(const qcase *c, const char *work) {
-    char out[1024], partial[1100];
+    char out[1024];
     snprintf(out, sizeof out, "%s/test-quantize-oom-%s.gguf", work, c->name);
-    snprintf(partial, sizeof partial, "%s.partial", out);
-    remove_outputs(out);
+    remove_outputs(work, out);
     long live0 = alloc_live;
     fail_at = -1;
     alloc_calls = 0;
@@ -154,7 +176,7 @@ static void sweep(const qcase *c, const char *work) {
     long clean_n = 0;
     char *clean = slurp(out, &clean_n);
     ck(clean != NULL, c->name, "the clean run wrote its output", -1);
-    remove_outputs(out);
+    remove_outputs(work, out);
     long refused = 0, optional = 0;
     for (long k = 0; k < n && clean; k++) {
         fail_at = k;
@@ -164,7 +186,7 @@ static void sweep(const qcase *c, const char *work) {
         if (rc != 0) {
             refused++;
             ck(!exists(out), c->name, "a refused run leaves no output", k);
-            ck(!exists(partial), c->name, "a refused run leaves no partial file", k);
+            ck(!has_partial_in(work, out), c->name, "a refused run leaves no partial file", k);
         } else {
             // an allocation the command can do without: the output must
             // be the clean run's
@@ -176,7 +198,7 @@ static void sweep(const qcase *c, const char *work) {
             free(got);
         }
         ck(alloc_live == live0, c->name, "the failed allocation leaves no block behind", k);
-        remove_outputs(out);
+        remove_outputs(work, out);
     }
     free(clean);
     fprintf(stderr, "test-quantize-oom: %-14s %ld allocations, %ld refused, %ld optional\n",
@@ -186,9 +208,12 @@ static void sweep(const qcase *c, const char *work) {
 // A refusal that is not an allocation failure: refused, nothing written,
 // nothing leaked.
 static void refusal(const qcase *c, const char *out) {
-    char partial[1100];
-    snprintf(partial, sizeof partial, "%s.partial", out);
-    remove_outputs(out);
+    char work[1024];
+    snprintf(work, sizeof work, "%s", out);
+    char *sl = strrchr(work, '/');
+    if (!sl) sl = strrchr(work, '\\');
+    if (sl) *sl = 0; else snprintf(work, sizeof work, ".");
+    remove_outputs(work, out);
     long live0 = alloc_live;
     int failed0 = g_fail;
     g_fail = 0;
@@ -196,9 +221,9 @@ static void refusal(const qcase *c, const char *out) {
     int rc = run_case(c, out);
     ck(rc != 0, c->name, "the request is refused", -1);
     ck(!exists(out), c->name, "a refused run leaves no output", -1);
-    ck(!exists(partial), c->name, "a refused run leaves no partial file", -1);
+    ck(!has_partial_in(work, out), c->name, "a refused run leaves no partial file", -1);
     ck(alloc_live == live0, c->name, "a refused run frees every block", -1);
-    remove_outputs(out);
+    remove_outputs(work, out);
     if (!g_fail)
         fprintf(stderr, "test-quantize-oom: %-14s refused, nothing written, nothing leaked\n",
                 c->name);

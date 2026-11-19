@@ -51,6 +51,12 @@ bool kvsnap_save(const engine *e, const char *ctx, jv *req, sbuf *out,
 bool kvsnap_load(const engine *e, const char *id, const char *name, sbuf *out,
                  kvsnap_err *err);
 
+// Write an open manifest JSON prefix (without closing '}') atomically onto
+// manpath via plat_fopen_partial + plat_replace_file (chaining and signing
+// when sign_key is non-empty). Exposed for tests/test_kvsnap_replace.c.
+bool kvsnap_write_manifest_file(const char *manpath, const char *body_open,
+                                size_t body_len, const char *sign_key);
+
 // ---- preamble snapshots, written and loaded unasked (R3.62) ----
 //
 // An agent opens every session with the same system message and tool list,

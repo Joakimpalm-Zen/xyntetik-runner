@@ -166,11 +166,11 @@ static bool cfg_save(void) {
     sb_fmt(&b, "\", \"port\": %d}\n", g_cfg.port);
     if (b.failed) { free(b.s); return false; }
 
-    size_t tmp_cap = strlen(path) + 48;
+    size_t tmp_cap = strlen(path) + 64;
     char *tmp = malloc(tmp_cap);
     if (!tmp) { free(b.s); return false; }
-    snprintf(tmp, tmp_cap, "%s.partial-%ld", path, (long)getpid());
-    FILE *f = plat_fopen(tmp, "wb");
+    bool made = false;
+    FILE *f = plat_fopen_partial(path, "partial", tmp, tmp_cap, &made);
     if (!f) { free(tmp); free(b.s); return false; }
     bool ok = fwrite(b.s, 1, b.n, f) == b.n && fflush(f) == 0;
     if (ok) {
@@ -186,7 +186,7 @@ static bool cfg_save(void) {
     if (getenv("RUNNER_TEST_TRAY_CONFIG_INSTALL_FAIL")) ok = false;
 #endif
     if (ok) ok = plat_replace_file(tmp, path);
-    if (!ok) plat_remove(tmp);
+    if (!ok && made) plat_remove(tmp);
     free(tmp);
     if (!ok) return false;
 

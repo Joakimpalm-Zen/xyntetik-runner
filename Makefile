@@ -1757,6 +1757,16 @@ TEST_PFX_PERSIST_SRC = tests/test_prefix_persist.c $(OBJDIR)/gguf.o $(OBJDIR)/co
 $(TEST_PFX_PERSIST): $(TEST_PFX_PERSIST_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_PFX_PERSIST_SRC) -o $@ $(LDFLAGS)
 
+# R6.101: kvsnap manifest replacement (Windows-visible overwrite + symlink refusal)
+TEST_KVSNAP_REPLACE = $(TEST_BATCH:test-batch%=test-kvsnap-replace%)
+TEST_KVSNAP_REPLACE_SRC = tests/test_kvsnap_replace.c $(filter-out tests/test_sched_turn.c,$(TEST_SCHED_TURN_SRC)) $(OBJDIR)/scheduler.o
+$(TEST_KVSNAP_REPLACE): $(TEST_KVSNAP_REPLACE_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_KVSNAP_REPLACE_SRC) -o $@ $(LDFLAGS)
+
+TEST_PARTIAL_FDOPEN = $(TEST_BATCH:test-batch%=test-partial-fdopen%)
+$(TEST_PARTIAL_FDOPEN): tests/test_partial_fdopen.c src/compat.c $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_partial_fdopen.c -o $@ $(LDFLAGS)
+
 TEST_QUANTIZE_SRC = tests/test_quantize.c $(QUANTIZE_OBJ) $(OBJDIR)/gguf.o \
                     $(OBJDIR)/compat.o $(QUANTS_OBJ) $(OBJDIR)/json.o
 $(TEST_QUANTIZE): $(TEST_QUANTIZE_SRC) $(HDR)
@@ -3777,7 +3787,7 @@ test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SC
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) $(TEST_LINEAGE_OOM) $(TEST_DERIVE_OOM) test-lora.full.gguf \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_SHA256) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_PMATH_EXPF) $(TEST_PMATH_EXPF_DEFAULT) $(TEST_PMATH_SOFTMAX) $(TEST_FPCLASS) $(TEST_ACT) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) \
-      $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
+      $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) $(TEST_RESTART) $(TEST_PFX_PERSIST) $(TEST_KVSNAP_REPLACE) $(TEST_PARTIAL_FDOPEN) \
       $(TEST_SCHED_TURN) $(TEST_STREAM_OUT) $(TEST_RESIDENCY) $(TEST_CAPACITY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
       $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_LONGROPE) $(TEST_PREFILL_BATCH) test-phi3-longrope.gguf $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) $(TEST_REQUEST_STOP) \
       runner test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-q5k.gguf test-q6k.gguf test-q40.gguf test-q3k-prefill.gguf $(PREFILL_IQ_FIXTURES) $(PREFILL_SPLITK_FIXTURES) test-mxfp4-prefill.gguf $(PREFILL_PERCOL_FIXTURES) test-oddff.gguf test-oddff-f16.gguf test-ornith.gguf test-clef.gguf test-ornith-draft.gguf test-yarn.gguf test-rope-local.gguf \
@@ -3928,6 +3938,8 @@ test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SC
 	./$(TEST_CAPACITY)
 	./$(TEST_RESTART)
 	./$(TEST_PFX_PERSIST)
+	./$(TEST_KVSNAP_REPLACE)
+	./$(TEST_PARTIAL_FDOPEN)
 	./$(TEST_SCHED_TURN)
 	./$(TEST_STREAM_OUT)
 	./$(TEST_VRAMREG)
@@ -4438,6 +4450,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_owned_fields.py \
     tests/test_package_manifests.py \
     tests/test_parent_pid.py \
+    tests/test_partial_outputs.py \
     tests/test_pattern_automaton.py \
     tests/test_pe_buildid_link.py \
     tests/test_phi3_rope.py \
@@ -4817,7 +4830,7 @@ clean:
 	      $(TEST_BATCH) $(TEST_BIND) $(TEST_HOST_HEADER) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_TRAIN_GPU) test-shared-asan-bin \
 	      $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_TOOLS) $(DIFFTOK) \
 	      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
-	      $(TEST_QUANTIZE) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
+	      $(TEST_QUANTIZE) $(TEST_KVSNAP_REPLACE) $(TEST_PARTIAL_FDOPEN) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
 	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) \
 	      $(TEST_FILE_ID) test-file-identity.tmp \
 	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_LONGROPE) $(TEST_PREFILL_BATCH) $(TEST_CUDA_LONGROPE) $(TEST_CUDA_BATCH_COLS) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \

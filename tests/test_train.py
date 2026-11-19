@@ -482,7 +482,7 @@ def test_failed_checkpoint_install_preserves_previous_adapter(
                        stderr=subprocess.PIPE, timeout=600, env=env)
     assert p.returncode != 0
     assert out.read_bytes() == sentinel
-    assert not pathlib.Path(f"{out}.partial").exists()
+    assert not list(tmp_path.glob("checkpoint.gguf.partial*"))
 
 
 def test_optimizer_allocation_failure_does_not_publish_adapter(

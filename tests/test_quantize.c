@@ -13,6 +13,7 @@
 // under the old hardcoded-32 writer — and 32 is not 64-aligned, which the
 // offset assertion below catches directly.
 #include "runner.h"
+#include "compat.h"
 
 #include <assert.h>
 #include <math.h>
@@ -785,6 +786,20 @@ static void check_error_report(void) {
            "q3_k, imatrix-weighted, null where a type cannot describe the row\n");
 }
 
+static bool has_partial_for(const char *target) {
+    char pfx[512];
+    snprintf(pfx, sizeof pfx, "%s.partial", plat_path_base(target));
+    size_t pn = strlen(pfx);
+    plat_dir *dp = plat_opendir(".");
+    if (!dp) return false;
+    bool found = false;
+    for (const char *nm; (nm = plat_readdir(dp)) != NULL; ) {
+        if (strncmp(nm, pfx, pn) == 0) { found = true; break; }
+    }
+    plat_closedir(dp);
+    return found;
+}
+
 int main(void) {
     f16_init();   // dequant_row's scale lookup table (unused by the quantizer
                   // itself, but the round-trip check below dequantizes)
@@ -794,7 +809,7 @@ int main(void) {
     make_fixture(in, 0);
     assert(quantize_gguf(in, out, T_Q8_0, NULL) == 0);
     check_valid_q8(out);
-    assert(!exists("q_out.gguf.partial"));        // temp cleaned up on success
+    assert(!has_partial_for("q_out.gguf"));       // temp cleaned up on success
     printf("ok: alignment honored, round-trips, no leftover .partial\n");
 
     // finding B: the declared file_type follows the OUTPUT histogram.
@@ -1295,7 +1310,7 @@ int main(void) {
             assert(fp && fread(got_text, 1, sizeof(got_text) - 1, fp) == 14);
             fclose(fp);
             assert(!strcmp(got_text, "previous model"));
-            assert(!exists("q_mrg_q4m.gguf.partial"));
+            assert(!has_partial_for("q_mrg_q4m.gguf"));
             // the override (a negative floor) writes it anyway
             assert(merge_lora_gguf(q4b, ad, 1e-6f, q4m, T_KEEP, -1.0f, NULL) == 0);
             gguf_file gq;
@@ -1380,7 +1395,7 @@ int main(void) {
     assert(quantize_gguf(in, dest, T_Q8_0, NULL) != 0);
     env_unset("RUNNER_QUANTIZE_INSTALL_FAIL");
     check_bytes(dest, sentinel, sizeof(sentinel));
-    assert(!exists("q_keep.gguf.partial"));
+    assert(!has_partial_for("q_keep.gguf"));
     printf("ok: failed install left the destination untouched\n");
 
     check_mxfp4_dequant();

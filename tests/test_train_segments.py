@@ -402,7 +402,7 @@ def test_a_sample_checks_the_record_once_before_it_draws(runner_bin, run8):
 
 def test_a_link_planted_at_the_reports_temporary_name_is_not_followed(runner_bin, run8):
     """The temporary report is created new: exclusively and without following a link, so a symlink planted at its
-    name (here fixed by RUNNER_TEST_REPORT_SUFFIX, normally random) is never written through, and the run fails
+    name (here fixed by RUNNER_TEST_PARTIAL_SUFFIX, normally random) is never written through, and the run fails
     cleanly instead."""
     d, out, rec_path, rec, segs = run8
     victim = d / "victim.txt"
@@ -412,7 +412,7 @@ def test_a_link_planted_at_the_reports_temporary_name_is_not_followed(runner_bin
         os.symlink(victim, d / "audit.json.partial-fixed")
     except (OSError, NotImplementedError):
         pytest.skip("no symlinks here")
-    env = dict(_env(), RUNNER_TEST_REPORT_SUFFIX="fixed")
+    env = dict(_env(), RUNNER_TEST_PARTIAL_SUFFIX="fixed")
     r = subprocess.run([str(runner_bin), "attest", "replay", str(rec_path), "-t", "2", *_same_binary(rec), "--sample",
                         "1", "--seed", SEED, "--report", str(rep)], cwd=ROOT, capture_output=True, text=True,
                        timeout=600, env=env)
