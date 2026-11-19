@@ -1,10 +1,5 @@
 # gpt-oss-20b: ggml-org's MXFP4 file against OpenAI's float32 reference, measured and not admitted (2026-11-13)
 
-**Update 2026-11-19:** the [chat-frame read and interval-rule assessment](../gpt-oss-20b-2026-11-19/README.md)
-supersede the admission status below: chat-frame mean KLD 0.0949 fails; raw-text 0.0709 is undecided under the
-interval rule. A measured, not admitted publisher-file row now records both reads, with no gate cells.
-The original results and point-estimate verdict below describe the 2026-11-13 read.
-
 gpt-oss-20b is OpenAI's 21B mixture-of-experts model: 24 layers, 32 experts with 4 active, sliding-window attention
 (128) on alternate layers, attention sinks, YaRN rope (factor 32 over an original 4,096, base 150,000), vocabulary
 201,088. The gpt-oss family's only roster row is the lab's own gpt-oss-20b-keep30-mxfp4, a 32-to-30-expert derivative
@@ -95,3 +90,10 @@ refuses training ("FFN activation not in the backward (gpt-oss/apertus)"); adapt
 
 Nothing on the roster: no row, no cells, and the gpt-oss family line stays as it was. The manifest entry
 `gpt-oss-20b-mxfp4` keeps its checks; its notes gain one sentence naming this read.
+
+## Update 2026-11-19
+
+The [chat-frame read and interval-rule assessment](../gpt-oss-20b-2026-11-19/README.md)
+supersede the admission status above: chat-frame mean KLD 0.0949 fails; raw-text 0.0709 is undecided under the
+interval rule. A measured, not admitted publisher-file row now records both reads, with no gate cells.
+The original results and point-estimate verdict above describe the 2026-11-13 read.
