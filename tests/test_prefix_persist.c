@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #ifndef _WIN32
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -107,6 +108,33 @@ int main(int argc, char **argv) {
             remove(sym_lnk);
         }
         remove(sym_path);
+        remove(victim);
+
+        // Legacy-name case (no RUNNER_TEST_PARTIAL_SUFFIX): succeeds without
+        // touching `<path>.partial` or overwriting its canary.
+        const char *leg_path = "test-prefix-legacy.bin";
+        const char *leg_lnk  = "test-prefix-legacy.bin.partial";
+        remove(leg_path); remove(leg_lnk); remove(victim);
+        vf = fopen(victim, "wb");
+        if (vf) { fputs("untouched", vf); fclose(vf); }
+        if (symlink(victim, leg_lnk) == 0) {
+            unsetenv("RUNNER_TEST_PARTIAL_SUFFIX");
+            int leg_rc = prefix_cache_save(leg_path);
+            ck(leg_rc == 1, "prefix_cache_save succeeds with legacy .partial symlink present");
+            char got[64] = {0};
+            vf = fopen(victim, "rb");
+            if (vf) {
+                size_t gn = fread(got, 1, sizeof got - 1, vf);
+                got[gn] = 0;
+                fclose(vf);
+            }
+            ck(strcmp(got, "untouched") == 0, "legacy .partial symlink canary untouched");
+            struct stat lst;
+            ck(lstat(leg_lnk, &lst) == 0 && S_ISLNK(lst.st_mode),
+               "legacy .partial remains a symlink");
+            remove(leg_lnk);
+        }
+        remove(leg_path);
         remove(victim);
     }
 #endif

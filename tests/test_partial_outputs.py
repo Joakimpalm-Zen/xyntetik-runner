@@ -86,14 +86,14 @@ def test_planted_symlink_refused_for_cli_outputs(runner_bin, fx, tmp_path):
     d2 = tmp_path / "sign_record"
     d2.mkdir()
     rec2 = d2 / "rec.json"
-    orig_bytes = fx["rec"].read_bytes()
+    orig_bytes = b'{"schema_version":"xyntetik.runner.custom.v1","ok":true}\n'
     rec2.write_bytes(orig_bytes)
     v2 = d2 / "victim.txt"
     _plant_symlink(d2 / "rec.json.partial-fixed", v2)
     r = subprocess.run([str(runner_bin), "--sign-record", str(rec2),
                         "--sign-key", str(fx["key"])],
                        cwd=ROOT, capture_output=True, text=True, timeout=120, env=env)
-    assert r.returncode != 0, r.stderr
+    assert r.returncode != 0 and "cannot write" in r.stderr, r.stderr
     assert v2.read_text() == "untouched"
     assert rec2.read_bytes() == orig_bytes
 
@@ -219,6 +219,155 @@ def test_planted_symlink_refused_for_kv_snapshot(runner_bin, fx, tmp_path):
         assert vs.read_text() == "untouched"
         assert not (snaps_s / "s_signed.kv").exists()
         assert not (snaps_s / "s_signed.kv.json").exists()
+
+
+def test_legacy_partial_links_never_followed_or_removed(runner_bin, fx, tmp_path):
+    """Faithful main-branch regression (no RUNNER_TEST_PARTIAL_SUFFIX):
+
+    Plant symlinks at the legacy predictable names main used (.partial / .tmp)
+    pointing to a 9-byte 'untouched' canary. Without RUNNER_TEST_PARTIAL_SUFFIX,
+    main overwrote the canary (e.g. quantize: 9 bytes -> GGUF size); with
+    R6.101 random partial suffixes, every site succeeds cleanly, leaves the
+    canary untouched (9 bytes), and leaves each legacy symlink intact.
+    """
+    env = _clean_env()
+
+    # 1. --transcript (<out>.partial)
+    d1 = tmp_path / "leg_transcript"
+    d1.mkdir()
+    out1 = d1 / "t.json"
+    v1 = d1 / "victim.txt"
+    l1 = d1 / "t.json.partial"
+    _plant_symlink(l1, v1)
+    r = subprocess.run([str(runner_bin), "-m", str(fx["model"]), "-p", "hi",
+                        "-n", "2", "--temp", "0", "--gpu", "off", "-t", "2",
+                        "--transcript", str(out1)],
+                       cwd=ROOT, capture_output=True, text=True, timeout=120, env=env)
+    assert r.returncode == 0, r.stderr
+    assert out1.is_file()
+    assert v1.read_text() == "untouched"
+    assert l1.is_symlink()
+
+    # 2. --sign-record (<rec>.partial)
+    d2 = tmp_path / "leg_sign"
+    d2.mkdir()
+    rec2 = d2 / "rec.json"
+    rec2.write_text('{"schema_version":"xyntetik.runner.custom.v1","ok":true}\n')
+    v2 = d2 / "victim.txt"
+    l2 = d2 / "rec.json.partial"
+    _plant_symlink(l2, v2)
+    r = subprocess.run([str(runner_bin), "--sign-record", str(rec2),
+                        "--sign-key", str(fx["key"])],
+                       cwd=ROOT, capture_output=True, text=True, timeout=120, env=env)
+    assert r.returncode == 0, r.stderr
+    assert "signature" in json.loads(rec2.read_text())
+    assert v2.read_text() == "untouched"
+    assert l2.is_symlink()
+
+    # 3. --quantize (<out>.partial)
+    d3 = tmp_path / "leg_quant"
+    d3.mkdir()
+    qout = d3 / "q.gguf"
+    v3 = d3 / "victim.txt"
+    l3 = d3 / "q.gguf.partial"
+    _plant_symlink(l3, v3)
+    r = subprocess.run([str(runner_bin), "-m", str(fx["model"]),
+                        "--quantize", str(qout), "--quant", "q8_0"],
+                       cwd=ROOT, capture_output=True, text=True, timeout=120, env=env)
+    assert r.returncode == 0, r.stderr
+    assert qout.is_file() and qout.stat().st_size > 0
+    assert v3.read_text() == "untouched"
+    assert l3.is_symlink()
+
+    # 4. --train adapter (<out>.partial)
+    d4 = tmp_path / "leg_lora"
+    d4.mkdir()
+    aout = d4 / "adapter.gguf"
+    v4 = d4 / "victim.txt"
+    l4 = d4 / "adapter.gguf.partial"
+    _plant_symlink(l4, v4)
+    r = subprocess.run([str(runner_bin), "-m", str(fx["model"]),
+                        "--train", str(fx["data"]), "--train-steps", "1",
+                        "--lr", "3e-3", "--train-batch", "2", "--gpu", "off",
+                        "-t", "2", "--train-out", str(aout)],
+                       cwd=ROOT, capture_output=True, text=True, timeout=120, env=env)
+    assert r.returncode == 0, r.stderr
+    assert aout.is_file()
+    assert v4.read_text() == "untouched"
+    assert l4.is_symlink()
+
+    # 5. --train optimizer sidecar (<adapter>.optim.partial)
+    d5 = tmp_path / "leg_optim"
+    d5.mkdir()
+    aout5 = d5 / "adapter.gguf"
+    v5 = d5 / "victim.txt"
+    l5 = d5 / "adapter.gguf.optim.partial"
+    _plant_symlink(l5, v5)
+    r = subprocess.run([str(runner_bin), "-m", str(fx["model"]),
+                        "--train", str(fx["data"]), "--train-steps", "1",
+                        "--save-every", "2", "--lr", "3e-3", "--train-batch", "2",
+                        "--gpu", "off", "-t", "2", "--train-out", str(aout5)],
+                       cwd=ROOT, capture_output=True, text=True, timeout=120, env=env)
+    assert r.returncode == 0, r.stderr
+    assert (d5 / "adapter.gguf.optim").is_file()
+    assert v5.read_text() == "untouched"
+    assert l5.is_symlink()
+
+    # 6. --train --train-full (<out>.tmp)
+    d6 = tmp_path / "leg_full"
+    d6.mkdir()
+    fout = d6 / "full.gguf"
+    v6 = d6 / "victim.txt"
+    l6 = d6 / "full.gguf.tmp"
+    _plant_symlink(l6, v6)
+    r = subprocess.run([str(runner_bin), "-m", str(fx["model"]),
+                        "--train", str(fx["data"]), "--train-steps", "1",
+                        "--lr", "3e-3", "--train-batch", "2", "--gpu", "off",
+                        "-t", "2", "--train-full", "--train-out", str(fout)],
+                       cwd=ROOT, capture_output=True, text=True, timeout=120, env=env)
+    assert r.returncode == 0, r.stderr
+    assert fout.is_file()
+    assert v6.read_text() == "untouched"
+    assert l6.is_symlink()
+
+    # 7. KV snapshots: <name>.kv.partial + <name>.kv.json.partial (unsigned & signed)
+    snaps_u = tmp_path / "leg_snaps_u"
+    snaps_u.mkdir()
+    vk = tmp_path / "leg_vk.txt"
+    vm = tmp_path / "leg_vm.txt"
+    lk = snaps_u / "leg_s.kv.partial"
+    lm = snaps_u / "leg_s.kv.json.partial"
+    _plant_symlink(lk, vk)
+    _plant_symlink(lm, vm)
+    with RunnerServer(runner_bin, str(fx["model"]), ctx=256, env=env,
+                      extra_args=["--gpu", "off", "-t", "2",
+                                  "--kv-snapshots", str(snaps_u)]) as srv:
+        st, body = _http_post(srv, "/v1/runner/contexts",
+                              {"id": "c", "prompt": "hello world one two three"})
+        assert st == 200, body
+        st1, b1 = _http_post(srv, "/v1/runner/contexts/c/snapshot", {"name": "leg_s"})
+        assert st1 == 200, b1
+        assert (snaps_u / "leg_s.kv").is_file()
+        assert (snaps_u / "leg_s.kv.json").is_file()
+        assert vk.read_text() == "untouched" and lk.is_symlink()
+        assert vm.read_text() == "untouched" and lm.is_symlink()
+
+    snaps_s = tmp_path / "leg_snaps_s"
+    snaps_s.mkdir()
+    vs = tmp_path / "leg_vs.txt"
+    ls = snaps_s / "leg_ss.kv.json.partial"
+    _plant_symlink(ls, vs)
+    with RunnerServer(runner_bin, str(fx["model"]), ctx=256, env=env,
+                      extra_args=["--gpu", "off", "-t", "2",
+                                  "--kv-snapshots", str(snaps_s),
+                                  "--sign-key", str(fx["key"])]) as srv:
+        st, body = _http_post(srv, "/v1/runner/contexts",
+                              {"id": "cs", "prompt": "hello world one two three"})
+        assert st == 200, body
+        st2, b2 = _http_post(srv, "/v1/runner/contexts/cs/snapshot", {"name": "leg_ss"})
+        assert st2 == 200, b2
+        assert (snaps_s / "leg_ss.kv.json").is_file()
+        assert vs.read_text() == "untouched" and ls.is_symlink()
 
 
 def test_two_concurrent_writers_do_not_collide(runner_bin, fx, tmp_path):

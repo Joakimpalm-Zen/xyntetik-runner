@@ -460,6 +460,32 @@ int main(int argc, char **argv) {
             remove(lnk);
             instances_unregister();
         }
+
+        // Legacy-name case (no RUNNER_TEST_PARTIAL_SUFFIX): succeeds without
+        // following or unlinking `<pid>.json.tmp`.
+        snprintf(lnk, sizeof lnk, "%s/%ld.json.tmp", dir, (long)getpid());
+        remove(lnk);
+        remove(self);
+        vf = fopen(victim, "wb");
+        if (vf) { fputs("untouched", vf); fclose(vf); }
+        if (symlink(victim, lnk) == 0) {
+            unsetenv("RUNNER_TEST_PARTIAL_SUFFIX");
+            bool ok = instances_register("cli", 0, NULL, NULL, 0);
+            CHECK(ok, "instances_register succeeds with legacy .json.tmp symlink present");
+            char got[64] = {0};
+            vf = fopen(victim, "rb");
+            if (vf) {
+                size_t gn = fread(got, 1, sizeof got - 1, vf);
+                got[gn] = 0;
+                fclose(vf);
+            }
+            CHECK(strcmp(got, "untouched") == 0, "legacy .json.tmp symlink canary untouched");
+            struct stat lst;
+            CHECK(lstat(lnk, &lst) == 0 && S_ISLNK(lst.st_mode),
+                  "legacy .json.tmp remains a symlink");
+            remove(lnk);
+            instances_unregister();
+        }
         remove(victim);
     }
 #endif

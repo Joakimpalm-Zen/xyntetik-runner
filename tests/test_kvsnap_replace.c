@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #ifndef _WIN32
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -77,6 +78,28 @@ int main(void) {
            "kvsnap manifest symlink refusal preserves existing manifest");
         free(mbuf);
         remove(lnk);
+    }
+
+    // Legacy-name case (no RUNNER_TEST_PARTIAL_SUFFIX): succeeds without
+    // touching `<man>.partial` or overwriting its canary.
+    const char *leg_lnk = "test-kvsnap-replace.kv.json.partial";
+    remove(leg_lnk);
+    vf = fopen(victim, "wb");
+    if (vf) { fputs("untouched", vf); fclose(vf); }
+    if (symlink(victim, leg_lnk) == 0) {
+        unsetenv("RUNNER_TEST_PARTIAL_SUFFIX");
+        const char *body4 = "{\"name\":\"legacy_ok\"";
+        ck(kvsnap_write_manifest_file(man, body4, strlen(body4), NULL),
+           "kvsnap manifest write succeeds with legacy .partial symlink present");
+        size_t vn = 0;
+        char *vbuf = plat_read_file(victim, 256, &vn);
+        ck(vbuf && vn == 9 && memcmp(vbuf, "untouched", 9) == 0,
+           "kvsnap legacy .partial canary untouched");
+        free(vbuf);
+        struct stat lst;
+        ck(lstat(leg_lnk, &lst) == 0 && S_ISLNK(lst.st_mode),
+           "kvsnap legacy .partial remains a symlink");
+        remove(leg_lnk);
     }
     remove(victim);
 #endif

@@ -627,6 +627,38 @@ int main(int argc, char **argv) {
                   "cfg_save symlink refusal preserves durable config");
             remove(lnk);
         }
+
+        // Legacy-name case (no RUNNER_TEST_PARTIAL_SUFFIX): succeeds without
+        // touching `<cfg>.partial-<pid>` or overwriting its canary.
+        snprintf(lnk, sizeof lnk, "%s.partial-%ld", cfg, (long)getpid());
+        remove(lnk);
+        vf = fopen(victim, "wb");
+        if (vf) { fputs("untouched", vf); fclose(vf); }
+        if (symlink(victim, lnk) == 0) {
+            unsetenv("RUNNER_TEST_PARTIAL_SUFFIX");
+            tray_menu_act(TRAY_ACT_PICK_MODEL, 0, alt);
+            char got[64] = {0};
+            vf = fopen(victim, "rb");
+            if (vf) {
+                size_t gn = fread(got, 1, sizeof got - 1, vf);
+                got[gn] = 0;
+                fclose(vf);
+            }
+            CHECK(strcmp(got, "untouched") == 0,
+                  "legacy .partial-<pid> symlink canary untouched");
+            struct stat lst;
+            CHECK(lstat(lnk, &lst) == 0 && S_ISLNK(lst.st_mode),
+                  "legacy .partial-<pid> remains a symlink");
+            n = tray_menu_build(items, 128);
+            CHECK(menu_has(items, n, "edited-model.gguf"),
+                  "cfg_save succeeds onto config when legacy partial symlink present");
+            remove(lnk);
+            // Restore durable model back to fake-model.gguf without spawning.
+            remove(mdl);
+            tray_menu_act(TRAY_ACT_PICK_MODEL, 0, mdl);
+            FILE *mf = fopen(mdl, "wb");
+            if (mf) { fputs("x", mf); fclose(mf); }
+        }
         remove(victim);
     }
 #endif
