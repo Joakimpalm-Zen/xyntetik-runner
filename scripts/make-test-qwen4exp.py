@@ -33,7 +33,10 @@ E = int(os.environ.get("QWEN4EXP_TEST_EMBD", str(E)))
 HC_BF16 = os.environ.get("QWEN4EXP_TEST_HC_BF16", "") not in ("", "0")
 LAYERS = int(os.environ.get("QWEN4EXP_TEST_LAYERS", "4"))
 STATE, GROUPS, VHEADS, CONV = 8, 2, 4, 4
-HC, HC_LR = 4, 16
+# QWEN4EXP_TEST_HC_LOWRANK sets the mixers' low rank (default 16): at 512 with
+# QWEN4EXP_TEST_EMBD=512 and QWEN4EXP_TEST_HC_BF16=1 a mixer's down projection is
+# 2,048 -> 512, a wide split-K shape for test-prefill-bits (R6.62)
+HC, HC_LR = 4, int(os.environ.get("QWEN4EXP_TEST_HC_LOWRANK", "16"))
 # QWEN4EXP_TEST_EXPERTS raises the expert count (the release file has 512; a
 # device path that clamped its router to 256 passed every 8-expert fixture)
 N_EXP, N_USED, FF_EXP, FF_SHEXP = int(os.environ.get("QWEN4EXP_TEST_EXPERTS", "8")), 2, 16, 16

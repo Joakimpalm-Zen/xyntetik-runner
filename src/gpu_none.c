@@ -80,6 +80,11 @@ bool gpu_tc_type_has_kernel(int type) { (void)type; return false; }
 // Same, for the fast decode matvec: the mv tolerance gate links here and
 // reports "never dispatched" rather than failing to build.
 void gpu_mv_force(int on) { (void)on; }
+bool gpu_test_mv(model_t *m, gguf_tensor *w, const float *x, float *y,
+                 int n_in, int n_out, int tn) {
+    (void)m; (void)w; (void)x; (void)y; (void)n_in; (void)n_out; (void)tn;
+    return false;
+}
 unsigned long gpu_mv_dispatches(void) { return 0; }
 unsigned long gpu_mv2_dispatches(void) { return 0; }
 

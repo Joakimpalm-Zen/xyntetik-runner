@@ -8798,6 +8798,30 @@ bool gpu_mvcanon(model_t *m, const gguf_tensor *w, const float *x, float *y,
     return ok;
 }
 
+// R6.62, test-only (gpu.h): one enc_mv of w over tn columns, so a test can
+// compare a prompt's product with tn batch-1 calls on the route the device
+// picks for each (split-K among them on qwen4exp)
+bool gpu_test_mv(model_t *m, gguf_tensor *w, const float *x, float *y,
+                 int n_in, int n_out, int tn) {
+    gpu_t *g = m ? m->gpu : NULL;
+    if (!g || !w || tn < 1 || n_in < 1 || n_out < 1) return false;
+    if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
+    size_t nx = (size_t)tn * n_in, ny = (size_t)tn * n_out;
+    CUdeviceptr d_x = 0, d_y = 0;
+    if (cu.MemAlloc(&d_x, sizeof(float) * nx) != 0) return false;
+    if (cu.MemAlloc(&d_y, sizeof(float) * ny) != 0) {
+        cu.MemFree(d_x);
+        return false;
+    }
+    bool ok = cu.MemcpyHtoD(d_x, x, sizeof(float) * nx) == 0 &&
+              enc_mv(g, m, w, d_x, d_y, n_in, n_out, 0, tn, n_in, n_out) &&
+              cu.CtxSynchronize() == 0 &&
+              cu.MemcpyDtoH(y, d_y, sizeof(float) * ny) == 0;
+    cu.MemFree(d_x);
+    cu.MemFree(d_y);
+    return ok;
+}
+
 // ------------------- transposed matvec for training (adaptation D8 slice 1)
 // dx[t][i] += sum_j W[j][i]*dy[t][j] on the device, with the accumulator
 // chain identical to the CPU trainer (start from dx, serial j, skip zero
