@@ -510,6 +510,7 @@ typedef struct {
     float *ssm_qkv, *ssm_z, *ssm_aux;     // qwen35 recurrent scratch
     float *ssm_cw;                         // qwen35 dequantized conv-kernel row
     float *ssm_conv_state, *ssm_state_mem; // qwen35 per-sequence recurrent state
+    size_t ssm_conv_floats, ssm_state_floats; // their sizes, for a state comparison (R3.78)
     bool   ssm_state_backend;  // the two above point into backend buffers (Metal)
     // R3.47: the slot of layer l's recurrent state in every per-layer fold
     // buffer (host, device, snapshots, the blob), -1 for a layer without one;
@@ -1801,6 +1802,9 @@ int model_gpu_window(uint64_t spare, uint64_t per_col, int instances,
 // Prompt-batch default from TOTAL RAM (a fixed machine fact, not the ambient
 // free figure — see the definition for why that distinction is determinism).
 int      model_batch_default_for(uint64_t total_ram);
+// R3.74: the default prompt batch for a GPU mode (GPU_AUTO, GPU_OFF) and a
+// total RAM figure: the rule both the load and main's preflight use
+int      model_batch_default(int gpu_mode, uint64_t total_ram);
 bool     model_load_prefetch_wanted(uint64_t mapped, uint64_t available,
                                     bool locked, bool moe_prefetch);
 bool     model_paging_note_wanted(uint64_t faults, int tokens);

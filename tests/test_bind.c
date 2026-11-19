@@ -250,7 +250,8 @@ static void test_binary_rejects_a_host_option(void) {
     snprintf(cmd, sizeof cmd, "%s --help 2>&1", exe);
     char *help = run_capture(cmd);
     must_contain(help, "runner --help", "--port");
-    must_contain(help, "runner --help", "auto-sized from free RAM");
+    // a liveness anchor: the help text was really captured (stable wording, R3.74)
+    must_contain(help, "runner --help", "prompt batch size");
     static const char *opts[] = { "--host", "--bind", "--listen", "--address",
                                   "--interface", "--ip" };
     for (size_t i = 0; i < sizeof opts / sizeof *opts; i++)

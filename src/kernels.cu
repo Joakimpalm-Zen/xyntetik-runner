@@ -7657,3 +7657,60 @@ extern "C" __global__ void k_mamba2_ssd_seq(
 }
 
 #include "kernels_train.cuh"
+
+// R6.62: the width-classed twin of k_mv_bf16_splitk and k_splitk_reduce, for
+// a prompt's 2 to 16 columns of the same tensor (a.batch columns, a.xs apart).
+// Block (row, split) runs k_mv_bf16_splitk's arithmetic for every column: each
+// thread walks its slice in the same order, reading each weight once for all
+// the columns, and each column takes the same fixed tree. The tree's top three
+// levels (off 128, 64, 32) run in shared memory as there; its last five (off
+// 16 to 1) run as warp shuffles, where lane t adds lane t + off's value to its
+// own, the same pair in the same order. Partials sit column-major at
+// partial[(c * splits + split) * n_out + row], so k_splitk_reduce_b reads a row
+// per thread coalesced and sums the splits in index order. So column c is the
+// batch-1 call's bits for that column.
+// Kept at the end of the file: appended functions leave every earlier
+// kernel's PTX text unchanged, byte for byte (its label numbering included).
+#define SPLITK_TWIN_COLS 16
+extern "C" __global__ void k_mv_bf16_splitk_b(const uchar *wb, const float *x, float *partial,
+                                              mv_args a, int splits) {
+    __shared__ float red[SPLITK_TWIN_COLS][256];
+    int row = blockIdx.x, sp = blockIdx.y, tid = threadIdx.x, tn = a.batch;
+    int slice = a.n_in / splits, i0 = sp * slice;
+    const unsigned short *rw = (const unsigned short *)(wb + a.w_off) + (ulong64)row * a.n_in + i0;
+    float s[SPLITK_TWIN_COLS];
+#pragma unroll
+    for (int c = 0; c < SPLITK_TWIN_COLS; c++) s[c] = 0;
+    for (int i = tid; i < slice; i += blockDim.x) {
+        float w = bf16f(rw[i]);
+#pragma unroll
+        for (int c = 0; c < SPLITK_TWIN_COLS; c++)
+            if (c < tn) s[c] += w * x[(ulong64)c * a.xs + i0 + i];
+    }
+#pragma unroll
+    for (int c = 0; c < SPLITK_TWIN_COLS; c++)
+        if (c < tn) red[c][tid] = s[c];
+    __syncthreads();
+    for (int off = blockDim.x / 2; off >= 32; off >>= 1) {
+        if (tid < off)
+            for (int c = 0; c < tn; c++) red[c][tid] += red[c][tid + off];
+        __syncthreads();
+    }
+    if (tid < 32) {
+        for (int c = 0; c < tn; c++) {
+            float v = red[c][tid];
+            for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffffu, v, off);
+            if (tid == 0) partial[((ulong64)c * splits + sp) * a.n_out + row] = v;
+        }
+    }
+}
+
+extern "C" __global__ void k_splitk_reduce_b(const float *partial, float *y, const float *bias,
+                                             int n_out, int splits, int has_bias, int ys) {
+    int row = blockIdx.x * blockDim.x + threadIdx.x, c = blockIdx.y;
+    if (row >= n_out) return;
+    const float *p = partial + (ulong64)c * splits * n_out + row;
+    float s = 0;
+    for (int sp = 0; sp < splits; sp++) s += p[(ulong64)sp * n_out];
+    y[(ulong64)c * ys + row] = has_bias ? s + bias[row] : s;
+}
