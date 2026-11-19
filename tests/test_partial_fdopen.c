@@ -4,7 +4,12 @@
 // file must be unlinked, *made_out stay false, and errno be preserved; when
 // O_EXCL / CREATE_NEW itself fails on a pre-existing file, that file must
 // remain untouched.
+#ifndef _CRT_RAND_S
 #define _CRT_RAND_S
+#endif
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
