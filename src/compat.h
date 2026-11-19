@@ -350,8 +350,10 @@ bool        plat_replace_file(const char *tmp_path, const char *path);
 
 // Cross-process lock serializing installation of an output artifact and its
 // provenance sidecar as one unit (uses directory flock() on POSIX and a named
-// kernel mutex on Windows; creates no files on disk). NULL on best-effort fallback.
-void       *plat_publish_lock(const char *path);
+// kernel mutex on Windows; creates no files on disk). Returns true with *lock_out
+// held (pass to plat_publish_unlock()), or false on any lock acquisition error
+// (callers must NOT proceed as if locked).
+bool        plat_publish_lock(const char *path, void **lock_out);
 void        plat_publish_unlock(void *lock);
 
 // An openable path for the executable image of this process, independent of

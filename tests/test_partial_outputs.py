@@ -112,6 +112,38 @@ def test_planted_symlink_refused_for_cli_outputs(runner_bin, fx, tmp_path):
     assert v3.read_text() == "untouched"
     assert qout.read_bytes() == b"SENTINEL"
 
+    # 3b. --quantize sidecar planted symlink keeps both destination and old sidecar intact
+    d3b = tmp_path / "quantize_sidecar_link"
+    d3b.mkdir()
+    qout3b = d3b / "q.gguf"
+    qout3b.write_bytes(b"OLD_MODEL")
+    qrec3b = d3b / "q.gguf.quant.json"
+    qrec3b.write_text('{"old":true}')
+    v3b = d3b / "victim.txt"
+    _plant_symlink(d3b / "q.gguf.quant.json.partial-fixed", v3b)
+    r = subprocess.run([str(runner_bin), "-m", str(fx["model"]),
+                        "--quantize", str(qout3b), "--quant", "q8_0"],
+                       cwd=ROOT, capture_output=True, text=True, timeout=120, env=env)
+    assert r.returncode != 0, r.stderr
+    assert v3b.read_text() == "untouched"
+    assert qout3b.read_bytes() == b"OLD_MODEL"
+    assert qrec3b.read_text() == '{"old":true}'
+    assert not list(d3b.glob("q.gguf.partial*"))
+
+    # 3c. If sidecar replacement fails after installing the model (e.g. destination
+    # provenance path is a directory), cleanup removes the new model too so no
+    # mismatched or un-provenanced pair remains.
+    d3c = tmp_path / "quantize_sidecar_fail"
+    d3c.mkdir()
+    qout3c = d3c / "q.gguf"
+    (d3c / "q.gguf.quant.json").mkdir()
+    r = subprocess.run([str(runner_bin), "-m", str(fx["model"]),
+                        "--quantize", str(qout3c), "--quant", "q8_0"],
+                       cwd=ROOT, capture_output=True, text=True, timeout=120, env=_clean_env())
+    assert r.returncode != 0, r.stderr
+    assert not qout3c.exists(), "new model must be removed when sidecar install fails"
+    assert not list(d3c.glob("*.partial*"))
+
     # 4. --train adapter (model.c:model_lora_save)
     d4 = tmp_path / "lora"
     d4.mkdir()

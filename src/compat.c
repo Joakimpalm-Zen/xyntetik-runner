@@ -1804,11 +1804,12 @@ bool plat_replace_file(const char *tmp_path, const char *path) {
 #endif
 }
 
-void *plat_publish_lock(const char *path) {
-    if (!path || !*path) return NULL;
+bool plat_publish_lock(const char *path, void **lock_out) {
+    if (lock_out) *lock_out = NULL;
+    if (!path || !*path || !lock_out) return false;
 #ifdef _WIN32
     wchar_t *wp = utf8_to_wide(path);
-    if (!wp) return NULL;
+    if (!wp) return false;
     DWORD need = GetFullPathNameW(wp, 0, NULL, NULL);
     wchar_t *full = need ? malloc((size_t)need * sizeof(wchar_t)) : NULL;
     const wchar_t *src = wp;
@@ -1826,13 +1827,14 @@ void *plat_publish_lock(const char *path) {
     _snwprintf(name, sizeof name / sizeof name[0],
                L"Local\\xyntetik-runner-pub-%016llx", (unsigned long long)h);
     HANDLE m = CreateMutexW(NULL, FALSE, name);
-    if (!m) return NULL;
+    if (!m) return false;
     DWORD w = WaitForSingleObject(m, INFINITE);
     if (w != WAIT_OBJECT_0 && w != WAIT_ABANDONED) {
         CloseHandle(m);
-        return NULL;
+        return false;
     }
-    return (void *)m;
+    *lock_out = (void *)m;
+    return true;
 #else
     const char *sl = strrchr(path, '/');
     char dir_buf[4096];
@@ -1847,12 +1849,23 @@ void *plat_publish_lock(const char *path) {
         }
     }
     int fd = open(dir, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return NULL;
-    while (flock(fd, LOCK_EX) < 0 && errno == EINTR) {}
+    if (fd < 0) return false;
+    while (flock(fd, LOCK_EX) < 0) {
+        if (errno == EINTR) continue;
+        int e = errno;
+        close(fd);
+        errno = e;
+        return false;
+    }
     int *p = malloc(sizeof *p);
-    if (!p) { flock(fd, LOCK_UN); close(fd); return NULL; }
+    if (!p) {
+        flock(fd, LOCK_UN);
+        close(fd);
+        return false;
+    }
     *p = fd;
-    return p;
+    *lock_out = p;
+    return true;
 #endif
 }
 

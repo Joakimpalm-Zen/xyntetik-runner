@@ -3462,7 +3462,13 @@ static int quantize_job_finish(quantize_job *J, const char *in_path,
     // Install the finished artifact and its staged sidecar under one publish
     // lock so concurrent writers never hash each other's output or leave
     // writer B's file beside writer A's provenance record.
-    void *pub_lock = plat_publish_lock(out_path);
+    void *pub_lock = NULL;
+    if (!plat_publish_lock(out_path, &pub_lock)) {
+        if (sidecar_tmp[0]) plat_remove(sidecar_tmp);
+        fprintf(stderr, "error: cannot lock %s for publish (destination unchanged)\n",
+                out_path);
+        return 1;
+    }
     if (install_finished_file(J->tmp_path, out_path) != 0) {
         if (sidecar_tmp[0]) plat_remove(sidecar_tmp);
         plat_publish_unlock(pub_lock);
@@ -3473,6 +3479,10 @@ static int quantize_job_finish(quantize_job *J, const char *in_path,
     J->tmp_created = false;   // installed: it is the destination now
     if (sidecar_tmp[0] && !plat_replace_file(sidecar_tmp, sidecar_out)) {
         plat_remove(sidecar_tmp);
+        // Never leave a newly installed artifact beside an absent or
+        // previous-run sidecar (which would describe the wrong bytes).
+        plat_remove(sidecar_out);
+        plat_remove(out_path);
         plat_publish_unlock(pub_lock);
         fprintf(stderr, "error: cannot write %s provenance to %s\n",
                 prov_kind[0] ? prov_kind : "rewrite", sidecar_out);
