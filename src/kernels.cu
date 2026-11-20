@@ -7771,6 +7771,31 @@ extern "C" __global__ void k_moe_limb_quant(const float *x, int n_in, int xs, si
     if (threadIdx.x == 0) lflag[col] = special;
 }
 
+// k_moe_mv_q4_0's own body for one row of one column (a flagged column's
+// arithmetic): x staged in xsm, blocks a lane, the same inner expression.
+// Every thread of the block calls it (it synchronizes); returns the lane's s.
+static __device__ __forceinline__ float limb_today_lane(const uchar *rw, const float *x, int nb, unsigned lane,
+                                                         bool live, float *xsm) {
+    float s = 0;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_X(xsm, x, b0, nblk)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            const uchar *blk = rw + (ulong64)(b0 + lane) * 18;
+            float d = f16f(blk);
+            const uchar *q = blk + 2;
+            const float *xp = xsm + lane * LANE_XPAD;
+            float t = 0;
+            for (int j = 0; j < 16; j++)
+                t += ((int)(q[j] & 0xF) - 8) * xp[j] + ((int)(q[j] >> 4) - 8) * xp[j + 16];
+            s += d * t;
+        }
+        __syncthreads();
+    }
+    return s;
+}
+
 // The decode: k_moe_mv_q4_0's launch and layout (grid.y = expert slot,
 // 8 warps a block, a warp a row, a lane a block). Slot s reads limb column
 // (xs ? s : 0) and, when that column is flagged, its f32 column x + s*xs
@@ -7792,23 +7817,7 @@ extern "C" __global__ void k_moe_limb_q4_0(const uchar *wb, const float *x, moe_
     const uchar *rw = wbase + (ulong64)(live ? row : 0) * nb * 18;
     float s = 0;
     if (flagged) {
-        x += (ulong64)blockIdx.y * a.xs;
-        for (int b0 = 0; b0 < nb; b0 += 32) {
-            int nblk = nb - b0 < 32 ? nb - b0 : 32;
-            LANE_STAGE_X(xsm, x, b0, nblk)
-            __syncthreads();
-            if (live && (int)lane < nblk) {
-                const uchar *blk = rw + (ulong64)(b0 + lane) * 18;
-                float d = f16f(blk);
-                const uchar *q = blk + 2;
-                const float *xp = xsm + lane * LANE_XPAD;
-                float t = 0;
-                for (int j = 0; j < 16; j++)
-                    t += ((int)(q[j] & 0xF) - 8) * xp[j] + ((int)(q[j] >> 4) - 8) * xp[j + 16];
-                s += d * t;
-            }
-            __syncthreads();
-        }
+        s = limb_today_lane(rw, x + (ulong64)blockIdx.y * a.xs, nb, lane, live, xsm);
     } else {
         const int *li = (const int *)(lq + (ulong64)col * a.n_in * 3);
         const float *sc = lsc + (ulong64)col * nb;
@@ -7831,8 +7840,10 @@ extern "C" __global__ void k_moe_limb_q4_0(const uchar *wb, const float *x, moe_
                     s1 = __dp4a(ql, L[8 + k], s1);  s1 = __dp4a(qh, L[12 + k], s1);
                     s2 = __dp4a(ql, L[16 + k], s2); s2 = __dp4a(qh, L[20 + k], s2);
                 }
-                long long tot = (long long)s0 * 65536 + (long long)s1 * 256 + s2;
-                s = __fmaf_rn(__ll2float_rn(tot), __fmul_rn(d, sc[b0 + lane]), s);
+                // exact in int32: q in [-8, 7] and the top limb in [-127, 127]
+                // bound |s0*65536 + s1*256 + s2| by 2,139,127,808 < 2^31
+                int tot = s0 * 65536 + s1 * 256 + s2;
+                s = __fmaf_rn(__int2float_rn(tot), __fmul_rn(d, sc[b0 + lane]), s);
             }
             __syncthreads();
         }
@@ -7840,5 +7851,27 @@ extern "C" __global__ void k_moe_limb_q4_0(const uchar *wb, const float *x, moe_
     if (live) {
         s = warp_sum(s);
         if (lane == 0) y[(ulong64)blockIdx.y * a.ys + row] = s;
+    }
+}
+
+// The prefill's pass for flagged columns: a block of 8 warps a row each walks
+// the ncols columns (column c: x + c*xs, y + c*ys, the expert at wb + w_off)
+// and runs k_moe_mv_q4_0's body for the flagged ones, the decode's flagged
+// arithmetic. One launch of n_out/8 blocks whatever ncols is.
+extern "C" __global__ void k_moe_limb_fix_q4_0(const uchar *wb, const float *x, moe_args a, float *y,
+                                               const int *lflag, int ncols) {
+    __shared__ float xsm[32 * LANE_XPAD];
+    unsigned row = blockIdx.x * (blockDim.x / 32) + (threadIdx.x >> 5);
+    unsigned lane = threadIdx.x & 31;
+    bool live = row < (unsigned)a.n_out;
+    int nb = a.n_in / 32;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 18;
+    for (int c = 0; c < ncols; c++) {
+        if (!lflag[c]) continue;
+        float s = limb_today_lane(rw, x + (ulong64)c * a.xs, nb, lane, live, xsm);
+        if (live) {
+            s = warp_sum(s);
+            if (lane == 0) y[(ulong64)c * a.ys + row] = s;
+        }
     }
 }
