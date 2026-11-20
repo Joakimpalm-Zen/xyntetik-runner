@@ -8697,9 +8697,11 @@ static bool batch_eligible(model_t **seqs, int n, gpu_t **lead_out) {
         // fwd_batch runs a dense FFN unconditionally; MoE (sparse experts or
         // the gemma-4 dual-branch) has no path there, and it neither projects
         // the attention output gate nor skips rope on nope_on_full layers —
-        // keep all of those on fwd_tile. The recurrent families (qwen35 and
-        // the Mamba-2 hybrids) are declined as a family: fwd_batch has no
-        // mixer path and would hand a recurrent layer's NULL attention
+        // keep all of those on fwd_tile. qwen35 has a mixer path since R3.82
+        // (fwd_batch_q35_mixer: each column the solo step's kernels on its
+        // own sequence's state), off with RUNNER_BATCH_QWEN35=0; the Mamba-2
+        // hybrids are still declined as a family: fwd_batch has no mixer
+        // path for them and would hand a recurrent layer's NULL attention
         // weights to enc_mv_batch as dense tensors. NoPE-stepped models are
         // declined here too (enc_rope_batch ropes every layer), and so is any
         // attention temperature (mistral3's scales every layer's Q by a
