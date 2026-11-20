@@ -348,6 +348,47 @@ bool plat_close_listed_descriptors(void);
 // needs MoveFileEx(..., REPLACE_EXISTING) for the same operation.
 bool        plat_replace_file(const char *tmp_path, const char *path);
 
+// Cross-process publish lock using `<path>.publish.lock` (`flock` on POSIX,
+// `CreateFileW` + `LockFileEx` on Windows). Works in unreadable (`0300`)
+// directories, verifies live file identity on acquisition, retries only EINTR,
+// and unlinks cleanly while holding the lock on unlock (an unlocked leftover
+// after SIGKILL/power loss is harmless and reused on the next acquisition).
+typedef enum {
+    PLAT_LOCK_OK = 0,
+    PLAT_LOCK_UNSUPPORTED,
+    PLAT_LOCK_ERROR,
+} plat_lock_status;
+
+plat_lock_status plat_publish_lock(const char *path, void **lock_out);
+void             plat_publish_unlock(void *lock);
+
+typedef struct {
+    int  (*install_out)(const char *tmp, const char *out);
+    bool (*replace_sidecar)(const char *tmp, const char *out);
+    int  (*remove_file)(const char *path);
+    int  (*lock_pub)(const char *path, void **lock_out);
+    void (*unlock_pub)(void *lock);
+} plat_publish_ops;
+
+// Publish `out_tmp -> out_path` and optional `sidecar_tmp -> sidecar_out` as a
+// locked pair: snapshot any existing `sidecar_out` to a ready-to-rename backup
+// file first, replace `sidecar_out` (Step A), then replace `out_path` (Step B).
+// A failed Step B atomically rolls back `sidecar_out` via ONE replace of the
+// pre-staged backup (no new write at failure time).
+//
+// Crash window: a hard kill between Step A and Step B leaves the NEW record
+// beside the OLD output; `--lineage` and KV snapshot loading detect and refuse
+// that mismatch rather than trusting it.
+//
+// When `kept_tmp_out != NULL`, `out_tmp` is preserved on backup/Step-A/Step-B
+// install failure (`*kept_tmp_out = true`) and named on stderr; when NULL (or
+// on pre-publish lock refusal / `no_overwrite`), `out_tmp` is removed.
+// Returns 0 on success, -2 if `no_overwrite` saw an existing file, -1 on error.
+int plat_publish_pair(const char *out_tmp, const char *out_path,
+                      const char *sidecar_tmp, const char *sidecar_out,
+                      bool no_overwrite, bool *kept_tmp_out,
+                      const plat_publish_ops *ops);
+
 // An openable path for the executable image of this process, independent of
 // argv[0] and the current working directory. Caller frees; NULL on failure.
 char       *plat_executable_path(void);

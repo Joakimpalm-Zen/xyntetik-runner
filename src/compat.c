@@ -1804,6 +1804,376 @@ bool plat_replace_file(const char *tmp_path, const char *path) {
 #endif
 }
 
+typedef struct {
+#ifdef _WIN32
+    HANDLE   h;
+    wchar_t *wlock;
+#else
+    int   fd;
+    char *lock_path;
+#endif
+} plat_pub_lock;
+
+plat_lock_status plat_publish_lock(const char *path, void **lock_out) {
+    if (lock_out) *lock_out = NULL;
+    if (!path || !*path || !lock_out) return PLAT_LOCK_ERROR;
+    size_t pn = strlen(path);
+    static const char suf[] = ".publish.lock";
+    if (pn > SIZE_MAX - sizeof suf) return PLAT_LOCK_ERROR;
+    char *lpath = malloc(pn + sizeof suf);
+    if (!lpath) return PLAT_LOCK_ERROR;
+    memcpy(lpath, path, pn);
+    memcpy(lpath + pn, suf, sizeof suf);
+
+#ifdef _WIN32
+    wchar_t *wl = utf8_to_wide(lpath);
+    free(lpath);
+    if (!wl) return PLAT_LOCK_ERROR;
+    int pending_tries = 0;
+    for (;;) {
+        HANDLE h = CreateFileW(wl, GENERIC_READ | GENERIC_WRITE,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               NULL, OPEN_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+        if (h == INVALID_HANDLE_VALUE) {
+            DWORD err = GetLastError();
+            if (err == ERROR_ACCESS_DENIED && pending_tries < 50 &&
+                GetFileAttributesW(wl) != INVALID_FILE_ATTRIBUTES) {
+                pending_tries++;
+                plat_sleep_ms(10);
+                continue;
+            }
+            free(wl);
+            return PLAT_LOCK_ERROR;
+        }
+        BY_HANDLE_FILE_INFORMATION i1;
+        if (!GetFileInformationByHandle(h, &i1) ||
+            (i1.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            CloseHandle(h);
+            free(wl);
+            return PLAT_LOCK_ERROR;
+        }
+        OVERLAPPED ov = {0};
+        if (!LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK, 0, MAXDWORD, MAXDWORD, &ov)) {
+            DWORD err = GetLastError();
+            CloseHandle(h);
+            free(wl);
+            if (err == ERROR_INVALID_FUNCTION || err == ERROR_NOT_SUPPORTED)
+                return PLAT_LOCK_UNSUPPORTED;
+            return PLAT_LOCK_ERROR;
+        }
+        HANDLE h2 = CreateFileW(wl, 0,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                NULL, OPEN_EXISTING,
+                                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+        BY_HANDLE_FILE_INFORMATION i2;
+        bool same = h2 != INVALID_HANDLE_VALUE &&
+                    GetFileInformationByHandle(h2, &i2) &&
+                    (i2.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0 &&
+                    i1.dwVolumeSerialNumber == i2.dwVolumeSerialNumber &&
+                    i1.nFileIndexHigh == i2.nFileIndexHigh &&
+                    i1.nFileIndexLow == i2.nFileIndexLow;
+        if (h2 != INVALID_HANDLE_VALUE) CloseHandle(h2);
+        if (same) {
+            plat_pub_lock *lk = malloc(sizeof *lk);
+            if (!lk) {
+                OVERLAPPED uov = {0};
+                UnlockFileEx(h, 0, MAXDWORD, MAXDWORD, &uov);
+                CloseHandle(h);
+                free(wl);
+                return PLAT_LOCK_ERROR;
+            }
+            lk->h = h;
+            lk->wlock = wl;
+            *lock_out = lk;
+            return PLAT_LOCK_OK;
+        }
+        OVERLAPPED uov = {0};
+        UnlockFileEx(h, 0, MAXDWORD, MAXDWORD, &uov);
+        CloseHandle(h);
+    }
+#else
+    for (;;) {
+        int fd = open(lpath, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0666);
+        if (fd < 0) {
+            free(lpath);
+            return PLAT_LOCK_ERROR;
+        }
+        while (flock(fd, LOCK_EX) < 0) {
+            if (errno == EINTR) continue;
+            int e = errno;
+            close(fd);
+            free(lpath);
+            errno = e;
+            if (e == ENOLCK
+#ifdef EOPNOTSUPP
+                || e == EOPNOTSUPP
+#endif
+#ifdef ENOTSUP
+                || e == ENOTSUP
+#endif
+#ifdef ENOSYS
+                || e == ENOSYS
+#endif
+            ) return PLAT_LOCK_UNSUPPORTED;
+            return PLAT_LOCK_ERROR;
+        }
+        struct stat fst, pst;
+        if (fstat(fd, &fst) == 0 && lstat(lpath, &pst) == 0 &&
+            !S_ISLNK(pst.st_mode) &&
+            fst.st_dev == pst.st_dev && fst.st_ino == pst.st_ino) {
+            plat_pub_lock *lk = malloc(sizeof *lk);
+            if (!lk) {
+                flock(fd, LOCK_UN);
+                close(fd);
+                free(lpath);
+                return PLAT_LOCK_ERROR;
+            }
+            lk->fd = fd;
+            lk->lock_path = lpath;
+            *lock_out = lk;
+            return PLAT_LOCK_OK;
+        }
+        close(fd);
+    }
+#endif
+}
+
+void plat_publish_unlock(void *lock) {
+    if (!lock) return;
+    plat_pub_lock *lk = lock;
+#ifdef _WIN32
+    DeleteFileW(lk->wlock);
+    OVERLAPPED ov = {0};
+    UnlockFileEx(lk->h, 0, MAXDWORD, MAXDWORD, &ov);
+    CloseHandle(lk->h);
+    free(lk->wlock);
+#else
+    unlink(lk->lock_path);
+    flock(lk->fd, LOCK_UN);
+    close(lk->fd);
+    free(lk->lock_path);
+#endif
+    free(lk);
+}
+
+static void publish_test_pause(const char *env_name) {
+    const char *spec = getenv(env_name);
+    if (!spec || !*spec) return;
+    const char *sep = strchr(spec, '|');
+    char ready_buf[4096];
+    const char *go_path = spec;
+    if (sep) {
+        size_t rn = (size_t)(sep - spec);
+        if (rn > 0 && rn < sizeof ready_buf) {
+            memcpy(ready_buf, spec, rn);
+            ready_buf[rn] = 0;
+            FILE *rf = plat_fopen(ready_buf, "wb");
+            if (rf) fclose(rf);
+        }
+        go_path = sep + 1;
+    }
+    if (!*go_path) return;
+    for (int i = 0; i < 1500; i++) {
+        plat_stat_t st;
+        if (plat_stat(go_path, &st) == 0) break;
+        plat_sleep_ms(20);
+    }
+}
+
+static int def_install_out(const char *tmp, const char *out) {
+    return plat_replace_file(tmp, out) ? 0 : -1;
+}
+static int def_remove_file(const char *path) {
+    return plat_remove(path);
+}
+static int def_lock_pub(const char *path, void **lock_out) {
+    return (int)plat_publish_lock(path, lock_out);
+}
+
+// Snapshot `src_path` bytes into a closed sibling `.bak-*` temporary file so
+// rollback after a failed Step B is ONE atomic replace rather than a new write.
+static bool stage_sidecar_backup(const char *src_path, char *bak_out,
+                                 size_t bak_cap, bool *has_bak) {
+    *has_bak = false;
+    bak_out[0] = 0;
+    plat_stat_t st;
+    bool is_link = false;
+    if (plat_stat_nofollow(src_path, &st, &is_link) != 0) {
+        return errno == ENOENT;
+    }
+    if (is_link || !S_ISREG(st.st_mode)) return false;
+    FILE *in = plat_fopen(src_path, "rb");
+    if (!in) return false;
+    bool made = false;
+    FILE *out = plat_fopen_partial(src_path, "bak", bak_out, bak_cap, &made);
+    if (!out) {
+        fclose(in);
+        return false;
+    }
+    char buf[8192];
+    bool ok = true;
+    size_t nr;
+    while ((nr = fread(buf, 1, sizeof buf, in)) > 0) {
+        if (fwrite(buf, 1, nr, out) != nr) { ok = false; break; }
+    }
+    if (ferror(in)) ok = false;
+    fclose(in);
+    if (fflush(out) != 0 || ferror(out)) ok = false;
+    if (fclose(out) != 0) ok = false;
+    if (!ok) {
+        if (made) plat_remove(bak_out);
+        bak_out[0] = 0;
+        return false;
+    }
+    *has_bak = true;
+    return true;
+}
+
+int plat_publish_pair(const char *out_tmp, const char *out_path,
+                      const char *sidecar_tmp, const char *sidecar_out,
+                      bool no_overwrite, bool *kept_tmp_out,
+                      const plat_publish_ops *ops) {
+    plat_publish_ops def = {
+        .install_out     = def_install_out,
+        .replace_sidecar = plat_replace_file,
+        .remove_file     = def_remove_file,
+        .lock_pub        = def_lock_pub,
+        .unlock_pub      = plat_publish_unlock,
+    };
+    plat_publish_ops resolved = {
+        .install_out     = (ops && ops->install_out)     ? ops->install_out     : def.install_out,
+        .replace_sidecar = (ops && ops->replace_sidecar) ? ops->replace_sidecar : def.replace_sidecar,
+        .remove_file     = (ops && ops->remove_file)     ? ops->remove_file     : def.remove_file,
+        .lock_pub        = (ops && ops->lock_pub)        ? ops->lock_pub        : def.lock_pub,
+        .unlock_pub      = (ops && ops->unlock_pub)      ? ops->unlock_pub      : def.unlock_pub,
+    };
+    const plat_publish_ops *op = &resolved;
+    if (kept_tmp_out) *kept_tmp_out = false;
+    bool have_sidecar = sidecar_tmp && sidecar_tmp[0] && sidecar_out && sidecar_out[0];
+
+    void *pub_lock = NULL;
+    int lrc = op->lock_pub(out_path, &pub_lock);
+    if (lrc == PLAT_LOCK_ERROR) {
+        if (have_sidecar) op->remove_file(sidecar_tmp);
+        if (out_tmp && out_tmp[0]) op->remove_file(out_tmp);
+        fprintf(stderr, "error: cannot lock %s for publish (destination unchanged)\n",
+                out_path);
+        return -1;
+    }
+    if (lrc == PLAT_LOCK_UNSUPPORTED) {
+        static atomic_flag warned_unsupported = ATOMIC_FLAG_INIT;
+        if (!atomic_flag_test_and_set(&warned_unsupported)) {
+            fprintf(stderr, "warning: file locking is not supported here; concurrent "
+                    "writers to the same output are not protected, and locking on "
+                    "some network shares is only enforced per host (%s)\n", out_path);
+        }
+    }
+
+    if (no_overwrite) {
+        plat_stat_t st;
+        bool is_link = false;
+        bool exists_out = plat_stat_nofollow(out_path, &st, &is_link) == 0;
+        bool exists_side = have_sidecar && plat_stat_nofollow(sidecar_out, &st, &is_link) == 0;
+        if (exists_out || exists_side) {
+            if (have_sidecar) op->remove_file(sidecar_tmp);
+            if (out_tmp && out_tmp[0]) op->remove_file(out_tmp);
+            op->unlock_pub(pub_lock);
+            return -2;
+        }
+    }
+
+    publish_test_pause("RUNNER_TEST_PUBLISH_PAUSE_BEFORE");
+
+    char sidecar_bak[4200] = "";
+    bool has_bak = false;
+    if (have_sidecar) {
+        size_t blen = strlen(sidecar_out) + 64;
+        if (blen > sizeof sidecar_bak ||
+            !stage_sidecar_backup(sidecar_out, sidecar_bak, sizeof sidecar_bak, &has_bak)) {
+            op->remove_file(sidecar_tmp);
+            op->unlock_pub(pub_lock);
+            if (kept_tmp_out) *kept_tmp_out = true;
+            else if (out_tmp && out_tmp[0]) op->remove_file(out_tmp);
+            fprintf(stderr, "error: wrote %s but could not snapshot existing provenance "
+                    "record %s (destination unchanged)\n",
+                    out_tmp ? out_tmp : out_path, sidecar_out);
+            return -1;
+        }
+
+        // Step A: replace the provenance record first. If it is unreplaceable
+        // (e.g. immutable or share-locked), the output has not been touched and
+        // the old pair remains intact.
+        // Crash window: a hard kill between Step A and Step B leaves the NEW
+        // record beside the OLD output; lineage/manifest checks detect the
+        // sha256 mismatch rather than trusting it.
+        if (!op->replace_sidecar(sidecar_tmp, sidecar_out)) {
+            op->remove_file(sidecar_tmp);
+            if (has_bak) op->remove_file(sidecar_bak);
+            op->unlock_pub(pub_lock);
+            if (kept_tmp_out) *kept_tmp_out = true;
+            else if (out_tmp && out_tmp[0]) op->remove_file(out_tmp);
+            fprintf(stderr, "error: wrote %s but could not install provenance record %s "
+                    "(destination unchanged)\n", out_tmp ? out_tmp : out_path, sidecar_out);
+            return -1;
+        }
+
+        publish_test_pause("RUNNER_TEST_PUBLISH_PAUSE_BETWEEN");
+    }
+
+    // Step B: replace the output artifact. On failure, roll back sidecar_out
+    // using ONE atomic replace of the pre-staged backup (or unlink if new).
+    if (op->install_out(out_tmp, out_path) != 0) {
+        if (kept_tmp_out) *kept_tmp_out = true;
+        else if (out_tmp && out_tmp[0]) op->remove_file(out_tmp);
+
+        bool rolled_back = true;
+        bool removed_new = true;
+        bool restore_failed_with_bak = false;
+        if (have_sidecar) {
+            if (has_bak) {
+                rolled_back = op->replace_sidecar(sidecar_bak, sidecar_out);
+                if (!rolled_back) {
+                    restore_failed_with_bak = true;
+                    // Never unlink sidecar_bak here: it is the only preserved copy
+                    // of the previous record. Try clearing the mismatched sidecar_out
+                    // and report the exact resulting state in either case.
+                    removed_new = (op->remove_file(sidecar_out) == 0);
+                }
+            } else {
+                rolled_back = (op->remove_file(sidecar_out) == 0);
+            }
+        }
+        op->unlock_pub(pub_lock);
+        if (restore_failed_with_bak) {
+            if (removed_new) {
+                fprintf(stderr, "error: wrote %s but could not install it as %s, and could "
+                        "not restore provenance record %s (removed mismatched record; "
+                        "previous record kept at %s)\n",
+                        out_tmp ? out_tmp : out_path, out_path, sidecar_out, sidecar_bak);
+            } else {
+                fprintf(stderr, "error: wrote %s but could not install it as %s, and could "
+                        "not restore or remove provenance record %s (old output sits beside "
+                        "new record; previous record kept at %s)\n",
+                        out_tmp ? out_tmp : out_path, out_path, sidecar_out, sidecar_bak);
+            }
+        } else if (!rolled_back) {
+            fprintf(stderr, "error: wrote %s but could not install it as %s, and could "
+                    "not remove provenance record %s\n",
+                    out_tmp ? out_tmp : out_path, out_path, sidecar_out);
+        } else {
+            fprintf(stderr, "error: wrote %s but could not install it as %s "
+                    "(previous files unchanged)\n",
+                    out_tmp ? out_tmp : out_path, out_path);
+        }
+        return -1;
+    }
+
+    if (has_bak) op->remove_file(sidecar_bak);
+    op->unlock_pub(pub_lock);
+    return 0;
+}
+
 bool plat_random(uint8_t *out, size_t n) {
 #ifdef _WIN32
     for (size_t i = 0; i < n; i += 4) {
@@ -2703,6 +3073,8 @@ static const char *const RUNNER_SWITCH_INERT[] = {
     "RUNNER_TEST_KV_DUMP",     // prints a KV row's hash
     "RUNNER_TEST_IDENTITY_WAIT",   // waits before the route identity is taken (R20)
     "RUNNER_TEST_PARTIAL_SUFFIX", // fixes atomic partial file's suffix for planted-symlink tests
+    "RUNNER_TEST_PUBLISH_PAUSE_BEFORE", // pauses inside publish lock before Step A (R6.112)
+    "RUNNER_TEST_PUBLISH_PAUSE_BETWEEN", // pauses between Step A and Step B (R6.112)
 };
 
 bool runner_switch_counts(const char *name, size_t n) {
