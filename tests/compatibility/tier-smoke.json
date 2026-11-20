@@ -144,8 +144,8 @@
         },
         "windows-x86_64-cuda/cpu": {
           "path": "tests/compatibility/tier-smoke/trinity-nano-preview-q8_0.windows-x86_64-cuda.cpu.txt",
-          "sha256": "5480f6cad63c85e2ed82faa650f5e47496d5e78e18d9c196bf500d9045cfba42",
-          "bytes": 218,
+          "sha256": "244682eddd94535fc0103d2ce866af322f5437fd907d50021997f3dff9c24f4e",
+          "bytes": 227,
           "finish_reason": "length",
           "completion_tokens": 48,
           "spec": {
@@ -161,17 +161,14 @@
             }
           },
           "pinned": {
-            "date": "2026-11-18",
+            "date": "2026-11-20",
             "runner_version": "1.20.0",
-            "commit": "fce00e8f565e133e67e16f0689fb05f756a78652",
+            "commit": "afde61fa957ccf1c0038d69dad7e5998b03778de",
             "build": {
-              "binary_sha256": "9073c7a06807fa1392a7fa12cb2058522ad600009420d361bc093d36bc7f06c0",
+              "binary_sha256": "1a105a3fe79430b9dbcb09bfa07697caa83a6e5c5f8e4057a56c380658567667",
               "compiler": "16.2.0",
-              "commit": "fce00e8f565e133e67e16f0689fb05f756a78652",
-              "dirty": false,
-              "compiler_line": "gcc.exe (Rev6, Built by MSYS2 project) 16.2.0, MSYS2 UCRT64",
-              "make": "make CFLAGS=\"-O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=x86-64-v3\" (the release workflow's line; the Makefile adds -DRUNNER_PORTABLE_MATH on Windows)",
-              "portable_math": true
+              "commit": "afde61fa957ccf1c0038d69dad7e5998b03778de",
+              "dirty": false
             }
           }
         }
