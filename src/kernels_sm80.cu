@@ -120,8 +120,8 @@ static __device__ __forceinline__ void mma_s8_16832(int c[4], const unsigned a[4
 }
 template <int R, int NT>
 static __device__ __forceinline__ void limb_tile_body(const uchar *wb, ulong64 w_off, int n_in, int n_out, int cnt, int ys,
-                                            float *y, const signed char *lq, const float *lsc) {
-    __shared__ float P[8][R * 16][8 * NT];
+                                            float *y, const signed char *lq, const float *lsc,
+                                            float (*P)[R * 16][8 * NT]) {
     unsigned w = threadIdx.x >> 5, lane = threadIdx.x & 31, gid = lane >> 2, tig = lane & 3;
     int nb = n_in / 32;
     unsigned rbase = blockIdx.x * R * 16, cb = blockIdx.y * 8 * NT;
@@ -211,10 +211,14 @@ static __device__ __forceinline__ void limb_tile_body(const uchar *wb, ulong64 w
         if (row < (unsigned)n_out && col < (unsigned)cnt) y[(ulong64)col * ys + row] = s[0];
     }
 }
+// The roots' shared array is the kernel's own: declared in a static template
+// body, nvcc names it with a hash of the checkout (_INTERNAL_<hash>_), and the
+// embedded PTX would differ between two checkouts of the same source.
 #define LIMB_TILE(NAME, R, NT)                                                                     \
 extern "C" __global__ void __launch_bounds__(256) NAME(const uchar *wb, ulong64 w_off, int n_in,  \
         int n_out, int cnt, int ys, float *y, const signed char *lq, const float *lsc) {         \
-    limb_tile_body<R, NT>(wb, w_off, n_in, n_out, cnt, ys, y, lq, lsc);                          \
+    __shared__ float P[8][R * 16][8 * NT];                                                       \
+    limb_tile_body<R, NT>(wb, w_off, n_in, n_out, cnt, ys, y, lq, lsc, P);                       \
 }
 LIMB_TILE(k_moe_limb_tile_q4_0, 1, 1)
 LIMB_TILE(k_moe_limb_tile2_q4_0, 2, 2)
