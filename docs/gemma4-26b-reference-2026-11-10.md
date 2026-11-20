@@ -116,7 +116,12 @@ publisher's chat template; 3,669 tokens):
 - With `--kv f32` the conversion reads 0.00003 on chat and 0.0055 on raw
   text: Runner's forward is the publisher's float32 forward to that, and the
   f16 cache's rounding is the rest of its distance.
-- The shipped QAT file reads 0.2140. On the same chat corpus, the
+- The shipped QAT file reads 0.2140. Read again on 2026-11-20 against the
+  same reference files, on the CUDA route that is the default from 1.21.0
+  (R3.83's expert route over R8.30's rope table), it reads 0.2144 with the
+  same 90.90% margin-qualified top-1: a paired ratio of 1.0018 (95%
+  interval 0.9979 to 1.0069), no difference shown. The tables above are the
+  2026-11-10 reads. On the same chat corpus, the
   2026-10-21 investigation's plain quants of a conversion read 0.295 (Q4_0)
   and 0.2485 (Q4_K_M), on an earlier build.
 
