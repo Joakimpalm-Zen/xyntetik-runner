@@ -1352,20 +1352,20 @@ int prefix_cache_load(const char *path, const engine *e) {
 
 // Writes one entry the way prefix_cache_save writes each, digest included, so
 // the file is a runner.prefix.v1 file a cache load would also accept.
-// One entry as a runner.prefix.v1 file, written beside `path` and moved into
-// place. n on success, PFX_CTX_IO otherwise.
-static int pfx_write_one(const char *path, uint64_t key, const int32_t *toks, int32_t n,
-                         const uint8_t *kv, uint64_t bytes) {
+// One entry as a runner.prefix.v1 file staged to `tmp_out` beside `path`
+// without replacing `path`. n on success, PFX_CTX_IO otherwise.
+static int pfx_stage_one(const char *path, uint64_t key, const int32_t *toks, int32_t n,
+                         const uint8_t *kv, uint64_t bytes,
+                         char *tmp_out, size_t tmp_cap) {
+    if (!tmp_out || tmp_cap == 0) return PFX_CTX_IO;
+    tmp_out[0] = 0;
     size_t path_n = strlen(path);
-    if (path_n > SIZE_MAX - 64) return PFX_CTX_IO;
-    size_t tmp_cap = path_n + 64;
-    char *tmp = malloc(tmp_cap);
-    if (!tmp) return PFX_CTX_IO;
+    if (path_n > SIZE_MAX - 64 || path_n + 64 > tmp_cap) return PFX_CTX_IO;
     bool made = false;
-    FILE *f = plat_fopen_partial(path, "partial", tmp, tmp_cap, &made);
+    FILE *f = plat_fopen_partial(path, "partial", tmp_out, tmp_cap, &made);
     if (!f) {
-        fprintf(stderr, "prefix: cannot write %s\n", tmp);
-        free(tmp);
+        fprintf(stderr, "prefix: cannot write %s\n", tmp_out);
+        tmp_out[0] = 0;
         return PFX_CTX_IO;
     }
     uint32_t count = 1;
@@ -1380,16 +1380,32 @@ static int pfx_write_one(const char *path, uint64_t key, const int32_t *toks, in
     digest ^= pfx_digest(kv, bytes);          digest *= 0x100000001b3ull;
     ok = ok && wr(f, &digest, sizeof digest);
     if (fclose(f) != 0) ok = false;
-    if (!ok || !plat_replace_file(tmp, path)) {
-        if (made) plat_remove(tmp);
-        free(tmp);
+    if (!ok) {
+        if (made) plat_remove(tmp_out);
+        tmp_out[0] = 0;
         return PFX_CTX_IO;
     }
-    free(tmp);
     return n;
 }
 
-int prefix_context_export(const char *name, const char *path) {
+static int pfx_write_one(const char *path, uint64_t key, const int32_t *toks, int32_t n,
+                         const uint8_t *kv, uint64_t bytes) {
+    size_t path_n = strlen(path);
+    if (path_n > SIZE_MAX - 64) return PFX_CTX_IO;
+    size_t tmp_cap = path_n + 64;
+    char *tmp = malloc(tmp_cap);
+    if (!tmp) return PFX_CTX_IO;
+    int rc = pfx_stage_one(path, key, toks, n, kv, bytes, tmp, tmp_cap);
+    if (rc >= 0 && !plat_replace_file(tmp, path)) {
+        plat_remove(tmp);
+        rc = PFX_CTX_IO;
+    }
+    free(tmp);
+    return rc;
+}
+
+static int prefix_context_export_impl(const char *name, const char *path,
+                                      char *tmp_out, size_t tmp_cap) {
     if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
     if (!path || !*path) return PFX_CTX_IO;
     pthread_mutex_lock(&PFX.mu);
@@ -1406,12 +1422,24 @@ int prefix_context_export(const char *name, const char *path) {
     p->readers++;
     pthread_mutex_unlock(&PFX.mu);
     // From here the entry is read without the lock (see `readers`).
-    int n = pfx_write_one(path, p->key, p->toks, p->n, p->kv, p->bytes);
+    int n = tmp_out ? pfx_stage_one(path, p->key, p->toks, p->n, p->kv, p->bytes,
+                                    tmp_out, tmp_cap)
+                    : pfx_write_one(path, p->key, p->toks, p->n, p->kv, p->bytes);
     pfx_release_reader(p);
     return n;
 }
 
-int prefix_slot_export(const engine *e, int n, const char *path) {
+int prefix_context_export(const char *name, const char *path) {
+    return prefix_context_export_impl(name, path, NULL, 0);
+}
+
+int prefix_context_stage(const char *name, const char *path,
+                         char *tmp_out, size_t tmp_cap) {
+    return prefix_context_export_impl(name, path, tmp_out, tmp_cap);
+}
+
+static int prefix_slot_export_impl(const engine *e, int n, const char *path,
+                                   char *tmp_out, size_t tmp_cap) {
     if (!path || !*path) return PFX_CTX_IO;
     // what a pin refuses, for the same reasons: no contiguous snapshot under
     // a ring or tied-V, and a recurrent fold belongs to position e->pos alone
@@ -1434,9 +1462,20 @@ int prefix_slot_export(const engine *e, int n, const char *path) {
     uint8_t *kv = malloc(need);
     if (!kv) return PFX_CTX_NOSPACE;
     pfx_save(e->m, kv, n);
-    int wrote = pfx_write_one(path, e->model_key, e->hist, n, kv, need);
+    int wrote = tmp_out ? pfx_stage_one(path, e->model_key, e->hist, n, kv, need,
+                                        tmp_out, tmp_cap)
+                        : pfx_write_one(path, e->model_key, e->hist, n, kv, need);
     free(kv);
     return wrote;
+}
+
+int prefix_slot_export(const engine *e, int n, const char *path) {
+    return prefix_slot_export_impl(e, n, path, NULL, 0);
+}
+
+int prefix_slot_stage(const engine *e, int n, const char *path,
+                      char *tmp_out, size_t tmp_cap) {
+    return prefix_slot_export_impl(e, n, path, tmp_out, tmp_cap);
 }
 
 // One whole runner.prefix.v1 entry read from `path` and held to this engine:

@@ -207,8 +207,9 @@ static bool save_one(const engine *e, const char *ctx, int slot_n, jv *req, sbuf
                  "exists; it is never overwritten", name);
             break;
         }
-        int n = slot_n > 0 ? prefix_slot_export(e, slot_n, kvpath)
-                           : prefix_context_export(ctx, kvpath);
+        char kv_tmp[1300] = "";
+        int n = slot_n > 0 ? prefix_slot_stage(e, slot_n, kvpath, kv_tmp, sizeof kv_tmp)
+                           : prefix_context_stage(ctx, kvpath, kv_tmp, sizeof kv_tmp);
         if (slot_n > 0 && n == PFX_CTX_UNSUPPORTED) {
             fail(err, 409, "context_unsupported", "this model's KV has no "
                  "contiguous prefix to write (a ring, tied-V or recurrent layout)");
@@ -227,15 +228,16 @@ static bool save_one(const engine *e, const char *ctx, int slot_n, jv *req, sbuf
             fail(err, 500, "snapshot_write_failed", "cannot write %s.kv", name);
             break;
         }
-        // describe the file as written: its digest, and the ids it carries
+        // describe the staged .kv file as written before touching either destination:
+        // its digest, and the ids it carries
         char kvhex[65], thex[65];
         size_t kn = 0;
-        if (!envelope_file_sha256(kvpath, kvhex)) {
-            plat_remove(kvpath);
+        if (!envelope_file_sha256(kv_tmp, kvhex)) {
+            plat_remove(kv_tmp);
             fail(err, 500, "snapshot_write_failed", "cannot read back %s.kv", name);
             break;
         }
-        FILE *f = plat_fopen(kvpath, "rb");
+        FILE *f = plat_fopen(kv_tmp, "rb");
         int32_t *toks = malloc(sizeof(int32_t) * (size_t)n);
         // The size through plat_file_size: ftell's long is 32 bits on Windows,
         // and the KV of a long context passes 2 GiB (a 14B model's does near
@@ -249,7 +251,7 @@ static bool save_one(const engine *e, const char *ctx, int slot_n, jv *req, sbuf
         if (tok_ok) envelope_data_sha256(toks, sizeof(int32_t) * (size_t)n, thex);
         free(toks);
         if (!tok_ok) {
-            plat_remove(kvpath);
+            plat_remove(kv_tmp);
             fail(err, 500, "snapshot_write_failed", "cannot read back %s.kv", name);
             break;
         }
@@ -277,25 +279,39 @@ static bool save_one(const engine *e, const char *ctx, int slot_n, jv *req, sbuf
         else sb_lit(&m, "null");
         sb_fmt(&m, "},\"created_utc\":\"%s\"", utc);
         if (m.failed) {
-            plat_remove(kvpath);
+            plat_remove(kv_tmp);
             fail(err, 500, "out_of_memory", "out of memory");
             break;
         }
-        // chained like any record; signed through the record signer when a
-        // key was given, else the chain object is written here
-        if (!kvsnap_write_manifest_file(manpath, m.s, m.n, KS.sign_key)) {
-            plat_remove(kvpath);
+        // Stage and sign/chain the manifest partial before acquiring the lock.
+        char man_tmp[1300] = "";
+        if (!kvsnap_stage_manifest_file(manpath, m.s, m.n, KS.sign_key,
+                                        man_tmp, sizeof man_tmp)) {
+            plat_remove(kv_tmp);
             fail(err, 500, "snapshot_write_failed", "cannot write %s.kv.json", name);
             break;
         }
         size_t mn = 0;
-        char *mb = plat_read_file(manpath, KS_MAX_FILE, &mn);
+        char *mb = plat_read_file(man_tmp, KS_MAX_FILE, &mn);
         char mchain[65] = "";
         bool mok = mb && chain_ok(mb, mn, mchain);
         free(mb);
         if (!mok) {
+            plat_remove(man_tmp);
+            plat_remove(kv_tmp);
             fail(err, 500, "snapshot_write_failed", "the manifest written does "
                  "not recompute");
+            break;
+        }
+        int prc = plat_publish_pair(kv_tmp, kvpath, man_tmp, manpath,
+                                    true, NULL, NULL);
+        if (prc == -2) {
+            fail(err, 409, "snapshot_exists", "a snapshot named %s already "
+                 "exists; it is never overwritten", name);
+            break;
+        }
+        if (prc != 0) {
+            fail(err, 500, "snapshot_write_failed", "cannot write %s.kv.json", name);
             break;
         }
         sb_fmt(out, "{\"object\":\"runner.kv_snapshot\",\"name\":\"%s\","
@@ -688,18 +704,21 @@ void kvsnap_auto_save(engine *e, const char *name, int n) {
     pthread_mutex_unlock(&KS.mu);
 }
 
-bool kvsnap_write_manifest_file(const char *manpath, const char *body_open,
-                                size_t body_len, const char *sign_key) {
-    if (!manpath || !*manpath || !body_open || body_len == 0) return false;
-    char tmp[4200];
+bool kvsnap_stage_manifest_file(const char *manpath, const char *body_open,
+                                size_t body_len, const char *sign_key,
+                                char *tmp_out, size_t tmp_cap) {
+    if (!manpath || !*manpath || !body_open || body_len == 0 ||
+        !tmp_out || tmp_cap == 0)
+        return false;
+    tmp_out[0] = 0;
     bool made = false;
-    FILE *mf = plat_fopen_partial(manpath, "partial", tmp, sizeof tmp, &made);
+    FILE *mf = plat_fopen_partial(manpath, "partial", tmp_out, tmp_cap, &made);
     if (!mf) return false;
     bool wrote = fwrite(body_open, 1, body_len, mf) == body_len;
     if (sign_key && sign_key[0]) {
         wrote = wrote && fputc('}', mf) != EOF;
         if (fclose(mf) != 0) wrote = false;
-        wrote = wrote && record_sign(tmp, sign_key, NULL);
+        wrote = wrote && record_sign(tmp_out, sign_key, NULL);
     } else {
         char chain[65];
         envelope_data_sha256(body_open, body_len, chain);
@@ -707,8 +726,22 @@ bool kvsnap_write_manifest_file(const char *manpath, const char *body_open,
                                      "\"hash\":\"%s\"}}", chain) > 0;
         if (fclose(mf) != 0) wrote = false;
     }
-    if (!wrote || !plat_replace_file(tmp, manpath)) {
-        if (made) plat_remove(tmp);
+    if (!wrote) {
+        if (made) plat_remove(tmp_out);
+        tmp_out[0] = 0;
+        return false;
+    }
+    return true;
+}
+
+bool kvsnap_write_manifest_file(const char *manpath, const char *body_open,
+                                size_t body_len, const char *sign_key) {
+    char tmp[4200];
+    if (!kvsnap_stage_manifest_file(manpath, body_open, body_len, sign_key,
+                                    tmp, sizeof tmp))
+        return false;
+    if (!plat_replace_file(tmp, manpath)) {
+        plat_remove(tmp);
         return false;
     }
     return true;
