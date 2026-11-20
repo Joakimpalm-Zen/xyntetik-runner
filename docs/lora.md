@@ -291,27 +291,38 @@ device it took longer than the host's whole step. The device checks its own
 copy finite as well before AdamW reads it. A and B come back to the host once
 a step (66 MB on Qwen3-4B at rank 8), since the evals, a checkpoint and the
 next step's windows read them there; nothing is resident across steps. A
-checkpoint's `.optim` and a step that runs on the host read the device's
-moments back first, and `--train-resume` takes the file's up. A gradient
-that is not finite fails the step before anything is updated, as on the
-host. `RUNNER_TRAIN_RES_ADAM=0` keeps the optimizer on the host, for
-comparison; the run says why once on stderr when it stays there.
+step that runs on the host reads the device's moments back first, and so
+does a checkpoint, before it installs anything: a pull that fails leaves the
+previous checkpoint's adapter and `.optim` as they were, byte for byte, and
+fails the run (`nothing written for step N`). `--train-resume` takes the
+file's up. A gradient that is not finite fails the step before anything is
+updated, as on the host. A device failure in the middle of the update is not
+undone in memory; the run fails at that step and writes no checkpoint of it.
+`RUNNER_TRAIN_RES_ADAM=0` keeps the optimizer on the host, for comparison;
+the run says why once on stderr when it stays there.
 
 Every one of these kernels is a host-chain twin: it computes each element as
 a strict build's host computes it (`make T3=1`: the host's order of
 operations, no contraction, the portable exp). A T3 build's `--train-gpu`
 adapter is therefore the one it was before, byte for byte (Qwen3-4B Q4_K_M,
-5 steps). With the head and the optimizer on the device, nothing of a
-resident step's arithmetic is left to the host, and a default build's
-adapter is a T3 build's, byte for byte, for a constant learning rate: the
-same file after 5 steps, after 20, and with `--batch 2`, and across a
-`--train-resume`. The few scalars the host still computes for it (a fresh
-adapter's init scale and alpha over rank, AdamW's bias corrections) are
-computed as a strict build computes them in every build. The learning-rate
-schedule (`--lr-schedule cosine`, `--lr-warmup`) is computed on the host in
-double and is not held to that. A default build's fresh adapter changed once
-for it, the CPU trainer's too: under `-ffast-math` the init scale 1 / sqrt(n)
-came from a fast reciprocal square root, one bit off at n 2560.
+5 steps). With the head and the optimizer on the device too, a build whose
+host math is portable (`--caps` reports `"math": "portable"`: a Windows
+default build, a build made with `PORTABLE_MATH=1`) has a T3 build's
+adapter, byte for byte, for a constant learning rate: the same file after 5
+steps, after 20, with `--batch 2`, and across a `--train-resume` on an RTX
+5070 under Windows, and after 5 and 20 steps on a CUDA slice (sm_120) under
+Linux. A Linux or
+macOS default build keeps the C library's math (`"math": "libc"`), and the
+host's side of the forward differs with it from step 1's loss on: such a
+build trains a correct adapter of its own, within rounding of the strict
+build's, not the strict build's bytes. The few scalars the host computes for
+the optimizer and a fresh adapter (the init scale, alpha over rank, AdamW's
+bias corrections) are computed as a strict build computes them in every
+build. The learning-rate schedule (`--lr-schedule cosine`, `--lr-warmup`) is
+computed on the host in double and is not held to that. A default build's
+fresh adapter can change once for it, the CPU trainer's too; on the Windows
+build it did: under `-ffast-math` the init scale 1 / sqrt(n) came from a
+fast reciprocal square root, one bit off at n 2560.
 
 On an RTX 5070 with 8 CPU threads (Qwen3-4B Q4_K_M, the ToolUse record's
 data, rank 8 on every projection, ctx 128; the median of steps 2 to 20,

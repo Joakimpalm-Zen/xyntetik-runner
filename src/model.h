@@ -789,6 +789,7 @@ typedef struct {
                               // (model_lora_res_adam_step), products.resident_adam_steps
     bool   train_opt_dev;     // R4: the device holds the run's AdamW moments
     bool   train_opt_host_old; // ... and the host's copies are older than the device's
+    bool   train_opt_pull_fail; // a test seam (RUNNER_TEST_TRAIN_OPT_PULL_FAIL): their pull fails
     bool   train_dev_ffn;    // R8.24.1 B: within a device-mode backward, the
                              // gated FFN (products, adapter, activation) runs
                              // on the device (gpu_train_ffn_*)
@@ -1557,6 +1558,11 @@ void   model_lora_grad_scale(model_t *m, float f);
 bool   model_lora_grad_norms(model_t *m, double *max_out, double *mean_out);
 bool   model_lora_optim_write(model_t *m, FILE *f);
 bool   model_lora_optim_read(model_t *m, FILE *f, char *why, size_t cap);
+// R4: the device's AdamW moments back into the host's when the device's are
+// newer (a no-op otherwise); false, with the error on stderr, when they did
+// not come back. A checkpoint calls it before it installs anything, so the
+// pull that can fail runs while the previous checkpoint is still whole.
+bool   model_lora_optim_sync(model_t *m);
 typedef struct {
     double loss, weight;          // weighted loss sum, and the weights' magnitude
     long   top1_topk, top1_vocab;  // top-1 agreements over the positions

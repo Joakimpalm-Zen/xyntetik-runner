@@ -6119,11 +6119,21 @@ static bool train_optim_load(const char *adapter, cli_run *rt, train_state *st,
     return true;
 }
 
+// R4: the moments a sidecar records, from the device when its are newer,
+// pulled and checked before anything is installed: a pull that fails leaves
+// OUT and OUT.optim as they were (the previous checkpoint's, or none).
+static bool train_optim_sync(cli_opts *o, cli_run *rt, int step) {
+    if (model_lora_optim_sync(&rt->m)) return true;
+    fprintf(stderr, "error: nothing written for step %d: %s and its .optim are left as they "
+            "were\n", step, o->train_out);
+    return false;
+}
+
 // The adapter and its sidecar as OUT, and with numbered also as OUT.step-NNNNN:
 // the checkpoints a resumed run starts from.
 static bool train_checkpoint(cli_opts *o, cli_run *rt, const train_state *st,
                              const train_eval_set *ev, bool numbered) {
-    if (!model_lora_save(&rt->m, o->train_out) ||
+    if (!train_optim_sync(o, rt, st->step) || !model_lora_save(&rt->m, o->train_out) ||
         !train_optim_save(o->train_out, rt, st, ev, o->n_eval))
         return false;
     if (!numbered) return true;
@@ -6841,6 +6851,8 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
     // so it can be continued past --train-steps
     bool sidecar = o->save_every > 0 || o->stop_file || o->kill_at || o->train_resume;
     char fwhy[512] = "";
+    // the sidecar's moments come back before the adapter is installed
+    if (!rc && sidecar && !o->replay_train && !train_optim_sync(o, rt, st.step)) rc = 1;
     if (!rc && model_full_on(&rt->m)) {
         // the variant: the -m file with the trained tensors' masters
         bool w = model_full_write(&rt->m, load_path, o->train_out, fwhy, sizeof fwhy);

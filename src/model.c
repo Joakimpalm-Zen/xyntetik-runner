@@ -14807,10 +14807,20 @@ static bool adam_state(float **state, size_t n) {
 // 2 down, 3 Q, 4 K, 5 V, 6 O
 static int lora_res_site(int s) { return s <= LW_O ? 3 + s : s - LW_GATE; }
 
+// a test seam: RUNNER_TEST_TRAIN_OPT_PULL_FAIL=N, after step N (the host's
+// optimizer or the device's), makes the pull of the device's newer moments
+// fail, as a device that stops answering would. After a host step it marks
+// the host's copies older first, so the seam reaches the pull without a device.
+static void lora_opt_pull_seam(model_t *m, int step) {
+    const char *e = getenv("RUNNER_TEST_TRAIN_OPT_PULL_FAIL");
+    if (e && *e && atoi(e) == step) m->train_opt_host_old = m->train_opt_pull_fail = true;
+}
+
 // R4: the device optimizer's moments back into the host's (each allocated)
 // when the host's are older: before a host step, and for a checkpoint's .optim
 static bool lora_opt_from_dev(model_t *m) {
     if (!m->train_opt_host_old) return true;
+    bool fail = m->train_opt_pull_fail;
     for (int l = 0; l < m->n_layer; l++)
         for (int s = 0; s <= LW_DOWN; s++) {
             struct lora_w *lw = &m->lora[(size_t)l * LW_SLOTS + s];
@@ -14819,7 +14829,7 @@ static bool lora_opt_from_dev(model_t *m) {
             size_t na = (size_t)lw->r * (size_t)base->ne[0];
             size_t nb = (size_t)lw->r * (size_t)base->ne[1];
             if (!adam_state(&lw->ma, na) || !adam_state(&lw->va, na) ||
-                !adam_state(&lw->mb, nb) || !adam_state(&lw->vb, nb) ||
+                !adam_state(&lw->mb, nb) || !adam_state(&lw->vb, nb) || fail ||
                 !gpu_train_res_optim_get(m, l, lora_res_site(s), lw->ma, lw->va, lw->mb, lw->vb)) {
                 fprintf(stderr, "error: --train-gpu: the optimizer's moments did not come back "
                         "from the device\n");
@@ -14877,6 +14887,7 @@ bool model_lora_adam_step(model_t *m, float lr, float beta1, float beta2,
         fprintf(stderr, "train-prof: optimizer on the host %.3fs (AdamW)\n", plat_now() - t0);
     // parameters moved: the adapter is a new behavioral identity
     m->lora_id = m->lora_id * 0x100000001B3ull + 1;
+    lora_opt_pull_seam(m, step);
     return true;
 }
 
@@ -15061,6 +15072,7 @@ int model_lora_res_adam_step(model_t *m, float scale, float lr, float beta1, flo
     if (!said++)
         fprintf(stderr, "train-gpu: the optimizer (the mean's scale and AdamW) runs on the device, the "
                 "gradient norms on the host's copy\n");
+    lora_opt_pull_seam(m, step);
     return 1;
 }
 
@@ -15366,6 +15378,10 @@ bool model_lora_grad_norms(model_t *m, double *max_out, double *mean_out) {
 // counts, then mA, vA, mB, vB as float32 (zeros for a slot whose moments were
 // never allocated). The reader checks every count against the attached
 // adapter and refuses a sidecar written for another one.
+bool model_lora_optim_sync(model_t *m) {
+    return !m->lora || lora_opt_from_dev(m);
+}
+
 bool model_lora_optim_write(model_t *m, FILE *f) {
     if (!m->lora) return false;
     if (!lora_opt_from_dev(m)) return false;   // R4: the device's moments, when newer

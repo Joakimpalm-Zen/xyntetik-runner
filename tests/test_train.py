@@ -260,6 +260,38 @@ def test_train_gpu_matches_cpu_within_rounding(runner_bin, base, tmp_path, famil
     assert rec["products"]["resident_adam_steps"] == resident, (family, rec["products"])
 
 
+# R4: the device keeps the AdamW moments across steps, so a checkpoint pulls
+# them back first, before it installs anything: a pull that fails leaves the
+# previous checkpoint's adapter and .optim as they were, byte for byte, and the
+# run fails (RUNNER_TEST_TRAIN_OPT_PULL_FAIL=2: the pull after step 2 fails).
+# test_train_recipe.py has the host-only form; here the moments really are the
+# device's. The anchor is the pair the same run installed after step 1, and a
+# resume from the canonical files that equals the run that never failed.
+def test_train_gpu_failed_moment_pull_keeps_the_previous_checkpoint(runner_bin, base, tmp_path):
+    out = tmp_path / "a.gguf"
+    ckpt = ("--save-every", "1", "--train-gpu")
+    p = _run_train(runner_bin, base, out, "corpus.txt", extra=("--train-steps", "3") + ckpt,
+                   env=dict(os.environ, RUNNER_TEST_TRAIN_OPT_PULL_FAIL="2"))
+    err = p.stderr.decode(errors="replace")
+    if p.returncode != 0 and "needs a CUDA build" in err:
+        pytest.skip("no usable CUDA device")
+    assert p.returncode != 0, err
+    assert "the optimizer (the mean's scale and AdamW) runs on the device" in err, err
+    assert "the optimizer's moments did not come back from the device" in err, err
+    one = pathlib.Path(str(out) + ".step-00001")
+    assert out.read_bytes() == one.read_bytes(), "the adapter was replaced beside the old .optim"
+    assert pathlib.Path(str(out) + ".optim").read_bytes() == pathlib.Path(str(one) + ".optim").read_bytes()
+    assert not pathlib.Path(str(out) + ".step-00002").exists()
+    assert "nothing written for step 2" in err, err
+    s, r = tmp_path / "s.gguf", tmp_path / "r.gguf"
+    p = _run_train(runner_bin, base, s, "corpus.txt", extra=("--train-steps", "2") + ckpt)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    p = _run_train(runner_bin, base, r, "corpus.txt",
+                   extra=("--train-steps", "2", "--train-resume", str(out)) + ckpt)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    assert r.read_bytes() == s.read_bytes()
+
+
 # Which weights the device holds decides a --train-gpu adapter's bits (a
 # tensor past the budget takes the CPU's order), and the budget decides
 # which fit. So the budget is an input: --train-gpu-budget names it, the
