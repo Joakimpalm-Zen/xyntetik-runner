@@ -9005,7 +9005,7 @@ typedef struct {
     struct rtab { CUdeviceptr an, fn, qn, kn; size_t an_c, fn_c, qn_c, kn_c; } *res_tab;
     int         res_tab_n;              // its layers (gpu_train_free drops each)
     CUfunction  f_thead;                // R8.24.1 B5, the head
-    CUfunction  f_tadam, f_tgnorm;      // R8.24.1 B7, AdamW and the gradient norms
+    CUfunction  f_tadam;                // R8.24.1 B7, AdamW
     // R4 of the resident step: AdamW on the device. Its segments are the
     // sites' A and B in the host's table order (per layer Q K V O gate up
     // down, each A then B); the moments live in two arenas laid out so (OA_M
@@ -9171,9 +9171,7 @@ bool gpu_train_init(model_t *m) {
             t->tattn_dyn = optin - st;
     }
     if (cu.ModuleGetFunction(&t->f_thead, t->mod, "k_thead") != 0) t->f_thead = NULL;
-    if (cu.ModuleGetFunction(&t->f_tadam, t->mod, "k_tadam") != 0 ||
-        cu.ModuleGetFunction(&t->f_tgnorm, t->mod, "k_tgnorm") != 0)
-        t->f_tadam = t->f_tgnorm = NULL;
+    if (cu.ModuleGetFunction(&t->f_tadam, t->mod, "k_tadam") != 0) t->f_tadam = NULL;
     if (cu.ModuleGetFunction(&t->f_tscale, t->mod, "k_tscale") != 0) t->f_tscale = NULL;
     if (cu.ModuleGetFunction(&t->f_tfinite, t->mod, "k_tfinite") != 0) t->f_tfinite = NULL;
     {
@@ -9625,10 +9623,8 @@ bool gpu_train_kv_store_check(model_t *m, const tkv_args *a, const float *src,
     return ok;
 }
 
-// R8.24.1 B7 (kernels_train.cuh k_tadam, k_tgnorm): AdamW a thread an
-// element; the norms one block, a thread a layer (at most TGNORM_MAX_LAYERS).
+// R8.24.1 B7 (kernels_train.cuh k_tadam): AdamW a thread an element
 #define TADAM_THREADS 256
-#define TGNORM_MAX_LAYERS 1024
 bool gpu_train_adam_check(model_t *m, const tadam_args *a, float *th, const float *g,
                           float *mo, float *vo) {
     train_gpu_t *t = m->train_gpu;
@@ -9650,35 +9646,6 @@ bool gpu_train_adam_check(model_t *m, const tadam_args *a, float *th, const floa
     }
     for (int i = 0; i < 4; i++)
         if (d[i]) cu.MemFree(d[i]);
-    return ok;
-}
-bool gpu_train_gnorm_check(model_t *m, const float *g, size_t n_g, const uint64_t *seg_off,
-                           const uint64_t *seg_len, int n_seg, const int *layer_seg,
-                           int n_layer, double *max_out, double *mean_out, bool *finite) {
-    train_gpu_t *t = m->train_gpu;
-    if (!t || !t->f_tgnorm || n_g < 1 || n_seg < 1 || n_layer < 1 ||
-        n_layer > TGNORM_MAX_LAYERS || cu.CtxSetCurrent(t->ctx) != 0)
-        return false;
-    CUdeviceptr d[5] = {0};   // g, seg_off, seg_len, layer_seg, out (max, mean, finite)
-    size_t sz[5] = { sizeof(float) * n_g, sizeof(uint64_t) * (size_t)n_seg,
-                     sizeof(uint64_t) * (size_t)n_seg, sizeof(int) * (size_t)(n_layer + 1),
-                     sizeof(double) * 3 };
-    bool ok = true;
-    for (int i = 0; i < 5 && ok; i++) ok = cu.MemAlloc(&d[i], sz[i]) == 0;
-    ok = ok && cu.MemcpyHtoD(d[0], g, sz[0]) == 0 && cu.MemcpyHtoD(d[1], seg_off, sz[1]) == 0 &&
-         cu.MemcpyHtoD(d[2], seg_len, sz[2]) == 0 && cu.MemcpyHtoD(d[3], layer_seg, sz[3]) == 0;
-    double out[3] = { 0, 0, 0 };
-    if (ok) {
-        int nl = n_layer;
-        void *p[] = { &d[0], &d[1], &d[2], &d[3], &nl, &d[4] };
-        ok = cu.LaunchKernel(t->f_tgnorm, 1, 1, 1, (unsigned)n_layer, 1, 1,
-                             (unsigned)(sizeof(double) * (size_t)n_layer + sizeof(int) * (size_t)n_layer),
-                             NULL, p, NULL) == 0 && cu.CtxSynchronize() == 0 &&
-             cu.MemcpyDtoH(out, d[4], sizeof out) == 0;
-    }
-    for (int i = 0; i < 5; i++)
-        if (d[i]) cu.MemFree(d[i]);
-    if (ok) { *max_out = out[0]; *mean_out = out[1]; *finite = out[2] != 0.0; }
     return ok;
 }
 // R4 (kernels_train.cuh k_tscale): a thread an element

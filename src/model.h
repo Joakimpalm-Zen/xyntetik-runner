@@ -1358,16 +1358,11 @@ double model_head_fw_ref(float *logits, int V, float logit_scale, float softcap,
 bool   model_head_bw_ref(float *probs, int V, int rows, float logit_scale, float softcap,
                          const int32_t *suppress, int n_suppress, const int32_t *targets,
                          const float *pos_w);
-// R8.24.1 B7: adam_buf over n parameters, and model_lora_grad_norms on a model
-// whose seven projection slots carry adapters with the given gradients, for
-// the device twins' gate
+// R8.24.1 B7: adam_buf over n parameters, for the device twin's gate
 void   model_adam_ref(float *th, const float *g, float *mo, float *vo, size_t n, float lr,
                       float b1, float b2, float eps, float wd, float bc1, float bc2);
 // R8.24.1 B R4: model_lora_grad_scale's loop over n floats (k_tscale's gate)
 void   model_grad_scale_ref(float *g, size_t n, float f);
-bool   model_grad_norms_ref(int n_layer, int r, const int *n_in, const int *n_out,
-                            float *const *ga, float *const *gb, double *max_out,
-                            double *mean_out);
 // R8.24.1 B6: one site's adapter through the host's code (lora_apply, then the
 // backward's four passes) on caller arrays, for the device twins' gate
 bool   model_lora_site_ref(int r, int n_in, int n_out, int nb, float s,

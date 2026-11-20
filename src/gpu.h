@@ -446,19 +446,11 @@ bool   gpu_train_attn_fw_check(model_t *m, const tattn_args *a, const void *kc,
 bool   gpu_train_head_check(model_t *m, const thead_args *a, float *z, const int32_t *targets,
                             const float *pos_w, const int32_t *suppress, double *lse,
                             float *z_target);
-// R8.24.1 B7, the kernel gates' entries: the device twin of adam_buf (k_tadam)
-// over a->n host parameters, th, mo and vo in place; and of the step log's
-// gradient norms (k_tgnorm) over host gradients g: layer l's segments are
-// layer_seg[l] .. layer_seg[l + 1] - 1, segment k the seg_len[k] floats at
-// g + seg_off[k], in the host's table order (slots ascending, A then B). Out:
-// the max and mean over the layers that have a segment of the square root
-// of each layer's double sum of squares, and *finite. false: no context or
-// no kernel in this PTX.
+// R8.24.1 B7, the kernel gate's entry: the device twin of adam_buf (k_tadam)
+// over a->n host parameters, th, mo and vo in place. false: no context or no
+// kernel in this PTX.
 bool   gpu_train_adam_check(model_t *m, const tadam_args *a, float *th, const float *g,
                             float *mo, float *vo);
-bool   gpu_train_gnorm_check(model_t *m, const float *g, size_t n_g, const uint64_t *seg_off,
-                             const uint64_t *seg_len, int n_seg, const int *layer_seg,
-                             int n_layer, double *max_out, double *mean_out, bool *finite);
 // R8.24.1 B R4, the kernel gate's entry: the device twin of
 // model_lora_grad_scale's loop (k_tscale), g[i] *= f over n host floats in
 // place. false: no context or no kernel in this PTX.

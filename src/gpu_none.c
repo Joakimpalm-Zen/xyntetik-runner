@@ -274,13 +274,6 @@ bool gpu_train_adam_check(model_t *m, const tadam_args *a, float *th, const floa
     (void)m; (void)a; (void)th; (void)g; (void)mo; (void)vo;
     return false;
 }
-bool gpu_train_gnorm_check(model_t *m, const float *g, size_t n_g, const uint64_t *seg_off,
-                           const uint64_t *seg_len, int n_seg, const int *layer_seg,
-                           int n_layer, double *max_out, double *mean_out, bool *finite) {
-    (void)m; (void)g; (void)n_g; (void)seg_off; (void)seg_len; (void)n_seg; (void)layer_seg;
-    (void)n_layer; (void)max_out; (void)mean_out; (void)finite;
-    return false;
-}
 bool gpu_train_scale_check(model_t *m, float *g, size_t n, float f) {
     (void)m; (void)g; (void)n; (void)f;
     return false;
