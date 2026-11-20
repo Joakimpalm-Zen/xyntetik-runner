@@ -22,14 +22,16 @@ import time
 
 from _errors import (CATEGORIES, ConformanceError, ModelQualityError,
                       ProtocolError, SchemaError, TransportError, categorize)
-from _process import RunnerServer, find_runner, free_port, peak_rss_kb, rss_kind
+from _process import (RunnerServer, KeptProcessLog, find_runner, free_port,
+                      peak_rss_kb, rss_kind, scaled_timeout)
 from _report import Report, normalize
 from _sse import (DONE, SSEParser, decode_events, parse_named_stream,
                    parse_stream, split_points)
 
 __all__ = [
     "Client", "Response", "Stream", "ResponseStream", "MessageStream",
-    "RunnerServer", "Report",
+    "RunnerServer", "KeptProcessLog", "Report",
+    "scaled_timeout",
     "ConformanceError", "TransportError", "ProtocolError", "SchemaError",
     "ModelQualityError", "categorize", "CATEGORIES",
     "SSEParser", "parse_stream", "parse_named_stream", "split_points",
