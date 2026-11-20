@@ -48,8 +48,10 @@
 #   batch-q35    make test-cuda-batch-q35 (qwen35 in the microbatch: each
 #                sequence's logits and recurrent state are its solo bits, R3.82)
 #   moe-limb     make test-cuda-moe-limb-fixture (gemma-4's Q4_0 experts through the
-#                moe-limb route: the prefill is the decode's bits at every width, on
-#                the int8 tile and on its no-compute_80 fallback, R3.81)
+#                moe-limb route, the default since R3.83: the prefill is the decode's
+#                bits at every width, on the int8 tile and on its no-compute_80
+#                fallback, R3.81; held off by RUNNER_MOE_LIMB=0 and by the reference
+#                route, the load takes today's route and its bits)
 #   cpu-cuda     scripts/cpu_cuda_check.py on one small model (byte identity)
 #   binary-unchanged  the runner's sha256 after every step equals the one before
 # Every make target the steps name is in DEVICE_STEPS below, and every

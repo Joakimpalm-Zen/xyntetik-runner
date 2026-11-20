@@ -3783,10 +3783,13 @@ static bool bind_meta_gemma4(model_t *m, gguf_file *g, const char *arch) {
         // The MoE variant used to print the dense line below, which read as
         // a llama.cpp token-identity claim this file never earned (lab,
         // 2026-10-17, on gemma-4-26B-A4B-it). Its evidence is its own.
+        // R3.83: that check ran on today's expert route; CUDA's default for
+        // Q4_0 experts is now moe-limb, whose products are not those bits
         bind_note(m, "gemma4: MoE variant (dual-branch FFN): CUDA and CPU "
-                "verified identical on gemma-4-26B-A4B-it; the dense variant's "
-                "token-identity check does not cover it "
-                "(docs/moe-support.md)\n");
+                "verified identical on gemma-4-26B-A4B-it on today's expert route "
+                "(on CUDA, Q4_0 experts take moe-limb by default; RUNNER_MOE_LIMB=0 "
+                "is that route); the dense variant's token-identity check does not "
+                "cover it (docs/moe-support.md)\n");
     else
         bind_note(m, "gemma4: dense variant verified token-identical in greedy decoding on the official GGUF; unofficial dequant conversions may still produce garbage, prefer official files\n");
     m->embd_scale    = sqrtf((float)m->n_embd);
@@ -8278,12 +8281,17 @@ int model_route_text(const model_t *m, char *out, size_t cap) {
     memset(&r, 0, sizeof r);
     route_collect(m, &r);
     // the build is the profile and architecture (route_build), the compiler
-    // that built this code and the source revision the receipt prints
-    return snprintf(out, cap, "%s|%s|%d/%d/%d/%d/%d|%s|%s|%s|%s|%s|%s|%s|%s%s%s", r.backend ? r.backend : "",
+    // that built this code and the source revision the receipt prints. R3.83:
+    // and the CUDA arithmetic routes the instance runs (profile.gpu_route),
+    // which a pin can change without any switch or detail token naming it
+    // (moe-limb, the default for gemma-4's Q4_0 experts, under --gpu-route)
+    const char *gr = m->gpu ? gpu_route_record(m) : NULL;
+    return snprintf(out, cap, "%s|%s|%d/%d/%d/%d/%d|%s|%s|%s|%s|%s|%s|%s|%s%s%s|%s", r.backend ? r.backend : "",
                     r.device, r.gpu_layers, r.n_layer, r.moe_layers, r.moe_host, r.moe_hot,
                     r.kv ? r.kv : "", r.detail ? r.detail : "", r.build ? r.build : "",
                     r.codegen ? r.codegen : "", r.cpu_act ? r.cpu_act : "", r.weights,
-                    __VERSION__, g_route_revision, g_route_dirty ? "+dirty:" : "", g_route_binary);
+                    __VERSION__, g_route_revision, g_route_dirty ? "+dirty:" : "", g_route_binary,
+                    gr ? gr : "");
 }
 
 uint64_t model_route_hash(const model_t *m) {
