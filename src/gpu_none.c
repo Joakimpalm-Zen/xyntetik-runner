@@ -442,6 +442,11 @@ void gpu_batch_free(gpu_batch *b) {
     (void)b;
 }
 
+// R3.82: this backend has no stepped-failure report (its batch keeps the
+// refusal contract) and no device fold to rescue
+bool gpu_batch_failed_stepped(const gpu_batch *b) { (void)b; return false; }
+bool gpu_recurrent_rescue(model_t *m) { (void)m; return true; }
+void gpu_batch_release_orphaned(gpu_batch *b) { (void)b; }
 bool gpu_batch_tiles_used(const gpu_batch *b) { (void)b; return false; }
 
 bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,

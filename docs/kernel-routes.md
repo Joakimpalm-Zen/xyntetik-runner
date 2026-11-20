@@ -211,7 +211,24 @@ Around the matvec:
   shared-weight decode microbatch only when its batched kernels are twins
   of the batch-1 kernel. A refusal decodes the sequences one at a time; it
   never runs a non-twin kernel. Obligation: bit-exact to sequential decode
-  (`docs/cuda-microbatch-identity-2026-08-18.md`).
+  (`docs/cuda-microbatch-identity-2026-08-18.md`). Since R3.82 qwen35 joins
+  it: its recurrent layers' projections take the twins, and the mixer is the
+  solo step's own kernels launched once per column on that column's sequence's
+  state, so each column's logits and recurrent state are its solo step's bits
+  (`make test-cuda-batch-q35`, which compares both after every step).
+  `RUNNER_BATCH_QWEN35=0` declines the batch (inert: the same bytes). It is
+  read once, when the process first creates a batch, and asked only then: a
+  batch already made keeps batching, so the switch is set before the process
+  starts. Its steps run eagerly, without a captured graph. A one-member round
+  runs the solo forward. A step that fails after it ran recovers each member
+  as a failed solo forward does: the pre-step snapshot to the host, checked,
+  the backend released, the step computed once on the CPU. A snapshot that
+  cannot be read back fails the step without serving logits. Any CUDA batch
+  holds its own reference to the device data its members share, so those
+  releases cannot free it under the batch; once the batch's lead has released
+  its backend the batch gives its graphs, buffers and that reference back and
+  declines every later step (`make test-batch-owner-asan`, which needs no
+  device).
 - **MoE routing.** The default fused device routing selects the same experts
   as the eager host routing (`RUNNER_MOE_EAGER=1`) and keeps routing weights
   within about 2 ulp: device `expf` is not the host libm. Gate:
