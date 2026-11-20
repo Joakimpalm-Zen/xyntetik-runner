@@ -1814,6 +1814,17 @@ typedef struct {
 #endif
 } plat_pub_lock;
 
+#ifdef _WIN32
+// R6.118: a publish lock that cannot be taken says which step refused and
+// with which system error, once per failure, so a failure seen once on
+// someone's machine can be read from its output.
+static plat_lock_status pub_lock_fail(const char *path, const char *step, DWORD err) {
+    fprintf(stderr, "publish lock: %s failed for %s (Windows error %lu)\n", step, path,
+            (unsigned long)err);
+    return PLAT_LOCK_ERROR;
+}
+#endif
+
 plat_lock_status plat_publish_lock(const char *path, void **lock_out) {
     if (lock_out) *lock_out = NULL;
     if (!path || !*path || !lock_out) return PLAT_LOCK_ERROR;
@@ -1844,14 +1855,19 @@ plat_lock_status plat_publish_lock(const char *path, void **lock_out) {
                 continue;
             }
             free(wl);
-            return PLAT_LOCK_ERROR;
+            return pub_lock_fail(path, "opening the lock file", err);
         }
         BY_HANDLE_FILE_INFORMATION i1;
-        if (!GetFileInformationByHandle(h, &i1) ||
-            (i1.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        if (!GetFileInformationByHandle(h, &i1)) {
+            DWORD ierr = GetLastError();
             CloseHandle(h);
             free(wl);
-            return PLAT_LOCK_ERROR;
+            return pub_lock_fail(path, "reading the lock file's identity", ierr);
+        }
+        if ((i1.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            CloseHandle(h);
+            free(wl);
+            return pub_lock_fail(path, "the lock file is a reparse point:", 0);
         }
         OVERLAPPED ov = {0};
         if (!LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK, 0, MAXDWORD, MAXDWORD, &ov)) {
@@ -1860,7 +1876,7 @@ plat_lock_status plat_publish_lock(const char *path, void **lock_out) {
             free(wl);
             if (err == ERROR_INVALID_FUNCTION || err == ERROR_NOT_SUPPORTED)
                 return PLAT_LOCK_UNSUPPORTED;
-            return PLAT_LOCK_ERROR;
+            return pub_lock_fail(path, "locking the lock file", err);
         }
         HANDLE h2 = CreateFileW(wl, 0,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,

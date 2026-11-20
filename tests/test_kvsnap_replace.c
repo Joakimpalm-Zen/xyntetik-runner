@@ -20,10 +20,23 @@ static void ck(bool cond, const char *what) {
 }
 
 #ifdef _WIN32
-// R6.118: closes the last other handle on a lock file whose delete is pending
-static DWORD WINAPI close_later(LPVOID p) {
-    Sleep(150);
-    CloseHandle((HANDLE)p);
+// R6.118: many takers of one publish lock at once. Each thread opens its own
+// handle, as each process does, so they contend as processes do.
+#define PL_THREADS 8
+#define PL_ITERS 150
+static volatile LONG pl_errors, pl_inside, pl_overlap, pl_taken;
+static DWORD WINAPI pl_worker(LPVOID arg) {
+    (void)arg;
+    for (int i = 0; i < PL_ITERS; i++) {
+        void *lk = NULL;
+        plat_lock_status st = plat_publish_lock("test-kvsnap-contend.out", &lk);
+        if (st != PLAT_LOCK_OK || !lk) { InterlockedIncrement(&pl_errors); continue; }
+        if (InterlockedIncrement(&pl_inside) != 1) InterlockedIncrement(&pl_overlap);
+        InterlockedIncrement(&pl_taken);
+        if ((i & 7) == 0) Sleep(1);
+        InterlockedDecrement(&pl_inside);
+        plat_publish_unlock(lk);
+    }
     return 0;
 }
 #endif
@@ -171,41 +184,30 @@ int main(void) {
     remove(kv_f); remove(man_f);
     remove("test-kvsnap-pair.kv.publish.lock");
 #ifdef _WIN32
-    // R6.118: the holder of the publish lock deletes the lock file before it
-    // closes it. While another handle is still open on the file (a waiting
-    // writer's, or a scanner's), the file is delete-pending: every open of it
-    // is refused with ERROR_ACCESS_DENIED until that handle closes, and so is
-    // an attributes query. A writer arriving then must wait the state out,
-    // not fail. Here this process holds that other handle and a thread closes
-    // it after 150 ms.
+    // R6.118: main's Windows job failed once with one of two concurrent
+    // writers giving up on this lock. Eight takers, 150 rounds each: every
+    // take must succeed (a failure prints its step and system error from
+    // plat_publish_lock), and no two may hold it at once. The first reading
+    // of the cause was a delete-pending lock file refusing opens; the first
+    // version of this test showed that state does not arise on this system
+    // (an open and an attributes query of a deleted-while-held file were not
+    // refused), so the cause is still to be read from what this prints.
     {
-        const char *dst = "test-kvsnap-pending.out";
-        const wchar_t *wl = L"test-kvsnap-pending.out.publish.lock";
-        const DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
-        DeleteFileW(wl);
-        HANDLE held = CreateFileW(wl, GENERIC_READ | GENERIC_WRITE, share, NULL, CREATE_ALWAYS,
-                                  FILE_ATTRIBUTE_NORMAL, NULL);
-        ck(held != INVALID_HANDLE_VALUE, "pending delete: the lock file is created and held");
-        ck(DeleteFileW(wl) != 0, "pending delete: the held lock file is deleted (delete pending)");
-        // live controls: the state is the one the fix is about
-        HANDLE probe = CreateFileW(wl, GENERIC_READ, share, NULL, OPEN_EXISTING,
-                                   FILE_ATTRIBUTE_NORMAL, NULL);
-        DWORD probe_err = probe == INVALID_HANDLE_VALUE ? GetLastError() : 0;
-        if (probe != INVALID_HANDLE_VALUE) CloseHandle(probe);
-        ck(probe == INVALID_HANDLE_VALUE && probe_err == ERROR_ACCESS_DENIED,
-           "pending delete: control: an open of the lock file is refused with access denied");
-        DWORD attrs = GetFileAttributesW(wl);
-        DWORD attrs_err = attrs == INVALID_FILE_ATTRIBUTES ? GetLastError() : 0;
-        ck(attrs == INVALID_FILE_ATTRIBUTES && attrs_err == ERROR_ACCESS_DENIED,
-           "pending delete: control: an attributes query is refused with access denied too");
-        HANDLE th = held != INVALID_HANDLE_VALUE ? CreateThread(NULL, 0, close_later, held, 0, NULL) : NULL;
-        void *lk = NULL;
-        plat_lock_status st = plat_publish_lock(dst, &lk);
-        ck(st == PLAT_LOCK_OK && lk != NULL,
-           "pending delete: plat_publish_lock waits the state out and takes the lock");
-        if (lk) plat_publish_unlock(lk);
-        if (th) { WaitForSingleObject(th, INFINITE); CloseHandle(th); }
-        DeleteFileW(wl);
+        HANDLE th[PL_THREADS];
+        int started = 0;
+        for (int t = 0; t < PL_THREADS; t++) {
+            th[t] = CreateThread(NULL, 0, pl_worker, NULL, 0, NULL);
+            if (th[t]) started++;
+        }
+        for (int t = 0; t < PL_THREADS; t++)
+            if (th[t]) { WaitForSingleObject(th[t], INFINITE); CloseHandle(th[t]); }
+        ck(started == PL_THREADS, "contended lock: eight takers started");
+        printf("contended lock: %ld taken, %ld failed, %ld overlaps\n",
+               (long)pl_taken, (long)pl_errors, (long)pl_overlap);
+        ck(pl_errors == 0, "contended lock: every take of the publish lock succeeds");
+        ck(pl_overlap == 0, "contended lock: no two takers hold it at once");
+        ck(pl_taken == PL_THREADS * PL_ITERS, "contended lock: 1200 takes in all");
+        DeleteFileW(L"test-kvsnap-contend.out.publish.lock");
     }
 #endif
     return g_fail ? 1 : 0;
