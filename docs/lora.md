@@ -318,11 +318,12 @@ data, rank 8 on every projection, ctx 128; the median of steps 2 to 20,
 interleaved runs on 2026-11-18 at a3589d19, whose tree is 6d3a65d9's), a
 resident step takes 0.67 s, against
 1.79 s for Runner 1.20.0's (d9b54174), 1.37 s for main before R8.24.1's list
-B (cc7af33b) and 1.06 s on the per-piece path. With the head on the device
-(R3) it took 0.65 s; with the optimizer there too (R4) 0.70 s, read
-interleaved against R3 on 2026-11-20 (0.700 s against 0.653 s, 1.073x
-[1.071, 1.077]): the device's gradient norms, summed one thread a layer in
-the host's order, cost more than the host's optimizer step did.
+B (cc7af33b) and 1.06 s on the per-piece path. With the head and the
+optimizer on the device too (R3 and R4) a step takes 0.667 s against main's
+0.679 s with the resident step alone (fc47c78f), 0.982x [0.977, 0.988], read
+interleaved on 2026-11-20; the head alone took it to 0.651 s, and the
+optimizer costs 1.023x [1.020, 1.027] of that (A and B coming back, and AdamW
+in one launch a segment).
 
 It is what to use when the weight products dominate, which they do on large
 models. On an RTX 3070 beside 4 CPU threads, a Qwen2.5-7B Q4_K_M step took
