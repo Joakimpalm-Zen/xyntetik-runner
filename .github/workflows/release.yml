@@ -52,6 +52,7 @@ jobs:
           update: false
           install: >-
             make
+            git
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-python
       - name: build
@@ -68,6 +69,8 @@ jobs:
         run: |
           python3 scripts/make-test-model.py test.gguf
           ./${{ matrix.binary }} -m test.gguf -p "hello" -n 8 --temp 0
+      - name: build stamp
+        run: python3 scripts/check-build-stamp.py --binary "./${{ matrix.binary }}" --model test.gguf --commit "${GITHUB_SHA}"
       - name: dotprod path in the macOS binary
         # the int8 kernels need the dot-product extension; the route line
         # names the int8 prefill only where its kernel was compiled in, and a
