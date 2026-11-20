@@ -1564,6 +1564,31 @@ TEST_CUDA_TEARDOWN_SRC = tests/test_cuda_teardown.c $(OBJDIR)/gguf.o $(OBJDIR)/c
 $(TEST_CUDA_TEARDOWN): $(TEST_CUDA_TEARDOWN_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src -I tests $(TEST_CUDA_TEARDOWN_SRC) -o $@ $(LDFLAGS)
 
+# moe-limb (R3.81): a gemma-4 Q4_0 expert's product is the decode's bits at any
+# width and order, on a real file's tensors (tests/test_cuda_moe_limb.c, which
+# says what it checks). MOE_LIMB_MODEL=<gemma-4 MoE Q4_0 .gguf>, the file whose
+# experts are the route's scope; MOE_LIMB_LAYERS=all (default) or 0,15,29.
+TEST_CUDA_MOE_LIMB = $(TEST_BATCH:test-batch%=test-moe-limb-cuda%)
+TEST_CUDA_MOE_LIMB_SRC = tests/test_cuda_moe_limb.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+$(TEST_CUDA_MOE_LIMB): $(TEST_CUDA_MOE_LIMB_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src -I tests $(TEST_CUDA_MOE_LIMB_SRC) -o $@ $(LDFLAGS)
+MOE_LIMB_LAYERS ?= all
+# The same gate on a generated gemma-4 MoE (scripts/make-test-moe.py at
+# MOE_TEST_DIMS=1280,384, requantized to Q4_0: 9 MB, blocks enough for every
+# lane and special column), on the int8 tile and on its fallback without the
+# compute_80 module (RUNNER_CUDA_SM80=0): a cuda-gate step, no real file.
+test-cuda-moe-limb-fixture: runner $(TEST_CUDA_MOE_LIMB)
+	@set -e; \
+	MOE_TEST_DIMS=1280,384 $(PYTHON) scripts/make-test-moe.py test-moe-limb > /dev/null; \
+	./$(RUNNER_EXE) -m test-moe-limb.gemma4-moe.gguf --quantize test-moe-limb-g4q40.gguf --quant q4_0 > /dev/null 2>&1; \
+	./$(TEST_CUDA_MOE_LIMB) test-moe-limb-g4q40.gguf all; \
+	RUNNER_CUDA_SM80=0 ./$(TEST_CUDA_MOE_LIMB) test-moe-limb-g4q40.gguf all
+test-cuda-moe-limb: $(TEST_CUDA_MOE_LIMB)
+	@if [ -z "$(MOE_LIMB_MODEL)" ]; then echo "moe-limb gate skipped: set MOE_LIMB_MODEL=<path.gguf>"; \
+	elif [ ! -f "$(MOE_LIMB_MODEL)" ]; then echo "moe-limb gate skipped: $(MOE_LIMB_MODEL) not found"; \
+	else ./$(TEST_CUDA_MOE_LIMB) "$(MOE_LIMB_MODEL)" $(MOE_LIMB_LAYERS); fi
+
 TEST_GPU_ID_SRC = tests/test_gpu_identity.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
                   $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ) \
                   $(FINITE_CHECK_OBJ)
@@ -3630,7 +3655,8 @@ endif
 #   test-metal-iquants            llama-quantize (RUNNER_LLAMA_CPP_BIN) and its fixtures
 #   test-metal-bigmodel           BIGMODEL=, a real multi-GB GGUF
 #   test-metal-bigmodel-multibuf  BIGMODEL=, the same
-DEVICE_OPT_IN = test-metal-iquants test-metal-bigmodel test-metal-bigmodel-multibuf
+#   test-cuda-moe-limb            MOE_LIMB_MODEL=, a real gemma-4 MoE Q4_0 GGUF (14 GB)
+DEVICE_OPT_IN = test-metal-iquants test-metal-bigmodel test-metal-bigmodel-multibuf test-cuda-moe-limb
 .PHONY: test-metal
 test-metal:
 	@[ -f test-moe-fixture.moe1.gguf ] || $(PYTHON) scripts/make-test-moe.py test-moe-fixture
