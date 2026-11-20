@@ -7398,6 +7398,62 @@ static bool gpu_gemma_moe_ffn_path(gpu_t *g, model_t *m, const layer_t *ly, int 
     return gpu_gemma_moe_ffn_eager(g, m, ly, l, tn, xdim);
 }
 
+// Test-only (R3.81, tests/test_cuda_moe_limb.c): one gemma-4 Q4_0 expert's
+// product, gate_up (proj 0) or down (1), over cols columns of x through the
+// production launches. prefill 0: each column alone through the decode's
+// expert matvec (enc_moe_mv, one slot); 1: every column in one call through
+// the by-expert prefill's product. route 0: today's (k_moe_mv_q4_0; the
+// twins, moe_twin_gemm); 1: the grouped prefill's (enc_moe_gemm, prefill
+// only); 2: moe-limb. No CLI path calls it. false: no device, not a gemma-4
+// Q4_0 expert layer, a route this build does not have, or a failed launch.
+bool gpu_test_moe_q4_0(model_t *m, int layer, int proj, int expert, int route, int prefill,
+                       const float *x, int cols, float *y) {
+    gpu_t *g = m ? m->gpu : NULL;
+    if (!g || layer < 0 || layer >= m->n_layer || cols < 1 || route < 0 || route > 2 ||
+        (route == 1 && !prefill))
+        return false;
+    const layer_t *ly = &m->layers[layer];
+    if (!m->moe_gemma || !ly->ffn_gate_up_exps || !ly->ffn_down_exps || !g->moe_fused_ok)
+        return false;
+    int n_embd = m->n_embd, nff = m->n_ff_exp;
+    gguf_tensor *base = proj == 0 ? ly->ffn_gate_up_exps : ly->ffn_down_exps;
+    if (base->type != T_Q4_0 || expert < 0 || expert >= ly->n_expert) return false;
+    if (route == 2) {
+        fprintf(stderr, "gpu: moe-limb is not in this build\n");
+        return false;
+    }
+    int n_in = proj == 0 ? n_embd : nff, n_out = proj == 0 ? 2 * nff : n_embd;
+    uint64_t estride = (uint64_t)n_out * ggml_row_size(base->type, n_in);
+    // the expert's slice, as the by-expert prefill cuts it
+    gguf_tensor slice = proj == 0 ? *base : moe_expert_weight(ly, 2, expert, n_embd, nff);
+    if (proj == 0) {
+        slice.data = (uint8_t *)base->data + (size_t)expert * estride;
+        slice.nbytes = (size_t)estride;
+    }
+    if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
+    size_t nx = (size_t)cols * n_in, ny = (size_t)cols * n_out;
+    CUdeviceptr d_x = 0, d_y = 0, d_sel = 0;
+    bool ok = cu.MemAlloc(&d_x, sizeof(float) * nx) == 0 &&
+              cu.MemAlloc(&d_y, sizeof(float) * ny) == 0 &&
+              cu.MemAlloc(&d_sel, sizeof(int)) == 0 &&
+              cu.MemcpyHtoD(d_x, x, sizeof(float) * nx) == 0 &&
+              cu.MemcpyHtoD(d_sel, &expert, sizeof(int)) == 0;
+    if (ok && !prefill)
+        for (int c = 0; ok && c < cols; c++)
+            ok = enc_moe_mv(g, m, base, estride, d_x + (size_t)c * n_in * sizeof(float),
+                            d_y + (size_t)c * n_out * sizeof(float), d_sel, n_in, n_out, 1, 0, n_out);
+    else if (ok && route == 0)
+        ok = moe_twin_gemm(g, m, &slice, true, d_x, d_y, n_in, n_out, cols, n_in, n_out);
+    else if (ok)
+        ok = enc_moe_gemm(g, m, &slice, d_x, d_y, n_in, n_out, cols, n_in, n_out);
+    ok = ok && cu.StreamSynchronize(g->stream) == 0 &&
+         cu.MemcpyDtoH(y, d_y, sizeof(float) * ny) == 0;
+    if (d_x) cu.MemFree(d_x);
+    if (d_y) cu.MemFree(d_y);
+    if (d_sel) cu.MemFree(d_sel);
+    return ok;
+}
+
 // as gpu_moe_ffn: the tile's trace records, written with their norms
 static bool gpu_gemma_moe_ffn(gpu_t *g, model_t *m, const layer_t *ly, int l,
                               int tn, int xdim) {

@@ -251,6 +251,14 @@ void   gpu_mv_force(int on);
 // No CLI path calls it. false = no device, w not resident, or a failed launch.
 bool   gpu_test_mv(model_t *m, gguf_tensor *w, const float *x, float *y,
                    int n_in, int n_out, int tn);
+// Test-only (R3.81): one gemma-4 Q4_0 expert's product (proj 0 gate_up, 1
+// down) over cols columns of x through the production launches: each column
+// alone through the decode's expert matvec (prefill 0), or all of them in one
+// call through the by-expert prefill's product (1). route 0 today's, 1 the
+// grouped prefill's (prefill only), 2 moe-limb. false: no device, not such a
+// layer, a route this build lacks, or a failed launch.
+bool   gpu_test_moe_q4_0(model_t *m, int layer, int proj, int expert, int route, int prefill,
+                         const float *x, int cols, float *y);
 // How many times the fast matvec has actually been dispatched. Same reason the
 // TC path counts: "the logits differ" cannot tell an unused kernel apart from
 // an exactly-matching one, and a gate that cannot see its own subject passes
