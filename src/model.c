@@ -16825,7 +16825,7 @@ bool model_moe_hot_terms(model_t *m, int layer, int n, const float *x, int xs,
         memcpy(m->xb + (size_t)b * n_embd, x + (size_t)b * xs, sizeof(float) * (size_t)n_embd);
     // the parser refuses a layer of more experts than this holds, so no
     // missed expert is dropped
-    int miss[MOE_HOT_MAX_EXPERT], nmiss = 0;
+    int miss[MOE_HOT_MAX_EXPERT] = { 0 }, nmiss = 0;   // read below nmiss only; gcc 16 at -O1 cannot see that
     for (int i = 0; i < n * used; i++) {
         int e = sel[i];
         if (e < 0 || e >= ne || slot[e] >= 0) continue;
