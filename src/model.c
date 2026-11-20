@@ -471,8 +471,7 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
     int half = m->rope_dim / 2;
     m->rope_inv_freq = malloc(sizeof(float) * half);
     if (!m->rope_inv_freq) return false;
-    for (int j = 0; j < half; j++)
-        m->rope_inv_freq[j] = powf(m->rope_base, -2.0f * j / m->rope_dim);
+    model_rope_inv_freq_fill(m->rope_inv_freq, half, m->rope_base, m->rope_dim);
 
     // per-dimension frequency factors (llama 3.x long-context models)
     gguf_tensor *ff = gguf_find_tensor(g, "rope_freqs.weight");
@@ -576,8 +575,7 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
         int lhalf = m->rope_dim_local / 2;
         m->rope_inv_freq_local = malloc(sizeof(float) * lhalf);
         if (!m->rope_inv_freq_local) return false;
-        for (int j = 0; j < lhalf; j++)
-            m->rope_inv_freq_local[j] = powf(local_base, -2.0f * j / m->rope_dim_local);
+        model_rope_inv_freq_fill(m->rope_inv_freq_local, lhalf, local_base, m->rope_dim_local);
     }
 
     if (mode == RS_LINEAR) {
@@ -14714,9 +14712,30 @@ int model_lora_rank(const model_t *m) {
 // tests/test_train_gpu.c, against the constants a T3 build gives (in every
 // build, without a device, and by memcmp against the T3 build's own
 // expressions there), are what keep it true.
+// On clang float_control(precise, on) alone is not that. It sets contraction
+// to "on", in a T3 build too, whose command line had turned it off; and under
+// -ffast-math (which sets -ffp-contract=fast) clang honors no pragma for it at
+// all: the back end fuses a product into the sum after it whatever the
+// function says. So the pragma turns contraction off where clang listens (a
+// T3 build), and TRAIN_BC_MADD keeps every product that feeds a sum out of a
+// fused multiply-add by construction: an empty asm on the product, as
+// pm_order.h's PM_IN_ORDER does for a sum's order, on every compiler.
+#if defined(__x86_64__) || defined(__i386__)
+#define TRAIN_BC_BAR(v) __asm__ volatile("" : "+x"(v))
+#elif defined(__aarch64__)
+#define TRAIN_BC_BAR(v) __asm__ volatile("" : "+w"(v))
+#elif defined(__riscv) && defined(__riscv_flen)
+#define TRAIN_BC_BAR(v) __asm__ volatile("" : "+f"(v))
+#elif defined(__GNUC__) || defined(__clang__)
+#define TRAIN_BC_BAR(v) __asm__ volatile("" : "+m"(v))
+#else
+#define TRAIN_BC_BAR(v) ((void)0)
+#endif
+// dst = a * b + c, the product rounded before the sum
+#define TRAIN_BC_MADD(dst, a, b, c) do { double tb_ = (a) * (b); TRAIN_BC_BAR(tb_); (dst) = tb_ + (c); } while (0)
 #if defined(__clang__)
 #define TRAIN_BC_ATTR __attribute__((noinline))
-#define TRAIN_BC_SCOPE _Pragma("float_control(precise, on)")
+#define TRAIN_BC_SCOPE _Pragma("float_control(precise, on)") _Pragma("clang fp contract(off)")
 #elif defined(__GNUC__)
 #define TRAIN_BC_ATTR __attribute__((noinline, optimize("no-fast-math", "fp-contract=off")))
 #define TRAIN_BC_SCOPE
@@ -14921,22 +14940,26 @@ static double train_bc_exp_d(double x) {   // pm_exp_d
     const double ln2_lo = 1.90821492927058770002e-10;
     const double inv_ln2 = 1.44269504088896338700e+00;
     double kd = x * inv_ln2;
+    TRAIN_BC_BAR(kd);   // rounded before the half is added
     int k = (int)(kd >= 0 ? kd + 0.5 : kd - 0.5);
-    double r = (x - (double)k * ln2_hi) - (double)k * ln2_lo;
+    double khi = (double)k * ln2_hi, klo = (double)k * ln2_lo;
+    TRAIN_BC_BAR(khi);
+    TRAIN_BC_BAR(klo);
+    double r = (x - khi) - klo;
     double p = 1.0 / 6227020800.0;
-    p = p * r + 1.0 / 479001600.0;
-    p = p * r + 1.0 / 39916800.0;
-    p = p * r + 1.0 / 3628800.0;
-    p = p * r + 1.0 / 362880.0;
-    p = p * r + 1.0 / 40320.0;
-    p = p * r + 1.0 / 5040.0;
-    p = p * r + 1.0 / 720.0;
-    p = p * r + 1.0 / 120.0;
-    p = p * r + 1.0 / 24.0;
-    p = p * r + 1.0 / 6.0;
-    p = p * r + 0.5;
-    p = p * r + 1.0;
-    p = p * r + 1.0;
+    TRAIN_BC_MADD(p, p, r, 1.0 / 479001600.0);
+    TRAIN_BC_MADD(p, p, r, 1.0 / 39916800.0);
+    TRAIN_BC_MADD(p, p, r, 1.0 / 3628800.0);
+    TRAIN_BC_MADD(p, p, r, 1.0 / 362880.0);
+    TRAIN_BC_MADD(p, p, r, 1.0 / 40320.0);
+    TRAIN_BC_MADD(p, p, r, 1.0 / 5040.0);
+    TRAIN_BC_MADD(p, p, r, 1.0 / 720.0);
+    TRAIN_BC_MADD(p, p, r, 1.0 / 120.0);
+    TRAIN_BC_MADD(p, p, r, 1.0 / 24.0);
+    TRAIN_BC_MADD(p, p, r, 1.0 / 6.0);
+    TRAIN_BC_MADD(p, p, r, 0.5);
+    TRAIN_BC_MADD(p, p, r, 1.0);
+    TRAIN_BC_MADD(p, p, r, 1.0);
     return train_bc_ldexp2(p, k);
 }
 TRAIN_BC_ATTR
@@ -14952,19 +14975,22 @@ static double train_bc_log_d(double x) {   // pm_log_d
     if (mm > 1.41421356237309504880) { mm *= 0.5; k += 1; }
     double s = (mm - 1.0) / (mm + 1.0), s2 = s * s;
     double p = 1.0 / 25.0;
-    p = p * s2 + 1.0 / 23.0;
-    p = p * s2 + 1.0 / 21.0;
-    p = p * s2 + 1.0 / 19.0;
-    p = p * s2 + 1.0 / 17.0;
-    p = p * s2 + 1.0 / 15.0;
-    p = p * s2 + 1.0 / 13.0;
-    p = p * s2 + 1.0 / 11.0;
-    p = p * s2 + 1.0 / 9.0;
-    p = p * s2 + 1.0 / 7.0;
-    p = p * s2 + 1.0 / 5.0;
-    p = p * s2 + 1.0 / 3.0;
-    p = p * s2 + 1.0;
-    return (double)k * 6.93147180559945309417e-01 + 2.0 * s * p;
+    TRAIN_BC_MADD(p, p, s2, 1.0 / 23.0);
+    TRAIN_BC_MADD(p, p, s2, 1.0 / 21.0);
+    TRAIN_BC_MADD(p, p, s2, 1.0 / 19.0);
+    TRAIN_BC_MADD(p, p, s2, 1.0 / 17.0);
+    TRAIN_BC_MADD(p, p, s2, 1.0 / 15.0);
+    TRAIN_BC_MADD(p, p, s2, 1.0 / 13.0);
+    TRAIN_BC_MADD(p, p, s2, 1.0 / 11.0);
+    TRAIN_BC_MADD(p, p, s2, 1.0 / 9.0);
+    TRAIN_BC_MADD(p, p, s2, 1.0 / 7.0);
+    TRAIN_BC_MADD(p, p, s2, 1.0 / 5.0);
+    TRAIN_BC_MADD(p, p, s2, 1.0 / 3.0);
+    TRAIN_BC_MADD(p, p, s2, 1.0);
+    double kl = (double)k * 6.93147180559945309417e-01, sp = 2.0 * s * p;
+    TRAIN_BC_BAR(kl);
+    TRAIN_BC_BAR(sp);
+    return kl + sp;
 }
 TRAIN_BC_ATTR
 float model_adam_bias_corr(float beta, int step) {   // 1.0f - p_powf(beta, (float)step)
@@ -14974,8 +15000,36 @@ float model_adam_bias_corr(float beta, int step) {   // 1.0f - p_powf(beta, (flo
     else p = (float)train_bc_exp_d((double)y * train_bc_log_d((double)beta));
     return 1.0f - p;
 }
+// R8.30: a model's rope inverse frequencies, base^(-2j/dim) for j below half
+// (rope_setup's two tables; the CPU forward reads them and the CUDA and Metal
+// back ends build theirs from them), as a T3 build's powf (pmath.h's p_powf)
+// gives them, in every build: the exponent as written and p_powf's steps, both
+// under the precise attribute. A default build had called the C library here.
+// On Linux gcc vectorized the loop under -ffast-math into the library's VECTOR
+// powf, a few last bits off the scalar one, so a libc-math build's forward,
+// and with it a --train-gpu adapter, differed from a strict build's from the
+// first step, and the table depended on the installed C library. 64 or so
+// values at load: no cost per token or per step.
+TRAIN_BC_ATTR
+void model_rope_inv_freq_fill(float *out, int half, float base, int dim) {
+    TRAIN_BC_SCOPE
+    for (int j = 0; j < half; j++) {
+        float y = -2.0f * j / dim;
+        if (base <= 0.0f) out[j] = base == 0.0f ? 0.0f : 0.0f / 0.0f;   // p_powf's guard
+        else out[j] = (float)train_bc_exp_d((double)y * train_bc_log_d((double)base));
+    }
+}
+// the strict log itself, for the gate that holds these functions' arithmetic
+// (not only their rounded results) to a T3 build's (tests/test_train_gpu.c)
+TRAIN_BC_ATTR
+double model_strict_log_d(double x) {
+    TRAIN_BC_SCOPE
+    return train_bc_log_d(x);
+}
 #undef TRAIN_BC_SCOPE
 #undef TRAIN_BC_ATTR
+#undef TRAIN_BC_MADD
+#undef TRAIN_BC_BAR
 
 int model_lora_res_adam_step(model_t *m, float scale, float lr, float beta1, float beta2,
                              float eps, float wd, int step, double *gmax, double *gmean) {
