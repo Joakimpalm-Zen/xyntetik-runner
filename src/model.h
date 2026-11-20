@@ -1447,10 +1447,12 @@ void   model_train_pin_scratch(model_t *m);
 bool   model_lora_adam_step(model_t *m, float lr, float beta1, float beta2,
                             float eps, float wd, int step);
 // R8.24.1 B R4: the step's optimizer on the device, after a step every
-// window of which ran resident (main.c): from the sites' gradients the norms
-// (the step log's, and the non-finite check) and AdamW, the moments kept on
-// the device across steps (up from the host's when those are newer: a
-// resume, a host step, the first step), then A and B back to the host.
+// window of which ran resident (main.c): the norms (the step log's, and the
+// non-finite check) from the host's code on the host's copy of the
+// gradients, then on the device the scale and AdamW on the sites' own
+// gradients, checked finite there too, the moments kept on the device across
+// steps (up from the host's when those are newer: a resume, a host step, the
+// first step), then A and B back to the host.
 // scale: the mean's 1 / wsum, as model_lora_grad_scale takes it; 1 for none.
 // 1: done (*gmax, *gmean set); 0: not here, the host's step runs (why said
 // once on stderr); -1: the device failed (said), the step fails; -2: a

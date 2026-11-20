@@ -1737,3 +1737,20 @@ k_tscale(float *g, ulong64 n, float f) {
     g[i] = __fmul_rn(g[i], f);
 #endif
 }
+
+// R4: whether every gradient on the device is finite, before AdamW reads
+// them (the step's norms and their finite check are the host's code, on the
+// host's copy; this guards the device's own). A grid of (blocks, segments),
+// segment s the len[s] floats at ptr[s], each block striding over its
+// segment; a value that is not finite clears *ok. The answer does not
+// depend on the order, so the blocks need none.
+extern "C" __global__ void __launch_bounds__(TADAM_THREADS)
+k_tfinite(const ulong64 *ptr, const ulong64 *len, int nseg, int *ok) {
+    int s = (int)blockIdx.y;
+    if (s >= nseg) return;
+    const float *g = (const float *)ptr[s];
+    ulong64 n = len[s];
+    for (ulong64 i = (ulong64)blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += (ulong64)gridDim.x * blockDim.x)
+        if (!(fabsf(g[i]) <= 3.40282346638528859812e38f)) *ok = 0;
+}

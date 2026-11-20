@@ -533,31 +533,41 @@ int main(int argc, char **argv) {
                    "%.3g relative; step 2 (other inputs, reported): %zu differ, %.3g of the bound\n",
                    pdiff[0], ptot, pworst[0], mdiff[0], nrel, pdiff[1], pworst[1]);
 #endif
-        // the planted NaN, on the device's state (its moments the run's)
+        // the planted NaN, on the device's state (its moments the run's): in
+        // both copies, in the host's alone (the host's norms catch it) and in
+        // the device's alone (the device's finite check does)
         CHECK(m.train_opt_dev, "R4: the device does not hold the moments after its steps");
-        size_t bn = 0;
-        unsigned char *before = r4_moments(&m, mf, &bn);
-        static char nan_env[] = "RUNNER_TEST_TRAIN_RES_NAN=3", nan_off[] = "RUNNER_TEST_TRAIN_RES_NAN=";
-        run_backward(&m, toks);
-        putenv(nan_env);
-        double gx = 0, gm = 0;
-        int r = model_lora_res_adam_step(&m, 1.0f, lr, b1, b2, ae, wd, 3, &gx, &gm);
-        putenv(nan_off);
-        CHECK(r == -2, "R4: a NaN gradient on the device returned %d, not -2", r);
-        size_t nchg = 0;
-        for (int i = 0; i < nsnap; i++) {
-            int cnt = 0;
-            const float *th = model_lora_param(&m, lay[i], slo[i], whi[i], &cnt);
-            if (memcmp(th, pp[0][1][i], sizeof(float) * (size_t)snap_n[i])) nchg++;
+        static char nan_env[3][40] = { "RUNNER_TEST_TRAIN_RES_NAN=3", "RUNNER_TEST_TRAIN_RES_NAN=3:host",
+                                       "RUNNER_TEST_TRAIN_RES_NAN=3:device" };
+        static char nan_off[] = "RUNNER_TEST_TRAIN_RES_NAN=";
+        static const char *const nan_where[3] = { "both copies", "the host's copy", "the device's copy" };
+        unsigned char *before = NULL, *after = NULL;
+        for (int v = 0; v < 3; v++) {
+            size_t bn = 0, an = 0;
+            free(before); free(after);
+            m.train_opt_host_old = true;   // read the device's moments, not the host's copies
+            before = r4_moments(&m, mf, &bn);
+            run_backward(&m, toks);
+            putenv(nan_env[v]);
+            double gx = 0, gm = 0;
+            int r = model_lora_res_adam_step(&m, 1.0f, lr, b1, b2, ae, wd, 3, &gx, &gm);
+            putenv(nan_off);
+            CHECK(r == -2, "R4: a NaN gradient in %s returned %d, not -2", nan_where[v], r);
+            size_t nchg = 0;
+            for (int i = 0; i < nsnap; i++) {
+                int cnt = 0;
+                const float *th = model_lora_param(&m, lay[i], slo[i], whi[i], &cnt);
+                if (memcmp(th, pp[0][1][i], sizeof(float) * (size_t)snap_n[i])) nchg++;
+            }
+            m.train_opt_host_old = true;
+            after = r4_moments(&m, mf, &an);
+            bool kept = r == -2 && before && after && an == bn && !memcmp(before, after, bn) && nchg == 0;
+            CHECK(kept, "R4: the failed step (NaN in %s) changed %zu parameter buffers or the device's "
+                  "moments", nan_where[v], nchg);
+            if (kept)
+                printf("ok: a NaN gradient in %s fails the step with nothing changed (A, B and the "
+                       "device's moments)\n", nan_where[v]);
         }
-        m.train_opt_host_old = true;   // read the device's moments, not the host's copies
-        size_t an = 0;
-        unsigned char *after = r4_moments(&m, mf, &an);
-        bool kept = before && after && an == bn && !memcmp(before, after, bn) && nchg == 0;
-        CHECK(kept, "R4: the failed step changed %zu parameter buffers or the device's moments", nchg);
-        if (kept)
-            printf("ok: a NaN gradient on the device fails the step with nothing changed (A, B and the "
-                   "device's moments)\n");
         // back to this adapter and zero moments for the checks below
         for (int i = 0; i < nsnap; i++) {
             int cnt = 0;

@@ -282,15 +282,20 @@ keep the head on the host, and so does `RUNNER_TRAIN_RES_HEAD=0`, for
 comparison; the run says why once on stderr.
 
 A step every window of which ran resident takes its optimizer on the device
-as well: the mean's scale (`--batch`), the gradient norms the step log
-prints, and AdamW, with the moments kept on the device across steps. A and B
-come back to the host once a step (66 MB on Qwen3-4B at rank 8), since the
-evals, a checkpoint and the next step's windows read them there; nothing is
-resident across steps. A checkpoint's `.optim` and a step that runs on the
-host read the device's moments back first, and `--train-resume` takes the
-file's up. A gradient that is not finite fails the step before anything is
-updated, as on the host. `RUNNER_TRAIN_RES_ADAM=0` keeps the optimizer on the
-host, for comparison; the run says why once on stderr when it stays there.
+as well: the mean's scale (`--batch`) and AdamW, with the moments kept on the
+device across steps. The gradient norms the step log prints, and their check
+that every gradient is finite, are the host's own code on its copy of the
+gradients, which the step's last window brought back bit for bit: a serial
+sum of rounded doubles has no parallel form with the same bits, and on the
+device it took longer than the host's whole step. The device checks its own
+copy finite as well before AdamW reads it. A and B come back to the host once
+a step (66 MB on Qwen3-4B at rank 8), since the evals, a checkpoint and the
+next step's windows read them there; nothing is resident across steps. A
+checkpoint's `.optim` and a step that runs on the host read the device's
+moments back first, and `--train-resume` takes the file's up. A gradient
+that is not finite fails the step before anything is updated, as on the
+host. `RUNNER_TRAIN_RES_ADAM=0` keeps the optimizer on the host, for
+comparison; the run says why once on stderr when it stays there.
 
 Every one of these kernels is a host-chain twin: it computes each element as
 a strict build's host computes it (`make T3=1`: the host's order of

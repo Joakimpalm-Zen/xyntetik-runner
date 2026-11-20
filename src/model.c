@@ -15006,11 +15006,36 @@ int model_lora_res_adam_step(model_t *m, float scale, float lr, float beta1, flo
     bc1 = bc1 * (1.0f + 0x1p-20f);   // the engagement mutant (out/r8241): never in a committed build
 #endif
     tadam_args a = { 0, lr, beta1, beta2, eps, wd, bc1, bc2 };
-    // a test seam: at this step the first gradient is made NaN on the device
+    // a test seam: RUNNER_TEST_TRAIN_RES_NAN=N makes the first gradient NaN at
+    // step N in both copies, N:host in the host's alone, N:device in the
+    // device's alone
     const char *nan = getenv("RUNNER_TEST_TRAIN_RES_NAN");
+    bool at = nan && atoi(nan) == step;
+    const char *which = at ? strchr(nan, ':') : NULL;
+    bool nan_host = at && (!which || !strcmp(which, ":host"));
+    bool nan_dev = at && (!which || !strcmp(which, ":device"));
     double t0 = plat_now();
-    int r = gpu_train_res_adam(m, scale, &a, nan && atoi(nan) == step, gmax, gmean);
+    // the norms and their finite check: the host's own code on the host's
+    // copy, which the step's last window pulled from the device bit for bit
+    // (lbw_resident_end, lbw_dev_ffn_end), scaled as the device's will be. A
+    // serial sum of rounded doubles has no parallel form with the same bits,
+    // and on the device it took 39 to 46 ms a step against the host's 10.
+    if (scale != 1.0f) model_lora_grad_scale(m, scale);
+    if (nan_host) {
+        float *g0 = NULL;
+        for (int l = 0; !g0 && l < m->n_layer; l++)
+            for (int s = 0; !g0 && s <= LW_DOWN; s++) {
+                int cnt = 0;
+                g0 = model_lora_gradbuf(m, l, s, 0, &cnt);
+            }
+        uint32_t qb = 0x7fc00000u;
+        if (g0) memcpy(g0, &qb, sizeof qb);
+    }
+    if (!model_lora_grad_norms(m, gmax, gmean)) return -2;
     double t1 = plat_now();
+    // the device: the scale on its own copy, that copy checked finite, AdamW
+    int r = gpu_train_res_adam(m, scale, &a, nan_dev);
+    double t2 = plat_now();
     if (r == 0) return -2;
     if (r < 0) {
         m->train_opt_dev = m->train_opt_host_old = false;   // the device's state is not known
@@ -15030,11 +15055,12 @@ int model_lora_res_adam_step(model_t *m, float scale, float lr, float beta1, flo
     m->lora_id = m->lora_id * 0x100000001B3ull + 1;
     m->train_res_adam_steps++;
     if (lbw_prof_on())
-        fprintf(stderr, "train-prof: optimizer on the device %.3fs (the copies, scale, norms and AdamW "
-                "%.3fs; A and B back %.3fs)\n", plat_now() - t0, t1 - t0, plat_now() - t1);
+        fprintf(stderr, "train-prof: optimizer %.3fs (the host's scale and norms %.3fs; on the device "
+                "%.3fs; A and B back %.3fs)\n", plat_now() - t0, t1 - t0, t2 - t1, plat_now() - t2);
     static _Atomic int said;
     if (!said++)
-        fprintf(stderr, "train-gpu: the optimizer (AdamW and the gradient norms) runs on the device\n");
+        fprintf(stderr, "train-gpu: the optimizer (the mean's scale and AdamW) runs on the device, the "
+                "gradient norms on the host's copy\n");
     return 1;
 }
 

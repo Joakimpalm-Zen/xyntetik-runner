@@ -3885,9 +3885,8 @@ bool gpu_train_res_optim_get(model_t *mm, int l, int which, float *ma, float *va
     (void)mm; (void)l; (void)which; (void)ma; (void)va; (void)mb; (void)vb;
     return false;
 }
-int gpu_train_res_adam(model_t *mm, float scale, const tadam_args *a, bool plant_nan,
-                       double *gmax, double *gmean) {
-    (void)mm; (void)scale; (void)a; (void)plant_nan; (void)gmax; (void)gmean;
+int gpu_train_res_adam(model_t *mm, float scale, const tadam_args *a, bool plant_nan) {
+    (void)mm; (void)scale; (void)a; (void)plant_nan;
     return -1;
 }
 bool gpu_train_site_ab_pull(model_t *mm, int l, int which, float *a, float *b) {

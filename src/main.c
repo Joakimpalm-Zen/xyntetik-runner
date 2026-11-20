@@ -6209,13 +6209,17 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
                                            o->weight_decay, step, &gmax, &gmean);
             if (dev == -1) { rc = 1; break; }
         }
+        double tn0 = plat_now();
         if (!dev && mean && wsum > 0) {
             if (full) model_full_grad_scale(&rt->m, (float)(1.0 / wsum));
             else model_lora_grad_scale(&rt->m, (float)(1.0 / wsum));
         }
-        if (dev == -2 || !fp_finite_f64(ml) ||
-            (!dev && !(full ? model_full_grad_norms(&rt->m, &gmax, &gmean)
-                            : model_lora_grad_norms(&rt->m, &gmax, &gmean)))) {
+        bool norms_ok = dev || !fp_finite_f64(ml) ||
+                        (full ? model_full_grad_norms(&rt->m, &gmax, &gmean)
+                              : model_lora_grad_norms(&rt->m, &gmax, &gmean));
+        if (!dev && fp_finite_f64(ml) && o->train_gpu && getenv("RUNNER_TRAIN_PROF"))
+            fprintf(stderr, "train-prof: the scale and norms on the host %.3fs\n", plat_now() - tn0);
+        if (dev == -2 || !fp_finite_f64(ml) || !norms_ok) {
             fprintf(stderr, "error: step %d: the loss or a gradient is not finite; "
                     "the adapter stays as step %d left it\n", step, step - 1);
             rc = 1;
