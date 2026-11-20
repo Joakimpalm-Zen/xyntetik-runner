@@ -19,24 +19,22 @@ import urllib.request
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests" / "conformance"))
 
-# The suite's timeout scale: 1 on an ordinary build, 8 under the sanitizers
-# (SAN_PYTEST_ENV in the Makefile), where a process start costs several times
-# more and a hosted runner can be twice as slow again.
-SCALE = float(os.environ.get("RUNNER_TEST_TIMEOUT_SCALE", "1"))
+from harness import KeptProcessLog, RunnerServer, scaled_timeout  # noqa: E402
 
 # Cleanup is eventual, not a service deadline. This only bounds a hung test
 # on slow storage; process startup and exit keep their own measured bounds.
-SWEEP_CLEANUP_TIMEOUT_S = 120 * SCALE
+SWEEP_CLEANUP_TIMEOUT_S = scaled_timeout(120)
 
 # test_blocked_sweep_does_not_hold_start_or_exit: the helper is held for
 # SWEEP_HOLD_S, and a start and an exit must each finish well inside that, or
 # they waited for it. The three scale together, so the claim is the same on
 # every build: a fixed 3 s start under the sanitizers failed on a slow hosted
 # runner with the server simply not up yet (2026-11-15).
-SWEEP_HOLD_S = 5 * SCALE
-SWEEP_START_S = 3 * SCALE
-SWEEP_EXIT_S = 2 * SCALE
+SWEEP_HOLD_S = scaled_timeout(5)
+SWEEP_START_S = scaled_timeout(3)
+SWEEP_EXIT_S = scaled_timeout(2)
 
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal contract")
 
@@ -68,29 +66,39 @@ def test_sigterm_does_not_wait_for_the_reaper_poll(runner_bin, model):
     env = dict(os.environ)
     env.pop("RUNNER_TTL_POLL_S", None)   # the shipped 5 s cadence, deliberately
     port = _free_port()
+    log = KeptProcessLog()
     proc = subprocess.Popen([str(runner_bin), "-m", str(model), "--serve", "--no-tray",
                              "--port", str(port), "--gpu", "off"],
-                            cwd=ROOT, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            cwd=ROOT, env=env, stdout=log.file, stderr=subprocess.STDOUT)
     try:
-        for _ in range(100):
+        deadline = time.monotonic() + scaled_timeout(10)
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                pytest.fail(f"server exited ({proc.returncode}) before /health; "
+                            f"server log {log.keep()}:\n{log.tail()}")
             try:
                 urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1).read()
                 break
             except OSError:
                 time.sleep(0.1)
         else:
-            pytest.fail("server never answered /health")
+            pytest.fail(f"server never answered /health; server log {log.keep()}:\n{log.tail()}")
         time.sleep(0.3)   # well inside the reaper's first 5 s sleep
         t0 = time.monotonic()
         proc.send_signal(signal.SIGTERM)
-        rc = proc.wait(timeout=10)
+        rc = proc.wait(timeout=scaled_timeout(10))
         took = time.monotonic() - t0
-        assert rc == 0, rc
-        assert took < 2.0, f"stop took {took:.2f}s: it waited for the reaper poll"
+        assert rc == 0, f"rc={rc}; server log {log.keep()}:\n{log.tail()}"
+        assert took < 2.0, (f"stop took {took:.2f}s: it waited for the reaper poll; "
+                            f"server log {log.keep()}:\n{log.tail()}")
+    except BaseException:
+        log.keep()
+        raise
     finally:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=10)
+        log.close()
 
 
 @pytest.mark.parametrize("registry", [False, True], ids=["single-model", "swap-set"])
@@ -101,9 +109,6 @@ def test_clean_stop_leaves_record_for_discovery_to_sweep(runner_bin, model, tmp_
     # Process death, established by wait(), is the independent liveness
     # anchor. Exit must leave the record alone: unlink can block after the
     # server's shutdown watchdog has released its bound (R10.20).
-    sys.path.insert(0, str(ROOT / "tests" / "conformance"))
-    from harness import RunnerServer
-
     helper = ROOT / "test-instances"
     assert helper.is_file(), "build test-instances with make"
     home = tmp_path / "home"
@@ -148,9 +153,6 @@ def test_clean_stop_leaves_record_for_discovery_to_sweep(runner_bin, model, tmp_
 
 
 def test_blocked_sweep_does_not_hold_start_or_exit(runner_bin, model, tmp_path):
-    sys.path.insert(0, str(ROOT / "tests" / "conformance"))
-    from harness import RunnerServer
-
     home = tmp_path / "home"
     records = home / ("xyntetik" if os.name == "nt" else ".xyntetik") / "runner" / "instances"
     records.mkdir(parents=True)
