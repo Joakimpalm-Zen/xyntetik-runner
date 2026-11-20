@@ -636,6 +636,16 @@ void       gpu_batch_free(gpu_batch *b);
 // the next call. false = nothing was evaluated, decode these sequences singly.
 bool       gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
                             const int *pos, int n, float **out);
+// R3.82: the last gpu_batch_decode returned false after its step ran: a
+// member's recurrent state on the device may have advanced, so the caller must
+// not decode those sequences again on the device. It recovers each one with
+// gpu_recurrent_rescue and releases its backend (model_batch_decode). False
+// after a plain refusal ("nothing was evaluated").
+bool       gpu_batch_failed_stepped(const gpu_batch *b);
+// The sequence's pre-forward recurrent snapshot to the host's fold buffers,
+// every copy checked; true when the backend holds none to read. False: the
+// host has no verified pre-step state.
+bool       gpu_recurrent_rescue(model_t *m);
 // Did the last successful decode use non-identity Metal GEMM tiles for any
 // weight product? A policy switch alone is not evidence that a tile ran.
 bool       gpu_batch_tiles_used(const gpu_batch *b);

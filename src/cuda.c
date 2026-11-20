@@ -684,6 +684,7 @@ typedef struct {
     CUdeviceptr q35_mix, q35_cv, q35_z, q35_beta, q35_alpha, q35_gate;
     CUdeviceptr q35_hist, q35_state;    // persistent recurrent state per sequence
     CUdeviceptr q35_hist_prev, q35_state_prev; // pre-forward rollback snapshot
+    bool        prev_rescued;   // R3.82: gpu_recurrent_rescue read the snapshot to the host
     // NextN/MTP head scratch (device): the queue of previous-position wide
     // residuals [n_batch][hcd], the pending row, the per-stream head input
     // [MVB*hc][2E], the chained hidden [hcd] and the normed embedding [MVB][E]
@@ -5822,7 +5823,9 @@ void gpu_disable(model_t *m) {
     // rescue it only on this rare fallback path instead of copying tens of
     // megabytes over PCIe after every generated token: the pre-forward
     // rollback copy is the state the failed forward started from.
-    if (g && g->sw && g->sw->ctx && cu.CtxSetCurrent(g->sw->ctx) == 0)
+    // A failed qwen35 microbatch step has read it already, checked
+    // (gpu_recurrent_rescue): a second, unchecked copy is not taken.
+    if (g && !g->prev_rescued && g->sw && g->sw->ctx && cu.CtxSetCurrent(g->sw->ctx) == 0)
         recurrent_xfer(g, m, true, true);
     gpu_free(m);
 }
@@ -8608,11 +8611,15 @@ struct gpu_batch {
     int         rope_split;
     int         graph_split[MVB + 1];
     // R3.82: this step's column c is the sequence whose device state col_g[c]
-    // holds (qwen35's mixer steps each column's own recurrent state), and how
-    // many members' pre-forward recurrent snapshots the step has taken, which
-    // a failed step restores before the caller decodes sequentially
+    // holds (qwen35's mixer steps each column's own recurrent state); how many
+    // members took their pre-forward snapshot this call; whether the step got
+    // past that preparation (from there a failure may have advanced every
+    // member's state); and whether the last call failed so
+    // (gpu_batch_failed_stepped)
     gpu_t      *col_g[MVB];
     int         q35_prepared;
+    bool        q35_launched;
+    bool        failed_stepped;
 };
 
 // enc_mv_batch reproduces the batch-1 result by launching the multi-column
@@ -8655,9 +8662,12 @@ static bool batch_mv_twin_ok(const gpu_t *g, const gguf_tensor *t) {
 // and the batched kernels present. A no here is not a failure — the caller
 // decodes these sequences one at a time, exactly as before.
 // RUNNER_BATCH_QWEN35=0: qwen35 sequences decline the decode microbatch and
-// decode one at a time, as before R3.82. It moves no byte: the microbatch
-// gives every column the bits of its sequence decoded alone
-// (test-cuda-batch-q35), which is why it sits in the inert set (compat.c).
+// decode one at a time, as before R3.82. Read once, when the process first
+// creates a batch, and asked only then: a batch already created keeps
+// batching, so it is set before the process starts (the server makes its
+// batch at startup). It moves no byte: the microbatch gives every column the
+// bits of its sequence decoded alone (test-cuda-batch-q35), which is why it
+// sits in the inert set (compat.c).
 static bool batch_q35_on(void) {
     static _Atomic int on = -1;
     if (on < 0) {
@@ -8675,8 +8685,11 @@ static bool batch_q35_mixer_ok(const gpu_t *g, const model_t *m, const layer_t *
     if (!ly->wqkv || !ly->wq_gate || !ly->ssm_beta || !ly->ssm_alpha || !ly->ssm_out ||
         !ly->ssm_conv || !ly->w_gate || !ly->w_up || !ly->w_down)
         return false;
-    if (!(g->sw->f_q35_conv_seq && g->sw->f_q35_delta_seq) &&
-        !(g->sw->f_q35_conv && g->sw->f_q35_delta))
+    // the question the step asks (fwd_batch_q35_mixer, as gpu_q35_recurrent):
+    // the whole-tile pair where recur_seq_admits takes it (RUNNER_CUDA_RECUR_SEQ,
+    // the shape limits, both kernels loaded; the column-split delta1 only where
+    // its own check passes, else the pair's delta), else the legacy pair
+    if (!recur_seq_admits(g, m) && !(g->sw->f_q35_conv && g->sw->f_q35_delta))
         return false;
     const gguf_tensor *ws[] = { ly->wqkv, ly->wq_gate, ly->ssm_beta, ly->ssm_alpha,
                                 ly->ssm_out, ly->w_gate, ly->w_up, ly->w_down };
@@ -11430,41 +11443,66 @@ static bool batch_decode_cols_run(gpu_batch *b, const int *idx, const int32_t *t
 
 // a qwen35 member's recurrent state back to its pre-forward snapshot
 // (cuda_fwd_prepare took it), as gpu_recurrent_rollback restores it
-// RUNNER_TEST_Q35_ROLLBACK_FAIL=1 (a test seam): a failed qwen35 microbatch
-// step's rollback of a member's recurrent state copies its conv history, then
-// fails the state copy, the partial restoration a device fault can leave
+// RUNNER_TEST_Q35_ROLLBACK_FAIL=1 (a test seam): the rollback read of a member's
+// pre-step recurrent state after a failed qwen35 microbatch step copies the
+// conv history, then fails the state copy, the partial copy a device fault
+// can leave (tests/test_cuda_batch_q35.c, fault-rollback)
 static bool q35_rollback_seam(void) {
     const char *e = getenv("RUNNER_TEST_Q35_ROLLBACK_FAIL");
     return e && !strcmp(e, "1");
 }
 
-static bool q35_restore_prev(gpu_t *g, model_t *m) {
+// The pre-forward snapshot (cuda_fwd_prepare took it) to the host's fold
+// buffers, every copy checked: the state the failed forward started from, as
+// gpu_disable reads it on the solo path. On success gpu_disable does not read
+// it again. False: the host holds no verified pre-step state.
+bool gpu_recurrent_rescue(model_t *m) {
+    gpu_t *g = m ? m->gpu : NULL;
+    if (!g || !m->qwen35) return true;
+    if (!g->sw || !g->sw->ctx || cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
     int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
-    size_t hist_bytes = sizeof(float) * model_rec_count(m) * (m->ssm.conv_kernel - 1) * convdim;
-    size_t state_bytes = sizeof(float) * model_rec_count(m) * m->ssm.v_heads * m->ssm.state * m->ssm.state;
-    return cu.CtxSetCurrent(g->sw->ctx) == 0 &&
-           (!hist_bytes || cu.MemcpyDtoD(g->q35_hist, g->q35_hist_prev, hist_bytes) == 0) &&
-           !q35_rollback_seam() &&
-           cu.MemcpyDtoD(g->q35_state, g->q35_state_prev, state_bytes) == 0;
+    size_t conv_layer = (size_t)(m->ssm.conv_kernel - 1) * convdim;
+    size_t state_layer = (size_t)m->ssm.v_heads * m->ssm.state * m->ssm.state;
+    bool seam = q35_rollback_seam();
+    for (int l = 0; l < m->gpu_layers; l++) {
+        if (!m->layers[l].recurrent) continue;
+        size_t slot = model_rec_slot(m, l);
+        if (conv_layer && cu.MemcpyDtoH(m->ssm_conv_state + slot * conv_layer,
+                                        g->q35_hist_prev + slot * conv_layer * sizeof(float),
+                                        conv_layer * sizeof(float)) != 0)
+            return false;
+        if (seam) return false;
+        if (cu.MemcpyDtoH(m->ssm_state_mem + slot * state_layer,
+                          g->q35_state_prev + slot * state_layer * sizeof(float),
+                          state_layer * sizeof(float)) != 0)
+            return false;
+    }
+    g->prev_rescued = true;
+    return true;
 }
 
-// A step that fails after a qwen35 member's state was snapshotted may have
-// stepped it: every snapshotted member's state goes back before the caller
-// decodes the step sequentially from it (model_batch_decode's fallback).
+bool gpu_batch_failed_stepped(const gpu_batch *b) { return b && b->failed_stepped; }
+
+// A failed step's members. Before the step got past its preparation, nothing
+// was stepped: a member that took its snapshot holds the same state, and its
+// forward count is given back (the solo step the caller runs counts its own).
+// After, any member's state may have advanced, and the device cannot tell how
+// far: the call reports it (gpu_batch_failed_stepped), and the caller recovers
+// each member as the solo protocol does, from the snapshot, never by decoding
+// it again on the device (model_batch_decode).
 static bool batch_decode_cols(gpu_batch *b, const int *idx, const int32_t *tok,
                               const int *pos, int n, float **out) {
     if (!b) return false;
     b->q35_prepared = 0;
+    b->q35_launched = false;
+    b->failed_stepped = false;
     if (batch_decode_cols_run(b, idx, tok, pos, n, out)) return true;
-    for (int i = 0; i < b->q35_prepared; i++) {
-        model_t *m = b->seqs[idx[i]];
-        if (m->gpu && !q35_restore_prev(m->gpu, m)) {
-            fprintf(stderr, "gpu: a failed qwen35 microbatch step could not restore a sequence's "
-                    "recurrent state\n");
-            gpu_first_error("a failed qwen35 microbatch step could not restore a sequence's "
-                            "recurrent state");
+    if (b->q35_launched) b->failed_stepped = true;
+    else
+        for (int i = 0; i < b->q35_prepared; i++) {
+            gpu_t *gi = b->seqs[idx[i]]->gpu;
+            if (gi) gi->fwd_count--;
         }
-    }
     b->q35_prepared = 0;
     return false;
 }
@@ -11491,6 +11529,11 @@ static bool batch_decode_cols_run(gpu_batch *b, const int *idx, const int32_t *t
     // solo path is better at it: narrower matvec kernels, x straight from
     // global, and a graph that is already warm. Hand it over rather than
     // charge a lightly loaded server for machinery it is not using.
+    // R3.82: not for qwen35. A failed device forward here would leave its
+    // recurrent state stepped with no recovery: the one member declines,
+    // before anything ran, and model_batch_decode's fallback runs the solo
+    // forward, whose failure the model layer recovers (gpu_runtime_failure).
+    if (n == 1 && b->seqs[idx[0]]->qwen35) return false;
     if (n == 1) {
         model_t *m = b->seqs[idx[0]];
         float *lg = NULL;
@@ -11545,6 +11588,8 @@ static bool batch_decode_cols_run(gpu_batch *b, const int *idx, const int32_t *t
             if (gi->snap_on) return false;
             b->col_g[i] = gi;
         }
+        // from here a failure may have stepped any member (batch_decode_cols)
+        b->q35_launched = true;
         if (cu.CtxSetCurrent(b->sw->ctx) != 0) return false;
     }
 

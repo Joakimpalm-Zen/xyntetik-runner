@@ -216,8 +216,14 @@ Around the matvec:
   solo step's own kernels launched once per column on that column's sequence's
   state, so each column's logits and recurrent state are its solo step's bits
   (`make test-cuda-batch-q35`, which compares both after every step).
-  `RUNNER_BATCH_QWEN35=0` declines the batch (inert: the same bytes). Its
-  steps run eagerly, without a captured graph.
+  `RUNNER_BATCH_QWEN35=0` declines the batch (inert: the same bytes). It is
+  read once, when the process first creates a batch, and asked only then: a
+  batch already made keeps batching, so the switch is set before the process
+  starts. Its steps run eagerly, without a captured graph. A one-member round
+  runs the solo forward. A step that fails after it ran recovers each member
+  as a failed solo forward does: the pre-step snapshot to the host, checked,
+  the backend released, the step computed once on the CPU. A snapshot that
+  cannot be read back fails the step without serving logits.
 - **MoE routing.** The default fused device routing selects the same experts
   as the eager host routing (`RUNNER_MOE_EAGER=1`) and keeps routing weights
   within about 2 ulp: device `expf` is not the host libm. Gate:

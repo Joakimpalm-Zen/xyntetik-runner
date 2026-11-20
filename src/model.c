@@ -17453,6 +17453,27 @@ bool model_batch_decode(model_batch *b, const int *idx, const int32_t *tok,
             if (!b->seqs[idx[i]]->gpu) on_device = false;
         bool ok = on_device && gpu_batch_decode(b->gb, idx + done, tok + done,
                                                 pos + done, take, out + done);
+        if (!ok && on_device && gpu_batch_failed_stepped(b->gb)) {
+            // R3.82: the step ran and failed, so a member's device recurrent
+            // state may be past the step's input, and decoding it again there
+            // would step it twice. Each member is recovered as the solo
+            // protocol recovers a failed forward: its pre-step snapshot to the
+            // host, every copy checked, then the backend released; the
+            // fallback below computes the step once, on the CPU. A snapshot
+            // that cannot be read back leaves no verified state: the step
+            // fails, serving no logits and stepping no member again (the
+            // scheduler stops these sequences).
+            for (int i = done; i < done + take; i++) {
+                model_t *m = b->seqs[idx[i]];
+                if (!m->gpu) continue;
+                if (!gpu_recurrent_rescue(m)) {
+                    fprintf(stderr, "gpu: a failed decode microbatch step: a sequence's pre-step "
+                            "recurrent state could not be read back; failing the step\n");
+                    return false;
+                }
+                gpu_runtime_failure(m);
+            }
+        }
         if (ok) {
             // The backend returns raw logits, exactly as gpu_forward_batch
             // does; the head transforms live here for both paths so a batched
