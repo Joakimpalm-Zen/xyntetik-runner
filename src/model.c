@@ -17448,11 +17448,43 @@ bool model_batch_decode(model_batch *b, const int *idx, const int32_t *tok,
         // over, so a step it is part of is the sequential one (R6.68.93;
         // the batch read the cache through its NULL backend and the server
         // died).
+        // a lead that gave up its backend since the last step (any failed
+        // forward) leaves the batch nothing to step with: its device side goes
+        gpu_batch_release_orphaned(b->gb);
         bool on_device = b->gb != NULL;
         for (int i = done; on_device && i < done + take; i++)
             if (!b->seqs[idx[i]]->gpu) on_device = false;
         bool ok = on_device && gpu_batch_decode(b->gb, idx + done, tok + done,
                                                 pos + done, take, out + done);
+        if (!ok && on_device && gpu_batch_failed_stepped(b->gb)) {
+            // R3.82: the step ran and failed, so a member's device recurrent
+            // state may be past the step's input, and decoding it again there
+            // would step it twice. Each member is recovered as the solo
+            // protocol recovers a failed forward: its pre-step snapshot to the
+            // host, every copy checked, then the backend released; the
+            // fallback below computes the step once, on the CPU. A snapshot
+            // that cannot be read back leaves no verified state: the step
+            // fails, serving no logits and stepping no member again (the
+            // scheduler stops these sequences).
+            // The batch holds its own reference to the members' shared device
+            // data, so these releases cannot free it under the batch; once the
+            // lead has released its backend the batch gives its device side
+            // back too, rather than keep the upload resident until it is freed.
+            bool rescued = true;
+            for (int i = done; i < done + take; i++) {
+                model_t *m = b->seqs[idx[i]];
+                if (!m->gpu) continue;
+                if (!gpu_recurrent_rescue(m)) {
+                    fprintf(stderr, "gpu: a failed decode microbatch step: a sequence's pre-step "
+                            "recurrent state could not be read back; failing the step\n");
+                    rescued = false;
+                    break;
+                }
+                gpu_runtime_failure(m);
+            }
+            gpu_batch_release_orphaned(b->gb);
+            if (!rescued) return false;
+        }
         if (ok) {
             // The backend returns raw logits, exactly as gpu_forward_batch
             // does; the head transforms live here for both paths so a batched

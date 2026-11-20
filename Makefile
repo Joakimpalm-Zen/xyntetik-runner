@@ -255,6 +255,7 @@ TEST_PREFILL_BATCH = $(TEST_BATCH:test-batch%=test-prefill-batch-identity%)
 # compile recipe and the binary is never built
 TEST_CUDA_LONGROPE = $(TEST_BATCH:test-batch%=test-longrope-cuda%)
 TEST_CUDA_BATCH_COLS = $(TEST_BATCH:test-batch%=test-batch-columns-cuda%)
+TEST_CUDA_BATCH_Q35 = $(TEST_BATCH:test-batch%=test-batch-q35-cuda%)
 TEST_PENALTY_WINDOW = $(TEST_BATCH:test-batch%=test-penalty-window%)
 TEST_ROPE_YARN = $(TEST_BATCH:test-batch%=test-rope-yarn%)
 TEST_ATTN_SCALE = $(TEST_BATCH:test-batch%=test-attn-scale%)
@@ -1020,6 +1021,67 @@ test-cuda-longrope: runner $(TEST_CUDA_LONGROPE) test-phi3-longrope.gguf
 TEST_CUDA_BATCH_COLS_SRC = $(TEST_RECURRENT_SRC:tests/test_recurrent_rewind.c=tests/test_cuda_batch_columns.c)
 $(TEST_CUDA_BATCH_COLS): $(TEST_CUDA_BATCH_COLS_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_CUDA_BATCH_COLS_SRC) -o $@ $(LDFLAGS)
+
+# R3.82: qwen35 in the CUDA decode microbatch. Each sequence's logits AND its
+# recurrent state (every DeltaNet state and conv history) after every step are
+# the bits of that sequence decoded alone, at widths 2, 4 and 8, with membership
+# and column order varying between rounds; RUNNER_BATCH_QWEN35=0 (the kill
+# switch) declines the batch with the same bytes (tests/test_cuda_batch_q35.c).
+# On the generated qwen35 fixture, a state-64 one (whose one-token step takes
+# the column-split k_q35_delta1), and that one's Q8_0 and Q4_K quantizations
+# (its 256-wide rows, ORNITH_TEST_FF=256, take Q4_K; the default fixture's 32
+# and 64 fall back to Q5_0, which has no twin and declines the batch), which
+# reach the quantized twins. Then the failure paths on the Q8_0 file
+# (R3.82's second read): a member decoded alone with its first decode step
+# failing (RUNNER_CUDA_INJECT_FAILURE) is the reference; an engaged batch
+# reduced to one member, and a 2-member step, failing at the same step must
+# give each member that reference's logits and state, and a 2-member step
+# whose rollback copy fails too (RUNNER_TEST_Q35_ROLLBACK_FAIL=1 for the first
+# member, 2 for the second after the first was rescued) must fail without
+# serving logits or stepping a member again. After each fault run every device
+# allocation must come back when the batch and the models are freed, and after
+# a 2-member recovery the batch must hold none (it owns its reference to the
+# members' upload: test-batch-owner-asan, run first).
+# Without a CUDA build or device each run prints "ok (skipped)" and exits 0, as
+# test-prefill-bits does; scripts/cuda-gate.sh fails the step if it skipped there.
+TEST_CUDA_BATCH_Q35_SRC = $(TEST_RECURRENT_SRC:tests/test_recurrent_rewind.c=tests/test_cuda_batch_q35.c)
+$(TEST_CUDA_BATCH_Q35): $(TEST_CUDA_BATCH_Q35_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_CUDA_BATCH_Q35_SRC) -o $@ $(LDFLAGS)
+
+test-cuda-batch-q35: runner $(TEST_CUDA_BATCH_Q35) test-ornith.gguf
+	$(MAKE) --no-print-directory test-batch-owner-asan
+	@set -e; \
+	ORNITH_TEST_STATE=64 ORNITH_TEST_FF=256 $(PYTHON) scripts/make-test-ornith.py test-ornith-batch-s64.gguf > /dev/null; \
+	for q in q8_0 q4_k; do \
+	  ./$(RUNNER_EXE) -m test-ornith-batch-s64.gguf --quantize test-ornith-batch-$$q.gguf --quant $$q > /dev/null 2>&1; \
+	done; \
+	for f in test-ornith.gguf test-ornith-batch-s64.gguf test-ornith-batch-q8_0.gguf test-ornith-batch-q4_k.gguf; do \
+	  ./$(TEST_CUDA_BATCH_Q35) $$f 128 40; \
+	  RUNNER_BATCH_QWEN35=0 ./$(TEST_CUDA_BATCH_Q35) $$f 128 12; \
+	done; \
+	f=test-ornith-batch-q8_0.gguf; \
+	for k in 0 1; do RUNNER_CUDA_INJECT_FAILURE=2 ./$(TEST_CUDA_BATCH_Q35) $$f 128 3 fault-ref $$k test-batch-q35-ref$$k.txt; done; \
+	RUNNER_CUDA_INJECT_FAILURE=3 ./$(TEST_CUDA_BATCH_Q35) $$f 128 3 fault-one test-batch-q35-ref0.txt; \
+	RUNNER_CUDA_INJECT_FAILURE=3 ./$(TEST_CUDA_BATCH_Q35) $$f 128 3 fault-multi test-batch-q35-ref0.txt test-batch-q35-ref1.txt; \
+	for nth in 1 2; do \
+	  RUNNER_TEST_Q35_ROLLBACK_FAIL=$$nth RUNNER_CUDA_INJECT_FAILURE=3 \
+	    ./$(TEST_CUDA_BATCH_Q35) $$f 128 3 fault-rollback test-batch-q35-ref0.txt test-batch-q35-ref1.txt; \
+	done
+
+# A decode microbatch owns its reference to the device data its members share:
+# the members' backends can all be released while the batch lives (a failed
+# qwen35 step's recovery), and the batch is freed after (tests/test_batch_owner.c).
+# It includes src/cuda.c and needs no driver or device, so it runs on any host,
+# under ASan and UBSan; a borrowed reference is a use-after-free there and an
+# unreturned one a leak. test-cuda-batch-q35 runs it first.
+TEST_BATCH_OWNER_SRC = tests/test_batch_owner.c src/gguf.c src/compat.c src/quants.c src/model.c src/vramreg.c
+test-batch-owner-asan: $(TEST_BATCH_OWNER_SRC) src/cuda.c $(HDR) src/kernels_ptx.h
+	$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer \
+	    -fno-fast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -DRUNNER_GPU_CUDA -I src \
+	    $(TEST_BATCH_OWNER_SRC) -o test-batch-owner-asan-bin $(LDFLAGS)
+	@# LeakSanitizer does not exist on macOS (ASan aborts on detect_leaks=1 there): the
+	@# reference-count checks in the test still fail a missing release on that host.
+	ASAN_OPTIONS=detect_leaks=$(if $(filter Darwin,$(BUILD_OS)),0,1) ./test-batch-owner-asan-bin
 
 # The K-quant twins the measured Phi-3.5-mini Q4_K_M runs (GEMVB_KQ) are sampled
 # on the wide fixture's Q4_K and Q6_K files, made as test-cuda-batch-identity
@@ -4833,7 +4895,7 @@ clean:
 	      $(TEST_QUANTIZE) $(TEST_KVSNAP_REPLACE) $(TEST_PARTIAL_FDOPEN) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
 	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) \
 	      $(TEST_FILE_ID) test-file-identity.tmp \
-	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_LONGROPE) $(TEST_PREFILL_BATCH) $(TEST_CUDA_LONGROPE) $(TEST_CUDA_BATCH_COLS) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
+	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_LONGROPE) $(TEST_PREFILL_BATCH) $(TEST_CUDA_LONGROPE) $(TEST_CUDA_BATCH_COLS) $(TEST_CUDA_BATCH_Q35) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
 	      $(TMPL_CONF_RENDER) \
 	      $(TEST_SPLIT_GUARD) split-guard.out test-swap-race-bin test-tokenizer-race-bin test-decide-race-bin test-decide-race-gpu-bin \
 	      runner-gpu-stub
@@ -5004,7 +5066,7 @@ test-anchors: runner test.gguf $(TEST_LORA_GRAD) $(DIFFTOK)
 	    --allow-skip 'this OS refuses a deliberate self-connect' .build/ci/anchors.xml
 
 .PHONY: test-anchors
-.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-hybrids test-cuda-qwen4exp test-cuda-qwen35moe test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity test-cuda-longrope test-cuda-batch-columns
+.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-hybrids test-cuda-qwen4exp test-cuda-qwen35moe test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity test-cuda-longrope test-cuda-batch-columns test-cuda-batch-q35
 .PHONY: test-gates test-gates-core test-gates-batch test-python
 .PHONY: test-deepseek2 test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 

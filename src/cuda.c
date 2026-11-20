@@ -684,6 +684,7 @@ typedef struct {
     CUdeviceptr q35_mix, q35_cv, q35_z, q35_beta, q35_alpha, q35_gate;
     CUdeviceptr q35_hist, q35_state;    // persistent recurrent state per sequence
     CUdeviceptr q35_hist_prev, q35_state_prev; // pre-forward rollback snapshot
+    bool        prev_rescued;   // R3.82: gpu_recurrent_rescue read the snapshot to the host
     // NextN/MTP head scratch (device): the queue of previous-position wide
     // residuals [n_batch][hcd], the pending row, the per-stream head input
     // [MVB*hc][2E], the chained hidden [hcd] and the normed embedding [MVB][E]
@@ -1731,6 +1732,17 @@ static void shared_release(gpu_weights *w) {
             if (*pp == w) { *pp = w->next; break; }
     pthread_mutex_unlock(&g_shared_mu);
     if (last) shared_destroy(w);
+}
+
+// A holder of an upload that is not a model's backend: a decode microbatch
+// (gpu_batch_create). Its graphs and buffers live in the upload's context, so
+// it keeps the upload, and with it the context, until they are destroyed; a
+// borrowed pointer let the members' last release free both under it (R3.82,
+// PR 965's re-read). shared_release gives the reference back.
+static void shared_retain(gpu_weights *w) {
+    pthread_mutex_lock(&g_shared_mu);
+    w->refs++;
+    pthread_mutex_unlock(&g_shared_mu);
 }
 
 // Upload one model's immutable device data and decide the CPU/GPU layer split.
@@ -5822,7 +5834,9 @@ void gpu_disable(model_t *m) {
     // rescue it only on this rare fallback path instead of copying tens of
     // megabytes over PCIe after every generated token: the pre-forward
     // rollback copy is the state the failed forward started from.
-    if (g && g->sw && g->sw->ctx && cu.CtxSetCurrent(g->sw->ctx) == 0)
+    // A failed qwen35 microbatch step has read it already, checked
+    // (gpu_recurrent_rescue): a second, unchecked copy is not taken.
+    if (g && !g->prev_rescued && g->sw && g->sw->ctx && cu.CtxSetCurrent(g->sw->ctx) == 0)
         recurrent_xfer(g, m, true, true);
     gpu_free(m);
 }
@@ -8607,6 +8621,16 @@ struct gpu_batch {
     // a step's split differs. A one-set model's split is always its width.
     int         rope_split;
     int         graph_split[MVB + 1];
+    // R3.82: this step's column c is the sequence whose device state col_g[c]
+    // holds (qwen35's mixer steps each column's own recurrent state); how many
+    // members took their pre-forward snapshot this call; whether the step got
+    // past that preparation (from there a failure may have advanced every
+    // member's state); and whether the last call failed so
+    // (gpu_batch_failed_stepped)
+    gpu_t      *col_g[MVB];
+    int         q35_prepared;
+    bool        q35_launched;
+    bool        failed_stepped;
 };
 
 // enc_mv_batch reproduces the batch-1 result by launching the multi-column
@@ -8648,6 +8672,43 @@ static bool batch_mv_twin_ok(const gpu_t *g, const gguf_tensor *t) {
 // activation back to the CPU per sequence, which is a different kernel shape),
 // and the batched kernels present. A no here is not a failure — the caller
 // decodes these sequences one at a time, exactly as before.
+// RUNNER_BATCH_QWEN35=0: qwen35 sequences decline the decode microbatch and
+// decode one at a time, as before R3.82. Read once, when the process first
+// creates a batch, and asked only then: a batch already created keeps
+// batching, so it is set before the process starts (the server makes its
+// batch at startup). It moves no byte: the microbatch gives every column the
+// bits of its sequence decoded alone (test-cuda-batch-q35), which is why it
+// sits in the inert set (compat.c).
+static bool batch_q35_on(void) {
+    static _Atomic int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RUNNER_BATCH_QWEN35");
+        on = !(e && *e && strcmp(e, "0") == 0);
+    }
+    return on == 1;
+}
+
+// A qwen35 recurrent layer in the microbatch: its four input projections, its
+// output projection and the FFN take the width-classed twins, and the mixer
+// itself is the solo step's kernels launched once per column
+// (fwd_batch_q35_mixer), so it needs those kernels and nothing new.
+static bool batch_q35_mixer_ok(const gpu_t *g, const model_t *m, const layer_t *ly) {
+    if (!ly->wqkv || !ly->wq_gate || !ly->ssm_beta || !ly->ssm_alpha || !ly->ssm_out ||
+        !ly->ssm_conv || !ly->w_gate || !ly->w_up || !ly->w_down)
+        return false;
+    // the question the step asks (fwd_batch_q35_mixer, as gpu_q35_recurrent):
+    // the whole-tile pair where recur_seq_admits takes it (RUNNER_CUDA_RECUR_SEQ,
+    // the shape limits, both kernels loaded; the column-split delta1 only where
+    // its own check passes, else the pair's delta), else the legacy pair
+    if (!recur_seq_admits(g, m) && !(g->sw->f_q35_conv && g->sw->f_q35_delta))
+        return false;
+    const gguf_tensor *ws[] = { ly->wqkv, ly->wq_gate, ly->ssm_beta, ly->ssm_alpha,
+                                ly->ssm_out, ly->w_gate, ly->w_up, ly->w_down };
+    for (size_t k = 0; k < sizeof(ws) / sizeof(*ws); k++)
+        if (!batch_mv_twin_ok(g, ws[k])) return false;
+    return true;
+}
+
 static bool batch_eligible(model_t **seqs, int n, gpu_t **lead_out) {
     if (n < 1) return false;
     if (seqs[0] && seqs[0]->hyper_conn) return false;   // qwen4exp: no microbatch path yet
@@ -8660,15 +8721,17 @@ static bool batch_eligible(model_t **seqs, int n, gpu_t **lead_out) {
         // fwd_batch runs a dense FFN unconditionally; MoE (sparse experts or
         // the gemma-4 dual-branch) has no path there, and it neither projects
         // the attention output gate nor skips rope on nope_on_full layers —
-        // keep all of those on fwd_tile. The recurrent families (qwen35 and
-        // the Mamba-2 hybrids) are declined as a family: fwd_batch has no
-        // mixer path and would hand a recurrent layer's NULL attention
+        // keep all of those on fwd_tile. qwen35 has a mixer path since R3.82
+        // (fwd_batch_q35_mixer: each column the solo step's kernels on its
+        // own sequence's state), off with RUNNER_BATCH_QWEN35=0; the Mamba-2
+        // hybrids are still declined as a family: fwd_batch has no mixer
+        // path for them and would hand a recurrent layer's NULL attention
         // weights to enc_mv_batch as dense tensors. NoPE-stepped models are
         // declined here too (enc_rope_batch ropes every layer), and so is any
         // attention temperature (mistral3's scales every layer's Q by a
         // per-position factor fwd_batch does not apply); the same check in
         // gpu_batch_decode stays as the runtime backstop.
-        if (m->n_expert > 0 || m->moe_gemma || m->qwen35 || m->deepseek2 ||
+        if (m->n_expert > 0 || m->moe_gemma || (m->qwen35 && !batch_q35_on()) || m->deepseek2 ||
             m->granite_hybrid || m->nemotron_h ||
             m->attn_out_gate || m->nope_on_full ||
             m->no_rope_layer_step > 0 || m->attn_temp_scale != 0.0f) return false;
@@ -8688,9 +8751,18 @@ static bool batch_eligible(model_t **seqs, int n, gpu_t **lead_out) {
         if (!batch_mv_twin_ok(g, m->output)) return false;
         for (int l = 0; l < m->n_layer; l++) {
             const layer_t *ly = &m->layers[l];
+            if (m->qwen35 && ly->recurrent) {
+                // R3.82: the mixer steps each column with the solo step's
+                // kernels (fwd_batch_q35_mixer); its projections and the
+                // FFN take the width-classed twins
+                if (!batch_q35_mixer_ok(g, m, ly)) return false;
+                continue;
+            }
             // the decode attention the layer runs alone needs its twin here
             if (batch_attn_gqa(g, m, model_head_dim(m, l), model_n_head_kv(m, l)) < 0)
                 return false;
+            // qwen35's Q carries the output gate interleaved per head
+            if (m->qwen35 && (!g->sw->f_q35_split || !g->sw->f_q35_gate)) return false;
             // fwd_batch implements the gated dense transformer loop only.
             // Apertus is dense but deliberately has no w_gate (its FFN is
             // up -> xIELU -> down); admitting it would hand NULL to
@@ -10947,11 +11019,11 @@ float *gpu_spec_logits(model_t *m, int row) {
     return g->h_logits + (size_t)row * m->n_vocab;
 }
 
-gpu_batch *gpu_batch_create(model_t **seqs, int n) {
-    gpu_t *lead = NULL;
-    if (!batch_eligible(seqs, n, &lead)) return NULL;
-    model_t *m0 = seqs[0];
-
+// The host half of gpu_batch_create: the member table and the batch's own
+// reference to the upload, which batch_release_device gives back after the
+// graphs and buffers are destroyed (gpu_batch_free, on a partial create too).
+// No driver call (tests/test_batch_owner.c runs it without one).
+static gpu_batch *batch_host_new(model_t **seqs, int n, gpu_t *lead) {
     gpu_batch *b = calloc(1, sizeof(gpu_batch));
     if (!b) {
         fprintf(stderr, "gpu: CUDA batch state allocation failed — using "
@@ -10969,11 +11041,22 @@ gpu_batch *gpu_batch_create(model_t **seqs, int n) {
     b->n = n;
     b->lead = lead;
     b->sw = lead->sw;
+    shared_retain(b->sw);
+    model_t *m0 = seqs[0];
     b->n_vocab = m0->n_vocab;
     b->n_embd  = m0->n_embd;
     b->xdim = m0->n_embd;
     for (int l = 0; l < m0->n_layer; l++)
         if (model_q_dim(m0, l) > b->xdim) b->xdim = model_q_dim(m0, l);
+    return b;
+}
+
+gpu_batch *gpu_batch_create(model_t **seqs, int n) {
+    gpu_t *lead = NULL;
+    if (!batch_eligible(seqs, n, &lead)) return NULL;
+    model_t *m0 = seqs[0];
+    gpu_batch *b = batch_host_new(seqs, n, lead);
+    if (!b) return NULL;
 
     CUresult ctx_rc = cu.CtxSetCurrent(b->sw->ctx);
     if (ctx_rc != 0) {
@@ -11002,6 +11085,13 @@ gpu_batch *gpu_batch_create(model_t **seqs, int n) {
             if (!b->graph_why)
                 b->graph_why = "a layer without a V projection that is not built on the stream (a synchronous memset)";
         }
+    // R3.82: each column's mixer launch names its own sequence's recurrent
+    // state, a pointer a captured graph would hold across a change of members
+    if (m0->qwen35) {
+        b->graph_bad = true;
+        if (!b->graph_why)
+            b->graph_why = "qwen35's recurrent mixer (each column's launch names its own sequence's state)";
+    }
     return b;
 
 fail:
@@ -11011,19 +11101,42 @@ fail:
 
 bool gpu_batch_tiles_used(const gpu_batch *b) { (void)b; return false; }
 
-void gpu_batch_free(gpu_batch *b) {
-    if (!b) return;
-    if (b->sw && b->sw->ctx) cu.CtxSetCurrent(b->sw->ctx);
+// The batch's device side: its graphs and buffers, destroyed in the upload's
+// context while the batch's reference still keeps that context, then the
+// reference. Afterwards the batch is a host shell that declines every step
+// (gpu_batch_decode). Idempotent.
+static void batch_release_device(gpu_batch *b) {
+    if (!b->sw) return;
+    if (b->sw->ctx) cu.CtxSetCurrent(b->sw->ctx);
     for (int i = 0; i <= MVB; i++) {
         if (b->gexec[i] && cu.GraphExecDestroy) cu.GraphExecDestroy(b->gexec[i]);
         if (b->graph[i] && cu.GraphDestroy) cu.GraphDestroy(b->graph[i]);
+        b->gexec[i] = NULL; b->graph[i] = NULL;
     }
     CUdeviceptr bufs[] = { b->logits_n, b->pos_d, b->kcp_d, b->vcp_d };
     for (size_t i = 0; i < sizeof(bufs) / sizeof(*bufs); i++)
         if (bufs[i]) cu.MemFree(bufs[i]);
+    b->logits_n = b->pos_d = b->kcp_d = b->vcp_d = 0;
+    gpu_weights *w = b->sw;
+    b->sw = NULL;
+    shared_release(w);
+}
+
+void gpu_batch_free(gpu_batch *b) {
+    if (!b) return;
+    batch_release_device(b);
     free(b->h_logits);
     free(b->seqs);
     free(b);
+}
+
+// The lead supplies the scratch and the graphs, so a batch whose lead gave up
+// its backend (gpu_runtime_failure) can never step again. Its device side goes
+// at once rather than at gpu_batch_free, which a server reaches only when it
+// stops: the batch's reference would otherwise keep the upload resident after
+// every member released it.
+void gpu_batch_release_orphaned(gpu_batch *b) {
+    if (b && b->sw && b->n > 0 && b->seqs[0]->gpu != b->lead) batch_release_device(b);
 }
 
 // Matvec for a decode microbatch. The selection rule is the whole correctness
@@ -11107,6 +11220,85 @@ static bool enc_rope_batch(gpu_batch *B, model_t *m, CUdeviceptr v, int n_heads,
     return true;
 }
 
+// R3.82: a qwen35 recurrent layer over the microbatch's columns. The input
+// projections and the output projection are each one launch of the
+// width-classed twins; the mixer between them is exactly what a lone decode
+// step runs in gpu_q35_recurrent (tn == 1): the conv over one token, then the
+// DeltaNet step (k_q35_delta1 and its norm where the state width allows, else
+// the whole-tile kernel over one token), here launched once per column with
+// THAT column's sequence's conv history and state (B->col_g). No kernel reads
+// another column, and each column's launch is the solo launch's arguments with
+// the lead's scratch in place of its own, so a column's state after the step
+// is its solo step's bits.
+static bool fwd_batch_q35_mixer(gpu_batch *B, model_t *m, const layer_t *ly, int l, int tn) {
+    gpu_t *g = B->lead;
+    int xdim = B->xdim;
+    int sk = m->ssm.state, ng = m->ssm.groups, nh = m->ssm.v_heads;
+    int inner = m->ssm.inner, convdim = 2 * sk * ng + inner;
+    int histn = m->ssm.conv_kernel - 1;
+    CUdeviceptr weight_base = 0;
+    uint64_t weight_off = 0;
+    if (!binding_find(g->sw, m, ly->ssm_conv, &weight_base, &weight_off))
+        return false;
+    CUdeviceptr conv_w = weight_base + weight_off;
+    bool ok = enc_mv_batch(g, m, ly->wqkv, g->xb, g->q35_mix, m->n_embd, convdim, 0, tn, xdim, convdim)
+           && enc_mv_batch(g, m, ly->wq_gate, g->xb, g->q35_z, m->n_embd, inner, 0, tn, xdim, inner)
+           && enc_mv_batch(g, m, ly->ssm_beta, g->xb, g->q35_beta, m->n_embd, nh, 0, tn, xdim, nh)
+           && enc_mv_batch(g, m, ly->ssm_alpha, g->xb, g->q35_alpha, m->n_embd, nh, 0, tn, xdim, nh);
+    if (!ok) return false;
+    size_t hist_layer = (size_t)histn * convdim;
+    size_t state_layer = (size_t)nh * sk * sk;
+    int kernel = m->ssm.conv_kernel, one = 1;
+    float eps = m->rms_eps;
+    int gate_sigmoid = m->hyper_conn ? 1 : 0;
+    for (int c = 0; c < tn; c++) {
+        gpu_t *gc = B->col_g[c];
+        if (!gc || gc->sw != g->sw) return false;
+        CUdeviceptr hist = gc->q35_hist + model_rec_slot(m, l) * hist_layer * sizeof(float);
+        CUdeviceptr state = gc->q35_state + model_rec_slot(m, l) * state_layer * sizeof(float);
+        CUdeviceptr mix = g->q35_mix + (size_t)c * convdim * sizeof(float);
+        CUdeviceptr cv = g->q35_cv + (size_t)c * convdim * sizeof(float);
+        CUdeviceptr z = g->q35_z + (size_t)c * inner * sizeof(float);
+        CUdeviceptr beta = g->q35_beta + (size_t)c * nh * sizeof(float);
+        CUdeviceptr alpha = g->q35_alpha + (size_t)c * nh * sizeof(float);
+        CUdeviceptr out = g->xb2 + (size_t)c * xdim * sizeof(float);
+        // the branch the column's own solo step takes (gpu_q35_recurrent)
+        bool seq = recur_seq_admits(gc, m);
+        bool split_ok = seq && sk % Q35D1_COLS == 0 && sk <= Q35D1_MAX_SD &&
+                        g->sw->f_q35_delta1 && g->sw->f_q35_delta_norm;
+        if (seq) {
+            void *pc[] = { &mix, &cv, &conv_w, &hist, &convdim, &kernel, &one };
+            if (!launch(g, g->sw->f_q35_conv_seq, (convdim + 255) / 256, 1, 1, 256, pc))
+                return false;
+            if (split_ok) {
+                void *p1[] = { &cv, &beta, &alpha, &g->sw->ssm_dt[l], &g->sw->ssm_a[l],
+                               &state, &out, &sk, &ng, &nh, &eps };
+                void *p2[] = { &z, &g->sw->ssm_norm[l], &out, &sk, &nh, &eps, &gate_sigmoid };
+                if (!launch(g, g->sw->f_q35_delta1, nh, (unsigned)(sk / Q35D1_COLS), 1, 128, p1) ||
+                    !launch(g, g->sw->f_q35_delta_norm, nh, 1, 1, 128, p2))
+                    return false;
+            } else {
+                void *pd[] = { &cv, &z, &beta, &alpha, &g->sw->ssm_dt[l],
+                               &g->sw->ssm_a[l], &g->sw->ssm_norm[l], &state, &out,
+                               &sk, &ng, &nh, &eps, &gate_sigmoid, &one,
+                               &convdim, &inner, &xdim };
+                if (!launch(g, g->sw->f_q35_delta_seq, nh, 1, 1, 128, pd))
+                    return false;
+            }
+            g_recur_seq_dispatches++;
+        } else {
+            void *pc[] = { &mix, &cv, &conv_w, &hist, &convdim, &kernel };
+            if (!launch(g, g->sw->f_q35_conv, (convdim + 255) / 256, 1, 1, 256, pc))
+                return false;
+            void *pd[] = { &cv, &z, &beta, &alpha, &g->sw->ssm_dt[l],
+                           &g->sw->ssm_a[l], &g->sw->ssm_norm[l], &state,
+                           &out, &sk, &ng, &nh, &eps, &gate_sigmoid };
+            if (!launch(g, g->sw->f_q35_delta, nh, 1, 1, Q35D_COLS, pd)) return false;
+        }
+    }
+    return enc_mv_batch(g, m, ly->ssm_out, g->xb2, g->xb, inner, m->n_embd, 0, tn, xdim, xdim);
+}
+
 // The layer loop, structurally fwd_tile with tn = the microbatch width. Only
 // the position-bearing and KV-bearing kernels differ; every other launch is
 // the same call with a wider batch, and each already treats its columns
@@ -11127,6 +11319,20 @@ static bool fwd_batch(gpu_batch *B, model_t *m, int tn) {
 
         ok = ok && enc_rmsnorm(g, g->x, g->xb, g->sw->attn_norm[l], n_embd,
                                m->rms_eps, tn, n_embd, xdim);
+        if (m->qwen35 && ly->recurrent) {
+            ok = ok && fwd_batch_q35_mixer(B, m, ly, l, tn);
+            goto mixer_done;
+        }
+        if (m->qwen35) {
+            // Q and the output gate share the projection, interleaved per
+            // head, as tile_q splits them
+            int heads = m->n_head, packed_stride = 2 * q_dim, q_stride = q_dim;
+            void *ps[] = { &g->q35_mix, &g->q, &g->q35_gate, &heads, &hd,
+                           &packed_stride, &q_stride };
+            ok = ok && enc_mv_batch(g, m, ly->wq, g->xb, g->q35_mix, n_embd, 2 * q_dim,
+                                    g->sw->bq[l], tn, xdim, 2 * q_dim)
+                    && launch(g, g->sw->f_q35_split, (q_dim + 255) / 256, tn, 1, 256, ps);
+        } else
         ok = ok && enc_mv_batch(g, m, ly->wq, g->xb, g->q,  n_embd, q_dim,  g->sw->bq[l], tn, xdim, q_dim);
         // shared-KV layers: Q only, then attend over the owning layer's rows
         if (model_kv_owner(m, l) == l) {
@@ -11182,7 +11388,14 @@ static bool fwd_batch(gpu_batch *B, model_t *m, int tn) {
             }
         }
 
+        if (m->qwen35) {
+            // the sigmoid output gate, as tile_attn_out applies it
+            int gate_stride = q_dim;
+            void *pg[] = { &g->xb2, &g->q35_gate, &q_dim, &xdim, &gate_stride };
+            ok = ok && launch(g, g->sw->f_q35_gate, (q_dim + 255) / 256, tn, 1, 256, pg);
+        }
         ok = ok && enc_mv_batch(g, m, ly->wo, g->xb2, g->xb, q_dim, n_embd, g->sw->bo[l], tn, xdim, xdim);
+    mixer_done:
         if (g->sw->pan[l])
             ok = ok && enc_rmsnorm(g, g->xb, g->xb, g->sw->pan[l], n_embd, m->post_norm_eps, tn, xdim, xdim);
         if (m->resid_scale != 1.0f)
@@ -11268,8 +11481,82 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
     return true;
 }
 
+static bool cuda_fwd_prepare(gpu_t *g, model_t *m, int n, int pos);
+static int inject_fail_ordinal(void);
+static bool batch_decode_cols_run(gpu_batch *b, const int *idx, const int32_t *tok,
+                                  const int *pos, int n, float **out);
+
+// a qwen35 member's recurrent state back to its pre-forward snapshot
+// (cuda_fwd_prepare took it), as gpu_recurrent_rollback restores it
+// RUNNER_TEST_Q35_ROLLBACK_FAIL=N (a test seam): the Nth rollback read in the
+// process of a member's pre-step recurrent state after a failed qwen35
+// microbatch step copies the conv history, then fails the state copy, the
+// partial copy a device fault can leave; N=2 fails the second member after the
+// first was rescued and released (tests/test_cuda_batch_q35.c, fault-rollback)
+static bool q35_rollback_seam(void) {
+    static int calls;
+    const char *e = getenv("RUNNER_TEST_Q35_ROLLBACK_FAIL");
+    int nth = e ? atoi(e) : 0;
+    return nth > 0 && ++calls == nth;
+}
+
+// The pre-forward snapshot (cuda_fwd_prepare took it) to the host's fold
+// buffers, every copy checked: the state the failed forward started from, as
+// gpu_disable reads it on the solo path. On success gpu_disable does not read
+// it again. False: the host holds no verified pre-step state.
+bool gpu_recurrent_rescue(model_t *m) {
+    gpu_t *g = m ? m->gpu : NULL;
+    if (!g || !m->qwen35) return true;
+    if (!g->sw || !g->sw->ctx || cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
+    int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
+    size_t conv_layer = (size_t)(m->ssm.conv_kernel - 1) * convdim;
+    size_t state_layer = (size_t)m->ssm.v_heads * m->ssm.state * m->ssm.state;
+    bool seam = q35_rollback_seam();
+    for (int l = 0; l < m->gpu_layers; l++) {
+        if (!m->layers[l].recurrent) continue;
+        size_t slot = model_rec_slot(m, l);
+        if (conv_layer && cu.MemcpyDtoH(m->ssm_conv_state + slot * conv_layer,
+                                        g->q35_hist_prev + slot * conv_layer * sizeof(float),
+                                        conv_layer * sizeof(float)) != 0)
+            return false;
+        if (seam) return false;
+        if (cu.MemcpyDtoH(m->ssm_state_mem + slot * state_layer,
+                          g->q35_state_prev + slot * state_layer * sizeof(float),
+                          state_layer * sizeof(float)) != 0)
+            return false;
+    }
+    g->prev_rescued = true;
+    return true;
+}
+
+bool gpu_batch_failed_stepped(const gpu_batch *b) { return b && b->failed_stepped; }
+
+// A failed step's members. Before the step got past its preparation, nothing
+// was stepped: a member that took its snapshot holds the same state, and its
+// forward count is given back (the solo step the caller runs counts its own).
+// After, any member's state may have advanced, and the device cannot tell how
+// far: the call reports it (gpu_batch_failed_stepped), and the caller recovers
+// each member as the solo protocol does, from the snapshot, never by decoding
+// it again on the device (model_batch_decode).
 static bool batch_decode_cols(gpu_batch *b, const int *idx, const int32_t *tok,
                               const int *pos, int n, float **out) {
+    if (!b) return false;
+    b->q35_prepared = 0;
+    b->q35_launched = false;
+    b->failed_stepped = false;
+    if (batch_decode_cols_run(b, idx, tok, pos, n, out)) return true;
+    if (b->q35_launched) b->failed_stepped = true;
+    else
+        for (int i = 0; i < b->q35_prepared; i++) {
+            gpu_t *gi = b->seqs[idx[i]]->gpu;
+            if (gi) gi->fwd_count--;
+        }
+    b->q35_prepared = 0;
+    return false;
+}
+
+static bool batch_decode_cols_run(gpu_batch *b, const int *idx, const int32_t *tok,
+                                  const int *pos, int n, float **out) {
     if (!b || n < 1 || n > BATCH_MAX_COLS) return false;
     // idx[] is caller-supplied and selects members of b->seqs[0, b->n): a bogus
     // index would dereference a wild model_t* below. Reject the whole batch
@@ -11290,6 +11577,11 @@ static bool batch_decode_cols(gpu_batch *b, const int *idx, const int32_t *tok,
     // solo path is better at it: narrower matvec kernels, x straight from
     // global, and a graph that is already warm. Hand it over rather than
     // charge a lightly loaded server for machinery it is not using.
+    // R3.82: not for qwen35. A failed device forward here would leave its
+    // recurrent state stepped with no recovery: the one member declines,
+    // before anything ran, and model_batch_decode's fallback runs the solo
+    // forward, whose failure the model layer recovers (gpu_runtime_failure).
+    if (n == 1 && b->seqs[idx[0]]->qwen35) return false;
     if (n == 1) {
         model_t *m = b->seqs[idx[0]];
         float *lg = NULL;
@@ -11297,6 +11589,7 @@ static bool batch_decode_cols(gpu_batch *b, const int *idx, const int32_t *tok,
         out[0] = lg;
         return true;
     }
+    if (!b->sw) return false;   // the device side was released (gpu_batch_release_orphaned)
     gpu_t *g = b->lead;
     model_t *m0 = b->seqs[0];
     // The lead supplies the scratch and the graphs. If it fell back to the CPU
@@ -11328,6 +11621,25 @@ static bool batch_decode_cols(gpu_batch *b, const int *idx, const int32_t *tok,
         b->h_pos[i] = b->h_pos[0];
         b->h_kcp[i] = b->h_kcp[0];
         b->h_vcp[i] = b->h_vcp[0];
+    }
+    if (m0->qwen35) {
+        // R3.82: what a solo step does before its forward, member by member
+        // (cuda_fwd_prepare): the pre-forward snapshot of the recurrent state
+        // a failure restores, and the forward count. A sequence's first
+        // forward resets its fold on the solo path, so a step at position 0
+        // is not batched; nor is a keep-forward, which files per-row states.
+        for (int i = 0; i < n; i++) if (pos[i] == 0) return false;
+        for (int i = 0; i < n; i++) {
+            model_t *m = b->seqs[idx[i]];
+            gpu_t *gi = m->gpu;
+            if (!cuda_fwd_prepare(gi, m, 1, pos[i])) return false;
+            b->q35_prepared = i + 1;
+            if (gi->snap_on) return false;
+            b->col_g[i] = gi;
+        }
+        // from here a failure may have stepped any member (batch_decode_cols)
+        b->q35_launched = true;
+        if (cu.CtxSetCurrent(b->sw->ctx) != 0) return false;
     }
 
     if (!stage_x_batch(b, m0, tok, n) ||
@@ -11385,6 +11697,18 @@ static bool batch_decode_cols(gpu_batch *b, const int *idx, const int32_t *tok,
             return false;
         }
         if (cu.CtxSynchronize() != 0) return false;
+    }
+    // RUNNER_CUDA_INJECT_FAILURE on a qwen35 microbatch step, as on the solo
+    // paths: the failure lands after the step changed every member's
+    // recurrent state, so the failure path has to give each member exactly
+    // one logical step (tests/test_cuda_batch_q35.c, fault modes)
+    if (m0->qwen35) {
+        int inj = inject_fail_ordinal();
+        if (inj) {
+            fprintf(stderr, "gpu: injected CUDA runtime failure at device forward %d "
+                            "(a qwen35 decode microbatch)\n", inj);
+            return false;
+        }
     }
 
     // Each sequence's newly written KV row goes back to its own host cache, so

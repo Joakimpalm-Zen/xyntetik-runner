@@ -5744,6 +5744,11 @@ static bool enc_mb_mv(gpu_t *g, id<MTLComputeCommandEncoder> e,
     return false;
 }
 
+// R3.82: this backend has no stepped-failure report (its batch keeps the
+// refusal contract) and no device fold to rescue
+bool gpu_batch_failed_stepped(const gpu_batch *b) { (void)b; return false; }
+bool gpu_recurrent_rescue(model_t *m) { (void)m; return true; }
+void gpu_batch_release_orphaned(gpu_batch *b) { (void)b; }
 bool gpu_batch_tiles_used(const gpu_batch *b) { return b && b->last_tiles; }
 
 // RUNNER_METAL_TIMING=2 (R3.24): the decode microbatch commits and waits at
