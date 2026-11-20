@@ -539,7 +539,7 @@ typedef struct gpu_weights {
     // moe-limb (R3.81): the limb quantizer and the Q4_0 decode (compute_75),
     // the Q4_0 prefill tile (compute_80; absent, the decode runs a column at
     // a time, the same bits)
-    CUfunction  f_moe_limb_quant, f_moe_limb_q4_0, f_moe_limb_tile;
+    CUfunction  f_moe_limb_quant, f_moe_limb_q4_0, f_moe_limb_tile, f_moe_limb_tile2, f_moe_limb_fix;
     // expert-grouped prefill (P2): gather/scatter around the k_gemm family
     CUfunction  f_moe_gather, f_moe_scatter, f_moe_actmul_plain, f_moe_copy;
     CUdeviceptr weights;
@@ -2929,6 +2929,7 @@ static bool shared_load_module(gpu_weights *w) {
         { &w->f_moe_mv[T_IQ2_XXS], "k_moe_mv_iq2_xxs" },
         { &w->f_moe_limb_quant,    "k_moe_limb_quant" },
         { &w->f_moe_limb_q4_0,     "k_moe_limb_q4_0" },
+        { &w->f_moe_limb_fix,      "k_moe_limb_fix_q4_0" },
         // expert-grouped prefill glue
         { &w->f_moe_gather,       "k_moe_gather" },
         { &w->f_moe_scatter,      "k_moe_scatter_add" },
@@ -3045,8 +3046,9 @@ static bool shared_load_module(gpu_weights *w) {
                 }
                 // moe-limb's Q4_0 prefill tile (R3.81); absent, its prefill runs
                 // the decode kernel a column at a time, the same bits
-                if (cu.ModuleGetFunction(&w->f_moe_limb_tile, w->mod80, "k_moe_limb_tile_q4_0") != 0)
-                    w->f_moe_limb_tile = NULL;
+                if (cu.ModuleGetFunction(&w->f_moe_limb_tile, w->mod80, "k_moe_limb_tile_q4_0") != 0 ||
+                    cu.ModuleGetFunction(&w->f_moe_limb_tile2, w->mod80, "k_moe_limb_tile2_q4_0") != 0)
+                    w->f_moe_limb_tile = w->f_moe_limb_tile2 = NULL;
                 // the 128-column twins, for GEMMs over more than 64 columns;
                 // a device that refuses their shared memory keeps the above
                 static const struct { int type; const char *name; } TC2_80W[] = {
@@ -4150,7 +4152,7 @@ static bool cuda_alloc_moe(model_t *m, gpu_t *g) {
         // moe-limb (R3.81): scratch for max(window, slots) columns of the
         // wider expert input
         g->moe_limb_avail = g->moe_fused_ok && moe_limb_wanted(m) &&
-                            g->sw->f_moe_limb_quant && g->sw->f_moe_limb_q4_0;
+                            g->sw->f_moe_limb_quant && g->sw->f_moe_limb_q4_0 && g->sw->f_moe_limb_fix;
         if (g->moe_limb_avail) {
             int lin = m->n_embd > m->n_ff_exp ? m->n_embd : m->n_ff_exp;
             int lcols = g->win > (int)used_c ? g->win : (int)used_c;
@@ -6365,16 +6367,26 @@ static bool enc_moe_limb_gemm(gpu_t *g, CUdeviceptr weights, uint64_t w_off, CUd
         if (!enc_moe_limb_quant(g, xc, n_in, xs, k)) return false;
         bool tile = g->sw->f_moe_limb_tile != NULL;
         if (tile) {
-            unsigned tiles = (unsigned)((n_out + 15) / 16);
+            // R row tiles of 16 by NT column tiles of 8 a block: the same bits
+            // at any R and NT, so the wider tile takes the wider products
+            // (measured, R3.81 step 5: 2 by 2 where k > 16 and n_in > 1024)
+            bool wide = k > 16 && n_in > 1024 && g->sw->f_moe_limb_tile2;
+            int R = wide ? 2 : 1, NT = wide ? 2 : 1;
             unsigned long long woff = w_off;
             void *p[] = { &weights, &woff, &n_in, &n_out, &k, &ys, &yc, &g->moe_lq, &g->moe_lsc };
-            if (!launch(g, g->sw->f_moe_limb_tile, (tiles + 3) / 4, (unsigned)((k + 7) / 8), 1, 128, p))
+            if (!launch(g, wide ? g->sw->f_moe_limb_tile2 : g->sw->f_moe_limb_tile,
+                        (unsigned)((n_out + 16 * R - 1) / (16 * R)), (unsigned)((k + 8 * NT - 1) / (8 * NT)),
+                        1, 256, p))
                 return false;
             g_moe_limb_tiles++;
-        }
-        if (!enc_moe_limb_launch(g, weights, w_off, 0, xc, yc, g->moe_lsel0, n_in, n_out, k, xs, ys,
-                                 tile ? 1 : 0))
+            // the flagged columns, k_moe_mv_q4_0's arithmetic (one launch)
+            moe_args a = { n_in, n_out, w_off, 0, xs, ys };
+            void *pf[] = { &weights, &xc, &a, &yc, &g->moe_lflag, &k };
+            if (!launch(g, g->sw->f_moe_limb_fix, (unsigned)((n_out + 7) / 8), 1, 1, 256, pf))
+                return false;
+        } else if (!enc_moe_limb_launch(g, weights, w_off, 0, xc, yc, g->moe_lsel0, n_in, n_out, k, xs, ys, 0)) {
             return false;
+        }
     }
     return true;
 }

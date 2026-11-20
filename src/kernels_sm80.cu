@@ -100,81 +100,125 @@ GEMM_I8(k_gemm_i8_q8_0, I8Q80)
 // ---- moe-limb's prefill (R3.81; the route is described in kernels.cu at
 // k_moe_limb_quant): the int8 MMA here gives the exact integer block sums the
 // decode's dp4a gives, and the same f32 tail.
+//
+// One expert's slice (wb + w_off) over cnt limb columns (column c of lq/lsc;
+// output y + c*ys). A block is 8 warps over R row tiles of 16 and NT column
+// tiles of 8; a thread holds rows gid, gid + 8 and columns 2*tig, 2*tig + 1 of
+// each. Warp w computes the decode's leaves (lanes) w, w+8, w+16, w+24: leaf
+// l is fma(t, c, .) over blocks l, l + 32, ..., the block's limb fragments
+// kept across the R row tiles. Those four leaves are the decode tree's subtree
+// under root w (level 16 adds w+16 to w and w+24 to w+8, level 8 adds w+8 to
+// w), folded in registers in that order; the tree's levels 4, 2, 1 then run
+// over the 8 roots in shared memory. Every leaf and every add is the decode's,
+// so a column's bits do not depend on R, NT or the other columns.
+// Flagged columns are written afterwards by k_moe_limb_fix_q4_0.
 static __device__ __forceinline__ void mma_s8_16832(int c[4], const unsigned a[4], const unsigned b[2]) {
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 "
                  "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
                  : "+r"(c[0]), "+r"(c[1]), "+r"(c[2]), "+r"(c[3])
                  : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
 }
-
-// The prefill: one expert's slice (wb + w_off) over cnt limb columns (column
-// c of lq/lsc; output y + c*ys). A warp a 16-row by 8-column tile; a thread
-// holds rows gid, gid + 8 and columns 2*tig, 2*tig + 1. Leaf l (a decode
-// lane) is fma(t, c, .) over blocks l, l + 32, ..., leaves visited in
-// bit-reversed order and folded on a stack, which is the decode's
-// shfl_down tree. Flagged columns are written by k_moe_limb_q4_0's
-// flagged-only pass afterwards.
-#define LIMB_TILE_WARPS 4
-extern "C" __global__ void k_moe_limb_tile_q4_0(const uchar *wb, ulong64 w_off, int n_in, int n_out,
-                                                int cnt, int ys, float *y, const signed char *lq,
-                                                const float *lsc) {
-    unsigned warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
-    unsigned gid = lane >> 2, tig = lane & 3;
-    unsigned tile = blockIdx.x * LIMB_TILE_WARPS + warp;
+template <int R, int NT>
+static __device__ __forceinline__ void limb_tile_body(const uchar *wb, ulong64 w_off, int n_in, int n_out, int cnt, int ys,
+                                            float *y, const signed char *lq, const float *lsc,
+                                            float (*P)[R * 16][8 * NT]) {
+    unsigned w = threadIdx.x >> 5, lane = threadIdx.x & 31, gid = lane >> 2, tig = lane & 3;
     int nb = n_in / 32;
-    unsigned r0 = tile * 16 + gid, r1 = r0 + 8;
-    bool l0 = r0 < (unsigned)n_out, l1 = r1 < (unsigned)n_out;
-    const uchar *w0 = wb + w_off + (ulong64)(l0 ? r0 : 0) * nb * 18;
-    const uchar *w1 = wb + w_off + (ulong64)(l1 ? r1 : 0) * nb * 18;
-    unsigned cb = blockIdx.y * 8;
-    unsigned bc = cb + gid;                       // this thread's B column
-    bool bl = bc < (unsigned)cnt;
-    const int *bq = (const int *)(lq + (ulong64)(bl ? bc : 0) * n_in * 3);
-    unsigned c0 = cb + tig * 2, c1 = c0 + 1;      // this thread's C columns
-    bool cl0 = c0 < (unsigned)cnt, cl1 = c1 < (unsigned)cnt;
-    const float *sc0 = lsc + (ulong64)(cl0 ? c0 : 0) * nb, *sc1 = lsc + (ulong64)(cl1 ? c1 : 0) * nb;
-    float st[6][4];
-    int top = 0;
+    unsigned rbase = blockIdx.x * R * 16, cb = blockIdx.y * 8 * NT;
+    bool bl[NT], cl0[NT], cl1[NT];
+    const int *bq[NT];
+    const float *sc0[NT], *sc1[NT];
     #pragma unroll
-    for (int i = 0; i < 32; i++) {
-        int leaf = (int)(__brev((unsigned)i) >> 27);
-        float p[4] = { 0.f, 0.f, 0.f, 0.f };
+    for (int n = 0; n < NT; n++) {
+        unsigned bc = cb + n * 8 + gid; bl[n] = bc < (unsigned)cnt;
+        bq[n] = (const int *)(lq + (ulong64)(bl[n] ? bc : 0) * n_in * 3);
+        unsigned c0 = cb + n * 8 + tig * 2, c1 = c0 + 1; cl0[n] = c0 < (unsigned)cnt; cl1[n] = c1 < (unsigned)cnt;
+        sc0[n] = lsc + (ulong64)(cl0[n] ? c0 : 0) * nb; sc1[n] = lsc + (ulong64)(cl1[n] ? c1 : 0) * nb;
+    }
+    float lv[4][R][NT][4];     // the four leaves' values, in the order w, w+8, w+16, w+24
+    #pragma unroll
+    for (int j = 0; j < 4; j++) {
+        int leaf = w + 8 * j;
+        #pragma unroll
+        for (int r = 0; r < R; r++)
+            #pragma unroll
+            for (int n = 0; n < NT; n++) lv[j][r][n][0] = lv[j][r][n][1] = lv[j][r][n][2] = lv[j][r][n][3] = 0.f;
         for (int b = leaf; b < nb; b += 32) {
-            const uchar *p0 = w0 + (ulong64)b * 18, *p1 = w1 + (ulong64)b * 18;
-            float d0 = __half2float(*(const __half *)p0), d1 = __half2float(*(const __half *)p1);
-            const ushort16 *h0 = (const ushort16 *)(p0 + 2 + tig * 4), *h1 = (const ushort16 *)(p1 + 2 + tig * 4);
-            unsigned u0 = (unsigned)h0[0] | ((unsigned)h0[1] << 16), u1 = (unsigned)h1[0] | ((unsigned)h1[1] << 16);
-            unsigned A[4] = { __vsub4(u0 & 0x0F0F0F0Fu, 0x08080808u), __vsub4(u1 & 0x0F0F0F0Fu, 0x08080808u),
-                              __vsub4((u0 >> 4) & 0x0F0F0F0Fu, 0x08080808u),
-                              __vsub4((u1 >> 4) & 0x0F0F0F0Fu, 0x08080808u) };
-            int S[3][4];
+            unsigned B[NT][3][2];
+            float s0[NT], s1[NT];
             #pragma unroll
-            for (int l = 0; l < 3; l++) {
-                unsigned B[2] = { bl ? (unsigned)bq[(ulong64)b * 24 + l * 8 + tig] : 0u,
-                                  bl ? (unsigned)bq[(ulong64)b * 24 + l * 8 + 4 + tig] : 0u };
-                S[l][0] = S[l][1] = S[l][2] = S[l][3] = 0;
-                mma_s8_16832(S[l], A, B);
+            for (int n = 0; n < NT; n++) {
+                #pragma unroll
+                for (int l = 0; l < 3; l++) {
+                    B[n][l][0] = bl[n] ? (unsigned)bq[n][(ulong64)b * 24 + l * 8 + tig] : 0u;
+                    B[n][l][1] = bl[n] ? (unsigned)bq[n][(ulong64)b * 24 + l * 8 + 4 + tig] : 0u;
+                }
+                s0[n] = cl0[n] ? sc0[n][b] : 0.f; s1[n] = cl1[n] ? sc1[n][b] : 0.f;
             }
-            float s0 = cl0 ? sc0[b] : 0.f, s1 = cl1 ? sc1[b] : 0.f;
-            float cc[4] = { __fmul_rn(d0, s0), __fmul_rn(d0, s1), __fmul_rn(d1, s0), __fmul_rn(d1, s1) };
             #pragma unroll
-            for (int o = 0; o < 4; o++) {
-                long long tot = (long long)S[0][o] * 65536 + (long long)S[1][o] * 256 + S[2][o];
-                p[o] = __fmaf_rn(__ll2float_rn(tot), cc[o], p[o]);
+            for (int r = 0; r < R; r++) {
+                unsigned r0 = rbase + r * 16 + gid, r1 = r0 + 8;
+                bool l0 = r0 < (unsigned)n_out, l1 = r1 < (unsigned)n_out;
+                const uchar *p0 = wb + w_off + ((ulong64)(l0 ? r0 : 0) * nb + b) * 18;
+                const uchar *p1 = wb + w_off + ((ulong64)(l1 ? r1 : 0) * nb + b) * 18;
+                float d0 = __half2float(*(const __half *)p0), d1 = __half2float(*(const __half *)p1);
+                const ushort16 *h0 = (const ushort16 *)(p0 + 2 + tig * 4), *h1 = (const ushort16 *)(p1 + 2 + tig * 4);
+                unsigned u0 = (unsigned)h0[0] | ((unsigned)h0[1] << 16), u1 = (unsigned)h1[0] | ((unsigned)h1[1] << 16);
+                unsigned A[4] = { __vsub4(u0 & 0x0F0F0F0Fu, 0x08080808u), __vsub4(u1 & 0x0F0F0F0Fu, 0x08080808u),
+                                  __vsub4((u0 >> 4) & 0x0F0F0F0Fu, 0x08080808u), __vsub4((u1 >> 4) & 0x0F0F0F0Fu, 0x08080808u) };
+                #pragma unroll
+                for (int n = 0; n < NT; n++) {
+                    int S[3][4];
+                    #pragma unroll
+                    for (int l = 0; l < 3; l++) { S[l][0] = S[l][1] = S[l][2] = S[l][3] = 0; mma_s8_16832(S[l], A, B[n][l]); }
+                    float cc[4] = { __fmul_rn(d0, s0[n]), __fmul_rn(d0, s1[n]), __fmul_rn(d1, s0[n]), __fmul_rn(d1, s1[n]) };
+                    #pragma unroll
+                    for (int o = 0; o < 4; o++) {
+                        // exact in int32: |s0*65536 + s1*256 + s2| <= 2,139,127,808 < 2^31
+                        int tot = S[0][o] * 65536 + S[1][o] * 256 + S[2][o];
+                        lv[j][r][n][o] = __fmaf_rn(__int2float_rn(tot), cc[o], lv[j][r][n][o]);
+                    }
+                }
             }
-        }
-        #pragma unroll
-        for (int o = 0; o < 4; o++) st[top][o] = p[o];
-        top++;
-        #pragma unroll
-        for (int j = i + 1; (j & 1) == 0; j >>= 1) {
-            top--;
-            #pragma unroll
-            for (int o = 0; o < 4; o++) st[top - 1][o] = st[top - 1][o] + st[top][o];
         }
     }
-    if (l0 && cl0) y[(ulong64)c0 * ys + r0] = st[0][0];
-    if (l0 && cl1) y[(ulong64)c1 * ys + r0] = st[0][1];
-    if (l1 && cl0) y[(ulong64)c0 * ys + r1] = st[0][2];
-    if (l1 && cl1) y[(ulong64)c1 * ys + r1] = st[0][3];
+    #pragma unroll
+    for (int r = 0; r < R; r++)
+        #pragma unroll
+        for (int n = 0; n < NT; n++) {
+            float root[4];
+            #pragma unroll
+            for (int o = 0; o < 4; o++) {
+                float qa = lv[0][r][n][o] + lv[2][r][n][o];      // level 16: w += w+16
+                float qb = lv[1][r][n][o] + lv[3][r][n][o];      // level 16: w+8 += w+24
+                root[o] = qa + qb;                               // level 8: w += w+8
+            }
+            P[w][r * 16 + gid][n * 8 + tig * 2] = root[0]; P[w][r * 16 + gid][n * 8 + tig * 2 + 1] = root[1];
+            P[w][r * 16 + gid + 8][n * 8 + tig * 2] = root[2]; P[w][r * 16 + gid + 8][n * 8 + tig * 2 + 1] = root[3];
+        }
+    __syncthreads();
+    for (int o = threadIdx.x; o < R * 16 * 8 * NT; o += blockDim.x) {
+        int rr = o / (8 * NT), c = o % (8 * NT);
+        float s[8];
+        #pragma unroll
+        for (int k = 0; k < 8; k++) s[k] = P[k][rr][c];
+        #pragma unroll
+        for (int off = 4; off > 0; off >>= 1) {
+            #pragma unroll
+            for (int k = 0; k < off; k++) s[k] = s[k] + s[k + off];
+        }
+        unsigned row = rbase + rr, col = cb + c;
+        if (row < (unsigned)n_out && col < (unsigned)cnt) y[(ulong64)col * ys + row] = s[0];
+    }
 }
+// The roots' shared array is the kernel's own: declared in a static template
+// body, nvcc names it with a hash of the checkout (_INTERNAL_<hash>_), and the
+// embedded PTX would differ between two checkouts of the same source.
+#define LIMB_TILE(NAME, R, NT)                                                                     \
+extern "C" __global__ void __launch_bounds__(256) NAME(const uchar *wb, ulong64 w_off, int n_in,  \
+        int n_out, int cnt, int ys, float *y, const signed char *lq, const float *lsc) {         \
+    __shared__ float P[8][R * 16][8 * NT];                                                       \
+    limb_tile_body<R, NT>(wb, w_off, n_in, n_out, cnt, ys, y, lq, lsc, P);                       \
+}
+LIMB_TILE(k_moe_limb_tile_q4_0, 1, 1)
+LIMB_TILE(k_moe_limb_tile2_q4_0, 2, 2)
