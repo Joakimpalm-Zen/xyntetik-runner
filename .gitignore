@@ -164,6 +164,7 @@ test-batch-columns-cuda
 test-batch-columns-cuda.exe
 test-batch-q35-cuda
 test-batch-q35-cuda.exe
+test-batch-q35-ref*.txt
 test-attn-scale
 test-attn-scale.exe
 test-hfhub.exe

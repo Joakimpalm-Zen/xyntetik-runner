@@ -11424,17 +11424,27 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
 }
 
 static bool cuda_fwd_prepare(gpu_t *g, model_t *m, int n, int pos);
+static int inject_fail_ordinal(void);
 static bool batch_decode_cols_run(gpu_batch *b, const int *idx, const int32_t *tok,
                                   const int *pos, int n, float **out);
 
 // a qwen35 member's recurrent state back to its pre-forward snapshot
 // (cuda_fwd_prepare took it), as gpu_recurrent_rollback restores it
+// RUNNER_TEST_Q35_ROLLBACK_FAIL=1 (a test seam): a failed qwen35 microbatch
+// step's rollback of a member's recurrent state copies its conv history, then
+// fails the state copy, the partial restoration a device fault can leave
+static bool q35_rollback_seam(void) {
+    const char *e = getenv("RUNNER_TEST_Q35_ROLLBACK_FAIL");
+    return e && !strcmp(e, "1");
+}
+
 static bool q35_restore_prev(gpu_t *g, model_t *m) {
     int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
     size_t hist_bytes = sizeof(float) * model_rec_count(m) * (m->ssm.conv_kernel - 1) * convdim;
     size_t state_bytes = sizeof(float) * model_rec_count(m) * m->ssm.v_heads * m->ssm.state * m->ssm.state;
     return cu.CtxSetCurrent(g->sw->ctx) == 0 &&
            (!hist_bytes || cu.MemcpyDtoD(g->q35_hist, g->q35_hist_prev, hist_bytes) == 0) &&
+           !q35_rollback_seam() &&
            cu.MemcpyDtoD(g->q35_state, g->q35_state_prev, state_bytes) == 0;
 }
 
@@ -11593,6 +11603,18 @@ static bool batch_decode_cols_run(gpu_batch *b, const int *idx, const int32_t *t
             return false;
         }
         if (cu.CtxSynchronize() != 0) return false;
+    }
+    // RUNNER_CUDA_INJECT_FAILURE on a qwen35 microbatch step, as on the solo
+    // paths: the failure lands after the step changed every member's
+    // recurrent state, so the failure path has to give each member exactly
+    // one logical step (tests/test_cuda_batch_q35.c, fault modes)
+    if (m0->qwen35) {
+        int inj = inject_fail_ordinal();
+        if (inj) {
+            fprintf(stderr, "gpu: injected CUDA runtime failure at device forward %d "
+                            "(a qwen35 decode microbatch)\n", inj);
+            return false;
+        }
     }
 
     // Each sequence's newly written KV row goes back to its own host cache, so

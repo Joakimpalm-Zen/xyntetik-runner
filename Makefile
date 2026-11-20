@@ -1031,8 +1031,14 @@ $(TEST_CUDA_BATCH_COLS): $(TEST_CUDA_BATCH_COLS_SRC) $(HDR)
 # the column-split k_q35_delta1), and that one's Q8_0 and Q4_K quantizations
 # (its 256-wide rows, ORNITH_TEST_FF=256, take Q4_K; the default fixture's 32
 # and 64 fall back to Q5_0, which has no twin and declines the batch), which
-# reach the quantized twins.
-# Without a CUDA device it fails as skipped.
+# reach the quantized twins. Then the failure paths on the Q8_0 file
+# (R3.82's second read): a member decoded alone with its first decode step
+# failing (RUNNER_CUDA_INJECT_FAILURE) is the reference; an engaged batch
+# reduced to one member, and a 2-member step, failing at the same step must
+# give each member that reference's logits and state, and a 2-member step
+# whose rollback copy fails too (RUNNER_TEST_Q35_ROLLBACK_FAIL=1) must fail
+# without serving logits or stepping a member again.
+# Without a CUDA build or device it fails as skipped.
 TEST_CUDA_BATCH_Q35_SRC = $(TEST_RECURRENT_SRC:tests/test_recurrent_rewind.c=tests/test_cuda_batch_q35.c)
 $(TEST_CUDA_BATCH_Q35): $(TEST_CUDA_BATCH_Q35_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_CUDA_BATCH_Q35_SRC) -o $@ $(LDFLAGS)
@@ -1046,7 +1052,13 @@ test-cuda-batch-q35: runner $(TEST_CUDA_BATCH_Q35) test-ornith.gguf
 	for f in test-ornith.gguf test-ornith-batch-s64.gguf test-ornith-batch-q8_0.gguf test-ornith-batch-q4_k.gguf; do \
 	  ./$(TEST_CUDA_BATCH_Q35) $$f 128 40; \
 	  RUNNER_BATCH_QWEN35=0 ./$(TEST_CUDA_BATCH_Q35) $$f 128 12; \
-	done
+	done; \
+	f=test-ornith-batch-q8_0.gguf; \
+	for k in 0 1; do RUNNER_CUDA_INJECT_FAILURE=2 ./$(TEST_CUDA_BATCH_Q35) $$f 128 3 fault-ref $$k test-batch-q35-ref$$k.txt; done; \
+	RUNNER_CUDA_INJECT_FAILURE=3 ./$(TEST_CUDA_BATCH_Q35) $$f 128 3 fault-one test-batch-q35-ref0.txt; \
+	RUNNER_CUDA_INJECT_FAILURE=3 ./$(TEST_CUDA_BATCH_Q35) $$f 128 3 fault-multi test-batch-q35-ref0.txt test-batch-q35-ref1.txt; \
+	RUNNER_TEST_Q35_ROLLBACK_FAIL=1 RUNNER_CUDA_INJECT_FAILURE=3 \
+	  ./$(TEST_CUDA_BATCH_Q35) $$f 128 3 fault-rollback test-batch-q35-ref0.txt test-batch-q35-ref1.txt
 
 # The K-quant twins the measured Phi-3.5-mini Q4_K_M runs (GEMVB_KQ) are sampled
 # on the wide fixture's Q4_K and Q6_K files, made as test-cuda-batch-identity
