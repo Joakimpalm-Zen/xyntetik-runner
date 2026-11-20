@@ -9,6 +9,8 @@
 #ifndef _WIN32
 #include <sys/stat.h>
 #include <unistd.h>
+#else
+#include <windows.h>
 #endif
 
 static int g_fail = 0;
@@ -16,6 +18,15 @@ static void ck(bool cond, const char *what) {
     if (!cond) { fprintf(stderr, "FAIL: %s\n", what); g_fail = 1; }
     else        printf("ok: %s\n", what);
 }
+
+#ifdef _WIN32
+// R6.118: closes the last other handle on a lock file whose delete is pending
+static DWORD WINAPI close_later(LPVOID p) {
+    Sleep(150);
+    CloseHandle((HANDLE)p);
+    return 0;
+}
+#endif
 
 static int kv_fail_step_b(const char *tmp, const char *out) {
     (void)tmp; (void)out;
@@ -159,5 +170,43 @@ int main(void) {
     remove(kv_t);
     remove(kv_f); remove(man_f);
     remove("test-kvsnap-pair.kv.publish.lock");
+#ifdef _WIN32
+    // R6.118: the holder of the publish lock deletes the lock file before it
+    // closes it. While another handle is still open on the file (a waiting
+    // writer's, or a scanner's), the file is delete-pending: every open of it
+    // is refused with ERROR_ACCESS_DENIED until that handle closes, and so is
+    // an attributes query. A writer arriving then must wait the state out,
+    // not fail. Here this process holds that other handle and a thread closes
+    // it after 150 ms.
+    {
+        const char *dst = "test-kvsnap-pending.out";
+        const wchar_t *wl = L"test-kvsnap-pending.out.publish.lock";
+        const DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+        DeleteFileW(wl);
+        HANDLE held = CreateFileW(wl, GENERIC_READ | GENERIC_WRITE, share, NULL, CREATE_ALWAYS,
+                                  FILE_ATTRIBUTE_NORMAL, NULL);
+        ck(held != INVALID_HANDLE_VALUE, "pending delete: the lock file is created and held");
+        ck(DeleteFileW(wl) != 0, "pending delete: the held lock file is deleted (delete pending)");
+        // live controls: the state is the one the fix is about
+        HANDLE probe = CreateFileW(wl, GENERIC_READ, share, NULL, OPEN_EXISTING,
+                                   FILE_ATTRIBUTE_NORMAL, NULL);
+        DWORD probe_err = probe == INVALID_HANDLE_VALUE ? GetLastError() : 0;
+        if (probe != INVALID_HANDLE_VALUE) CloseHandle(probe);
+        ck(probe == INVALID_HANDLE_VALUE && probe_err == ERROR_ACCESS_DENIED,
+           "pending delete: control: an open of the lock file is refused with access denied");
+        DWORD attrs = GetFileAttributesW(wl);
+        DWORD attrs_err = attrs == INVALID_FILE_ATTRIBUTES ? GetLastError() : 0;
+        ck(attrs == INVALID_FILE_ATTRIBUTES && attrs_err == ERROR_ACCESS_DENIED,
+           "pending delete: control: an attributes query is refused with access denied too");
+        HANDLE th = held != INVALID_HANDLE_VALUE ? CreateThread(NULL, 0, close_later, held, 0, NULL) : NULL;
+        void *lk = NULL;
+        plat_lock_status st = plat_publish_lock(dst, &lk);
+        ck(st == PLAT_LOCK_OK && lk != NULL,
+           "pending delete: plat_publish_lock waits the state out and takes the lock");
+        if (lk) plat_publish_unlock(lk);
+        if (th) { WaitForSingleObject(th, INFINITE); CloseHandle(th); }
+        DeleteFileW(wl);
+    }
+#endif
     return g_fail ? 1 : 0;
 }
