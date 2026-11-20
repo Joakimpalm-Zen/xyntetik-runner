@@ -8869,7 +8869,13 @@ bool gpu_test_mv(model_t *m, gguf_tensor *w, const float *x, float *y,
     if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
     size_t nx = (size_t)tn * n_in, ny = (size_t)tn * n_out;
     CUdeviceptr d_x = 0, d_y = 0;
-    if (cu.MemAlloc(&d_x, sizeof(float) * nx) != 0) return false;
+    // x in whole MVT-column tiles. The float tile kernels (k_mv_f32_b,
+    // k_mv_f16_b, k_mv_bf16_b) read every column of a tile whatever a.batch
+    // and store only the batch's (MV_FMA, MV_TAIL_B): a caller owns whole
+    // tiles. The engine's do, their x a plane of g->win columns, a multiple
+    // of 64. An exact x of 17 columns was read 15 columns past its end, and
+    // faulted on an RTX 5070 (R6.62's 1024-wide control).
+    if (cu.MemAlloc(&d_x, sizeof(float) * (size_t)((tn + MVT - 1) / MVT * MVT) * n_in) != 0) return false;
     if (cu.MemAlloc(&d_y, sizeof(float) * ny) != 0) {
         cu.MemFree(d_x);
         return false;
