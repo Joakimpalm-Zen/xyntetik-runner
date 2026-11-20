@@ -263,9 +263,12 @@ Around the matvec:
   The route is recorded (`profile.gpu_route`) and is part of the route
   identity that names stored rows (a preamble snapshot, the prefix store, a
   session's rows), so rows written with it are not read without it, nor the
-  reverse. Its scratch is charged to every window column of the split plan:
-  3 bytes an element, 4 a 32-element block and 8 a column, at the wider expert
-  input (8,808 bytes a column on Gemma-4-26B-A4B). Gates:
+  reverse. Its scratch is charged to every prompt-window column where the
+  route runs: 3 bytes an element, 4 a 32-element block and 8 a column, at the
+  wider expert input (8,808 bytes a column on Gemma-4-26B-A4B). The window is
+  sized from what the split leaves spare, so the charge can narrow the window
+  but never costs a layer, and a partial offload the default declines is not
+  charged for it. Gates:
   `make test-cuda-moe-limb-fixture` (a cuda-gate step: a generated gemma-4
   MoE at Q4_0, with the default on the tile and on its fallback,
   RUNNER_CUDA_SM80=0, and held off by RUNNER_MOE_LIMB=0 and by the reference

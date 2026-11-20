@@ -172,10 +172,32 @@ def test_the_split_plan_charges_its_scratch(runner_bin, fx):
     each), at the wider expert input. Hand-computed for the fixture: max(n_embd 32, n_ff_exp 64) = 64, so
     3 * 64 + 4 * 2 + 8 = 208 bytes a column more than with the route held off (8,808 on Gemma-4-26B-A4B,
     n_embd 2816)."""
-    def per_col(env):
-        p = _run(runner_bin, fx["g4q40"], env=env)
-        assert p.returncode == 0, p.stderr.decode(errors="replace")
-        m = re.search(r"gpu-split: prompt window \d+ columns \([^)]*?(\d+) bytes a column", p.stderr.decode())
-        assert m, p.stderr.decode(errors="replace")[-600:]
-        return int(m.group(1))
-    assert per_col(_env()) - per_col(_env(RUNNER_MOE_LIMB="0")) == 208
+    assert _plan(runner_bin, fx)[1] - _plan(runner_bin, fx, env=_env(RUNNER_MOE_LIMB="0"))[1] == 208
+
+
+def _plan(runner_bin, fx, *args, env=None):
+    """the split's layer count and the window's bytes a column, from the plan's two gpu-split lines"""
+    p = _run(runner_bin, fx["g4q40"], *args, env=env)
+    err = p.stderr.decode(errors="replace")
+    assert p.returncode == 0, err
+    g = re.search(r"gpu-split: budget=\S+ fixed=\S+ G=(\d+)/\d+", err)
+    m = re.search(r"gpu-split: prompt window \d+ columns \([^)]*?(\d+) bytes a column", err)
+    assert g and m, err[-600:]
+    return int(g.group(1)), int(m.group(1))
+
+
+def test_the_plan_charges_its_scratch_only_where_the_route_runs(runner_bin, fx):
+    """7 (the second reader of #976): a partial offload the default declines pays nothing for the route's scratch,
+    the same bytes a window column as with the route held off; asked for there (RUNNER_MOE_LIMB=1) the route runs
+    on the device's layers and the window pays its 208 bytes a column. The split is the same in every case: it was
+    planned from the narrowest window's generic charge, which never held the route's scratch, so the route can cost
+    window columns and never a layer (the 14 GB Gemma-4-26B file on a 12 GB card splits 23 of 30 layers with and
+    without the charge: 409,388 against 400,580 bytes a column, the same 320 columns)."""
+    off = _plan(runner_bin, fx, "--gpu", "1", env=_env(RUNNER_MOE_LIMB="0"))
+    declined = _plan(runner_bin, fx, "--gpu", "1")
+    asked = _plan(runner_bin, fx, "--gpu", "1", env=_env(RUNNER_MOE_LIMB="1"))
+    assert off[0] == declined[0] == asked[0] == 1, (off, declined, asked)
+    assert declined[1] == off[1], "a declined partial offload's window still pays for the route's scratch"
+    assert asked[1] - off[1] == 208, (asked, off)
+    full_off, full_on = _plan(runner_bin, fx, env=_env(RUNNER_MOE_LIMB="0")), _plan(runner_bin, fx)
+    assert full_off[0] == full_on[0] == 2, (full_off, full_on)
