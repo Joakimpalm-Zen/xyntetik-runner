@@ -1038,7 +1038,8 @@ $(TEST_CUDA_BATCH_COLS): $(TEST_CUDA_BATCH_COLS_SRC) $(HDR)
 # give each member that reference's logits and state, and a 2-member step
 # whose rollback copy fails too (RUNNER_TEST_Q35_ROLLBACK_FAIL=1) must fail
 # without serving logits or stepping a member again.
-# Without a CUDA build or device it fails as skipped.
+# Without a CUDA build or device each run prints "ok (skipped)" and exits 0, as
+# test-prefill-bits does; scripts/cuda-gate.sh fails the step if it skipped there.
 TEST_CUDA_BATCH_Q35_SRC = $(TEST_RECURRENT_SRC:tests/test_recurrent_rewind.c=tests/test_cuda_batch_q35.c)
 $(TEST_CUDA_BATCH_Q35): $(TEST_CUDA_BATCH_Q35_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_CUDA_BATCH_Q35_SRC) -o $@ $(LDFLAGS)

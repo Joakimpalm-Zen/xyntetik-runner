@@ -36,7 +36,11 @@
 // pre-forward snapshot; the batch modes must give each member the same logits
 // and state for that step and the two after it, or (fault-rollback) fail the
 // step without serving logits and without stepping any member again.
-// Without a CUDA build or device it fails as skipped.
+// Without a CUDA build, or with no CUDA device, it prints "test-cuda-batch-q35:
+// ok (skipped)" and exits 0, as the other device gates do (test-prefill-bits);
+// scripts/cuda-gate.sh fails a step whose log says it skipped for want of the
+// device. A device that is up with a kernel module that did not load fails
+// (gate_no_device). The device-only code is compiled only in a CUDA build.
 
 #include "runner.h"
 #include "gate_gpu.h"
@@ -45,8 +49,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef RUNNER_GPU_CUDA
 enum { NS = 8, MAX_STEPS = 512, FAULT_STEPS = 3, RP_SOLO_IDX = 0, RP_MICRO_IDX = 4 };
 static int g_fail = 0;
+static bool g_skip = false;   // no CUDA device took the file
 
 static void ck(int cond, const char *what) {
     if (!cond) { fprintf(stderr, "FAIL: %s\n", what); g_fail = 1; }
@@ -120,7 +126,11 @@ static bool load(model_t *m, int n, const char *path, int ctx) {
         p.n_ctx = ctx;
         if (!model_load(&m[i], path, &p)) { fprintf(stderr, "cannot load %s\n", path); return false; }
         if (!m[i].gpu && gate_no_device("test-cuda-batch-q35")) return false;
-        if (!m[i].gpu) { fprintf(stderr, "test-cuda-batch-q35: skipped (no CUDA device took %s)\n", path); return false; }
+        if (!m[i].gpu) {
+            fprintf(stderr, "test-cuda-batch-q35: skipped (no CUDA device took %s)\n", path);
+            g_skip = true;
+            return false;
+        }
     }
     if (!m[0].qwen35) { fprintf(stderr, "test-cuda-batch-q35: %s is not a qwen35 file\n", path); return false; }
     return true;
@@ -133,7 +143,7 @@ static int identity(const char *path, int ctx, int steps) {
     bool killed = ks && !strcmp(ks, "0");
     int steps2 = steps / 4 > 2 ? steps / 4 : 2;
     model_t m[NS];
-    if (!load(m, NS, path, ctx)) return 1;
+    if (!load(m, NS, path, ctx)) return g_skip ? 0 : 1;
     int nv = m[0].n_vocab;
 
     // ---- the reference: each sequence alone, its tokens on a fixed schedule;
@@ -280,7 +290,7 @@ static int fault_ref(const char *path, int ctx, int K, const char *out) {
     model_t m[1];
     // member K's prompt in a one-model process: the first device forward is its
     // prefill, the second its first decode step (RUNNER_CUDA_INJECT_FAILURE=2)
-    if (!load(m, 1, path, ctx)) return 1;
+    if (!load(m, 1, path, ctx)) return g_skip ? 0 : 1;
     int nv = m[0].n_vocab;
     h128 lg[FAULT_STEPS], st[FAULT_STEPS];
     if (!prefill_one(&m[0], K, nv)) { ck(0, "fault-ref prefill"); return 1; }
@@ -300,7 +310,7 @@ static int fault_ref(const char *path, int ctx, int K, const char *out) {
 // after an unrecovered failed step produces; prints its hashes
 static int double_ref(const char *path, int ctx) {
     model_t m[1];
-    if (!load(m, 1, path, ctx)) return 1;
+    if (!load(m, 1, path, ctx)) return g_skip ? 0 : 1;
     int nv = m[0].n_vocab;
     if (!prefill_one(&m[0], 0, nv)) return 1;
     float *l = NULL;
@@ -318,13 +328,14 @@ static int fault_batch(const char *path, int ctx, const char *mode, const char *
     bool one = !strcmp(mode, "fault-one"), rollback = !strcmp(mode, "fault-rollback");
     int nm = one ? 1 : 2;
     h128 rl[2][FAULT_STEPS], rs[2][FAULT_STEPS];
+    // two models: the device forwards are the two prefills, then the failing
+    // step (RUNNER_CUDA_INJECT_FAILURE=3); loaded first, so a skip for want of
+    // a device does not need the references a skipped fault-ref did not write
+    model_t m[2];
+    if (!load(m, 2, path, ctx)) return g_skip ? 0 : 1;
     if (!read_ref(ref0, rl[0], rs[0]) || (nm == 2 && !read_ref(ref1, rl[1], rs[1]))) {
         fprintf(stderr, "%s: cannot read the reference\n", mode); return 1;
     }
-    // two models: the device forwards are the two prefills, then the failing
-    // step (RUNNER_CUDA_INJECT_FAILURE=3)
-    model_t m[2];
-    if (!load(m, 2, path, ctx)) return 1;
     int nv = m[0].n_vocab;
     for (int i = 0; i < 2; i++)
         if (!prefill_one(&m[i], i, nv)) { ck(0, "fault prefill"); return 1; }
@@ -395,12 +406,14 @@ static int fault_batch(const char *path, int ctx, const char *mode, const char *
     for (int i = 0; i < 2; i++) model_free(&m[i]);
     return g_fail;
 }
+#endif // RUNNER_GPU_CUDA
 
 int main(int argc, char **argv) {
 #ifndef RUNNER_GPU_CUDA
     (void)argc; (void)argv;
     fprintf(stderr, "test-cuda-batch-q35: skipped (not a CUDA build)\n");
-    return 1;
+    printf("test-cuda-batch-q35: ok (skipped)\n");
+    return 0;
 #else
     if (argc < 3) { fprintf(stderr, "usage: see tests/test_cuda_batch_q35.c\n"); return 2; }
     const char *path = argv[1];
@@ -416,7 +429,8 @@ int main(int argc, char **argv) {
     else if ((!strcmp(mode, "fault-multi") || !strcmp(mode, "fault-rollback")) && argc > 6)
         rc = fault_batch(path, ctx, mode, argv[5], argv[6]);
     else { fprintf(stderr, "unknown mode %s\n", mode); return 2; }
-    fprintf(stderr, rc ? "test-cuda-batch-q35: FAILED\n" : "test-cuda-batch-q35: ok\n");
+    fprintf(stderr, rc ? "test-cuda-batch-q35: FAILED\n" : g_skip ? "test-cuda-batch-q35: ok (skipped)\n"
+                                                         : "test-cuda-batch-q35: ok\n");
     return rc;
 #endif
 }
