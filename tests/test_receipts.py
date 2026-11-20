@@ -339,4 +339,4 @@ def test_recording_over_an_existing_receipt_replaces_it(runner_bin, base, tmp_pa
     second = _record(runner_bin, base, rec, "-n", "5")
     assert first != second
     assert rec.read_bytes() == second
-    assert not (tmp_path / "same.json.partial").exists()
+    assert not list(tmp_path.glob("same.json.partial*"))

@@ -2590,6 +2590,16 @@ bool model_load(model_t *m, const char *path, const model_params *p) {
         return false;
     }
     model_debug_geometry(m);
+    // R3.60: this model's own route, read now (its load-time facts, the
+    // switches), after a shared load copied the prototype's cache and seam
+    m->route_known = false;
+    m->route_epoch = 0;
+    m->test_route_flip_at = -1;
+    {
+        const char *f = getenv("RUNNER_TEST_ROUTE_FLIP_AT");
+        if (f && *f) m->test_route_flip_at = atoi(f);
+    }
+    (void)model_route_hash(m);
     if (p->mlock && gguf_mapped_size(&m->gf)) {
         uint64_t hot = 0, cold = 0;
         int rc = weights_lock(m, &hot, &cold);
@@ -6108,8 +6118,15 @@ int model_batch_default_for(uint64_t total_ram) {
     return 512;
 }
 
-static int model_gpu_batch_default(void) {
-    return model_batch_default_for(plat_ram_bytes());
+// R3.74: the default prompt batch of a load in this GPU mode on a machine of
+// this much total RAM, the one rule both the load and main's preflight use.
+// --gpu auto takes the RAM rule. The CPU route (GPU_OFF: --gpu off, -ngl 0,
+// a session image's run) takes the same rule capped at 256: since R3.60 a
+// prompt's rows are the same bytes at any width, -b 256 read about 9% faster
+// than 64 on the CPU route, and 512 is not measured there.
+int model_batch_default(int gpu_mode, uint64_t total_ram) {
+    int b = model_batch_default_for(total_ram);
+    return gpu_mode == GPU_AUTO ? b : (b > 256 ? 256 : b);
 }
 
 // What this instance asks of the GPU split: the VRAM cap, a forced layer
@@ -6343,7 +6360,7 @@ static bool runtime_context(model_t *m, const model_params *p) {
         fprintf(stderr, "%s: context %d, the indexer's top_k (sparse attention runs "
                 "dense, which is exact up to it)\n", m->arch, n_ctx);
     m->n_ctx = n_ctx;
-    int batch_default = p->gpu_mode == GPU_AUTO ? model_gpu_batch_default() : 64;
+    int batch_default = model_batch_default(p->gpu_mode, plat_ram_bytes());
     m->n_batch = p->n_batch > 0 ? p->n_batch : batch_default;
     if (m->n_batch > n_ctx) m->n_batch = n_ctx;
     return true;
@@ -6624,6 +6641,8 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
         m->ssm_conv_state = calloc(nrec * (m->ssm.conv_kernel - 1) * conv_dim,
                                    sizeof(float));
         m->ssm_state_mem = calloc(nrec * m->ssm.v_heads * hv * hv, sizeof(float));
+        m->ssm_conv_floats = nrec * (m->ssm.conv_kernel - 1) * conv_dim;
+        m->ssm_state_floats = nrec * m->ssm.v_heads * hv * hv;
         // recurrent-state snapshot (tracer 4): same shape as the live buffers
         m->ssm_conv_snap = calloc(nrec * (m->ssm.conv_kernel - 1) * conv_dim,
                                   sizeof(float));
@@ -6653,6 +6672,8 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
         m->ssm_conv_state = calloc(nrec * (m->ssm.conv_kernel - 1) * conv_dim,
                                    sizeof(float));
         m->ssm_state_mem = calloc(nrec * nh * hd * ds, sizeof(float));
+        m->ssm_conv_floats = nrec * (m->ssm.conv_kernel - 1) * conv_dim;
+        m->ssm_state_floats = nrec * nh * hd * ds;
         // recurrent-state snapshot (tracer 4): same shape as the live buffers
         m->ssm_conv_snap = calloc(nrec * (m->ssm.conv_kernel - 1) * conv_dim,
                                   sizeof(float));
@@ -6675,6 +6696,7 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
         m->ssm_z   = malloc(sizeof(float) * (size_t)B * E);
         // one ring per short-convolution layer (model_rec_count, R3.47)
         m->ssm_conv_state = calloc(model_rec_count(m) * histn * E, sizeof(float));
+        m->ssm_conv_floats = model_rec_count(m) * histn * E;
         m->ssm_conv_snap  = calloc(model_rec_count(m) * histn * E, sizeof(float));
         m->ssm_state_mem  = calloc(1, sizeof(float));
         m->ssm_state_snap = calloc(1, sizeof(float));
@@ -7128,10 +7150,16 @@ typedef struct {
     bool exact;       // a verify round's columns: the per-column route up to
                       // VEC_DOT_MULTI_MAX wide (matvec_b, t_mv_exact)
     const void *xk;   // one column in 256-element int8 blocks (RUNNER_CPU_I8K)
+    bool prefill;     // a CPU-only prompt's prefill (R3.60): the batch route at every width
 } mv_job;
 
 // Batches narrower than this take the per-column native dot (see mv_rows);
 // wider ones the dequantized f32 tile, whose row reuse only pays off there.
+// A CPU-only prompt's prefill takes the tile at every width instead (R3.60):
+// its short chunk tails and its experts given a few of a chunk's rows would
+// otherwise take the native dot, so the prompt's bits moved with -b. Measured
+// on gpt-oss-120b at 26 threads, the route read 1.146x the native dot's
+// prompt speed at -b 64 and 1.084x at -b 512 (with R3.73's SIMD MXFP4 decode).
 enum { MV_SMALL_BATCH = 8 };
 
 static void mv_rows(void *ctx, int i0, int i1) {
@@ -7143,7 +7171,8 @@ static void mv_rows(void *ctx, int i0, int i1) {
     // the weights, so dot(w * s, x) = s * dot(w, x), before the bias.
     const float sc = j->w->scale;
 
-    if (j->n_batch < MV_SMALL_BATCH || (j->exact && j->n_batch <= VEC_DOT_MULTI_MAX)) {
+    if (!j->prefill &&
+        (j->n_batch < MV_SMALL_BATCH || (j->exact && j->n_batch <= VEC_DOT_MULTI_MAX))) {
         // Solo step and small batches (the speculative verify, a few server
         // slots decoding together): every column takes the SAME native dot
         // the solo step takes, rows outer so a weight row is streamed from
@@ -7281,7 +7310,7 @@ static void mv_rows(void *ctx, int i0, int i1) {
     enum { TROWS = VEC_DOT_F32_TILE_ROWS };
     float *tbuf = NULL;
     const float *trow[TROWS];
-    if (j->n_batch >= 8 && i1 - i0 >= 4)
+    if ((j->n_batch >= 8 || j->prefill) && i1 - i0 >= 4)
         tbuf = malloc(sizeof(float) * (size_t)n_in * TROWS);
     if (tbuf) {
         int r = i0;
@@ -7380,8 +7409,13 @@ static void mv_rows(void *ctx, int i0, int i1) {
 // activation quant to save one dot.
 enum { I8_MIN_ROWS = 32 };
 
+// A CPU-only prompt's prefill on this thread (forward_batch_run, from
+// model_t.prefill_pass): every product of it takes the batch route, the int8
+// one included when RUNNER_CPU_I8_PREFILL pins it on (R3.60).
+static _Thread_local bool t_mv_prefill;
+
 static bool mv_takes_i8(const gguf_tensor *w, int n_in, int n_out, int n_batch) {
-    if (n_batch >= MV_SMALL_BATCH)
+    if (n_batch >= MV_SMALL_BATCH || t_mv_prefill)
         return i8_prefill_enabled() && i8_tile_ok(w->type, n_in);
     return n_out >= I8_MIN_ROWS && i8_dot_enabled() && i8_dot_ok(w->type, n_in);
 }
@@ -7449,12 +7483,12 @@ static void matvec_b(tpool *tp, float *y, int y_stride, const gguf_tensor *w,
         return;
     }
     mv_job j = { w, x, bias, y, n_in, n_batch, x_stride, y_stride,
-                 ggml_row_size(w->type, n_in), NULL, 0, NULL, t_mv_exact, NULL };
+                 ggml_row_size(w->type, n_in), NULL, 0, NULL, t_mv_exact, NULL, t_mv_prefill };
     void *xq = NULL;
     float xs_stack[MV_XS_STACK], *xs_heap = NULL;
     double tq = tprof_enabled() ? tprof_now() : 0;
     void *xk = NULL;
-    if (n_batch == 1 && i8k_dot_enabled() && i8k_dot_ok(w->type, n_in) &&
+    if (n_batch == 1 && !t_mv_prefill && i8k_dot_enabled() && i8k_dot_ok(w->type, n_in) &&
         (xk = malloc(i8k_act_size(n_in)))) {
         i8k_quant_act(x, xk, n_in);
         j.xk = xk;
@@ -7463,7 +7497,7 @@ static void matvec_b(tpool *tp, float *y, int y_stride, const gguf_tensor *w,
         j.xq = xq;
         j.xq_stride = i8_act_size(n_in);
     } else {
-        j.xs = mv_xsums(w, x, n_in, n_batch, xs_stack, &xs_heap);
+        j.xs = t_mv_prefill ? NULL : mv_xsums(w, x, n_in, n_batch, xs_stack, &xs_heap);
     }
     if (tq) {
         tprof_region(xq || xk ? "act-quant" : "xsums", tprof_now() - tq);
@@ -7577,8 +7611,8 @@ static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
         tag |= 1ull << (p[s].w->type < 60 ? p[s].w->type : 59);
         mv_job j = { p[s].w, x, p[s].bias, p[s].y, n_in, n_batch, x_stride,
                      p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0, NULL,
-                     t_mv_exact, NULL };
-        if (n_batch == 1 && i8k_dot_enabled() && i8k_dot_ok(p[s].w->type, n_in)) {
+                     t_mv_exact, NULL, t_mv_prefill };
+        if (n_batch == 1 && !t_mv_prefill && i8k_dot_enabled() && i8k_dot_ok(p[s].w->type, n_in)) {
             if (!xk_tried) {
                 xk_tried = true;
                 if ((xk = malloc(i8k_act_size(n_in)))) i8k_quant_act(x, xk, n_in);
@@ -7595,7 +7629,7 @@ static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
                 j.xq_stride = i8_act_size(n_in);
             }
         }
-        if (!j.xq && n_batch == 1 && vec_dot_xs_ok(p[s].w->type)) {
+        if (!j.xq && n_batch == 1 && !t_mv_prefill && vec_dot_xs_ok(p[s].w->type)) {
             if (!xs_tried) {
                 xsum = mv_xsums(p[s].w, x, n_in, n_batch, xs_stack, &xs_heap);
                 xs_tried = true;
@@ -7632,13 +7666,13 @@ static void matvec_b_parts_x(tpool *tp, const mv_part *p, const float *const *xs
     void *xq[MV_MAX_PARTS] = {0};
     // each part's own group sums (vec_dot_xs), one block for all parts
     float *xsum = NULL;
-    for (int s = 0; s < np && !xsum; s++)
+    for (int s = 0; s < np && !xsum && !t_mv_prefill; s++)
         if (vec_dot_xs_ok(p[s].w->type) && n_in % 32 == 0)
             xsum = malloc(sizeof(float) * (size_t)np * (size_t)(n_in / 32));
     for (int s = 0; s < np; s++) {
         mv_job j = { p[s].w, xs[s], p[s].bias, p[s].y, n_in, 1, n_in,
                      p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0, NULL,
-                     false, NULL };
+                     false, NULL, t_mv_prefill };
         if (mv_takes_i8(p[s].w, n_in, p[s].n_out, 1)) {
             xq[s] = mv_quant_act(xs[s], n_in, n_in, 1);
             if (xq[s]) { j.xq = xq[s]; j.xq_stride = i8_act_size(n_in); }
@@ -8163,13 +8197,18 @@ typedef struct {
     int  gpu_layers, n_layer, moe_layers, moe_host, moe_hot;
 } route_facts;
 
+// The device's name, looked up once. R3.60 computes a route at every model
+// load, and loads run in parallel (tests/test_decide_race.c), so the first
+// lookup is made once for every thread, not raced.
+static char route_device_name[128];
+static pthread_once_t route_device_once = PTHREAD_ONCE_INIT;
+static void route_device_init(void) {
+    if (!gpu_available(route_device_name, sizeof route_device_name)) route_device_name[0] = 0;
+}
+
 static void route_collect(const model_t *m, route_facts *r) {
-    static char device[128];
-    static int device_known;
-    if (!device_known) {
-        if (!gpu_available(device, sizeof device)) device[0] = 0;
-        device_known = 1;
-    }
+    pthread_once(&route_device_once, route_device_init);
+    const char *device = route_device_name;
     r->backend = route_backend(m);
     snprintf(r->device, sizeof r->device, "%s", m->gpu ? device : "");
     r->gpu_layers = m->gpu ? m->gpu_layers : 0;
@@ -8199,6 +8238,81 @@ static void route_collect(const model_t *m, route_facts *r) {
     r->cpu_act = r->act;
     route_weights(m, r->weights, sizeof r->weights);
     route_tuning(r->tuning, sizeof r->tuning);
+}
+
+static uint64_t route_fnv(uint64_t h, const char *s) {
+    for (const char *c = s ? s : ""; *c; c++) { h ^= (uint8_t)*c; h *= 0x100000001b3ull; }
+    h ^= 0xff; h *= 0x100000001b3ull;   // a separator, so "ab","c" is not "a","bc"
+    return h;
+}
+
+static _Atomic uint64_t g_route_hashes;   // computations, for the tests
+static char g_route_revision[64];
+static bool g_route_dirty;
+
+// R20: a dirty build's source is no commit, so its identity is its binary's
+// sha256: two dirty trees at one revision are two binaries, and two identities.
+// If the binary could not be hashed, a value of this process alone, so a dirty
+// build of unknown bytes reuses nothing another process persisted.
+static char g_route_binary[80];
+
+void model_route_set_build(const char *revision, bool dirty, const char *binary_sha256) {
+    if (!dirty) g_route_binary[0] = 0;
+    else if (binary_sha256 && *binary_sha256 && strlen(binary_sha256) < sizeof g_route_binary)
+        snprintf(g_route_binary, sizeof g_route_binary, "%s", binary_sha256);
+    else
+        snprintf(g_route_binary, sizeof g_route_binary, "process-%llx-%llx", (unsigned long long)plat_pid_self(),
+                 (unsigned long long)(plat_now() * 1e9));
+    snprintf(g_route_revision, sizeof g_route_revision, "%s", revision ? revision : "");
+    g_route_dirty = dirty;
+}
+
+void model_route_transition(model_t *m) { if (m) m->route_epoch++; }
+
+uint64_t model_route_hash_count(void) { return g_route_hashes; }
+
+// The facts the route identity hashes, as text: what a test and the PR's
+// limits can read. Returns the length written (or wanted).
+int model_route_text(const model_t *m, char *out, size_t cap) {
+    route_facts r;
+    memset(&r, 0, sizeof r);
+    route_collect(m, &r);
+    // the build is the profile and architecture (route_build), the compiler
+    // that built this code and the source revision the receipt prints
+    return snprintf(out, cap, "%s|%s|%d/%d/%d/%d/%d|%s|%s|%s|%s|%s|%s|%s|%s%s%s", r.backend ? r.backend : "",
+                    r.device, r.gpu_layers, r.n_layer, r.moe_layers, r.moe_host, r.moe_hot,
+                    r.kv ? r.kv : "", r.detail ? r.detail : "", r.build ? r.build : "",
+                    r.codegen ? r.codegen : "", r.cpu_act ? r.cpu_act : "", r.weights,
+                    __VERSION__, g_route_revision, g_route_dirty ? "+dirty:" : "", g_route_binary);
+}
+
+uint64_t model_route_hash(const model_t *m) {
+    // load-time facts, kept: the device, the split, the switches and the
+    // build do not change while the model lives, except by a transition
+    if (m->route_known && m->route_gpu == m->gpu && m->route_layers == m->gpu_layers &&
+        m->route_hash_epoch == m->route_epoch)
+        return m->route_hash;
+    g_route_hashes++;
+    char text[1024];
+    model_route_text(m, text, sizeof text);
+    uint64_t h = route_fnv(0xcbf29ce484222325ull, text);
+    // the switches, read live and in any order: XOR of each one's own hash
+    uint64_t sw = 0;
+    for (char **e = ROUTE_ENVIRON; e && *e; e++) {
+        const char *eq = strchr(*e, '=');
+        if (eq && runner_switch_counts(*e, (size_t)(eq - *e))) sw ^= route_fnv(0xcbf29ce484222325ull, *e);
+    }
+    h ^= sw; h *= 0x100000001b3ull;
+    // a transition is a route change by definition: rows across it are of no
+    // one route, even where the facts read back the same
+    h ^= m->route_epoch; h *= 0x100000001b3ull;
+    model_t *w = (model_t *)m;   // the cache only; the model is not changed
+    w->route_hash = h;
+    w->route_gpu = m->gpu;
+    w->route_layers = m->gpu_layers;
+    w->route_hash_epoch = m->route_epoch;
+    w->route_known = true;
+    return h;
 }
 
 enum { RP_SOLO, RP_BATCH, RP_KEEP, RP_MTP, RP_MICRO };
@@ -9059,11 +9173,20 @@ void model_embd_transform(const model_t *m, float *row) {
 // whole block under the translation unit's -ffast-math setting on macOS.
 // Keep the compiler split explicit: GCC gets its function option and Clang
 // gets the documented compound-statement precise mode.
+//
+// Contraction off on both (R3.78): clang's precise mode already forbids
+// fusing a*b+c into one rounding, but GCC's no-fast-math alone left GNU C's
+// default -ffp-contract=fast, so on an FMA host the serial and the chunked
+// cores below fused their updates differently and their state differed in the
+// last bits on GCC builds only (the lab's Linux, CI's Windows: R3.76). The
+// attribute is the mechanism; gate 17 of tests/test_prefill_batch_identity.c
+// (the recurrent state after a prompt with a one-row last chunk, against one
+// pass) is what keeps the two cores bit-identical.
 #if defined(__clang__)
 #define SSM_PRECISE_ATTR
 #define SSM_PRECISE_SCOPE _Pragma("float_control(precise, on)")
 #elif defined(__GNUC__)
-#define SSM_PRECISE_ATTR __attribute__((optimize("no-fast-math")))
+#define SSM_PRECISE_ATTR __attribute__((optimize("no-fast-math", "fp-contract=off")))
 #define SSM_PRECISE_SCOPE
 #else
 #define SSM_PRECISE_ATTR
@@ -10275,7 +10398,8 @@ NUM_STAGE void moe_grouped_sum(model_t *m, const layer_t *ly, int n, int xdim,
 // and each token sums its experts in the ROUTER's order (moe_dall holds the
 // per-expert outputs until the whole layer has run), exactly the per-token
 // accumulation. Below MV_SMALL_BATCH rows per expert the dots are the
-// per-token dots too, so a speculation verify batch (K+1 rows) is byte-equal
+// per-token dots too (outside a CPU-only prompt's prefill, which takes the
+// batch route at every width, R3.60), so a speculation verify batch (K+1 rows) is byte-equal
 // to decoding its rows one at a time; the ascending-expert order this path
 // used before was not (Qwen3.8-Flash-Next --draft-lookup changed the greedy
 // text, 2026-10-07). Big prefill throughput win; decode is untouched.
@@ -14908,10 +15032,10 @@ const float *model_full_master(const model_t *m, int layer, int slot) {
 bool model_full_write(model_t *m, const char *src_path, const char *out_path,
                       char *why, size_t cap) {
     if (!m->full) { snprintf(why, cap, "no full-weight training state"); return false; }
-    char tmp[4096];
-    snprintf(tmp, sizeof tmp, "%s.tmp", out_path);
+    char tmp[4200];
+    bool made = false;
     FILE *in = plat_fopen(src_path, "rb");
-    FILE *out = in ? plat_fopen(tmp, "wb") : NULL;
+    FILE *out = in ? plat_fopen_partial(out_path, "tmp", tmp, sizeof tmp, &made) : NULL;
     if (!in || !out) {
         snprintf(why, cap, "cannot open %s", in ? tmp : src_path);
         if (in) fclose(in);
@@ -14941,7 +15065,7 @@ bool model_full_write(model_t *m, const char *src_path, const char *out_path,
         snprintf(why, cap, "cannot replace %s", out_path);
         ok = false;
     }
-    if (!ok) plat_remove(tmp);
+    if (!ok && made) plat_remove(tmp);
     return ok;
 }
 
@@ -15179,17 +15303,18 @@ static bool lora_write_gguf(model_t *m, FILE *f) {
 bool model_lora_save(model_t *m, const char *path) {
     if (!m->lora) return false;
     size_t pn = strlen(path);
-    if (pn > SIZE_MAX - sizeof(".partial")) {
+    if (pn > SIZE_MAX - 64) {
         fprintf(stderr, "error: adapter path is too long\n");
         return false;
     }
-    char *tmp_path = malloc(pn + sizeof(".partial"));
+    size_t tmp_cap = pn + 64;
+    char *tmp_path = malloc(tmp_cap);
     if (!tmp_path) {
         fprintf(stderr, "error: cannot allocate adapter checkpoint path\n");
         return false;
     }
-    snprintf(tmp_path, pn + sizeof(".partial"), "%s.partial", path);
-    FILE *f = plat_fopen(tmp_path, "wb");
+    bool made = false;
+    FILE *f = plat_fopen_partial(path, "partial", tmp_path, tmp_cap, &made);
     if (!f) {
         fprintf(stderr, "error: cannot write %s\n", tmp_path);
         free(tmp_path);
@@ -15198,14 +15323,14 @@ bool model_lora_save(model_t *m, const char *path) {
     bool ok = lora_write_gguf(m, f) && fflush(f) == 0 && !ferror(f);
     if (fclose(f) != 0) ok = false;
     if (!ok) {
-        plat_remove(tmp_path);
+        if (made) plat_remove(tmp_path);
         fprintf(stderr, "error: failed writing adapter %s "
                 "(destination left untouched)\n", path);
         free(tmp_path);
         return false;
     }
     if (install_lora_file(tmp_path, path) != 0) {
-        plat_remove(tmp_path);
+        if (made) plat_remove(tmp_path);
         fprintf(stderr, "error: wrote %s but could not install it as %s "
                 "(destination unchanged)\n", tmp_path, path);
         free(tmp_path);
@@ -16511,6 +16636,7 @@ static bool gpu_fallback_fails(void) {
 // one gpu_disable here): a runtime failure, or (R3.68) a KV grow that does not
 // fit, which is planned and so not marked as a lost device.
 static void gpu_release_to_cpu(model_t *m, const char *why, const char *then, bool lost) {
+    model_route_transition(m);   // R3.60: the rows from here are another route's
     if (gpu_fallback_fails()) {
         fprintf(stderr, "gpu: %s; RUNNER_GPU_FALLBACK=fail "
                 "ends the process (exit status 3)\n", why);
@@ -16578,6 +16704,12 @@ static float *forward_gpu_leading(model_t *m, const int32_t *tokens, int n,
                                   bool *done) {
     *start = 0;
     *done = false;
+    // R3.60: RUNNER_TEST_ROUTE_FLIP_AT forces, on the CPU, the route change a
+    // device's fallback makes here, once, at the forward that crosses it
+    if (m->test_route_flip_at >= 0 && pos + n > m->test_route_flip_at) {
+        m->test_route_flip_at = -1;
+        model_route_transition(m);
+    }
     if (m->gpu) {
         // R3.68: the device's KV rows for this forward, grown first
         char kv_why[256];
@@ -16666,6 +16798,7 @@ static float *forward_batch_run(model_t *m, const int32_t *tokens, int n, int po
     m->fwd_tokens = tokens;   // the PLE block hashes the batch's own ids
 
     double dt_f0 = dbg_time_on() ? dt_now() : 0;
+    t_mv_prefill = m->prefill_pass;   // R3.60: the layers' products take the batch route
     // R8.24.1 B R1: a resident step's taped forward round runs every layer
     // on the device (it writes the tape's and the K/V cache's rows as
     // forward_layer does); a round that declines runs here, and so does the
@@ -16688,6 +16821,7 @@ static float *forward_batch_run(model_t *m, const int32_t *tokens, int n, int po
     for (int b = 0; m->tape && b < n && pos + b < m->tape_T; b++)
         memcpy(m->tape + ((size_t)m->n_layer * m->tape_T + pos + b) * m->n_embd,
                m->x + (size_t)b * m->n_embd, sizeof(float) * (size_t)m->n_embd);
+    t_mv_prefill = false;   // the head is one row, the decode step's own route
     if (!want_logits) return NULL;
     return forward_head(m, n, dbg);
 }

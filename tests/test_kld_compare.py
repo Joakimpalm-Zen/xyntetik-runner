@@ -393,3 +393,149 @@ def test_the_server_helper_picks_ports_below_every_ephemeral_range():
         assert 1024 <= p < 32768, p
         with socket.socket() as s:
             s.bind(("127.0.0.1", p))
+
+
+def _standin_http_server(port):
+    """Minimal HTTP server answering /v1/models and /v1/capabilities with a foreign pid."""
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import socketserver
+    import threading
+
+    class FastHTTP(HTTPServer):
+        allow_reuse_address = False
+
+        def server_bind(self):
+            socketserver.TCPServer.server_bind(self)
+            self.server_name, self.server_port = "127.0.0.1", self.server_address[1]
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b'{"data":[{"id":"other"}]}' if self.path == "/v1/models" else b'{"pid":999999}'
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    srv = FastHTTP(("127.0.0.1", port), H)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    return srv
+
+
+@pytest.mark.parametrize("exit_early", [False, True])
+def test_start_own_server_retries_on_port_conflict_and_stops_losing_child(exit_early):
+    """When two evaluations on one worker draw the same low_free_port, the
+    loser finds another pid answering there (either before or after its own
+    bind exits). start_own_server stops the losing child and retries on a
+    fresh port (R6.107)."""
+    mod = _load("server_probe")
+    taken = mod.low_free_port()
+    srv = _standin_http_server(taken)
+    spawned = []
+    stub_code = (
+        "import json, os, socketserver, sys, time; "
+        "from http.server import BaseHTTPRequestHandler, HTTPServer; "
+        "p = int(sys.argv[1]); "
+        "early = sys.argv[2] == '1'; "
+        "\nclass FastHTTP(HTTPServer):\n"
+        "  allow_reuse_address = False\n"
+        "  def server_bind(self):\n"
+        "    socketserver.TCPServer.server_bind(self)\n"
+        "    self.server_name, self.server_port = '127.0.0.1', self.server_address[1]\n"
+        "class H(BaseHTTPRequestHandler):\n"
+        "  def do_GET(self):\n"
+        "    b = json.dumps({'data':[{'id':'m'}]} if self.path=='/v1/models' else {'pid':os.getpid()}).encode()\n"
+        "    self.send_response(200); self.end_headers(); self.wfile.write(b)\n"
+        "  def log_message(self, *a): pass\n"
+        "try:\n"
+        "  s = FastHTTP(('127.0.0.1', p), H)\n"
+        "except OSError:\n"
+        "  if early: sys.exit(1)\n"
+        "  time.sleep(30); sys.exit(0)\n"
+        "s.serve_forever()\n"
+    )
+    proc = None
+    try:
+        def spawn(p):
+            c = subprocess.Popen([sys.executable, "-c", stub_code, str(p), "1" if exit_early else "0"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            spawned.append((c, p))
+            return c
+
+        proc, actual = mod.start_own_server(spawn, taken, "stub.gguf", attempts=3)
+        assert actual != taken
+        assert len(spawned) == 2
+        assert spawned[0][0].poll() is not None, "first child must be stopped before retry"
+        assert proc is spawned[1][0] and proc.poll() is None
+    finally:
+        if proc and proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        for c, _ in spawned:
+            if c.poll() is None:
+                c.kill()
+                c.wait()
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_start_own_server_does_not_retry_non_conflict_failure():
+    mod = _load("server_probe")
+    port = mod.low_free_port()
+    spawned = []
+
+    def spawn(p):
+        c = subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(1)"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        spawned.append((c, p))
+        return c
+
+    with pytest.raises(RuntimeError, match="exited early"):
+        mod.start_own_server(spawn, port, "broken.gguf", attempts=4)
+    assert len(spawned) == 1
+    assert spawned[0][0].poll() == 1
+
+
+@pytest.mark.parametrize("script_name", ["kld-compare", "kld-compare-raw"])
+def test_kld_scripts_start_server_retries_and_returns_actual_port(tmp_path, monkeypatch, script_name):
+    mod = _load(script_name)
+    probe = _load("server_probe")
+    taken = probe.low_free_port()
+    srv = _standin_http_server(taken)
+    fake_runner = tmp_path / "fake_kld_stub.py"
+    fake_runner.write_text(
+        "import json, os, socketserver, sys\n"
+        "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+        "port = int(sys.argv[sys.argv.index('--port') + 1])\n"
+        "class FastHTTP(HTTPServer):\n"
+        "  allow_reuse_address = False\n"
+        "  def server_bind(self):\n"
+        "    socketserver.TCPServer.server_bind(self)\n"
+        "    self.server_name, self.server_port = '127.0.0.1', self.server_address[1]\n"
+        "class H(BaseHTTPRequestHandler):\n"
+        "  def do_GET(self):\n"
+        "    b = json.dumps({'data':[{'id':'m'}]} if self.path=='/v1/models' else {'pid':os.getpid()}).encode()\n"
+        "    self.send_response(200); self.end_headers(); self.wfile.write(b)\n"
+        "  def log_message(self, *a): pass\n"
+        "try:\n"
+        "  s = FastHTTP(('127.0.0.1', port), H)\n"
+        "except OSError:\n"
+        "  sys.exit(1)\n"
+        "s.serve_forever()\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path) + os.pathsep + os.environ.get("PYTHONPATH", ""))
+    proc = None
+    try:
+        # sys.executable -m fake_kld_stub keeps proc.pid == os.getpid() on POSIX and Windows.
+        proc, actual = mod.start_server(sys.executable, "fake_kld_stub", taken)
+        assert actual != taken
+        assert proc.poll() is None
+    finally:
+        if proc and proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        srv.shutdown()
+        srv.server_close()

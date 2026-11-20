@@ -166,7 +166,7 @@ def test_a_merge_the_grid_erased_is_refused(runner_bin, fixtures, tmp_path):
     err = p.stderr.decode(errors="replace")
     assert p.returncode != 0, err
     assert "rounded the fine-tune away" in err and "--merge-allow-erased" in err
-    assert not out.exists() and not (tmp_path / "erased.gguf.partial").exists()
+    assert not out.exists() and not list(tmp_path.glob("erased.gguf.partial*"))
     p = subprocess.run([runner_bin, "-m", str(q4), "--lora", str(adapter),
                         "--merge-lora", str(out), *tiny, "--merge-allow-erased"],
                        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

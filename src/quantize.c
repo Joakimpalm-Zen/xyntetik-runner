@@ -2781,18 +2781,17 @@ static bool quantize_job_open_output(quantize_job *J, const char *out_path) {
     // interrupted requant never destroys an existing good model — and an
     // in-place requant (in_path == out_path) no longer truncates its own
     // input. (RNR-015.)
-    size_t tlen = strlen(out_path) + sizeof(".partial");
+    size_t tlen = strlen(out_path) + 64;
     J->tmp_path = malloc(tlen);
     if (!J->tmp_path) return false;
-    snprintf(J->tmp_path, tlen, "%s.partial", out_path);
-
-    J->w.f = plat_fopen(J->tmp_path, "wb");
+    bool made = false;
+    J->w.f = plat_fopen_partial(out_path, "partial", J->tmp_path, tlen, &made);
+    J->tmp_created = made;
     if (!J->w.f) {
         fprintf(stderr, "error: cannot write %s\n", J->tmp_path);
         return false;
     }
     J->w.ok = true;
-    J->tmp_created = true;
     return true;
 }
 

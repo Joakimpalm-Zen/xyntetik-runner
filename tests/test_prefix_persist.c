@@ -15,6 +15,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 static int g_fail = 0;
 static const char *g_model = "test.gguf";
@@ -75,6 +79,65 @@ int main(int argc, char **argv) {
     ck(prefix_cache_save(path) == 1, "save reports one entry");
     ck(prefix_cache_save(path) == 1,
        "saving again atomically replaces an existing snapshot");
+
+#ifndef _WIN32
+    // R6.101: a symlink planted at `<path>.partial-fixed` is refused, never followed.
+    {
+        const char *sym_path = "test-prefix-symlink.bin";
+        const char *sym_lnk = "test-prefix-symlink.bin.partial-fixed";
+        const char *victim = "test-prefix-victim.txt";
+        remove(sym_path); remove(sym_lnk); remove(victim);
+        FILE *vf = fopen(victim, "wb");
+        if (vf) { fputs("untouched", vf); fclose(vf); }
+        if (symlink(victim, sym_lnk) == 0) {
+            setenv("RUNNER_TEST_PARTIAL_SUFFIX", "fixed", 1);
+            int src_rc = prefix_cache_save(sym_path);
+            unsetenv("RUNNER_TEST_PARTIAL_SUFFIX");
+            ck(src_rc < 0, "prefix_cache_save refuses a symlink planted at .partial-fixed");
+            char got[64] = {0};
+            vf = fopen(victim, "rb");
+            if (vf) {
+                size_t gn = fread(got, 1, sizeof got - 1, vf);
+                got[gn] = 0;
+                fclose(vf);
+            }
+            ck(strcmp(got, "untouched") == 0, "prefix_cache_save leaves symlink victim untouched");
+            FILE *sf = fopen(sym_path, "rb");
+            ck(sf == NULL, "prefix_cache_save writes no output after symlink refusal");
+            if (sf) fclose(sf);
+            remove(sym_lnk);
+        }
+        remove(sym_path);
+        remove(victim);
+
+        // Legacy-name case (no RUNNER_TEST_PARTIAL_SUFFIX): succeeds without
+        // touching `<path>.partial` or overwriting its canary.
+        const char *leg_path = "test-prefix-legacy.bin";
+        const char *leg_lnk  = "test-prefix-legacy.bin.partial";
+        remove(leg_path); remove(leg_lnk); remove(victim);
+        vf = fopen(victim, "wb");
+        if (vf) { fputs("untouched", vf); fclose(vf); }
+        if (symlink(victim, leg_lnk) == 0) {
+            unsetenv("RUNNER_TEST_PARTIAL_SUFFIX");
+            int leg_rc = prefix_cache_save(leg_path);
+            ck(leg_rc == 1, "prefix_cache_save succeeds with legacy .partial symlink present");
+            char got[64] = {0};
+            vf = fopen(victim, "rb");
+            if (vf) {
+                size_t gn = fread(got, 1, sizeof got - 1, vf);
+                got[gn] = 0;
+                fclose(vf);
+            }
+            ck(strcmp(got, "untouched") == 0, "legacy .partial symlink canary untouched");
+            struct stat lst;
+            ck(lstat(leg_lnk, &lst) == 0 && S_ISLNK(lst.st_mode),
+               "legacy .partial remains a symlink");
+            remove(leg_lnk);
+        }
+        remove(leg_path);
+        remove(victim);
+    }
+#endif
 
     // The restart: drop everything, then load the file back.
     prefix_cache_clear();

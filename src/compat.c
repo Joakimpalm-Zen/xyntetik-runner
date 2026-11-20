@@ -18,6 +18,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <fcntl.h>
 #include <io.h>
 #include <psapi.h>
 
@@ -1613,7 +1614,9 @@ int plat_spawn_wait_stdin(const char *const argv[], const char *input, size_t n)
     }
     if (input) close(p[0]);
     int status = 0;
-    if (waitpid(pid, &status, 0) < 0) return -1;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) return -1;
+    }
     if (WIFEXITED(status)) return WEXITSTATUS(status) == 127 ? -1 : WEXITSTATUS(status);
     return -1;
 }
@@ -2624,4 +2627,150 @@ bool plat_file_identity(const char *path, uint64_t *size, uint64_t *ino,
     *mtime = stat_mtime_ns(&st);
     if (ctime) *ctime = stat_ctime_ns(&st);
     return true;
+}
+
+// R20: an identity of the image this process is RUNNING, not of the file a
+// path names now (which can have been replaced since the process started). On
+// macOS, the LC_UUID of the loaded main image, read from memory through dyld:
+// the linker derives it from the output, so another build has another one.
+// False where no such identity is had here (Linux hashes /proc/self/exe, the
+// image itself, in its caller; Windows and the rest have none).
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+bool plat_running_image_id(char *out, size_t cap) {
+    const struct mach_header_64 *h = (const struct mach_header_64 *)_dyld_get_image_header(0);
+    if (!h || h->magic != MH_MAGIC_64 || cap < 50) return false;
+    const uint8_t *p = (const uint8_t *)(h + 1);
+    for (uint32_t i = 0; i < h->ncmds; i++) {
+        const struct load_command *lc = (const struct load_command *)p;
+        if (lc->cmd == LC_UUID) {
+            const struct uuid_command *u = (const struct uuid_command *)lc;
+            int n = snprintf(out, cap, "macho-uuid:");
+            for (int k = 0; k < 16; k++) n += snprintf(out + n, cap - (size_t)n, "%02x", u->uuid[k]);
+            return true;
+        }
+        p += lc->cmdsize;
+    }
+    return false;
+}
+#elif defined(_WIN32)
+// R20, Windows: the build id the linker wrote (ld --build-id, the Makefile's
+// Windows LDFLAGS) into the image's CodeView debug record, read from the
+// loaded module in memory (no file, no name) by pe_buildid_walk, bounded by
+// the image size the loader reports. False for an image without one.
+#include "pe_buildid.h"
+bool plat_running_image_id(char *out, size_t cap) {
+    HMODULE h = GetModuleHandleW(NULL);
+    MODULEINFO mi;
+    if (!h || !GetModuleInformation(GetCurrentProcess(), h, &mi, sizeof mi)) return false;
+    return pe_buildid_walk((const uint8_t *)mi.lpBaseOfDll, (size_t)mi.SizeOfImage, out, cap);
+}
+#else
+bool plat_running_image_id(char *out, size_t cap) {
+    if (cap) out[0] = 0;
+    return false;
+}
+#endif
+
+// R17.9, shared since R3.60: the RUNNER_ variables that cannot change
+// arithmetic. Every other one a run starts with counts as a switch that may:
+// a training record names it, and it is part of a row's route identity. No
+// list of the switches that move bytes is known to be complete for every
+// model (RUNNER_CPU_I8 and RUNNER_CPU_I8_PREFILL move a default build's), so
+// the environment is read whole, as route_tuning reads it, and only these
+// are let through.
+// Here, in the platform layer, because every binary that links the model or
+// reads a training record links compat: the one rule needs no other unit
+// (the record reader's fuzz target links train_record.c without the model).
+static const char *const RUNNER_SWITCH_INERT[] = {
+    // read only by the test harness, never by this binary
+    "RUNNER_EXE", "RUNNER_CONFORMANCE_OUT", "RUNNER_TEST_GPU_OFF", "RUNNER_TEST_TIMEOUT_SCALE",
+    "RUNNER_REQUIRE_TURN_GUARD", "RUNNER_SWEEP_MODELS", "RUNNER_LLAMA_CPP_BIN",
+    // set by GitHub Actions' runner on every job, never read by this binary
+    "RUNNER_NAME", "RUNNER_OS", "RUNNER_ARCH", "RUNNER_TEMP", "RUNNER_TOOL_CACHE", "RUNNER_WORKSPACE",
+    "RUNNER_ENVIRONMENT", "RUNNER_TRACKING_ID", "RUNNER_DEBUG", "RUNNER_PERFLOG",
+    // read, and held not to move a training run's bytes
+    "RUNNER_TRAIN_ROWS",       // every width trains the same bytes (test_batched_taped_forward_is_the_solo_bytes)
+    "RUNNER_TPOOL_SPIN",       // how idle pool threads wait
+    "RUNNER_HF_CACHE", "RUNNER_CURL", "RUNNER_PREFIX_CACHE_MB",   // downloads, the server's prefix cache
+    "RUNNER_TEST_BUILD_DIRTY", // marks a training build dirty: it can only take a claim down
+    // test seams that only wait (a sleep between steps, chunks or phases) or print
+    "RUNNER_TEST_STEP_DELAY_MS", "RUNNER_TEST_PREFILL_DELAY_MS", "RUNNER_TEST_LOAD_DELAY_MS",
+    "RUNNER_TEST_REQUEST_TAIL_MS", "RUNNER_TEST_DRAIN_GRACE_MS", "RUNNER_TEST_DRAIN_HARD_MS",
+    "RUNNER_TEST_DRAIN_LATE_MS", "RUNNER_TEST_INSTANCE_SWEEP_DELAY_MS",
+    "RUNNER_TEST_KV_DUMP",     // prints a KV row's hash
+    "RUNNER_TEST_IDENTITY_WAIT",   // waits before the route identity is taken (R20)
+    "RUNNER_TEST_PARTIAL_SUFFIX", // fixes atomic partial file's suffix for planted-symlink tests
+};
+
+bool runner_switch_counts(const char *name, size_t n) {
+    if (n == 12 && !strncmp(name, "XR_SSM_CHUNK", 12)) return true;
+    if (n == 13 && !strncmp(name, "XR_SSM_SERIAL", 13)) return true;
+    if (n <= 7 || strncmp(name, "RUNNER_", 7) != 0) return false;
+    for (size_t i = 0; i < sizeof RUNNER_SWITCH_INERT / sizeof *RUNNER_SWITCH_INERT; i++)
+        if (strlen(RUNNER_SWITCH_INERT[i]) == n && !strncmp(RUNNER_SWITCH_INERT[i], name, n)) return false;
+    return true;
+}
+
+// R17.9 step 4b: a new file for writing, created exclusively and never
+// through a link: NULL if anything (a file, a symlink, dangling or not) is
+// already at the name. POSIX: O_CREAT|O_EXCL|O_NOFOLLOW, which refuse an
+// existing name without following it; Windows: CREATE_NEW, which fails on
+// any existing name, a reparse point included.
+FILE *plat_fopen_new(const char *path) {
+#ifdef _WIN32
+    void *h = plat_create_file(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL);
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+    int fd = _open_osfhandle((intptr_t)h, _O_WRONLY | _O_BINARY);
+    if (fd < 0) {
+        int e = errno;
+        CloseHandle(h);
+        plat_remove(path);
+        errno = e;
+        return NULL;
+    }
+    FILE *f = _fdopen(fd, "wb");
+    if (!f) {
+        int e = errno;
+        _close(fd);
+        plat_remove(path);
+        errno = e;
+        return NULL;
+    }
+    return f;
+#else
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
+    if (fd < 0) return NULL;
+    FILE *f = fdopen(fd, "wb");
+    if (!f) {
+        int e = errno;
+        close(fd);
+        remove(path);
+        errno = e;
+        return NULL;
+    }
+    return f;
+#endif
+}
+
+FILE *plat_fopen_partial(const char *path, const char *ext,
+                         char *tmp_out, size_t tmp_cap, bool *made_out) {
+    if (made_out) *made_out = false;
+    if (!path || !*path || !tmp_out || tmp_cap == 0) return NULL;
+    if (!ext || !*ext) ext = "partial";
+    const char *tsuf = getenv("RUNNER_TEST_PARTIAL_SUFFIX");
+    char suf[40];
+    if (tsuf && *tsuf && strlen(tsuf) < sizeof suf) {
+        snprintf(suf, sizeof suf, "%s", tsuf);
+    } else {
+        uint8_t rb[8] = { 0 };
+        if (!plat_random(rb, sizeof rb)) return NULL;
+        for (int i = 0; i < 8; i++) snprintf(suf + 2 * i, 3, "%02x", rb[i]);
+    }
+    int n = snprintf(tmp_out, tmp_cap, "%s.%s-%s", path, ext, suf);
+    if (n < 0 || (size_t)n >= tmp_cap) return NULL;
+    FILE *f = plat_fopen_new(tmp_out);
+    if (f && made_out) *made_out = true;
+    return f;
 }

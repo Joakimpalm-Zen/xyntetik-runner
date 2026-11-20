@@ -139,9 +139,14 @@ and `make hooks` installs the same check as a local `commit-msg` hook.
 
 ## 6. Version control
 
-- In each new worktree, set `user.name` to your agent name and set its email
-  explicitly before committing (Codex example):
-  `git config --worktree user.name Codex && git config --worktree user.email claude-code@users.noreply.github.com`.
+- In each new worktree, set the worktree-local `user.name` and `user.email`
+  before committing (`.githooks/pre-commit` refuses linked-worktree commits
+  without a `--worktree` `user.email`). Use one of the three agent identities
+  (an address of the form `name@users.noreply.github.com` credits whoever holds
+  that username):
+  - `Claude Code`: `git config --worktree user.name "Claude Code" && git config --worktree user.email "noreply@anthropic.com"`
+  - `Codex`: `git config --worktree user.name "Codex" && git config --worktree user.email "267193182+codex@users.noreply.github.com"`
+  - `Antigravity`: `git config --worktree user.name "Antigravity" && git config --worktree user.email "antigravity@noreply.xyntetik.com"`
   Agent authors and committers use a noreply or `.local` address.
 - Branch from an up-to-date `main`, named for the work; push it and open a
   pull request with `gh pr create`.
@@ -152,4 +157,18 @@ and `make hooks` installs the same check as a local `commit-msg` hook.
 - Merge only with CI green (`gh pr merge <n> --merge --delete-branch`). Tag
   a release only after `main` is green and `make release-check` passes.
 - Never leave finished work unmerged: a branch is merged, or its decline is
-  written down.
+  written down. Remove a linked worktree when its PR merges; check and prune
+  worktrees (anything but ignored/build outputs keeps the tree) with
+  `scripts/agents-worktrees.sh [--remove-merged] [--dry-run] [REPO]`. Note that
+  `--remove-merged` also removes a baseline checkout at an old commit of
+  `main` (a detached worktree kept for comparison); `git worktree lock <path>`
+  keeps one.
+- For a large sibling repository (`<repo>` holding multi-gigabyte research
+  trees), never create a full worktree; use a cone sparse checkout:
+  ```sh
+  git -C <repo> worktree add --no-checkout -b <branch> ../wt-<name> origin/main
+  git -C wt-<name> sparse-checkout set --cone <folder> [<folder>...]
+  git -C wt-<name> checkout
+  git -C wt-<name> config --worktree user.name <Agent>
+  git -C wt-<name> config --worktree user.email <noreply-email>
+  ```

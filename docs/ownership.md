@@ -44,7 +44,7 @@ The frontends, the request policy above sampling, the serving lifecycle and the 
   - the CLI's run, serve and fit flags;
   - the Python client's `RunnerEndpoint`, `ManagedRunner`, `StartupLease`, `ServerLaunch` and
     `query_system_capabilities`;
-  - the records `xyntetik.runner.session.v1` and `xyntetik.runner.kv_snapshot.v1`.
+  - the records `xyntetik.runner.session.v2` (v1 still read) and `xyntetik.runner.kv_snapshot.v1`.
 - **Primary:** run and serve a model, know whether it fits and where it runs, tools and structured output.
   **Advanced:** embeddings, scoring, reranking, typed decisions, named contexts, sessions, prefix reuse,
   session images and KV snapshots.

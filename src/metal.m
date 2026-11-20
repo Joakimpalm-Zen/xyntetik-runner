@@ -627,6 +627,43 @@ static bool metal_command_failed(id<MTLCommandBuffer> cb) {
     return injected || cb.status == MTLCommandBufferStatusError;
 }
 
+// One-line cb.error diagnostic (R6.98): keeps domain, code, localizedDescription,
+// and optional command buffer label when MTLCommandBufferStatusError occurs,
+// flattening embedded line breaks so the runtime-failure output stays one line.
+static void metal_flat_copy(char *dst, size_t cap, const char *src) {
+    if (!cap) return;
+    if (!src) { dst[0] = '\0'; return; }
+    size_t j = 0;
+    for (size_t i = 0; src[i] && j + 1 < cap; i++) {
+        unsigned char c = (unsigned char)src[i];
+        dst[j++] = (c == '\n' || c == '\r' || c == '\t') ? ' ' : (char)c;
+    }
+    dst[j] = '\0';
+}
+
+static void metal_report_cb_error(const char *what, const char *action,
+                                  id<MTLCommandBuffer> cb) {
+    char detail[512] = "";
+    if (cb && cb.status == MTLCommandBufferStatusError) {
+        NSError *err = cb.error;
+        char dom[128], desc[256], lbl[128];
+        metal_flat_copy(dom, sizeof dom,
+                        err && err.domain ? err.domain.UTF8String : NULL);
+        metal_flat_copy(desc, sizeof desc,
+                        err && err.localizedDescription ? err.localizedDescription.UTF8String : NULL);
+        metal_flat_copy(lbl, sizeof lbl,
+                        cb.label && cb.label.length ? cb.label.UTF8String : NULL);
+        long code = err ? (long)err.code : 0;
+        const char *d = dom[0] ? dom : "unknown";
+        const char *m = desc[0] ? desc : "no description";
+        if (lbl[0])
+            snprintf(detail, sizeof detail, " (%s code=%ld: %s, label=%s)", d, code, m, lbl);
+        else
+            snprintf(detail, sizeof detail, " (%s code=%ld: %s)", d, code, m);
+    }
+    fprintf(stderr, "gpu: %s%s — %s\n", what, detail, action);
+}
+
 static id<MTLBuffer> new_f32_scratch(id<MTLDevice> dev, size_t n) {
     if (n > SIZE_MAX / sizeof(float)) return nil;
     return [dev newBufferWithLength:n * sizeof(float)
@@ -1400,6 +1437,11 @@ unsigned long gpu_tc2_wide_dispatches(void) { return 0; }   // CUDA's 128-column
 void gpu_tc2_wide_force(int on) { (void)on; }
 int gpu_prompt_window(const model_t *m) { (void)m; return 0; }   // CUDA's prompt window
 void gpu_route_pin(int mask) { (void)mask; }             // CUDA's arithmetic routes
+bool gpu_test_mv(model_t *m, gguf_tensor *w, const float *x, float *y,   // CUDA's test hook (R6.62)
+                 int n_in, int n_out, int tn) {
+    (void)m; (void)w; (void)x; (void)y; (void)n_in; (void)n_out; (void)tn;
+    return false;
+}
 int gpu_route_active(const model_t *m) { (void)m; return 0; }
 void gpu_recur_seq_force(int on) { (void)on; }          // CUDA's whole-tile recurrent kernels
 unsigned long gpu_recur_seq_dispatches(void) { return 0; }
@@ -1416,6 +1458,9 @@ bool gpu_tc_takes(const model_t *m, int type) { (void)m; (void)type; return fals
 bool gpu_prefill_twin16(const model_t *m, int type) { (void)m; (void)type; return false; }
 int gpu_prefill_route(const model_t *m, int type, int batch, bool scaled) {
     (void)m; (void)type; (void)batch; (void)scaled; return GPU_PREFILL_NONE;
+}
+int gpu_prefill_route_shape(const model_t *m, int type, int n_in, int n_out, int batch, bool scaled) {
+    (void)m; (void)type; (void)n_in; (void)n_out; (void)batch; (void)scaled; return GPU_PREFILL_NONE;
 }
 static void count_tc_dispatch(int type) {
     g_tc_dispatches++;
@@ -1514,6 +1559,7 @@ static _Atomic unsigned long g_gqa_dispatches;
 unsigned long gpu_attn_gqa_dispatches(void) { return g_gqa_dispatches; }
 // CUDA-only route; present so its gate links and reports 'never here'.
 unsigned long gpu_splitk_dispatches(void) { return 0; }
+unsigned long gpu_splitk_twin_dispatches(void) { return 0; }
 long gpu_live_buffers(void) { return -1; }
 const char *gpu_module_failure(void) { return NULL; }
 static bool metal_attn_gqa_on(void) {
@@ -5444,7 +5490,7 @@ static float *metal_fwd_submit(metal_fwd *F, double t_enc0) {
                 (now - t_enc0) * 1e3);
     }
     if (metal_command_failed(F->cb)) {
-        fprintf(stderr, "gpu: command buffer failed — falling back to CPU\n");
+        metal_report_cb_error("command buffer failed", "falling back to CPU", F->cb);
         return NULL;
     }
     // A binding this encoder could not place makes every number it produced
@@ -5993,8 +6039,8 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         fprintf(stderr, "\n");
     }
     if (metal_command_failed(cb)) {
-        fprintf(stderr, "gpu: Metal microbatch command buffer failed — "
-                "falling back to sequential decode\n");
+        metal_report_cb_error("Metal microbatch command buffer failed",
+                              "falling back to sequential decode", cb);
         return false;
     }
     b->last_tiles = used_tiles;

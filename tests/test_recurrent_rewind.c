@@ -229,6 +229,44 @@ static void test_prefix_cache_fold_restore_matches_cold(void) {
 // KV rows plus the fold blob. (It was WANT one-token entries, the blob WANT
 // times over, which held only while every layer reserved rows; R3.44 left the
 // fixture's one attention layer with rows its blob dwarfs.)
+// ---- gate 3c: a publication capped at the scored mark keeps no fold -------
+//
+// R3.60: a publication stops at the first row a scoring feed wrote. On a
+// recurrent model the entry's blob is the fold this slot holds NOW, after
+// every token, so an entry capped below e->pos would pair the clean rows with
+// the fold of a longer sequence, and an exact hit would install it. As for the
+// ring, a recurrent entry is stored only when it ends where the slot stands.
+// Live control: the same slot, its scored tokens not marked, publishes and is
+// forked.
+static void test_capped_publish_keeps_no_fold(void) {
+    enum { CLEAN = 24, SCORED = 8, TAIL = 3 };
+    model_params p = base_params();
+    slot warm, forked;
+    if (!slot_open(&warm, &p) || !slot_open(&forked, &p)) {
+        ck(0, "load two instances for the capped-publish gate");
+        return;
+    }
+    int32_t prompt[CLEAN + SCORED + TAIL];
+    for (int i = 0; i < CLEAN + SCORED + TAIL; i++) prompt[i] = 10 + i;
+    for (int marked = 1; marked >= 0; marked--) {
+        prefix_cache_clear();
+        engine_reset(&warm.e);
+        bool ok = engine_feed(&warm.e, prompt, CLEAN) != NULL;
+        if (marked) engine_mark_scored(&warm.e, CLEAN);
+        for (int j = CLEAN; j < CLEAN + SCORED && ok; j++) ok = engine_feed_solo(&warm.e, prompt[j]) != NULL;
+        ck(ok, "warm folds the clean prefix and the scored tokens");
+        engine_prefix_publish(&warm.e, prompt, CLEAN + SCORED, CLEAN + SCORED, 0.0);
+        engine_reset(&forked.e);
+        prefix_reuse r = engine_prefix_reuse(&forked.e, prompt, CLEAN + SCORED + TAIL);
+        if (marked)
+            ck(r.keep == 0, "a publication capped at the mark stores no recurrent entry (its fold is past it)");
+        else
+            ck(r.keep == CLEAN + SCORED, "live control: unmarked, the whole run is published and forked");
+    }
+    prefix_cache_clear();
+    slot_close(&warm); slot_close(&forked);
+}
+
 static void test_truncated_publish_never_mislabels_the_fold(void) {
     enum { N = 520, TAIL = 3, WANT = 16 };   // WANT == PFX_MIN_TOKENS
     model_params p = base_params();
@@ -557,6 +595,7 @@ int main(void) {
     test_rewind_divergence_matches_cold();
     test_prefix_cache_fold_restore_matches_cold();
     test_truncated_publish_never_mislabels_the_fold();
+    test_capped_publish_keeps_no_fold();
     test_divergent_round_rollback();
     test_spec_full_accept_identity();
     test_spec_admission_requires_host_recurrent_fold();

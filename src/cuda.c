@@ -569,7 +569,7 @@ typedef struct gpu_weights {
     bool        mtp;
     CUdeviceptr mtp_enorm, mtp_hnorm, mtp_head_norm;
     CUfunction  f_rmsnorm_grouped, f_hc_gate_mean, f_hc_combine, f_silu_scale, f_mtp_cat;
-    CUfunction  f_mv_bf16_splitk, f_splitk_reduce, f_axpy_sigmoid;
+    CUfunction  f_mv_bf16_splitk, f_splitk_reduce, f_mv_bf16_splitk_b, f_splitk_reduce_b, f_axpy_sigmoid;
     CUdeviceptr *pan, *pfn;             // gemma3 sandwich norms, may be 0
     CUdeviceptr *bq, *bk, *bv, *bo;     // per layer, may be 0
     CUdeviceptr *qn, *kn;               // qwen3 per-head q/k norms
@@ -2691,6 +2691,7 @@ static bool shared_load_module(gpu_weights *w) {
         { &w->f_hc_gate_mean, "k_hc_gate_mean" }, { &w->f_hc_combine, "k_hc_combine" },
         { &w->f_silu_scale, "k_silu_scale" },
         { &w->f_mv_bf16_splitk, "k_mv_bf16_splitk" }, { &w->f_splitk_reduce, "k_splitk_reduce" },
+        { &w->f_mv_bf16_splitk_b, "k_mv_bf16_splitk_b" }, { &w->f_splitk_reduce_b, "k_splitk_reduce_b" },
         { &w->f_axpy_sigmoid, "k_axpy_sigmoid" },
         { &w->f_rope,       "k_rope" },      { &w->f_store,  "k_store_kv" },
         { &w->f_mla_q,      "k_mla_q" },     { &w->f_mla_kv, "k_mla_kv" },
@@ -4469,6 +4470,8 @@ unsigned long gpu_attn_gqa_dispatches(void) { return 0; }
 
 static _Atomic unsigned long g_splitk_dispatches;
 unsigned long gpu_splitk_dispatches(void) { return g_splitk_dispatches; }
+static _Atomic unsigned long g_splitk_twin_dispatches;
+unsigned long gpu_splitk_twin_dispatches(void) { return g_splitk_twin_dispatches; }
 long gpu_live_buffers(void) { return cu_ok ? g_live_bufs : -1; }
 
 // Same hook for the MoE routing path: the fused-vs-eager tolerance gate has to
@@ -4890,6 +4893,17 @@ static bool mv_route_q8x(const gpu_t *g, const gguf_tensor *w, int n_in, int bat
     return batch >= 1 && batch <= 8 && w->scale == 1.0f && g->q8x_q &&
            n_in <= g->q8x_cap && n_in % 256 == 0 && g->sw->f_q8x[batch][w->type];
 }
+// The split count of BF16's split-K for an n_in x n_out tensor: a power of two
+// dividing n_in/32 with n_out*splits around 4,096 blocks, bounded by the
+// partials buffer. The batch-1 call and its twin take the same count, so a
+// column of the twin is that call's arithmetic.
+static int splitk_splits(int n_in, int n_out) {
+    int splits = 1;
+    while (splits < 64 && n_out * splits * 2 <= 4096 &&
+           (n_in % (splits * 2 * 32)) == 0 &&
+           (size_t)n_out * splits * 2 <= SPLITK_PARTIALS) splits *= 2;
+    return splits;
+}
 static bool mv_route_splitk(const gpu_t *g, const gguf_tensor *w, int n_in, int n_out) {
     return w->type == T_BF16 && w->scale == 1.0f && g->splitk &&
            n_out <= 1024 && n_in >= 2048 && g->sw->f_mv_bf16_splitk;
@@ -4904,6 +4918,15 @@ static bool mv_twin_route(const gpu_t *g, const gguf_tensor *w, int n_in, int n_
            !mv_route_splitk(g, w, n_in, n_out);
 }
 static inline bool mvb_is_mv_twin(int type);
+// R6.62: whether a matvec of w over more than one column may run the type's
+// own tile (f_mvb) as its batch-1 kernel's twin. F32's, F16's and BF16's tiles
+// are twins of their plain f_mv, so not where the batch-1 call is BF16's
+// split-K (mv_route_splitk, qwen4exp): there the tile summed in another order
+// than the decode, and so did the small-batch twins. The prefill routes and the
+// route table (scalar_mv_route) all ask this one question.
+static bool mv_tile_is_twin(const gpu_t *g, const gguf_tensor *w, int n_in, int n_out) {
+    return mvb_is_mv_twin(w->type) && !mv_route_splitk(g, w, n_in, n_out);
+}
 // Whether a prompt's matvec (batch > GPU_SMALL_BATCH) of w on the scalar
 // route runs the batch-1 GEMV's 16-wide twins (enc_mv; scalar_mv_route
 // answers the same for test-prefill-bits' route table). Every type whose batch-1
@@ -4914,7 +4937,7 @@ static inline bool mvb_is_mv_twin(int type);
 // summed in another order. Not F32, F16 or BF16, whose f_mvb already is
 // their batch-1 kernel's twin.
 static bool prefill_takes_twins(const gpu_t *g, const gguf_tensor *w, int n_in, int n_out) {
-    return !mvb_is_mv_twin(w->type) && mv_twin_route(g, w, n_in, n_out) &&
+    return !mv_tile_is_twin(g, w, n_in, n_out) && mv_twin_route(g, w, n_in, n_out) &&
            g->sw->f_gemvb[BW_16][w->type];
 }
 // Whether a matvec of w over batch (> 1) columns on the scalar route runs the
@@ -4927,8 +4950,10 @@ static bool prefill_takes_twins(const gpu_t *g, const gguf_tensor *w, int n_in, 
 // IQ4_NL files. Over 8 columns, and 2 to 8 of a scaled tensor (NVFP4's
 // companion), which the small-batch branch does not take.
 static bool prefill_per_column(const gpu_t *g, const gguf_tensor *w, int n_in, int n_out, int batch) {
-    if (batch < 2 || mvb_is_mv_twin(w->type)) return false;
-    if (batch <= GPU_SMALL_BATCH) return w->scale != 1.0f;
+    if (batch < 2 || mv_tile_is_twin(g, w, n_in, n_out)) return false;
+    // 2 to 8 columns: the small-batch twins serve an unscaled tensor whose
+    // batch-1 route they twin; BF16's split-K is not that route (R6.62)
+    if (batch <= GPU_SMALL_BATCH) return w->scale != 1.0f || !mv_twin_route(g, w, n_in, n_out);
     return !prefill_takes_twins(g, w, n_in, n_out);
 }
 // Where a matvec of w over batch (> 1) columns goes on the scalar route, in
@@ -4941,12 +4966,17 @@ static bool prefill_per_column(const gpu_t *g, const gguf_tensor *w, int n_in, i
 static int scalar_mv_route(const gpu_t *g, const gguf_tensor *w, int n_in, int n_out, int batch) {
     const gpu_weights *sw = g->sw;
     if (batch < 2 || (!sw->f_mv[w->type] && !sw->f_gemv[w->type])) return GPU_PREFILL_NONE;
-    if (batch <= GPU_SMALL_BATCH && w->scale == 1.0f)
+    // R6.62: BF16's split-K tensors take split-K's own twin, else the batch-1
+    // call per column, the routes enc_mv takes for them
+    if (w->scale == 1.0f && mv_route_splitk(g, w, n_in, n_out))
+        return sw->f_mv_bf16_splitk_b && sw->f_splitk_reduce_b ? GPU_PREFILL_TWINS : GPU_PREFILL_PER_COLUMN;
+    if (batch <= GPU_SMALL_BATCH && w->scale == 1.0f && mv_twin_route(g, w, n_in, n_out))
         return sw->f_gemvb[batch_width_class(batch)][w->type] ? GPU_PREFILL_TWINS
                                                               : GPU_PREFILL_PER_COLUMN;
     if (batch > GPU_SMALL_BATCH && prefill_takes_twins(g, w, n_in, n_out)) return GPU_PREFILL_TWINS;
     if (prefill_per_column(g, w, n_in, n_out, batch)) return GPU_PREFILL_PER_COLUMN;
-    return mvb_is_mv_twin(w->type) && sw->f_mvb[w->type] ? GPU_PREFILL_TILE_TWIN : GPU_PREFILL_NONE;
+    return mv_tile_is_twin(g, w, n_in, n_out) && sw->f_mvb[w->type] ? GPU_PREFILL_TILE_TWIN
+                                                                    : GPU_PREFILL_NONE;
 }
 // gpu.h's questions for the route table, asked of a dense 4096 x 4096 tensor
 // of the type: is the 16-wide twin of its batch-1 route loaded, and where does
@@ -4971,6 +5001,12 @@ int gpu_prefill_route(const model_t *m, int type, int batch, bool scaled) {
     if (scaled) w.scale = 0.5f;
     const gpu_t *g = m->gpu;
     return scalar_mv_route(g, &w, 4096, 4096, batch);
+}
+int gpu_prefill_route_shape(const model_t *m, int type, int n_in, int n_out, int batch, bool scaled) {
+    gguf_tensor w;
+    if (!prefill_probe(m, type, &w) || n_in < 1 || n_out < 1) return GPU_PREFILL_NONE;
+    if (scaled) w.scale = 0.5f;
+    return scalar_mv_route(m->gpu, &w, n_in, n_out, batch);
 }
 static bool batch_mv_twin_ok(const gpu_t *g, const gguf_tensor *t);
 
@@ -5024,12 +5060,41 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
         unsigned rpb = batch == 1 ? 8 : 4;
         return launch(g, g->sw->f_q8x[batch][w->type], (n_out + rpb - 1) / rpb, 1, 1, 128, pm);
     }
+    // R6.62: a prompt's columns of a split-K tensor, SPLITK_TWIN_COLS (16) a
+    // pass through split-K's twin (k_mv_bf16_splitk_b: each column the batch-1
+    // call's arithmetic, the weights read once a pass), a lone last column the
+    // batch-1 call itself. Without the twin loaded every column falls to the
+    // batch-1 call (prefill_per_column), never to BF16's plain tile.
+    if (batch > 1 && mv_route_splitk(g, w, n_in, n_out) && g->sw->f_mv_bf16_splitk_b &&
+        g->sw->f_splitk_reduce_b) {
+        int splits = splitk_splits(n_in, n_out);
+        for (int c0 = 0; c0 < batch; c0 += 16) {
+            int cn = batch - c0 < 16 ? batch - c0 : 16;
+            CUdeviceptr xc = x + (size_t)c0 * xs * sizeof(float);
+            CUdeviceptr yc = y + (size_t)c0 * ys * sizeof(float);
+            if (cn == 1 || (size_t)n_out * splits * cn > SPLITK_PARTIALS) {
+                for (int c = 0; c < cn; c++)
+                    if (!enc_mv(g, m, w, xc + (size_t)c * xs * sizeof(float),
+                                yc + (size_t)c * ys * sizeof(float), n_in, n_out, bias, 1, xs, ys))
+                        return false;
+                continue;
+            }
+            mv_args at = { n_in, n_out, w_off, bias != 0, cn, xs, ys };
+            void *ps[] = { &weights, &xc, &g->splitk, &at, &splits };
+            g_splitk_twin_dispatches++;
+            if (!launch(g, g->sw->f_mv_bf16_splitk_b, n_out, splits, 1, 256, ps)) return false;
+            int hb = bias != 0;
+            void *pr[] = { &g->splitk, &yc, &b, &n_out, &splits, &hb, &ys };
+            if (!launch(g, g->sw->f_splitk_reduce_b, (n_out + 255) / 256, cn, 1, 256, pr)) return false;
+        }
+        return true;
+    }
     // Small batch (1 < batch <= GPU_SMALL_BATCH): a speculative verify tile, a
     // short prompt, a few rows of one expert. The tile kernels are shaped for
     // 64-row tiles and barely get cheaper with fewer rows. The width-classed
     // twins stream each weight once and reproduce the batch-1 bits per column; a
     // type without a twin takes the batch-1 kernel once per column.
-    if (batch > 1 && batch <= GPU_SMALL_BATCH && w->scale == 1.0f) {
+    if (batch > 1 && batch <= GPU_SMALL_BATCH && w->scale == 1.0f && mv_twin_route(g, w, n_in, n_out)) {
         if (g->sw->f_gemvb[batch_width_class(batch)][w->type])
             return enc_mv_batch(g, m, w, x, y, n_in, n_out, bias, batch, xs, ys);
         for (int c = 0; c < batch; c++)
@@ -5148,10 +5213,7 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     // split-K, see k_mv_bf16_splitk. splits is a power of two dividing n_in/32
     // with n_out*splits around 4,096 blocks, bounded by the partials buffer.
     if (batch == 1 && mv_route_splitk(g, w, n_in, n_out)) {
-        int splits = 1;
-        while (splits < 64 && n_out * splits * 2 <= 4096 &&
-               (n_in % (splits * 2 * 32)) == 0 &&
-               (size_t)n_out * splits * 2 <= SPLITK_PARTIALS) splits *= 2;
+        int splits = splitk_splits(n_in, n_out);
         void *ps[] = { &weights, &x, &g->splitk, &a, &splits };
         g_splitk_dispatches++;
         if (!launch(g, g->sw->f_mv_bf16_splitk, n_out, splits, 1, 256, ps)) return false;
@@ -6249,8 +6311,7 @@ static inline bool mvb_is_mv_twin(int type);
 // per column.
 static bool enc_router(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x, int xs,
                        CUdeviceptr y, int n_in, int n_out, CUdeviceptr bias, int tn) {
-    if (tn > 1 && w->scale == 1.0f && mvb_is_mv_twin(w->type) && g->sw->f_mvb[w->type] &&
-        !mv_route_splitk(g, w, n_in, n_out)) {
+    if (tn > 1 && w->scale == 1.0f && mv_tile_is_twin(g, w, n_in, n_out) && g->sw->f_mvb[w->type]) {
         CUdeviceptr weights = 0;
         uint64_t w_off = 0;
         if (!binding_find(g->sw, m, w, &weights, &w_off)) {
@@ -8793,6 +8854,30 @@ bool gpu_mvcanon(model_t *m, const gguf_tensor *w, const float *x, float *y,
              cu.CtxSynchronize() == 0 &&
              cu.MemcpyDtoH(y, d_y, sizeof(float) * (size_t)n_out) == 0;
     }
+    cu.MemFree(d_x);
+    cu.MemFree(d_y);
+    return ok;
+}
+
+// R6.62, test-only (gpu.h): one enc_mv of w over tn columns, so a test can
+// compare a prompt's product with tn batch-1 calls on the route the device
+// picks for each (split-K among them on qwen4exp)
+bool gpu_test_mv(model_t *m, gguf_tensor *w, const float *x, float *y,
+                 int n_in, int n_out, int tn) {
+    gpu_t *g = m ? m->gpu : NULL;
+    if (!g || !w || tn < 1 || n_in < 1 || n_out < 1) return false;
+    if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
+    size_t nx = (size_t)tn * n_in, ny = (size_t)tn * n_out;
+    CUdeviceptr d_x = 0, d_y = 0;
+    if (cu.MemAlloc(&d_x, sizeof(float) * nx) != 0) return false;
+    if (cu.MemAlloc(&d_y, sizeof(float) * ny) != 0) {
+        cu.MemFree(d_x);
+        return false;
+    }
+    bool ok = cu.MemcpyHtoD(d_x, x, sizeof(float) * nx) == 0 &&
+              enc_mv(g, m, w, d_x, d_y, n_in, n_out, 0, tn, n_in, n_out) &&
+              cu.CtxSynchronize() == 0 &&
+              cu.MemcpyDtoH(y, d_y, sizeof(float) * ny) == 0;
     cu.MemFree(d_x);
     cu.MemFree(d_y);
     return ok;

@@ -201,6 +201,20 @@ char       *plat_read_file(const char *path, size_t max_bytes, size_t *n_out);
 bool        plat_file_size(FILE *f, uint64_t *out);   // 64-bit, position left at the start
 // n bytes from the operating system's random generator; false when it has none.
 bool        plat_random(uint8_t *out, size_t n);
+// R17.9 and R3.60: whether the variable `name` (n bytes) is a switch that may
+// change arithmetic: a RUNNER_ one outside the inert set, or XR_SSM_CHUNK /
+// XR_SSM_SERIAL. One rule for a training record's environment and a row's
+// route identity (compat.c).
+bool        runner_switch_counts(const char *name, size_t n);
+// a new file for writing: created exclusively, never through a link; NULL if the
+// name exists
+FILE       *plat_fopen_new(const char *path);
+// a new temporary file beside `path` ("%s.%s-%s", ext defaults to "partial")
+// with an unpredictable 16-hex suffix (fixed only by RUNNER_TEST_PARTIAL_SUFFIX
+// in tests), opened via plat_fopen_new(). *made_out (when non-NULL) is set
+// true iff a FILE* is returned so callers unlink only what this call created.
+FILE       *plat_fopen_partial(const char *path, const char *ext,
+                               char *tmp_out, size_t tmp_cap, bool *made_out);
 // The last path component: what follows the last '/' or '\\' (both count on
 // every platform, so a path spelled the other platform's way still names
 // its file), or the whole string when it has neither.
@@ -346,6 +360,9 @@ char       *plat_executable_dir(void);
 void        plat_parent_watch(long pid);
 
 void        plat_sleep_ms(int ms);
+// R20: the running image's own identity where the platform gives one from
+// memory (macOS: the main image's LC_UUID; Windows: the PE build id); false elsewhere
+bool        plat_running_image_id(char *out, size_t cap);
 long        plat_pid_self(void);
 
 // Is file descriptor `fd` a terminal a person is at? On Windows a console,

@@ -1336,6 +1336,15 @@ static void b4_checks(model_t *m) {
     b4_check(m, 64, 4, 2, 64, 0, 1.0f, 0, 0, 0, 1);       // the control: a planted NaN is caught
 }
 
+// A scope case holds when the reason names want, or, with want NULL, when there
+// is no reason. strstr never sees a NULL: as a macro arm, strstr(got, NULL)
+// stayed visible to gcc 13 at -O3 in the branch that never runs, and
+// -Werror=nonnull refused the STRICT build.
+static bool scope_reason_holds(const char *got, const char *want) {
+    if (!want) return got == NULL;
+    return got != NULL && strstr(got, want) != NULL;
+}
+
 // R8.24.1 B, the attention slots' scope (model_attn_dev_why), by shape and
 // with no device: the recipe's shape (and an f32 cache) runs on the twin, and
 // every condition outside the scope declines with its own reason, so a model
@@ -1352,7 +1361,7 @@ static int b_scope_checks(void) {
 #define SCOPE_CASE(label, want, pos, n, hd, nkv, qd, os) do { \
         cases++; \
         const char *got = model_attn_dev_why(&s, 0, pos, n, hd, nkv, qd, os); \
-        bool okc = (want) ? got != NULL && strstr(got, (want)) != NULL : got == NULL; \
+        bool okc = scope_reason_holds(got, (want)); \
         if (!okc && !bad++) \
             fprintf(stderr, "FAIL: attention scope (%s): %s, want %s\n", label, \
                     got ? got : "runs on the device", (want) ? (want) : "runs on the device"); \
@@ -1408,7 +1417,7 @@ static int b_resident_scope_checks(void) {
 #define RES_CASE(label, want) do { \
         cases++; \
         const char *got = model_resident_layer_why(&s, 0, 300); \
-        bool okc = (want) ? got != NULL && strstr(got, (want)) != NULL : got == NULL; \
+        bool okc = scope_reason_holds(got, (want)); \
         if (!okc && !bad++) \
             fprintf(stderr, "FAIL: resident scope (%s): %s, want %s\n", label, \
                     got ? got : "resident", (want) ? (want) : "resident"); \

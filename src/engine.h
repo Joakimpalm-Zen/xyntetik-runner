@@ -183,6 +183,23 @@ typedef struct {
     // mark_pos), whose FNV-1a hash this is. Belt and braces over the
     // structural rule (the mark is dropped whenever pos moves below it).
     int      rewind_how;
+    // R3.60: the first position whose KV row a scoring feed wrote, INT_MAX
+    // when none does. A scored prompt (echo, prompt_logprobs) and decide's
+    // scored tokens are fed one token at a time on the decode route
+    // (engine_feed_solo), whose rows differ in their last bits from the rows
+    // a prompt's prefill pass writes. A normal request reuses the slot's rows
+    // only below this mark (engine_rewind_prompt), and nothing at or past it
+    // is published, pinned or exported. engine_reset clears it, and so does a
+    // rewind below it. Generated tokens are decode rows too, and are not
+    // marked: a continuation reuses them, as it always has (docs/kernel-routes.md).
+    int      scored_from;
+    // R3.60: the context the request in progress names (its context_id), or
+    // NULL: an imported context is forked only by a request naming it.
+    const char *reuse_ctx;
+    // R3.60: the route identity of the rows this slot holds (engine_prompt_route
+    // when they were written), 0 for none known: rows of another route than
+    // the engine's now are reused by no later request
+    uint64_t rows_route;
     int      rope_rebuilds;   // R4.40: times a sequence was recomputed at the LongRoPE crossing
     uint64_t mark_hash;
     // R3.62: the preamble snapshot this slot's rows were last loaded from
@@ -465,6 +482,19 @@ void   engine_think_prime(engine *e, const char *prompt);
 // keep the KV for the longest common prefix of hist and toks, reset the rest
 // of the engine state; returns how many prompt tokens can be skipped
 int    engine_rewind(engine *e, const int32_t *toks, int n);
+// engine_rewind for the start of a normal request: it keeps no row at or past
+// e->scored_from, so a prompt never reuses the decode route's rows of an
+// earlier scoring request (R3.60). decide's own rewinds between its options
+// keep engine_rewind, which reuses the solo rows of its own path.
+int    engine_rewind_prompt(engine *e, const int32_t *toks, int n);
+// a scoring feed is about to write the solo row of position pos (decide)
+void   engine_mark_scored(engine *e, int pos);
+// R3.60: whether a prompt here is a prefill pass (engine_feed's route choice),
+// and the route identity of the rows this engine writes now: the model's route
+// record, the switches set and the prompt pass. Every store key, snapshot name,
+// session image and slot stamp carries the identity.
+bool     engine_prompt_prefill(const engine *e);
+uint64_t engine_prompt_route(const engine *e);
 // What engine_rewind (or the prefix fork after it) did with the slot's
 // previous state; engine_rewind_how_name spells it for the request telemetry
 // (runner_telemetry.timing.cache) and the start line, so a client that sees
@@ -482,6 +512,7 @@ enum rewind_how {
     REWIND_ROPE,       // LongRoPE: the prompt's length takes the other factor set
     REWIND_FORK,       // forked from the shared prefix cache (engine_prefix_reuse)
     REWIND_PREAMBLE,   // the slot's rows were loaded from a preamble snapshot (R3.62)
+    REWIND_SCORED,     // rows from a scoring feed's decode route: kept only below them (R3.60)
 };
 const char *engine_rewind_how_name(int how);
 // Recurrent turn mark (model_recurrent_mark): checkpoint the fold at the
@@ -507,8 +538,15 @@ void   engine_set_request_stops(engine *e, const int *ids, int n);
 // Recompute the engine's model identity (the prefix-cache key) after the
 // model's adapter changed (R8.6); cheap enough to do per adapter switch.
 void   engine_refresh_identity(engine *e);
-// feed tokens (batched); returns last-token logits, or NULL on overflow/stop
+// feed tokens (batched); returns last-token logits, or NULL on overflow/stop.
+// The prompt's prefill pass: on a CPU-only run its bits do not depend on the
+// batch size (from 2 up) or the chunking (R3.60), and they are not the decode
+// step's. At -b 1 the prompt is read on the decode route, one token a forward.
 float *engine_feed(engine *e, const int32_t *toks, int n);
+// feed ONE token through the decode step's route, the solo forward the
+// sampler sees and `--score` uses: for a caller whose numbers must be those
+// (echo / prompt_logprobs, the decision scorer). Same returns as engine_feed.
+float *engine_feed_solo(engine *e, int32_t tok);
 
 // The log-softmax normalizer of one logits row: float max, a double sum of
 // expf(l - max), float result. EVERY logprob the runner reports divides by

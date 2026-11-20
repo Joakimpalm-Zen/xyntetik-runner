@@ -14,6 +14,7 @@
 #include "json.h"
 #include "envelope.h"
 #include "lineage.h"
+#include "train_record.h"
 #include "oms.h"
 #include "server.h"
 #include "provenance.h"
@@ -29,6 +30,7 @@
 #include "api.h"
 #include "derive.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -96,21 +98,11 @@ static double float_arg(const char *opt, const char *s, double min, double max) 
 // Runner, and out-of-range floating-to-integer conversions are undefined C.
 static bool record_num(jv *obj, const char *key, double min, double max,
                        double *out) {
-    jv *v = jv_get(obj, key);
-    if (!v || v->type != J_NUM || !fp_isfinite(v->num) ||
-        v->num < min || v->num > max)
-        return false;
-    *out = v->num;
-    return true;
+    return train_record_num(obj, key, min, max, out);
 }
 
 static bool record_int(jv *obj, const char *key, int min, int max, int *out) {
-    double d;
-    if (!record_num(obj, key, (double)min, (double)max, &d) ||
-        d != trunc(d))
-        return false;
-    *out = (int)d;
-    return true;
+    return train_record_int(obj, key, min, max, out);
 }
 
 static bool record_token(jv *v, int n_vocab, int32_t *out) {
@@ -1288,8 +1280,8 @@ static void usage_to(FILE *f, const char *prog) {
         "  -c N           context length (default: min(model max, 4096); under\n"
         "                 --reserve the default is the auto-fit instead, the\n"
         "                 context the reservation leaves after the weights)\n"
-        "  -b N           prompt batch size (default 64 with --gpu off;\n"
-        "                 otherwise auto-sized from free RAM: 64/256/512)\n"
+        "  -b N           prompt batch size (default by total RAM: 64 below 6 GB,\n"
+        "                 256 below 12 GB, else 512; --gpu off caps it at 256)\n"
         "  -t N           threads (default: physical cores, capped at 32)\n"
         "  -s N           RNG seed (default: time)\n"
         "  --think [on|off|auto]  in -i chat, request the family's thinking\n"
@@ -1470,7 +1462,9 @@ static const char ATTEST_VERBS[] =
     "  lineage FILE [--trust-key K]\n"
     "        walk FILE's provenance chain (a model or adapter file, its\n"
     "        record, an answer's receipt, or a receipts directory) back to\n"
-    "        its origins: every link re-hashed, every signature checked.\n"
+    "        its origins: every link re-hashed, every signature checked,\n"
+    "        an unlearned adapter's parent record too; a cycle or a chain\n"
+    "        longer than 32 links is broken.\n"
     "        Exit 0 verified and signed, 1 consistent but not all signed,\n"
     "        2 broken or no record\n"
     "  replay RECORD [-m BASE] [--data FILE] [--teacher DIR] [--lora FILE] [--trust-key K]\n"
@@ -1787,7 +1781,7 @@ static int run_fit_check(const char *path, int n_ctx_want,
     // would take (model.c: a GPU load's default batch follows total RAM)
     f.kv_ring_mode = mp->kv_ring;
     f.n_batch = mp->n_batch > 0 ? mp->n_batch
-              : mp->gpu_mode == GPU_AUTO ? model_batch_default_for(plat_ram_bytes()) : 64;
+              : model_batch_default(mp->gpu_mode, plat_ram_bytes());
     // R3.58: a load that keeps every expert bank on the host (--cpu-moe, or
     // nemotron_h_moe's CUDA default, model.c model_default_placement) is
     // charged as that load charges it. --cpu-moe N and auto keep only some
@@ -2237,7 +2231,7 @@ static int run_caps(void) {
     // figures describe the same moment
     plat_capacity cap;
     plat_capacity_get(&cap);
-    printf("{\"version\":\"%s\",\"os\":\"%s\",\"arch\":\"%s\",\"cpu_cores\":%d,"
+    printf("{\"version\":\"%s\",\"math\":\"" RUNNER_BUILD_MATH "\",\"os\":\"%s\",\"arch\":\"%s\",\"cpu_cores\":%d,"
            "\"ram_bytes\":%llu,\"ram_available_bytes\":%llu,",
            RUNNER_VERSION,
 #if defined(_WIN32)
@@ -2499,6 +2493,11 @@ typedef struct {
     const char *keygen_algo, *lineage_path, *require_eval;
     const char *sign_record, *record_prev, *check_record;
     const char *replay_train, *replay_data;
+    const char *replay_segment;   // attest replay --segment A..B (R17.9 step 4)
+    int replay_sample;            // attest replay --sample s (step 4b)
+    bool sample_given;
+    const char *audit_seed, *audit_report;   // its --seed S and --report FILE
+    int replay_stop_at;           // a segment replay stops after this step
     // R17.9(c): --unlearn PARENT --drop D (a retrain without D's rows), and
     // attest unlearn RECORD --parent-data DATA1 --dropped D (its audit)
     const char *unlearn_parent, *unlearn_drop, *unlearn_audit, *unlearn_parent_data, *unlearn_dropped;
@@ -2561,6 +2560,10 @@ typedef struct {
     char sampling[256];           // the effective sampler, as the load line says
     double load_s;
     char prev_hash[65];           // --transcript-prev's chain hash, read before the load
+    // R17.9 step 4: the numbered checkpoints this run wrote, for the record's
+    // checkpoints and checkpoint_chain (train_checkpoint fills it)
+    struct train_ckpt { int step; long long cursor; char adapter[65], optim[65]; } *ckpt;
+    int n_ckpt, cap_ckpt;
 } cli_run;
 
 static void cli_opts_init(cli_opts *o) {
@@ -2663,6 +2666,10 @@ static const cli_opt CLI_OPTS[] = {
     { "--sign-record", NULL, OPT_STR, false, OPT_AT(const char *, sign_record), OPT_NONE, 0, 0 },
     { "--check-record", NULL, OPT_STR, false, OPT_AT(const char *, check_record), OPT_NONE, 0, 0 },
     { "--replay-train", NULL, OPT_STR, false, OPT_AT(const char *, replay_train), OPT_NONE, 0, 0 },
+    { "--segment", NULL, OPT_STR, false, OPT_AT(const char *, replay_segment), OPT_NONE, 0, 0 },
+    { "--sample", NULL, OPT_INT, false, OPT_AT(int, replay_sample), OPT_AT(bool, sample_given), 0, INT_MAX },
+    { "--seed", NULL, OPT_STR, false, OPT_AT(const char *, audit_seed), OPT_NONE, 0, 0 },
+    { "--report", NULL, OPT_STR, false, OPT_AT(const char *, audit_report), OPT_NONE, 0, 0 },
     { "--replay-data", NULL, OPT_STR, false, OPT_AT(const char *, replay_data), OPT_NONE, 0, 0 },
     { "--unlearn", NULL, OPT_STR, false, OPT_AT(const char *, unlearn_parent), OPT_NONE, 0, 0 },
     { "--drop", NULL, OPT_STR, false, OPT_AT(const char *, unlearn_drop), OPT_NONE, 0, 0 },
@@ -3325,7 +3332,11 @@ static bool cli_resolve_trust_key(cli_opts *o) {
     }
     bool ok = *hex && strlen(hex) < sizeof keybuf;
     if (ok) { strcpy(keybuf, hex); o->trust_key = keybuf; }
-    else fprintf(stderr, "error: --trust-key %s: the file holds no key\n", o->trust_key);
+    else {
+        fputs("error: --trust-key ", stderr);
+        envelope_print_safe(stderr, o->trust_key, 0, "?", false);
+        fputs(": the file holds no key\n", stderr);
+    }
     if (j) jv_free(j);
     free(data);
     return ok;
@@ -3561,8 +3572,10 @@ static bool run_record_utility(const cli_opts *o, int *rc) {
         }
         oms_sign_info si;
         if (!oms_sign_file(o->sign_model, o->model_key, out, &si)) { *rc = 1; return true; }
-        printf("signed: %s (%s/%s, %d file%s, subject sha256 %s, key hint %s)\n",
-               out, si.curve, si.hash, si.n_resources,
+        fputs("signed: ", stdout);
+        envelope_print_safe(stdout, out, 0, "?", false);
+        printf(" (%s/%s, %d file%s, subject sha256 %s, key hint %s)\n",
+               si.curve, si.hash, si.n_resources,
                si.n_resources == 1 ? "" : "s", si.subject_digest, si.key_hint);
         *rc = 0;
         return true;
@@ -3592,15 +3605,17 @@ static bool run_record_utility(const cli_opts *o, int *rc) {
         bool ok = wm_key_write(o->watermark_keygen, key, id);
         memset(key, 0, sizeof key);
         if (!ok) {
-            fprintf(stderr, "error: --watermark-keygen: cannot create %s (an "
-                    "existing key is never overwritten)\n", o->watermark_keygen);
+            fputs("error: --watermark-keygen: cannot create ", stderr);
+            envelope_print_safe(stderr, o->watermark_keygen, 0, "?", false);
+            fputs(" (an existing key is never overwritten)\n", stderr);
             *rc = 1;
             return true;
         }
         printf("{\"schema_version\":\"xyntetik.runner.watermark_key.v1\","
                "\"key_id\":\"%s\"}\n", id);
-        fprintf(stderr, "watermark key -> %s (keep it private; receipts name it "
-                "by its id %s)\n", o->watermark_keygen, id);
+        fputs("watermark key -> ", stderr);
+        envelope_print_safe(stderr, o->watermark_keygen, 0, "?", false);
+        fprintf(stderr, " (keep it private; receipts name it by its id %s)\n", id);
         *rc = 0;
         return true;
     }
@@ -3617,7 +3632,9 @@ static bool cli_watermark_setup(const cli_opts *o, wm_key *wmk, bool *wm_on,
     if (o->watermark_path) {
         char werr[256];
         if (!wm_key_load(o->watermark_path, wmk, werr, sizeof werr)) {
-            fprintf(stderr, "error: --watermark: %s\n", werr);
+            fputs("error: --watermark: ", stderr);
+            envelope_print_safe(stderr, werr, 0, "?", false);
+            fputc('\n', stderr);
             *rc = 1;
             return true;
         }
@@ -3632,7 +3649,9 @@ static bool cli_watermark_setup(const cli_opts *o, wm_key *wmk, bool *wm_on,
         size_t dn = 0;
         char *dbuf = text_file_read(o->detect_path, &dn);
         if (!dbuf) {
-            fprintf(stderr, "error: --detect-watermark: cannot read %s\n", o->detect_path);
+            fputs("error: --detect-watermark: cannot read ", stderr);
+            envelope_print_safe(stderr, o->detect_path, 0, "?", false);
+            fputc('\n', stderr);
             *rc = 1;
             return true;
         }
@@ -3646,8 +3665,9 @@ static bool cli_watermark_setup(const cli_opts *o, wm_key *wmk, bool *wm_on,
             int32_t *all = pt && ot ? malloc(sizeof *all * (size_t)(np + no + 1)) : NULL;
             int drc = 3;
             if (!all) {
-                fprintf(stderr, "error: --detect-watermark: %s has malformed token "
-                        "arrays\n", o->detect_path);
+                fputs("error: --detect-watermark: ", stderr);
+                envelope_print_safe(stderr, o->detect_path, 0, "?", false);
+                fputs(" has malformed token arrays\n", stderr);
             } else {
                 memcpy(all, pt, sizeof *all * (size_t)np);
                 memcpy(all + np, ot, sizeof *all * (size_t)no);
@@ -3664,16 +3684,18 @@ static bool cli_watermark_setup(const cli_opts *o, wm_key *wmk, bool *wm_on,
         jv_free(dj);
         if (!o->model_path) {
             free(dbuf);
-            fprintf(stderr, "error: --detect-watermark: %s is not a transcript "
-                    "record; scoring a text needs -m MODEL (its tokenizer)\n",
-                    o->detect_path);
+            fputs("error: --detect-watermark: ", stderr);
+            envelope_print_safe(stderr, o->detect_path, 0, "?", false);
+            fputs(" is not a transcript record; scoring a text needs -m MODEL (its tokenizer)\n",
+                  stderr);
             *rc = 1;
             return true;
         }
         if (memchr(dbuf, '\0', dn)) {   // the text would end there unseen
             free(dbuf);
-            fprintf(stderr, "error: --detect-watermark: %s contains a NUL byte\n",
-                    o->detect_path);
+            fputs("error: --detect-watermark: ", stderr);
+            envelope_print_safe(stderr, o->detect_path, 0, "?", false);
+            fputs(" contains a NUL byte\n", stderr);
             *rc = 1;
             return true;
         }
@@ -3805,19 +3827,24 @@ static int run_keygen(const cli_opts *o) {
     bool exists = false;
     if (!signkey_write(o->keygen_path, o->keygen_algo, seed, pub, &exists)) {
         memset(seed, 0, sizeof seed);
-        if (exists)
-            fprintf(stderr, "error: --keygen: %s already exists; a signing key is "
-                    "never replaced. Name another path, or remove the file "
-                    "yourself to retire that key\n", o->keygen_path);
-        else
-            fprintf(stderr, "error: --keygen: cannot write %s\n", o->keygen_path);
+        if (exists) {
+            fputs("error: --keygen: ", stderr);
+            envelope_print_safe(stderr, o->keygen_path, 0, "?", false);
+            fputs(" already exists; a signing key is never replaced. Name "
+                  "another path, or remove the file yourself to retire that key\n", stderr);
+        } else {
+            fputs("error: --keygen: cannot write ", stderr);
+            envelope_print_safe(stderr, o->keygen_path, 0, "?", false);
+            fputc('\n', stderr);
+        }
         return 1;
     }
     memset(seed, 0, sizeof seed);
     printf("{\"schema_version\":\"xyntetik.runner.signkey.v1\",\"algo\":\"%s\","
            "\"public_key\":\"%s\"}\n", o->keygen_algo, pub);
-    fprintf(stderr, "signing key -> %s (keep it private; the %s public key is %s)\n",
-            o->keygen_path, o->keygen_algo, pub);
+    fputs("signing key -> ", stderr);
+    envelope_print_safe(stderr, o->keygen_path, 0, "?", false);
+    fprintf(stderr, " (keep it private; the %s public key is %s)\n", o->keygen_algo, pub);
     return 0;
 }
 
@@ -4900,10 +4927,18 @@ static bool cli_require_eval_ok(const cli_opts *o, const char *load_path) {
     if (o->require_eval) {
         char why[512];
         if (!lineage_require_eval(load_path, o->require_eval, o->trust_key, why, sizeof why)) {
-            fprintf(stderr, "error: --require-eval %s: %s\n", o->require_eval, why);
+            fputs("error: --require-eval ", stderr);
+            envelope_print_safe(stderr, o->require_eval, 0, "?", false);
+            fputs(": ", stderr);
+            envelope_print_safe(stderr, why, 0, "?", false);
+            fputc('\n', stderr);
             return false;
         }
-        fprintf(stderr, "eval: %s.eval.%s.json passes for this file\n", load_path, o->require_eval);
+        fputs("eval: ", stderr);
+        envelope_print_safe(stderr, load_path, 0, "?", false);
+        fputs(".eval.", stderr);
+        envelope_print_safe(stderr, o->require_eval, 0, "?", false);
+        fputs(".json passes for this file\n", stderr);
     }
     return true;
 }
@@ -5339,12 +5374,7 @@ static bool cli_engine_setup(cli_opts *o, cli_run *rt, bool wm_on, wm_state *cli
     return true;
 }
 
-// AdamW's constants. Both objectives' steps use them and the provenance
-// record states them, stringized, so the record's text is the source's.
-#define TRAIN_ADAM_BETA1 0.9
-#define TRAIN_ADAM_BETA2 0.999
-#define TRAIN_ADAM_EPS   1e-8
-#define TRAIN_ADAM_WD    0.01
+// TRAIN_ADAM_* constants live in train_record.h so replay and training share them.
 #define TRAIN_STR_(x) #x
 #define TRAIN_STR(x)  TRAIN_STR_(x)
 
@@ -5948,8 +5978,8 @@ static bool train_optim_save(const char *adapter, cli_run *rt, const train_state
     if (!envelope_file_sha256(adapter, sha) ||
         snprintf(path, sizeof path, "%s.optim", adapter) >= (int)sizeof path)
         return false;
-    snprintf(tmp, sizeof tmp, "%s.partial", path);
-    FILE *f = plat_fopen(tmp, "wb");
+    bool made = false;
+    FILE *f = plat_fopen_partial(path, "partial", tmp, sizeof tmp, &made);
     if (!f) return false;
     uint32_t ver = 1;
     int32_t step = st->step, n = n_ev;
@@ -5965,7 +5995,7 @@ static bool train_optim_save(const char *adapter, cli_run *rt, const train_state
     ok = ok && model_lora_optim_write(&rt->m, f) && fflush(f) == 0 && !ferror(f);
     if (fclose(f) != 0) ok = false;
     if (!ok || !plat_replace_file(tmp, path)) {
-        plat_remove(tmp);
+        if (made) plat_remove(tmp);
         fprintf(stderr, "error: cannot write the optimizer state %s\n", path);
         return false;
     }
@@ -6032,7 +6062,26 @@ static bool train_checkpoint(cli_opts *o, cli_run *rt, const train_state *st,
     if (snprintf(path, sizeof path, "%s.step-%05d", o->train_out, st->step) >=
         (int)sizeof path)
         return false;
-    return model_lora_save(&rt->m, path) && train_optim_save(path, rt, st, ev, o->n_eval);
+    if (!model_lora_save(&rt->m, path) || !train_optim_save(path, rt, st, ev, o->n_eval)) return false;
+    // R17.9 step 4: what the record commits to, hashed from the files as written
+    char opath[4200];
+    if (rt->n_ckpt == rt->cap_ckpt) {
+        int cap = rt->cap_ckpt ? rt->cap_ckpt * 2 : 16;
+        void *p = realloc(rt->ckpt, sizeof *rt->ckpt * (size_t)cap);
+        if (!p) return false;
+        rt->ckpt = p;
+        rt->cap_ckpt = cap;
+    }
+    struct train_ckpt *c = &rt->ckpt[rt->n_ckpt];
+    c->step = st->step;
+    c->cursor = st->cursor;
+    snprintf(opath, sizeof opath, "%s.optim", path);
+    if (!envelope_file_sha256(path, c->adapter) || !envelope_file_sha256(opath, c->optim)) {
+        fprintf(stderr, "error: cannot hash checkpoint %s for the provenance record\n", path);
+        return false;
+    }
+    rt->n_ckpt++;
+    return true;
 }
 
 // The kill rule's verdict beside the adapter: OUT.killed.json when the run
@@ -6202,6 +6251,7 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
             rc = 1;
             break;
         }
+        if (o->replay_stop_at > 0 && step >= o->replay_stop_at) break;   // a segment replay's B
         if (o->kill_at && step == o->kill_at) {
             train_eval_set *k = NULL;
             for (int e = 0; e < o->n_eval; e++)
@@ -6267,41 +6317,6 @@ extern char **environ;
 #define TRAIN_ENVIRON environ
 #endif
 
-// R17.9: the RUNNER_ variables that cannot change a training run's bytes. Every
-// other one the run started with is in its record, and a run with one set is
-// not cpu-t3-exact. No list of the switches that move bytes is known to be
-// complete for every model (RUNNER_CPU_I8 and RUNNER_CPU_I8_PREFILL move a
-// default build's adapter on Q8_0), so the environment is read whole, as
-// route_tuning reads it, and only these are let through.
-static const char *const TRAIN_ENV_INERT[] = {
-    // read only by the test harness, never by this binary
-    "RUNNER_EXE", "RUNNER_CONFORMANCE_OUT", "RUNNER_TEST_GPU_OFF", "RUNNER_TEST_TIMEOUT_SCALE",
-    "RUNNER_REQUIRE_TURN_GUARD", "RUNNER_SWEEP_MODELS", "RUNNER_LLAMA_CPP_BIN",
-    // set by GitHub Actions' runner on every job, never read by this binary
-    "RUNNER_NAME", "RUNNER_OS", "RUNNER_ARCH", "RUNNER_TEMP", "RUNNER_TOOL_CACHE", "RUNNER_WORKSPACE",
-    "RUNNER_ENVIRONMENT", "RUNNER_TRACKING_ID", "RUNNER_DEBUG", "RUNNER_PERFLOG",
-    // read, and held not to move a training run's bytes
-    "RUNNER_TRAIN_ROWS",       // every width trains the same bytes (test_batched_taped_forward_is_the_solo_bytes)
-    "RUNNER_TPOOL_SPIN",       // how idle pool threads wait
-    "RUNNER_HF_CACHE", "RUNNER_CURL", "RUNNER_PREFIX_CACHE_MB",   // downloads, the server's prefix cache
-    "RUNNER_TEST_BUILD_DIRTY", // marks the build dirty: it can only take the claim down
-};
-
-static bool train_env_inert(const char *name, size_t n) {
-    for (size_t i = 0; i < sizeof TRAIN_ENV_INERT / sizeof *TRAIN_ENV_INERT; i++)
-        if (strlen(TRAIN_ENV_INERT[i]) == n && !strncmp(TRAIN_ENV_INERT[i], name, n)) return true;
-    return false;
-}
-
-// Whether the variable `name` (n bytes) is one a record names: a RUNNER_ one
-// outside the inert set, or one of the two the binary reads outside that
-// prefix that reach arithmetic (the recurrent scan's chunking, src/model.c).
-static bool train_env_counts(const char *name, size_t n) {
-    if (n == 12 && !strncmp(name, "XR_SSM_CHUNK", 12)) return true;
-    if (n == 13 && !strncmp(name, "XR_SSM_SERIAL", 13)) return true;
-    return n > 7 && !strncmp(name, "RUNNER_", 7) && !train_env_inert(name, n);
-}
-
 // The run's RUNNER_ variables outside the inert set, as JSON members
 // ("NAME":"value") into *json, and their names comma-joined into names. A value
 // whose name says it may be a credential is written as "(set)". Returns how many.
@@ -6312,12 +6327,7 @@ static int train_environment(sbuf *json, char *names, size_t cap) {
     for (char **e = TRAIN_ENVIRON; e && *e; e++) {
         const char *eq = strchr(*e, '=');
         if (!eq || !train_env_counts(*e, (size_t)(eq - *e))) continue;
-        bool secret = false;
-        static const char *const words[] = { "KEY", "TOKEN", "SECRET", "PASS" };
-        for (size_t w = 0; w < sizeof words / sizeof *words; w++) {
-            const char *f = strstr(*e, words[w]);
-            if (f && f < eq) secret = true;
-        }
+        bool secret = train_env_is_secret(*e, (size_t)(eq - *e));
         if (json) {
             sb_lit(json, count ? ",\"" : "\"");
             sb_esc(json, *e, (size_t)(eq - *e));
@@ -6633,7 +6643,34 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
     sb_lit(&rec, model_full_on(&rt->m) ? "\"variant\":{\"path\":\"" : "\"adapter\":{\"path\":\"");
     sb_esc(&rec, plat_path_base(o->train_out), strlen(plat_path_base(o->train_out)));
     sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, asha);
-    sb_lit(&rec, "\"}}\n");
+    sb_lit(&rec, "\"}");
+    // R17.9 step 4: the checkpoints this run wrote and a chain over them, bound
+    // to this record: h_0 hashes the record's bytes so far (closed with "}"),
+    // so the chain cannot be moved to a run of another base, data or recipe;
+    // h_i = sha256("h_{i-1}|step|cursor|adapter|optim"), hex text throughout
+    if (rt->n_ckpt > 0 && !rec.failed) {
+        char body[65], h[65];
+        sb_lit(&rec, "}");
+        envelope_data_sha256(rec.s, rec.n, body);
+        rec.n--;                                         // the "}" again, the chain follows
+        rec.s[rec.n] = 0;
+        char line[512];
+        int n = snprintf(line, sizeof line, "xyntetik.runner.train.chain.v1|%s", body);
+        envelope_data_sha256(line, (size_t)n, h);
+        sb_fmt(&rec, ",\"checkpoints\":[");
+        char h0[65];
+        memcpy(h0, h, sizeof h0);
+        for (int i = 0; i < rt->n_ckpt; i++) {
+            const struct train_ckpt *c = &rt->ckpt[i];
+            sb_fmt(&rec, "%s{\"step\":%d,\"cursor\":%lld,\"adapter_sha256\":\"%s\",\"optim_sha256\":\"%s\"}",
+                   i ? "," : "", c->step, c->cursor, c->adapter, c->optim);
+            n = snprintf(line, sizeof line, "%s|%d|%lld|%s|%s", h, c->step, c->cursor, c->adapter, c->optim);
+            envelope_data_sha256(line, (size_t)n, h);
+        }
+        sb_fmt(&rec, "],\"checkpoint_chain\":{\"basis\":\"xyntetik.runner.train.chain.v1\",\"h0\":\"%s\","
+               "\"head\":\"%s\"}", h0, h);
+    }
+    sb_lit(&rec, "}\n");
     bool ok = write_record(o->train_out, ".train.json", "train", &rec, o->sign_key);
     free(rec.s);
     return ok;
@@ -6741,697 +6778,199 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
     train_teacher_close(&tt);
     train_examples_free(exs, n_ex);
     dpo_pairs_free(pairs, n_pair);
+    if (!o->replay_train) {      // R17.9 step 4: the record has what it needs (a replay compares them)
+        free(rt->ckpt);
+        rt->ckpt = NULL;
+        rt->n_ckpt = rt->cap_ckpt = 0;
+    }
     model_debug_time_report();   // RUNNER_DEBUG_TIME: the forwards' stages
     return rc;
 }
 
-typedef struct {
-    bool  is_full, want_t3_exact;
-    int   want_ctx, want_eot_id, want_resumed_at;
-    float want_alpha;
-    char  want_out_path[512];
-    char  want_out_sha[65];
-    char  base_path[4096];
-    char  data_path[4096];
-    char  from_path[4096];
-    char  teacher_dir[4096];
-    char  eval_specs[8][8256];
-    char  kill_metric[128];
-    char  tmp_out[4096];
-} cli_replay;
-
 static bool replay_fail(int *rc, const char *field, const char *want, const char *got) {
-    printf("MISMATCH %s: expected %s, got %s\n", field, want, got ? got : "missing");
-    *rc = 2;
-    return true;
+    return train_record_fail(rc, field, want, got);
 }
 
-static bool replay_check_sha(const char *field, const char *path, const char *want, int *rc) {
-    if (!want || strlen(want) != 64) return !replay_fail(rc, field, "64-hex sha256", want);
-    char got[65] = "";
-    if (!path || !*path || !envelope_cited_sha256(path, got))
-        return !replay_fail(rc, field, want, "missing or unreadable");
-    if (strcmp(got, want) != 0) return !replay_fail(rc, field, want, got);
-    return true;
-}
-
-static void replay_parent_dir(const char *path, char *out, size_t cap) {
-    const char *s = strrchr(path, '/');
-    const char *b = strrchr(path, '\\');
-    if (b && (!s || b > s)) s = b;
-    if (!s) snprintf(out, cap, ".");
-    else snprintf(out, cap, "%.*s", (int)(s - path), path);
-}
-
-static bool replay_resolve_teacher(const cli_opts *o, cli_replay *rp, jv *tch, int *rc) {
-    jv *ti = jv_get(tch, "topk_idx"), *tl = jv_get(tch, "topk_logp");
-    const char *inm = jv_str(jv_get(ti, "path"), NULL), *isha = jv_str(jv_get(ti, "sha256"), NULL);
-    const char *lnm = jv_str(jv_get(tl, "path"), NULL), *lsha = jv_str(jv_get(tl, "sha256"), NULL);
-    if (!inm || !*inm || !lnm || !*lnm)
-        return !replay_fail(rc, "teacher", "topk_idx and topk_logp", "missing");
-    char idx_p[8192] = "", logp_p[8192] = "";
-    if (o->train_teacher) {
-        snprintf(rp->teacher_dir, sizeof rp->teacher_dir, "%s", o->train_teacher);
-        snprintf(idx_p, sizeof idx_p, "%s/%s", rp->teacher_dir, plat_path_base(inm));
-        snprintf(logp_p, sizeof logp_p, "%s/%s", rp->teacher_dir, plat_path_base(lnm));
-    } else {
-        char probe[4096], sub[8192], rdir[4096], ddir[4096];
-        const char *cand = lineage_relocate(inm, o->replay_train, probe, sizeof probe);
-        if (!record_regular_file(cand)) {
-            replay_parent_dir(o->replay_train, rdir, sizeof rdir);
-            snprintf(sub, sizeof sub, "%s/teacher/%s", rdir, plat_path_base(inm));
-            if (record_regular_file(sub)) {
-                snprintf(idx_p, sizeof idx_p, "%s", sub);
-            } else {
-                replay_parent_dir(rp->data_path, ddir, sizeof ddir);
-                snprintf(sub, sizeof sub, "%s/teacher/%s", ddir, plat_path_base(inm));
-                if (record_regular_file(sub)) snprintf(idx_p, sizeof idx_p, "%s", sub);
-            }
-        }
-        if (!idx_p[0]) snprintf(idx_p, sizeof idx_p, "%s", cand);
-        replay_parent_dir(idx_p, rp->teacher_dir, sizeof rp->teacher_dir);
-        snprintf(logp_p, sizeof logp_p, "%s/%s", rp->teacher_dir, plat_path_base(lnm));
-    }
-    return replay_check_sha("teacher.topk_idx.sha256", idx_p, isha, rc) &&
-           replay_check_sha("teacher.topk_logp.sha256", logp_p, lsha, rc);
-}
-
-static bool replay_resolve_evals(const cli_opts *o, cli_replay *rp, jv *rec, jv *kill_v, int *rc) {
-    jv *evals = jv_get(rec, "evals");
-    if (!evals) return true;
-    if (evals->type != J_ARR || evals->n > 8)
-        return !replay_fail(rc, "evals", "array of <= 8 eval sets", "invalid");
-    for (int i = 0; i < evals->n; i++) {
-        jv *e = evals->items[i], *rw = jv_get(e, "rows");
-        const char *lbl = jv_str(jv_get(e, "label"), NULL);
-        const char *rpath = jv_str(jv_get(rw, "path"), NULL), *rsha = jv_str(jv_get(rw, "sha256"), NULL);
-        char rbuf[4096];
-        const char *rf = rpath ? lineage_relocate(rpath, o->replay_train, rbuf, sizeof rbuf) : NULL;
-        if (!lbl || !*lbl || !replay_check_sha("evals.rows.sha256", rf, rsha, rc)) return false;
-        jv *ti = jv_get(e, "topk_idx"), *tl = jv_get(e, "topk_logp");
-        char tdir[4096] = "";
-        if (ti || tl) {
-            const char *inm = jv_str(jv_get(ti, "path"), NULL), *isha = jv_str(jv_get(ti, "sha256"), NULL);
-            const char *lnm = jv_str(jv_get(tl, "path"), NULL), *lsha = jv_str(jv_get(tl, "sha256"), NULL);
-            char ibuf[8192], lbuf[8192];   // the same size: ibuf takes lbuf whole (gcc's -Wformat-truncation)
-            const char *ip = inm ? lineage_relocate(inm, o->replay_train, ibuf, sizeof ibuf) : NULL;
-            if (ip && !record_regular_file(ip)) {
-                char edir[4096];
-                replay_parent_dir(rf, edir, sizeof edir);
-                snprintf(lbuf, sizeof lbuf, "%s/%s", edir, plat_path_base(inm));
-                if (record_regular_file(lbuf)) { snprintf(ibuf, sizeof ibuf, "%s", lbuf); ip = ibuf; }
-            }
-            if (!ip || !replay_check_sha("evals.topk_idx.sha256", ip, isha, rc)) return false;
-            replay_parent_dir(ip, tdir, sizeof tdir);
-            snprintf(lbuf, sizeof lbuf, "%s/%s", tdir, lnm ? plat_path_base(lnm) : "");
-            if (!replay_check_sha("evals.topk_logp.sha256", lbuf, lsha, rc)) return false;
-        }
-        if (kill_v) {
-            if (tdir[0]) snprintf(rp->eval_specs[i], sizeof rp->eval_specs[i], "%s=%s,%s", lbl, rf, tdir);
-            else         snprintf(rp->eval_specs[i], sizeof rp->eval_specs[i], "%s=%s", lbl, rf);
-        }
-    }
-    return true;
-}
-
-static bool replay_check_compat(const cli_opts *o, jv *rec, bool *want_t3_exact, int *rc) {
-    if (strcmp(jv_str(jv_get(rec, "schema_version"), ""), "xyntetik.runner.train.v1"))
-        return !replay_fail(rc, "schema_version", "xyntetik.runner.train.v1",
-                            jv_str(jv_get(rec, "schema_version"), ""));
-    char pub[SIGN_PUBHEX_CAP];
-    int sig = record_signature_state(o->replay_train, o->trust_key, pub);
-    if (sig == 2) return !replay_fail(rc, "signature", "valid signature", "bad, malformed or untrusted");
-    if (sig == 1 && o->trust_key)
-        return !replay_fail(rc, "signature", "signed record (--trust-key)", "unsigned");
-    const char *det = jv_str(jv_get(rec, "determinism"), "");
-    if (jv_get(rec, "products") || strcmp(det, "gpu-within-tolerance") == 0)
-        return !replay_fail(rc, "determinism", "cpu-t3-exact or cpu-same-binary", "gpu-within-tolerance");
-    if (strcmp(det, "cpu-t3-exact") != 0 && strcmp(det, "cpu-same-binary") != 0)
-        return !replay_fail(rc, "determinism", "cpu-t3-exact or cpu-same-binary", det);
-    *want_t3_exact = strcmp(det, "cpu-t3-exact") == 0;
-    const char *rec_runner = jv_str(jv_get(rec, "runner"), "");
-    if (strcmp(rec_runner, RUNNER_VERSION) != 0)
-        return !replay_fail(rc, "runner", rec_runner, RUNNER_VERSION);
-    jv *bld = jv_get(rec, "build");
-    const char *rec_flavor = jv_str(jv_get(bld, "flavor"), "");
-    const char *cur_flavor = RUNNER_BUILD_FLAVOR ? RUNNER_BUILD_FLAVOR : "default";
-    if (strcmp(det, "cpu-t3-exact") == 0) {
-        if (strcmp(rec_flavor, "t3") != 0 || strcmp(cur_flavor, "t3") != 0)
-            return !replay_fail(rc, "build.flavor", "t3",
-                                strcmp(rec_flavor, "t3") ? rec_flavor : cur_flavor);
-        // R17.9: exact means a clean stamped commit on both sides. A record
-        // that says otherwise beside the word, or names a switch or a reason,
-        // is not one a T3 run writes; a dirty or unstamped replaying binary
-        // is not the commit's.
-        const char *rcm = jv_str(jv_get(bld, "commit"), NULL);
-        const char *ccm = provenance_build_commit(NULL);
-        jv *rdirty = jv_get(bld, "dirty");
-        if (!rdirty || rdirty->type != J_BOOL || rdirty->b)
-            return !replay_fail(rc, "build.dirty", "false", rdirty && rdirty->type == J_BOOL ? "true" : "missing");
-        if (train_build_dirty())
-            return !replay_fail(rc, "build.dirty", "a clean replaying build", "this binary is dirty");
-        if (!rcm || !ccm)
-            return !replay_fail(rc, "build.commit", rcm ? rcm : "a commit", ccm ? ccm : "none");
-        if (strcmp(rcm, ccm) != 0)
-            return !replay_fail(rc, "build.commit", rcm, ccm);
-        if (jv_get(rec, "environment") || jv_get(rec, "determinism_reasons"))
-            return !replay_fail(rc, "determinism", "cpu-t3-exact with no switch and no reason",
-                                "a record that names one");
-    } else {
-        if (!o->allow_same_binary)
-            return !replay_fail(rc, "determinism", "cpu-t3-exact (or --allow-same-binary)", det);
-        char *exe = plat_executable_path();
-        char cur_sha[65] = "";
-        bool xok = exe && envelope_file_sha256(exe, cur_sha);
-        free(exe);
-        const char *want_sha = jv_str(jv_get(bld, "binary_sha256"), "");
-        if (!xok || strcmp(cur_sha, want_sha) != 0)
-            return !replay_fail(rc, "build.binary_sha256", want_sha, xok ? cur_sha : "unreadable");
-    }
-    return true;
-}
-
-// R17.9: the replay runs with the record's switches and no other: each of the
-// record's must be set here to its value ("(set)", a credential's, only set),
-// and none a record names (train_env_counts) may be set here that it lacks.
-static bool replay_check_environment(jv *rec, int *rc) {
-    jv *want = jv_get(rec, "environment");
-    if (want && want->type != J_OBJ) return !replay_fail(rc, "environment", "an object", "invalid");
-    char wb[600], gb[600];
-    for (int i = 0; want && i < want->n; i++) {
-        const char *v = jv_str(want->items[i], NULL), *here = getenv(want->keys[i]);
-        if (v && here && (!strcmp(v, here) || !strcmp(v, "(set)"))) continue;
-        snprintf(wb, sizeof wb, "%s=%s", want->keys[i], v ? v : "?");
-        snprintf(gb, sizeof gb, "%s %s", want->keys[i], here ? "set otherwise" : "unset");
-        return !replay_fail(rc, "environment", wb, gb);
-    }
-    for (char **e = TRAIN_ENVIRON; e && *e; e++) {
-        const char *eq = strchr(*e, '=');
-        if (!eq || !train_env_counts(*e, (size_t)(eq - *e))) continue;   // the record's own rule
-        snprintf(gb, sizeof gb, "%.*s set", (int)(eq - *e), *e);
-        snprintf(wb, sizeof wb, "%.*s", (int)(eq - *e), *e);
-        if (!want || !jv_get(want, wb)) return !replay_fail(rc, "environment", "no such switch", gb);
-    }
-    return true;
-}
-
-// R17.9: the model overrides the run took, applied from the record. One the
-// caller passes is refused unless it is the record's own.
-static bool replay_apply_overrides(cli_opts *o, jv *rec, int *rc) {
-    jv *mo = jv_get(rec, "model_overrides");
-    if (mo && mo->type != J_OBJ) return !replay_fail(rc, "model_overrides", "an object", "invalid");
-    static const char *const keys[] = { "rope_base", "rope_scale", "yarn_factor" };
-    float *fields[] = { &o->mp.rope_base, &o->mp.rope_scale, &o->mp.yarn_factor };
-    char wb[64], gb[64], field[64];
-    for (int i = 0; i < 3; i++) {
-        double want = 0;
-        jv *v = mo ? jv_get(mo, keys[i]) : NULL;
-        if (v && !record_num(mo, keys[i], 0, FLT_MAX, &want))
-            return !replay_fail(rc, "model_overrides", "numbers", "invalid");
-        float given = *fields[i];
-        if (given > 0 && given != (float)want) {
-            snprintf(field, sizeof field, "model_overrides.%s", keys[i]);
-            snprintf(wb, sizeof wb, v ? "%.9g" : "none", want);
-            snprintf(gb, sizeof gb, "%.9g", (double)given);
-            return !replay_fail(rc, field, wb, gb);
-        }
-        *fields[i] = (float)want;
-    }
-    // --mtp is not one: training never reads the predictor (#925's measurement)
-    return true;
-}
-
-// R17.9(c), exact unlearning as a retrain: DATA1's lines less every occurrence
-// of D's lines, the rest in their order, each closed by "\n", into *kept. A
-// line is dropped when it equals one of D's non-empty lines byte for byte (its
-// newline aside). *count is the rows removed, *distinct the lines D lists.
-// False, with why, for a text corpus (it has no rows), a line of D that is not
-// in DATA1, or a file that cannot be read.
-static int unlearn_line_cmp(const void *a, const void *b) {
-    return strcmp(*(char *const *)a, *(char *const *)b);
-}
-
-static bool unlearn_split(const char *data1, const char *drop, sbuf *kept, int *count, int *distinct,
-                          char *why, size_t cap) {
-    size_t n1 = 0, n2 = 0;
-    char *a = plat_read_file(data1, MAX_INPUT_FILE, &n1);
-    char *d = plat_read_file(drop, MAX_INPUT_FILE, &n2);
-    char **dl = NULL;
-    bool *found = NULL, ok = false;
-    int nd = 0, capn = 0;
-    *count = *distinct = 0;
-    if (!a || !d) { snprintf(why, cap, "cannot read %s", !a ? data1 : drop); goto out; }
-    size_t i0 = 0;
-    while (i0 < n1 && (a[i0] == ' ' || a[i0] == '\t' || a[i0] == '\r' || a[i0] == '\n')) i0++;
-    if (i0 == n1 || a[i0] != '{') {
-        snprintf(why, cap, "%s is not JSONL rows: a text corpus has no row to drop", data1);
-        goto out;
-    }
-    for (size_t p = 0; p < n2; ) {
-        const char *e = memchr(d + p, '\n', n2 - p);
-        size_t len = e ? (size_t)(e - (d + p)) : n2 - p;
-        if (len) {
-            if (nd == capn) {
-                capn = capn ? 2 * capn : 16;
-                char **g = realloc(dl, sizeof *dl * (size_t)capn);
-                if (!g) { snprintf(why, cap, "out of memory"); goto out; }
-                dl = g;
-            }
-            dl[nd] = malloc(len + 1);
-            if (!dl[nd]) { snprintf(why, cap, "out of memory"); goto out; }
-            memcpy(dl[nd], d + p, len);
-            dl[nd++][len] = 0;
-        }
-        p += len + 1;
-    }
-    if (nd == 0) { snprintf(why, cap, "%s lists no row", drop); goto out; }
-    qsort(dl, (size_t)nd, sizeof *dl, unlearn_line_cmp);
-    int u = 1;   // distinct, in place
-    for (int i = 1; i < nd; i++)
-        if (strcmp(dl[i], dl[u - 1])) dl[u++] = dl[i];
-        else free(dl[i]);
-    nd = u;
-    found = calloc((size_t)nd, sizeof *found);
-    if (!found) { snprintf(why, cap, "out of memory"); goto out; }
-    for (size_t p = 0; p < n1; ) {
-        char *e = memchr(a + p, '\n', n1 - p);
-        size_t len = e ? (size_t)(e - (a + p)) : n1 - p;
-        char save = a[p + len];
-        a[p + len] = 0;   // the buffer is ours: the line as a string for the search
-        const char *key = a + p;
-        char **hit = len ? bsearch(&key, dl, (size_t)nd, sizeof *dl, unlearn_line_cmp) : NULL;
-        a[p + len] = save;
-        if (hit) { found[hit - dl] = true; (*count)++; }
-        else if (len || e) { sb_put(kept, a + p, len); sb_lit(kept, "\n"); }
-        p += len + 1;
-    }
-    for (int i = 0; i < nd; i++)
-        if (!found[i]) { snprintf(why, cap, "a line of %s is not in the parent's data: %.60s", drop, dl[i]); goto out; }
-    *distinct = nd;
-    ok = !kept->failed;
-    if (!ok) snprintf(why, cap, "out of memory");
-out:
-    if (dl) for (int i = 0; i < nd; i++) free(dl[i]);
-    free(dl);
-    free(found);
-    free(a);
-    free(d);
-    return ok;
-}
-
-// --unlearn: the parent record a retrain may follow, and the retained rows,
-// written beside the output. A fresh cross-entropy adapter only: a teacher's
-// arrays are indexed by row, a continued or resumed run starts from another
-// adapter, and evals and a kill rule would need their own files dropped too.
-static bool unlearn_prepare(cli_opts *o, jv *rec, int *rc) {
-    const char *why = NULL;
-    if (strcmp(jv_str(jv_get(rec, "schema_version"), ""), "xyntetik.runner.train.v1"))
-        why = "is not a xyntetik.runner.train.v1 training record";
-    else if (strcmp(jv_str(jv_get(rec, "objective"), ""), "weighted-cross-entropy"))
-        why = "is not a cross-entropy run (a teacher's arrays and DPO pairs are not rows to drop)";
-    else if (jv_get(rec, "from_adapter") || jv_get(rec, "resumed_at_step"))
-        why = "continued another adapter (an unlearned run starts from the base)";
-    else if (jv_get(rec, "full_weight"))
-        why = "trained the full weights";
-    else if (jv_get(rec, "evals") || jv_get(rec, "kill"))
-        why = "has evals or a kill rule, whose files would need the rows dropped too";
-    if (why) {
-        fprintf(stderr, "error: --unlearn: %s %s\n", o->unlearn_parent, why);
-        *rc = 1;
-        return false;
-    }
-    char have[65] = "";
-    const char *want = jv_str(jv_get(jv_get(rec, "data"), "sha256"), "");
-    if (!envelope_file_sha256(o->train_path, have) || strcmp(have, want)) {
-        fprintf(stderr, "error: --unlearn: %s is not the parent's data (sha256 %s, the record names %s)\n",
-                o->train_path, have[0] ? have : "unreadable", want);
-        *rc = 1;
-        return false;
-    }
-    sbuf kept = {0};
-    char swhy[512];
-    if (!unlearn_split(o->train_path, o->unlearn_drop, &kept, &o->unlearn_count, &o->unlearn_distinct,
-                       swhy, sizeof swhy)) {
-        fprintf(stderr, "error: --unlearn: %s\n", swhy);
-        free(kept.s);
-        *rc = 1;
-        return false;
-    }
-    if (kept.n == 0) {
-        fprintf(stderr, "error: --unlearn: %s drops every row of %s: nothing is left to train on\n",
-                o->unlearn_drop, o->train_path);
-        free(kept.s);
-        *rc = 1;
-        return false;
-    }
-    static char path[4200];
-    snprintf(path, sizeof path, "%s.retained.jsonl", o->train_out);
-    FILE *f = plat_fopen(path, "wb");
-    bool ok = f && (kept.n == 0 || fwrite(kept.s, 1, kept.n, f) == kept.n);
-    if (f && fclose(f) != 0) ok = false;
-    free(kept.s);
-    if (!ok) {
-        fprintf(stderr, "error: --unlearn: cannot write %s\n", path);
-        *rc = 1;
-        return false;
-    }
-    o->unlearn_retained = path;
-    return true;
-}
-
-// Two JSON values the same: type, number, string, bool, and objects and arrays
-// member for member (an absent value is the same only as another absent one).
-static bool jv_same(const jv *a, const jv *b) {
-    if (!a || !b) return a == b;
-    if (a->type != b->type) return false;
-    switch (a->type) {
-    case J_NULL: return true;
-    case J_BOOL: return a->b == b->b;
-    case J_NUM:  return a->num_text || b->num_text
-                      ? a->num_text && b->num_text && !strcmp(a->num_text, b->num_text)
-                      : a->num == b->num;
-    case J_STR:  return !strcmp(a->str, b->str);
-    case J_ARR:
-        if (a->n != b->n) return false;
-        for (int i = 0; i < a->n; i++) if (!jv_same(a->items[i], b->items[i])) return false;
-        return true;
-    case J_OBJ:
-        if (a->n != b->n) return false;
-        for (int i = 0; i < a->n; i++)
-            if (!jv_same(a->items[i], jv_get((jv *)b, a->keys[i]))) return false;
-        return true;
-    }
-    return false;
-}
-
-// attest unlearn: the record's unlearn object against the files the auditor
-// holds, before any replay: the parent record, its data, the dropped rows, and
-// DATA1 less D as the record's own data.
-static bool unlearn_audit_check(const cli_opts *o, jv *rec, const char *rec_path, int *rc) {
-    jv *un = jv_get(rec, "unlearn");
-    if (!un || un->type != J_OBJ)
-        return !replay_fail(rc, "unlearn", "a record of runner train --unlearn", "none");
-    jv *pr = jv_get(un, "parent_record");
-    const char *ppath = jv_str(jv_get(pr, "path"), NULL);
-    char pbuf[4096];
-    const char *pf = ppath ? lineage_relocate(ppath, rec_path, pbuf, sizeof pbuf) : NULL;
-    if (!replay_check_sha("unlearn.parent_record.sha256", pf, jv_str(jv_get(pr, "sha256"), NULL), rc))
-        return false;
-    size_t pn = 0;
-    char *pb = plat_read_file(pf, MAX_INPUT_FILE, &pn);
-    jv *parent = pb ? json_parse(pb, pn) : NULL;
-    free(pb);
-    char pdata[65] = "";
-    snprintf(pdata, sizeof pdata, "%s", jv_str(jv_get(jv_get(parent, "data"), "sha256"), ""));
-    // the same base and the same recipe as the parent: every field replay reads
-    // to train, the switches and the model overrides. Otherwise a from-scratch
-    // run under another recipe, given an unlearn block, would replay to its own
-    // bytes and verify.
-    static const char *const same[] = {
-        "objective", "lora_rank", "alpha", "lora_scale", "lr", "steps", "ctx", "seed", "kv_cache",
-        "no_bos", "end_of_turn", "eot_id", "adamw", "recipe", "model_overrides", "environment",
-    };
-    const char *pbase = jv_str(jv_get(jv_get(parent, "base"), "sha256"), "");
-    const char *rbase = jv_str(jv_get(jv_get(rec, "base"), "sha256"), "");
-    bool same_ok = parent && !strcmp(pbase, rbase);
-    const char *differs = same_ok ? NULL : "base.sha256";
-    for (size_t i = 0; same_ok && i < sizeof same / sizeof *same; i++)
-        if (!jv_same(jv_get(parent, same[i]), jv_get(rec, same[i]))) { same_ok = false; differs = same[i]; }
-    jv_free(parent);
-    if (!same_ok) {
-        char field[64];
-        snprintf(field, sizeof field, "unlearn.%s", differs);
-        return !replay_fail(rc, field, "the parent's", "another");
-    }
-    if (!replay_check_sha("unlearn.parent_data.sha256", o->unlearn_parent_data, pdata, rc)) return false;
-    if (!replay_check_sha("unlearn.dropped_sha256", o->unlearn_dropped,
-                          jv_str(jv_get(un, "dropped_sha256"), NULL), rc))
-        return false;
-    sbuf kept = {0};
-    int count = 0, distinct = 0;
-    char why[512], got[65] = "";
-    if (!unlearn_split(o->unlearn_parent_data, o->unlearn_dropped, &kept, &count, &distinct, why, sizeof why)) {
-        free(kept.s);
-        return !replay_fail(rc, "unlearn.retained", "DATA1 less D's lines", why);
-    }
-    envelope_data_sha256(kept.s ? kept.s : "", kept.n, got);
-    free(kept.s);
-    const char *want = jv_str(jv_get(jv_get(rec, "data"), "sha256"), "");
-    if (strcmp(got, want)) return !replay_fail(rc, "unlearn.retained", want, got);
-    double c = 0, dd = 0;
-    if (!record_num(un, "dropped_count", 0, 1e12, &c) || (int)c != count ||
-        !record_num(un, "dropped_distinct", 0, 1e12, &dd) || (int)dd != distinct) {
-        char w[64], g[64];
-        snprintf(w, sizeof w, "%d rows of %d lines", (int)c, (int)dd);
-        snprintf(g, sizeof g, "%d rows of %d lines", count, distinct);
-        return !replay_fail(rc, "unlearn.dropped_count", w, g);
-    }
-    return true;
-}
+static int run_replay_sample(cli_opts *o, const train_record_host *host, const train_record_opts *to);
 
 static bool cli_prepare_replay_train(cli_opts *o, cli_replay *rp, int *rc) {
-    // R17.9(c): attest unlearn is a replay of the record after its unlearn
-    // checks; --unlearn reads the parent record here for its recipe, retrains
-    // into the caller's --train-out, and is no replay (nothing is compared).
-    if (o->unlearn_audit && !o->replay_train) o->replay_train = o->unlearn_audit;
-    const bool retrain = !o->replay_train && o->unlearn_parent;
-    const char *rec_path = o->replay_train ? o->replay_train : o->unlearn_parent;
-    if (!rec_path) return false;
-    if (!record_regular_file(rec_path)) {
-        fprintf(stderr, "error: cannot read %s\n", rec_path);
+    if (o->replay_segment && (!o->replay_train || o->unlearn_audit)) {
+        fprintf(stderr, "error: --segment is an option of runner attest replay RECORD\n");
         *rc = 1;
         return true;
     }
-    size_t rlen = 0;
-    char *rbuf = plat_read_file(rec_path, MAX_INPUT_FILE, &rlen);
-    jv *rec = rbuf ? json_parse(rbuf, rlen) : NULL;
-    free(rbuf);
-    if (!rec || rec->type != J_OBJ) {
-        fprintf(stderr, "error: %s is not a valid JSON training record\n", rec_path);
-        jv_free(rec);
-        *rc = 1;
+    const train_record_host host = {
+        .runner_version = RUNNER_VERSION,
+        .build_flavor = RUNNER_BUILD_FLAVOR,
+        .build_commit = provenance_build_commit(NULL),
+        .build_dirty = train_build_dirty(),
+        .environ_list = TRAIN_ENVIRON,
+    };
+    train_record_opts to = {
+        .model_path = o->model_path,
+        .train_path = o->train_path,
+        .train_out = o->train_out,
+        .dpo_path = o->dpo_path,
+        .train_teacher = o->train_teacher,
+        .lora_path = o->lora_path,
+        .train_resume = o->train_resume,
+        .trust_key = o->trust_key,
+        .sign_key = o->sign_key,
+        .stop_file = o->stop_file,
+        .train_lp_path = o->train_lp_path,
+        .replay_train = o->replay_train,
+        .replay_segment = o->replay_segment,
+        .replay_data = o->replay_data,
+        .unlearn_parent = o->unlearn_parent,
+        .unlearn_drop = o->unlearn_drop,
+        .unlearn_audit = o->unlearn_audit,
+        .unlearn_parent_data = o->unlearn_parent_data,
+        .unlearn_dropped = o->unlearn_dropped,
+        .unlearn_retained = o->unlearn_retained,
+        .unlearn_count = o->unlearn_count,
+        .unlearn_distinct = o->unlearn_distinct,
+        .allow_same_binary = o->allow_same_binary,
+        .no_bos = o->no_bos,
+        .train_eot = o->train_eot,
+        .train_kv_f32 = o->train_kv_f32,
+        .train_full = o->train_full,
+        .train_gpu = o->train_gpu,
+        .seed_given = o->seed_given,
+        .train_gpu_budget = o->train_gpu_budget,
+        .lora_rank = o->lora_rank,
+        .train_steps = o->train_steps,
+        .train_ctx = o->train_ctx,
+        .replay_resumed_at = o->replay_resumed_at,
+        .save_every = o->save_every,
+        .lr_schedule = o->lr_schedule,
+        .lr_warmup = o->lr_warmup,
+        .train_batch = o->train_batch,
+        .n_eval = o->n_eval,
+        .kill_at = o->kill_at,
+        .seed = o->seed,
+        .lora_scale = o->lora_scale,
+        .train_lr = o->train_lr,
+        .dpo_beta = o->dpo_beta,
+        .weight_decay = o->weight_decay,
+        .lr_floor = o->lr_floor,
+        .kill_min_rel = o->kill_min_rel,
+        .kill_metric = o->kill_metric,
+        .mp = {
+            .kv_f32 = o->mp.kv_f32,
+            .rope_base = o->mp.rope_base,
+            .rope_scale = o->mp.rope_scale,
+            .yarn_factor = o->mp.yarn_factor,
+        },
+    };
+    for (int i = 0; i < 8; i++) to.eval_spec[i] = o->eval_spec[i];
+    // R17.9 step 4b: --sample draws and replays its segments itself, after
+    // the record's own checks with these options
+    if (o->sample_given || o->audit_seed || o->audit_report) {
+        *rc = run_replay_sample(o, &host, &to);
         return true;
     }
-    const char *caller_sign_key = o->sign_key;
-    if (retrain) o->replay_data = o->train_path;   // DATA1, hashed as the parent's data below
-    bool ok = (retrain ? unlearn_prepare(o, rec, rc) : replay_check_compat(o, rec, &rp->want_t3_exact, rc)) &&
-              (!o->unlearn_audit || unlearn_audit_check(o, rec, rec_path, rc)) &&
-              replay_check_environment(rec, rc) && replay_apply_overrides(o, rec, rc);
-    if (!ok && *rc == 0) *rc = 1;
-    rp->is_full = jv_get(rec, "full_weight") != NULL;
-    jv *out_v = ok ? jv_get(rec, rp->is_full ? "variant" : "adapter") : NULL;
-    const char *out_name = jv_str(jv_get(out_v, "path"), NULL);
-    const char *out_sha = jv_str(jv_get(out_v, "sha256"), NULL);
-    if (ok && (!out_name || !*out_name || !out_sha || strlen(out_sha) != 64))
-        ok = !replay_fail(rc, rp->is_full ? "variant.sha256" : "adapter.sha256", "64-hex sha256", out_sha);
-    if (ok) {
-        snprintf(rp->want_out_path, sizeof rp->want_out_path, "%s", out_name);
-        snprintf(rp->want_out_sha, sizeof rp->want_out_sha, "%s", out_sha);
-    }
+    bool ret = train_record_prepare(&host, &to, rp, rc);
+    o->model_path = to.model_path;
+    o->train_path = to.train_path;
+    o->train_out = to.train_out;
+    o->dpo_path = to.dpo_path;
+    o->train_teacher = to.train_teacher;
+    o->lora_path = to.lora_path;
+    o->train_resume = to.train_resume;
+    o->sign_key = to.sign_key;
+    o->stop_file = to.stop_file;
+    o->train_lp_path = to.train_lp_path;
+    o->replay_train = to.replay_train;
+    o->replay_data = to.replay_data;
+    o->unlearn_retained = to.unlearn_retained;
+    o->unlearn_count = to.unlearn_count;
+    o->unlearn_distinct = to.unlearn_distinct;
+    o->no_bos = to.no_bos;
+    o->train_eot = to.train_eot;
+    o->train_kv_f32 = to.train_kv_f32;
+    o->train_full = to.train_full;
+    o->train_gpu = to.train_gpu;
+    o->seed_given = to.seed_given;
+    o->train_gpu_budget = to.train_gpu_budget;
+    o->lora_rank = to.lora_rank;
+    o->train_steps = to.train_steps;
+    o->train_ctx = to.train_ctx;
+    o->replay_resumed_at = to.replay_resumed_at;
+    o->save_every = to.save_every;
+    o->replay_stop_at = to.replay_stop_at;
+    o->lr_schedule = to.lr_schedule;
+    o->lr_warmup = to.lr_warmup;
+    o->train_batch = to.train_batch;
+    o->n_eval = to.n_eval;
+    o->kill_at = to.kill_at;
+    o->seed = to.seed;
+    o->lora_scale = to.lora_scale;
+    o->train_lr = to.train_lr;
+    o->dpo_beta = to.dpo_beta;
+    o->weight_decay = to.weight_decay;
+    o->lr_floor = to.lr_floor;
+    o->kill_min_rel = to.kill_min_rel;
+    o->kill_metric = to.kill_metric;
+    o->mp.kv_f32 = to.mp.kv_f32;
+    o->mp.rope_base = to.mp.rope_base;
+    o->mp.rope_scale = to.mp.rope_scale;
+    o->mp.yarn_factor = to.mp.yarn_factor;
+    if (!ret && (o->replay_train || o->unlearn_parent)) o->mp.gpu_mode = GPU_OFF;
+    for (int i = 0; i < 8; i++) o->eval_spec[i] = to.eval_spec[i];
+    return ret;
+}
 
-    // Locate & hash every input before touching the model.
-    jv *base = ok ? jv_get(rec, "base") : NULL;
-    jv *data = ok ? jv_get(rec, "data") : NULL;
-    if (ok) {
-        const char *bp = o->model_path ? o->model_path
-                                       : lineage_relocate(jv_str(jv_get(base, "path"), ""),
-                                                          rec_path, rp->base_path, sizeof rp->base_path);
-        if (bp != rp->base_path) snprintf(rp->base_path, sizeof rp->base_path, "%s", bp);
-        ok = replay_check_sha("base.sha256", rp->base_path, jv_str(jv_get(base, "sha256"), NULL), rc);
-        if (ok) o->model_path = rp->base_path;
-    }
-    if (ok) {
-        const char *dp = o->replay_data ? o->replay_data
-                                        : lineage_relocate(jv_str(jv_get(data, "path"), ""),
-                                                           rec_path, rp->data_path, sizeof rp->data_path);
-        if (dp != rp->data_path) snprintf(rp->data_path, sizeof rp->data_path, "%s", dp);
-        ok = replay_check_sha("data.sha256", rp->data_path, jv_str(jv_get(data, "sha256"), NULL), rc);
-    }
-
-    jv *res_v = jv_get(rec, "resumed_at_step");
-    jv *from_v = jv_get(rec, "from_adapter");
-    if (ok && (from_v || res_v)) {
-        if (res_v && o->lora_path) {
-            fprintf(stderr, "error: record resumes a checkpoint (--train-resume), not --lora\n");
-            *rc = 1;
-            ok = false;
-        } else if (!res_v && o->train_resume) {
-            fprintf(stderr, "error: record continues from --lora adapter, not --train-resume\n");
-            *rc = 1;
-            ok = false;
-        }
-        const char *fp = !ok ? ""
-                       : o->train_resume ? o->train_resume
-                       : o->lora_path ? o->lora_path
-                       : lineage_relocate(jv_str(jv_get(from_v, "path"), ""),
-                                          rec_path, rp->from_path, sizeof rp->from_path);
-        if (ok && fp != rp->from_path) snprintf(rp->from_path, sizeof rp->from_path, "%s", fp);
-        if (ok) ok = replay_check_sha("from_adapter.sha256", rp->from_path, jv_str(jv_get(from_v, "sha256"), NULL), rc);
-        if (ok && res_v) {
-            int rs = 0;
-            if (!record_int(rec, "resumed_at_step", 0, INT_MAX, &rs))
-                ok = !replay_fail(rc, "resumed_at_step", "integer", "invalid");
-            char opt_p[4120];
-            if (ok && snprintf(opt_p, sizeof opt_p, "%s.optim", rp->from_path) < (int)sizeof opt_p)
-                ok = replay_check_sha("resume_optim_sha256", opt_p,
-                                      jv_str(jv_get(rec, "resume_optim_sha256"), NULL), rc);
-            if (ok) {
-                o->train_resume = rp->from_path;
-                o->lora_path = NULL;
-                o->replay_resumed_at = rp->want_resumed_at = rs;
-            }
-        } else if (ok) {
-            o->lora_path = rp->from_path;
-            o->train_resume = NULL;
-        }
-    } else if (ok && (o->lora_path || o->train_resume)) {
-        fprintf(stderr, "error: fresh training record does not take --lora or --train-resume\n");
-        *rc = 1;
-        ok = false;
-    }
-
-    const char *obj = jv_str(jv_get(rec, "objective"), "");
-    jv *tch = jv_get(rec, "teacher");
-    if (ok && !strcmp(obj, "kl-to-teacher")) {
-        if (!tch || !replay_resolve_teacher(o, rp, tch, rc)) {
-            if (*rc != 2) replay_fail(rc, "teacher", "teacher object", "missing");
-            ok = false;
+// R17.9 step 4: a segment replay's verdict. Every checkpoint the segment wrote
+// (steps A+1..B, every K steps as the record's run wrote them) against the
+// record's entry for that step, adapter and .optim bytes by sha256; then the
+// replay's files go.
+static int replay_segment_verdict(cli_run *rt, const cli_replay *rp, int trc) {
+    int rc = trc, want = 0, got = 0;
+    for (int i = 0; i < rp->seg_n; i++)
+        if (rp->seg_ck[i].step > rp->seg_a && rp->seg_ck[i].step <= rp->seg_b) want++;
+    for (int i = 0; rc == 0 && i < rt->n_ckpt; i++) {
+        const struct train_ckpt *c = &rt->ckpt[i];
+        if (c->step <= rp->seg_a || c->step > rp->seg_b) continue;
+        int j = 0;
+        while (j < rp->seg_n && rp->seg_ck[j].step != c->step) j++;
+        char field[64];
+        if (j == rp->seg_n) {
+            snprintf(field, sizeof field, "checkpoint step %d", c->step);
+            replay_fail(&rc, field, "a step the record names", "an extra checkpoint");
+        } else if (strcmp(c->adapter, rp->seg_ck[j].adapter) != 0) {
+            snprintf(field, sizeof field, "checkpoints[step %d].adapter_sha256", c->step);
+            replay_fail(&rc, field, rp->seg_ck[j].adapter, c->adapter);
+        } else if (strcmp(c->optim, rp->seg_ck[j].optim) != 0) {
+            snprintf(field, sizeof field, "checkpoints[step %d].optim_sha256", c->step);
+            replay_fail(&rc, field, rp->seg_ck[j].optim, c->optim);
         } else {
-            o->train_teacher = rp->teacher_dir;
+            got++;
         }
     }
-
-    jv *kill_v = jv_get(rec, "kill");
-    if (ok) ok = replay_resolve_evals(o, rp, rec, kill_v, rc);
-
-    // Parse hyperparameters and configure CPU-only execution.
-    const char *kv = jv_str(jv_get(rec, "kv_cache"), NULL);
-    jv *nb = jv_get(rec, "no_bos"), *eot = jv_get(rec, "end_of_turn");
-    jv *sv = jv_get(rec, "seed"), *adm = jv_get(rec, "adamw"), *rcp = jv_get(rec, "recipe");
-    int rank = 0, steps = 0, ctx = 0, eot_id = -1, warm = 0, batch = 1;
-    double alpha = 0, lscale = 0, lr = 0, beta = 0.1, wd = 0, lr_floor_d = 0;
-    double b1 = 0, b2 = 0, eps = 0;
-    uint64_t seed_u64 = 0;
-    if (ok) {
-        if (!kv || (strcmp(kv, "f16") && strcmp(kv, "f32")))
-            ok = !replay_fail(rc, "kv_cache", "f16 or f32", kv);
-        else if (!nb || nb->type != J_BOOL)
-            ok = !replay_fail(rc, "no_bos", "bool", "missing");
-        else if (!eot || eot->type != J_BOOL)
-            ok = !replay_fail(rc, "end_of_turn", "bool", "missing");
-        else if (!record_int(rec, "lora_rank", rp->is_full ? 0 : 1, 512, &rank) ||
-                 !record_num(rec, "alpha", 0, FLT_MAX, &alpha) ||
-                 (rp->is_full && (rank != 0 || alpha != 0.0)) ||
-                 !record_num(rec, "lora_scale", 0, FLT_MAX, &lscale) ||
-                 (!from_v && !res_v && fabs(lscale - 1.0) > 1e-6) ||
-                 !record_num(rec, "lr", 0, 1, &lr) ||
-                 !record_int(rec, "steps", 1, INT_MAX, &steps) ||
-                 !record_int(rec, "ctx", 2, INT_MAX, &ctx) ||
-                 !record_int(rec, "eot_id", -1, INT_MAX, &eot_id))
-            ok = !replay_fail(rc, "recipe", "valid training hyperparameters", "invalid");
-        else if (!sv || sv->type != J_NUM ||
-                 !(sv->num_text ? parse_u64(sv->num_text, 0, UINT64_MAX, &seed_u64)
-                                : (sv->num >= 0 && sv->num <= 9007199254740992.0 &&
-                                   sv->num == trunc(sv->num) && (seed_u64 = (uint64_t)sv->num, true))))
-            ok = !replay_fail(rc, "seed", "exact uint64", "invalid");
-        else if (!adm || !record_num(adm, "beta1", 0, 1, &b1) || !record_num(adm, "beta2", 0, 1, &b2) ||
-                 !record_num(adm, "eps", 0, 1, &eps) || !record_num(adm, "weight_decay", 0, 1, &wd) ||
-                 fabs(b1 - TRAIN_ADAM_BETA1) > 1e-6 || fabs(b2 - TRAIN_ADAM_BETA2) > 1e-6 ||
-                 fabs(eps - TRAIN_ADAM_EPS) > 1e-12)
-            ok = !replay_fail(rc, "adamw", "matching AdamW constants", "mismatch");
-        else if (!rcp || !record_int(rcp, "warmup", 0, INT_MAX, &warm) ||
-                 !record_num(rcp, "floor", 0, 1, &lr_floor_d) ||
-                 !record_int(rcp, "batch", 1, 65536, &batch))
-            ok = !replay_fail(rc, "recipe", "valid lr/batch config", "invalid");
+    for (int i = 0; i < rt->n_ckpt; i++) {
+        char p[4200];
+        snprintf(p, sizeof p, "%s.step-%05d", rp->tmp_out, rt->ckpt[i].step);
+        plat_remove(p);
+        snprintf(p, sizeof p, "%s.step-%05d.optim", rp->tmp_out, rt->ckpt[i].step);
+        plat_remove(p);
     }
-    if (ok) {
-        const char *sched = jv_str(jv_get(rcp, "schedule"), "");
-        const char *loss_mode = jv_str(jv_get(rcp, "loss"), "");
-        if (strcmp(sched, "constant") && strcmp(sched, "cosine"))
-            ok = !replay_fail(rc, "recipe.schedule", "constant or cosine", sched);
-        else if (strcmp(loss_mode, "row-sum") && strcmp(loss_mode, "position-mean"))
-            ok = !replay_fail(rc, "recipe.loss", "row-sum or position-mean", loss_mode);
-        else if (batch > 1 && strcmp(loss_mode, "position-mean") != 0)
-            ok = !replay_fail(rc, "recipe.loss", "position-mean", loss_mode);
-        else if (rp->want_t3_exact && (rp->is_full || strcmp(obj, "weighted-cross-entropy") != 0))
-            ok = !replay_fail(rc, "determinism", "cpu-same-binary", "cpu-t3-exact");
-        else if (!strcmp(obj, "dpo")) {
-            if (!record_num(rec, "dpo_beta", 0, FLT_MAX, &beta))
-                ok = !replay_fail(rc, "dpo_beta", "number", "missing");
-            else { o->dpo_path = rp->data_path; o->dpo_beta = (float)beta; o->train_path = NULL; }
-        } else if (!strcmp(obj, "weighted-cross-entropy") || !strcmp(obj, "kl-to-teacher")) {
-            o->train_path = rp->data_path;
-            o->dpo_path = NULL;
-        } else {
-            ok = !replay_fail(rc, "objective", "weighted-cross-entropy, kl-to-teacher or dpo", obj);
-        }
-        if (ok) {
-            o->mp.kv_f32 = strcmp(kv, "f32") == 0;
-            o->train_kv_f32 = o->mp.kv_f32;
-            o->train_full = rp->is_full;
-            o->no_bos = nb->b;
-            o->train_eot = eot->b;
-            o->lora_rank = rank;
-            o->lora_scale = (float)lscale;
-            o->train_lr = (float)lr;
-            o->train_steps = steps;
-            o->train_ctx = ctx;
-            o->seed = seed_u64;
-            o->seed_given = true;
-            o->weight_decay = (float)wd;
-            o->lr_schedule = strcmp(sched, "cosine") == 0 ? 1 : 0;
-            o->lr_warmup = warm;
-            o->lr_floor = (float)lr_floor_d;
-            o->train_batch = (!strcmp(loss_mode, "position-mean") || batch > 1) ? batch : 0;
-            o->mp.gpu_mode = GPU_OFF;
-            o->train_gpu = false;
-            o->train_gpu_budget = 0;
-            o->save_every = 0;
-            o->sign_key = NULL;
-            o->stop_file = NULL;
-            o->train_lp_path = NULL;
-            rp->want_ctx = ctx;
-            rp->want_eot_id = eot_id;
-            rp->want_alpha = (float)alpha;
-            if (kill_v) {
-                int kat = 0; double kmin = 0;
-                const char *km = jv_str(jv_get(kill_v, "metric"), NULL);
-                jv *evals = jv_get(rec, "evals");
-                if (!km || !*km || strlen(km) >= sizeof rp->kill_metric ||
-                    !record_int(kill_v, "at", 1, INT_MAX, &kat) ||
-                    !record_num(kill_v, "min_rel", -1, 1, &kmin) || !evals)
-                    ok = !replay_fail(rc, "kill", "valid kill object", "invalid");
-                else {
-                    snprintf(rp->kill_metric, sizeof rp->kill_metric, "%s", km);
-                    o->kill_at = kat;
-                    o->kill_metric = rp->kill_metric;
-                    o->kill_min_rel = (float)kmin;
-                    o->n_eval = evals->n;
-                    for (int i = 0; i < evals->n; i++) o->eval_spec[i] = rp->eval_specs[i];
-                }
-            } else {
-                o->n_eval = 0;
-                o->kill_at = 0;
-                o->kill_metric = NULL;
-            }
-            if (ok && retrain) {
-                // the retrain trains the retained rows into the caller's output, signed as asked
-                o->train_path = o->unlearn_retained;
-                o->sign_key = caller_sign_key;
-                o->replay_data = NULL;
-            } else if (ok && snprintf(rp->tmp_out, sizeof rp->tmp_out, "%s/runner-replay-%ld.gguf",
-                               plat_runtime_dir(), plat_pid_self()) < (int)sizeof rp->tmp_out) {
-                plat_remove(rp->tmp_out);
-                o->train_out = rp->tmp_out;
-            } else if (ok) {
-                fprintf(stderr, "error: replay output path too long\n");
-                *rc = 1;
-                ok = false;
-            }
-        }
+    char p[4200];
+    snprintf(p, sizeof p, "%s.optim", rp->tmp_out);
+    plat_remove(p);
+    plat_remove(rp->tmp_out);
+    free(rt->ckpt);
+    rt->ckpt = NULL;
+    rt->n_ckpt = rt->cap_ckpt = 0;
+    if (rc == 0 && got != want) {
+        char wb[32], gb[32];
+        snprintf(wb, sizeof wb, "%d", want);
+        snprintf(gb, sizeof gb, "%d", got);
+        replay_fail(&rc, "checkpoints in the segment", wb, gb);
     }
-    jv_free(rec);
-    return !ok;
+    if (rc != 0) return rc;
+    printf("VERIFIED segment %d..%d: steps %d to %d, %d checkpoint%s, adapter and optimizer state byte for byte\n",
+           rp->seg_a, rp->seg_b, rp->seg_a + 1, rp->seg_b, got, got == 1 ? "" : "s");
+    return 0;
 }
 
 static int run_replay_train(cli_opts *o, cli_run *rt, const cli_replay *rp,
@@ -7475,6 +7014,7 @@ static int run_replay_train(cli_opts *o, cli_run *rt, const cli_replay *rp,
         }
     }
     int trc = run_train(o, rt, tmpl_override, load_path);
+    if (rp->segment) return replay_segment_verdict(rt, rp, trc);
     if (trc != 0) {
         plat_remove(rp->tmp_out);
         return trc;
@@ -7491,7 +7031,9 @@ static int run_replay_train(cli_opts *o, cli_run *rt, const cli_replay *rp,
                     rp->want_out_sha, got_sha);
         return rc;
     }
-    printf("VERIFIED %s sha256 %s\n", rp->want_out_path, got_sha);
+    fputs("VERIFIED ", stdout);
+    envelope_print_safe(stdout, rp->want_out_path, 0, "?", false);
+    printf(" sha256 %s\n", got_sha);
     return 0;
 }
 
@@ -8873,6 +8415,7 @@ static int run_resume(cli_opts *o, cli_run *rt, session_image *simg, const char 
     if (!why && !engine_state_load(&rt->e, simg->tokens, sm->n_tokens, simg->state))
         why = "this model's KV layout (a tied-V cache, or a ring with a gap below its "
               "span) cannot be resumed";
+    if (!why) session_restore_mark(&rt->e, sm);   // R3.60
     if (why) {
         fprintf(stderr, "error: --resume %s: %s\n", o->resume_path, why);
         session_image_free(simg);
@@ -9208,7 +8751,190 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
 // the caller frees it after this returns, on every path. About twenty-five
 // returns follow the read (a schema that does not match, the model's flags,
 // the load), and only the resume itself freed the image (R6.68.41).
+// R17.9 step 4b: attest replay RECORD --sample s --seed S [--report FILE].
+// The auditor draws s of the record's M segments (the intervals between its
+// checkpoints, the first from the run's start) and each drawn segment is
+// replayed by --segment in a child process of this binary, so each starts
+// from a clean state: the first interval from the seed's adapter init, as a
+// full replay starts, the others from their step-A files. The draw ranks
+// segment j by sha256("xyntetik.runner.train.sample.v1|SEED|head|j") and
+// takes the s lowest; SEED is the auditor's (never the record's), and the
+// header line gives everything a third party needs to redo the draw.
+#define SAMPLE_ALGO "xyntetik.runner.train.sample.v1"
+typedef struct { char h[65]; int j; } sample_rank;
+static int sample_rank_cmp(const void *a, const void *b) {
+    // a total order: the hash, then the index (two equal hashes would
+    // otherwise leave qsort's order to the C library)
+    const sample_rank *x = a, *y = b;
+    int c = strcmp(x->h, y->h);
+    return c ? c : (x->j > y->j) - (x->j < y->j);
+}
+static int sample_int_cmp(const void *a, const void *b) {
+    return *(const int *)a - *(const int *)b;
+}
+
+static int g_cli_argc;
+static char **g_cli_argv;
+
+static int run_replay_sample(cli_opts *o, const train_record_host *host, const train_record_opts *to) {
+    int argc = g_cli_argc;
+    char **argv = g_cli_argv;
+    if (!o->sample_given) {
+        fprintf(stderr, "error: --seed is the auditor's seed of --sample (runner attest replay RECORD --sample s "
+                "--seed S), and --report its report; the sampler's seed is -s\n");
+        return 1;
+    }
+    if (!o->replay_train || o->unlearn_audit) {
+        fprintf(stderr, "error: --sample is an option of runner attest replay RECORD\n");
+        return 1;
+    }
+    if (o->replay_segment) {
+        fprintf(stderr, "error: --sample draws its segments itself: --sample or --segment, not both\n");
+        return 1;
+    }
+    if (!o->audit_seed) {
+        fprintf(stderr, "error: --sample needs --seed S: the auditor's own seed (32 or more hex digits, or os), "
+                "chosen after the record is fixed and never taken from it\n");
+        return 1;
+    }
+    char seed[129];
+    if (!strcmp(o->audit_seed, "os")) {
+        uint8_t b[32];
+        if (!plat_random(b, sizeof b)) {
+            fprintf(stderr, "error: --seed os: the system's random source failed\n");
+            return 1;
+        }
+        for (int i = 0; i < 32; i++) snprintf(seed + 2 * i, 3, "%02x", b[i]);
+    } else {
+        size_t n = strlen(o->audit_seed);
+        for (size_t i = 0; i < n; i++)
+            if (!isxdigit((unsigned char)o->audit_seed[i])) {
+                fprintf(stderr, "error: --seed wants hex digits (or os)\n");
+                return 1;
+            }
+        if (n < 32 || n > 128) {
+            fprintf(stderr, "error: --seed wants at least 128 bits: 32 to 128 hex digits (or os)\n");
+            return 1;
+        }
+        for (size_t i = 0; i <= n; i++) seed[i] = (char)tolower((unsigned char)o->audit_seed[i]);
+    }
+    int bounds[257], m = 0, rc = 0;
+    char head[65] = "";
+    if (!train_record_sample_plan(host, to, bounds, 257, &m, head, &rc)) return rc ? rc : 1;
+    int s = o->replay_sample;
+    if (s < 1 || s > m) {
+        fprintf(stderr, "error: --sample %d: s must be between 1 and %d, the record's segments\n", s, m);
+        return 1;
+    }
+    sample_rank rk[256];
+    char line[512];
+    for (int j = 0; j < m; j++) {
+        int n = snprintf(line, sizeof line, "%s|%s|%s|%d", SAMPLE_ALGO, seed, head, j);
+        envelope_data_sha256(line, (size_t)n, rk[j].h);
+        rk[j].j = j;
+    }
+    qsort(rk, (size_t)m, sizeof rk[0], sample_rank_cmp);
+    int drawn[256];
+    for (int i = 0; i < s; i++) drawn[i] = rk[i].j;
+    qsort(drawn, (size_t)s, sizeof drawn[0], sample_int_cmp);
+    printf("sample: %s, seed %s, record head %s, %d segments, %d drawn\n", SAMPLE_ALGO, seed, head, m, s);
+    printf("sample: drawn");
+    for (int i = 0; i < s; i++) printf(" %d..%d", bounds[drawn[i]], bounds[drawn[i] + 1]);
+    printf("\n");
+    fflush(stdout);
+    // each drawn segment in a child: this binary, the caller's arguments
+    // without the sample's own, and --segment A..B
+    char *exe = plat_executable_path();
+    const char **cargv = calloc((size_t)argc + 4, sizeof *cargv);
+    if (!exe || !cargv) {
+        free(exe);
+        free(cargv);
+        fprintf(stderr, "error: --sample: out of memory\n");
+        return 1;
+    }
+    int cn = 0;
+    cargv[cn++] = exe;
+    for (int i = 1; i < argc; i++) {
+        const char *a = argv[i];
+        bool own = !strcmp(a, "--sample") || !strcmp(a, "--seed") || !strcmp(a, "--report");
+        if (own) { i++; continue; }
+        if (!strncmp(a, "--sample=", 9) || !strncmp(a, "--seed=", 7) || !strncmp(a, "--report=", 9)) continue;
+        cargv[cn++] = a;
+    }
+    char segarg[64];
+    cargv[cn++] = "--segment";
+    cargv[cn++] = segarg;
+    cargv[cn] = NULL;
+    int verdict[256], bad = 0, errs = 0;
+    for (int i = 0; i < s; i++) {
+        snprintf(segarg, sizeof segarg, "%d..%d", bounds[drawn[i]], bounds[drawn[i] + 1]);
+        verdict[i] = plat_spawn_wait(cargv);
+        fflush(stdout);
+        if (verdict[i] == 2) bad++;
+        else if (verdict[i] != 0) errs++;   // the child could not finish: no verdict on that segment
+    }
+    free(cargv);
+    free(exe);
+    double missed = (double)(m - s) / (double)m;
+    const char *word = errs ? "ERROR" : bad ? "MISMATCH" : "VERIFIED";
+    if (errs) printf("ERROR sample: %d of the %d drawn segments could not be replayed (no verdict on them)%s\n",
+                     errs, s, bad ? ", and others did not verify" : "");
+    else if (bad) printf("MISMATCH sample: %d of the %d drawn segments did not verify\n", bad, s);
+    else printf("VERIFIED sample: %d of %d segments, byte for byte\n", s, m);
+    printf("sample: bound: if k of the %d segments are false, %d random segments miss all of them with probability "
+           "C(%d-k,%d)/C(%d,%d); one false segment is missed with probability %.4g. It holds for a seed drawn at "
+           "random after the record was fixed and kept from its author; it proves nothing about the segments not "
+           "drawn, and an auditor who always picks the same segment proves that segment only.\n",
+           m, s, m, s, m, s, missed);
+    if (o->audit_report) {
+        // never over a file that is not a sample report (the record, a
+        // checkpoint, anything else): read its head first
+        static const char want[] = "{\"schema_version\":\"xyntetik.runner.sample.v1\"";
+        FILE *old = plat_fopen(o->audit_report, "rb");
+        if (old) {
+            char hb[sizeof want] = "";
+            size_t got = fread(hb, 1, sizeof want - 1, old);
+            fclose(old);
+            if (got != sizeof want - 1 || memcmp(hb, want, sizeof want - 1) != 0) {
+                fputs("error: --report ", stderr);
+                envelope_print_safe(stderr, o->audit_report, 0, "?", false);
+                fputs(" exists and is not a sample report: refusing to overwrite it\n", stderr);
+                return 1;
+            }
+        }
+        char tmp[4200];
+        // RUNNER_TEST_PARTIAL_SUFFIX fixes the temporary name's suffix, so a
+        // test can plant a file there (tests/test_train_segments.py)
+        bool made = false;
+        FILE *f = plat_fopen_partial(o->audit_report, "partial", tmp, sizeof tmp, &made);
+        bool wok = made;
+        if (f) {
+            fprintf(f, "{\"schema_version\":\"xyntetik.runner.sample.v1\",\"algorithm\":\"%s\",\"record\":", SAMPLE_ALGO);
+            fput_json_str(f, plat_path_base(o->replay_train));
+            fprintf(f, ",\"record_head\":\"%s\",\"seed\":\"%s\",\"segments\":%d,\"sampled\":%d,\"drawn\":[",
+                    head, seed, m, s);
+            for (int i = 0; i < s; i++)
+                fprintf(f, "%s{\"segment\":\"%d..%d\",\"verdict\":\"%s\"}", i ? "," : "", bounds[drawn[i]],
+                        bounds[drawn[i] + 1], verdict[i] == 0 ? "VERIFIED" : verdict[i] == 2 ? "MISMATCH" : "ERROR");
+            fprintf(f, "],\"verdict\":\"%s\",\"one_false_missed\":%.4g}\n", word, missed);
+            wok = !ferror(f);
+            wok = fclose(f) == 0 && wok;
+        }
+        wok = wok && plat_replace_file(tmp, o->audit_report);
+        if (!wok) {
+            if (made) plat_remove(tmp);   // only a file this run made: never what was planted there
+            fputs("error: cannot write --report ", stderr);
+            envelope_print_safe(stderr, o->audit_report, 0, "?", false);
+            fputc('\n', stderr);
+            return 1;
+        }
+    }
+    return errs ? 1 : bad ? 2 : 0;
+}
+
 static int cli_main(int argc, char **argv, char **owned_prompt, session_image *simg) {
+    g_cli_argc = argc;   // --sample passes them on to each segment's replay
+    g_cli_argv = argv;
     // the model, tokenizer and engine the modes run on, and what the load
     // decided about them; cli_cleanup frees them on every exit after the load
     cli_run rt_state;
@@ -9253,6 +8979,47 @@ static int cli_main(int argc, char **argv, char **owned_prompt, session_image *s
 
     if (!cli_chat_flags_ok(o)) return 1;
     if (run_record_utility(o, &rc)) return rc;
+    {
+        // R3.60: the source this binary was built from is part of every row's
+        // route identity (the receipt prints the same)
+        bool dirty = false;
+        const char *rev = provenance_build_commit(&dirty);
+        // R20: a dirty build is identified by its own bytes, hashed once here.
+        // Test seams: RUNNER_TEST_BUILD_DIRTY=1 marks the build dirty (it can
+        // only add dirt), RUNNER_TEST_IDENTITY_WAIT=F waits, up to a minute,
+        // until F exists before the identity is taken.
+        const char *td = getenv("RUNNER_TEST_BUILD_DIRTY");
+        if (td && !strcmp(td, "1")) dirty = true;
+        const char *tw = getenv("RUNNER_TEST_IDENTITY_WAIT");
+        for (int i = 0; tw && *tw && i < 600 && !plat_file_readable(tw); i++) plat_sleep_ms(100);
+        // The identity of the image running, never of a file a path names now:
+        // on Linux the hash of /proc/self/exe (the image itself), on macOS the
+        // loaded image's LC_UUID, on Windows the PE build id in the loaded module's
+        // headers (plat_running_image_id: memory, no file), elsewhere none: a
+        // value of this process, said once on stderr since it ends cross-process reuse.
+        char bid[96] = "";
+        if (dirty) {
+            char sha[65];
+#if defined(__linux__)
+            const char *kind = "sha256:/proc/self/exe";
+            if (envelope_file_sha256("/proc/self/exe", sha)) snprintf(bid, sizeof bid, "sha256:%s", sha);
+#else
+            (void)sha;
+            if (!plat_running_image_id(bid, sizeof bid)) bid[0] = 0;
+            char kbuf[32];
+            snprintf(kbuf, sizeof kbuf, "%.*s", (int)strcspn(bid, ":"), bid);
+            const char *kind = kbuf;
+#endif
+            // the test seam names the kind of identity taken (tests/test_route_identity_running_image.py)
+            if (td && !strcmp(td, "1"))
+                fprintf(stderr, "runner: test: image identity: %s\n", bid[0] ? kind : "none");
+            if (!bid[0])
+                fprintf(stderr, "runner: warning: this dirty build has no identity of its running image here, so "
+                        "it reuses nothing another process persisted (prefix stores, automatic snapshots, "
+                        "sessions)\n");
+        }
+        model_route_set_build(rev ? rev : "", dirty, bid[0] ? bid : NULL);
+    }
     cli_replay rp;
     memset(&rp, 0, sizeof rp);
     if (cli_prepare_replay_train(o, &rp, &rc)) return rc;

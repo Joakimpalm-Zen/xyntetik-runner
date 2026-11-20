@@ -138,6 +138,9 @@ enum { GPU_PREFILL_NONE, GPU_PREFILL_TILE_TWIN, GPU_PREFILL_TWINS, GPU_PREFILL_P
        GPU_PREFILL_TILE };
 bool gpu_prefill_twin16(const model_t *m, int type);
 int  gpu_prefill_route(const model_t *m, int type, int batch, bool scaled);
+// the same question for a tensor of n_in x n_out (R6.62: a route can depend on
+// the shape, as BF16's split-K does on qwen4exp)
+int  gpu_prefill_route_shape(const model_t *m, int type, int n_in, int n_out, int batch, bool scaled);
 // of those, the ones the pipelined TC2 kernels ran (CUDA, RUNNER_CUDA_TC2)
 unsigned long gpu_tc2_dispatches(void);
 unsigned long gpu_tc2_reused(void);   // TC2 GEMMs that reused the previous GEMM's staging
@@ -242,6 +245,12 @@ bool   gpu_tc_type_has_kernel(int type);
 // to tests/test_mv_tol.c the way the tiled prefill GEMM answers to
 // test_tc_tol.c, and the identity route stays reachable and unchanged.
 void   gpu_mv_force(int on);
+// Test-only (R6.62): y = W x over tn columns through the device encoder's own
+// route choice (enc_mv) on m's device context, the way a prompt's product of w
+// would run. x holds tn rows of n_in, y tn rows of n_out; w must be resident.
+// No CLI path calls it. false = no device, w not resident, or a failed launch.
+bool   gpu_test_mv(model_t *m, gguf_tensor *w, const float *x, float *y,
+                   int n_in, int n_out, int tn);
 // How many times the fast matvec has actually been dispatched. Same reason the
 // TC path counts: "the logits differ" cannot tell an unused kernel apart from
 // an exactly-matching one, and a gate that cannot see its own subject passes
@@ -267,6 +276,9 @@ unsigned long gpu_attn_gqa_dispatches(void);   // grouped-query decode groups (M
 // CUDA's BF16 split-K decode GEMV (k_mv_bf16_splitk) launches, so its gate
 // can prove the route ran; 0 on every other backend.
 unsigned long gpu_splitk_dispatches(void);
+// its width-classed twin (k_mv_bf16_splitk_b) launches, one per pass of up to
+// 16 prompt columns (R6.62); 0 on every other backend
+unsigned long gpu_splitk_twin_dispatches(void);
 // Device allocations the engine holds right now (every cuMemAlloc it made
 // and has not freed), or -1 where the backend does not count them. A model
 // loaded and freed must leave it where it was (tests/test_cuda_teardown.c).

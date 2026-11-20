@@ -815,6 +815,48 @@ flipped byte.
 
 **Limits first:** cross-machine replay works only for strict `T3=1` CPU dense LoRA cross-entropy records (`"determinism":"cpu-t3-exact"`, 27% to 41% slower on Apple Silicon at 4B); GPU records (`gpu-within-tolerance`) are refused, `cpu-same-binary` records require `--allow-same-binary` with the exact `build.binary_sha256`, the auditor must hold the base GGUF and training data, and replay proves training provenance rather than adapter quality. Pre-flight checks the signature (`--trust-key`), `runner` version, build compatibility, and every input sha256 before training begins, exiting `0` (`VERIFIED <path> sha256 <hex>`) or `2` (`MISMATCH <field>: ...`).
 
+### Segment replay (an audit of part of a run)
+
+```sh
+./runner attest replay adapter.gguf.train.json --segment 40..60
+```
+
+**Limits first:**
+- **A sampled audit is probabilistic.** A segment re-run proves that segment only: an unchecked segment is unproven. If an auditor re-runs s of a run's M segments and k of them are false, the audit misses every false one with probability C(M-k, s) / C(M, s); for one false segment, it catches it with probability s/M.
+- **The sample is the auditor's, drawn after the record is fixed,** from the auditor's own randomness. A trainer who knows which segments will be checked can make only those honest.
+- **What prior work showed:** proof-of-learning (Jia et al., IEEE S&P 2021) re-executes chosen training segments and accepts them within a tolerance. Zhang et al. (IEEE S&P 2022) and Fang et al. (EuroS&P 2023) forged checkpoint chains, cheaper than training, that pass inside that tolerance. A segment here must match byte for byte (adapter and optimizer state), which removes the tolerance those forgeries used. It does not remove the sampling gap: a forged segment no auditor re-runs still passes.
+- **The same scope as a whole replay:** exact across machines only for strict `T3=1` CPU records; same-binary otherwise (`--allow-same-binary`). A record of a run with a teacher, DPO, `--train-full` or a resumed run is refused by name.
+
+A run with `--save-every K` writes a checkpoint every K steps and at its last, and its record lists each one (`checkpoints`: step, rows consumed, the sha256 of the adapter and of its `.optim` sidecar). A chain over them, `checkpoint_chain`, starts from `h0`, a hash of the record's own bytes before the chain, so the list cannot be moved to a record of another base, data or recipe. `--segment A..B` takes two of those steps (A may be 0, the run's start):
+1. it checks the chain, and that the step-A files beside the record are the ones the record names, before anything trains;
+2. it resumes there with the record's whole recipe, so the learning-rate schedule is the run's;
+3. it stops after step B and compares every checkpoint in between, byte for byte.
+
+Measured on 2026-11-18 (T3 build): runs resumed from a checkpoint are the uninterrupted run byte for byte at every later checkpoint, with warmup and a cosine schedule, at another thread count, with an eval set, and on Qwen3-0.6B. `tests/test_train_segments.py` keeps the fixture case as a gate in CI's T3 job.
+
+### Sampled audit (s random segments)
+
+```sh
+./runner attest replay adapter.gguf.train.json --sample 3 --seed os --report audit.json
+```
+
+**Limits first:** the printed probability is a bound for **random** draws by an auditor, and nothing more:
+- If k of the record's M segments are false, s segments drawn at random miss all of them with probability C(M-k, s) / C(M, s). One false segment is missed with probability (M-s)/M.
+- It holds only if the seed was chosen after the record was fixed and kept from the record's author. An auditor who always audits the same segment (the last one, say) proves that segment only, and an author who expects that can make only it honest.
+- It proves nothing about the segments not drawn.
+- **Why the seed must stay unknown until the record is fixed:** the draw depends on the record's chain head. So an author who knew the seed beforehand could re-make the record (another checkpoint interval, another byte anywhere in it) until a draw misses the false segments. That takes about C(M, s) / C(M-k, s) tries on average, few for small M. A seed chosen after the record is fixed leaves nothing to try.
+- **The verdicts:**
+  - VERIFIED: every drawn segment matched;
+  - MISMATCH (exit 2): one did not;
+  - ERROR (exit 1): a drawn segment could not be replayed at all, so there is no verdict on it.
+
+The record's own checks (schema, signature, determinism) run once before the draw.
+
+The draw ranks segment j (the interval between two of the record's checkpoints, the first from the run's start) by sha256(`xyntetik.runner.train.sample.v1|SEED|head|j`), where head is the record's `checkpoint_chain.head`, and replays the s lowest. Each drawn segment is replayed by `--segment` in a process of its own, so the first interval starts from the seed's adapter initialisation, as a full replay does.
+- **SEED** is the auditor's: `--seed` takes 32 to 128 hex digits (at least 128 bits), or `os` to draw them from the system's random source. It is never read from the record.
+- **The first two lines printed** carry everything a third party needs to redo the draw: the algorithm, the seed, the record's head, M, s and the drawn segments.
+- **`--report FILE`** writes the same as JSON (`xyntetik.runner.sample.v1`): each drawn segment with its verdict, the verdict, and the one-false-segment miss probability. Nothing reads it back yet.
+
 ### Exact unlearning (a retrain with a receipt)
 
 ```sh
@@ -954,7 +996,7 @@ row is in the [command-line reference](../MANUAL.md#command-line-reference).
 optimizer state), `ADAPTER.gguf.killed.json` / `.kill-check.json` (the kill
 rule's verdict),
 `MERGED.gguf.merge.json` (a merge record), `ADAPTER.gguf.sig` (an OMS bundle),
-`*.partial` (a write in progress, never installed on failure).
+`*.partial-*` (a write in progress with an unpredictable suffix, never installed on failure).
 
 **Environment.** `RUNNER_TRAIN_GPU=1` (the CUDA assist, same bytes; `--train-gpu`
 is the whole step on the GPU), `RUNNER_TRAIN_DEVICE_STEP=0` (`--train-gpu`

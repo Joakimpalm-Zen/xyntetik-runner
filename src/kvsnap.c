@@ -195,10 +195,9 @@ static bool save_one(const engine *e, const char *ctx, int slot_n, jv *req, sbuf
     if (!provenance_digests(mhex, bhex))
         return fail(err, 409, "model_digest_unavailable", "the served model's "
                     "digest is unavailable; a snapshot must name it");
-    char kvpath[1200], manpath[1200], tmp[1300];
+    char kvpath[1200], manpath[1200];
     snprintf(kvpath, sizeof kvpath, "%s/%s.kv", KS.dir, name);
     snprintf(manpath, sizeof manpath, "%s/%s.kv.json", KS.dir, name);
-    snprintf(tmp, sizeof tmp, "%s.partial", manpath);
     pthread_mutex_lock(&KS.mu);
     bool ok = false;
     sbuf m = {0};
@@ -284,23 +283,7 @@ static bool save_one(const engine *e, const char *ctx, int slot_n, jv *req, sbuf
         }
         // chained like any record; signed through the record signer when a
         // key was given, else the chain object is written here
-        bool wrote;
-        if (KS.sign_key[0]) {
-            FILE *mf = plat_fopen(tmp, "wb");
-            wrote = mf && fwrite(m.s, 1, m.n, mf) == m.n && fputc('}', mf) != EOF;
-            if (mf && fclose(mf) != 0) wrote = false;
-            wrote = wrote && record_sign(tmp, KS.sign_key, NULL);
-        } else {
-            char chain[65];
-            envelope_data_sha256(m.s, m.n, chain);
-            sb_fmt(&m, ",\"chain\":{\"algo\":\"sha256\",\"prev\":\"\",\"hash\":"
-                       "\"%s\"}}", chain);
-            FILE *mf = plat_fopen(tmp, "wb");
-            wrote = !m.failed && mf && fwrite(m.s, 1, m.n, mf) == m.n;
-            if (mf && fclose(mf) != 0) wrote = false;
-        }
-        if (!wrote || plat_rename(tmp, manpath) != 0) {
-            plat_remove(tmp);
+        if (!kvsnap_write_manifest_file(manpath, m.s, m.n, KS.sign_key)) {
             plat_remove(kvpath);
             fail(err, 500, "snapshot_write_failed", "cannot write %s.kv.json", name);
             break;
@@ -425,6 +408,13 @@ static bool load_one(engine *e, const char *id, const char *name, bool slot, sbu
             // must not take this turn's snapshot out of its receipt
             snprintf(e->snap_name, sizeof e->snap_name, "%s", name);
             snprintf(e->snap_origin, sizeof e->snap_origin, "%s", origin);
+            // R3.60: only an automatic preamble snapshot loads into a slot, and
+            // its name carries this release's salt and the arithmetic class,
+            // while its writer (prefix_slot_export) refuses scored rows: its
+            // rows are a prompt's prefill pass of this class, not of the
+            // unknown provenance a load gives (engine_state_load)
+            e->scored_from = INT_MAX;
+            e->rows_route = engine_prompt_route(e);
         }
         if (n == PFX_CTX_MISMATCH) {
             fail(err, 409, "snapshot_model_mismatch", "snapshot %s was made for "
@@ -529,7 +519,13 @@ void kvsnap_auto_name(const engine *e, const int32_t *toks, int n,
     uint8_t *buf = malloc(nb);
     char hex[65] = "";
     if (buf) {
-        memcpy(buf, &e->model_key, sizeof(uint64_t));
+        // R3.60: a preamble's rows are a prompt's prefill pass, which no longer
+        // depends on -b; a snapshot written before it holds the old rows, so
+        // its name is not this one and it is never loaded (it ages out of the
+        // directory as the trim takes it). Named snapshots are not salted:
+        // loading one is an explicit resume.
+        uint64_t key = e->model_key ^ 0x5233362e36302e31ull ^ engine_prompt_route(e);   // "R36.60.1", and the route
+        memcpy(buf, &key, sizeof(uint64_t));
         memcpy(buf + sizeof(uint64_t), toks, sizeof(int32_t) * (size_t)n);
         envelope_data_sha256(buf, nb, hex);
         free(buf);
@@ -690,6 +686,32 @@ void kvsnap_auto_save(engine *e, const char *name, int n) {
     pthread_mutex_lock(&KS.mu);
     auto_trim(name);
     pthread_mutex_unlock(&KS.mu);
+}
+
+bool kvsnap_write_manifest_file(const char *manpath, const char *body_open,
+                                size_t body_len, const char *sign_key) {
+    if (!manpath || !*manpath || !body_open || body_len == 0) return false;
+    char tmp[4200];
+    bool made = false;
+    FILE *mf = plat_fopen_partial(manpath, "partial", tmp, sizeof tmp, &made);
+    if (!mf) return false;
+    bool wrote = fwrite(body_open, 1, body_len, mf) == body_len;
+    if (sign_key && sign_key[0]) {
+        wrote = wrote && fputc('}', mf) != EOF;
+        if (fclose(mf) != 0) wrote = false;
+        wrote = wrote && record_sign(tmp, sign_key, NULL);
+    } else {
+        char chain[65];
+        envelope_data_sha256(body_open, body_len, chain);
+        wrote = wrote && fprintf(mf, ",\"chain\":{\"algo\":\"sha256\",\"prev\":\"\","
+                                     "\"hash\":\"%s\"}}", chain) > 0;
+        if (fclose(mf) != 0) wrote = false;
+    }
+    if (!wrote || !plat_replace_file(tmp, manpath)) {
+        if (made) plat_remove(tmp);
+        return false;
+    }
+    return true;
 }
 
 bool kvsnap_auto_origin(const engine *e, const char *name, char *out, size_t cap) {

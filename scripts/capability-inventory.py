@@ -53,9 +53,9 @@ SOURCE_RULES = [
                  "registry", "session", "respstore", "kvsnap", "decide", "clef", "vramreg",
                  "hfhub", "model_roster"}),
     ("substrate", {"gguf", "tokenizer", "unicode_classes", "unicode_nfc", "npy", "json",
-                   "compat", "arch"}),
+                   "compat", "arch", "pe_buildid"}),
     ("production", {"quantize", "derive", "dpo", "tdn_args"}),
-    ("proof", {"receipts", "bundle", "provenance", "envelope", "lineage", "oms", "ecdsa",
+    ("proof", {"receipts", "bundle", "provenance", "envelope", "lineage", "train_record", "oms", "ecdsa",
                "ed25519", "mldsa", "watermark", "build_arch", "micro_sched"}),
     ("desktop", {"tray", "tray_win", "tray_macos", "tray_stub", "instances"}),
     ("shared", {"main", "model", "completion", "runner"}),
@@ -117,10 +117,10 @@ HTTP_RULES = {
 # components, needs a name rule.
 ENV_NAME_RULES = [
     ("production", re.compile(r"^(TRAIN_|LORA_ADAM_|GOLD_|TEST_BUILD_DIRTY$)")),
-    ("runtime", re.compile(r"^(SCHEMA_|PREFIX_CACHE_|REPEAT_COUNT$|SCORE_|TEST_SCRIPTED_REPLY$|"
+    ("runtime", re.compile(r"^(SCHEMA_|PREFIX_CACHE_|REPEAT_COUNT$|SCORE_|TEST_SCRIPTED_REPLY$|TEST_ROUTE_FLIP_AT$|TEST_IDENTITY_WAIT$|"
                            r"TEST_STREAM_OUT_CAP$|VRAM_PRIORITY$)")),
     ("substrate", re.compile(r"^(ALLOW_UNKNOWN_ARCH|PREFETCH|TEST_LOAD_DELAY_MS|"
-                             r"TEST_NO_FILE_ID|TEST_NO_INODE|LORA_INSTALL_FAIL)$")),
+                             r"TEST_NO_FILE_ID|TEST_NO_INODE|TEST_PARTIAL_SUFFIX$|LORA_INSTALL_FAIL)$")),
     ("execution", re.compile(r"^(ACT_TRACE|ATTN_|CPU_MOE_DEFAULT$|DEBUG_(ACT|ROUTE|TIME|VRAM)$|GPU_FALLBACK$|"
                              r"KV_|LAYER_SIM$|MLA_|MOE_|MTP_|MV_FUSE$|SPEC_BATCH$|TIEDV|"
                              r"TEST_VRAM_FREE_MB$|"
@@ -133,7 +133,8 @@ RECORD_RULES = {
                 "score"},
     "production": {"train", "merge", "quant", "derive", "eval", "context-surgery"},
     "proof": {"transcript", "verify", "bundle", "envelope", "evidence-pack", "signkey",
-              "watermark_key", "watermark.key_id", "watermark_detect"},
+              "watermark_key", "watermark.key_id", "watermark_detect", "train.chain",
+              "train.sample", "sample"},
 }
 
 PYTHON_RULES = {"runtime": {"xyntetik_runner"}, "shadow": {"xyntetik_runner.shadow"}}
