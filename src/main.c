@@ -6193,16 +6193,29 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
             tokens += ex->n;
         }
         if (!ok) { rc = 1; break; }
-        if (rt->m.train_res_windows - res_w0 == B) rt->m.train_res_steps++;
+        bool resident = rt->m.train_res_windows - res_w0 == B;
+        if (resident) rt->m.train_res_steps++;
         double ml = wsum > 0 ? loss_sum / wsum : loss_sum;
         bool full = model_full_on(&rt->m);
-        if (mean && wsum > 0) {
+        double gmax = 0, gmean = 0;
+        // R8.24.1 B R4: a step every window of which ran resident takes the
+        // mean's scale, the norms and AdamW on the device; where it does not
+        // (0: the reason said once), the host's below
+        int dev = 0;
+        if (resident && !full && fp_finite_f64(ml)) {
+            dev = model_lora_res_adam_step(&rt->m, mean && wsum > 0 ? (float)(1.0 / wsum) : 1.0f,
+                                           (float)lr, (float)TRAIN_ADAM_BETA1,
+                                           (float)TRAIN_ADAM_BETA2, (float)TRAIN_ADAM_EPS,
+                                           o->weight_decay, step, &gmax, &gmean);
+            if (dev == -1) { rc = 1; break; }
+        }
+        if (!dev && mean && wsum > 0) {
             if (full) model_full_grad_scale(&rt->m, (float)(1.0 / wsum));
             else model_lora_grad_scale(&rt->m, (float)(1.0 / wsum));
         }
-        double gmax = 0, gmean = 0;
-        if (!fp_finite_f64(ml) || !(full ? model_full_grad_norms(&rt->m, &gmax, &gmean)
-                                         : model_lora_grad_norms(&rt->m, &gmax, &gmean))) {
+        if (dev == -2 || !fp_finite_f64(ml) ||
+            (!dev && !(full ? model_full_grad_norms(&rt->m, &gmax, &gmean)
+                            : model_lora_grad_norms(&rt->m, &gmax, &gmean)))) {
             fprintf(stderr, "error: step %d: the loss or a gradient is not finite; "
                     "the adapter stays as step %d left it\n", step, step - 1);
             rc = 1;
@@ -6216,7 +6229,7 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
             rc = 1;
             break;
         }
-        if (!train_adam_step(o, rt, step, lr)) { rc = 1; break; }
+        if (dev != 1 && !train_adam_step(o, rt, step, lr)) { rc = 1; break; }
         st->step = step;
         if (first) { *first_loss = ml; first = false; }
         *last_loss = ml;
@@ -6600,10 +6613,11 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
                      "\"tensors_on_cpu\":%d,\"cpu_bytes\":%llu,"
                      "\"deltanet_device_calls\":%ld,\"deltanet_failed_calls\":%ld,"
                      "\"attention_device_calls\":%ld,\"attention_failed_calls\":%ld,"
-                     "\"resident_steps\":%ld},",
+                     "\"resident_steps\":%ld,\"resident_adam_steps\":%ld},",
                (unsigned long long)bud, bud_set ? "--train-gpu-budget" : "free memory",
                on_dev, (unsigned long long)dev_b, on_cpu, (unsigned long long)cpu_b,
-               dn_dev, dn_failed, ab_dev, ab_failed, rt->m.train_res_steps);
+               dn_dev, dn_failed, ab_dev, ab_failed, rt->m.train_res_steps,
+               rt->m.train_res_adam_steps);
     }
     // R8.17: the held-out sets (rows and teacher hashed like the data), the
     // kill rule and the step a resumed run started from

@@ -9006,6 +9006,19 @@ typedef struct {
     int         res_tab_n;              // its layers (gpu_train_free drops each)
     CUfunction  f_thead;                // R8.24.1 B5, the head
     CUfunction  f_tadam, f_tgnorm;      // R8.24.1 B7, AdamW and the gradient norms
+    // R4 of the resident step: the optimizer on the device. The step's
+    // gradients copied from the sites into one arena in the host's table order
+    // (OA_G), the moments laid out alike and kept across steps (OA_M, OA_V);
+    // each segment's offset and length (floats), its site and half (site * 2,
+    // + 1 for B), each layer's first segment, each site's first segment (-1:
+    // none); the norms' tables on the device (offsets, lengths, layers, out)
+    CUfunction  f_tscale;
+    CUdeviceptr oa[3], ot[4];
+    size_t      oa_cap[3], ot_cap[4];
+    uint64_t   *o_off, *o_len;
+    int        *o_seg_site, *o_layer_seg, *o_site_seg;
+    int         o_nseg;
+    size_t      o_n;                    // the arena's floats; 0 until laid out
     // R3 of the resident step: the head's planes for a round's scored rows
     // (RH_*), the output norm and the suppress list on the device (frozen:
     // up once), the round gpu_train_res_round last ran (the head reads its
@@ -9159,6 +9172,7 @@ bool gpu_train_init(model_t *m) {
     if (cu.ModuleGetFunction(&t->f_tadam, t->mod, "k_tadam") != 0 ||
         cu.ModuleGetFunction(&t->f_tgnorm, t->mod, "k_tgnorm") != 0)
         t->f_tadam = t->f_tgnorm = NULL;
+    if (cu.ModuleGetFunction(&t->f_tscale, t->mod, "k_tscale") != 0) t->f_tscale = NULL;
     {
         static const char *const LN[6] = { "k_tlora_t", "k_tlora_y", "k_tlora_tb",
                                            "k_tlora_ga", "k_tlora_gb", "k_tlora_dx" };
@@ -9289,6 +9303,8 @@ void gpu_train_free(model_t *m) {
         tg_drop(&t->res_tape, &t->res_tape_cap);
         tg_drop(&t->res_dx, &t->res_dx_cap);
         res_tab_drop(t);
+        for (int i = 0; i < 3; i++) tg_drop(&t->oa[i], &t->oa_cap[i]);   // R4's arenas
+        for (int i = 0; i < 4; i++) tg_drop(&t->ot[i], &t->ot_cap[i]);
         for (int i = 0; i < t->n_pin; i++) cu.MemHostUnregister(t->pin_p[i]);
         for (int i = 0; i < GPU_TRAIN_HBUF; i++)
             if (t->hbuf[i]) cu.MemFreeHost(t->hbuf[i]);
@@ -9300,6 +9316,7 @@ void gpu_train_free(model_t *m) {
     }
     cu.PrimaryCtxRelease(t->dev);
     free(t->res_tab);   // the host table, if the context could not be made current
+    free(t->o_off); free(t->o_len); free(t->o_seg_site); free(t->o_layer_seg); free(t->o_site_seg);
     free(t->site);
     free(t->pin_p);
     free(t->cache);
@@ -9659,6 +9676,24 @@ bool gpu_train_gnorm_check(model_t *m, const float *g, size_t n_g, const uint64_
     for (int i = 0; i < 5; i++)
         if (d[i]) cu.MemFree(d[i]);
     if (ok) { *max_out = out[0]; *mean_out = out[1]; *finite = out[2] != 0.0; }
+    return ok;
+}
+// R4 (kernels_train.cuh k_tscale): a thread an element
+bool gpu_train_scale_check(model_t *m, float *g, size_t n, float f) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || !t->f_tscale || n < 1 || cu.CtxSetCurrent(t->ctx) != 0) return false;
+    size_t nb = sizeof(float) * n;
+    CUdeviceptr d = 0;
+    bool ok = cu.MemAlloc(&d, nb) == 0 && cu.MemcpyHtoD(d, g, nb) == 0;
+    if (ok) {
+        unsigned long long nn = n;
+        float ff = f;
+        void *p[] = { &d, &nn, &ff };
+        ok = cu.LaunchKernel(t->f_tscale, (unsigned)((n + TADAM_THREADS - 1) / TADAM_THREADS), 1, 1,
+                             TADAM_THREADS, 1, 1, 0, NULL, p, NULL) == 0 &&
+             cu.CtxSynchronize() == 0 && cu.MemcpyDtoH(g, d, nb) == 0;
+    }
+    if (d) cu.MemFree(d);
     return ok;
 }
 
@@ -11011,6 +11046,193 @@ bool gpu_train_res_layer_bw(model_t *m, int l) {
 bool gpu_train_res_bw_end(model_t *m) {
     train_gpu_t *t = m->train_gpu;
     return t && cu.CtxSetCurrent(t->ctx) == 0 && cu.CtxSynchronize() == 0;
+}
+
+// ---- R4 of the resident step: the optimizer on the device (gpu.h)
+bool gpu_train_res_adam_ok(model_t *m) {
+    train_gpu_t *t = m->train_gpu;
+    return t && t->f_tadam && t->f_tgnorm && t->f_tscale && t->site && m->n_layer >= 1 &&
+           m->n_layer <= TGNORM_MAX_LAYERS;
+}
+
+// The arenas' layout, from the sites the step pushed: once a run (an
+// adapter's shapes do not change within one), the moments zeroed. The order
+// is model_lora_grad_norms': per layer the slots ascending (Q K V O gate up
+// down, the sites 3 4 5 6 0 1 2), each A then B.
+static bool res_opt_layout(train_gpu_t *t, int n_layer) {
+    if (t->o_n) return true;
+    static const int ord[7] = { 3, 4, 5, 6, 0, 1, 2 };
+    size_t cap = (size_t)n_layer * 14;
+    free(t->o_off); free(t->o_len); free(t->o_seg_site); free(t->o_layer_seg); free(t->o_site_seg);
+    t->o_off = calloc(cap, sizeof *t->o_off);
+    t->o_len = calloc(cap, sizeof *t->o_len);
+    t->o_seg_site = calloc(cap, sizeof *t->o_seg_site);
+    t->o_layer_seg = calloc((size_t)n_layer + 1, sizeof *t->o_layer_seg);
+    t->o_site_seg = calloc((size_t)n_layer * 7, sizeof *t->o_site_seg);
+    if (!t->o_off || !t->o_len || !t->o_seg_site || !t->o_layer_seg || !t->o_site_seg) return false;
+    size_t off = 0;
+    int k = 0;
+    for (int l = 0; l < n_layer; l++) {
+        t->o_layer_seg[l] = k;
+        for (int w = 0; w < 7; w++) {
+            int si = l * 7 + ord[w];
+            t->o_site_seg[si] = -1;
+            struct tsite *st = tg_site(t, n_layer, l, ord[w]);
+            if (!st || !st->r) continue;
+            t->o_site_seg[si] = k;
+            t->o_off[k] = off; t->o_len[k] = (uint64_t)st->r * (uint64_t)st->n_in;
+            t->o_seg_site[k] = si * 2; off += t->o_len[k]; k++;
+            t->o_off[k] = off; t->o_len[k] = (uint64_t)st->n_out * (uint64_t)st->r;
+            t->o_seg_site[k] = si * 2 + 1; off += t->o_len[k]; k++;
+        }
+    }
+    t->o_layer_seg[n_layer] = k;
+    if (!k) return false;
+    size_t fb = sizeof(float) * off;
+    if (!tg_scratch(&t->oa[0], &t->oa_cap[0], fb) || !tg_scratch(&t->oa[1], &t->oa_cap[1], fb) ||
+        !tg_scratch(&t->oa[2], &t->oa_cap[2], fb) ||
+        !tg_scratch(&t->ot[0], &t->ot_cap[0], sizeof(uint64_t) * (size_t)k) ||
+        !tg_scratch(&t->ot[1], &t->ot_cap[1], sizeof(uint64_t) * (size_t)k) ||
+        !tg_scratch(&t->ot[2], &t->ot_cap[2], sizeof(int) * ((size_t)n_layer + 1)) ||
+        !tg_scratch(&t->ot[3], &t->ot_cap[3], sizeof(double) * 3) ||
+        cu.MemsetD8(t->oa[1], 0, fb) != 0 || cu.MemsetD8(t->oa[2], 0, fb) != 0 ||
+        cu.MemcpyHtoD(t->ot[0], t->o_off, sizeof(uint64_t) * (size_t)k) != 0 ||
+        cu.MemcpyHtoD(t->ot[1], t->o_len, sizeof(uint64_t) * (size_t)k) != 0 ||
+        cu.MemcpyHtoD(t->ot[2], t->o_layer_seg, sizeof(int) * ((size_t)n_layer + 1)) != 0)
+        return false;
+    t->o_nseg = k;
+    t->o_n = off;
+    return true;
+}
+
+// a site's first segment (A; B is the next), -1 for a site without an adapter
+static bool res_opt_site(train_gpu_t *t, int n_layer, int l, int which, int *k) {
+    if (l < 0 || l >= n_layer || which < 0 || which >= 7 || !res_opt_layout(t, n_layer)) return false;
+    *k = t->o_site_seg[l * 7 + which];
+    return true;
+}
+
+// the moments' arena (OA_M 1, OA_V 2) of ma, va, mb, vb in turn, and the segment
+static CUdeviceptr res_opt_moment(train_gpu_t *t, int k, int i, size_t *n) {
+    int s = k + (i >= 2);
+    *n = (size_t)t->o_len[s];
+    return t->oa[1 + (i & 1)] + sizeof(float) * (size_t)t->o_off[s];
+}
+
+bool gpu_train_res_optim_put(model_t *m, int l, int which, const float *ma, const float *va,
+                             const float *mb, const float *vb) {
+    train_gpu_t *t = m->train_gpu;
+    int k = -1;
+    if (!t || !t->site || cu.CtxSetCurrent(t->ctx) != 0 || !res_opt_site(t, m->n_layer, l, which, &k))
+        return false;
+    if (k < 0) return true;
+    const float *src[4] = { ma, va, mb, vb };
+    for (int i = 0; i < 4; i++) {
+        size_t n = 0;
+        CUdeviceptr d = res_opt_moment(t, k, i, &n);
+        if (src[i] ? cu.MemcpyHtoD(d, src[i], sizeof(float) * n) != 0
+                   : cu.MemsetD8(d, 0, sizeof(float) * n) != 0)
+            return false;
+    }
+    return true;
+}
+
+bool gpu_train_res_optim_get(model_t *m, int l, int which, float *ma, float *va, float *mb,
+                             float *vb) {
+    train_gpu_t *t = m->train_gpu;
+    int k = -1;
+    if (!t || !t->site || cu.CtxSetCurrent(t->ctx) != 0 || !res_opt_site(t, m->n_layer, l, which, &k) ||
+        cu.CtxSynchronize() != 0)
+        return false;
+    if (k < 0) return true;
+    float *dst[4] = { ma, va, mb, vb };
+    for (int i = 0; i < 4; i++) {
+        size_t n = 0;
+        CUdeviceptr d = res_opt_moment(t, k, i, &n);
+        if (!dst[i] || cu.MemcpyDtoH(dst[i], d, sizeof(float) * n) != 0) return false;
+    }
+    return true;
+}
+
+int gpu_train_res_adam(model_t *m, float scale, const tadam_args *a, bool plant_nan,
+                       double *gmax, double *gmean) {
+    train_gpu_t *t = m->train_gpu;
+    if (!gpu_train_res_adam_ok(m) || cu.CtxSetCurrent(t->ctx) != 0 || !res_opt_layout(t, m->n_layer))
+        return -1;
+    CUdeviceptr G = t->oa[0];
+    // RUNNER_TRAIN_PROF: each phase's wall time, a sync after each (the bytes
+    // are the same either way)
+    static int opt_prof = -1;
+    if (opt_prof < 0) opt_prof = getenv("RUNNER_TRAIN_PROF") != NULL;
+    double p0 = plat_now(), p1 = p0, p2 = p0;
+    // the step's gradients, in the table's order
+    for (int k = 0; k < t->o_nseg; k++) {
+        const struct tsite *st = &t->site[t->o_seg_site[k] / 2];
+        CUdeviceptr src = (t->o_seg_site[k] & 1) ? st->gb : st->ga;
+        if (cu.MemcpyDtoD(G + sizeof(float) * (size_t)t->o_off[k], src,
+                          sizeof(float) * (size_t)t->o_len[k]) != 0)
+            return -1;
+    }
+    if (plant_nan) {
+        float nan;
+        uint32_t qb = 0x7fc00000u;
+        memcpy(&nan, &qb, sizeof nan);
+        if (cu.MemcpyHtoD(G, &nan, sizeof nan) != 0) return -1;
+    }
+    unsigned long long n = t->o_n;
+    if (scale != 1.0f) {
+        float f = scale;
+        void *p[] = { &G, &n, &f };
+        if (cu.LaunchKernel(t->f_tscale, (unsigned)((n + TADAM_THREADS - 1) / TADAM_THREADS), 1, 1,
+                            TADAM_THREADS, 1, 1, 0, NULL, p, NULL) != 0)
+            return -1;
+    }
+    if (opt_prof) {
+        if (cu.CtxSynchronize() != 0) return -1;
+        p1 = plat_now();
+    }
+    int nl = m->n_layer;
+    double out[3] = { 0, 0, 0 };
+    void *pn[] = { &G, &t->ot[0], &t->ot[1], &t->ot[2], &nl, &t->ot[3] };
+    if (cu.LaunchKernel(t->f_tgnorm, 1, 1, 1, (unsigned)nl, 1, 1,
+                        (unsigned)(sizeof(double) * (size_t)nl + sizeof(int) * (size_t)nl), NULL, pn,
+                        NULL) != 0 ||
+        cu.CtxSynchronize() != 0 || cu.MemcpyDtoH(out, t->ot[3], sizeof out) != 0)
+        return -1;
+    *gmax = out[0];
+    *gmean = out[1];
+    p2 = plat_now();
+    if (out[2] == 0.0) return 0;
+    // AdamW a segment at a time: the site's A or B in place, its slice of the
+    // gradients and of the moments
+    for (int k = 0; k < t->o_nseg; k++) {
+        const struct tsite *st = &t->site[t->o_seg_site[k] / 2];
+        size_t o = sizeof(float) * (size_t)t->o_off[k];
+        CUdeviceptr th = (t->o_seg_site[k] & 1) ? st->b : st->a;
+        CUdeviceptr g = G + o, mo = t->oa[1] + o, vo = t->oa[2] + o;
+        tadam_args aa = *a;
+        aa.n = t->o_len[k];
+        void *p[] = { &th, &g, &mo, &vo, &aa };
+        if (cu.LaunchKernel(t->f_tadam, (unsigned)((aa.n + TADAM_THREADS - 1) / TADAM_THREADS), 1, 1,
+                            TADAM_THREADS, 1, 1, 0, NULL, p, NULL) != 0)
+            return -1;
+    }
+    if (cu.CtxSynchronize() != 0) return -1;
+    if (opt_prof)
+        fprintf(stderr, "train-prof: device optimizer: copies and scale %.3fs, norms %.3fs, AdamW %.3fs "
+                "(%d segments)\n", p1 - p0, p2 - p1, plat_now() - p2, t->o_nseg);
+    return 1;
+}
+
+bool gpu_train_site_ab_pull(model_t *m, int l, int which, float *a, float *b) {
+    train_gpu_t *t = m->train_gpu;
+    if (!t || cu.CtxSetCurrent(t->ctx) != 0) return false;
+    struct tsite *st = tg_site(t, m->n_layer, l, which);
+    if (!st) return false;
+    if (!st->r) return true;
+    return cu.CtxSynchronize() == 0 &&
+           cu.MemcpyDtoH(a, st->a, sizeof(float) * (size_t)st->r * st->n_in) == 0 &&
+           cu.MemcpyDtoH(b, st->b, sizeof(float) * (size_t)st->n_out * st->r) == 0;
 }
 // R8.24.1 B: the backward's recompute of layer l's FFN front: xn2 (T rows of
 // n_embd, packed) goes up and stays, with g, u and act(g)*u, for the sites

@@ -1721,3 +1721,19 @@ k_tgnorm(const float *g, const ulong64 *seg_off, const ulong64 *seg_len, const i
         out[2] = fin ? 1.0 : 0.0;
     }
 }
+
+// ---- R8.24.1 B R4: the mean's scale on the step's gradients, the host-chain
+// twin of model_lora_grad_scale's loop (g[i] *= f), one thread an element: one
+// rounded product, so a T3 host and this agree bit for bit.
+// RUNNER_TSCALE_MUTANT (never set in the committed PTX) rounds the product
+// toward zero.
+extern "C" __global__ void __launch_bounds__(TADAM_THREADS)
+k_tscale(float *g, ulong64 n, float f) {
+    ulong64 i = (ulong64)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+#ifdef RUNNER_TSCALE_MUTANT
+    g[i] = __fmul_rz(g[i], f);
+#else
+    g[i] = __fmul_rn(g[i], f);
+#endif
+}

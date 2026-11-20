@@ -279,23 +279,45 @@ normalizer and the adjoint into the device's dx; only each row's normalizer
 and target logit come back for the loss. A teacher's targets
 (`--train-teacher`) and `--train-logprobs`, which read every row's logits,
 keep the head on the host, and so does `RUNNER_TRAIN_RES_HEAD=0`, for
-comparison; the run says why once on stderr. The CPU keeps the optimizer.
+comparison; the run says why once on stderr.
+
+A step every window of which ran resident takes its optimizer on the device
+as well: the mean's scale (`--batch`), the gradient norms the step log
+prints, and AdamW, with the moments kept on the device across steps. A and B
+come back to the host once a step (66 MB on Qwen3-4B at rank 8), since the
+evals, a checkpoint and the next step's windows read them there; nothing is
+resident across steps. A checkpoint's `.optim` and a step that runs on the
+host read the device's moments back first, and `--train-resume` takes the
+file's up. A gradient that is not finite fails the step before anything is
+updated, as on the host. `RUNNER_TRAIN_RES_ADAM=0` keeps the optimizer on the
+host, for comparison; the run says why once on stderr when it stays there.
 
 Every one of these kernels is a host-chain twin: it computes each element as
 a strict build's host computes it (`make T3=1`: the host's order of
 operations, no contraction, the portable exp). A T3 build's `--train-gpu`
 adapter is therefore the one it was before, byte for byte (Qwen3-4B Q4_K_M,
-5 steps). A default build's adapter changed with R8.24.1, because its host
-had used the C library's `expf` and `-ffast-math` in the parts that moved;
-until the optimizer moves too, a default build's adapter is not a T3
-build's, though both are within the tolerance below.
+5 steps). With the head and the optimizer on the device, nothing of a
+resident step's arithmetic is left to the host, and a default build's
+adapter is a T3 build's, byte for byte, for a constant learning rate: the
+same file after 5 steps, after 20, and with `--batch 2`, and across a
+`--train-resume`. The few scalars the host still computes for it (a fresh
+adapter's init scale and alpha over rank, AdamW's bias corrections) are
+computed as a strict build computes them in every build. The learning-rate
+schedule (`--lr-schedule cosine`, `--lr-warmup`) is computed on the host in
+double and is not held to that. A default build's fresh adapter changed once
+for it, the CPU trainer's too: under `-ffast-math` the init scale 1 / sqrt(n)
+came from a fast reciprocal square root, one bit off at n 2560.
 
 On an RTX 5070 with 8 CPU threads (Qwen3-4B Q4_K_M, the ToolUse record's
 data, rank 8 on every projection, ctx 128; the median of steps 2 to 20,
 interleaved runs on 2026-11-18 at a3589d19, whose tree is 6d3a65d9's), a
 resident step takes 0.67 s, against
 1.79 s for Runner 1.20.0's (d9b54174), 1.37 s for main before R8.24.1's list
-B (cc7af33b) and 1.06 s on the per-piece path.
+B (cc7af33b) and 1.06 s on the per-piece path. With the head on the device
+(R3) it took 0.65 s; with the optimizer there too (R4) 0.70 s, read
+interleaved against R3 on 2026-11-20 (0.700 s against 0.653 s, 1.073x
+[1.071, 1.077]): the device's gradient norms, summed one thread a layer in
+the host's order, cost more than the host's optimizer step did.
 
 It is what to use when the weight products dominate, which they do on large
 models. On an RTX 3070 beside 4 CPU threads, a Qwen2.5-7B Q4_K_M step took
@@ -342,6 +364,7 @@ failed there and ran on the CPU instead (`deltanet_failed_calls`, which
 stderr also reports). `resident_steps` counts the steps every window of which
 ran as a resident step; a run whose planes stop fitting partway takes the
 per-piece path for the rest, and the count says how many steps did not.
+`resident_adam_steps` counts the steps whose optimizer ran on the device.
 
 The weights are cached as long as the device budget allows, and the rest
 train on the CPU, where a tensor's products take the CPU's order. So the

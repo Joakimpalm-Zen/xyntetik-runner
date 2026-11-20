@@ -256,6 +256,8 @@ def test_train_gpu_matches_cpu_within_rounding(runner_bin, base, tmp_path, famil
     # layers, experts, another activation) none, on the per-piece path
     resident = 4 if family in ("base", "q8_0") else 0
     assert rec["products"]["resident_steps"] == resident, (family, rec["products"])
+    # R4: a resident step's optimizer runs on the device; the others' on the host
+    assert rec["products"]["resident_adam_steps"] == resident, (family, rec["products"])
 
 
 # Which weights the device holds decides a --train-gpu adapter's bits (a

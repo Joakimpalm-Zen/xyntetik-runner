@@ -52,6 +52,37 @@ static double run_backward(model_t *m, const int32_t *toks) {
     return loss;
 }
 
+// R8.24.1 B R4: the AdamW moments as a checkpoint's .optim holds them
+// (model_lora_optim_write through a file at path), read back whole; NULL on a
+// failure. r4_moments_set: the moments from such a file (model_lora_optim_read).
+static unsigned char *r4_moments(model_t *m, const char *path, size_t *n) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return NULL;
+    bool ok = model_lora_optim_write(m, f);
+    ok = fclose(f) == 0 && ok;
+    f = ok ? fopen(path, "rb") : NULL;
+    if (!f) return NULL;
+    unsigned char *b = NULL;
+    if (fseek(f, 0, SEEK_END) == 0) {
+        long len = ftell(f);
+        b = len > 0 ? malloc((size_t)len) : NULL;
+        if (b && (fseek(f, 0, SEEK_SET) != 0 || fread(b, 1, (size_t)len, f) != (size_t)len)) {
+            free(b);
+            b = NULL;
+        }
+        *n = b ? (size_t)len : 0;
+    }
+    fclose(f);
+    return b;
+}
+static bool r4_moments_set(model_t *m, const char *path) {
+    FILE *f = fopen(path, "rb");
+    char why[160];
+    bool ok = f && model_lora_optim_read(m, f, why, sizeof why);
+    if (f) fclose(f);
+    return ok;
+}
+
 int main(int argc, char **argv) {
     const char *base = argc > 1 ? argv[1] : "test.gguf";
     const char *adapter = argc > 2 ? argv[2] : "test-lora.full.gguf";
@@ -382,6 +413,164 @@ int main(int argc, char **argv) {
                    "empty round: %zu of %zu gradients differ, worst %.3g\n", diff, tot, worst);
 #endif
         run_backward(&m, toks);   // the checks below read the resident step's gradients
+    }
+    // R8.24.1 B R4: the step's optimizer on the device (model_lora_res_adam_step)
+    // against the host's (model_lora_grad_norms, model_lora_adam_step), two
+    // steps each from this adapter and zero moments, every step's gradients
+    // its own resident backward's, the device's moments carried on the device
+    // between its two. T3: after each step A, B, the moments and the norms by
+    // bits. A default build's host step keeps its own arithmetic under
+    // -ffast-math, so its second step starts from other bits of A and B and
+    // its gradients differ in their last bits, which Adam's normalization
+    // magnifies where a gradient is small: bounded there on the first step
+    // alone, where both take the same inputs (A and B within 2^-20 (|th| +
+    // lr), as B7's twin gate bounds one update, the moments within 2^-16 of
+    // the largest, the norms within 1e-12 relative); the second is reported.
+    // Then, on the device's state, a gradient made NaN on the device
+    // (RUNNER_TEST_TRAIN_RES_NAN) fails the step (-2) with nothing changed: A,
+    // B and the device's moments keep their bytes.
+    if (m.train_dev && m.train_res_windows > 0) {
+        const float lr = 1e-3f, b1 = 0.9f, b2 = 0.999f, ae = 1e-8f, wd = 0.01f;
+        const char *zf = "test-lora-grad-r4-zero.optim", *mf = "test-lora-grad-r4.optim";
+        size_t zn = 0, mn[2][2] = {{0}};   // [path][step]
+        unsigned char *z = r4_moments(&m, zf, &zn);   // before any step: zeros
+        CHECK(z != NULL, "R4: cannot write the moments to %s", zf);
+        float *p0[MAX_BUF], *pp[2][2][MAX_BUF];      // A and B after [path][step]
+        for (int i = 0; i < nsnap; i++) {
+            int cnt = 0;
+            const float *th = model_lora_param(&m, lay[i], slo[i], whi[i], &cnt);
+            p0[i] = malloc(sizeof(float) * (size_t)snap_n[i]);
+            for (int a = 0; a < 4; a++) pp[a / 2][a % 2][i] = malloc(sizeof(float) * (size_t)snap_n[i]);
+            memcpy(p0[i], th, sizeof(float) * (size_t)snap_n[i]);
+        }
+        unsigned char *mo[2][2] = {{ NULL, NULL }, { NULL, NULL }};
+        double gn[2][2][2] = {{{0}}};   // [path][step][max, mean]
+        long a0 = m.train_res_adam_steps;
+        for (int path = 1; z && path >= 0; path--) {   // 1 the host's, then 0 the device's
+            for (int i = 0; i < nsnap; i++) {
+                int cnt = 0;
+                memcpy(model_lora_param(&m, lay[i], slo[i], whi[i], &cnt), p0[i],
+                       sizeof(float) * (size_t)snap_n[i]);
+            }
+            CHECK(r4_moments_set(&m, zf), "R4: cannot read the zero moments back");
+            for (int s = 1; s <= 2; s++) {
+                run_backward(&m, toks);
+                double *g = gn[path][s - 1];
+                if (path == 0) {
+                    int r = model_lora_res_adam_step(&m, 1.0f, lr, b1, b2, ae, wd, s, &g[0], &g[1]);
+                    CHECK(r == 1, "R4: the device optimizer's step %d returned %d", s, r);
+                } else {
+                    CHECK(model_lora_grad_norms(&m, &g[0], &g[1]) &&
+                          model_lora_adam_step(&m, lr, b1, b2, ae, wd, s), "R4: the host's step %d failed", s);
+                }
+                for (int i = 0; i < nsnap; i++) {
+                    int cnt = 0;
+                    memcpy(pp[path][s - 1][i], model_lora_param(&m, lay[i], slo[i], whi[i], &cnt),
+                           sizeof(float) * (size_t)snap_n[i]);
+                }
+                // the moments as a checkpoint writes them (the device's pulled back for it)
+                mo[path][s - 1] = r4_moments(&m, mf, &mn[path][s - 1]);
+                CHECK(mo[path][s - 1] != NULL, "R4: cannot write the moments after path %d step %d", path, s);
+            }
+        }
+        CHECK(m.train_res_adam_steps == a0 + 2, "R4: the device optimizer ran %ld steps, not 2",
+              m.train_res_adam_steps - a0);
+        // the two paths after each step: A and B, then the moments
+        size_t pdiff[2] = { 0, 0 }, mdiff[2] = { 0, 0 }, ptot = 0;
+        double pworst[2] = { 0, 0 }, mworst[2] = { 0, 0 };
+        bool msize = true;
+        for (int k = 0; k < 2; k++) {
+            for (int i = 0; i < nsnap; i++)
+                for (int j = 0; j < snap_n[i]; j++) {
+                    float d = pp[0][k][i][j], h = pp[1][k][i][j];
+                    if (memcmp(&d, &h, 4)) pdiff[k]++;
+                    double e = fabs((double)d - (double)h) / (0x1p-20 * (fabs((double)h) + lr));
+                    if (!(e <= pworst[k])) pworst[k] = e;   // a NaN makes it worst
+                    if (!k) ptot++;
+                }
+            bool ms = mo[0][k] && mo[1][k] && mn[0][k] == mn[1][k] && mn[0][k] % 4 == 0;
+            CHECK(ms, "R4: the two paths' moments differ in size after step %d (%zu, %zu)", k + 1,
+                  mn[0][k], mn[1][k]);
+            msize = msize && ms;
+            double mmax = 0;
+            for (size_t j = 0; ms && j < mn[0][k]; j += 4) {   // the headers are equal ints either way
+                float d, h;
+                memcpy(&d, mo[0][k] + j, 4);
+                memcpy(&h, mo[1][k] + j, 4);
+                if (memcmp(&d, &h, 4)) mdiff[k]++;
+                if (fabs((double)h) > mmax) mmax = fabs((double)h);
+            }
+            for (size_t j = 0; ms && mmax > 0 && j < mn[0][k]; j += 4) {
+                float d, h;
+                memcpy(&d, mo[0][k] + j, 4);
+                memcpy(&h, mo[1][k] + j, 4);
+                double e = fabs((double)d - (double)h) / (0x1p-16 * mmax);
+                if (!(e <= mworst[k])) mworst[k] = e;
+            }
+        }
+#ifdef RUNNER_T3_BUILD
+        bool osame = !pdiff[0] && !pdiff[1] && !mdiff[0] && !mdiff[1] && msize &&
+                     !memcmp(gn[0], gn[1], sizeof gn[0]);
+        CHECK(osame, "R4: the device optimizer and the host's differ in a T3 build: parameters %zu and "
+              "%zu of %zu after steps 1 and 2, moments %zu and %zu, step 2's norms %.17g/%.17g and "
+              "%.17g/%.17g", pdiff[0], pdiff[1], ptot, mdiff[0], mdiff[1], gn[0][1][0], gn[1][1][0],
+              gn[0][1][1], gn[1][1][1]);
+        if (osame)
+            printf("ok: device optimizer == host optimizer by bits (T3), after each of two steps: %zu "
+                   "parameters, the moments and the norms\n", ptot);
+#else
+        double nrel = 0;   // step 1's norms, from the same gradients
+        for (int q = 0; q < 2; q++) {
+            double e = fabs(gn[0][0][q] - gn[1][0][q]) / (fabs(gn[1][0][q]) + 1e-300);
+            if (!(e <= nrel)) nrel = e;
+        }
+        bool onear = pworst[0] <= 1.0 && mworst[0] <= 1.0 && nrel <= 1e-12 && msize;
+        CHECK(onear, "R4: the device optimizer against the host's after step 1: parameters %.3g, "
+              "moments %.3g of their bounds, norms %.3g relative", pworst[0], mworst[0], nrel);
+        if (onear)
+            printf("ok: device optimizer against the host optimizer (default build), step 1 bounded: "
+                   "%zu of %zu parameters differ, worst %.3g of the bound, %zu moments differ, norms "
+                   "%.3g relative; step 2 (other inputs, reported): %zu differ, %.3g of the bound\n",
+                   pdiff[0], ptot, pworst[0], mdiff[0], nrel, pdiff[1], pworst[1]);
+#endif
+        // the planted NaN, on the device's state (its moments the run's)
+        CHECK(m.train_opt_dev, "R4: the device does not hold the moments after its steps");
+        size_t bn = 0;
+        unsigned char *before = r4_moments(&m, mf, &bn);
+        static char nan_env[] = "RUNNER_TEST_TRAIN_RES_NAN=3", nan_off[] = "RUNNER_TEST_TRAIN_RES_NAN=";
+        run_backward(&m, toks);
+        putenv(nan_env);
+        double gx = 0, gm = 0;
+        int r = model_lora_res_adam_step(&m, 1.0f, lr, b1, b2, ae, wd, 3, &gx, &gm);
+        putenv(nan_off);
+        CHECK(r == -2, "R4: a NaN gradient on the device returned %d, not -2", r);
+        size_t nchg = 0;
+        for (int i = 0; i < nsnap; i++) {
+            int cnt = 0;
+            const float *th = model_lora_param(&m, lay[i], slo[i], whi[i], &cnt);
+            if (memcmp(th, pp[0][1][i], sizeof(float) * (size_t)snap_n[i])) nchg++;
+        }
+        m.train_opt_host_old = true;   // read the device's moments, not the host's copies
+        size_t an = 0;
+        unsigned char *after = r4_moments(&m, mf, &an);
+        bool kept = before && after && an == bn && !memcmp(before, after, bn) && nchg == 0;
+        CHECK(kept, "R4: the failed step changed %zu parameter buffers or the device's moments", nchg);
+        if (kept)
+            printf("ok: a NaN gradient on the device fails the step with nothing changed (A, B and the "
+                   "device's moments)\n");
+        // back to this adapter and zero moments for the checks below
+        for (int i = 0; i < nsnap; i++) {
+            int cnt = 0;
+            memcpy(model_lora_param(&m, lay[i], slo[i], whi[i], &cnt), p0[i], sizeof(float) * (size_t)snap_n[i]);
+            free(p0[i]);
+            for (int a = 0; a < 4; a++) free(pp[a / 2][a % 2][i]);
+        }
+        CHECK(r4_moments_set(&m, zf), "R4: cannot read the zero moments back");
+        free(z); free(before); free(after);
+        for (int a = 0; a < 4; a++) free(mo[a / 2][a % 2]);
+        remove(zf);
+        remove(mf);
+        run_backward(&m, toks);
     }
     // RUNNER_GRAD_DUMP=FILE: the loss, then per buffer its layer, slot, side
     // (0 A, 1 B) and count as int32 and its gradients as float32, for

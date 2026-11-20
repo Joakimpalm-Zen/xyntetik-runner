@@ -785,6 +785,10 @@ typedef struct {
     long   train_res_head_windows; // windows whose head ran on the device (the gate reads it)
     long   train_res_steps;   // training steps every window of which ran resident (main.c),
                               // the record's products.resident_steps
+    long   train_res_adam_steps; // R4: steps whose optimizer ran on the device
+                              // (model_lora_res_adam_step), products.resident_adam_steps
+    bool   train_opt_dev;     // R4: the device holds the run's AdamW moments
+    bool   train_opt_host_old; // ... and the host's copies are older than the device's
     bool   train_dev_ffn;    // R8.24.1 B: within a device-mode backward, the
                              // gated FFN (products, adapter, activation) runs
                              // on the device (gpu_train_ffn_*)
@@ -1359,6 +1363,8 @@ bool   model_head_bw_ref(float *probs, int V, int rows, float logit_scale, float
 // the device twins' gate
 void   model_adam_ref(float *th, const float *g, float *mo, float *vo, size_t n, float lr,
                       float b1, float b2, float eps, float wd, float bc1, float bc2);
+// R8.24.1 B R4: model_lora_grad_scale's loop over n floats (k_tscale's gate)
+void   model_grad_scale_ref(float *g, size_t n, float f);
 bool   model_grad_norms_ref(int n_layer, int r, const int *n_in, const int *n_out,
                             float *const *ga, float *const *gb, double *max_out,
                             double *mean_out);
@@ -1440,6 +1446,24 @@ bool   model_lora_train_init(model_t *m, int rank, float alpha,
 void   model_train_pin_scratch(model_t *m);
 bool   model_lora_adam_step(model_t *m, float lr, float beta1, float beta2,
                             float eps, float wd, int step);
+// R8.24.1 B R4: the step's optimizer on the device, after a step every
+// window of which ran resident (main.c): from the sites' gradients the norms
+// (the step log's, and the non-finite check) and AdamW, the moments kept on
+// the device across steps (up from the host's when those are newer: a
+// resume, a host step, the first step), then A and B back to the host.
+// scale: the mean's 1 / wsum, as model_lora_grad_scale takes it; 1 for none.
+// 1: done (*gmax, *gmean set); 0: not here, the host's step runs (why said
+// once on stderr); -1: the device failed (said), the step fails; -2: a
+// gradient is not finite, and nothing has changed.
+int    model_lora_res_adam_step(model_t *m, float scale, float lr, float beta1, float beta2,
+                                float eps, float wd, int step, double *gmax, double *gmean);
+// R4: AdamW's bias correction 1 - beta^step, as a T3 build's powf gives it,
+// in every build (the device optimizer's; the CPU trainer keeps powf)
+float  model_adam_bias_corr(float beta, int step);
+// R4: a fresh adapter's A init range 1 / sqrt(n_in) and its scale alpha /
+// rank, a T3 build's in every build
+float  model_lora_init_scale(int64_t n_in);
+float  model_lora_alpha_scale(float alpha, int rank);
 bool   model_lora_save(model_t *m, const char *path);
 // The largest rank among the adapter's projections; 0 without an adapter.
 int    model_lora_rank(const model_t *m);

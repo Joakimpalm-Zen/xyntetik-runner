@@ -459,6 +459,31 @@ bool   gpu_train_adam_check(model_t *m, const tadam_args *a, float *th, const fl
 bool   gpu_train_gnorm_check(model_t *m, const float *g, size_t n_g, const uint64_t *seg_off,
                              const uint64_t *seg_len, int n_seg, const int *layer_seg,
                              int n_layer, double *max_out, double *mean_out, bool *finite);
+// R8.24.1 B R4, the kernel gate's entry: the device twin of
+// model_lora_grad_scale's loop (k_tscale), g[i] *= f over n host floats in
+// place. false: no context or no kernel in this PTX.
+bool   gpu_train_scale_check(model_t *m, float *g, size_t n, float f);
+// R4 of the resident step, the optimizer on the device (model_lora_res_adam_step).
+// gpu_train_res_adam_ok: its kernels are in this PTX and the layers fit
+// k_tgnorm. The moments live in two arenas laid out as the step's gradient
+// arena (per layer the sites Q K V O gate up down, each A then B: the host's
+// table order), built from the sites the step pushed and zeroed at the start.
+// _optim_put: a site's moments up (NULL arrays: zeros); _optim_get: back.
+// gpu_train_res_adam: the sites' gradients copied into the arena in that
+// order, times scale where it is not 1 (k_tscale), the norms (k_tgnorm) into
+// *gmax and *gmean, and when every gradient is finite AdamW (k_tadam: a's
+// constants, a->n per segment) on every site's A and B with the arenas'
+// moments. plant_nan, a test seam: the arena's first gradient made NaN before
+// the norms. 1: done; 0: a gradient is not finite, nothing updated; -1: the
+// device failed. gpu_train_site_ab_pull: a site's A and B back to the host.
+bool   gpu_train_res_adam_ok(model_t *m);
+bool   gpu_train_res_optim_put(model_t *m, int l, int which, const float *ma, const float *va,
+                               const float *mb, const float *vb);
+bool   gpu_train_res_optim_get(model_t *m, int l, int which, float *ma, float *va, float *mb,
+                               float *vb);
+int    gpu_train_res_adam(model_t *m, float scale, const tadam_args *a, bool plant_nan,
+                          double *gmax, double *gmean);
+bool   gpu_train_site_ab_pull(model_t *m, int l, int which, float *a, float *b);
 bool   gpu_train_ffn_check(model_t *m, int act, const float *g, const float *u,
                            const float *dh, float *h, float *dg, float *du, int n);
 // R8.24.1 B6, the kernel gate's entry: the device twins of one site's adapter

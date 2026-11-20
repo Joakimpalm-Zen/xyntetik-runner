@@ -3870,6 +3870,30 @@ bool gpu_train_gnorm_check(model_t *mm, const float *g, size_t n_g, const uint64
     (void)n_layer; (void)max_out; (void)mean_out; (void)finite;
     return false;
 }
+bool gpu_train_scale_check(model_t *mm, float *g, size_t n, float f) {
+    (void)mm; (void)g; (void)n; (void)f;
+    return false;
+}
+bool gpu_train_res_adam_ok(model_t *mm) { (void)mm; return false; }
+bool gpu_train_res_optim_put(model_t *mm, int l, int which, const float *ma, const float *va,
+                             const float *mb, const float *vb) {
+    (void)mm; (void)l; (void)which; (void)ma; (void)va; (void)mb; (void)vb;
+    return false;
+}
+bool gpu_train_res_optim_get(model_t *mm, int l, int which, float *ma, float *va, float *mb,
+                             float *vb) {
+    (void)mm; (void)l; (void)which; (void)ma; (void)va; (void)mb; (void)vb;
+    return false;
+}
+int gpu_train_res_adam(model_t *mm, float scale, const tadam_args *a, bool plant_nan,
+                       double *gmax, double *gmean) {
+    (void)mm; (void)scale; (void)a; (void)plant_nan; (void)gmax; (void)gmean;
+    return -1;
+}
+bool gpu_train_site_ab_pull(model_t *mm, int l, int which, float *a, float *b) {
+    (void)mm; (void)l; (void)which; (void)a; (void)b;
+    return false;
+}
 bool gpu_train_head_check(model_t *mm, const thead_args *a, float *z, const int32_t *targets,
                           const float *pos_w, const int32_t *suppress, double *lse,
                           float *z_target) {

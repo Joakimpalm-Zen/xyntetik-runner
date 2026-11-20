@@ -1956,6 +1956,164 @@ static void b7_checks(model_t *m) {
     b7_gnorm_check(m, 36, 8, 123457); // a NaN gradient fails both
 }
 
+// R8.24.1 B R4 (G0): the mean's scale on the device (gpu_train_scale_check:
+// k_tscale) against the host's own loop (model_grad_scale_ref:
+// model_lora_grad_scale's g[i] *= f). One rounded product each: memcmp in a
+// T3 build; in a default build too, except where the input or the product is
+// subnormal (that host flushes them, -ffast-math's FTZ and DAZ: counted, not
+// compared). The absolute anchor, in both builds: the exact product in
+// double, rounded once to float, which IEEE's single product is (a float
+// times a float is exact in double). Written before the kernel.
+static void r4_scale_check(model_t *m, size_t n, float f) {
+    float *g = malloc(sizeof(float) * n), *gh = malloc(sizeof(float) * n);
+    float *gd = malloc(sizeof(float) * n);
+    for (size_t i = 0; i < n; i++) g[i] = frnd() * (i % 3 ? 1e-2f : 3.0f);
+    if (n > 9) {
+        uint32_t inf = 0x7f800000u, nan = 0x7fc00001u, sub = 0x00012345u, fmin = 0x00800000u;
+        g[0] = 0.0f; g[1] = -0.0f; g[2] = 3.4e38f; g[4] = -1e-30f;
+        memcpy(&g[3], &sub, 4); memcpy(&g[5], &inf, 4); memcpy(&g[6], &nan, 4);
+        memcpy(&g[7], &fmin, 4); g[8] = -3.4e38f;
+    }
+    memcpy(gh, g, sizeof(float) * n);
+    memcpy(gd, g, sizeof(float) * n);
+    model_grad_scale_ref(gh, n, f);
+    bool ok = gpu_train_scale_check(m, gd, n, f);
+    CHECK(ok, "scale twin n %zu: declined (no kernel in this PTX?)", n);
+    size_t bad = 0, abad = 0, flushed = 0;
+    for (size_t i = 0; ok && i < n; i++) {
+        double pd = (double)g[i] * (double)f;
+        float want = (float)pd;
+        // by bits and in double: under DAZ a float compare reads a subnormal as zero
+        uint32_t ub;
+        memcpy(&ub, &g[i], 4);
+        bool sub_in = ((ub & 0x7f800000u) == 0 && (ub & 0x007fffffu) != 0) ||
+                      (!d_nonfin(pd) && pd != 0.0 && fabs(pd) < 0x1p-126);
+#ifdef RUNNER_T3_BUILD
+        (void)sub_in;
+        if (!nf_same(gd[i], gh[i]) && !bad++)
+            fprintf(stderr, "FAIL: scale twin differs from the T3 host at [%zu]: %.9g/%.9g\n", i, gd[i], gh[i]);
+        if (!nf_same(gd[i], want) && !abad++)
+            fprintf(stderr, "FAIL: scale twin is not the product rounded once at [%zu]: %.9g/%.9g\n", i,
+                    gd[i], want);
+#else
+        if (sub_in) { flushed++; continue; }
+        if (!nf_same(gd[i], gh[i]) && !bad++)
+            fprintf(stderr, "FAIL: scale twin differs from the default build's host at [%zu]: %.9g/%.9g\n", i,
+                    gd[i], gh[i]);
+        if (!nf_same(gd[i], want) && !abad++)
+            fprintf(stderr, "FAIL: scale twin is not the product rounded once at [%zu]: %.9g/%.9g\n", i,
+                    gd[i], want);
+#endif
+    }
+    CHECK(!bad, "scale twin n %zu f %g: %zu values differ from the host's", n, (double)f, bad);
+    CHECK(!abad, "scale twin n %zu f %g: %zu values are not the product rounded once", n, (double)f, abad);
+    if (ok)
+        printf("scale twin n %7zu f %-9g: host %s, the product rounded once; subnormal inputs or products "
+               "not compared: %zu\n", n, (double)f,
+#ifdef RUNNER_T3_BUILD
+               "T3 (memcmp)",
+#else
+               "default (memcmp, subnormals flushed)",
+#endif
+               flushed);
+    free(g); free(gh); free(gd);
+}
+static void r4_checks(model_t *m) {
+    r4_scale_check(m, 100003, 1.0f / 37.0f);   // a mean's 1 / wsum, blocks and a tail
+    r4_scale_check(m, 256, 0.5f);              // one block exactly; a power of two
+    r4_scale_check(m, 257, 3.0f);              // one over
+    r4_scale_check(m, 1, 1.0f / 3.0f);         // one element
+    r4_scale_check(m, 4099, 1e-37f);           // most products subnormal (T3 compares them all)
+}
+
+// R8.24.1 B R4: the host scalars held to a T3 build's bits in every build by
+// their precise attribute (model.c, model_lora_train_init's note): the device
+// optimizer's bias corrections (model_adam_bias_corr), and below them a fresh
+// adapter's init scale (model_lora_init_scale). The bias corrections for steps
+// 1 to 100000 at AdamW's two betas: an FNV-1a 64 digest of their bits against
+// the constant a T3 build gives; in a T3 build also memcmp against 1.0f -
+// powf(beta, step), that build's own powf (pmath.h's p_powf, strict), which is
+// what makes the constant the T3 values. The anchor: step 1 is 1 - beta
+// exactly (beta^1 is beta, and the subtraction rounds once). No device
+// needed, so every CI host runs it: gcc on Linux and Windows, clang on macOS,
+// each compiler's reading of the attribute.
+#define R4_BC_DIGEST 0x001728232e120610ull   // a T3 build's (gcc 16.2.0, x86-64), 2026-11-20
+#define R4_INIT_DIGEST 0x972bb79cdde78270ull // the same build's
+static int r4_bias_corr_checks(void) {
+    static const float betas[2] = { 0.9f, 0.999f };   // TRAIN_ADAM_BETA1, TRAIN_ADAM_BETA2
+    uint64_t h = 0xcbf29ce484222325ull;
+    int bad = 0;
+    for (int b = 0; b < 2; b++) {
+        float beta = betas[b], one = 1.0f - beta, at1 = model_adam_bias_corr(beta, 1);
+        if (memcmp(&at1, &one, 4) != 0 && !bad++)
+            fprintf(stderr, "FAIL: bias correction at step 1, beta %.9g: %.9g, not 1 - beta %.9g\n",
+                    (double)beta, (double)at1, (double)one);
+        for (int s = 1; s <= 100000; s++) {
+            float v = model_adam_bias_corr(beta, s);
+            uint32_t u;
+            memcpy(&u, &v, 4);
+            for (int k = 0; k < 4; k++) { h ^= (u >> (8 * k)) & 0xffu; h *= 0x100000001b3ull; }
+#ifdef RUNNER_T3_BUILD
+            float w = 1.0f - powf(beta, (float)s);
+            if (memcmp(&v, &w, 4) != 0 && !bad++)
+                fprintf(stderr, "FAIL: bias correction differs from the T3 build's powf at step %d, beta "
+                        "%.9g: %.9g/%.9g\n", s, (double)beta, (double)v, (double)w);
+#endif
+        }
+    }
+    if (h != R4_BC_DIGEST && !bad++)
+        fprintf(stderr, "FAIL: the bias corrections' digest is %016llx, a T3 build's %016llx\n",
+                (unsigned long long)h, (unsigned long long)R4_BC_DIGEST);
+    // a fresh adapter's init scale (model_lora_init_scale, the same attribute):
+    // 1 / sqrt(n_in) for every n_in 1 to 65536; the anchors are the powers of 4,
+    // whose scale is a power of 2 exactly (a default build's rsqrtss and one
+    // Newton step gave one ulp more at 2560)
+    uint64_t hi = 0xcbf29ce484222325ull;
+    for (int n = 1; n <= 65536; n++) {
+        float v = model_lora_init_scale(n);
+        uint32_t u;
+        memcpy(&u, &v, 4);
+        for (int k = 0; k < 4; k++) { hi ^= (u >> (8 * k)) & 0xffu; hi *= 0x100000001b3ull; }
+        int p = 0;
+        while ((1 << (2 * p)) < n) p++;
+        if ((1 << (2 * p)) == n && v != 1.0f / (float)(1 << p) && !bad++)
+            fprintf(stderr, "FAIL: the init scale at n_in %d is %.9g, not 2^-%d\n", n, (double)v, p);
+#ifdef RUNNER_T3_BUILD
+        float w = 1.0f / sqrtf((float)n);
+        if (memcmp(&v, &w, 4) != 0 && !bad++)
+            fprintf(stderr, "FAIL: the init scale differs from the T3 build's 1.0f / sqrtf at n_in %d: "
+                    "%.9g/%.9g\n", n, (double)v, (double)w);
+#endif
+    }
+    if (hi != R4_INIT_DIGEST && !bad++)
+        fprintf(stderr, "FAIL: the init scales' digest is %016llx, a T3 build's %016llx\n",
+                (unsigned long long)hi, (unsigned long long)R4_INIT_DIGEST);
+    // and the adapter's scale alpha / rank (model_lora_alpha_scale) at every
+    // rank the CLI admits (--lora-rank 1 to 512), whose alpha is 2 x rank
+    // (main.c): 2 exactly at each, the anchor
+    for (int r = 1; r <= 512; r++) {
+        float a = 2.0f * (float)r, v = model_lora_alpha_scale(a, r);
+        if (v != 2.0f && !bad++)
+            fprintf(stderr, "FAIL: alpha / rank at rank %d is %.9g, not 2\n", r, (double)v);
+#ifdef RUNNER_T3_BUILD
+        float w = a / (float)r;
+        if (memcmp(&v, &w, 4) != 0 && !bad++)
+            fprintf(stderr, "FAIL: alpha / rank differs from the T3 build's at rank %d\n", r);
+#endif
+    }
+    if (!bad)
+        printf("bias corrections: steps 1 to 100000 at beta 0.9 and 0.999, the init scale at n_in 1 to "
+               "65536 and alpha / rank at ranks 1 to 512 are a T3 build's (digests %016llx, %016llx%s)\n",
+               (unsigned long long)h, (unsigned long long)hi,
+#ifdef RUNNER_T3_BUILD
+               ", and memcmp against this T3 build's powf"
+#else
+               ""
+#endif
+               );
+    return bad;
+}
+
 int main(void) {
     f16_init();
     model_t m;
@@ -1964,6 +2122,7 @@ int main(void) {
     if (gate_cc_pins("train-gpu")) return 1;   // no device needed
     if (b_scope_checks()) return 1;   // no device needed
     if (b_resident_scope_checks()) return 1;
+    if (r4_bias_corr_checks()) return 1;   // no device needed
     if (!gpu_train_init(&m)) {
         if (gate_no_device("train-gpu")) return 1;
         printf("train-gpu: no CUDA device, skipping (not passing)\n");
@@ -2266,6 +2425,7 @@ int main(void) {
     b4_checks(&m);
     b5_checks(&m);
     b7_checks(&m);
+    r4_checks(&m);
     gpu_train_free(&m);
     free(keep_pinned);
     for (size_t k = 0; k < sizeof(keep) / sizeof(*keep); k++) free(keep[k]);
