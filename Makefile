@@ -255,6 +255,7 @@ TEST_PREFILL_BATCH = $(TEST_BATCH:test-batch%=test-prefill-batch-identity%)
 # compile recipe and the binary is never built
 TEST_CUDA_LONGROPE = $(TEST_BATCH:test-batch%=test-longrope-cuda%)
 TEST_CUDA_BATCH_COLS = $(TEST_BATCH:test-batch%=test-batch-columns-cuda%)
+TEST_CUDA_BATCH_Q35 = $(TEST_BATCH:test-batch%=test-batch-q35-cuda%)
 TEST_PENALTY_WINDOW = $(TEST_BATCH:test-batch%=test-penalty-window%)
 TEST_ROPE_YARN = $(TEST_BATCH:test-batch%=test-rope-yarn%)
 TEST_ATTN_SCALE = $(TEST_BATCH:test-batch%=test-attn-scale%)
@@ -1020,6 +1021,32 @@ test-cuda-longrope: runner $(TEST_CUDA_LONGROPE) test-phi3-longrope.gguf
 TEST_CUDA_BATCH_COLS_SRC = $(TEST_RECURRENT_SRC:tests/test_recurrent_rewind.c=tests/test_cuda_batch_columns.c)
 $(TEST_CUDA_BATCH_COLS): $(TEST_CUDA_BATCH_COLS_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_CUDA_BATCH_COLS_SRC) -o $@ $(LDFLAGS)
+
+# R3.82: qwen35 in the CUDA decode microbatch. Each sequence's logits AND its
+# recurrent state (every DeltaNet state and conv history) after every step are
+# the bits of that sequence decoded alone, at widths 2, 4 and 8, with membership
+# and column order varying between rounds; RUNNER_BATCH_QWEN35=0 (the kill
+# switch) declines the batch with the same bytes (tests/test_cuda_batch_q35.c).
+# On the generated qwen35 fixture, a state-64 one (whose one-token step takes
+# the column-split k_q35_delta1), and that one's Q8_0 and Q4_K quantizations
+# (its 256-wide rows, ORNITH_TEST_FF=256, take Q4_K; the default fixture's 32
+# and 64 fall back to Q5_0, which has no twin and declines the batch), which
+# reach the quantized twins.
+# Without a CUDA device it fails as skipped.
+TEST_CUDA_BATCH_Q35_SRC = $(TEST_RECURRENT_SRC:tests/test_recurrent_rewind.c=tests/test_cuda_batch_q35.c)
+$(TEST_CUDA_BATCH_Q35): $(TEST_CUDA_BATCH_Q35_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_CUDA_BATCH_Q35_SRC) -o $@ $(LDFLAGS)
+
+test-cuda-batch-q35: runner $(TEST_CUDA_BATCH_Q35) test-ornith.gguf
+	@set -e; \
+	ORNITH_TEST_STATE=64 ORNITH_TEST_FF=256 $(PYTHON) scripts/make-test-ornith.py test-ornith-batch-s64.gguf > /dev/null; \
+	for q in q8_0 q4_k; do \
+	  ./$(RUNNER_EXE) -m test-ornith-batch-s64.gguf --quantize test-ornith-batch-$$q.gguf --quant $$q > /dev/null 2>&1; \
+	done; \
+	for f in test-ornith.gguf test-ornith-batch-s64.gguf test-ornith-batch-q8_0.gguf test-ornith-batch-q4_k.gguf; do \
+	  ./$(TEST_CUDA_BATCH_Q35) $$f 128 40; \
+	  RUNNER_BATCH_QWEN35=0 ./$(TEST_CUDA_BATCH_Q35) $$f 128 12; \
+	done
 
 # The K-quant twins the measured Phi-3.5-mini Q4_K_M runs (GEMVB_KQ) are sampled
 # on the wide fixture's Q4_K and Q6_K files, made as test-cuda-batch-identity
@@ -4833,7 +4860,7 @@ clean:
 	      $(TEST_QUANTIZE) $(TEST_KVSNAP_REPLACE) $(TEST_PARTIAL_FDOPEN) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
 	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) \
 	      $(TEST_FILE_ID) test-file-identity.tmp \
-	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_LONGROPE) $(TEST_PREFILL_BATCH) $(TEST_CUDA_LONGROPE) $(TEST_CUDA_BATCH_COLS) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
+	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_LONGROPE) $(TEST_PREFILL_BATCH) $(TEST_CUDA_LONGROPE) $(TEST_CUDA_BATCH_COLS) $(TEST_CUDA_BATCH_Q35) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
 	      $(TMPL_CONF_RENDER) \
 	      $(TEST_SPLIT_GUARD) split-guard.out test-swap-race-bin test-tokenizer-race-bin test-decide-race-bin test-decide-race-gpu-bin \
 	      runner-gpu-stub
@@ -5004,7 +5031,7 @@ test-anchors: runner test.gguf $(TEST_LORA_GRAD) $(DIFFTOK)
 	    --allow-skip 'this OS refuses a deliberate self-connect' .build/ci/anchors.xml
 
 .PHONY: test-anchors
-.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-hybrids test-cuda-qwen4exp test-cuda-qwen35moe test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity test-cuda-longrope test-cuda-batch-columns
+.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-hybrids test-cuda-qwen4exp test-cuda-qwen35moe test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity test-cuda-longrope test-cuda-batch-columns test-cuda-batch-q35
 .PHONY: test-gates test-gates-core test-gates-batch test-python
 .PHONY: test-deepseek2 test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 

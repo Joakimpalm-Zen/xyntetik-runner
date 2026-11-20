@@ -32,6 +32,11 @@ STATE, GROUPS, VHEADS, CONV = 8, 2, 4, 4
 if os.environ.get("ORNITH_TEST_STATE"):
     STATE = int(os.environ["ORNITH_TEST_STATE"])
     E = STATE * VHEADS
+# ORNITH_TEST_FF=N: the dense FFN N wide. 256 (with ORNITH_TEST_STATE=64) lets
+# every projection, ffn_down's 256-wide rows included, quantize to a K-quant
+# rather than fall back to Q5_0 (test-cuda-batch-q35's Q4_K file)
+if os.environ.get("ORNITH_TEST_FF"):
+    FF = int(os.environ["ORNITH_TEST_FF"])
 VOCAB = ["<unk>", "<s>", "</s>"] + [f"<0x{i:02X}>" for i in range(256)]
 TTYPE = [2, 3, 3] + [6] * 256
 

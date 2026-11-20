@@ -2695,6 +2695,7 @@ static const char *const RUNNER_SWITCH_INERT[] = {
     "RUNNER_TPOOL_SPIN",       // how idle pool threads wait
     "RUNNER_HF_CACHE", "RUNNER_CURL", "RUNNER_PREFIX_CACHE_MB",   // downloads, the server's prefix cache
     "RUNNER_TEST_BUILD_DIRTY", // marks a training build dirty: it can only take a claim down
+    "RUNNER_BATCH_QWEN35",     // qwen35's CUDA decode microbatch off: every column's bits are its solo step's (test-cuda-batch-q35)
     // test seams that only wait (a sleep between steps, chunks or phases) or print
     "RUNNER_TEST_STEP_DELAY_MS", "RUNNER_TEST_PREFILL_DELAY_MS", "RUNNER_TEST_LOAD_DELAY_MS",
     "RUNNER_TEST_REQUEST_TAIL_MS", "RUNNER_TEST_DRAIN_GRACE_MS", "RUNNER_TEST_DRAIN_HARD_MS",
