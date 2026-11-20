@@ -233,9 +233,18 @@ Around the matvec:
   as the eager host routing (`RUNNER_MOE_EAGER=1`) and keeps routing weights
   within about 2 ulp: device `expf` is not the host libm. Gate:
   `./test-moe-tol MODEL.gguf`.
-- **gemma-4's Q4_0 experts through int8 activation limbs (moe-limb, R3.81, opt-in).**
-  `RUNNER_MOE_LIMB=1`, or `moe-limb` in `--gpu-route`/`RUNNER_CUDA_ROUTE`, on a
-  gemma-4 MoE file whose routed expert products are all Q4_0. Each 32-element
+- **gemma-4's Q4_0 experts through int8 activation limbs (moe-limb, R3.81, the
+  default since R3.83).** On CUDA, a gemma-4 MoE file whose routed expert
+  products are all Q4_0 takes it by default, with every routed expert on the
+  device. Under a partial offload (MoE layers past the device's split, or
+  expert banks on the host under `--cpu-moe`) the default keeps today's route
+  for the whole model; `RUNNER_MOE_LIMB=1` takes it on the device's layers
+  there, as the opt-in did. `RUNNER_MOE_LIMB=0` (or `off`), and a route set
+  without `moe-limb` in `--gpu-route`/`RUNNER_CUDA_ROUTE` (`reference`
+  included), keep today's route and today's bits; the pin decides before the
+  switch, and a replay takes its record's set, so a record made without the
+  route replays without it. A gemma-4 MoE file that does not take it says why,
+  once, on stderr. Each 32-element
   block of an expert's input becomes a 24-bit fixed-point number relative to
   the block's max, held in three int8 limbs (k_moe_limb_quant). A block's sum
   with the Q4_0 integers is then exact, whether dp4a computes it (the decode,
@@ -249,12 +258,21 @@ Around the matvec:
   a block max above 2^64 or nonzero below 2^-64, takes k_moe_mv_q4_0's own
   arithmetic, in the decode and the prefill alike. Without the compute_80
   module, the prefill runs the decode kernel a column at a time: the same
-  bits. The route replaces the grouped prefill on such an instance, and the
-  switch is not inert: it moves bytes, and the route is recorded. Gates:
+  bits, and the default there too. The route replaces the grouped prefill on
+  such an instance, and the switch is not inert either way: it moves bytes.
+  The route is recorded (`profile.gpu_route`) and is part of the route
+  identity that names stored rows (a preamble snapshot, the prefix store, a
+  session's rows), so rows written with it are not read without it, nor the
+  reverse. Its scratch is charged to every window column of the split plan:
+  3 bytes an element, 4 a 32-element block and 8 a column, at the wider expert
+  input (8,808 bytes a column on Gemma-4-26B-A4B). Gates:
   `make test-cuda-moe-limb-fixture` (a cuda-gate step: a generated gemma-4
-  MoE at Q4_0, on the tile and on its fallback, RUNNER_CUDA_SM80=0) and
+  MoE at Q4_0, with the default on the tile and on its fallback,
+  RUNNER_CUDA_SM80=0, and held off by RUNNER_MOE_LIMB=0 and by the reference
+  route, where the load must take today's route and bits),
   `make test-cuda-moe-limb MOE_LIMB_MODEL=<file>` on a real file
-  (tests/test_cuda_moe_limb.c).
+  (tests/test_cuda_moe_limb.c), and tests/test_moe_limb_default.py (the
+  selection, the records, the scope guards, the stored rows and the plan).
 - **MoE families on the tensor cores (moe-tc) and grouped (moe-grouped).**
   qwen3moe and gpt-oss run their dense projections through the tensor-core
   GEMM (and TC2 on 8.0+), and qwen3moe's prefill groups a tile's columns by

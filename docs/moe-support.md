@@ -59,7 +59,11 @@ The activation is the tanh-GELU approximation, shared with the dense gemma FFN
 via one `gated_act()` so the GELU path cannot silently diverge from SiLU MoE.
 **Execution: CPU, CUDA, and Metal.** CUDA is verified GPU/CPU-identical on
 **gemma-4-26B-A4B-it** (128 experts, top-8; ~23 tok/s full-offload in the
-24 GB slice). Metal is gated on the Mac synthetic `gemma4-moe` fixture
+24 GB slice) on today's expert route. Since R3.83 a file whose routed expert
+products are all Q4_0 takes moe-limb on CUDA by default (int8 activation limbs:
+a prompt row's expert products are a lone decode's bits at any width, not those
+bytes; [kernel routes](kernel-routes.md)); `RUNNER_MOE_LIMB=0` runs today's
+route. Metal is gated on the Mac synthetic `gemma4-moe` fixture
 (`make test-metal-gemma4-moe`), covering scaled embeddings, GELU, fused
 `gate_up` experts, branch norms, down scales, post norms, layer scale, V
 RMSNorm and final logit softcap; large real-model Metal validation is still

@@ -1240,27 +1240,96 @@ static bool moe_fused_eligible(const model_t *m) {
     return true;
 }
 
-// moe-limb (R3.81): gemma-4 with every routed expert product in Q4_0 (the
-// scope it was measured on), when asked for: a route pin decides first, then
-// RUNNER_MOE_LIMB=1. Off by default. It moves bytes (its products are not
-// today's), so the switch is not inert and the route is recorded (GR_MOE_LIMB).
-static bool moe_limb_wanted(const model_t *m) {
+// moe-limb (R3.81, the default since R3.83): gemma-4 with every routed
+// expert product in Q4_0, the scope it was measured on. A route pin decides
+// first (--gpu-route, --verify's record, RUNNER_CUDA_ROUTE: `reference` holds
+// it off), then RUNNER_MOE_LIMB (0 or off: today's route; any other value:
+// asked for), then the default: on. Its products are not today's, so the
+// switch moves bytes whichever way it is set (not inert) and the route is
+// recorded (GR_MOE_LIMB). -1 the default, 0 off, 1 asked for.
+static int moe_limb_request(void) {
     int p = route_pinned(GR_MOE_LIMB);
-    bool on;
-    if (p >= 0) on = p;
-    else {
-        const char *e = getenv("RUNNER_MOE_LIMB");
-        on = e && *e && strcmp(e, "0") != 0 && strcmp(e, "off") != 0;
-    }
-    if (!on || !m || !m->moe_gemma || m->n_expert <= 0) return false;
+    if (p >= 0) return p;
+    const char *e = getenv("RUNNER_MOE_LIMB");
+    if (!e || !*e) return -1;
+    return strcmp(e, "0") != 0 && strcmp(e, "off") != 0;
+}
+
+// Why m is outside the route's scope, or NULL: a gemma-4 MoE file whose
+// routed expert products (the fused gate_up and down stacks) are all Q4_0.
+static const char *moe_limb_scope_why(const model_t *m, char *buf, size_t n) {
+    if (!m || !m->moe_gemma || m->n_expert <= 0) return "not a gemma-4 MoE file";
     for (int l = 0; l < m->n_layer; l++) {
         const layer_t *ly = &m->layers[l];
         if (ly->n_expert <= 0) continue;
-        if (!ly->ffn_gate_up_exps || ly->ffn_gate_up_exps->type != T_Q4_0 ||
-            !ly->ffn_down_exps || ly->ffn_down_exps->type != T_Q4_0 || ly->moe_split)
-            return false;
+        if (ly->moe_split) {
+            snprintf(buf, n, "layer %d's experts are split into one tensor each", l);
+            return buf;
+        }
+        const gguf_tensor *gu = ly->ffn_gate_up_exps, *dn = ly->ffn_down_exps;
+        if (!gu || !dn) {
+            snprintf(buf, n, "layer %d has no fused gate_up and down expert stacks", l);
+            return buf;
+        }
+        const gguf_tensor *t = gu->type != T_Q4_0 ? gu : dn->type != T_Q4_0 ? dn : NULL;
+        if (t) {
+            snprintf(buf, n, "layer %d's routed %s experts are %s, and the route takes Q4_0 only",
+                     l, t == gu ? "gate_up" : "down", ggml_type_name(t->type));
+            return buf;
+        }
     }
-    return true;
+    return NULL;
+}
+
+// In scope and not held off: what the split plan charges the route's scratch
+// for (cuda_instance_dims) and what a record states without an instance.
+static bool moe_limb_wanted(const model_t *m) {
+    char why[192];
+    return moe_limb_request() != 0 && !moe_limb_scope_why(m, why, sizeof why);
+}
+
+// The default also needs every routed expert on the device, the
+// configuration it was measured in: under a partial offload (MoE layers past
+// the device's split, or expert banks on the host under --cpu-moe) today's
+// route runs model-wide. An explicit request (RUNNER_MOE_LIMB=1, a pin) takes
+// it on the device's layers, as the opt-in did before R3.83.
+static const char *moe_limb_offload_why(const model_t *m, char *buf, size_t n) {
+    for (int l = 0; l < m->n_layer; l++) {
+        if (!m->layers[l].is_moe) continue;
+        if (l >= m->gpu_layers) {
+            snprintf(buf, n, "a partial offload: layer %d runs on the host (%d of %d layers on the "
+                     "device); RUNNER_MOE_LIMB=1 takes it on the device's layers", l, m->gpu_layers,
+                     m->n_layer);
+            return buf;
+        }
+        if (moe_on_host(m, l)) {
+            snprintf(buf, n, "a partial offload: layer %d's experts are on the host (--cpu-moe); "
+                     "RUNNER_MOE_LIMB=1 takes it on the device's layers", l);
+            return buf;
+        }
+    }
+    return NULL;
+}
+
+// Why this instance does not take the route, or NULL when it does; said once
+// a process for a gemma-4 MoE file (moe_limb_say).
+static const char *moe_limb_decline(const model_t *m, const gpu_t *g, char *buf, size_t n) {
+    int req = moe_limb_request();
+    if (req == 0)
+        return route_pinned(GR_MOE_LIMB) == 0
+                   ? "the route pin leaves it out (--gpu-route, a replayed record's route, or RUNNER_CUDA_ROUTE)"
+                   : "RUNNER_MOE_LIMB=0";
+    const char *why = moe_limb_scope_why(m, buf, n);
+    if (why) return why;
+    if (!g->moe_fused_ok) return "the fused device routing is off (RUNNER_MOE_EAGER)";
+    if (!g->sw->f_moe_limb_quant || !g->sw->f_moe_limb_q4_0) return "its kernels did not load on this device";
+    if (req < 0) return moe_limb_offload_why(m, buf, n);
+    return NULL;
+}
+
+static void moe_limb_say(const char *why) {
+    static _Atomic int said;
+    if (!said++) fprintf(stderr, "gpu: moe-limb not taken, the experts run today's route: %s\n", why);
 }
 
 static bool moe_grouped_eligible(const model_t *m) {
@@ -4147,10 +4216,13 @@ static bool cuda_alloc_moe(model_t *m, gpu_t *g) {
             g->h_moe_gsel = malloc(sizeof(int) * (size_t)g->win * used_c);
             if (!g->h_moe_gpos || !g->h_moe_gsel) g->moe_twin_ok = false;
         }
-        // moe-limb (R3.81): scratch for max(window, slots) columns of the
-        // wider expert input
-        g->moe_limb_avail = g->moe_fused_ok && moe_limb_wanted(m) &&
-                            g->sw->f_moe_limb_quant && g->sw->f_moe_limb_q4_0;
+        // moe-limb (R3.81, the default since R3.83): scratch for
+        // max(window, slots) columns of the wider expert input; a gemma-4 MoE
+        // file that does not take it says why, once
+        char lwhy[192];
+        const char *lno = moe_limb_decline(m, g, lwhy, sizeof lwhy);
+        g->moe_limb_avail = !lno;
+        if (lno && m->moe_gemma) moe_limb_say(lno);
         if (g->moe_limb_avail) {
             int lin = m->n_embd > m->n_ff_exp ? m->n_embd : m->n_ff_exp;
             int lcols = g->win > (int)used_c ? g->win : (int)used_c;
@@ -7546,12 +7618,13 @@ static bool gpu_gemma_moe_ffn_path(gpu_t *g, model_t *m, const layer_t *ly, int 
 // expert matvec (enc_moe_mv, one slot); 1: every column in one call through
 // the by-expert prefill's product. route 0: today's (k_moe_mv_q4_0; the
 // twins, moe_twin_gemm); 1: the grouped prefill's (enc_moe_gemm, prefill
-// only); 2: moe-limb. No CLI path calls it. false: no device, not a gemma-4
-// Q4_0 expert layer, a route this build does not have, or a failed launch.
+// only); 2: moe-limb; 3 (R3.83): the instance's own, as its load chose it.
+// No CLI path calls it. false: no device, not a gemma-4 Q4_0 expert layer, a
+// route this build or instance does not have, or a failed launch.
 bool gpu_test_moe_q4_0(model_t *m, int layer, int proj, int expert, int route, int prefill,
                        const float *x, int cols, float *y) {
     gpu_t *g = m ? m->gpu : NULL;
-    if (!g || layer < 0 || layer >= m->n_layer || cols < 1 || route < 0 || route > 2 ||
+    if (!g || layer < 0 || layer >= m->n_layer || cols < 1 || route < 0 || route > 3 ||
         (route == 1 && !prefill))
         return false;
     const layer_t *ly = &m->layers[layer];
@@ -7561,7 +7634,7 @@ bool gpu_test_moe_q4_0(model_t *m, int layer, int proj, int expert, int route, i
     gguf_tensor *base = proj == 0 ? ly->ffn_gate_up_exps : ly->ffn_down_exps;
     if (base->type != T_Q4_0 || expert < 0 || expert >= ly->n_expert) return false;
     if (route == 2 && !g->moe_limb_avail) {
-        fprintf(stderr, "gpu: moe-limb is not available on this instance (RUNNER_MOE_LIMB=1 at load)\n");
+        fprintf(stderr, "gpu: moe-limb is not available on this instance (its load did not take it)\n");
         return false;
     }
     int n_in = proj == 0 ? n_embd : nff, n_out = proj == 0 ? 2 * nff : n_embd;
@@ -7581,7 +7654,7 @@ bool gpu_test_moe_q4_0(model_t *m, int layer, int proj, int expert, int route, i
               cu.MemcpyHtoD(d_x, x, sizeof(float) * nx) == 0 &&
               cu.MemcpyHtoD(d_sel, &expert, sizeof(int)) == 0;
     bool limb_was = g->moe_limb_ok;
-    g->moe_limb_ok = route == 2;
+    if (route != 3) g->moe_limb_ok = route == 2;
     if (ok && !prefill)
         for (int c = 0; ok && c < cols; c++)
             ok = enc_moe_mv(g, m, base, estride, d_x + (size_t)c * n_in * sizeof(float),
