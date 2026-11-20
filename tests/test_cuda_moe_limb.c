@@ -20,6 +20,7 @@
 //   somewhere, or the gate could not see a route that is not an identity.
 // Skips (prints so) without a CUDA device that took the file.
 #include "runner.h"
+#include "compat.h"
 #include "gpu.h"
 #include "gate_gpu.h"
 
@@ -154,7 +155,7 @@ static long widths_check(model_t *m, int l, int proj, int e, int route, const fl
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s MODEL.gguf [all|0,15,29]\n", argv[0]); return 2; }
     setvbuf(stdout, NULL, _IOLBF, 0);
-    setenv("RUNNER_MOE_LIMB", "1", 1);   // the route's scratch and kernels; each call names its route
+    plat_setenv("RUNNER_MOE_LIMB", "1");   // the route's scratch and kernels; each call names its route
     model_t m;
     memset(&m, 0, sizeof m);
     model_params p;
