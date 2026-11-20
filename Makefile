@@ -1036,8 +1036,12 @@ $(TEST_CUDA_BATCH_COLS): $(TEST_CUDA_BATCH_COLS_SRC) $(HDR)
 # failing (RUNNER_CUDA_INJECT_FAILURE) is the reference; an engaged batch
 # reduced to one member, and a 2-member step, failing at the same step must
 # give each member that reference's logits and state, and a 2-member step
-# whose rollback copy fails too (RUNNER_TEST_Q35_ROLLBACK_FAIL=1) must fail
-# without serving logits or stepping a member again.
+# whose rollback copy fails too (RUNNER_TEST_Q35_ROLLBACK_FAIL=1 for the first
+# member, 2 for the second after the first was rescued) must fail without
+# serving logits or stepping a member again. After each fault run every device
+# allocation must come back when the batch and the models are freed, and after
+# a 2-member recovery the batch must hold none (it owns its reference to the
+# members' upload: test-batch-owner-asan, run first).
 # Without a CUDA build or device each run prints "ok (skipped)" and exits 0, as
 # test-prefill-bits does; scripts/cuda-gate.sh fails the step if it skipped there.
 TEST_CUDA_BATCH_Q35_SRC = $(TEST_RECURRENT_SRC:tests/test_recurrent_rewind.c=tests/test_cuda_batch_q35.c)
@@ -1045,6 +1049,7 @@ $(TEST_CUDA_BATCH_Q35): $(TEST_CUDA_BATCH_Q35_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_CUDA_BATCH_Q35_SRC) -o $@ $(LDFLAGS)
 
 test-cuda-batch-q35: runner $(TEST_CUDA_BATCH_Q35) test-ornith.gguf
+	$(MAKE) --no-print-directory test-batch-owner-asan
 	@set -e; \
 	ORNITH_TEST_STATE=64 ORNITH_TEST_FF=256 $(PYTHON) scripts/make-test-ornith.py test-ornith-batch-s64.gguf > /dev/null; \
 	for q in q8_0 q4_k; do \
@@ -1058,8 +1063,23 @@ test-cuda-batch-q35: runner $(TEST_CUDA_BATCH_Q35) test-ornith.gguf
 	for k in 0 1; do RUNNER_CUDA_INJECT_FAILURE=2 ./$(TEST_CUDA_BATCH_Q35) $$f 128 3 fault-ref $$k test-batch-q35-ref$$k.txt; done; \
 	RUNNER_CUDA_INJECT_FAILURE=3 ./$(TEST_CUDA_BATCH_Q35) $$f 128 3 fault-one test-batch-q35-ref0.txt; \
 	RUNNER_CUDA_INJECT_FAILURE=3 ./$(TEST_CUDA_BATCH_Q35) $$f 128 3 fault-multi test-batch-q35-ref0.txt test-batch-q35-ref1.txt; \
-	RUNNER_TEST_Q35_ROLLBACK_FAIL=1 RUNNER_CUDA_INJECT_FAILURE=3 \
-	  ./$(TEST_CUDA_BATCH_Q35) $$f 128 3 fault-rollback test-batch-q35-ref0.txt test-batch-q35-ref1.txt
+	for nth in 1 2; do \
+	  RUNNER_TEST_Q35_ROLLBACK_FAIL=$$nth RUNNER_CUDA_INJECT_FAILURE=3 \
+	    ./$(TEST_CUDA_BATCH_Q35) $$f 128 3 fault-rollback test-batch-q35-ref0.txt test-batch-q35-ref1.txt; \
+	done
+
+# A decode microbatch owns its reference to the device data its members share:
+# the members' backends can all be released while the batch lives (a failed
+# qwen35 step's recovery), and the batch is freed after (tests/test_batch_owner.c).
+# It includes src/cuda.c and needs no driver or device, so it runs on any host,
+# under ASan and UBSan; a borrowed reference is a use-after-free there and an
+# unreturned one a leak. test-cuda-batch-q35 runs it first.
+TEST_BATCH_OWNER_SRC = tests/test_batch_owner.c src/gguf.c src/compat.c src/quants.c src/model.c src/vramreg.c
+test-batch-owner-asan: $(TEST_BATCH_OWNER_SRC) src/cuda.c $(HDR) src/kernels_ptx.h
+	$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer \
+	    -fno-fast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -DRUNNER_GPU_CUDA -I src \
+	    $(TEST_BATCH_OWNER_SRC) -o test-batch-owner-asan-bin $(LDFLAGS)
+	ASAN_OPTIONS=detect_leaks=1 ./test-batch-owner-asan-bin
 
 # The K-quant twins the measured Phi-3.5-mini Q4_K_M runs (GEMVB_KQ) are sampled
 # on the wide fixture's Q4_K and Q6_K files, made as test-cuda-batch-identity

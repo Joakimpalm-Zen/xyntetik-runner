@@ -17448,6 +17448,9 @@ bool model_batch_decode(model_batch *b, const int *idx, const int32_t *tok,
         // over, so a step it is part of is the sequential one (R6.68.93;
         // the batch read the cache through its NULL backend and the server
         // died).
+        // a lead that gave up its backend since the last step (any failed
+        // forward) leaves the batch nothing to step with: its device side goes
+        gpu_batch_release_orphaned(b->gb);
         bool on_device = b->gb != NULL;
         for (int i = done; on_device && i < done + take; i++)
             if (!b->seqs[idx[i]]->gpu) on_device = false;
@@ -17463,16 +17466,24 @@ bool model_batch_decode(model_batch *b, const int *idx, const int32_t *tok,
             // that cannot be read back leaves no verified state: the step
             // fails, serving no logits and stepping no member again (the
             // scheduler stops these sequences).
+            // The batch holds its own reference to the members' shared device
+            // data, so these releases cannot free it under the batch; once the
+            // lead has released its backend the batch gives its device side
+            // back too, rather than keep the upload resident until it is freed.
+            bool rescued = true;
             for (int i = done; i < done + take; i++) {
                 model_t *m = b->seqs[idx[i]];
                 if (!m->gpu) continue;
                 if (!gpu_recurrent_rescue(m)) {
                     fprintf(stderr, "gpu: a failed decode microbatch step: a sequence's pre-step "
                             "recurrent state could not be read back; failing the step\n");
-                    return false;
+                    rescued = false;
+                    break;
                 }
                 gpu_runtime_failure(m);
             }
+            gpu_batch_release_orphaned(b->gb);
+            if (!rescued) return false;
         }
         if (ok) {
             // The backend returns raw logits, exactly as gpu_forward_batch

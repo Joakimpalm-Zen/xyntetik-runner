@@ -618,6 +618,10 @@ jobs:
         run: python3 scripts/check-sanitizers.py
       - name: sanitized sharing and load cleanup
         run: make test-shared-asan
+      - name: a CUDA decode microbatch owns its reference to the shared upload
+        # R3.82: includes src/cuda.c and needs no driver or device; a batch
+        # that borrowed its members' upload is a use-after-free under ASan
+        run: make test-batch-owner-asan
       - name: the pattern automaton and the schema validator under sanitizers
         # R2.18: an overflow at the largest maxLength, or a stray read in the
         # automaton's cache, only fails loudly with UBSan and ASan

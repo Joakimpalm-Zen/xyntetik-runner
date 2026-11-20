@@ -223,7 +223,12 @@ Around the matvec:
   runs the solo forward. A step that fails after it ran recovers each member
   as a failed solo forward does: the pre-step snapshot to the host, checked,
   the backend released, the step computed once on the CPU. A snapshot that
-  cannot be read back fails the step without serving logits.
+  cannot be read back fails the step without serving logits. Any CUDA batch
+  holds its own reference to the device data its members share, so those
+  releases cannot free it under the batch; once the batch's lead has released
+  its backend the batch gives its graphs, buffers and that reference back and
+  declines every later step (`make test-batch-owner-asan`, which needs no
+  device).
 - **MoE routing.** The default fused device routing selects the same experts
   as the eager host routing (`RUNNER_MOE_EAGER=1`) and keeps routing weights
   within about 2 ulp: device `expf` is not the host libm. Gate:

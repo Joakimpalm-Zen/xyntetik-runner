@@ -646,6 +646,11 @@ bool       gpu_batch_failed_stepped(const gpu_batch *b);
 // every copy checked; true when the backend holds none to read. False: the
 // host has no verified pre-step state.
 bool       gpu_recurrent_rescue(model_t *m);
+// A batch holds its own reference to the device data its members share, so
+// its graphs and buffers outlive the members' backends safely; this releases
+// them, and that reference, once the batch can no longer step (its lead gave
+// up its backend). The batch then declines every step. No-op otherwise.
+void       gpu_batch_release_orphaned(gpu_batch *b);
 // Did the last successful decode use non-identity Metal GEMM tiles for any
 // weight product? A policy switch alone is not evidence that a tile ran.
 bool       gpu_batch_tiles_used(const gpu_batch *b);

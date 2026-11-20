@@ -30,8 +30,8 @@
 //
 // Faults, with RUNNER_CUDA_INJECT_FAILURE (one injected failure a process,
 // after the forward changed the recurrent state) and RUNNER_TEST_Q35_ROLLBACK_
-// FAIL=1 (the rollback copy of a member's state copies the conv history, then
-// fails): a fault-ref process decodes one member alone with its first decode
+// FAIL=N (the Nth rollback copy of a member's state copies the conv history,
+// then fails; N=2 is the second member, after the first was rescued): a fault-ref process decodes one member alone with its first decode
 // step failing, which the solo protocol recovers on the CPU from the
 // pre-forward snapshot; the batch modes must give each member the same logits
 // and state for that step and the two after it, or (fault-rollback) fail the
@@ -183,9 +183,7 @@ static int identity(const char *path, int ctx, int steps) {
         ck(mb && model_batch_engaged(mb) == !killed, what);
         // k[i]: steps done in the member's current life; life[i]: 0 first request, 1 member 0's second
         int k[NS] = { 0 }, life[NS] = { 0 }, lg_diff = 0, st_diff = 0, first = -1, rounds = 0, cols = 0;
-        int want_solo[NS] = { 0 }, want_micro[NS] = { 0 }, seen_w[NS + 1] = { 0 }, pos0_rounds = 0;
-        uint32_t solo0[NS], micro0[NS];
-        for (int i = 0; i < w; i++) { solo0[i] = m[i].route_runs[RP_SOLO_IDX]; micro0[i] = m[i].route_runs[RP_MICRO_IDX]; }
+        int seen_w[NS + 1] = { 0 }, pos0_rounds = 0, acct = 0, acct_first = -1;
         bool ok = mb != NULL;
         for (int r = 0; ok; r++) {
             // the members with work left; member 0 starts its second request in
@@ -214,12 +212,28 @@ static int identity(const char *path, int ctx, int steps) {
                 tok[c] = life[i] ? tok_at(NS, k[i], nv) : tok_at(i, k[i], nv);
                 has0 |= pos[c] == 0;
             }
+            // each round's route counts, per member: a member in the round ran
+            // exactly one forward, the solo one (one member, a position-0
+            // member, or the kill switch) or one microbatch step; every
+            // other member ran none
+            uint32_t solo0[NS], micro0[NS];
+            for (int i = 0; i < w; i++) { solo0[i] = m[i].route_runs[RP_SOLO_IDX]; micro0[i] = m[i].route_runs[RP_MICRO_IDX]; }
             if (!model_batch_decode(mb, idx, tok, pos, n, out)) { ok = false; break; }
             rounds++; cols += n; seen_w[n]++; pos0_rounds += has0;
+            bool solo_round = killed || n == 1 || has0;
+            for (int i = 0; i < w; i++) {
+                bool in = false;
+                for (int c = 0; c < n; c++) in |= idx[c] == i;
+                int ws = in && solo_round, wm = in && !solo_round;
+                if ((int)(m[i].route_runs[RP_SOLO_IDX] - solo0[i]) != ws ||
+                    (int)(m[i].route_runs[RP_MICRO_IDX] - micro0[i]) != wm) {
+                    acct++;
+                    if (acct_first < 0) acct_first = r;
+                }
+            }
             for (int c = 0; c < n; c++) {
                 int i = idx[c];
                 if (!out[c]) { ok = false; break; }
-                if (killed || n == 1 || has0) want_solo[i]++; else want_micro[i]++;
                 h128 hl = hash_bytes(h0(), out[c], sizeof(float) * (size_t)nv), hs;
                 if (!state_hash(&m[i], &hs)) { ok = false; break; }
                 h128 rl = life[i] ? ref2_lg[k[i]] : ref_lg[i][k[i]];
@@ -229,10 +243,8 @@ static int identity(const char *path, int ctx, int steps) {
                 k[i]++;
             }
         }
-        int acct = 0;
-        for (int i = 0; i < w; i++)
-            acct += (int)(m[i].route_runs[RP_SOLO_IDX] - solo0[i]) != want_solo[i] ||
-                    (int)(m[i].route_runs[RP_MICRO_IDX] - micro0[i]) != want_micro[i];
+        if (acct) fprintf(stderr, "%s, pool %d: %d member-rounds with route counts not as expected (first round %d)\n",
+                          path, w, acct, acct_first);
         int expect_cols = w * steps + steps2;
         char ws[64] = "";
         for (int x = 1; x <= w; x++) {
@@ -251,7 +263,8 @@ static int identity(const char *path, int ctx, int steps) {
         ck(ok && cols == expect_cols, what);
         snprintf(what, sizeof what, "%s, pool %d: %s", path, w, killed
                  ? "every step ran the solo forward (the kill switch)"
-                 : "rounds of 2 or more at positions past 0 ran as one microbatch step, the others the solo forward");
+                 : "in every round, each member of a round of 2 or more at positions past 0 ran one microbatch "
+                   "step, of any other round one solo forward, and no other member ran");
         ck(ok && acct == 0, what);
         snprintf(what, sizeof what, "%s, pool %d: every step's logits are the solo decode's bits", path, w);
         ck(ok && lg_diff == 0, what);
@@ -395,6 +408,18 @@ static int fault_batch(const char *path, int ctx, const char *mode, const char *
             snprintf(what, sizeof what, "%s: the injected failure released %s to the CPU, as the solo protocol does",
                      mode, one ? "member 0" : "both members");
             ck(m[0].gpu == NULL && (one || m[1].gpu == NULL), what);
+            if (!one) {
+                // R3.82 (PR 965's re-read): the batch outlives its members'
+                // backends here. It holds its own reference to their upload,
+                // and gives its device side back once its lead has gone, so
+                // nothing of the device's is left allocated (gpu_live_buffers:
+                // every allocation the engine holds); a batch that borrowed the
+                // upload kept its buffers in a released context
+                long live = gpu_live_buffers();
+                snprintf(what, sizeof what, "%s: with both members on the CPU, the batch holds no device "
+                         "allocation (%ld live)", mode, live);
+                ck(live == 0, what);
+            }
         }
     }
     if (!rollback) {
@@ -402,8 +427,15 @@ static int fault_batch(const char *path, int ctx, const char *mode, const char *
                  "protocol's under the same failure, for %d steps", mode, FAULT_STEPS);
         ck(diff == 0, what);
     }
+    // teardown after the failure: the batch is freed after (fault-multi) or
+    // before (fault-one, fault-rollback) the last member's backend release,
+    // and every device allocation comes back
     model_batch_free(mb);
     for (int i = 0; i < 2; i++) model_free(&m[i]);
+    long live = gpu_live_buffers();
+    snprintf(what, sizeof what, "%s: after the batch and both models are freed no device allocation is left "
+             "(%ld live)", mode, live);
+    ck(live == 0, what);
     return g_fail;
 }
 #endif // RUNNER_GPU_CUDA

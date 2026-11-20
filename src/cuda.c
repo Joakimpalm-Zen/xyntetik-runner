@@ -1734,6 +1734,17 @@ static void shared_release(gpu_weights *w) {
     if (last) shared_destroy(w);
 }
 
+// A holder of an upload that is not a model's backend: a decode microbatch
+// (gpu_batch_create). Its graphs and buffers live in the upload's context, so
+// it keeps the upload, and with it the context, until they are destroyed; a
+// borrowed pointer let the members' last release free both under it (R3.82,
+// PR 965's re-read). shared_release gives the reference back.
+static void shared_retain(gpu_weights *w) {
+    pthread_mutex_lock(&g_shared_mu);
+    w->refs++;
+    pthread_mutex_unlock(&g_shared_mu);
+}
+
 // Upload one model's immutable device data and decide the CPU/GPU layer split.
 // act_bytes/max_hd describe the per-sequence scratch of one instance; they
 // feed the fitting decision only.
@@ -11008,11 +11019,11 @@ float *gpu_spec_logits(model_t *m, int row) {
     return g->h_logits + (size_t)row * m->n_vocab;
 }
 
-gpu_batch *gpu_batch_create(model_t **seqs, int n) {
-    gpu_t *lead = NULL;
-    if (!batch_eligible(seqs, n, &lead)) return NULL;
-    model_t *m0 = seqs[0];
-
+// The host half of gpu_batch_create: the member table and the batch's own
+// reference to the upload, which batch_release_device gives back after the
+// graphs and buffers are destroyed (gpu_batch_free, on a partial create too).
+// No driver call (tests/test_batch_owner.c runs it without one).
+static gpu_batch *batch_host_new(model_t **seqs, int n, gpu_t *lead) {
     gpu_batch *b = calloc(1, sizeof(gpu_batch));
     if (!b) {
         fprintf(stderr, "gpu: CUDA batch state allocation failed — using "
@@ -11030,11 +11041,22 @@ gpu_batch *gpu_batch_create(model_t **seqs, int n) {
     b->n = n;
     b->lead = lead;
     b->sw = lead->sw;
+    shared_retain(b->sw);
+    model_t *m0 = seqs[0];
     b->n_vocab = m0->n_vocab;
     b->n_embd  = m0->n_embd;
     b->xdim = m0->n_embd;
     for (int l = 0; l < m0->n_layer; l++)
         if (model_q_dim(m0, l) > b->xdim) b->xdim = model_q_dim(m0, l);
+    return b;
+}
+
+gpu_batch *gpu_batch_create(model_t **seqs, int n) {
+    gpu_t *lead = NULL;
+    if (!batch_eligible(seqs, n, &lead)) return NULL;
+    model_t *m0 = seqs[0];
+    gpu_batch *b = batch_host_new(seqs, n, lead);
+    if (!b) return NULL;
 
     CUresult ctx_rc = cu.CtxSetCurrent(b->sw->ctx);
     if (ctx_rc != 0) {
@@ -11079,19 +11101,42 @@ fail:
 
 bool gpu_batch_tiles_used(const gpu_batch *b) { (void)b; return false; }
 
-void gpu_batch_free(gpu_batch *b) {
-    if (!b) return;
-    if (b->sw && b->sw->ctx) cu.CtxSetCurrent(b->sw->ctx);
+// The batch's device side: its graphs and buffers, destroyed in the upload's
+// context while the batch's reference still keeps that context, then the
+// reference. Afterwards the batch is a host shell that declines every step
+// (gpu_batch_decode). Idempotent.
+static void batch_release_device(gpu_batch *b) {
+    if (!b->sw) return;
+    if (b->sw->ctx) cu.CtxSetCurrent(b->sw->ctx);
     for (int i = 0; i <= MVB; i++) {
         if (b->gexec[i] && cu.GraphExecDestroy) cu.GraphExecDestroy(b->gexec[i]);
         if (b->graph[i] && cu.GraphDestroy) cu.GraphDestroy(b->graph[i]);
+        b->gexec[i] = NULL; b->graph[i] = NULL;
     }
     CUdeviceptr bufs[] = { b->logits_n, b->pos_d, b->kcp_d, b->vcp_d };
     for (size_t i = 0; i < sizeof(bufs) / sizeof(*bufs); i++)
         if (bufs[i]) cu.MemFree(bufs[i]);
+    b->logits_n = b->pos_d = b->kcp_d = b->vcp_d = 0;
+    gpu_weights *w = b->sw;
+    b->sw = NULL;
+    shared_release(w);
+}
+
+void gpu_batch_free(gpu_batch *b) {
+    if (!b) return;
+    batch_release_device(b);
     free(b->h_logits);
     free(b->seqs);
     free(b);
+}
+
+// The lead supplies the scratch and the graphs, so a batch whose lead gave up
+// its backend (gpu_runtime_failure) can never step again. Its device side goes
+// at once rather than at gpu_batch_free, which a server reaches only when it
+// stops: the batch's reference would otherwise keep the upload resident after
+// every member released it.
+void gpu_batch_release_orphaned(gpu_batch *b) {
+    if (b && b->sw && b->n > 0 && b->seqs[0]->gpu != b->lead) batch_release_device(b);
 }
 
 // Matvec for a decode microbatch. The selection rule is the whole correctness
@@ -11443,13 +11488,16 @@ static bool batch_decode_cols_run(gpu_batch *b, const int *idx, const int32_t *t
 
 // a qwen35 member's recurrent state back to its pre-forward snapshot
 // (cuda_fwd_prepare took it), as gpu_recurrent_rollback restores it
-// RUNNER_TEST_Q35_ROLLBACK_FAIL=1 (a test seam): the rollback read of a member's
-// pre-step recurrent state after a failed qwen35 microbatch step copies the
-// conv history, then fails the state copy, the partial copy a device fault
-// can leave (tests/test_cuda_batch_q35.c, fault-rollback)
+// RUNNER_TEST_Q35_ROLLBACK_FAIL=N (a test seam): the Nth rollback read in the
+// process of a member's pre-step recurrent state after a failed qwen35
+// microbatch step copies the conv history, then fails the state copy, the
+// partial copy a device fault can leave; N=2 fails the second member after the
+// first was rescued and released (tests/test_cuda_batch_q35.c, fault-rollback)
 static bool q35_rollback_seam(void) {
+    static int calls;
     const char *e = getenv("RUNNER_TEST_Q35_ROLLBACK_FAIL");
-    return e && !strcmp(e, "1");
+    int nth = e ? atoi(e) : 0;
+    return nth > 0 && ++calls == nth;
 }
 
 // The pre-forward snapshot (cuda_fwd_prepare took it) to the host's fold
@@ -11541,6 +11589,7 @@ static bool batch_decode_cols_run(gpu_batch *b, const int *idx, const int32_t *t
         out[0] = lg;
         return true;
     }
+    if (!b->sw) return false;   // the device side was released (gpu_batch_release_orphaned)
     gpu_t *g = b->lead;
     model_t *m0 = b->seqs[0];
     // The lead supplies the scratch and the graphs. If it fell back to the CPU
