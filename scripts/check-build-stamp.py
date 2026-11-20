@@ -67,7 +67,7 @@ def extract_release_build(target_os, workflow_path=ROOT / ".github/workflows/rel
 
 
 def check_binary(binary_path, model_path, expected_commit):
-    binary = Path(binary_path)
+    binary = Path(binary_path).resolve()
     if not binary.is_file():
         raise SystemExit(f"check-build-stamp: binary not found: {binary}")
 

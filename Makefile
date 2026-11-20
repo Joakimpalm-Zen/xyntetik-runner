@@ -475,8 +475,14 @@ $(OBJDIR)/%.o: src/%.c $(HDR)
 # recompiles one file, and BUILD_ID (the flags' key) does not move. The stamp
 # is rewritten only when its content changes. A tree without git stamps
 # nothing, and the route says null.
+# R6.99: actions/checkout and Git for Windows check out text files with CRLF
+# under core.autocrlf=true, while MSYS2's own git leaves core.autocrlf unset
+# and flags every text file as modified. Running the diff with
+# core.autocrlf=true on Windows matches the checkout git (and stays clean if
+# files on disk are already LF).
+BUILD_GIT_DIFF = git$(if $(filter Windows,$(BUILD_OS)), -c core.autocrlf=true,)
 BUILD_COMMIT := $(shell git rev-parse HEAD 2>/dev/null)
-BUILD_DIRTY  := $(if $(BUILD_COMMIT),$(shell git diff --quiet HEAD -- 2>/dev/null && echo 0 || echo 1),0)
+BUILD_DIRTY  := $(if $(BUILD_COMMIT),$(shell $(BUILD_GIT_DIFF) diff --quiet HEAD -- 2>/dev/null && echo 0 || echo 1),0)
 $(OBJDIR)/build-commit.stamp: FORCE
 	@mkdir -p $(dir $@)
 	@want='$(BUILD_COMMIT) $(BUILD_DIRTY)'; \
