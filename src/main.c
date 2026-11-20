@@ -6119,11 +6119,21 @@ static bool train_optim_load(const char *adapter, cli_run *rt, train_state *st,
     return true;
 }
 
+// R4: the moments a sidecar records, from the device when its are newer,
+// pulled and checked before anything is installed: a pull that fails leaves
+// OUT and OUT.optim as they were (the previous checkpoint's, or none).
+static bool train_optim_sync(cli_opts *o, cli_run *rt, int step) {
+    if (model_lora_optim_sync(&rt->m)) return true;
+    fprintf(stderr, "error: nothing written for step %d: %s and its .optim are left as they "
+            "were\n", step, o->train_out);
+    return false;
+}
+
 // The adapter and its sidecar as OUT, and with numbered also as OUT.step-NNNNN:
 // the checkpoints a resumed run starts from.
 static bool train_checkpoint(cli_opts *o, cli_run *rt, const train_state *st,
                              const train_eval_set *ev, bool numbered) {
-    if (!model_lora_save(&rt->m, o->train_out) ||
+    if (!train_optim_sync(o, rt, st->step) || !model_lora_save(&rt->m, o->train_out) ||
         !train_optim_save(o->train_out, rt, st, ev, o->n_eval))
         return false;
     if (!numbered) return true;
@@ -6262,16 +6272,33 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
             tokens += ex->n;
         }
         if (!ok) { rc = 1; break; }
-        if (rt->m.train_res_windows - res_w0 == B) rt->m.train_res_steps++;
+        bool resident = rt->m.train_res_windows - res_w0 == B;
+        if (resident) rt->m.train_res_steps++;
         double ml = wsum > 0 ? loss_sum / wsum : loss_sum;
         bool full = model_full_on(&rt->m);
-        if (mean && wsum > 0) {
+        double gmax = 0, gmean = 0;
+        // R8.24.1 B R4: a step every window of which ran resident takes the
+        // mean's scale, the norms and AdamW on the device; where it does not
+        // (0: the reason said once), the host's below
+        int dev = 0;
+        if (resident && !full && fp_finite_f64(ml)) {
+            dev = model_lora_res_adam_step(&rt->m, mean && wsum > 0 ? (float)(1.0 / wsum) : 1.0f,
+                                           (float)lr, (float)TRAIN_ADAM_BETA1,
+                                           (float)TRAIN_ADAM_BETA2, (float)TRAIN_ADAM_EPS,
+                                           o->weight_decay, step, &gmax, &gmean);
+            if (dev == -1) { rc = 1; break; }
+        }
+        double tn0 = plat_now();
+        if (!dev && mean && wsum > 0) {
             if (full) model_full_grad_scale(&rt->m, (float)(1.0 / wsum));
             else model_lora_grad_scale(&rt->m, (float)(1.0 / wsum));
         }
-        double gmax = 0, gmean = 0;
-        if (!fp_finite_f64(ml) || !(full ? model_full_grad_norms(&rt->m, &gmax, &gmean)
-                                         : model_lora_grad_norms(&rt->m, &gmax, &gmean))) {
+        bool norms_ok = dev || !fp_finite_f64(ml) ||
+                        (full ? model_full_grad_norms(&rt->m, &gmax, &gmean)
+                              : model_lora_grad_norms(&rt->m, &gmax, &gmean));
+        if (!dev && fp_finite_f64(ml) && o->train_gpu && getenv("RUNNER_TRAIN_PROF"))
+            fprintf(stderr, "train-prof: the scale and norms on the host %.3fs\n", plat_now() - tn0);
+        if (dev == -2 || !fp_finite_f64(ml) || !norms_ok) {
             fprintf(stderr, "error: step %d: the loss or a gradient is not finite; "
                     "the adapter stays as step %d left it\n", step, step - 1);
             rc = 1;
@@ -6285,7 +6312,7 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
             rc = 1;
             break;
         }
-        if (!train_adam_step(o, rt, step, lr)) { rc = 1; break; }
+        if (dev != 1 && !train_adam_step(o, rt, step, lr)) { rc = 1; break; }
         st->step = step;
         if (first) { *first_loss = ml; first = false; }
         *last_loss = ml;
@@ -6669,10 +6696,11 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
                      "\"tensors_on_cpu\":%d,\"cpu_bytes\":%llu,"
                      "\"deltanet_device_calls\":%ld,\"deltanet_failed_calls\":%ld,"
                      "\"attention_device_calls\":%ld,\"attention_failed_calls\":%ld,"
-                     "\"resident_steps\":%ld},",
+                     "\"resident_steps\":%ld,\"resident_adam_steps\":%ld},",
                (unsigned long long)bud, bud_set ? "--train-gpu-budget" : "free memory",
                on_dev, (unsigned long long)dev_b, on_cpu, (unsigned long long)cpu_b,
-               dn_dev, dn_failed, ab_dev, ab_failed, rt->m.train_res_steps);
+               dn_dev, dn_failed, ab_dev, ab_failed, rt->m.train_res_steps,
+               rt->m.train_res_adam_steps);
     }
     // R8.17: the held-out sets (rows and teacher hashed like the data), the
     // kill rule and the step a resumed run started from
@@ -6823,6 +6851,8 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
     // so it can be continued past --train-steps
     bool sidecar = o->save_every > 0 || o->stop_file || o->kill_at || o->train_resume;
     char fwhy[512] = "";
+    // the sidecar's moments come back before the adapter is installed
+    if (!rc && sidecar && !o->replay_train && !train_optim_sync(o, rt, st.step)) rc = 1;
     if (!rc && model_full_on(&rt->m)) {
         // the variant: the -m file with the trained tensors' masters
         bool w = model_full_write(&rt->m, load_path, o->train_out, fwhy, sizeof fwhy);

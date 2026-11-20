@@ -12113,6 +12113,13 @@ bool model_lora_bypass(model_t *m, bool on) {
     return true;
 }
 
+// the mean's scale on a gradient buffer; model_grad_scale_ref is the device
+// twin's (k_tscale's) gate entry
+static void grad_scale_buf(float *g, size_t n, float f) {
+    for (size_t i = 0; i < n; i++) g[i] *= f;
+}
+void model_grad_scale_ref(float *g, size_t n, float f) { grad_scale_buf(g, n, f); }
+
 void model_lora_grad_scale(model_t *m, float f) {
     if (!m || !m->lora) return;
     for (int l = 0; l < m->n_layer; l++)
@@ -12121,7 +12128,7 @@ void model_lora_grad_scale(model_t *m, float f) {
                 int cnt = 0;
                 float *g = model_lora_gradbuf(m, l, s, w, &cnt);
                 if (!g) continue;
-                for (int i = 0; i < cnt; i++) g[i] *= f;
+                grad_scale_buf(g, (size_t)cnt, f);
             }
 }
 
@@ -14235,6 +14242,45 @@ NUM_STAGE bool head_rows_bw(model_t *m, const int32_t *toks, int T,
     return true;
 }
 
+// R8.24.1 B R3: why a resident step's head stays on the host, said once a run
+static void lbw_head_why(const char *why) {
+    static _Atomic int said;
+    if (!said++) fprintf(stderr, "train-gpu: the head stays on the host: %s\n", why);
+}
+// R3: one round's head on the device (gpu_train_res_head), on the rows the
+// host's head takes (t < T - 1 with a nonzero weight, head_rows_bw's), in
+// runs of consecutive rows; the loss added in row order with the host's own
+// expression. A round with no scored row computes nothing, as on the host.
+// Scratch of the round's width: rb, rl (runs), tg, pw (targets, weights),
+// lse, zt (each scored row's normalizer and transformed target logit).
+static bool lbw_head_round(model_t *m, const int32_t *toks, int T, int t0, int n,
+                           const float *pos_w, double *loss, int *rb, int *rl, int32_t *tg,
+                           float *pw, double *lse, float *zt) {
+    int nr = 0, nc = 0;
+    for (int b = 0; b < n; b++) {
+        int t = t0 + b;
+        if (!(t < T - 1 && (!pos_w || pos_w[t] != 0.0f))) continue;
+        if (nr && rb[nr - 1] + rl[nr - 1] == b) rl[nr - 1]++;
+        else { rb[nr] = b; rl[nr] = 1; nr++; }
+        tg[nc] = toks[t + 1];
+        if (pos_w) pw[nc] = pos_w[t];
+        nc++;
+    }
+    if (!nc) return true;
+    if (!gpu_train_res_head(m, n, t0, rb, rl, nr, tg, pos_w ? pw : NULL, nc, lse, zt)) {
+        fprintf(stderr, "error: --train-gpu: the resident head failed on the device\n");
+        return false;
+    }
+    for (int b = 0, c = 0; b < n; b++) {
+        int t = t0 + b;
+        if (!(t < T - 1 && (!pos_w || pos_w[t] != 0.0f))) continue;
+        double w = pos_w ? (double)pos_w[t] : 1.0;
+        *loss += w * (lse[c] - (double)zt[c]);
+        c++;
+    }
+    return true;
+}
+
 // The taped forward: the inference forward in rounds of solo bits, every
 // layer's input kept on the tape, the window's (weighted) next-token loss, or
 // with a teacher its (weighted) KL, and the head's adjoint into dx for each
@@ -14252,6 +14298,41 @@ NUM_STAGE bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
     m->tape = malloc(sizeof(float) * (size_t)(L + 1) * T * E);
     if (!m->tape) { m->tape_T = 0; return false; }
     int rows = lora_fw_rows(m);
+    // R8.24.1 B R3: a resident step's head on the device, round by round,
+    // unless a teacher's targets or a reader of every row's logits
+    // (--train-logprobs) needs the host's; RUNNER_TRAIN_RES_HEAD=0 keeps the
+    // host's for comparison. Nothing else reads the unscored rows' logits
+    // (the evals run their own forward, the step log reads the loss).
+    m->train_res_head = false;
+    if (m->train_resident) {
+        const char *e = getenv("RUNNER_TRAIN_RES_HEAD");
+        const char *why = tch ? "a teacher's targets"
+                        : m->tape_logits_cb ? "every row's logits are read (--train-logprobs)"
+                        : e && e[0] == '0' && !e[1] ? "RUNNER_TRAIN_RES_HEAD=0"
+                        : gpu_train_res_head_begin(m, rows);
+        if (why) lbw_head_why(why);
+        else m->train_res_head = true;
+    }
+    if (m->train_res_head) {
+        m->train_res_head_windows++;
+        int *rb = malloc(sizeof(int) * (size_t)rows), *rl = malloc(sizeof(int) * (size_t)rows);
+        int32_t *tg = malloc(sizeof(int32_t) * (size_t)rows);
+        float *pw = malloc(sizeof(float) * (size_t)rows), *zt = malloc(sizeof(float) * (size_t)rows);
+        double *lse = malloc(sizeof(double) * (size_t)rows);
+        bool ok = rb && rl && tg && pw && zt && lse;
+        for (int t0 = 0; ok && t0 < T; t0 += rows) {
+            int n = T - t0 < rows ? T - t0 : rows;
+            bool ex = t_mv_exact;
+            t_mv_exact = true;
+            model_forward_batch(m, toks + t0, n, t0, false);
+            t_mv_exact = ex;
+            if (m->train_res_failed) ok = false;
+            ok = ok && lbw_head_round(m, toks, T, t0, n, pos_w, &loss, rb, rl, tg, pw, lse, zt);
+        }
+        free(rb); free(rl); free(tg); free(pw); free(zt); free(lse);
+        if (ok) *loss_out = loss;
+        return ok;
+    }
     float *raw   = malloc(sizeof(float) * (size_t)rows * V);
     float *probs = malloc(sizeof(float) * (size_t)rows * V);
     float *lgt   = malloc(sizeof(float) * (size_t)V);
@@ -14337,7 +14418,7 @@ static bool lora_layers_bw(model_t *m, const int32_t *toks, int T, float *dx) {
     // device's tape and K/V rows (no PLE, no shared K/V in its scope), dx up
     // once; a failure fails the step (the host holds no tape to resume from)
     if (ok && m->train_resident) {
-        ok = gpu_train_res_bw_begin(m, dx, T);
+        ok = gpu_train_res_bw_begin(m, m->train_res_head ? NULL : dx, T);   // R3: dx is resident already
         for (int l = L - 1; ok && l >= 0; l--) ok = gpu_train_res_layer_bw(m, l);
         ok = ok && gpu_train_res_bw_end(m);
         if (!ok) fprintf(stderr, "error: --train-gpu: the resident backward failed on the device\n");
@@ -14563,6 +14644,7 @@ static bool lora_backward(model_t *m, const int32_t *toks, int T,
     if (!lbw_dn_settle(m)) ok = false;
     if (m->train_resident && !lbw_resident_end(m)) ok = false;
     m->train_resident = false;
+    m->train_res_head = false;
     if (dffn && !lbw_dev_ffn_end(m)) ok = false;
     t_mv_dev = dev;
     if (ok && loss_out) *loss_out = loss;
@@ -14620,6 +14702,41 @@ int model_lora_rank(const model_t *m) {
     return r;
 }
 
+// R8.24.1 B R4: host scalars a T3 build computes, in every build. A default
+// build compiles this unit under -ffast-math, and there gcc takes 1.0f /
+// sqrtf(x) as rsqrtss and one Newton step (one ulp off the rounded quotient
+// at n_in 2560: Qwen3-4B's Q, K, V, gate and up), may take a division as a
+// reciprocal's product, and fuses and reassociates p_powf's double
+// polynomials (an inlined pm_exp_d or pm_log_d takes its caller's flags). The
+// functions under these attributes are precise as mamba2's cores are (R3.78:
+// no fast math, contraction off), and noinline keeps each body out of a
+// fast-math caller. The attribute is the mechanism; the digest gates in
+// tests/test_train_gpu.c, against the constants a T3 build gives (in every
+// build, without a device, and by memcmp against the T3 build's own
+// expressions there), are what keep it true.
+#if defined(__clang__)
+#define TRAIN_BC_ATTR __attribute__((noinline))
+#define TRAIN_BC_SCOPE _Pragma("float_control(precise, on)")
+#elif defined(__GNUC__)
+#define TRAIN_BC_ATTR __attribute__((noinline, optimize("no-fast-math", "fp-contract=off")))
+#define TRAIN_BC_SCOPE
+#else
+#define TRAIN_BC_ATTR
+#define TRAIN_BC_SCOPE
+#endif
+
+// a fresh adapter's two scales: A's init range 1 / sqrt(n_in), and alpha / rank
+TRAIN_BC_ATTR
+float model_lora_init_scale(int64_t n_in) {
+    TRAIN_BC_SCOPE
+    return 1.0f / sqrtf((float)n_in);
+}
+TRAIN_BC_ATTR
+float model_lora_alpha_scale(float alpha, int rank) {
+    TRAIN_BC_SCOPE
+    return alpha / (float)rank;
+}
+
 bool model_lora_train_init(model_t *m, int rank, float alpha, uint64_t seed) {
     char why[128];
     if (rank < 1 || rank > LORA_R_MAX) {
@@ -14642,7 +14759,7 @@ bool model_lora_train_init(model_t *m, int rank, float alpha, uint64_t seed) {
             struct lora_w *lw = &tab[(size_t)l * LW_SLOTS + s];
             int64_t n_in = base->ne[0], n_out = base->ne[1];
             lw->r = rank;
-            lw->scale = alpha / (float)rank;
+            lw->scale = model_lora_alpha_scale(alpha, rank);
             lw->a = malloc(sizeof(float) * (size_t)rank * n_in);
             lw->b = calloc((size_t)n_out * rank, sizeof(float));
             if (!lw->a || !lw->b) {
@@ -14651,7 +14768,7 @@ bool model_lora_train_init(model_t *m, int rank, float alpha, uint64_t seed) {
             }
             // uniform in [-1,1)/sqrt(n_in): the standard small-A init,
             // deterministic from the xorshift stream
-            float sc = 1.0f / sqrtf((float)n_in);
+            float sc = model_lora_init_scale(n_in);
             for (int64_t i = 0; i < (int64_t)rank * n_in; i++) {
                 st ^= st << 13; st ^= st >> 7; st ^= st << 17;
                 lw->a[i] = ((float)(int32_t)(uint32_t)(st >> 32)
@@ -14686,6 +14803,43 @@ static bool adam_state(float **state, size_t n) {
     return *state != NULL;
 }
 
+// R8.24.1 B R4: a resident site of slot s (cuda.c's tg_site): 0 gate, 1 up,
+// 2 down, 3 Q, 4 K, 5 V, 6 O
+static int lora_res_site(int s) { return s <= LW_O ? 3 + s : s - LW_GATE; }
+
+// a test seam: RUNNER_TEST_TRAIN_OPT_PULL_FAIL=N, after step N (the host's
+// optimizer or the device's), makes the pull of the device's newer moments
+// fail, as a device that stops answering would. After a host step it marks
+// the host's copies older first, so the seam reaches the pull without a device.
+static void lora_opt_pull_seam(model_t *m, int step) {
+    const char *e = getenv("RUNNER_TEST_TRAIN_OPT_PULL_FAIL");
+    if (e && *e && atoi(e) == step) m->train_opt_host_old = m->train_opt_pull_fail = true;
+}
+
+// R4: the device optimizer's moments back into the host's (each allocated)
+// when the host's are older: before a host step, and for a checkpoint's .optim
+static bool lora_opt_from_dev(model_t *m) {
+    if (!m->train_opt_host_old) return true;
+    bool fail = m->train_opt_pull_fail;
+    for (int l = 0; l < m->n_layer; l++)
+        for (int s = 0; s <= LW_DOWN; s++) {
+            struct lora_w *lw = &m->lora[(size_t)l * LW_SLOTS + s];
+            gguf_tensor *base = lora_slot_base(m, l, s);
+            if (!lw->r || !base) continue;
+            size_t na = (size_t)lw->r * (size_t)base->ne[0];
+            size_t nb = (size_t)lw->r * (size_t)base->ne[1];
+            if (!adam_state(&lw->ma, na) || !adam_state(&lw->va, na) ||
+                !adam_state(&lw->mb, nb) || !adam_state(&lw->vb, nb) || fail ||
+                !gpu_train_res_optim_get(m, l, lora_res_site(s), lw->ma, lw->va, lw->mb, lw->vb)) {
+                fprintf(stderr, "error: --train-gpu: the optimizer's moments did not come back "
+                        "from the device\n");
+                return false;
+            }
+        }
+    m->train_opt_host_old = false;
+    return true;
+}
+
 bool model_lora_adam_step(model_t *m, float lr, float beta1, float beta2,
                           float eps, float wd, int step) {
     if (!m->lora) return true;
@@ -14710,7 +14864,10 @@ bool model_lora_adam_step(model_t *m, float lr, float beta1, float beta2,
                 !adam_state(&lw->mb, nb) || !adam_state(&lw->vb, nb))
                 return false;
         }
+    // R4: where the device's step kept newer moments, they come back first
+    if (!lora_opt_from_dev(m)) return false;
 
+    double t0 = plat_now();
     float bc1 = 1.0f - powf(beta1, (float)step);
     float bc2 = 1.0f - powf(beta2, (float)step);
     for (int l = 0; l < m->n_layer; l++)
@@ -14725,9 +14882,198 @@ bool model_lora_adam_step(model_t *m, float lr, float beta1, float beta2,
                      (size_t)base->ne[1] * (size_t)lw->r, lr, beta1, beta2, eps,
                      wd, bc1, bc2);
         }
+    m->train_opt_dev = false;   // the device's moments are older now
+    if (m->train_gpu && lbw_prof_on())
+        fprintf(stderr, "train-prof: optimizer on the host %.3fs (AdamW)\n", plat_now() - t0);
     // parameters moved: the adapter is a new behavioral identity
     m->lora_id = m->lora_id * 0x100000001B3ull + 1;
+    lora_opt_pull_seam(m, step);
     return true;
+}
+
+// ---- R8.24.1 B R4: the step's optimizer on the device (model.h)
+// once a run: why the optimizer stays on the host
+static void lora_res_adam_why(const char *why) {
+    static _Atomic int said;
+    if (!said++) fprintf(stderr, "train-gpu: the optimizer stays on the host: %s\n", why);
+}
+
+// AdamW's bias correction for the device optimizer, 1 - beta^step, as a T3
+// build's powf (pmath.h's p_powf) gives it, in every build: its own copies of
+// p_powf's steps under the precise attribute (model_lora_train_init's note).
+// The CPU trainer keeps powf.
+TRAIN_BC_ATTR
+static double train_bc_ldexp2(double x, int k) {   // pm_ldexp2
+    TRAIN_BC_SCOPE
+    union { double d; uint64_t u; } v;
+    while (k > 1000) { v.d = 0x1p1000; x *= v.d; k -= 1000; }
+    while (k < -1000) { v.d = 0x1p-1000; x *= v.d; k += 1000; }
+    v.u = (uint64_t)(k + 1023) << 52;
+    return x * v.d;
+}
+TRAIN_BC_ATTR
+static double train_bc_exp_d(double x) {   // pm_exp_d
+    TRAIN_BC_SCOPE
+    if (x != x) return x;
+    if (x > 709.0) return 1.0 / 0.0;
+    if (x < -745.0) return 0.0;
+    const double ln2_hi = 6.93147180369123816490e-01;
+    const double ln2_lo = 1.90821492927058770002e-10;
+    const double inv_ln2 = 1.44269504088896338700e+00;
+    double kd = x * inv_ln2;
+    int k = (int)(kd >= 0 ? kd + 0.5 : kd - 0.5);
+    double r = (x - (double)k * ln2_hi) - (double)k * ln2_lo;
+    double p = 1.0 / 6227020800.0;
+    p = p * r + 1.0 / 479001600.0;
+    p = p * r + 1.0 / 39916800.0;
+    p = p * r + 1.0 / 3628800.0;
+    p = p * r + 1.0 / 362880.0;
+    p = p * r + 1.0 / 40320.0;
+    p = p * r + 1.0 / 5040.0;
+    p = p * r + 1.0 / 720.0;
+    p = p * r + 1.0 / 120.0;
+    p = p * r + 1.0 / 24.0;
+    p = p * r + 1.0 / 6.0;
+    p = p * r + 0.5;
+    p = p * r + 1.0;
+    p = p * r + 1.0;
+    return train_bc_ldexp2(p, k);
+}
+TRAIN_BC_ATTR
+static double train_bc_log_d(double x) {   // pm_log_d
+    TRAIN_BC_SCOPE
+    if (x != x) return x;
+    if (x <= 0.0) return x == 0.0 ? -1.0 / 0.0 : 0.0 / 0.0;
+    if (x > 1.7976931348623157e308) return x;
+    union { double d; uint64_t u; } v = { x };
+    int k = (int)((v.u >> 52) & 0x7ff) - 1023;
+    v.u = (v.u & 0x000fffffffffffffULL) | 0x3ff0000000000000ULL;
+    double mm = v.d;
+    if (mm > 1.41421356237309504880) { mm *= 0.5; k += 1; }
+    double s = (mm - 1.0) / (mm + 1.0), s2 = s * s;
+    double p = 1.0 / 25.0;
+    p = p * s2 + 1.0 / 23.0;
+    p = p * s2 + 1.0 / 21.0;
+    p = p * s2 + 1.0 / 19.0;
+    p = p * s2 + 1.0 / 17.0;
+    p = p * s2 + 1.0 / 15.0;
+    p = p * s2 + 1.0 / 13.0;
+    p = p * s2 + 1.0 / 11.0;
+    p = p * s2 + 1.0 / 9.0;
+    p = p * s2 + 1.0 / 7.0;
+    p = p * s2 + 1.0 / 5.0;
+    p = p * s2 + 1.0 / 3.0;
+    p = p * s2 + 1.0;
+    return (double)k * 6.93147180559945309417e-01 + 2.0 * s * p;
+}
+TRAIN_BC_ATTR
+float model_adam_bias_corr(float beta, int step) {   // 1.0f - p_powf(beta, (float)step)
+    TRAIN_BC_SCOPE
+    float y = (float)step, p;
+    if (beta <= 0.0f) p = beta == 0.0f ? 0.0f : 0.0f / 0.0f;
+    else p = (float)train_bc_exp_d((double)y * train_bc_log_d((double)beta));
+    return 1.0f - p;
+}
+#undef TRAIN_BC_SCOPE
+#undef TRAIN_BC_ATTR
+
+int model_lora_res_adam_step(model_t *m, float scale, float lr, float beta1, float beta2,
+                             float eps, float wd, int step, double *gmax, double *gmean) {
+    if (!m->lora || !m->train_gpu || m->full) return 0;
+    const char *e = getenv("RUNNER_TRAIN_RES_ADAM");
+    if (e && e[0] == '0' && !e[1]) {
+        lora_res_adam_why("RUNNER_TRAIN_RES_ADAM=0");
+        return 0;
+    }
+    if (!gpu_train_res_adam_ok(m)) {
+        lora_res_adam_why("the device kernels are missing, or the model has more layers than "
+                          "the norms' kernel takes");
+        return 0;
+    }
+    for (int l = 0; l < m->n_layer; l++)
+        for (int s = LW_DOWN + 1; s < LW_SLOTS; s++)
+            if (m->lora[(size_t)l * LW_SLOTS + s].r) {
+                lora_res_adam_why("an adapter on a projection outside the resident step's seven");
+                return 0;
+            }
+    // the moments: the host's up when they are the run's (a resume, a host
+    // step; at the first step none, so zeros)
+    if (!m->train_opt_dev) {
+        for (int l = 0; l < m->n_layer; l++)
+            for (int s = 0; s <= LW_DOWN; s++) {
+                struct lora_w *lw = &m->lora[(size_t)l * LW_SLOTS + s];
+                if (lw->r && !gpu_train_res_optim_put(m, l, lora_res_site(s), lw->ma, lw->va,
+                                                      lw->mb, lw->vb)) {
+                    fprintf(stderr, "error: --train-gpu: the optimizer's moments could not go "
+                            "up to the device\n");
+                    return -1;
+                }
+            }
+        m->train_opt_dev = true;
+        m->train_opt_host_old = false;
+    }
+    float bc1 = model_adam_bias_corr(beta1, step), bc2 = model_adam_bias_corr(beta2, step);
+#ifdef RUNNER_TRAIN_RES_ADAM_MUTANT
+    bc1 = bc1 * (1.0f + 0x1p-20f);   // the engagement mutant (out/r8241): never in a committed build
+#endif
+    tadam_args a = { 0, lr, beta1, beta2, eps, wd, bc1, bc2 };
+    // a test seam: RUNNER_TEST_TRAIN_RES_NAN=N makes the first gradient NaN at
+    // step N in both copies, N:host in the host's alone, N:device in the
+    // device's alone
+    const char *nan = getenv("RUNNER_TEST_TRAIN_RES_NAN");
+    bool at = nan && atoi(nan) == step;
+    const char *which = at ? strchr(nan, ':') : NULL;
+    bool nan_host = at && (!which || !strcmp(which, ":host"));
+    bool nan_dev = at && (!which || !strcmp(which, ":device"));
+    double t0 = plat_now();
+    // the norms and their finite check: the host's own code on the host's
+    // copy, which the step's last window pulled from the device bit for bit
+    // (lbw_resident_end, lbw_dev_ffn_end), scaled as the device's will be. A
+    // serial sum of rounded doubles has no parallel form with the same bits,
+    // and on the device it took 39 to 46 ms a step against the host's 10.
+    if (scale != 1.0f) model_lora_grad_scale(m, scale);
+    if (nan_host) {
+        float *g0 = NULL;
+        for (int l = 0; !g0 && l < m->n_layer; l++)
+            for (int s = 0; !g0 && s <= LW_DOWN; s++) {
+                int cnt = 0;
+                g0 = model_lora_gradbuf(m, l, s, 0, &cnt);
+            }
+        uint32_t qb = 0x7fc00000u;
+        if (g0) memcpy(g0, &qb, sizeof qb);
+    }
+    if (!model_lora_grad_norms(m, gmax, gmean)) return -2;
+    double t1 = plat_now();
+    // the device: the scale on its own copy, that copy checked finite, AdamW
+    int r = gpu_train_res_adam(m, scale, &a, nan_dev);
+    double t2 = plat_now();
+    if (r == 0) return -2;
+    if (r < 0) {
+        m->train_opt_dev = m->train_opt_host_old = false;   // the device's state is not known
+        fprintf(stderr, "error: --train-gpu: the optimizer failed on the device\n");
+        return -1;
+    }
+    m->train_opt_host_old = true;
+    // A and B back: the evals, a checkpoint and the next step's windows read the host's
+    for (int l = 0; l < m->n_layer; l++)
+        for (int s = 0; s <= LW_DOWN; s++) {
+            struct lora_w *lw = &m->lora[(size_t)l * LW_SLOTS + s];
+            if (lw->r && !gpu_train_site_ab_pull(m, l, lora_res_site(s), lw->a, lw->b)) {
+                fprintf(stderr, "error: --train-gpu: the adapter did not come back from the device\n");
+                return -1;
+            }
+        }
+    m->lora_id = m->lora_id * 0x100000001B3ull + 1;
+    m->train_res_adam_steps++;
+    if (lbw_prof_on())
+        fprintf(stderr, "train-prof: optimizer %.3fs (the host's scale and norms %.3fs; on the device "
+                "%.3fs; A and B back %.3fs)\n", plat_now() - t0, t1 - t0, t2 - t1, plat_now() - t2);
+    static _Atomic int said;
+    if (!said++)
+        fprintf(stderr, "train-gpu: the optimizer (the mean's scale and AdamW) runs on the device, the "
+                "gradient norms on the host's copy\n");
+    lora_opt_pull_seam(m, step);
+    return 1;
 }
 
 // ---- R8.25.2 full-weight training (model.h)
@@ -15032,8 +15378,13 @@ bool model_lora_grad_norms(model_t *m, double *max_out, double *mean_out) {
 // counts, then mA, vA, mB, vB as float32 (zeros for a slot whose moments were
 // never allocated). The reader checks every count against the attached
 // adapter and refuses a sidecar written for another one.
+bool model_lora_optim_sync(model_t *m) {
+    return !m->lora || lora_opt_from_dev(m);
+}
+
 bool model_lora_optim_write(model_t *m, FILE *f) {
     if (!m->lora) return false;
+    if (!lora_opt_from_dev(m)) return false;   // R4: the device's moments, when newer
     for (int l = 0; l < m->n_layer; l++)
         for (int s = 0; s < LW_SLOTS; s++) {
             struct lora_w *lw = &m->lora[(size_t)l * LW_SLOTS + s];
@@ -15094,6 +15445,8 @@ bool model_lora_optim_read(model_t *m, FILE *f, char *why, size_t cap) {
         snprintf(why, cap, "it has bytes past the last slot");
         return false;
     }
+    // R4: these are the run's moments now; a device step takes them up
+    m->train_opt_dev = m->train_opt_host_old = false;
     return true;
 }
 
@@ -17642,4 +17995,75 @@ void model_matmul(model_t *m, float *y, int y_stride, const gguf_tensor *w,
                   const float *x, int x_stride, int n_in, int n_out,
                   const float *bias, int n_batch) {
     matvec_b(m->tp, y, y_stride, w, x, x_stride, n_in, n_out, bias, n_batch);
+}
+
+// R8.24.1 B5: the head through the host's own code, for the device twin's
+// gate. model_head_fw_ref: apply_head_transforms on one row of V logits in
+// place, then train_row_lse as the taped forward's loss reads it; *z_target
+// is the transformed target logit. model_head_bw_ref: head_rows_bw's
+// per-row adjoint without a teacher, on rows of V logits in place, through
+// head_rows_bw itself (its product into dhn and the out-norm adjoint run on a
+// placeholder head of width 4 and are discarded); row r's target is
+// targets[r] and its weight pos_w[r] (pos_w may be NULL).
+double model_head_fw_ref(float *logits, int V, float logit_scale, float softcap,
+                         const int32_t *suppress, int n_suppress, int target,
+                         float *z_target) {
+    model_t mm;
+    memset(&mm, 0, sizeof(mm));
+    mm.n_vocab = V;
+    mm.logit_scale = logit_scale;
+    mm.logit_softcap = softcap;
+    mm.suppress = (int32_t *)suppress;
+    mm.n_suppress = n_suppress;
+    apply_head_transforms(&mm, logits);
+    *z_target = logits[target];
+    return train_row_lse(logits, V);
+}
+bool model_head_bw_ref(float *probs, int V, int rows, float logit_scale, float softcap,
+                       const int32_t *suppress, int n_suppress, const int32_t *targets,
+                       const float *pos_w) {
+    enum { E = 4 };
+    model_t mm;
+    memset(&mm, 0, sizeof(mm));
+    mm.n_embd = E;
+    mm.n_vocab = V;
+    mm.logit_scale = logit_scale;
+    mm.logit_softcap = softcap;
+    mm.suppress = (int32_t *)suppress;
+    mm.n_suppress = n_suppress;
+    mm.rms_eps = 1e-6f;
+    float *w = calloc((size_t)E * V, sizeof(float));
+    float *tape = calloc((size_t)rows * E, sizeof(float)), *onw = malloc(sizeof(float) * E);
+    float *dhn = calloc((size_t)rows * E, sizeof(float)), *dx = calloc((size_t)rows * E, sizeof(float));
+    int32_t *toks = calloc((size_t)rows + 1, sizeof(int32_t));
+    int *tmap = malloc(sizeof(int) * (size_t)rows);
+    float *thb = softcap > 0 ? malloc(sizeof(float) * (size_t)rows * V) : NULL;
+    bool ok = w && tape && onw && dhn && dx && toks && tmap && (softcap <= 0 || thb);
+    gguf_tensor out;
+    memset(&out, 0, sizeof(out));
+    if (ok) {
+        for (int i = 0; i < E; i++) onw[i] = 1.0f;
+        for (int r = 0; r < rows; r++) { tmap[r] = r; toks[r + 1] = targets[r]; }
+        out.type = T_F32;
+        out.n_dims = 2;
+        out.ne[0] = E;
+        out.ne[1] = (uint64_t)V;
+        out.data = w;
+        out.nbytes = sizeof(float) * (uint64_t)E * (uint64_t)V;
+        out.scale = 1.0f;
+        mm.output = &out;
+        mm.out_norm_w = onw;
+        mm.tape = tape;
+        mm.tape_T = rows;
+        ok = head_rows_bw(&mm, toks, rows, pos_w, NULL, probs, thb, dhn, tmap, rows, dx);
+    }
+    free(w); free(tape); free(onw); free(dhn); free(dx); free(toks); free(tmap); free(thb);
+    return ok;
+}
+
+// R8.24.1 B7: AdamW through the host's own code, for the device twin's gate:
+// adam_buf over n parameters
+void model_adam_ref(float *th, const float *g, float *mo, float *vo, size_t n, float lr,
+                    float b1, float b2, float eps, float wd, float bc1, float bc2) {
+    adam_buf(th, g, mo, vo, n, lr, b1, b2, eps, wd, bc1, bc2);
 }

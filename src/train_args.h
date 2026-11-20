@@ -113,10 +113,7 @@ typedef struct {
     float logit_scale, softcap;
 } thead_args;
 
-// B7: AdamW over n parameters (model.c adam_buf), and the step log's gradient
-// norms (model_lora_grad_norms: per layer the square root of a double sum of
-// squares over its slots' A then B gradients in table order; the max and mean
-// over layers; a non-finite gradient fails the step).
+// B7: AdamW over n parameters (model.c adam_buf).
 typedef struct {
     ka_u64 n;
     float lr, b1, b2, eps, wd, bc1, bc2;

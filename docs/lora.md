@@ -273,23 +273,68 @@ Outside it the run says once on stderr why, and the step takes the same
 kernels piece by piece, each layer's values passing through the host;
 `RUNNER_TRAIN_RESIDENT=0` keeps that path for comparison. A resident step
 that fails on the device fails the run, since the host holds no tape to
-resume from. The CPU keeps the head's loss and adjoint and the optimizer.
+resume from. A resident step runs the head on the device too: on each
+round's scored rows, the output norm, the logits, the transforms, the loss's
+normalizer and the adjoint into the device's dx; only each row's normalizer
+and target logit come back for the loss. A teacher's targets
+(`--train-teacher`) and `--train-logprobs`, which read every row's logits,
+keep the head on the host, and so does `RUNNER_TRAIN_RES_HEAD=0`, for
+comparison; the run says why once on stderr.
+
+A step every window of which ran resident takes its optimizer on the device
+as well: the mean's scale (`--batch`) and AdamW, with the moments kept on the
+device across steps. The gradient norms the step log prints, and their check
+that every gradient is finite, are the host's own code on its copy of the
+gradients, which the step's last window brought back bit for bit: a serial
+sum of rounded doubles has no parallel form with the same bits, and on the
+device it took longer than the host's whole step. The device checks its own
+copy finite as well before AdamW reads it. A and B come back to the host once
+a step (66 MB on Qwen3-4B at rank 8), since the evals, a checkpoint and the
+next step's windows read them there; nothing is resident across steps. A
+step that runs on the host reads the device's moments back first, and so
+does a checkpoint, before it installs anything: a pull that fails leaves the
+previous checkpoint's adapter and `.optim` as they were, byte for byte, and
+fails the run (`nothing written for step N`). `--train-resume` takes the
+file's up. A gradient that is not finite fails the step before anything is
+updated, as on the host. A device failure in the middle of the update is not
+undone in memory; the run fails at that step and writes no checkpoint of it.
+`RUNNER_TRAIN_RES_ADAM=0` keeps the optimizer on the host, for comparison;
+the run says why once on stderr when it stays there.
 
 Every one of these kernels is a host-chain twin: it computes each element as
 a strict build's host computes it (`make T3=1`: the host's order of
 operations, no contraction, the portable exp). A T3 build's `--train-gpu`
 adapter is therefore the one it was before, byte for byte (Qwen3-4B Q4_K_M,
-5 steps). A default build's adapter changed with R8.24.1, because its host
-had used the C library's `expf` and `-ffast-math` in the parts that moved;
-until the head and the optimizer move too, a default build's adapter is not
-a T3 build's, though both are within the tolerance below.
+5 steps). With the head and the optimizer on the device too, a build whose
+host math is portable (`--caps` reports `"math": "portable"`: a Windows
+default build, a build made with `PORTABLE_MATH=1`) has a T3 build's
+adapter, byte for byte, for a constant learning rate: the same file after 5
+steps, after 20, with `--batch 2`, and across a `--train-resume` on an RTX
+5070 under Windows, and after 5 and 20 steps on a CUDA slice (sm_120) under
+Linux. A Linux or
+macOS default build keeps the C library's math (`"math": "libc"`), and the
+host's side of the forward differs with it from step 1's loss on: such a
+build trains a correct adapter of its own, within rounding of the strict
+build's, not the strict build's bytes. The few scalars the host computes for
+the optimizer and a fresh adapter (the init scale, alpha over rank, AdamW's
+bias corrections) are computed as a strict build computes them in every
+build. The learning-rate schedule (`--lr-schedule cosine`, `--lr-warmup`) is
+computed on the host in double and is not held to that. A default build's
+fresh adapter can change once for it, the CPU trainer's too; on the Windows
+build it did: under `-ffast-math` the init scale 1 / sqrt(n) came from a
+fast reciprocal square root, one bit off at n 2560.
 
 On an RTX 5070 with 8 CPU threads (Qwen3-4B Q4_K_M, the ToolUse record's
 data, rank 8 on every projection, ctx 128; the median of steps 2 to 20,
 interleaved runs on 2026-11-18 at a3589d19, whose tree is 6d3a65d9's), a
 resident step takes 0.67 s, against
 1.79 s for Runner 1.20.0's (d9b54174), 1.37 s for main before R8.24.1's list
-B (cc7af33b) and 1.06 s on the per-piece path.
+B (cc7af33b) and 1.06 s on the per-piece path. With the head and the
+optimizer on the device too (R3 and R4) a step takes 0.667 s against main's
+0.679 s with the resident step alone (fc47c78f), 0.982x [0.977, 0.988], read
+interleaved on 2026-11-20; the head alone took it to 0.651 s, and the
+optimizer costs 1.023x [1.020, 1.027] of that (A and B coming back, and AdamW
+in one launch a segment).
 
 It is what to use when the weight products dominate, which they do on large
 models. On an RTX 3070 beside 4 CPU threads, a Qwen2.5-7B Q4_K_M step took
@@ -336,6 +381,7 @@ failed there and ran on the CPU instead (`deltanet_failed_calls`, which
 stderr also reports). `resident_steps` counts the steps every window of which
 ran as a resident step; a run whose planes stop fitting partway takes the
 per-piece path for the rest, and the count says how many steps did not.
+`resident_adam_steps` counts the steps whose optimizer ran on the device.
 
 The weights are cached as long as the device budget allows, and the rest
 train on the CPU, where a tensor's products take the CPU's order. So the
@@ -995,7 +1041,8 @@ rule's verdict),
 **Environment.** `RUNNER_TRAIN_GPU=1` (the CUDA assist, same bytes; `--train-gpu`
 is the whole step on the GPU), `RUNNER_TRAIN_DEVICE_STEP=0` (`--train-gpu`
 keeps a gated FFN's adapter and activation on the host), `RUNNER_TRAIN_RESIDENT=0`
-(`--train-gpu` keeps a step in the resident scope on the per-piece path), `RUNNER_TRAIN_PROF=1`
+(`--train-gpu` keeps a step in the resident scope on the per-piece path), `RUNNER_TRAIN_RES_HEAD=0`
+(a resident step's head on the host), `RUNNER_TRAIN_PROF=1`
 (per-step phase times on stderr, with each phase's device share under
 `--train-gpu`), `RUNNER_DEBUG_TIME=1` (the forward's stage times at the end
 of a run, under `--train-gpu` split into device and host), `RUNNER_TRAIN_ROWS=N` (positions the trained

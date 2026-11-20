@@ -1493,3 +1493,217 @@ extern "C" __global__ void k_tadd(float *x, const float *y, tadd_args a) {
     float *p = x + (ulong64)r * a.x_stride + i;
     *p = __fadd_rn(*p, y[(ulong64)r * a.y_stride + i]);
 }
+
+// ---- R8.24.1 B5: the head, a host-chain twin (kernel_args.h thead_args) of
+// model.c's apply_head_transforms then train_row_lse (the taped forward's
+// loss) and head_rows_bw's per-row adjoint without a teacher. One block a
+// scored row (targets[r] >= 0; other rows untouched):
+// - the transforms one thread an element: times logit_scale (0 or 1: none),
+//   then softcap: th = tanh(z / c), z = c * th (pmath's tanh, tw_tanhf, th
+//   kept for the adjoint); then the suppressed ids set to -1e30 by one
+//   thread in list order;
+// - z_target[r] = the transformed target logit; the max by one thread in
+//   index order (z > mx);
+// - e = exp(z - mx) one thread an element (pmath's exp); then one thread in
+//   index order sums them in float (softmax's normalizer) and, each widened,
+//   in double (train_row_lse's); lse[r] = (double)(mx + logf((float)dsum))
+//   with pmath's log;
+// - the adjoint, each step as head_rows_bw takes it: e / sum, minus 1 at the
+//   target, times pos_w[r], the suppressed ids set to 0, times 1 - th * th,
+//   times the scale.
+// Every chain is the host's, never contracted, so a T3 host and this agree
+// bit for bit. The sums over V are serial on one thread: about 3 V dependent
+// operations a row, a named cost, not a tree.
+// RUNNER_THEAD_MUTANT and RUNNER_THEAD_MUTANT2 (never set in the committed
+// PTX): the softmax's normalizer summed in double and rounded once, and the
+// loss's normalizer summed in float: the gate's mutants, one for each sum.
+#define THEAD_THREADS 256
+
+// p_tanhf (src/pmath.h) ported 1:1
+static __device__ __forceinline__ float tw_tanhf(float x) {
+    double xd = (double)x;
+    if (xd > 20.0) return 1.0f;
+    if (xd < -20.0) return -1.0f;
+    if (xd < 1e-4 && xd > -1e-4)
+        return __double2float_rn(__dmul_rn(xd, __dsub_rn(1.0, __dmul_rn(__dmul_rn(xd, xd), 1.0 / 3.0))));
+    double e = tw_exp_d(__dmul_rn(2.0, xd));
+    return __double2float_rn(__ddiv_rn(__dsub_rn(e, 1.0), __dadd_rn(e, 1.0)));
+}
+// pm_log_d (src/pmath.h) ported 1:1
+static __device__ __forceinline__ double tw_log_d(double x) {
+    if (x != x) return x;
+    if (x <= 0.0) return x == 0.0 ? __longlong_as_double(0xfff0000000000000LL)
+                                  : __longlong_as_double(0x7ff8000000000000LL);
+    if (x > 1.7976931348623157e308) return x;
+    unsigned long long u = (unsigned long long)__double_as_longlong(x);
+    int k = (int)((u >> 52) & 0x7ff) - 1023;
+    u = (u & 0x000fffffffffffffULL) | 0x3ff0000000000000ULL;
+    double m = __longlong_as_double((long long)u);
+    if (m > 1.41421356237309504880) { m = __dmul_rn(m, 0.5); k += 1; }
+    double s = __ddiv_rn(__dsub_rn(m, 1.0), __dadd_rn(m, 1.0)), s2 = __dmul_rn(s, s);
+    double p = 1.0 / 25.0;
+    p = __dadd_rn(__dmul_rn(p, s2), 1.0 / 23.0);
+    p = __dadd_rn(__dmul_rn(p, s2), 1.0 / 21.0);
+    p = __dadd_rn(__dmul_rn(p, s2), 1.0 / 19.0);
+    p = __dadd_rn(__dmul_rn(p, s2), 1.0 / 17.0);
+    p = __dadd_rn(__dmul_rn(p, s2), 1.0 / 15.0);
+    p = __dadd_rn(__dmul_rn(p, s2), 1.0 / 13.0);
+    p = __dadd_rn(__dmul_rn(p, s2), 1.0 / 11.0);
+    p = __dadd_rn(__dmul_rn(p, s2), 1.0 / 9.0);
+    p = __dadd_rn(__dmul_rn(p, s2), 1.0 / 7.0);
+    p = __dadd_rn(__dmul_rn(p, s2), 1.0 / 5.0);
+    p = __dadd_rn(__dmul_rn(p, s2), 1.0 / 3.0);
+    p = __dadd_rn(__dmul_rn(p, s2), 1.0);
+    return __dadd_rn(__dmul_rn((double)k, 6.93147180559945309417e-01), __dmul_rn(__dmul_rn(2.0, s), p));
+}
+
+extern "C" __global__ void __launch_bounds__(THEAD_THREADS)
+k_thead(float *z, float *th, const int *targets, const float *pos_w, const int *suppress,
+        double *lse, float *z_target, thead_args a) {
+    __shared__ float mxs, sums;
+    int r = (int)blockIdx.x, tid = (int)threadIdx.x, V = a.V;
+    if (r >= a.rows) return;
+    int tg = targets[r];
+    if (tg < 0 || tg >= V) return;
+    float *zr = z + (ulong64)r * a.stride;
+    float *tr = a.softcap > 0.0f ? th + (ulong64)r * a.stride : NULL;
+    float ls = a.logit_scale != 0.0f ? a.logit_scale : 1.0f, c = a.softcap;
+    for (int i = tid; i < V; i += THEAD_THREADS) {
+        float v = zr[i];
+        if (ls != 1.0f) v = __fmul_rn(v, ls);
+        if (tr) {
+            float t = tw_tanhf(__fdiv_rn(v, c));
+            tr[i] = t;
+            v = __fmul_rn(c, t);
+        }
+        zr[i] = v;
+    }
+    __syncthreads();
+    if (tid == 0) {
+        for (int k = 0; k < a.n_suppress; k++) zr[suppress[k]] = -1e30f;
+        z_target[r] = zr[tg];
+        float mx = zr[0];
+        for (int i = 1; i < V; i++) if (zr[i] > mx) mx = zr[i];
+        mxs = mx;
+    }
+    __syncthreads();
+    float mx = mxs;
+    for (int i = tid; i < V; i += THEAD_THREADS) zr[i] = tw_expf(__fsub_rn(zr[i], mx));
+    __syncthreads();
+    if (tid == 0) {
+        float s = 0.0f;
+        double ds = 0.0;
+        for (int i = 0; i < V; i++) {
+            float e = zr[i];
+            ds = __dadd_rn(ds, (double)e);
+#ifdef RUNNER_THEAD_MUTANT
+            (void)s;
+#else
+            s = __fadd_rn(s, e);
+#endif
+        }
+#ifdef RUNNER_THEAD_MUTANT
+        s = __double2float_rn(ds);
+#endif
+#ifdef RUNNER_THEAD_MUTANT2
+        lse[r] = (double)__fadd_rn(mx, __double2float_rn(tw_log_d((double)s)));   // the loss's sum in float
+#else
+        lse[r] = (double)__fadd_rn(mx, __double2float_rn(tw_log_d((double)__double2float_rn(ds))));
+#endif
+        sums = s;
+    }
+    __syncthreads();
+    float s = sums;
+    for (int i = tid; i < V; i += THEAD_THREADS) zr[i] = __fdiv_rn(zr[i], s);
+    __syncthreads();
+    if (tid == 0) zr[tg] = __fsub_rn(zr[tg], 1.0f);
+    __syncthreads();
+    if (pos_w) {
+        float pw = pos_w[r];
+        for (int i = tid; i < V; i += THEAD_THREADS) zr[i] = __fmul_rn(zr[i], pw);
+        __syncthreads();
+    }
+    if (tid == 0)
+        for (int k = 0; k < a.n_suppress; k++) zr[suppress[k]] = 0.0f;
+    __syncthreads();
+    for (int i = tid; i < V; i += THEAD_THREADS) {
+        float v = zr[i];
+        if (tr) v = __fmul_rn(v, __fsub_rn(1.0f, __fmul_rn(tr[i], tr[i])));
+        if (ls != 1.0f) v = __fmul_rn(v, ls);
+        zr[i] = v;
+    }
+}
+
+// ---- R8.24.1 B7: AdamW, a host-chain twin. k_tadam (train_args.h
+// tadam_args), one thread an element, as model.c adam_buf writes it: m = b1*m
+// + (1 - b1)*g; v = b2*v + (1 - b2)*g*g (left to right); mh = m / bc1, vh = v
+// / bc2; th -= lr * (mh / (sqrtf(vh) + eps) + wd * th). Never contracted, so a
+// T3 host and this agree bit for bit. (B7's twin of the step log's gradient
+// norms, k_tgnorm, is retired: the step takes the norms from the host's code
+// on its copy, R4, since their serial double sum has no faster form with the
+// same bits.)
+// Mutants (never set in the committed PTX), one for each step a case can see:
+// RUNNER_TADAM_MUTANT fuses the first moment's update into an fmaf;
+// RUNNER_TADAM_MUTANT2 takes the bias corrections as a reciprocal times;
+// RUNNER_TADAM_MUTANT3 fuses the weight-decay term into an fmaf (seen only
+// where it cancels the moment term: the gate's cancellation case).
+#define TADAM_THREADS 256
+
+extern "C" __global__ void __launch_bounds__(TADAM_THREADS)
+k_tadam(float *th, const float *g, float *mo, float *vo, tadam_args a) {
+    ulong64 i = (ulong64)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= a.n) return;
+    float gi = g[i];
+#ifdef RUNNER_TADAM_MUTANT
+    float m = __fmaf_rn(a.b1, mo[i], __fmul_rn(__fsub_rn(1.0f, a.b1), gi));
+#else
+    float m = __fadd_rn(__fmul_rn(a.b1, mo[i]), __fmul_rn(__fsub_rn(1.0f, a.b1), gi));
+#endif
+    float v = __fadd_rn(__fmul_rn(a.b2, vo[i]), __fmul_rn(__fmul_rn(__fsub_rn(1.0f, a.b2), gi), gi));
+    mo[i] = m;
+    vo[i] = v;
+#ifdef RUNNER_TADAM_MUTANT2
+    float mh = __fmul_rn(m, __frcp_rn(a.bc1)), vh = __fmul_rn(v, __frcp_rn(a.bc2)), t = th[i];
+#else
+    float mh = __fdiv_rn(m, a.bc1), vh = __fdiv_rn(v, a.bc2), t = th[i];
+#endif
+    float q = __fdiv_rn(mh, __fadd_rn(__fsqrt_rn(vh), a.eps));
+#ifdef RUNNER_TADAM_MUTANT3
+    th[i] = __fsub_rn(t, __fmul_rn(a.lr, __fmaf_rn(a.wd, t, q)));
+#else
+    th[i] = __fsub_rn(t, __fmul_rn(a.lr, __fadd_rn(q, __fmul_rn(a.wd, t))));
+#endif
+}
+
+// ---- R8.24.1 B R4: the mean's scale on the step's gradients, the host-chain
+// twin of model_lora_grad_scale's loop (g[i] *= f), one thread an element: one
+// rounded product, so a T3 host and this agree bit for bit.
+// RUNNER_TSCALE_MUTANT (never set in the committed PTX) rounds the product
+// toward zero.
+extern "C" __global__ void __launch_bounds__(TADAM_THREADS)
+k_tscale(float *g, ulong64 n, float f) {
+    ulong64 i = (ulong64)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+#ifdef RUNNER_TSCALE_MUTANT
+    g[i] = __fmul_rz(g[i], f);
+#else
+    g[i] = __fmul_rn(g[i], f);
+#endif
+}
+
+// R4: whether every gradient on the device is finite, before AdamW reads
+// them (the step's norms and their finite check are the host's code, on the
+// host's copy; this guards the device's own). A grid of (blocks, segments),
+// segment s the len[s] floats at ptr[s], each block striding over its
+// segment; a value that is not finite clears *ok. The answer does not
+// depend on the order, so the blocks need none.
+extern "C" __global__ void __launch_bounds__(TADAM_THREADS)
+k_tfinite(const ulong64 *ptr, const ulong64 *len, int nseg, int *ok) {
+    int s = (int)blockIdx.y;
+    if (s >= nseg) return;
+    const float *g = (const float *)ptr[s];
+    ulong64 n = len[s];
+    for (ulong64 i = (ulong64)blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += (ulong64)gridDim.x * blockDim.x)
+        if (!(fabsf(g[i]) <= 3.40282346638528859812e38f)) *ok = 0;
+}

@@ -116,7 +116,7 @@ HTTP_RULES = {
 # has the same one. A switch read in a shared file, or in files of two
 # components, needs a name rule.
 ENV_NAME_RULES = [
-    ("production", re.compile(r"^(TRAIN_|LORA_ADAM_|GOLD_|TEST_BUILD_DIRTY$)")),
+    ("production", re.compile(r"^(TRAIN_|LORA_ADAM_|GOLD_|TEST_BUILD_DIRTY$|TEST_TRAIN_RES_NAN$|TEST_TRAIN_OPT_PULL_FAIL$)")),
     ("runtime", re.compile(r"^(SCHEMA_|PREFIX_CACHE_|REPEAT_COUNT$|SCORE_|TEST_SCRIPTED_REPLY$|TEST_ROUTE_FLIP_AT$|TEST_IDENTITY_WAIT$|"
                            r"TEST_STREAM_OUT_CAP$|VRAM_PRIORITY$)")),
     ("substrate", re.compile(r"^(ALLOW_UNKNOWN_ARCH|PREFETCH|TEST_LOAD_DELAY_MS|"

@@ -161,6 +161,56 @@ def test_resume_refuses_moments_of_another_adapter(runner_bin, fx, tmp_path):
     assert p.returncode != 0 and b"another adapter file" in p.stderr
 
 
+def _bytes(p):
+    p = pathlib.Path(p)
+    return p.read_bytes() if p.exists() else None
+
+
+# R8.24.1 B R4: a checkpoint pulls the device's newer AdamW moments back before
+# it installs anything, so a pull that fails leaves the previous checkpoint's
+# adapter and .optim as they were, byte for byte, and the run fails. The seam
+# RUNNER_TEST_TRAIN_OPT_PULL_FAIL=N fails that pull after step N; after a host
+# step it marks the host's moments older first, so this form needs no device
+# (test_train.py has the --train-gpu one). The anchor is the pair the same run
+# (or the run before) installed: the checkpoint the canonical files must still
+# be, and a resume from them that must equal the run that never failed.
+@pytest.mark.parametrize("where", ["checkpoint", "final"])
+def test_a_failed_moment_pull_keeps_the_previous_checkpoint(runner_bin, fx, tmp_path, where):
+    out = tmp_path / "a.gguf"
+    seam = {"RUNNER_TEST_TRAIN_OPT_PULL_FAIL": "2"}
+    if where == "checkpoint":
+        # checkpoints after steps 1, 2 and 3; step 2's pull fails
+        p, lines, _ = run(runner_bin, fx, out, "--save-every", "1", steps=3, env=seam)
+        prev = (_bytes(str(out) + ".step-00001"), _bytes(str(out) + ".step-00001.optim"))
+        assert prev[0] and prev[1]
+        assert not pathlib.Path(str(out) + ".step-00002").exists()
+        assert not pathlib.Path(str(out) + ".step-00002.optim").exists()
+    else:
+        # the final save of a run whose sidecar is due (a stop file that never
+        # appears), over the pair a 1-step run installed
+        p0, _, _ = run(runner_bin, fx, tmp_path / "p.gguf", "--save-every", "1", steps=1)
+        ok(p0)
+        prev = (_bytes(tmp_path / "p.gguf"), _bytes(tmp_path / "p.gguf.optim"))
+        out.write_bytes(prev[0])
+        pathlib.Path(str(out) + ".optim").write_bytes(prev[1])
+        p, lines, _ = run(runner_bin, fx, out, "--stop-file", str(tmp_path / "never"), steps=2,
+                          env=seam)
+    err = p.stderr.decode(errors="replace")
+    assert p.returncode != 0, err
+    assert "the optimizer's moments did not come back from the device" in err, err
+    assert [l["step"] for l in lines] == [1, 2]
+    assert _bytes(out) == prev[0], "the adapter was replaced beside the old .optim"
+    assert _bytes(str(out) + ".optim") == prev[1]
+    assert "nothing written for step 2" in err, err
+    # and it is still a checkpoint: a resume from it is the run that never failed
+    s = tmp_path / "s.gguf"
+    ok(run(runner_bin, fx, s, "--save-every", "1", steps=2)[0])
+    p, _, _ = run(runner_bin, fx, tmp_path / "r.gguf", "--save-every", "1",
+                  "--train-resume", str(out), steps=2)
+    ok(p)
+    assert (tmp_path / "r.gguf").read_bytes() == s.read_bytes()
+
+
 def test_eval_at_step_zero_is_the_no_update_loss(runner_bin, fx, tmp_path):
     spec = "dev=%s,%s" % (fx / "dev.jsonl", fx / "dev-teacher")
     p, lines, evals = run(runner_bin, fx, tmp_path / "a.gguf", "--train-eval", spec,

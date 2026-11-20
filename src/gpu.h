@@ -430,7 +430,19 @@ bool   gpu_train_res_round(model_t *m, int n, int pos);
 // R2: the resident backward. dx (the head's adjoint, T rows) up once; layer
 // l's backward on the device's tape and K/V rows, dx staying on the device;
 // every launch done. false: the step fails.
-bool   gpu_train_res_bw_begin(model_t *m, const float *dx, int T);
+bool   gpu_train_res_bw_begin(model_t *m, const float *dx, int T);   // dx NULL: R3's head wrote it
+// R3: the head on the device for a resident step. _begin: its planes for a
+// round of `rows`, the output norm and suppressed ids up once, the step's dx
+// plane zeroed; NULL, or why the head stays on the host this step. Per round
+// after gpu_train_res_round(m, n, pos): the nc scored rows (nruns runs of the
+// round's rows, run_b[k] .. run_b[k] + run_len[k] - 1), their targets and
+// weights (pos_w NULL: none), the head's adjoint into dx at those positions,
+// each row's normalizer (lse) and transformed target logit back. false: the
+// step fails.
+const char *gpu_train_res_head_begin(model_t *m, int rows);
+bool   gpu_train_res_head(model_t *m, int n, int pos, const int *run_b, const int *run_len,
+                          int nruns, const int32_t *targets, const float *pos_w, int nc,
+                          double *lse, float *z_target);
 bool   gpu_train_res_layer_bw(model_t *m, int l);
 bool   gpu_train_res_bw_end(model_t *m);
 // R8.24.1 B R0, the kernel gate's entry: the residual add's twin (k_tadd),
@@ -444,6 +456,44 @@ bool   gpu_train_add_check(model_t *m, const tadd_args *a, float *x, const float
 // no kernel in this PTX, or a shape or kind it does not take.
 bool   gpu_train_attn_fw_check(model_t *m, const tattn_args *a, const void *kc,
                                const void *vc, const float *q, float *ao);
+// R8.24.1 B5, the kernel gate's entry: the device twin of the head (k_thead)
+// over a->rows host rows of a->V logits a->stride apart, in place: for each
+// row with targets[r] >= 0, lse[r] and z_target[r] (the transformed row's
+// normalizer and target logit) and the row's adjoint (pos_w[r] its weight,
+// pos_w may be NULL; suppress: a->n_suppress ids). false: no context or no
+// kernel in this PTX.
+bool   gpu_train_head_check(model_t *m, const thead_args *a, float *z, const int32_t *targets,
+                            const float *pos_w, const int32_t *suppress, double *lse,
+                            float *z_target);
+// R8.24.1 B7, the kernel gate's entry: the device twin of adam_buf (k_tadam)
+// over a->n host parameters, th, mo and vo in place. false: no context or no
+// kernel in this PTX.
+bool   gpu_train_adam_check(model_t *m, const tadam_args *a, float *th, const float *g,
+                            float *mo, float *vo);
+// R8.24.1 B R4, the kernel gate's entry: the device twin of
+// model_lora_grad_scale's loop (k_tscale), g[i] *= f over n host floats in
+// place. false: no context or no kernel in this PTX.
+bool   gpu_train_scale_check(model_t *m, float *g, size_t n, float f);
+// R4 of the resident step, AdamW on the device (model_lora_res_adam_step,
+// which takes the step's norms and their finite check from the host's code on
+// the host's copy of the gradients). gpu_train_res_adam_ok: its kernels are in
+// this PTX. The moments live in two arenas laid out by the sites the step
+// pushed (per layer Q K V O gate up down, each A then B: the host's table
+// order), zeroed at the start. _optim_put: a site's moments up (NULL arrays:
+// zeros); _optim_get: back. gpu_train_res_adam: each site's own gradients
+// times scale where it is not 1 (k_tscale, in place), checked finite
+// (k_tfinite), and when all are AdamW (k_tadam: a's constants, a->n per
+// segment) on every site's A and B with the arenas' moments. plant_nan, a test
+// seam: the device's first gradient made NaN before the check. 1: done; 0: a
+// gradient on the device is not finite, nothing updated; -1: the device
+// failed. gpu_train_site_ab_pull: a site's A and B back to the host.
+bool   gpu_train_res_adam_ok(model_t *m);
+bool   gpu_train_res_optim_put(model_t *m, int l, int which, const float *ma, const float *va,
+                               const float *mb, const float *vb);
+bool   gpu_train_res_optim_get(model_t *m, int l, int which, float *ma, float *va, float *mb,
+                               float *vb);
+int    gpu_train_res_adam(model_t *m, float scale, const tadam_args *a, bool plant_nan);
+bool   gpu_train_site_ab_pull(model_t *m, int l, int which, float *a, float *b);
 bool   gpu_train_ffn_check(model_t *m, int act, const float *g, const float *u,
                            const float *dh, float *h, float *dg, float *du, int n);
 // R8.24.1 B6, the kernel gate's entry: the device twins of one site's adapter
