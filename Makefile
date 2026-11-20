@@ -1075,12 +1075,18 @@ test-cuda-batch-q35: runner $(TEST_CUDA_BATCH_Q35) test-ornith.gguf
 # under ASan and UBSan; a borrowed reference is a use-after-free there and an
 # unreturned one a leak. test-cuda-batch-q35 runs it first.
 TEST_BATCH_OWNER_SRC = tests/test_batch_owner.c src/gguf.c src/compat.c src/quants.c src/model.c src/vramreg.c
+# MinGW's gcc ships no sanitizer runtime (it stops at 'cannot read spec file
+# libsanitizer.spec'), so a Windows build runs the same test without the
+# sanitizers: its reference-count checks still fail a missing retain or release
+# there, and the sanitized run is Linux's and macOS's.
+TEST_BATCH_OWNER_SAN = $(if $(filter Windows,$(BUILD_OS)),,-fsanitize=address,undefined -fno-sanitize-recover=undefined)
 test-batch-owner-asan: $(TEST_BATCH_OWNER_SRC) src/cuda.c $(HDR) src/kernels_ptx.h
-	$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer \
+	$(CC) -O1 -g $(TEST_BATCH_OWNER_SAN) -fno-omit-frame-pointer \
 	    -fno-fast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -DRUNNER_GPU_CUDA -I src \
 	    $(TEST_BATCH_OWNER_SRC) -o test-batch-owner-asan-bin $(LDFLAGS)
 	@# LeakSanitizer does not exist on macOS (ASan aborts on detect_leaks=1 there): the
 	@# reference-count checks in the test still fail a missing release on that host.
+	$(if $(filter Windows,$(BUILD_OS)),@echo "test-batch-owner-asan: no sanitizer runtime on this host: running the reference-count checks only",@true)
 	ASAN_OPTIONS=detect_leaks=$(if $(filter Darwin,$(BUILD_OS)),0,1) ./test-batch-owner-asan-bin
 
 # The K-quant twins the measured Phi-3.5-mini Q4_K_M runs (GEMVB_KQ) are sampled
