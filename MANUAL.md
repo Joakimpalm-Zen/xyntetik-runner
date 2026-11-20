@@ -704,11 +704,15 @@ runs proceed unlocked (note that locking on some network shares is only enforced
 per host); any other lock error refuses before touching the destination. Any
 existing record is backed up to a closed `.bak-<16hex>` file beforehand so a
 failed output install atomically restores the old pair in one replace and
-preserves the newly written partial (named in the error), while an unlocked
-`PATH.publish.lock` left after a crash is harmless and reused on the next run;
-a hard kill in the narrow window between replacing the record and replacing the
-output leaves the new record beside the old file, which `runner attest lineage`
-and snapshot loading detect as mismatched rather than trusting.
+preserves the newly written partial (named in the error); if restoring the
+backup also fails, the backup is kept on disk and named in the error so the
+old record stays recoverable while removing the mismatched record is attempted
+(if removing that record also fails, the old output stays beside the new record
+alongside the kept backup). An unlocked `PATH.publish.lock` left after a crash
+is harmless and reused on the next run; a hard kill in the narrow window between
+replacing the record and replacing the output leaves the new record beside the
+old file, which `runner attest lineage` and snapshot loading detect as
+mismatched rather than trusting.
 
 ```sh
 ./runner train data.txt -m base.gguf --out a.gguf --sign-key key.json

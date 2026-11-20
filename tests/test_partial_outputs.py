@@ -536,6 +536,53 @@ def test_failed_pair_install_preserves_old_pair_and_keeps_temp(runner_bin, fx, t
         finally:
             subprocess.run(["chflags", "nouchg", str(q3)], check=False)
 
+        # Case 4 (double-failure probe): immutable output q.gguf AND new
+        # .quant.json made immutable between Step A and Step B -> Step B fails,
+        # restore and removal fail, old output stays beside new record, and
+        # old record backup MUST stay intact on disk and be named in stderr
+        # alongside kept output partial.
+        d4 = tmp_path / "uchg_double"
+        d4.mkdir()
+        q4 = d4 / "q.gguf"
+        rec4 = d4 / "q.gguf.quant.json"
+        r_init4 = subprocess.run([str(runner_bin), "-m", str(fx["model"]),
+                                  "--quantize", str(q4), "--quant", "q8_0"],
+                                 cwd=ROOT, capture_output=True, text=True, timeout=120, env=env)
+        assert r_init4.returncode == 0, r_init4.stderr
+        old_out4 = q4.read_bytes()
+        old_rec4 = rec4.read_bytes()
+        mid_ready = d4 / "mid.ready"
+        mid_go = d4 / "mid.go"
+        subprocess.run(["chflags", "uchg", str(q4)], check=True)
+        p4 = subprocess.Popen(
+            [str(runner_bin), "-m", str(fx["model"]), "--quantize", str(q4), "--quant", "q4_0"],
+            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=_clean_env(RUNNER_TEST_PUBLISH_PAUSE_BETWEEN=f"{mid_ready}|{mid_go}"),
+        )
+        try:
+            _wait_file(mid_ready)
+            subprocess.run(["chflags", "uchg", str(rec4)], check=True)
+            mid_go.write_text("go")
+            _, err4 = p4.communicate(timeout=60)
+            assert p4.returncode != 0, err4
+            assert q4.read_bytes() == old_out4
+            assert json.loads(rec4.read_text())["target"] == "q4_0"
+            kept4 = list(d4.glob("q.gguf.partial-*"))
+            assert len(kept4) == 1 and kept4[0].name in err4, (kept4, err4)
+            assert kept4[0].read_bytes() == expected_q4
+            baks4 = list(d4.glob("q.gguf.quant.json.bak-*"))
+            assert len(baks4) == 1, f"old record backup was deleted: {err4}"
+            assert baks4[0].read_bytes() == old_rec4
+            assert baks4[0].name in err4, err4
+            assert "old output sits beside new record; previous record kept at" in err4, err4
+            assert not (d4 / "q.gguf.publish.lock").exists()
+        finally:
+            mid_go.write_text("go")
+            if p4.poll() is None:
+                p4.kill()
+                p4.wait()
+            subprocess.run(["chflags", "nouchg", str(q4), str(rec4)], check=False)
+
 
 def test_forced_lock_serialization_and_aliases(runner_bin, fx, tmp_path):
     """R6.112: pause seams force lock contention deterministically across

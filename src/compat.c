@@ -2128,22 +2128,38 @@ int plat_publish_pair(const char *out_tmp, const char *out_path,
         else if (out_tmp && out_tmp[0]) op->remove_file(out_tmp);
 
         bool rolled_back = true;
+        bool removed_new = true;
+        bool restore_failed_with_bak = false;
         if (have_sidecar) {
             if (has_bak) {
                 rolled_back = op->replace_sidecar(sidecar_bak, sidecar_out);
                 if (!rolled_back) {
-                    op->remove_file(sidecar_bak);
-                    // Avoid leaving the new record beside the old output if restore failed.
-                    op->remove_file(sidecar_out);
+                    restore_failed_with_bak = true;
+                    // Never unlink sidecar_bak here: it is the only preserved copy
+                    // of the previous record. Try clearing the mismatched sidecar_out
+                    // and report the exact resulting state in either case.
+                    removed_new = (op->remove_file(sidecar_out) == 0);
                 }
             } else {
-                rolled_back = op->remove_file(sidecar_out) == 0;
+                rolled_back = (op->remove_file(sidecar_out) == 0);
             }
         }
         op->unlock_pub(pub_lock);
-        if (!rolled_back) {
+        if (restore_failed_with_bak) {
+            if (removed_new) {
+                fprintf(stderr, "error: wrote %s but could not install it as %s, and could "
+                        "not restore provenance record %s (removed mismatched record; "
+                        "previous record kept at %s)\n",
+                        out_tmp ? out_tmp : out_path, out_path, sidecar_out, sidecar_bak);
+            } else {
+                fprintf(stderr, "error: wrote %s but could not install it as %s, and could "
+                        "not restore or remove provenance record %s (old output sits beside "
+                        "new record; previous record kept at %s)\n",
+                        out_tmp ? out_tmp : out_path, out_path, sidecar_out, sidecar_bak);
+            }
+        } else if (!rolled_back) {
             fprintf(stderr, "error: wrote %s but could not install it as %s, and could "
-                    "not restore provenance record %s\n",
+                    "not remove provenance record %s\n",
                     out_tmp ? out_tmp : out_path, out_path, sidecar_out);
         } else {
             fprintf(stderr, "error: wrote %s but could not install it as %s "

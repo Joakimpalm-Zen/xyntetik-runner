@@ -872,6 +872,26 @@ static bool has_bak_for(const char *target) {
     return found;
 }
 
+static void check_and_remove_bak(const char *target, const char *want, size_t want_n) {
+    char pfx[512];
+    snprintf(pfx, sizeof pfx, "%s.bak", plat_path_base(target));
+    size_t pn = strlen(pfx);
+    char bak_name[512] = "";
+    int count = 0;
+    plat_dir *dp = plat_opendir(".");
+    assert(dp != NULL);
+    for (const char *nm; (nm = plat_readdir(dp)) != NULL; ) {
+        if (strncmp(nm, pfx, pn) == 0) {
+            if (strlen(nm) < sizeof bak_name) snprintf(bak_name, sizeof bak_name, "%s", nm);
+            count++;
+        }
+    }
+    plat_closedir(dp);
+    assert(count == 1 && bak_name[0] != 0);
+    check_bytes(bak_name, want, want_n);
+    assert(plat_remove(bak_name) == 0);
+}
+
 static void check_publish_pair_recovery_and_locks(void) {
     const char *out_t = "q_pub_out.partial-a";
     const char *out_f = "q_pub_out.gguf";
@@ -934,8 +954,8 @@ static void check_publish_pair_recovery_and_locks(void) {
     assert(plat_publish_pair(out_t, out_f, sid_t, sid_f, false, &kept_tmp, &ops) != 0);
     assert(kept_tmp && exists(out_t) && !exists(out_f) && !exists(sid_f) && !exists(sid_t));
 
-    // Outcome 4: Step B fails AND rollback replace fails -> stale/new record cleared
-    // so old output never sits beside a mismatched record.
+    // Outcome 4a: Step B fails AND rollback replace fails, removal of new record succeeds ->
+    // new sidecar cleared so old output has no mismatched record, AND backup stays intact.
     remove(out_t); remove(out_f); remove(sid_t); remove(sid_f);
     write_str_file(out_f, "OLD_GGUF4");
     write_str_file(sid_f, "OLD_JSON4");
@@ -947,8 +967,28 @@ static void check_publish_pair_recovery_and_locks(void) {
     pub_mock_remove_sidecar_ok = true;
     kept_tmp = false;
     assert(plat_publish_pair(out_t, out_f, sid_t, sid_f, false, &kept_tmp, &ops) != 0);
-    assert(kept_tmp && exists(out_t) && !exists(sid_f) && !has_bak_for(sid_f));
+    assert(kept_tmp && exists(out_t) && !exists(sid_f));
     check_bytes(out_f, "OLD_GGUF4", 9);
+    check_and_remove_bak(sid_f, "OLD_JSON4", 9);
+
+    // Outcome 4b: Step B fails, rollback replace fails, AND removal of new record fails ->
+    // old output remains beside NEW record, AND backup of OLD record stays intact on disk.
+    remove(out_t); remove(out_f); remove(sid_t); remove(sid_f);
+    write_str_file(out_f, "OLD_GGUF5");
+    write_str_file(sid_f, "OLD_JSON5");
+    write_str_file(out_t, "NEW_GGUF5");
+    write_str_file(sid_t, "NEW_JSON5");
+    pub_mock_install_rc = -1;
+    pub_mock_replace_fail_on = 2;
+    pub_mock_replace_calls = 0;
+    pub_mock_remove_sidecar_ok = false;
+    kept_tmp = false;
+    assert(plat_publish_pair(out_t, out_f, sid_t, sid_f, false, &kept_tmp, &ops) != 0);
+    assert(kept_tmp && exists(out_t) && exists(sid_f));
+    check_bytes(out_f, "OLD_GGUF5", 9);
+    check_bytes(sid_f, "NEW_JSON5", 9);
+    check_and_remove_bak(sid_f, "OLD_JSON5", 9);
+    pub_mock_remove_sidecar_ok = true;
 
     // Lock UNSUPPORTED: warns once across 2 calls and installs cleanly
     remove(out_t); remove(out_f); remove(sid_t); remove(sid_f);
