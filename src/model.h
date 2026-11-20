@@ -1462,6 +1462,9 @@ float  model_adam_bias_corr(float beta, int step);
 // rank, a T3 build's in every build
 float  model_lora_init_scale(int64_t n_in);
 float  model_lora_alpha_scale(float alpha, int rank);
+// R8.30: the rope inverse frequencies base^(-2j/dim), j below half: the model's
+// rope table (and its local one), which every back end's rope is built from
+void   model_rope_inv_freq_fill(float *out, int half, float base, int dim);
 bool   model_lora_save(model_t *m, const char *path);
 // The largest rank among the adapter's projections; 0 without an adapter.
 int    model_lora_rank(const model_t *m);

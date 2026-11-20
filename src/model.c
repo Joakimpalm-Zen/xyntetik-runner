@@ -471,8 +471,7 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
     int half = m->rope_dim / 2;
     m->rope_inv_freq = malloc(sizeof(float) * half);
     if (!m->rope_inv_freq) return false;
-    for (int j = 0; j < half; j++)
-        m->rope_inv_freq[j] = powf(m->rope_base, -2.0f * j / m->rope_dim);
+    model_rope_inv_freq_fill(m->rope_inv_freq, half, m->rope_base, m->rope_dim);
 
     // per-dimension frequency factors (llama 3.x long-context models)
     gguf_tensor *ff = gguf_find_tensor(g, "rope_freqs.weight");
@@ -576,8 +575,7 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
         int lhalf = m->rope_dim_local / 2;
         m->rope_inv_freq_local = malloc(sizeof(float) * lhalf);
         if (!m->rope_inv_freq_local) return false;
-        for (int j = 0; j < lhalf; j++)
-            m->rope_inv_freq_local[j] = powf(local_base, -2.0f * j / m->rope_dim_local);
+        model_rope_inv_freq_fill(m->rope_inv_freq_local, lhalf, local_base, m->rope_dim_local);
     }
 
     if (mode == RS_LINEAR) {
@@ -14973,6 +14971,13 @@ float model_adam_bias_corr(float beta, int step) {   // 1.0f - p_powf(beta, (flo
     if (beta <= 0.0f) p = beta == 0.0f ? 0.0f : 0.0f / 0.0f;
     else p = (float)train_bc_exp_d((double)y * train_bc_log_d((double)beta));
     return 1.0f - p;
+}
+// R8.30: a model's rope inverse frequencies, base^(-2j/dim) for j below half
+// (rope_setup's two tables; the CPU forward reads them and the CUDA and Metal
+// back ends build theirs from them).
+void model_rope_inv_freq_fill(float *out, int half, float base, int dim) {
+    for (int j = 0; j < half; j++)
+        out[j] = powf(base, -2.0f * j / dim);
 }
 #undef TRAIN_BC_SCOPE
 #undef TRAIN_BC_ATTR
