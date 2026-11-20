@@ -2035,6 +2035,76 @@ static int r4_bias_corr_checks(void) {
     return bad;
 }
 
+// R8.30: the rope inverse frequencies (model_rope_inv_freq_fill), the table
+// every back end's rope is built from, held to a T3 build's bits in every
+// build. A libc-math Linux default build computed them with the C library's
+// VECTOR powf (gcc vectorizes the loop under -ffast-math), a few last bits off,
+// and so trained another adapter than a strict build from step 1's loss on.
+// The bases and dimensions are the roster's (10000, 500000, 1000000 and a
+// local 10000; head dimensions 32 to 256, powers of two and not) and some
+// that are not on it. A representative set, not an inventory. The anchor:
+// entry 0 is base^0, 1 exactly. No device needed, so every CI host runs it.
+#define R830_ROPE_DIGEST 0xaa58da5b98b74325ull   // a T3 build's (Apple clang, arm64), 2026-11-20
+static int r830_rope_checks(void) {
+    static const float bases[] = { 10000.0f, 500000.0f, 1000000.0f, 160000.0f, 2.0f, 1e9f };
+    static const int dims[] = { 2, 16, 32, 48, 64, 80, 96, 128, 160, 192, 256, 510, 1024 };
+    uint64_t h = 0xcbf29ce484222325ull;
+    int bad = 0;
+    static float t[512];
+    for (size_t b = 0; b < sizeof bases / sizeof bases[0]; b++)
+        for (size_t d = 0; d < sizeof dims / sizeof dims[0]; d++) {
+            int dim = dims[d], half = dim / 2;
+            model_rope_inv_freq_fill(t, half, bases[b], dim);
+            if (t[0] != 1.0f && !bad++)
+                fprintf(stderr, "FAIL: rope inverse frequency 0 at base %.9g, dim %d is %.9g, not 1\n",
+                        (double)bases[b], dim, (double)t[0]);
+            for (int j = 0; j < half; j++) {
+                uint32_t u;
+                memcpy(&u, &t[j], 4);
+                for (int k = 0; k < 4; k++) { h ^= (u >> (8 * k)) & 0xffu; h *= 0x100000001b3ull; }
+#ifdef RUNNER_T3_BUILD
+                float w = powf(bases[b], -2.0f * j / dim);
+                if (memcmp(&t[j], &w, 4) != 0 && !bad++)
+                    fprintf(stderr, "FAIL: rope inverse frequency %d at base %.9g, dim %d differs from the "
+                            "T3 build's powf: %.9g/%.9g\n", j, (double)bases[b], dim, (double)t[j], (double)w);
+#endif
+            }
+        }
+    // The arithmetic itself, not only its rounded results: the strict double
+    // log at an input where a fused multiply-add moves the last bit (found by
+    // the pull request's second reader: with contraction left on, Apple clang
+    // gave 0x1.3cf2660224e72p+4). A float table can hide that for a million
+    // inputs and not for the next one.
+    {
+        uint32_t fb = 0x4dbf27dfu;
+        float f;
+        memcpy(&f, &fb, 4);
+        double got = model_strict_log_d((double)f), want = 0x1.3cf2660224e73p+4;
+        if (memcmp(&got, &want, 8) != 0 && !bad++)
+            fprintf(stderr, "FAIL: the strict log of %a is %a, a T3 build's %a (a contracted "
+                    "multiply-add?)\n", (double)f, got, want);
+#ifdef RUNNER_T3_BUILD
+        double ref = pm_log_d((double)f);
+        if (memcmp(&ref, &want, 8) != 0 && !bad++)
+            fprintf(stderr, "FAIL: this T3 build's pm_log_d of %a is %a, not the constant %a\n",
+                    (double)f, ref, want);
+#endif
+    }
+    if (h != R830_ROPE_DIGEST && !bad++)
+        fprintf(stderr, "FAIL: the rope inverse frequencies' digest is %016llx, a T3 build's %016llx\n",
+                (unsigned long long)h, (unsigned long long)R830_ROPE_DIGEST);
+    if (!bad)
+        printf("rope inverse frequencies: 6 bases at 13 dimensions are a T3 build's (digest %016llx%s)\n",
+               (unsigned long long)h,
+#ifdef RUNNER_T3_BUILD
+               ", and memcmp against this T3 build's powf"
+#else
+               ""
+#endif
+               );
+    return bad;
+}
+
 int main(void) {
     f16_init();
     model_t m;
@@ -2044,6 +2114,7 @@ int main(void) {
     if (b_scope_checks()) return 1;   // no device needed
     if (b_resident_scope_checks()) return 1;
     if (r4_bias_corr_checks()) return 1;   // no device needed
+    if (r830_rope_checks()) return 1;      // no device needed
     if (!gpu_train_init(&m)) {
         if (gate_no_device("train-gpu")) return 1;
         printf("train-gpu: no CUDA device, skipping (not passing)\n");
