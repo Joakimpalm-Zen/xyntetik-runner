@@ -166,9 +166,11 @@ int    gpu_prompt_window(const model_t *m);
 // dense projections) and moe-grouped (the grouped expert prefill) count
 // only for the MoE families measured for them (qwen3moe and gpt-oss; the
 // grouped prefill qwen3moe only): a record of another model never names
-// them.
+// them. moe-limb (R3.81, opt-in): gemma-4's Q4_0 expert products through
+// three int8 activation limbs, the same bits at any width, in the decode and
+// the prefill alike; named only where the instance takes it.
 enum { GR_TC2 = 1, GR_SM80 = 2, GR_ATTN_TILE = 4, GR_ATTN_DEC = 8, GR_ATTN_TC = 16,
-       GR_MOE_TC = 32, GR_MOE_GROUPED = 64, GR_ALL = 127 };
+       GR_MOE_TC = 32, GR_MOE_GROUPED = 64, GR_MOE_LIMB = 128, GR_ALL = 255 };
 // Pin the set for this process (--gpu-route, --verify): it then overrides
 // RUNNER_CUDA_ROUTE (the same set from the environment), the per-route
 // RUNNER_CUDA_* diagnostics and the defaults. -1 returns to them.
@@ -184,6 +186,7 @@ static const struct { int bit; const char *name; } GPU_ROUTE_NAMES[] = {
     { GR_TC2, "tc2" }, { GR_SM80, "sm80" }, { GR_ATTN_TILE, "attn-tile" },
     { GR_ATTN_DEC, "attn-dec" }, { GR_ATTN_TC, "attn-tc" },
     { GR_MOE_TC, "moe-tc" }, { GR_MOE_GROUPED, "moe-grouped" },
+    { GR_MOE_LIMB, "moe-limb" },
 };
 static inline void gpu_route_format(int mask, char *buf, size_t n) {
     size_t at = 0;
@@ -259,6 +262,10 @@ bool   gpu_test_mv(model_t *m, gguf_tensor *w, const float *x, float *y,
 // layer, a route this build lacks, or a failed launch.
 bool   gpu_test_moe_q4_0(model_t *m, int layer, int proj, int expert, int route, int prefill,
                          const float *x, int cols, float *y);
+// How many moe-limb prefill tiles (the int8 MMA kernel) have run: a gate that
+// compares the prefill with the decode must see that the tile ran, since its
+// fallback is the decode kernel itself. 0 on the other backends.
+unsigned long gpu_moe_limb_tiles(void);
 // How many times the fast matvec has actually been dispatched. Same reason the
 // TC path counts: "the logits differ" cannot tell an unused kernel apart from
 // an exactly-matching one, and a gate that cannot see its own subject passes

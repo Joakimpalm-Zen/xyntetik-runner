@@ -233,6 +233,25 @@ Around the matvec:
   as the eager host routing (`RUNNER_MOE_EAGER=1`) and keeps routing weights
   within about 2 ulp: device `expf` is not the host libm. Gate:
   `./test-moe-tol MODEL.gguf`.
+- **gemma-4's Q4_0 experts through int8 activation limbs (moe-limb, R3.81, opt-in).**
+  `RUNNER_MOE_LIMB=1`, or `moe-limb` in `--gpu-route`/`RUNNER_CUDA_ROUTE`, on a
+  gemma-4 MoE file whose routed expert products are all Q4_0. Each 32-element
+  block of an expert's input becomes a 24-bit fixed-point number relative to
+  the block's max, held in three int8 limbs (k_moe_limb_quant). A block's sum
+  with the Q4_0 integers is then exact, whether dp4a computes it (the decode,
+  k_moe_limb_q4_0) or the int8 tensor cores (the prefill, k_moe_limb_tile_q4_0
+  in the compute_80 module). The f32 work after it is fixed: one rounding of
+  the sum, one of the scale product, an fma per block in k_moe_mv_q4_0's lane
+  order and its warp tree. So a prompt row's expert products are a lone
+  decode's bits at any width and in any prompt. They are not today's bits: the
+  route's error is within 3uA + 37uS of today's (u = 2^-24, S the dot's scale,
+  A the same with each block's max for |x|). A column with a NaN or an inf, or
+  a block max above 2^64 or nonzero below 2^-64, takes k_moe_mv_q4_0's own
+  arithmetic, in the decode and the prefill alike. Without the compute_80
+  module, the prefill runs the decode kernel a column at a time: the same
+  bits. The route replaces the grouped prefill on such an instance, and the
+  switch is not inert: it moves bytes, and the route is recorded. Gate:
+  `make test-cuda-moe-limb MOE_LIMB_MODEL=<file>` (tests/test_cuda_moe_limb.c).
 - **MoE families on the tensor cores (moe-tc) and grouped (moe-grouped).**
   qwen3moe and gpt-oss run their dense projections through the tensor-core
   GEMM (and TC2 on 8.0+), and qwen3moe's prefill groups a tile's columns by

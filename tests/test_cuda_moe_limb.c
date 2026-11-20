@@ -86,6 +86,48 @@ static double gelu(double v) {
     return 0.5 * v * (1 + tanh(0.7978845608028654 * (v + 0.044715 * v * v * v)));
 }
 
+// |limb - today| per output against the two bounds (R3.81 design, point 1):
+// |limb - ref| <= 3uA + 12uS and |today - ref| <= 25uS, u = 2^-24, S = sum_b
+// |d_b| sum_j |q_bj x_bj|, A = sum_b |d_b| mb_b sum_j |q_bj| (mb_b the block's
+// max |x|). Host arithmetic in double from the Q4_0 slice. Returns the number
+// of outputs over 3uA + 37uS; *worst gets the largest |limb - today| / that.
+static long accuracy(const uint8_t *w, int n_in, int n_out, const float *x, const float *lim,
+                     const float *tod, double *worst) {
+    int nb = n_in / 32;
+    double mb[512];
+    for (int b = 0; b < nb && b < 512; b++) {
+        double m = 0;
+        for (int j = 0; j < 32; j++) m = fmax(m, fabs((double)x[b * 32 + j]));
+        mb[b] = m;
+    }
+    const double u = ldexp(1.0, -24);
+    long over = 0;
+    for (int r = 0; r < n_out; r++) {
+        const uint8_t *row = w + (size_t)r * nb * 18;
+        double S = 0, A = 0;
+        for (int b = 0; b < nb; b++) {
+            const uint8_t *blk = row + (size_t)b * 18;
+            uint16_t h;
+            memcpy(&h, blk, 2);
+            // f16 to double
+            int ex = (h >> 10) & 31, mant = h & 1023;
+            double d = ex ? ldexp(1.0 + mant / 1024.0, ex - 15) : ldexp(mant / 1024.0, -14);
+            double sq = 0, sqx = 0;
+            for (int j = 0; j < 16; j++) {
+                int lo = (blk[2 + j] & 15) - 8, hi = (blk[2 + j] >> 4) - 8;
+                sq += abs(lo) + abs(hi);
+                sqx += abs(lo) * fabs((double)x[b * 32 + j]) + abs(hi) * fabs((double)x[b * 32 + 16 + j]);
+            }
+            S += d * sqx;
+            A += d * mb[b] * sq;
+        }
+        double bound = 3 * u * A + 37 * u * S, e = fabs((double)lim[r] - (double)tod[r]);
+        if (e > bound) over++;
+        if (bound > 0 && e / bound > *worst) *worst = e / bound;
+    }
+    return over;
+}
+
 static const int WIDTHS[] = { 1, 2, 3, 5, 8, 9, 16, 17, 31, 32, 33, 64, NALL };
 enum { NW = sizeof WIDTHS / sizeof WIDTHS[0] };
 
@@ -137,7 +179,8 @@ int main(int argc, char **argv) {
     float *xs = malloc(sizeof(float) * (size_t)NALL * mx), *ys = malloc(sizeof(float) * (size_t)NALL * mx);
     float *gu0 = malloc(sizeof(float) * (size_t)NCOL * 2 * nff);
     if (!xg || !xd || !dec || !tod || !xs || !ys || !gu0) return 2;
-    long subj = 0, ctrl = 0, grp = 0, cls = 0, flg = 0, bad_flag_rows = 0;
+    long subj = 0, ctrl = 0, grp = 0, cls = 0, flg = 0, bad_flag_rows = 0, moved = 0, plain = 0, acc = 0;
+    double worst = 0;
     int bad_calls = 0, cases = 0;
     for (int li = 0; li < nl; li++) {
         int l = layers[li];
@@ -171,6 +214,21 @@ int main(int argc, char **argv) {
                 // the subject
                 if (!gpu_test_moe_q4_0(&m, l, proj, e, 2, 0, x, NALL, dec)) { bad_calls++; continue; }
                 subj += widths_check(&m, l, proj, e, 2, x, n_in, n_out, dec, xs, ys, &bad_calls);
+                // accuracy against today, on 8 ordinary columns
+                {
+                    const gguf_tensor *bt = proj ? ly->ffn_down_exps : ly->ffn_gate_up_exps;
+                    size_t es = (size_t)n_out * (size_t)(n_in / 32) * 18;
+                    const uint8_t *wexp = (const uint8_t *)bt->data + (size_t)e * es;
+                    for (int c = 0; c < 8; c++)
+                        acc += accuracy(wexp, n_in, n_out, x + (size_t)c * n_in, dec + (size_t)c * n_out,
+                                        tod + (size_t)c * n_out, &worst);
+                }
+                // the route engaged: its decode is not today's on the ordinary columns
+                for (int c = 0; c < NCOL; c++) {
+                    plain++;
+                    for (int r = 0; r < n_out; r++)
+                        if (!same_bits(dec[(size_t)c * n_out + r], tod[(size_t)c * n_out + r])) { moved++; break; }
+                }
                 for (int s = 0; s < NSPEC; s++) {
                     const float *a = dec + (size_t)(NCOL + s) * n_out, *b = tod + (size_t)(NCOL + s) * n_out;
                     long cdiff = 0, fdiff = 0;
@@ -198,6 +256,12 @@ int main(int argc, char **argv) {
     ck(ctrl == 0, "control: today's twins give every column the decode's bits at every width");
     snprintf(what, sizeof what, "negative control: the grouped prefill differs from the decode (%ld columns)", grp);
     ck(grp > 0, what);
+    snprintf(what, sizeof what, "moe-limb engaged: its decode differs from today's on %ld of %ld ordinary columns, "
+             "and its prefill ran the int8 MMA tile %lu times", moved, plain, gpu_moe_limb_tiles());
+    ck(moved > 0 && gpu_moe_limb_tiles() > 0, what);
+    snprintf(what, sizeof what, "moe-limb: every output of 8 ordinary columns a case is within 3uA + 37uS of "
+             "today's (%ld are not; the largest is %.4f of its bound)", acc, worst);
+    ck(acc == 0 && bad_calls == 0, what);
     snprintf(what, sizeof what, "moe-limb: every prefill column is the decode's bits at every width and order "
              "(%ld columns differ)", subj);
     ck(subj == 0 && bad_calls == 0, what);

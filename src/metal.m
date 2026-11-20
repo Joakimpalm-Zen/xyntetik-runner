@@ -1448,6 +1448,7 @@ bool gpu_test_moe_q4_0(model_t *m, int layer, int proj, int expert, int route, i
     (void)x; (void)cols; (void)y;
     return false;
 }
+unsigned long gpu_moe_limb_tiles(void) { return 0; }
 int gpu_route_active(const model_t *m) { (void)m; return 0; }
 void gpu_recur_seq_force(int on) { (void)on; }          // CUDA's whole-tile recurrent kernels
 unsigned long gpu_recur_seq_dispatches(void) { return 0; }
