@@ -536,6 +536,10 @@ typedef struct gpu_weights {
     CUfunction  f_moe_route_replay;     // RUNNER_MOE_REPLAY's router (R3.21.2)
     CUfunction  f_moe_sum_tile, f_moe_place;   // the by-expert prefill (moe_twin)
     CUfunction  f_moe_mv[KT_N];         // indexed by expert tensor type
+    // moe-limb (R3.81): the limb quantizer and the Q4_0 decode (compute_75),
+    // the Q4_0 prefill tile (compute_80; absent, the decode runs a column at
+    // a time, the same bits)
+    CUfunction  f_moe_limb_quant, f_moe_limb_q4_0, f_moe_limb_tile;
     // expert-grouped prefill (P2): gather/scatter around the k_gemm family
     CUfunction  f_moe_gather, f_moe_scatter, f_moe_actmul_plain, f_moe_copy;
     CUdeviceptr weights;
@@ -680,6 +684,12 @@ typedef struct {
     float      *tr_w, *tr_norm;
     bool        moe_grouped_ok;         // expert types have width-classed kernels
     bool        moe_twin_ok;            // ... and the by-expert path can be fused-identical
+    // moe-limb (R3.81): this instance's Q4_0 expert products take the limb
+    // route (moe_limb_ok); the limb scratch for moe_lcols columns: limbs
+    // (3 bytes an element), block scales, column flags, a zero expert table
+    bool        moe_limb_ok, moe_limb_avail;
+    int         moe_lcols, moe_lin;
+    CUdeviceptr moe_lq, moe_lsc, moe_lflag, moe_lsel0;
     CUdeviceptr g_scr;                  // gemma-4-MoE dual-branch scratch: 5*n_embd
     CUdeviceptr q35_mix, q35_cv, q35_z, q35_beta, q35_alpha, q35_gate;
     CUdeviceptr q35_hist, q35_state;    // persistent recurrent state per sequence
@@ -1226,6 +1236,29 @@ static bool moe_fused_eligible(const model_t *m) {
                 !moe_indirect_type_ok(ly->ffn_up_exps->type) ||
                 !moe_indirect_type_ok(ly->ffn_down_exps->type)) return false;
         }
+    }
+    return true;
+}
+
+// moe-limb (R3.81): gemma-4 with every routed expert product in Q4_0 (the
+// scope it was measured on), when asked for: a route pin decides first, then
+// RUNNER_MOE_LIMB=1. Off by default. It moves bytes (its products are not
+// today's), so the switch is not inert and the route is recorded (GR_MOE_LIMB).
+static bool moe_limb_wanted(const model_t *m) {
+    int p = route_pinned(GR_MOE_LIMB);
+    bool on;
+    if (p >= 0) on = p;
+    else {
+        const char *e = getenv("RUNNER_MOE_LIMB");
+        on = e && *e && strcmp(e, "0") != 0 && strcmp(e, "off") != 0;
+    }
+    if (!on || !m || !m->moe_gemma || m->n_expert <= 0) return false;
+    for (int l = 0; l < m->n_layer; l++) {
+        const layer_t *ly = &m->layers[l];
+        if (ly->n_expert <= 0) continue;
+        if (!ly->ffn_gate_up_exps || ly->ffn_gate_up_exps->type != T_Q4_0 ||
+            !ly->ffn_down_exps || ly->ffn_down_exps->type != T_Q4_0 || ly->moe_split)
+            return false;
     }
     return true;
 }
@@ -2894,6 +2927,8 @@ static bool shared_load_module(gpu_weights *w) {
         { &w->f_moe_mv[T_IQ4_XS],  "k_moe_mv_iq4_xs" },
         { &w->f_moe_mv[T_IQ2_XS],  "k_moe_mv_iq2_xs" },
         { &w->f_moe_mv[T_IQ2_XXS], "k_moe_mv_iq2_xxs" },
+        { &w->f_moe_limb_quant,    "k_moe_limb_quant" },
+        { &w->f_moe_limb_q4_0,     "k_moe_limb_q4_0" },
         // expert-grouped prefill glue
         { &w->f_moe_gather,       "k_moe_gather" },
         { &w->f_moe_scatter,      "k_moe_scatter_add" },
@@ -3008,6 +3043,10 @@ static bool shared_load_module(gpu_weights *w) {
                         f = NULL;
                     w->f_gemm2_80[TC2_80[i].type] = f;
                 }
+                // moe-limb's Q4_0 prefill tile (R3.81); absent, its prefill runs
+                // the decode kernel a column at a time, the same bits
+                if (cu.ModuleGetFunction(&w->f_moe_limb_tile, w->mod80, "k_moe_limb_tile_q4_0") != 0)
+                    w->f_moe_limb_tile = NULL;
                 // the 128-column twins, for GEMMs over more than 64 columns;
                 // a device that refuses their shared memory keeps the above
                 static const struct { int type; const char *name; } TC2_80W[] = {
@@ -3782,6 +3821,12 @@ static void cuda_instance_dims(const model_t *m, cuda_dims *D) {
                                         m->n_embd + 1);
         // the by-expert prefill's slot outputs and pair tables (moe_twin)
         per_col += used * (sizeof(float) * (size_t)m->n_embd + 2 * sizeof(int));
+        // moe-limb's scratch (R3.81): a column's limbs, block scales, flag
+        // and zero expert entry at the wider expert input
+        if (moe_limb_wanted(m)) {
+            size_t lin = (size_t)(m->n_embd > m->n_ff_exp ? m->n_embd : m->n_ff_exp);
+            per_col += 3 * lin + sizeof(float) * (lin / 32) + 2 * sizeof(int);
+        }
     }
     if (m->hyper_conn)
         per_col += sizeof(float) * (3 * (size_t)m->hc_count * m->n_embd +
@@ -4102,6 +4147,22 @@ static bool cuda_alloc_moe(model_t *m, gpu_t *g) {
             g->h_moe_gsel = malloc(sizeof(int) * (size_t)g->win * used_c);
             if (!g->h_moe_gpos || !g->h_moe_gsel) g->moe_twin_ok = false;
         }
+        // moe-limb (R3.81): scratch for max(window, slots) columns of the
+        // wider expert input
+        g->moe_limb_avail = g->moe_fused_ok && moe_limb_wanted(m) &&
+                            g->sw->f_moe_limb_quant && g->sw->f_moe_limb_q4_0;
+        if (g->moe_limb_avail) {
+            int lin = m->n_embd > m->n_ff_exp ? m->n_embd : m->n_ff_exp;
+            int lcols = g->win > (int)used_c ? g->win : (int)used_c;
+            CK(cu.MemAlloc(&g->moe_lq, (size_t)lcols * lin * 3));
+            CK(cu.MemAlloc(&g->moe_lsc, sizeof(float) * (size_t)lcols * (lin / 32)));
+            CK(cu.MemAlloc(&g->moe_lflag, sizeof(int) * (size_t)lcols));
+            CK(cu.MemAlloc(&g->moe_lsel0, sizeof(int) * (size_t)lcols));
+            CK(cu.MemsetD8(g->moe_lsel0, 0, sizeof(int) * (size_t)lcols));
+            g->moe_lcols = lcols;
+            g->moe_lin = lin;
+        }
+        g->moe_limb_ok = g->moe_limb_avail;
     }
     if (m->moe_gemma)
         // gemma-4-MoE dual-branch scratch: xn, xn2, rin, mout — window
@@ -4761,7 +4822,7 @@ static int route_env(void) {
         int v = e && *e ? gpu_route_parse(e) : -1;
         if (e && *e && v < 0)
             fprintf(stderr, "gpu: RUNNER_CUDA_ROUTE=%s is not reference or a list of tc2, "
-                    "sm80, attn-tile, attn-dec, attn-tc, moe-tc, moe-grouped; ignored\n", e);
+                    "sm80, attn-tile, attn-dec, attn-tc, moe-tc, moe-grouped, moe-limb; ignored\n", e);
         env = v;
     }
     return env;
@@ -5436,6 +5497,7 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
                            g->moe_selw, g->moe_hb, g->moe_hb2, g->moe_hot_sel,
                            g->moe_gath, g->moe_dout, g->moe_gidx, g->moe_gw,
                            g->moe_gpos, g->moe_gsel, g->moe_slots,
+                           g->moe_lq, g->moe_lsc, g->moe_lflag, g->moe_lsel0,
                            g->g_scr, g->ple, g->ple_g,
                            g->q35_mix, g->q35_cv, g->q35_z, g->q35_beta,
                            g->q35_alpha, g->q35_gate, g->q35_hist,
@@ -6252,12 +6314,80 @@ static bool enc_moe_mv(gpu_t *g, model_t *m, gguf_tensor *base,
                          nslots, xs, ys);
 }
 
+// moe-limb (R3.81): ncols columns of x (xs floats apart, n_in each) to the
+// limb scratch's columns 0.. (k_moe_limb_quant), at most moe_lcols.
+static bool enc_moe_limb_quant(gpu_t *g, CUdeviceptr x, int n_in, int xs, int ncols) {
+    if (ncols < 1 || ncols > g->moe_lcols || n_in > g->moe_lin || n_in % 32) {
+        gpu_first_error("moe-limb: %d columns of %d do not fit its scratch", ncols, n_in);
+        return false;
+    }
+    void *p[] = { &x, &n_in, &xs, &g->moe_lq, &g->moe_lsc, &g->moe_lflag };
+    return launch(g, g->sw->f_moe_limb_quant, (unsigned)ncols, 1, 1, 256, p);
+}
+
+// The decode's product (k_moe_limb_q4_0), k_moe_mv_q4_0's launch: grid.y the
+// slots, slot s reading limb column (xs ? s : 0). quantize: limb the input
+// first (the decode); flagged_only: the prefill's pass for flagged columns,
+// over limbs already made.
+static bool enc_moe_limb_launch(gpu_t *g, CUdeviceptr weights, uint64_t w_off, uint64_t estride,
+                                CUdeviceptr x, CUdeviceptr y, CUdeviceptr sel, int n_in, int n_out,
+                                int nslots, int xs, int ys, int flagged_only) {
+    moe_args a = { n_in, n_out, w_off, estride, xs, ys };
+    void *p[] = { &weights, &x, &a, &sel, &y, &g->moe_lq, &g->moe_lsc, &g->moe_lflag,
+                  &flagged_only };
+    return launch(g, g->sw->f_moe_limb_q4_0, (unsigned)((n_out + 7) / 8), nslots, 1, 256, p);
+}
+
+static bool enc_moe_limb_mv(gpu_t *g, CUdeviceptr weights, uint64_t w_off, uint64_t estride,
+                            CUdeviceptr x, CUdeviceptr y, CUdeviceptr sel, int n_in, int n_out,
+                            int nslots, int xs, int ys, int flagged_only) {
+    return enc_moe_limb_quant(g, x, n_in, xs, xs ? nslots : 1) &&
+           enc_moe_limb_launch(g, weights, w_off, estride, x, y, sel, n_in, n_out, nslots, xs, ys,
+                               flagged_only);
+}
+
+// The prefill's product over cnt columns of one expert's slice at weights +
+// w_off: in chunks of the scratch's columns, the limbs, the int8 MMA tile
+// (compute_80), then the decode kernel over the chunk's columns for the
+// flagged ones. Without the tile the decode kernel takes every column: the
+// same bits, one column a slot.
+static _Atomic unsigned long g_moe_limb_tiles;
+unsigned long gpu_moe_limb_tiles(void) { return g_moe_limb_tiles; }
+bool gpu_moe_limb_has_tile(const model_t *m) {
+    const gpu_t *g = m ? (const gpu_t *)m->gpu : NULL;
+    return g && g->sw && g->sw->f_moe_limb_tile != NULL;
+}
+static bool enc_moe_limb_gemm(gpu_t *g, CUdeviceptr weights, uint64_t w_off, CUdeviceptr x,
+                              CUdeviceptr y, int n_in, int n_out, int cnt, int xs, int ys) {
+    for (int c0 = 0; c0 < cnt; c0 += g->moe_lcols) {
+        int k = cnt - c0 < g->moe_lcols ? cnt - c0 : g->moe_lcols;
+        CUdeviceptr xc = x + (size_t)c0 * xs * sizeof(float), yc = y + (size_t)c0 * ys * sizeof(float);
+        if (!enc_moe_limb_quant(g, xc, n_in, xs, k)) return false;
+        bool tile = g->sw->f_moe_limb_tile != NULL;
+        if (tile) {
+            unsigned tiles = (unsigned)((n_out + 15) / 16);
+            unsigned long long woff = w_off;
+            void *p[] = { &weights, &woff, &n_in, &n_out, &k, &ys, &yc, &g->moe_lq, &g->moe_lsc };
+            if (!launch(g, g->sw->f_moe_limb_tile, (tiles + 3) / 4, (unsigned)((k + 7) / 8), 1, 128, p))
+                return false;
+            g_moe_limb_tiles++;
+        }
+        if (!enc_moe_limb_launch(g, weights, w_off, 0, xc, yc, g->moe_lsel0, n_in, n_out, k, xs, ys,
+                                 tile ? 1 : 0))
+            return false;
+    }
+    return true;
+}
+
 // enc_moe_mv's launch on an expert stack at weights + w_off, estride bytes an
 // expert: the bound tensor's, or a RUNNER_MOE_HOT bank's slots.
 static bool enc_moe_mv_at(gpu_t *g, gguf_tensor *base, CUdeviceptr weights,
                           uint64_t w_off, uint64_t estride, CUdeviceptr x,
                           CUdeviceptr y, CUdeviceptr sel, int n_in, int n_out,
                           int nslots, int xs, int ys) {
+    if (g->moe_limb_ok && base->type == T_Q4_0)
+        return enc_moe_limb_mv(g, weights, w_off, estride, x, y, sel, n_in, n_out, nslots,
+                               xs, ys, 0);
     CUfunction f = g->sw->f_moe_mv[base->type];
     if (!f) {
         gpu_first_error("no indirect MoE kernel for quant type %s",
@@ -6817,6 +6947,17 @@ static bool moe_twin_gemm(gpu_t *g, model_t *m, gguf_tensor *w, bool expert,
                           CUdeviceptr x, CUdeviceptr y, int n_in, int n_out,
                           int cnt, int xs, int ys) {
     bool lane_q40 = expert && w->type == T_Q4_0;
+    if (lane_q40 && g->moe_limb_ok) {
+        // moe-limb (R3.81): the decode's limb arithmetic for every column
+        CUdeviceptr lw = 0;
+        uint64_t lo = 0;
+        if (!binding_find(g->sw, m, w, &lw, &lo)) {
+            gpu_first_error("tensor '%s' is not resident on the device "
+                            "(no binding covers it)", w->name);
+            return false;
+        }
+        return enc_moe_limb_gemm(g, lw, lo, x, y, n_in, n_out, cnt, xs, ys);
+    }
     bool twins = w->type != T_Q4_0 || lane_q40
                ? moe_twin_type_ok(g->sw, w->type)
                : g->sw->f_gemvb[BW_4][T_Q4_0] && g->sw->f_gemvb[BW_8][T_Q4_0] &&
@@ -7388,7 +7529,8 @@ static bool gpu_gemma_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly,
 static bool gpu_gemma_moe_ffn_path(gpu_t *g, model_t *m, const layer_t *ly, int l,
                                    int tn, int xdim) {
     if (g->moe_fused_ok) {
-        if (tn > 1 && g->moe_grouped_ok && !g->exact_rows)
+        // moe-limb is an identity route: the grouped prefill's tiles are not
+        if (tn > 1 && g->moe_grouped_ok && !g->moe_limb_ok && !g->exact_rows)
             return gpu_gemma_moe_ffn_grouped(g, m, ly, l, tn, xdim);
         if (tn > 8 && g->moe_twin_ok && moe_twin_on(m) && !gpu_q8x_on() &&
             (long)tn * m->n_expert_used >= 4L * ly->n_expert)
@@ -7396,6 +7538,65 @@ static bool gpu_gemma_moe_ffn_path(gpu_t *g, model_t *m, const layer_t *ly, int 
         return gpu_gemma_moe_ffn_fused(g, m, ly, l, tn, xdim);
     }
     return gpu_gemma_moe_ffn_eager(g, m, ly, l, tn, xdim);
+}
+
+// Test-only (R3.81, tests/test_cuda_moe_limb.c): one gemma-4 Q4_0 expert's
+// product, gate_up (proj 0) or down (1), over cols columns of x through the
+// production launches. prefill 0: each column alone through the decode's
+// expert matvec (enc_moe_mv, one slot); 1: every column in one call through
+// the by-expert prefill's product. route 0: today's (k_moe_mv_q4_0; the
+// twins, moe_twin_gemm); 1: the grouped prefill's (enc_moe_gemm, prefill
+// only); 2: moe-limb. No CLI path calls it. false: no device, not a gemma-4
+// Q4_0 expert layer, a route this build does not have, or a failed launch.
+bool gpu_test_moe_q4_0(model_t *m, int layer, int proj, int expert, int route, int prefill,
+                       const float *x, int cols, float *y) {
+    gpu_t *g = m ? m->gpu : NULL;
+    if (!g || layer < 0 || layer >= m->n_layer || cols < 1 || route < 0 || route > 2 ||
+        (route == 1 && !prefill))
+        return false;
+    const layer_t *ly = &m->layers[layer];
+    if (!m->moe_gemma || !ly->ffn_gate_up_exps || !ly->ffn_down_exps || !g->moe_fused_ok)
+        return false;
+    int n_embd = m->n_embd, nff = m->n_ff_exp;
+    gguf_tensor *base = proj == 0 ? ly->ffn_gate_up_exps : ly->ffn_down_exps;
+    if (base->type != T_Q4_0 || expert < 0 || expert >= ly->n_expert) return false;
+    if (route == 2 && !g->moe_limb_avail) {
+        fprintf(stderr, "gpu: moe-limb is not available on this instance (RUNNER_MOE_LIMB=1 at load)\n");
+        return false;
+    }
+    int n_in = proj == 0 ? n_embd : nff, n_out = proj == 0 ? 2 * nff : n_embd;
+    uint64_t estride = (uint64_t)n_out * ggml_row_size(base->type, n_in);
+    // the expert's slice, as the by-expert prefill cuts it
+    gguf_tensor slice = proj == 0 ? *base : moe_expert_weight(ly, 2, expert, n_embd, nff);
+    if (proj == 0) {
+        slice.data = (uint8_t *)base->data + (size_t)expert * estride;
+        slice.nbytes = (size_t)estride;
+    }
+    if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
+    size_t nx = (size_t)cols * n_in, ny = (size_t)cols * n_out;
+    CUdeviceptr d_x = 0, d_y = 0, d_sel = 0;
+    bool ok = cu.MemAlloc(&d_x, sizeof(float) * nx) == 0 &&
+              cu.MemAlloc(&d_y, sizeof(float) * ny) == 0 &&
+              cu.MemAlloc(&d_sel, sizeof(int)) == 0 &&
+              cu.MemcpyHtoD(d_x, x, sizeof(float) * nx) == 0 &&
+              cu.MemcpyHtoD(d_sel, &expert, sizeof(int)) == 0;
+    bool limb_was = g->moe_limb_ok;
+    g->moe_limb_ok = route == 2;
+    if (ok && !prefill)
+        for (int c = 0; ok && c < cols; c++)
+            ok = enc_moe_mv(g, m, base, estride, d_x + (size_t)c * n_in * sizeof(float),
+                            d_y + (size_t)c * n_out * sizeof(float), d_sel, n_in, n_out, 1, 0, n_out);
+    else if (ok && route != 1)
+        ok = moe_twin_gemm(g, m, &slice, true, d_x, d_y, n_in, n_out, cols, n_in, n_out);
+    else if (ok)
+        ok = enc_moe_gemm(g, m, &slice, d_x, d_y, n_in, n_out, cols, n_in, n_out);
+    g->moe_limb_ok = limb_was;
+    ok = ok && cu.StreamSynchronize(g->stream) == 0 &&
+         cu.MemcpyDtoH(y, d_y, sizeof(float) * ny) == 0;
+    if (d_x) cu.MemFree(d_x);
+    if (d_y) cu.MemFree(d_y);
+    if (d_sel) cu.MemFree(d_sel);
+    return ok;
 }
 
 // as gpu_moe_ffn: the tile's trace records, written with their norms
@@ -7983,10 +8184,14 @@ int gpu_route_active(const model_t *m) {
     // or RUNNER_MOE_GROUPED=1 admits any MoE model whose expert types it
     // takes, and a record that left it out replayed another path
     bool mtc = moe_tc_family(m) && tc_on(m, T_Q4_K);
-    bool mgr = g ? g->moe_grouped_ok : moe_grouped_eligible(m);
+    // moe-limb where the instance took it (or, without one, would); it
+    // replaces the grouped prefill on such an instance
+    bool mlb = g ? g->moe_limb_ok : moe_limb_wanted(m);
+    bool mgr = !mlb && (g ? g->moe_grouped_ok : moe_grouped_eligible(m));
     return (tc2 ? GR_TC2 : 0) | (sm80 ? GR_SM80 : 0) |
            (attn_tile_on() ? GR_ATTN_TILE : 0) | (attn_dec_on() ? GR_ATTN_DEC : 0) |
-           (attn_tc_on(m) ? GR_ATTN_TC : 0) | (mtc ? GR_MOE_TC : 0) | (mgr ? GR_MOE_GROUPED : 0);
+           (attn_tc_on(m) ? GR_ATTN_TC : 0) | (mtc ? GR_MOE_TC : 0) | (mgr ? GR_MOE_GROUPED : 0) |
+           (mlb ? GR_MOE_LIMB : 0);
 }
 
 // The dynamic shared memory k_attn_dec_gqa needs for a layer's geometry, or

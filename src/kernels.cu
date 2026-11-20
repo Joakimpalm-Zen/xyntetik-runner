@@ -7714,3 +7714,131 @@ extern "C" __global__ void k_splitk_reduce_b(const float *partial, float *y, con
     for (int sp = 0; sp < splits; sp++) s += p[(ulong64)sp * n_out];
     y[(ulong64)c * ys + row] = has_bias ? s + bias[row] : s;
 }
+
+// ---- moe-limb (R3.81): Q4_0 expert products whose bits do not depend on the
+// width, on the kernel or on the other tokens of a prompt.
+//
+// Each 32-element block of an activation column is a 24-bit fixed-point
+// number relative to the block's max: full = rint(x * RN(M / mb)), M =
+// 8355711 = 127*65536 + 127*256 + 127 so all three int8 limbs of full fit
+// (2^23 - 1 wraps the top limb to -128), and sc = RN(mb / M). A block's sum
+// sum_j q_j full_j (q the nibble - 8) is then an EXACT integer, the same from
+// dp4a (k_moe_limb_q4_0, the decode) and from int8 MMA (k_moe_limb_tile_q4_0
+// in kernels_sm80.cu, the prefill: m16n8k32, an sm_80 instruction, is one
+// Q4_0 block). The f32 tail is fixed: t =
+// RN(tot), c = RN(d sc), s = fma(t, c, s) over a lane's blocks b = lane,
+// lane + 32, ... and k_moe_mv_q4_0's warp_sum tree; the tile runs the same
+// tree as a stack over the 32 leaves in bit-reversed order.
+//
+// A column with a NaN or an inf, a block max above 2^64 or a nonzero block
+// max below 2^-64 is flagged (k_moe_limb_quant) and takes k_moe_mv_q4_0's own
+// arithmetic, in the decode kernel and, for the prefill, in that kernel's
+// flagged-only pass over the tile's columns: today's bits and result class.
+#define LIMB_M 8355711
+#define LIMB_HI 18446744073709551616.0f        // 2^64
+#define LIMB_LO 5.42101086242752217e-20f       // 2^-64
+
+// one block a column: lq [col][blk][3][32] int8 (top limb first), lsc
+// [col][blk], lflag [col]
+extern "C" __global__ void k_moe_limb_quant(const float *x, int n_in, int xs, signed char *lq,
+                                            float *lsc, int *lflag) {
+    unsigned warp = threadIdx.x >> 5, lane = threadIdx.x & 31, nw = blockDim.x >> 5;
+    unsigned col = blockIdx.x;
+    int nb = n_in / 32;
+    const float *xc = x + (ulong64)col * xs;
+    signed char *lc = lq + (ulong64)col * n_in * 3;
+    float *sc = lsc + (ulong64)col * nb;
+    int special = 0;
+    for (int b = warp; b < nb; b += nw) {
+        float v = xc[(ulong64)b * 32 + lane];
+        special |= !isfinite(v);
+        float mb = fabsf(v);
+        for (int off = 16; off > 0; off >>= 1) mb = fmaxf(mb, __shfl_xor_sync(0xffffffffu, mb, off));
+        special |= !(mb <= LIMB_HI) || (mb > 0.f && mb < LIMB_LO);
+        int full = 0;
+        if (mb > 0.f && mb <= LIMB_HI && mb >= LIMB_LO) {
+            float inv = __fdiv_rn((float)LIMB_M, mb);
+            full = __float2int_rn(__fmul_rn(v, inv));
+            full = full > LIMB_M ? LIMB_M : full < -LIMB_M ? -LIMB_M : full;
+        }
+        int l2 = ((full + 128) & 255) - 128, r = (full - l2) >> 8;
+        int l1 = ((r + 128) & 255) - 128, l0 = (r - l1) >> 8;
+        signed char *o = lc + (ulong64)b * 96;
+        o[lane] = (signed char)l0; o[32 + lane] = (signed char)l1; o[64 + lane] = (signed char)l2;
+        if (lane == 0) sc[b] = mb > 0.f && mb <= LIMB_HI ? __fdiv_rn(mb, (float)LIMB_M) : 0.f;
+    }
+    special = __syncthreads_or(special);
+    if (threadIdx.x == 0) lflag[col] = special;
+}
+
+// The decode: k_moe_mv_q4_0's launch and layout (grid.y = expert slot,
+// 8 warps a block, a warp a row, a lane a block). Slot s reads limb column
+// (xs ? s : 0) and, when that column is flagged, its f32 column x + s*xs
+// through k_moe_mv_q4_0's own body. flagged_only (the prefill's pass over
+// a tile's columns): unflagged columns return at once.
+extern "C" __global__ void k_moe_limb_q4_0(const uchar *wb, const float *x, moe_args a, const int *sel,
+                                           float *y, const signed char *lq, const float *lsc,
+                                           const int *lflag, int flagged_only) {
+    __shared__ float xsm[32 * LANE_XPAD];
+    __shared__ int lsm[32 * 25];
+    unsigned row = blockIdx.x * (blockDim.x / 32) + (threadIdx.x >> 5);
+    unsigned lane = threadIdx.x & 31;
+    bool live = row < (unsigned)a.n_out;
+    int nb = a.n_in / 32;
+    unsigned col = a.xs ? blockIdx.y : 0;
+    bool flagged = lflag[col] != 0;
+    if (flagged_only && !flagged) return;
+    const uchar *wbase = wb + a.w_off + (ulong64)sel[blockIdx.y] * a.estride;
+    const uchar *rw = wbase + (ulong64)(live ? row : 0) * nb * 18;
+    float s = 0;
+    if (flagged) {
+        x += (ulong64)blockIdx.y * a.xs;
+        for (int b0 = 0; b0 < nb; b0 += 32) {
+            int nblk = nb - b0 < 32 ? nb - b0 : 32;
+            LANE_STAGE_X(xsm, x, b0, nblk)
+            __syncthreads();
+            if (live && (int)lane < nblk) {
+                const uchar *blk = rw + (ulong64)(b0 + lane) * 18;
+                float d = f16f(blk);
+                const uchar *q = blk + 2;
+                const float *xp = xsm + lane * LANE_XPAD;
+                float t = 0;
+                for (int j = 0; j < 16; j++)
+                    t += ((int)(q[j] & 0xF) - 8) * xp[j] + ((int)(q[j] >> 4) - 8) * xp[j + 16];
+                s += d * t;
+            }
+            __syncthreads();
+        }
+    } else {
+        const int *li = (const int *)(lq + (ulong64)col * a.n_in * 3);
+        const float *sc = lsc + (ulong64)col * nb;
+        for (int b0 = 0; b0 < nb; b0 += 32) {
+            int nblk = nb - b0 < 32 ? nb - b0 : 32;
+            for (int i = threadIdx.x; i < nblk * 24; i += blockDim.x)
+                lsm[(i / 24) * 25 + i % 24] = li[(ulong64)b0 * 24 + i];
+            __syncthreads();
+            if (live && (int)lane < nblk) {
+                const uchar *blk = rw + (ulong64)(b0 + lane) * 18;
+                float d = f16f(blk);
+                const ushort16 *qh2 = (const ushort16 *)(blk + 2);
+                const int *L = lsm + lane * 25;
+                int s0 = 0, s1 = 0, s2 = 0;
+                for (int k = 0; k < 4; k++) {
+                    unsigned w4 = (unsigned)qh2[2 * k] | ((unsigned)qh2[2 * k + 1] << 16);
+                    int ql = (int)__vsub4(w4 & 0x0F0F0F0Fu, 0x08080808u);
+                    int qh = (int)__vsub4((w4 >> 4) & 0x0F0F0F0Fu, 0x08080808u);
+                    s0 = __dp4a(ql, L[k], s0);      s0 = __dp4a(qh, L[4 + k], s0);
+                    s1 = __dp4a(ql, L[8 + k], s1);  s1 = __dp4a(qh, L[12 + k], s1);
+                    s2 = __dp4a(ql, L[16 + k], s2); s2 = __dp4a(qh, L[20 + k], s2);
+                }
+                long long tot = (long long)s0 * 65536 + (long long)s1 * 256 + s2;
+                s = __fmaf_rn(__ll2float_rn(tot), __fmul_rn(d, sc[b0 + lane]), s);
+            }
+            __syncthreads();
+        }
+    }
+    if (live) {
+        s = warp_sum(s);
+        if (lane == 0) y[(ulong64)blockIdx.y * a.ys + row] = s;
+    }
+}

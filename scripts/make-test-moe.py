@@ -46,6 +46,22 @@ if str(OUT).startswith("-"):
 # scripts/make-test-model.py's flag of the same name.
 OVF = "--act-fp16-overflow" in sys.argv[2:]
 E, HEADS, KV, FF, LAYERS = 32, 4, 2, 64, 2
+# MOE_TEST_DIMS=E,FF (R3.81): wider embedding and expert widths, heads of 64
+# (E/64 of them, 2 KV), so a Q4_0 requantization has blocks enough for the
+# moe-limb gate's lanes and special columns (test-cuda-moe-limb-fixture)
+if os.environ.get("MOE_TEST_DIMS"):
+    E, FF = (int(v) for v in os.environ["MOE_TEST_DIMS"].split(","))
+    HEADS, KV = E // 64, 2
+
+
+def degenerate(msg):
+    """a fixture's own sanity check failed: fatal at the default dimensions, which every
+    gate that reads that fixture uses; under MOE_TEST_DIMS only the gemma4 Q4_0 fixture
+    is read (test-cuda-moe-limb-fixture), so the others are noted and left alone"""
+    if os.environ.get("MOE_TEST_DIMS"):
+        print("note: " + msg + " (MOE_TEST_DIMS: not this run's fixture)")
+    else:
+        sys.exit(msg)
 VOCAB = ["<unk>", "<s>", "</s>"] + [f"<0x{i:02X}>" for i in range(256)]
 TTYPE = [2, 3, 3] + [6] * 256
 
@@ -352,7 +368,7 @@ def check_group_sensitivity(probs_b, n_group, n_group_used, used, live):
     grouped = _sel_grouped(scores, n_group, n_group_used, used)
     flat = _sel_topk(scores, used)
     if grouped == flat:
-        sys.exit(f"make-test-moe: group fixture is degenerate — grouped and "
+        degenerate(f"make-test-moe: group fixture is degenerate — grouped and "
                  f"ungrouped selection are both {grouped}; a binary with no "
                  f"group-limited top-k would pass")
     if not set(grouped) <= live:
@@ -443,7 +459,7 @@ def check_gating_sensitivity(gating, routers, ne=4, used=2, probes=64,
         if base is None:
             continue
         if worst[tag] < margin:
-            sys.exit(f"make-test-moe: gating fixture {tag} is degenerate — its "
+            degenerate(f"make-test-moe: gating fixture {tag} is degenerate — its "
                      f"expert weights match {base}'s to {worst[tag]:.3g} on the "
                      f"weakest of {probes} probes; a binary that ignores "
                      f"expert_gating_func would pass")

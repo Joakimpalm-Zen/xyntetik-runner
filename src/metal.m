@@ -1442,6 +1442,14 @@ bool gpu_test_mv(model_t *m, gguf_tensor *w, const float *x, float *y,   // CUDA
     (void)m; (void)w; (void)x; (void)y; (void)n_in; (void)n_out; (void)tn;
     return false;
 }
+bool gpu_test_moe_q4_0(model_t *m, int layer, int proj, int expert, int route, int prefill,
+                       const float *x, int cols, float *y) {   // CUDA's test hook (R3.81)
+    (void)m; (void)layer; (void)proj; (void)expert; (void)route; (void)prefill;
+    (void)x; (void)cols; (void)y;
+    return false;
+}
+unsigned long gpu_moe_limb_tiles(void) { return 0; }
+bool gpu_moe_limb_has_tile(const model_t *m) { (void)m; return false; }
 int gpu_route_active(const model_t *m) { (void)m; return 0; }
 void gpu_recur_seq_force(int on) { (void)on; }          // CUDA's whole-tile recurrent kernels
 unsigned long gpu_recur_seq_dispatches(void) { return 0; }
