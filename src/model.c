@@ -14974,10 +14974,22 @@ float model_adam_bias_corr(float beta, int step) {   // 1.0f - p_powf(beta, (flo
 }
 // R8.30: a model's rope inverse frequencies, base^(-2j/dim) for j below half
 // (rope_setup's two tables; the CPU forward reads them and the CUDA and Metal
-// back ends build theirs from them).
+// back ends build theirs from them), as a T3 build's powf (pmath.h's p_powf)
+// gives them, in every build: the exponent as written and p_powf's steps, both
+// under the precise attribute. A default build had called the C library here.
+// On Linux gcc vectorized the loop under -ffast-math into the library's VECTOR
+// powf, a few last bits off the scalar one, so a libc-math build's forward,
+// and with it a --train-gpu adapter, differed from a strict build's from the
+// first step, and the table depended on the installed C library. 64 or so
+// values at load: no cost per token or per step.
+TRAIN_BC_ATTR
 void model_rope_inv_freq_fill(float *out, int half, float base, int dim) {
-    for (int j = 0; j < half; j++)
-        out[j] = powf(base, -2.0f * j / dim);
+    TRAIN_BC_SCOPE
+    for (int j = 0; j < half; j++) {
+        float y = -2.0f * j / dim;
+        if (base <= 0.0f) out[j] = base == 0.0f ? 0.0f : 0.0f / 0.0f;   // p_powf's guard
+        else out[j] = (float)train_bc_exp_d((double)y * train_bc_log_d((double)base));
+    }
 }
 #undef TRAIN_BC_SCOPE
 #undef TRAIN_BC_ATTR

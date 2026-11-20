@@ -311,11 +311,17 @@ default build, a build made with `PORTABLE_MATH=1`) has a T3 build's
 adapter, byte for byte, for a constant learning rate: the same file after 5
 steps, after 20, with `--batch 2`, and across a `--train-resume` on an RTX
 5070 under Windows, and after 5 and 20 steps on a CUDA slice (sm_120) under
-Linux. A Linux or
-macOS default build keeps the C library's math (`"math": "libc"`), and the
-host's side of the forward differs with it from step 1's loss on: such a
-build trains a correct adapter of its own, within rounding of the strict
-build's, not the strict build's bytes. The few scalars the host computes for
+Linux. A Linux
+default build keeps the C library's math (`"math": "libc"`) and had trained
+another adapter, from step 1's loss on. The cause was one table: the model's
+rope inverse frequencies, which such a build computed with the C library's
+vector `powf`. Every build now computes that table as a strict build does
+(R8.30). With the portable function at those two sites a libc-math Linux
+build (gcc 15.2, glibc 2.39) gave the strict build's adapter after 5 and
+after 20 steps on that recipe. That is one recipe on one model: the rest of
+such a build's host math is still the C library's, so the claim for a
+libc-math build is that measurement, not a guarantee for every model and
+option. The few scalars the host computes for
 the optimizer and a fresh adapter (the init scale, alpha over rank, AdamW's
 bias corrections) are computed as a strict build computes them in every
 build. The learning-rate schedule (`--lr-schedule cosine`, `--lr-warmup`) is
