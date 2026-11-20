@@ -231,6 +231,12 @@ jobs:
         run: .venv/bin/python scripts/ci-run.py --timeout 1500 metal -- make test-metal PYTHON=.venv/bin/python
       - name: agent-protocol conformance harness on the Metal path
         run: PYTHON=.venv/bin/python ./scripts/conformance.sh --junitxml=.build/ci/conformance.xml
+      - name: release build stamp (macOS release flags)
+        run: |
+          cmd=$(.venv/bin/python scripts/check-build-stamp.py --extract-release-build macos-latest)
+          echo "release build: $cmd"
+          eval "$cmd"
+          .venv/bin/python scripts/check-build-stamp.py --binary ./runner --model test.gguf --commit "$GITHUB_SHA"
 
       - name: CI timing and test reports
         if: always()
@@ -494,6 +500,18 @@ jobs:
             sleep 0.5
           done
           echo "runner survived parent death for 20 s"; exit 1
+      - name: build stamp diagnostics and verification (Windows CI build)
+        run: |
+          echo "which git: $(command -v git || echo none)"
+          git --version || true
+          git config --show-origin --get-all core.autocrlf || true
+          git status --short || true
+          git diff --stat HEAD -- || true
+          python3 scripts/check-build-stamp.py --binary ./runner.exe --model test.gguf --commit "$GITHUB_SHA"
+          cmd=$(python3 scripts/check-build-stamp.py --extract-release-build windows-latest)
+          echo "release build: $cmd"
+          eval "$cmd"
+          python3 scripts/check-build-stamp.py --binary ./runner.exe --model test.gguf --commit "$GITHUB_SHA"
 
       - name: CI timing and test reports
         if: always()
@@ -1117,6 +1135,75 @@ jobs:
           name: macos-suite-report-${{ matrix.part }}
           path: .build/ci/
 
+  # Verify the exact environment and build recipe declared in release.yml on
+  # Linux and Windows produces a clean non-null build stamp matching HEAD
+  # (macos is checked inside the macos job above to avoid another Mac VM).
+  release-stamp:
+    needs: changes
+    if: needs.changes.outputs.engine == 'true' && needs.changes.outputs.tested != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            binary: runner
+          - os: windows-latest
+            binary: runner.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: ${{ matrix.os == 'windows-latest' && 'msys2 {0}' || 'bash' }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: read release.yml msys2 package list
+        id: recipe
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $lines = Get-Content .github/workflows/release.yml
+          $in_msys2 = $false
+          $in_install = $false
+          $pkgs = @()
+          foreach ($line in $lines) {
+            if ($line -match 'msys2/setup-msys2@') { $in_msys2 = $true; continue }
+            if ($in_msys2 -and $line -match '^\s*install:\s*(.*)$') {
+              $rest = $matches[1].Trim()
+              if ($rest -and $rest -ne '>-' -and $rest -ne '|') { $pkgs += ($rest -split '\s+'); break }
+              $in_install = $true
+              $install_indent = ($line -replace '^(\s*).*','$1').Length
+              continue
+            }
+            if ($in_install) {
+              $indent = ($line -replace '^(\s*).*','$1').Length
+              $trimmed = $line.Trim()
+              if (-not $trimmed -or $indent -le $install_indent) { break }
+              $pkgs += ($trimmed -split '\s+')
+            }
+          }
+          $pkgs = $pkgs | Where-Object { $_ }
+          if ($pkgs.Count -eq 0) { throw "No msys2 packages found in release.yml" }
+          $joined = $pkgs -join ' '
+          Write-Host "release.yml msys2 install: $joined"
+          "msys2_install=$joined" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+      - uses: msys2/setup-msys2@v2
+        if: matrix.os == 'windows-latest'
+        with:
+          msystem: UCRT64
+          update: false
+          install: ${{ steps.recipe.outputs.msys2_install }}
+      - name: build with release.yml recipe
+        run: |
+          echo "which git: $(command -v git || echo none)"
+          git --version 2>/dev/null || true
+          git config --show-origin --get-all core.autocrlf 2>/dev/null || true
+          git diff --stat HEAD -- 2>/dev/null || true
+          cmd=$(python3 scripts/check-build-stamp.py --extract-release-build "${{ matrix.os }}")
+          echo "release build: $cmd"
+          eval "$cmd"
+      - name: verify release build stamp
+        run: python3 scripts/check-build-stamp.py --binary "./${{ matrix.binary }}" --commit "$GITHUB_SHA"
+
   # The one check branch protection requires for the engine matrix. A job
   # that is skipped (docs-only change, or a tree a pull request already
   # tested) still lets this pass; a job that failed or was cancelled fails
@@ -1129,7 +1216,8 @@ jobs:
     name: pr-gate
     needs: [changes, make-test, macos, simd-isa-levels, fuzz, windows, conformance,
             conformance-sanitized, consumer-compatibility, template-conformance,
-            anchors, thread-sanitizer, t3, windows-suite, macos-suite, reverse-proxy]
+            anchors, thread-sanitizer, t3, windows-suite, macos-suite, reverse-proxy,
+            release-stamp]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
