@@ -1465,6 +1465,9 @@ float  model_lora_alpha_scale(float alpha, int rank);
 // R8.30: the rope inverse frequencies base^(-2j/dim), j below half: the model's
 // rope table (and its local one), which every back end's rope is built from
 void   model_rope_inv_freq_fill(float *out, int half, float base, int dim);
+// the strict double log those functions use (pmath.h's pm_log_d as a T3 build
+// computes it, in every build), for the gate
+double model_strict_log_d(double x);
 bool   model_lora_save(model_t *m, const char *path);
 // The largest rank among the adapter's projections; 0 without an adapter.
 int    model_lora_rank(const model_t *m);

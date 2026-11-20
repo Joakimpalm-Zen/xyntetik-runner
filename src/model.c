@@ -14991,6 +14991,13 @@ void model_rope_inv_freq_fill(float *out, int half, float base, int dim) {
         else out[j] = (float)train_bc_exp_d((double)y * train_bc_log_d((double)base));
     }
 }
+// the strict log itself, for the gate that holds these functions' arithmetic
+// (not only their rounded results) to a T3 build's (tests/test_train_gpu.c)
+TRAIN_BC_ATTR
+double model_strict_log_d(double x) {
+    TRAIN_BC_SCOPE
+    return train_bc_log_d(x);
+}
 #undef TRAIN_BC_SCOPE
 #undef TRAIN_BC_ATTR
 

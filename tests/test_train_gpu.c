@@ -2041,12 +2041,13 @@ static int r4_bias_corr_checks(void) {
 // VECTOR powf (gcc vectorizes the loop under -ffast-math), a few last bits off,
 // and so trained another adapter than a strict build from step 1's loss on.
 // The bases and dimensions are the roster's (10000, 500000, 1000000 and a
-// local 10000; head dimensions 32 to 256) and some that are not. The anchor:
+// local 10000; head dimensions 32 to 256, powers of two and not) and some
+// that are not on it. A representative set, not an inventory. The anchor:
 // entry 0 is base^0, 1 exactly. No device needed, so every CI host runs it.
 #define R830_ROPE_DIGEST 0x5e85efccb2d74f26ull   // a T3 build's (Apple clang, arm64), 2026-11-20
 static int r830_rope_checks(void) {
     static const float bases[] = { 10000.0f, 500000.0f, 1000000.0f, 160000.0f, 2.0f, 1e9f };
-    static const int dims[] = { 2, 16, 32, 48, 64, 96, 128, 192, 256, 510, 1024 };
+    static const int dims[] = { 2, 16, 32, 48, 64, 80, 96, 128, 160, 192, 256, 510, 1024 };
     uint64_t h = 0xcbf29ce484222325ull;
     int bad = 0;
     static float t[512];
@@ -2069,11 +2070,31 @@ static int r830_rope_checks(void) {
 #endif
             }
         }
+    // The arithmetic itself, not only its rounded results: the strict double
+    // log at an input where a fused multiply-add moves the last bit (found by
+    // the pull request's second reader: with contraction left on, Apple clang
+    // gave 0x1.3cf2660224e72p+4). A float table can hide that for a million
+    // inputs and not for the next one.
+    {
+        uint32_t fb = 0x4dbf27dfu;
+        float f;
+        memcpy(&f, &fb, 4);
+        double got = model_strict_log_d((double)f), want = 0x1.3cf2660224e73p+4;
+        if (memcmp(&got, &want, 8) != 0 && !bad++)
+            fprintf(stderr, "FAIL: the strict log of %a is %a, a T3 build's %a (a contracted "
+                    "multiply-add?)\n", (double)f, got, want);
+#ifdef RUNNER_T3_BUILD
+        double ref = pm_log_d((double)f);
+        if (memcmp(&ref, &want, 8) != 0 && !bad++)
+            fprintf(stderr, "FAIL: this T3 build's pm_log_d of %a is %a, not the constant %a\n",
+                    (double)f, ref, want);
+#endif
+    }
     if (h != R830_ROPE_DIGEST && !bad++)
         fprintf(stderr, "FAIL: the rope inverse frequencies' digest is %016llx, a T3 build's %016llx\n",
                 (unsigned long long)h, (unsigned long long)R830_ROPE_DIGEST);
     if (!bad)
-        printf("rope inverse frequencies: 6 bases at 11 dimensions are a T3 build's (digest %016llx%s)\n",
+        printf("rope inverse frequencies: 6 bases at 13 dimensions are a T3 build's (digest %016llx%s)\n",
                (unsigned long long)h,
 #ifdef RUNNER_T3_BUILD
                ", and memcmp against this T3 build's powf"
