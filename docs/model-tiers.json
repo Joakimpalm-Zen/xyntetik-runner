@@ -1055,10 +1055,10 @@
         "cpu": {
           "kind": "gate",
           "runner_version": "1.20.0",
-          "date": "2026-11-18",
+          "date": "2026-11-20",
           "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "fce00e8f565e133e67e16f0689fb05f756a78652",
+          "commit": "afde61fa957ccf1c0038d69dad7e5998b03778de",
           "caps": {
             "version": "1.20.0",
             "os": "windows",
@@ -1067,13 +1067,13 @@
             "gpu_backend": "cuda",
             "gpu_name": "NVIDIA GeForce RTX 5070"
           },
-          "output_sha256": "5480f6cad63c85e2ed82faa650f5e47496d5e78e18d9c196bf500d9045cfba42",
+          "output_sha256": "244682eddd94535fc0103d2ce866af322f5437fd907d50021997f3dff9c24f4e",
           "ran": "runner -m Trinity-Nano-Preview-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
           "evidence": "tests/compatibility/tier-smoke/trinity-nano-preview-q8_0.windows-x86_64-cuda.cpu.txt",
           "build": {
-            "binary_sha256": "9073c7a06807fa1392a7fa12cb2058522ad600009420d361bc093d36bc7f06c0",
+            "binary_sha256": "1a105a3fe79430b9dbcb09bfa07697caa83a6e5c5f8e4057a56c380658567667",
             "compiler": "16.2.0",
-            "commit": "fce00e8f565e133e67e16f0689fb05f756a78652",
+            "commit": "afde61fa957ccf1c0038d69dad7e5998b03778de",
             "dirty": false
           }
         },
@@ -1098,7 +1098,7 @@
           "reason": null
         },
         "runner_version": "1.20.0",
-        "date": "2026-11-18"
+        "date": "2026-11-20"
       },
       "transitions": [
         {

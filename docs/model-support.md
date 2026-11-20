@@ -710,7 +710,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td colspan="5"><b>Trinity Nano</b></td></tr>
-<tr><td><a href="#trinity-nano-preview-q8_0"><code>Trinity-Nano-Preview-Q8_0.gguf</code></a></td><td nowrap>✅ 1.20.0<br>2026-11-18</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE router gating other than softmax</td></tr>
+<tr><td><a href="#trinity-nano-preview-q8_0"><code>Trinity-Nano-Preview-Q8_0.gguf</code></a></td><td nowrap>✅ 1.20.0<br>2026-11-20</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE router gating other than softmax</td></tr>
 </tbody>
 </table>
 </details>
@@ -2847,12 +2847,12 @@ Arcee's Q8_0 of Trinity Nano Preview, text path, CPU only by admission: the one 
 - **Context tested:** not recorded.
 - **Still missing:** Pinned output.
 - **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [docs/model-evidence.md](model-evidence.md).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.20.0 on 2026-11-18.
-- **CPU:** ✅ v1.20.0 2026-11-18 on windows-x86_64-cuda at commit `fce00e8f565e`, output sha256 `5480f6cad63c85e2`, [pin](../tests/compatibility/tier-smoke/trinity-nano-preview-q8_0.windows-x86_64-cuda.cpu.txt)
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.20.0 on 2026-11-20.
+- **CPU:** ✅ v1.20.0 2026-11-20 on windows-x86_64-cuda at commit `afde61fa957c`, output sha256 `244682eddd94535f`, [pin](../tests/compatibility/tier-smoke/trinity-nano-preview-q8_0.windows-x86_64-cuda.cpu.txt)
 - **CUDA:** [n/a](../MANUAL.md#support-matrix): afmoe (gated attention with sparse MoE) has no CUDA path; CUDA refuses it and the file runs on the CPU.
 - **Metal:** [n/a](../MANUAL.md#support-matrix): afmoe (gated attention with sparse MoE) has no Metal path; Metal refuses it and the file runs on the CPU.
-- **LoRA training:** no: MoE router gating other than softmax (runner 1.20.0, 2026-11-18).
-- **LoRA adapter serving:** supported (runner 1.20.0, 2026-11-18).
+- **LoRA training:** no: MoE router gating other than softmax (runner 1.20.0, 2026-11-20).
+- **LoRA adapter serving:** supported (runner 1.20.0, 2026-11-20).
 
 ### Xyntetik-Kvist-14B
 
