@@ -316,14 +316,13 @@ default build keeps the C library's math (`"math": "libc"`) and had trained
 another adapter, from step 1's loss on. The cause was one table: the model's
 rope inverse frequencies, which such a build computed with the C library's
 vector `powf`. Every build now computes that table as a strict build does
-(R8.30). With the portable function at those two sites a libc-math Linux
-build (gcc 15.2, glibc 2.39) gave the strict build's adapter after 5 and
-after 20 steps on that recipe. That is one recipe on one model, whose head
-dimension is a power of two (at other dimensions a portable-math build's
-table had not been the strict build's either, before R8.30): the rest of
-such a build's host math is still the C library's, so the claim for a
-libc-math build is that measurement, not a guarantee for every model and
-option. The few scalars the host computes for
+(R8.30), and on this recipe a libc-math Linux default build gives the strict
+build's adapter after 5 and after 20 steps (gcc 13.3). That is one model,
+Qwen3-4B, whose head dimension is a power of two. It is not every model: on
+Phi-3.5 mini (head dimension 96, LongRoPE) a portable-math build still
+trains an adapter of its own, with its rope tables bit-equal to the strict
+build's and the cause not found. So the byte-for-byte claim for a build
+that is not strict is a claim about the measured model. The few scalars the host computes for
 the optimizer and a fresh adapter (the init scale, alpha over rank, AdamW's
 bias corrections) are computed as a strict build computes them in every
 build. The learning-rate schedule (`--lr-schedule cosine`, `--lr-warmup`) is
