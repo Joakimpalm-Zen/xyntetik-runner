@@ -1848,10 +1848,21 @@ plat_lock_status plat_publish_lock(const char *path, void **lock_out) {
                                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
         if (h == INVALID_HANDLE_VALUE) {
             DWORD err = GetLastError();
-            if (err == ERROR_ACCESS_DENIED && pending_tries < 50 &&
-                GetFileAttributesW(wl) != INVALID_FILE_ATTRIBUTES) {
+            // The holder deletes the lock file as it releases it
+            // (plat_publish_unlock). An open that meets the file in the
+            // middle of that delete is refused with ERROR_ACCESS_DENIED, for
+            // a moment: the next try either finds the name gone and creates
+            // the file, or finds the next holder's. This wait used to run
+            // only when an attributes query on the path then succeeded, and
+            // for 50 tries at most; under contention that was not enough
+            // (R6.118: 214 of 1,200 takes failed here with eight takers, each
+            // with this error). It now waits on that error alone, bounded:
+            // 20 tries of 1 ms, then 10 ms each, about 4 s in all. A lock
+            // path we truly may not open fails after that wait, with the
+            // error named.
+            if (err == ERROR_ACCESS_DENIED && pending_tries < 400) {
                 pending_tries++;
-                plat_sleep_ms(10);
+                plat_sleep_ms(pending_tries <= 20 ? 1 : 10);
                 continue;
             }
             free(wl);
