@@ -266,6 +266,10 @@ bool   gpu_test_moe_q4_0(model_t *m, int layer, int proj, int expert, int route,
 // compares the prefill with the decode must see that the tile ran, since its
 // fallback is the decode kernel itself. 0 on the other backends.
 unsigned long gpu_moe_limb_tiles(void);
+// Whether m's device has moe-limb's int8 prefill tile (the compute_80 module
+// loaded: CC 8.0 or newer, RUNNER_CUDA_SM80 not 0). Without it the prefill
+// runs the decode kernel a column at a time. false on the other backends.
+bool   gpu_moe_limb_has_tile(const model_t *m);
 // How many times the fast matvec has actually been dispatched. Same reason the
 // TC path counts: "the logits differ" cannot tell an unused kernel apart from
 // an exactly-matching one, and a gate that cannot see its own subject passes

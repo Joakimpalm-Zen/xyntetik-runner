@@ -319,6 +319,9 @@ test-gpu-identity.exe
 test-cuda-teardown
 test-moe-limb-cuda
 test-moe-limb-cuda.exe
+test-moe-limb.*.gguf
+test-moe-limb-g4q40.gguf
+test-moe-limb-g4q40.gguf.quant.json
 test-cuda-teardown.exe
 test-attn-tol
 test-attn-tol.exe

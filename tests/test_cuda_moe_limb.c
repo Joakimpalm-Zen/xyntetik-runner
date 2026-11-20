@@ -63,7 +63,7 @@ static void specials(const float *base, int n, float *out) {
     for (int s = 0; s < NSPEC; s++) {
         float *c = out + (size_t)s * n;
         memcpy(c, base, sizeof(float) * (size_t)n);
-        int b = 3 + s % 5, j = b * 32 + 7;
+        int nb = n / 32, b = (3 + s % 5) % nb, j = b * 32 + 7;
         switch (s) {
         case 0: memset(c, 0, sizeof(float) * (size_t)n); break;                 // all zeros
         case 1: memset(c + b * 32, 0, sizeof(float) * 32); break;               // a zero block
@@ -256,9 +256,14 @@ int main(int argc, char **argv) {
     ck(ctrl == 0, "control: today's twins give every column the decode's bits at every width");
     snprintf(what, sizeof what, "negative control: the grouped prefill differs from the decode (%ld columns)", grp);
     ck(grp > 0, what);
+    // the prefill's path: the int8 MMA tile where the compute_80 module loaded,
+    // else the decode kernel a column at a time (RUNNER_CUDA_SM80=0 forces it)
+    bool tile = gpu_moe_limb_has_tile(&m);
     snprintf(what, sizeof what, "moe-limb engaged: its decode differs from today's on %ld of %ld ordinary columns, "
-             "and its prefill ran the int8 MMA tile %lu times", moved, plain, gpu_moe_limb_tiles());
-    ck(moved > 0 && gpu_moe_limb_tiles() > 0, what);
+             "and its prefill ran %s (%lu tiles)", moved, plain,
+             tile ? "the int8 MMA tile" : "the decode kernel a column at a time (no compute_80 module)",
+             gpu_moe_limb_tiles());
+    ck(moved > 0 && (tile ? gpu_moe_limb_tiles() > 0 : gpu_moe_limb_tiles() == 0), what);
     snprintf(what, sizeof what, "moe-limb: every output of 8 ordinary columns a case is within 3uA + 37uS of "
              "today's (%ld are not; the largest is %.4f of its bound)", acc, worst);
     ck(acc == 0 && bad_calls == 0, what);

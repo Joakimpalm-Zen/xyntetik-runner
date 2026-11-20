@@ -95,6 +95,7 @@ bool gpu_test_moe_q4_0(model_t *m, int layer, int proj, int expert, int route, i
     return false;
 }
 unsigned long gpu_moe_limb_tiles(void) { return 0; }
+bool gpu_moe_limb_has_tile(const model_t *m) { (void)m; return false; }
 unsigned long gpu_mv_dispatches(void) { return 0; }
 unsigned long gpu_mv2_dispatches(void) { return 0; }
 

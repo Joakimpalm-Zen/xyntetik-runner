@@ -1562,6 +1562,16 @@ TEST_CUDA_MOE_LIMB_SRC = tests/test_cuda_moe_limb.c $(OBJDIR)/gguf.o $(OBJDIR)/c
 $(TEST_CUDA_MOE_LIMB): $(TEST_CUDA_MOE_LIMB_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src -I tests $(TEST_CUDA_MOE_LIMB_SRC) -o $@ $(LDFLAGS)
 MOE_LIMB_LAYERS ?= all
+# The same gate on a generated gemma-4 MoE (scripts/make-test-moe.py at
+# MOE_TEST_DIMS=1280,384, requantized to Q4_0: 9 MB, blocks enough for every
+# lane and special column), on the int8 tile and on its fallback without the
+# compute_80 module (RUNNER_CUDA_SM80=0): a cuda-gate step, no real file.
+test-cuda-moe-limb-fixture: runner $(TEST_CUDA_MOE_LIMB)
+	@set -e; \
+	MOE_TEST_DIMS=1280,384 $(PYTHON) scripts/make-test-moe.py test-moe-limb > /dev/null; \
+	./$(RUNNER_EXE) -m test-moe-limb.gemma4-moe.gguf --quantize test-moe-limb-g4q40.gguf --quant q4_0 > /dev/null 2>&1; \
+	./$(TEST_CUDA_MOE_LIMB) test-moe-limb-g4q40.gguf all; \
+	RUNNER_CUDA_SM80=0 ./$(TEST_CUDA_MOE_LIMB) test-moe-limb-g4q40.gguf all
 test-cuda-moe-limb: $(TEST_CUDA_MOE_LIMB)
 	@if [ -z "$(MOE_LIMB_MODEL)" ]; then echo "moe-limb gate skipped: set MOE_LIMB_MODEL=<path.gguf>"; \
 	elif [ ! -f "$(MOE_LIMB_MODEL)" ]; then echo "moe-limb gate skipped: $(MOE_LIMB_MODEL) not found"; \

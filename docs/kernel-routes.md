@@ -250,8 +250,11 @@ Around the matvec:
   arithmetic, in the decode and the prefill alike. Without the compute_80
   module, the prefill runs the decode kernel a column at a time: the same
   bits. The route replaces the grouped prefill on such an instance, and the
-  switch is not inert: it moves bytes, and the route is recorded. Gate:
-  `make test-cuda-moe-limb MOE_LIMB_MODEL=<file>` (tests/test_cuda_moe_limb.c).
+  switch is not inert: it moves bytes, and the route is recorded. Gates:
+  `make test-cuda-moe-limb-fixture` (a cuda-gate step: a generated gemma-4
+  MoE at Q4_0, on the tile and on its fallback, RUNNER_CUDA_SM80=0) and
+  `make test-cuda-moe-limb MOE_LIMB_MODEL=<file>` on a real file
+  (tests/test_cuda_moe_limb.c).
 - **MoE families on the tensor cores (moe-tc) and grouped (moe-grouped).**
   qwen3moe and gpt-oss run their dense projections through the tensor-core
   GEMM (and TC2 on 8.0+), and qwen3moe's prefill groups a tile's columns by

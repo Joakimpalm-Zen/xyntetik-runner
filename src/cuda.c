@@ -6353,6 +6353,10 @@ static bool enc_moe_limb_mv(gpu_t *g, CUdeviceptr weights, uint64_t w_off, uint6
 // same bits, one column a slot.
 static _Atomic unsigned long g_moe_limb_tiles;
 unsigned long gpu_moe_limb_tiles(void) { return g_moe_limb_tiles; }
+bool gpu_moe_limb_has_tile(const model_t *m) {
+    const gpu_t *g = m ? (const gpu_t *)m->gpu : NULL;
+    return g && g->sw && g->sw->f_moe_limb_tile != NULL;
+}
 static bool enc_moe_limb_gemm(gpu_t *g, CUdeviceptr weights, uint64_t w_off, CUdeviceptr x,
                               CUdeviceptr y, int n_in, int n_out, int cnt, int xs, int ys) {
     for (int c0 = 0; c0 < cnt; c0 += g->moe_lcols) {
