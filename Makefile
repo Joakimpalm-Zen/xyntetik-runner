@@ -1079,7 +1079,9 @@ test-batch-owner-asan: $(TEST_BATCH_OWNER_SRC) src/cuda.c $(HDR) src/kernels_ptx
 	$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer \
 	    -fno-fast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -DRUNNER_GPU_CUDA -I src \
 	    $(TEST_BATCH_OWNER_SRC) -o test-batch-owner-asan-bin $(LDFLAGS)
-	ASAN_OPTIONS=detect_leaks=1 ./test-batch-owner-asan-bin
+	@# LeakSanitizer does not exist on macOS (ASan aborts on detect_leaks=1 there): the
+	@# reference-count checks in the test still fail a missing release on that host.
+	ASAN_OPTIONS=detect_leaks=$(if $(filter Darwin,$(BUILD_OS)),0,1) ./test-batch-owner-asan-bin
 
 # The K-quant twins the measured Phi-3.5-mini Q4_K_M runs (GEMVB_KQ) are sampled
 # on the wide fixture's Q4_K and Q6_K files, made as test-cuda-batch-identity
