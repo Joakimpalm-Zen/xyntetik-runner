@@ -18,7 +18,8 @@
 // - the control, today's route: the twins equal the decode in the same way.
 // - the negative control, the grouped prefill (enc_moe_gemm): it must differ
 //   somewhere, or the gate could not see a route that is not an identity.
-// Skips (prints so) without a CUDA device that took the file.
+// Skips (prints "ok (skipped)", exits 0) in a non-CUDA build or without a CUDA
+// device that took the file.
 #include "runner.h"
 #include "compat.h"
 #include "gpu.h"
@@ -48,15 +49,30 @@ static float nrand(void) {
     return (float)(sqrt(-2.0 * log(u)) * cos(6.283185307179586 * v));
 }
 
+// Special values are made, and read, through their bit patterns: this file
+// builds with the default flags, whose -ffast-math lets a compiler fold
+// isnan/isinf (and x != x) to false and refuse the NAN/INFINITY macros
+// (Apple clang: -Wnan-infinity-disabled). class_self_test proves the reading.
+static float fbits(uint32_t u) { float v; memcpy(&v, &u, 4); return v; }
+static uint32_t ubits(float v) { uint32_t u; memcpy(&u, &v, 4); return u; }
 // 0 NaN, 1 +inf, 2 -inf, 3 zero, 4 finite nonzero
 static int fclass(float v) {
-    return isnan(v) ? 0 : isinf(v) ? (v > 0 ? 1 : 2) : v == 0.0f ? 3 : 4;
+    uint32_t u = ubits(v), e = (u >> 23) & 0xffu, mant = u & 0x7fffffu;
+    if (e == 0xffu) return mant ? 0 : (u >> 31) ? 2 : 1;
+    return (u & 0x7fffffffu) == 0 ? 3 : 4;
 }
 static bool same_bits(float a, float b) {
-    if (isnan(a) || isnan(b)) return isnan(a) && isnan(b);
-    uint32_t x, y;
-    memcpy(&x, &a, 4); memcpy(&y, &b, 4);
-    return x == y;
+    if (fclass(a) == 0 || fclass(b) == 0) return fclass(a) == 0 && fclass(b) == 0;
+    return ubits(a) == ubits(b);
+}
+static bool class_self_test(void) {
+    static const uint32_t u[] = { 0x7fc00000u, 0xffc00001u, 0x7f800000u, 0xff800000u, 0x00000000u, 0x80000000u,
+                                  0x00000001u, 0x3f800000u, 0x7f7fffffu };
+    static const int want[] = { 0, 0, 1, 2, 3, 3, 4, 4, 4 };
+    for (int i = 0; i < 9; i++)
+        if (fclass(fbits(u[i])) != want[i]) return false;
+    return !same_bits(fbits(0x7fc00000u), fbits(0x3f800000u)) && same_bits(fbits(0x7fc00000u), fbits(0xffc00001u)) &&
+           !same_bits(fbits(0x00000000u), fbits(0x80000000u));
 }
 
 // the 12 special columns from a base column of n elements (n / 32 blocks)
@@ -68,16 +84,16 @@ static void specials(const float *base, int n, float *out) {
         switch (s) {
         case 0: memset(c, 0, sizeof(float) * (size_t)n); break;                 // all zeros
         case 1: memset(c + b * 32, 0, sizeof(float) * 32); break;               // a zero block
-        case 2: c[j] = 1e-40f; c[j + 1] = -2e-41f; break;                       // denormals in a normal block
+        case 2: c[j] = fbits(0x000116c2u); c[j + 1] = fbits(0x80003cf6u); break;  // denormals (1e-40, -2.2e-41) in a normal block
         case 3: for (int k = 0; k < 32; k++) c[b * 32 + k] = 1e-30f * (float)(k - 15); break;  // max < 2^-64
-        case 4: c[j] = NAN; break;
-        case 5: c[j] = INFINITY; break;
-        case 6: c[j] = -INFINITY; break;
+        case 4: c[j] = fbits(0x7fc00000u); break;                               // NaN
+        case 5: c[j] = fbits(0x7f800000u); break;                               // +inf
+        case 6: c[j] = fbits(0xff800000u); break;                               // -inf
         case 7: c[j] = ldexpf(1.0f, 70); break;                                 // max > 2^64
         case 8: c[j] = ldexpf(1.0f, 64); break;                                 // max at 2^64
         case 9: memset(c + b * 32, 0, sizeof(float) * 32); c[j] = ldexpf(1.0f, -64); break;
         case 10: c[j] = FLT_MAX; break;
-        case 11: for (int k = 0; k < n; k++) c[k] = -0.0f; break;               // negative zeros
+        case 11: for (int k = 0; k < n; k++) c[k] = fbits(0x80000000u); break;  // negative zeros
         }
     }
 }
@@ -155,6 +171,14 @@ static long widths_check(model_t *m, int l, int proj, int e, int route, const fl
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s MODEL.gguf [all|0,15,29]\n", argv[0]); return 2; }
     setvbuf(stdout, NULL, _IOLBF, 0);
+#ifndef RUNNER_GPU_CUDA
+    // the route and its test hook are CUDA's; a Metal build's device would
+    // take the file and refuse every call
+    fprintf(stderr, "test-cuda-moe-limb: skipped (not a CUDA build)\n");
+    printf("test-cuda-moe-limb: ok (skipped)\n");
+    return 0;
+#endif
+    ck(class_self_test(), "the result classes are read from the bits (NaN, +-inf, zeros, denormals, finite)");
     plat_setenv("RUNNER_MOE_LIMB", "1");   // the route's scratch and kernels; each call names its route
     model_t m;
     memset(&m, 0, sizeof m);
