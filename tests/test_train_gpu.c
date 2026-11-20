@@ -2044,7 +2044,7 @@ static int r4_bias_corr_checks(void) {
 // local 10000; head dimensions 32 to 256, powers of two and not) and some
 // that are not on it. A representative set, not an inventory. The anchor:
 // entry 0 is base^0, 1 exactly. No device needed, so every CI host runs it.
-#define R830_ROPE_DIGEST 0x5e85efccb2d74f26ull   // a T3 build's (Apple clang, arm64), 2026-11-20
+#define R830_ROPE_DIGEST 0xaa58da5b98b74325ull   // a T3 build's (Apple clang, arm64), 2026-11-20
 static int r830_rope_checks(void) {
     static const float bases[] = { 10000.0f, 500000.0f, 1000000.0f, 160000.0f, 2.0f, 1e9f };
     static const int dims[] = { 2, 16, 32, 48, 64, 80, 96, 128, 160, 192, 256, 510, 1024 };

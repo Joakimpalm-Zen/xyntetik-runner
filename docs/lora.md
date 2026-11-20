@@ -318,7 +318,9 @@ rope inverse frequencies, which such a build computed with the C library's
 vector `powf`. Every build now computes that table as a strict build does
 (R8.30). With the portable function at those two sites a libc-math Linux
 build (gcc 15.2, glibc 2.39) gave the strict build's adapter after 5 and
-after 20 steps on that recipe. That is one recipe on one model: the rest of
+after 20 steps on that recipe. That is one recipe on one model, whose head
+dimension is a power of two (at other dimensions a portable-math build's
+table had not been the strict build's either, before R8.30): the rest of
 such a build's host math is still the C library's, so the claim for a
 libc-math build is that measurement, not a guarantee for every model and
 option. The few scalars the host computes for
