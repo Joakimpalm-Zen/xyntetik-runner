@@ -40,6 +40,36 @@ LISTENING_BANNER_FMT = "server listening on http://127.0.0.1:{port}"
 UNCLEAN_TAIL = 16000
 
 
+def scaled_timeout(seconds):
+    """Scale an absolute timeout by RUNNER_TEST_TIMEOUT_SCALE (1 normally, 8 under ASan)."""
+    return seconds * float(os.environ.get("RUNNER_TEST_TIMEOUT_SCALE", "1"))
+
+
+class KeptProcessLog:
+    """Capture a child server's stdout/stderr in a temp file kept only on failure."""
+
+    def __init__(self, prefix="runner-server-"):
+        fd, self.path = tempfile.mkstemp(prefix=prefix, suffix=".log")
+        self.file = os.fdopen(fd, "wb")
+        self.kept = False
+
+    def tail(self, limit=2000):
+        self.file.flush()
+        with open(self.path, "rb") as f:
+            return f.read()[-limit:].decode("utf-8", "replace")
+
+    def keep(self):
+        self.kept = True
+        return self.path
+
+    def close(self):
+        if self.file is not None:
+            self.file.close()
+            self.file = None
+        if not self.kept and self.path and os.path.exists(self.path):
+            os.unlink(self.path)
+
+
 def listening_banner(port):
     """Exact prefix printed by src/server.c on stderr before entering accept()."""
     return LISTENING_BANNER_FMT.format(port=port)

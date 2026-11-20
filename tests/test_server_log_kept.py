@@ -14,7 +14,7 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "scripts"), str(ROOT / "tests" / "conformance")]
-from harness import RunnerServer  # noqa: E402
+from harness import KeptProcessLog, RunnerServer, scaled_timeout  # noqa: E402
 import _process  # noqa: E402
 from _process import child_env  # noqa: E402
 from _errors import TransportError  # noqa: E402
@@ -221,3 +221,28 @@ def test_the_windows_stop_rule(monkeypatch):
     assert RunnerServer._break_works is False and off.exit_code == 1 and not off.killed
     later = _stopped(_Proc())                        # not tried again
     assert later.proc.sent == [] and later.exit_code == 1
+
+
+def test_scaled_timeout_and_kept_process_log(monkeypatch):
+    monkeypatch.delenv("RUNNER_TEST_TIMEOUT_SCALE", raising=False)
+    assert scaled_timeout(10) == 10
+    monkeypatch.setenv("RUNNER_TEST_TIMEOUT_SCALE", "8")
+    assert scaled_timeout(10) == 80
+
+    # Clean close unlinks the temp log
+    clean = KeptProcessLog()
+    clean.file.write(b"ok\n")
+    clean.close()
+    assert not os.path.exists(clean.path)
+
+    # Failure keep() leaves the log intact and tail() returns its text
+    kept = KeptProcessLog()
+    try:
+        kept.file.write(b"server line\n")
+        assert kept.keep() == kept.path
+        assert "server line" in kept.tail()
+    finally:
+        kept.close()
+    assert os.path.exists(kept.path)
+    assert "server line" in pathlib.Path(kept.path).read_text(encoding="utf-8")
+    os.unlink(kept.path)

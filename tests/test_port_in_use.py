@@ -38,9 +38,11 @@ def model(tmp_path_factory):
     return p
 
 
-def serve(model, port):
+def serve(model, port, log_file=None):
     return subprocess.Popen([str(EXE), "-m", str(model), "--serve", "--no-tray", "--port", str(port), "--parallel", "1",
-                             "-c", "256", "--gpu", "off"], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                             "-c", "256", "--gpu", "off"], cwd=ROOT,
+                            stdout=log_file if log_file is not None else subprocess.PIPE,
+                            stderr=subprocess.STDOUT)
 
 
 def complete(port):
@@ -72,19 +74,29 @@ def test_a_server_can_restart_on_its_port_straight_after_serving(model):
         port = first.port
         for _ in range(4):
             assert complete(port) == 200
-    p = serve(model, port)
+    log = _process.KeptProcessLog()
+    p = serve(model, port, log_file=log.file)
     try:
-        for _ in range(200):
-            assert p.poll() is None, p.communicate()[0].decode(errors="replace")[-400:]
+        deadline = time.monotonic() + _process.scaled_timeout(10)
+        while time.monotonic() < deadline:
+            if p.poll() is not None:
+                pytest.fail(
+                    f"the restarted server exited ({p.returncode}); "
+                    f"server log {log.keep()}:\n{log.tail()}"
+                )
             try:
                 assert complete(port) == 200
                 return
             except OSError:
                 time.sleep(0.05)
-        pytest.fail("the restarted server never answered")
+        pytest.fail(f"the restarted server never answered; server log {log.keep()}:\n{log.tail()}")
+    except BaseException:
+        log.keep()
+        raise
     finally:
         p.kill()
         p.wait()
+        log.close()
 
 
 def test_the_harness_takes_another_port_when_it_loses_the_bind(model, monkeypatch):
