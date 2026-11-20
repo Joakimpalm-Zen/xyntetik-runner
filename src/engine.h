@@ -797,11 +797,15 @@ int prefix_cache_load(const char *path, const engine *e);
 // PFX_CTX_MISMATCH (another model, context or KV type), PFX_CTX_PRIOR (this
 // model under the KV layout before R3.44), PFX_CTX_NOSPACE or PFX_CTX_BADNAME.
 int  prefix_context_export(const char *name, const char *path);
+int  prefix_context_stage(const char *name, const char *path,
+                          char *tmp_out, size_t tmp_cap);
 // The same file, written straight from the slot: rows [0, n) of what e holds
 // (e->pos at least n), on a model without recurrent layers, a ring or tied-V
 // (PFX_CTX_UNSUPPORTED otherwise). It takes nothing from the prefix cache's
 // budget: the copy lives for the length of the write (R3.62).
 int  prefix_slot_export(const engine *e, int n, const char *path);
+int  prefix_slot_stage(const engine *e, int n, const char *path,
+                       char *tmp_out, size_t tmp_cap);
 // And back: the entry's rows become the slot's own (e->pos its token count,
 // e->hist its tokens), held to this engine like any import. Nothing is added
 // to the prefix cache. Returns the token count or a PFX_CTX_*.

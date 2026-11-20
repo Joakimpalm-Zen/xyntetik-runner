@@ -17,6 +17,17 @@ static void ck(bool cond, const char *what) {
     else        printf("ok: %s\n", what);
 }
 
+static int kv_fail_step_b(const char *tmp, const char *out) {
+    (void)tmp; (void)out;
+    return -1;
+}
+
+static bool file_exists(const char *p) {
+    FILE *f = fopen(p, "rb");
+    if (f) { fclose(f); return true; }
+    return false;
+}
+
 static bool has_partial(const char *prefix) {
     size_t pn = strlen(prefix);
     plat_dir *dp = plat_opendir(".");
@@ -105,5 +116,48 @@ int main(void) {
 #endif
 
     remove(man);
+
+    // Pair publish tests for KV snapshots (.kv + .kv.json via plat_publish_pair):
+    // 1. Fresh pair succeeds, cleans temps and lock file.
+    const char *kv_f = "test-kvsnap-pair.kv";
+    const char *man_f = "test-kvsnap-pair.kv.json";
+    const char *kv_t = "test-kvsnap-pair.kv.partial-a";
+    const char *man_t = "test-kvsnap-pair.kv.json.partial-a";
+    remove(kv_f); remove(man_f); remove(kv_t); remove(man_t);
+    FILE *kf = fopen(kv_t, "wb"); if (kf) { fputs("KV_BYTES_1", kf); fclose(kf); }
+    FILE *mf = fopen(man_t, "wb"); if (mf) { fputs("{\"n\":1}", mf); fclose(mf); }
+    ck(plat_publish_pair(kv_t, kv_f, man_t, man_f, true, NULL, NULL) == 0,
+       "kvsnap pair publish succeeds on fresh destination");
+    // 2. no_overwrite under lock returns -2 and cleans partials without overwriting.
+    kf = fopen(kv_t, "wb"); if (kf) { fputs("KV_BYTES_2", kf); fclose(kf); }
+    mf = fopen(man_t, "wb"); if (mf) { fputs("{\"n\":2}", mf); fclose(mf); }
+    ck(plat_publish_pair(kv_t, kv_f, man_t, man_f, true, NULL, NULL) == -2,
+       "kvsnap pair publish refuses overwrite when destination exists");
+    FILE *chk = fopen(kv_t, "rb");
+    ck(chk == NULL, "kvsnap refused overwrite unlinks staged kv partial");
+    if (chk) fclose(chk);
+    // 3. Step B failure on overwrite restores old manifest and keeps staged kv partial.
+    kf = fopen(kv_t, "wb"); if (kf) { fputs("KV_BYTES_2", kf); fclose(kf); }
+    mf = fopen(man_t, "wb"); if (mf) { fputs("{\"n\":2}", mf); fclose(mf); }
+    plat_publish_ops ops = { .install_out = kv_fail_step_b };
+    bool kept_kv = false;
+    ck(plat_publish_pair(kv_t, kv_f, man_t, man_f, false, &kept_kv, &ops) == -1,
+       "kvsnap pair publish reports Step B failure");
+    ck(kept_kv, "kvsnap Step B failure preserves staged kv partial");
+    size_t kvn = 0, mn = 0;
+    char *kvb = plat_read_file(kv_f, 256, &kvn);
+    char *mb = plat_read_file(man_f, 256, &mn);
+    ck(kvb && kvn == 10 && memcmp(kvb, "KV_BYTES_1", 10) == 0,
+       "kvsnap Step B failure preserves old .kv bytes");
+    ck(mb && mn == 7 && memcmp(mb, "{\"n\":1}", 7) == 0,
+       "kvsnap Step B failure atomically restores old .kv.json bytes");
+    free(kvb); free(mb);
+    ck(!has_partial("test-kvsnap-pair.kv.json.bak"),
+       "kvsnap Step B failure leaves no .bak temp");
+    ck(file_exists(kv_t) && !file_exists(man_t),
+       "kvsnap Step B failure keeps kv partial and consumes manifest partial");
+    remove(kv_t);
+    remove(kv_f); remove(man_f);
+    remove("test-kvsnap-pair.kv.publish.lock");
     return g_fail ? 1 : 0;
 }

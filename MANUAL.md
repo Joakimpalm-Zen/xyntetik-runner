@@ -696,7 +696,19 @@ and signature objects a receipt carries. Atomic file outputs (models, checkpoint
 receipts, signed records, snapshots, and `--report`) write to a new
 `PATH.partial-<16hex>` (or `PATH.tmp-<16hex>`) temporary beside the target and
 replace it cleanly; any leftover left by an interrupted process is unused and
-safe to delete.
+safe to delete. Model rewrites (`--quantize`, `--merge-lora`, `--context-surgery`)
+and KV snapshots stage both the artifact and its provenance record first and
+publish them together under a sibling `PATH.publish.lock` file lock: if the
+file system does not support locking, one warning is printed and single-writer
+runs proceed unlocked (note that locking on some network shares is only enforced
+per host); any other lock error refuses before touching the destination. Any
+existing record is backed up to a closed `.bak-<16hex>` file beforehand so a
+failed output install atomically restores the old pair in one replace and
+preserves the newly written partial (named in the error), while an unlocked
+`PATH.publish.lock` left after a crash is harmless and reused on the next run;
+a hard kill in the narrow window between replacing the record and replacing the
+output leaves the new record beside the old file, which `runner attest lineage`
+and snapshot loading detect as mismatched rather than trusting.
 
 ```sh
 ./runner train data.txt -m base.gguf --out a.gguf --sign-key key.json

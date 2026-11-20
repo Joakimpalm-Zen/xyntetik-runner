@@ -21,6 +21,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 #define ALIGN 64
 
@@ -786,6 +789,26 @@ static void check_error_report(void) {
            "q3_k, imatrix-weighted, null where a type cannot describe the row\n");
 }
 
+static void remove_partials_for(const char *target) {
+    char pfx[512];
+    snprintf(pfx, sizeof pfx, "%s.partial", plat_path_base(target));
+    size_t pn = strlen(pfx);
+    for (;;) {
+        plat_dir *dp = plat_opendir(".");
+        if (!dp) break;
+        char victim[512] = "";
+        for (const char *nm; (nm = plat_readdir(dp)) != NULL; ) {
+            if (strncmp(nm, pfx, pn) == 0 && strlen(nm) < sizeof victim) {
+                snprintf(victim, sizeof victim, "%s", nm);
+                break;
+            }
+        }
+        plat_closedir(dp);
+        if (!victim[0]) break;
+        plat_remove(victim);
+    }
+}
+
 static bool has_partial_for(const char *target) {
     char pfx[512];
     snprintf(pfx, sizeof pfx, "%s.partial", plat_path_base(target));
@@ -798,6 +821,177 @@ static bool has_partial_for(const char *target) {
     }
     plat_closedir(dp);
     return found;
+}
+
+static int pub_mock_lock_rc = PLAT_LOCK_OK;
+static int pub_mock_install_rc = 0;
+static int pub_mock_replace_fail_on = 0;   // 0=none, 1=first replace (Step A), 2=second replace (rollback)
+static int pub_mock_replace_calls = 0;
+static const char *pub_mock_sidecar_path = NULL;
+static bool pub_mock_remove_sidecar_ok = true;
+
+static int pub_mock_lock(const char *path, void **lock_out) {
+    (void)path;
+    *lock_out = pub_mock_lock_rc == PLAT_LOCK_OK ? (void *)1 : NULL;
+    return pub_mock_lock_rc;
+}
+static void pub_mock_unlock(void *lock) { (void)lock; }
+static int pub_mock_install(const char *tmp, const char *out) {
+    if (pub_mock_install_rc != 0) return pub_mock_install_rc;
+    return plat_replace_file(tmp, out) ? 0 : -1;
+}
+static bool pub_mock_replace(const char *tmp, const char *out) {
+    pub_mock_replace_calls++;
+    if (pub_mock_replace_fail_on == pub_mock_replace_calls) return false;
+    return plat_replace_file(tmp, out);
+}
+static int pub_mock_remove(const char *path) {
+    if (!pub_mock_remove_sidecar_ok && pub_mock_sidecar_path &&
+        strcmp(path, pub_mock_sidecar_path) == 0)
+        return -1;
+    return plat_remove(path);
+}
+
+static void write_str_file(const char *path, const char *s) {
+    FILE *f = fopen(path, "wb"); assert(f);
+    assert(fwrite(s, 1, strlen(s), f) == strlen(s));
+    assert(fclose(f) == 0);
+}
+
+static bool has_bak_for(const char *target) {
+    char pfx[512];
+    snprintf(pfx, sizeof pfx, "%s.bak", plat_path_base(target));
+    size_t pn = strlen(pfx);
+    plat_dir *dp = plat_opendir(".");
+    if (!dp) return false;
+    bool found = false;
+    for (const char *nm; (nm = plat_readdir(dp)) != NULL; ) {
+        if (strncmp(nm, pfx, pn) == 0) { found = true; break; }
+    }
+    plat_closedir(dp);
+    return found;
+}
+
+static void check_publish_pair_recovery_and_locks(void) {
+    const char *out_t = "q_pub_out.partial-a";
+    const char *out_f = "q_pub_out.gguf";
+    const char *sid_t = "q_pub_out.gguf.quant.json.partial-a";
+    const char *sid_f = "q_pub_out.gguf.quant.json";
+    const char *lck_f = "q_pub_out.gguf.publish.lock";
+    pub_mock_sidecar_path = sid_f;
+    plat_publish_ops ops = {
+        .install_out     = pub_mock_install,
+        .replace_sidecar = pub_mock_replace,
+        .remove_file     = pub_mock_remove,
+        .lock_pub        = pub_mock_lock,
+        .unlock_pub      = pub_mock_unlock,
+    };
+
+    // Outcome 1: Step A (sidecar replace) fails -> OLD pair intact, out_tmp kept,
+    // backup and staged sidecar removed.
+    remove(out_t); remove(out_f); remove(sid_t); remove(sid_f); remove(lck_f);
+    write_str_file(out_f, "OLD_GGUF");
+    write_str_file(sid_f, "OLD_JSON");
+    write_str_file(out_t, "NEW_GGUF");
+    write_str_file(sid_t, "NEW_JSON");
+    pub_mock_lock_rc = PLAT_LOCK_OK;
+    pub_mock_install_rc = 0;
+    pub_mock_replace_fail_on = 1;
+    pub_mock_replace_calls = 0;
+    pub_mock_remove_sidecar_ok = true;
+    bool kept_tmp = false;
+    assert(plat_publish_pair(out_t, out_f, sid_t, sid_f, false, &kept_tmp, &ops) != 0);
+    assert(kept_tmp && exists(out_t) && !exists(sid_t) && !has_bak_for(sid_f));
+    check_bytes(out_f, "OLD_GGUF", 8);
+    check_bytes(sid_f, "OLD_JSON", 8);
+
+    // Outcome 2: Step A succeeds, Step B (output install) fails -> rollback restores
+    // OLD sidecar via ONE replace of staged backup, OLD pair intact, out_tmp kept.
+    remove(out_t); remove(out_f); remove(sid_t); remove(sid_f);
+    write_str_file(out_f, "OLD_GGUF2");
+    write_str_file(sid_f, "OLD_JSON2");
+    write_str_file(out_t, "NEW_GGUF2");
+    write_str_file(sid_t, "NEW_JSON2");
+    pub_mock_install_rc = -1;
+    pub_mock_replace_fail_on = 0;
+    pub_mock_replace_calls = 0;
+    kept_tmp = false;
+    assert(plat_publish_pair(out_t, out_f, sid_t, sid_f, false, &kept_tmp, &ops) != 0);
+    assert(kept_tmp && exists(out_t) && !exists(sid_t) && !has_bak_for(sid_f));
+    assert(pub_mock_replace_calls == 2);   // Step A + atomic backup restore
+    check_bytes(out_f, "OLD_GGUF2", 9);
+    check_bytes(sid_f, "OLD_JSON2", 9);
+
+    // Outcome 3: Step A succeeds on fresh target (no prior sidecar), Step B fails ->
+    // new sidecar unlinked, out_tmp kept, no stale files left.
+    remove(out_t); remove(out_f); remove(sid_t); remove(sid_f);
+    write_str_file(out_t, "NEW_GGUF3");
+    write_str_file(sid_t, "NEW_JSON3");
+    pub_mock_install_rc = -1;
+    pub_mock_replace_fail_on = 0;
+    pub_mock_replace_calls = 0;
+    kept_tmp = false;
+    assert(plat_publish_pair(out_t, out_f, sid_t, sid_f, false, &kept_tmp, &ops) != 0);
+    assert(kept_tmp && exists(out_t) && !exists(out_f) && !exists(sid_f) && !exists(sid_t));
+
+    // Outcome 4: Step B fails AND rollback replace fails -> stale/new record cleared
+    // so old output never sits beside a mismatched record.
+    remove(out_t); remove(out_f); remove(sid_t); remove(sid_f);
+    write_str_file(out_f, "OLD_GGUF4");
+    write_str_file(sid_f, "OLD_JSON4");
+    write_str_file(out_t, "NEW_GGUF4");
+    write_str_file(sid_t, "NEW_JSON4");
+    pub_mock_install_rc = -1;
+    pub_mock_replace_fail_on = 2;   // Step A ok, restore replace fails
+    pub_mock_replace_calls = 0;
+    pub_mock_remove_sidecar_ok = true;
+    kept_tmp = false;
+    assert(plat_publish_pair(out_t, out_f, sid_t, sid_f, false, &kept_tmp, &ops) != 0);
+    assert(kept_tmp && exists(out_t) && !exists(sid_f) && !has_bak_for(sid_f));
+    check_bytes(out_f, "OLD_GGUF4", 9);
+
+    // Lock UNSUPPORTED: warns once across 2 calls and installs cleanly
+    remove(out_t); remove(out_f); remove(sid_t); remove(sid_f);
+    pub_mock_lock_rc = PLAT_LOCK_UNSUPPORTED;
+    pub_mock_install_rc = 0;
+    pub_mock_replace_fail_on = 0;
+    for (int i = 0; i < 2; i++) {
+        write_str_file(out_t, "UNSUP_GGUF");
+        write_str_file(sid_t, "UNSUP_JSON");
+        kept_tmp = false;
+        assert(plat_publish_pair(out_t, out_f, sid_t, sid_f, false, &kept_tmp, &ops) == 0);
+        assert(!kept_tmp && exists(out_f) && exists(sid_f));
+    }
+
+    // Lock ERROR: refuses cleanly before touching destinations and cleans up temps
+    write_str_file(out_t, "SHOULD_NOT_LAND");
+    write_str_file(sid_t, "SHOULD_NOT_LAND_JSON");
+    pub_mock_lock_rc = PLAT_LOCK_ERROR;
+    kept_tmp = false;
+    assert(plat_publish_pair(out_t, out_f, sid_t, sid_f, false, &kept_tmp, &ops) != 0);
+    assert(!kept_tmp && !exists(out_t) && !exists(sid_t));
+    check_bytes(out_f, "UNSUP_GGUF", 10);
+    check_bytes(sid_f, "UNSUP_JSON", 10);
+
+#ifndef _WIN32
+    // Real POSIX lock file symlink refusal (`O_NOFOLLOW`)
+    const char *victim = "q_pub_lock_victim.txt";
+    remove(lck_f); remove(victim);
+    write_str_file(victim, "untouched");
+    if (symlink(victim, lck_f) == 0) {
+        write_str_file(out_t, "NO_SYMLOCK");
+        write_str_file(sid_t, "NO_SYMLOCK_J");
+        kept_tmp = false;
+        assert(plat_publish_pair(out_t, out_f, sid_t, sid_f, false, &kept_tmp, NULL) != 0);
+        assert(!kept_tmp && !exists(out_t) && !exists(sid_t));
+        check_bytes(victim, "untouched", 9);
+        remove(lck_f);
+    }
+    remove(victim);
+#endif
+
+    remove(out_t); remove(out_f); remove(sid_t); remove(sid_f); remove(lck_f);
+    printf("ok: publish pair backup/rollback (all outcomes) and lock fallback/refusal\n");
 }
 
 int main(void) {
@@ -1395,14 +1589,16 @@ int main(void) {
     assert(quantize_gguf(in, dest, T_Q8_0, NULL) != 0);
     env_unset("RUNNER_QUANTIZE_INSTALL_FAIL");
     check_bytes(dest, sentinel, sizeof(sentinel));
-    assert(!has_partial_for("q_keep.gguf"));
-    printf("ok: failed install left the destination untouched\n");
+    assert(has_partial_for("q_keep.gguf"));
+    remove_partials_for("q_keep.gguf");
+    printf("ok: failed install left the destination untouched and kept partial\n");
 
     check_mxfp4_dequant();
     check_error_report();
     check_ggml_golden();
     check_ggml_weighted_golden();
     check_width_fallback();
+    check_publish_pair_recovery_and_locks();
 
     remove(in); remove(out); remove(inplace); remove(dest); remove(bad);
     printf("all quantize tests passed\n");
