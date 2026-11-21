@@ -103,6 +103,10 @@ ink2_status ink2_head(const ink2_shape *s, const ink2_weights *w, int T, const f
 ink2_status ink2_block_read(const ink2_shape *s, const ink2_weights *w, const char *which, int T, int n_blocks,
                             const float *block_states, const float *partial, float *out, int *n_out);
 
+// The expert layer's selection alone: sel [T][n_used], the chosen experts in ascending index, by the same router code
+// ink2_expert_layer runs (ties lowest index first).
+ink2_status ink2_expert_selection(const ink2_shape *s, const ink2_weights *w, int block, int T, const float *x, int *sel);
+
 // The cross-pass message read: Inkling2LoopMessageAttentionResidual (`model.message_input`), in passes after the
 // first: the previous pass's block states [T][n_prev][hidden] and the current state [T][hidden] in, one message per
 // role out, [T][4][hidden] (q, k, v, mlp), for the loop layer at core index `loop_layer`.
@@ -138,6 +142,11 @@ ink2_status ink2_decoder_layer(const ink2_shape *s, const ink2_weights *w, ink2_
                                const int *pos, const float *x, const float *block_states, int n_blocks,
                                const float *messages, float *out);
 
+// The same, also returning the layer's own expert selection sel [T][n_used] (the harness's selection check).
+ink2_status ink2_decoder_layer_sel(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int app, int T,
+                                   const int *pos, const float *x, const float *block_states, int n_blocks,
+                                   const float *messages, float *out, int *sel);
+
 // The whole text model on token ids, logits [T][vocab_used]: Inkling2LoopNormedEmbedding; the pre-loop layers; the
 // first pass over the core; each later pass restarting from the pre-loop hidden and block states, its messages read
 // from the PREVIOUS pass's block states (those after the one its first core layer appended) and final hidden state;
@@ -151,6 +160,11 @@ ink2_status ink2_forward(const ink2_shape *s, const ink2_weights *w, int T, cons
 #define INK2_MISWIRE_OWN_PASS 2   // later passes read their own pass's block states for the messages
 ink2_status ink2_forward_chunk(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int p0, int T,
                                const int *ids, float *logits, int flags, float *app_states);
+
+// One operation of a layer or the model on recorded inputs, for the fixture harness's single-step lines (the ops and
+// their layouts are listed beside the definition in inkling2.c); the same code the forward runs.
+ink2_status ink2_op_step(const ink2_shape *s, const ink2_weights *w, const char *module, const char *op, int n, int in_d,
+                         const float *const *in, const int *iin, float *out, float *out2, int *iout);
 
 // The attention's sub-steps one at a time, on a sub-module's recorded inputs, for the fixture harness (the steps and
 // their inputs are listed beside the definition in inkling2.c).

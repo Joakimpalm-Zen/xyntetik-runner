@@ -140,8 +140,9 @@ static inline float ink2_sigmoid(float x) { return 1.0f / (1.0f + p_expf(-x)); }
 //   in ascending expert order;
 //   experts in ASCENDING expert index (the reference's eager loop order): gate, up = W13 x; act = softcap(gate, gate
 //   cap) * sigmoid(gate) * softcap(up, up cap); down = W2 act; out += down * weight.
-ink2_status ink2_expert_layer(const ink2_shape *s, const ink2_weights *w, int block, int T,
-                              const float *x, float *out) {
+// the expert layer's tensors, looked up once
+typedef struct { const float *wr, *br, *w13, *w2; } ink2_moe_w;
+static ink2_status ink2_moe_bind(const ink2_shape *s, const ink2_weights *w, int block, ink2_moe_w *M) {
     char n1[160], n2[160], n3[160], n4[160];
     snprintf(n1, sizeof n1, "model.layers.%d.mlp.gate.weight", block);
     snprintf(n2, sizeof n2, "model.layers.%d.mlp.gate.e_score_correction_bias", block);
@@ -152,52 +153,89 @@ ink2_status ink2_expert_layer(const ink2_shape *s, const ink2_weights *w, int bl
     if (!wr || !br || !w13 || !w2 || wr->ne[0] != H || wr->ne[1] != E || br->ne[0] != E ||
         w13->ne[0] != H || w13->ne[1] != 2 * F || w13->ne[2] != E || w2->ne[0] != F || w2->ne[1] != H || w2->ne[2] != E ||
         K < 1 || K > E) return INK2_NO_TENSOR;
-    float *sc = malloc(sizeof(float) * ((size_t)E + 2 * (size_t)F + (size_t)H));
+    M->wr = wr->data; M->br = br->data; M->w13 = w13->data; M->w2 = w2->data;
+    return INK2_OK;
+}
+// the router at one position: logits (if lg), sc = sigmoid scores, chosen[E], wt[e] = sc / (sum chosen + 1e-20) * scale
+static void ink2_route_one(const ink2_shape *s, const ink2_moe_w *M, const float *xt, float *lg, float *sc,
+                           unsigned char *chosen, float *wt) {
+    int H = s->hidden, E = s->n_expert, K = s->n_used;
+    for (int e = 0; e < E; e++) {
+        float l = 0.0f; const float *row = M->wr + (size_t)e * H;
+        for (int h = 0; h < H; h++) l += row[h] * xt[h];
+        if (lg) lg[e] = l;
+        sc[e] = ink2_sigmoid(l);
+    }
+    for (int e = 0; e < E; e++) chosen[e] = 0;
+    for (int k = 0; k < K; k++) {
+        int best = -1; float bv = 0.0f;
+        for (int e = 0; e < E; e++) {
+            if (chosen[e]) continue;
+            float v = sc[e] + M->br[e];
+            if (best < 0 || v > bv) { best = e; bv = v; }   // strict >: the lowest index wins a tie
+        }
+        chosen[best] = 1;
+    }
+    float sum = 0.0f;
+    for (int e = 0; e < E; e++) if (chosen[e]) sum += sc[e];
+    float den = sum + 1e-20f;
+    for (int e = 0; e < E; e++) wt[e] = chosen[e] ? sc[e] / den * s->route_scale : 0.0f;
+}
+// SoftcappedSwiGLU: softcap(gate, gate cap) * sigmoid(gate) * softcap(up, up cap)
+static inline float ink2_swiglu(const ink2_shape *s, float g, float u) {
+    return ink2_softcap(g, s->gate_cap) * ink2_sigmoid(g) * ink2_softcap(u, s->up_cap);
+}
+// the experts at one position, the chosen ones in ascending index, weighted by wt[e]: ot = sum wt[e] * expert_e(xt);
+// act [2F], down [H] scratch
+static void ink2_experts_one(const ink2_shape *s, const ink2_moe_w *M, const float *xt, const unsigned char *chosen,
+                             const float *wt, float *act, float *down, float *ot) {
+    int H = s->hidden, E = s->n_expert, F = s->ff;
+    for (int h = 0; h < H; h++) ot[h] = 0.0f;
+    for (int e = 0; e < E; e++) {
+        if (!chosen[e]) continue;
+        const float *g13 = M->w13 + (size_t)e * 2 * F * H, *g2 = M->w2 + (size_t)e * H * F;
+        for (int j = 0; j < 2 * F; j++) {
+            float a = 0.0f; const float *row = g13 + (size_t)j * H;
+            for (int h = 0; h < H; h++) a += row[h] * xt[h];
+            act[j] = a;
+        }
+        for (int j = 0; j < F; j++) act[j] = ink2_swiglu(s, act[j], act[F + j]);
+        for (int h = 0; h < H; h++) {
+            float a = 0.0f; const float *row = g2 + (size_t)h * F;
+            for (int j = 0; j < F; j++) a += row[j] * act[j];
+            down[h] = a;
+        }
+        for (int h = 0; h < H; h++) ot[h] += down[h] * wt[e];
+    }
+}
+ink2_status ink2_expert_layer(const ink2_shape *s, const ink2_weights *w, int block, int T,
+                              const float *x, float *out) {
+    ink2_moe_w M;
+    ink2_status st = ink2_moe_bind(s, w, block, &M);
+    if (st != INK2_OK) return st;
+    int H = s->hidden, E = s->n_expert, F = s->ff;
+    float *sc = malloc(sizeof(float) * (2 * (size_t)E + 2 * (size_t)F + (size_t)H));
     unsigned char *chosen = malloc((size_t)E);
     if (!sc || !chosen) { free(sc); free(chosen); return INK2_BAD_INPUT; }
-    float *act = sc + E, *down = act + 2 * F;
+    float *wt = sc + E, *act = wt + E, *down = act + 2 * F;
     for (int t = 0; t < T; t++) {
-        const float *xt = x + (size_t)t * H;
-        float *ot = out + (size_t)t * H;
-        for (int e = 0; e < E; e++) {
-            float l = 0.0f; const float *row = wr->data + (size_t)e * H;
-            for (int h = 0; h < H; h++) l += row[h] * xt[h];
-            sc[e] = ink2_sigmoid(l);
-        }
-        memset(chosen, 0, (size_t)E);
-        for (int k = 0; k < K; k++) {
-            int best = -1; float bv = 0.0f;
-            for (int e = 0; e < E; e++) {
-                if (chosen[e]) continue;
-                float v = sc[e] + br->data[e];
-                if (best < 0 || v > bv) { best = e; bv = v; }   // strict >: the lowest index wins a tie
-            }
-            chosen[best] = 1;
-        }
-        float sum = 0.0f;
-        for (int e = 0; e < E; e++) if (chosen[e]) sum += sc[e];
-        float den = sum + 1e-20f;
-        for (int h = 0; h < H; h++) ot[h] = 0.0f;
-        for (int e = 0; e < E; e++) {
-            if (!chosen[e]) continue;
-            float wt = sc[e] / den * s->route_scale;
-            const float *g13 = w13->data + (size_t)e * 2 * F * H, *g2 = w2->data + (size_t)e * H * F;
-            for (int j = 0; j < 2 * F; j++) {
-                float a = 0.0f; const float *row = g13 + (size_t)j * H;
-                for (int h = 0; h < H; h++) a += row[h] * xt[h];
-                act[j] = a;
-            }
-            for (int j = 0; j < F; j++) {
-                float g = act[j], u = act[F + j];
-                act[j] = ink2_softcap(g, s->gate_cap) * ink2_sigmoid(g) * ink2_softcap(u, s->up_cap);
-            }
-            for (int h = 0; h < H; h++) {
-                float a = 0.0f; const float *row = g2 + (size_t)h * F;
-                for (int j = 0; j < F; j++) a += row[j] * act[j];
-                down[h] = a;
-            }
-            for (int h = 0; h < H; h++) ot[h] += down[h] * wt;
-        }
+        ink2_route_one(s, &M, x + (size_t)t * H, NULL, sc, chosen, wt);
+        ink2_experts_one(s, &M, x + (size_t)t * H, chosen, wt, act, down, out + (size_t)t * H);
+    }
+    free(sc); free(chosen);
+    return INK2_OK;
+}
+
+ink2_status ink2_expert_selection(const ink2_shape *s, const ink2_weights *w, int block, int T, const float *x, int *sel) {
+    ink2_moe_w M;
+    ink2_status st = ink2_moe_bind(s, w, block, &M);
+    if (st != INK2_OK) return st;
+    int H = s->hidden, E = s->n_expert, K = s->n_used;
+    float *sc = malloc(sizeof(float) * 2 * (size_t)E); unsigned char *chosen = malloc((size_t)E);
+    if (!sc || !chosen) { free(sc); free(chosen); return INK2_BAD_INPUT; }
+    for (int t = 0; t < T; t++) {
+        ink2_route_one(s, &M, x + (size_t)t * H, NULL, sc, chosen, sc + E);
+        for (int e = 0, k = 0; e < E; e++) if (chosen[e]) sel[(size_t)t * K + k++] = e;
     }
     free(sc); free(chosen);
     return INK2_OK;
@@ -639,6 +677,11 @@ static ink2_status ink2_post_conv(const ink2_shape *s, const ink2_weights *w, in
 ink2_status ink2_decoder_layer(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int app, int T,
                                const int *pos, const float *x, const float *block_states, int n_blocks,
                                const float *messages, float *out) {
+    return ink2_decoder_layer_sel(s, w, c, app, T, pos, x, block_states, n_blocks, messages, out, NULL);
+}
+ink2_status ink2_decoder_layer_sel(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int app, int T,
+                                   const int *pos, const float *x, const float *block_states, int n_blocks,
+                                   const float *messages, float *out, int *sel) {
     if (!s || !w || !c || app < 0 || app >= s->n_app || T <= 0 || n_blocks < 0 || (n_blocks && !block_states))
         return INK2_BAD_INPUT;
     int b = s->app_block[app], g = s->block_global[b], H = s->hidden;
@@ -709,6 +752,7 @@ ink2_status ink2_decoder_layer(const ink2_shape *s, const ink2_weights *w, ink2_
     snprintf(name, sizeof name, "model.layers.%d.post_attention_layernorm.weight", b);
     INK2_TRY(ink2_norm_rows(s, w, name, T, mi, gt));
     INK2_TRY(ink2_expert_layer(s, w, b, T, gt, mo));
+    if (sel) INK2_TRY(ink2_expert_selection(s, w, b, T, gt, sel));
     INK2_TRY(ink2_post_conv(s, w, c, app, 3, T, pos[0], mo, gt));
     for (size_t i = 0; i < TH; i++) out[i] = res[i] + gt[i];
 #undef INK2_TRY
@@ -812,4 +856,105 @@ ink2_status ink2_forward(const ink2_shape *s, const ink2_weights *w, int T, cons
     ink2_status st = ink2_forward_chunk(s, w, &c, 0, T, ids, logits, 0, NULL);
     ink2_cache_free(&c);
     return st;
+}
+
+// One operation of the layer or the model on recorded inputs, for the harness's single-step lines; the same static
+// code the forward runs. `module` is the reference's module path; n is the number of rows (positions, or for the
+// per-head steps every head vector). Ops:
+//   "linear"           <module>.weight [n_out][n_in]: in[0] [n][n_in] -> out [n][n_out]
+//   "rms_norm"         <module>.weight [d]: in[0] [n][d] -> out (Inkling2LoopRMSNorm)
+//   "unweighted_norm"  in[0] [n][hidden] -> out (eps: rms_norm_eps for a message gate's norm, else 1e-6, the reference's
+//                      Inkling2LoopUnweightedRMSNorm() default in the block and message reads)
+//   "short_conv"       <module>.conv1d.weight: in[0] [n][hidden] -> out, a prefill (no history)
+//   "embed"            iin ids [n] -> out [n][hidden]: the row, then embed_tokens.embed_norm
+//   "l2_clip"          in[0] [n][d] head vectors, d = in_d -> out (threshold rel_clip under relative_position_bias, else
+//                      qk_clip)
+//   "log_scale"        in[0] [n][in_d], iin positions [n] -> out * tau(pos)
+//   "router"           <module> = model.layers.<b>.mlp.gate: in[0] [n][hidden] -> out logits [n][E], out2 weights
+//                      [n][K] and iout indices [n][K], the chosen in ascending index
+//   "score_fn"         in[0] [n] -> sigmoid
+//   "experts"          <module> = model.layers.<b>.mlp.experts: in[0] [n][hidden], iin indices [n][K], in[1] weights
+//                      [n][K] -> out [n][hidden]
+//   "act_fn"           in[0] gate, in[1] up [n] -> SoftcappedSwiGLU
+//   "softcap"          in[0] [n] -> tanh(x / cap) * cap, cap by module (gate_softcap, up_softcap, logit_softcap)
+ink2_status ink2_op_step(const ink2_shape *s, const ink2_weights *w, const char *module, const char *op, int n, int in_d,
+                         const float *const *in, const int *iin, float *out, float *out2, int *iout) {
+    if (!s || !w || !module || !op || n <= 0) return INK2_BAD_INPUT;
+    int H = s->hidden, b = -1;
+    char name[192];
+    sscanf(module, "model.layers.%d.", &b);
+    if (!strcmp(op, "linear")) {
+        snprintf(name, sizeof name, "%s.weight", module);
+        const ink2_tensor *t = w->get(w->ctx, name);
+        if (!t || t->n_dims != 2) return INK2_NO_TENSOR;
+        ink2_rows(t->data, (int)t->ne[1], (int)t->ne[0], n, in[0], out);
+    } else if (!strcmp(op, "rms_norm")) {
+        snprintf(name, sizeof name, "%s.weight", module);
+        const ink2_tensor *t = w->get(w->ctx, name);
+        if (!t || t->n_dims != 1) return INK2_NO_TENSOR;
+        int d = (int)t->ne[0];
+        for (int i = 0; i < n; i++) ink2_rms_norm(in[0] + (size_t)i * d, d, s->eps, t->data, out + (size_t)i * d);
+    } else if (!strcmp(op, "unweighted_norm")) {
+        float eps = strstr(module, "_message_gate.norm") ? s->eps : 1e-6f;
+        for (int i = 0; i < n; i++) ink2_unweighted_norm(in[0] + (size_t)i * H, H, eps, out + (size_t)i * H);
+    } else if (!strcmp(op, "short_conv")) {
+        snprintf(name, sizeof name, "%s.conv1d.weight", module);
+        const ink2_tensor *t = w->get(w->ctx, name);
+        if (!t || t->ne[0] != s->conv_k || t->ne[0] * t->ne[1] * t->ne[2] * t->ne[3] != (int64_t)H * s->conv_k) return INK2_NO_TENSOR;
+        ink2_short_conv(t->data, H, s->conv_k, n, in[0], out, 0, NULL);
+    } else if (!strcmp(op, "embed")) {
+        const ink2_tensor *e = w->get(w->ctx, "model.embed_tokens.weight");
+        if (!e || e->ne[0] != H) return INK2_NO_TENSOR;
+        float *row = malloc(sizeof(float) * (size_t)n * H);
+        if (!row) return INK2_BAD_INPUT;
+        for (int i = 0; i < n; i++) {
+            if (iin[i] < 0 || iin[i] >= e->ne[1]) { free(row); return INK2_BAD_INPUT; }
+            memcpy(row + (size_t)i * H, e->data + (size_t)iin[i] * H, sizeof(float) * H);
+        }
+        ink2_status st = ink2_norm_rows(s, w, "model.embed_tokens.embed_norm.weight", n, row, out);
+        free(row);
+        return st;
+    } else if (!strcmp(op, "l2_clip")) {
+        float thr = strstr(module, "relative_position_bias") ? s->rel_clip : s->qk_clip;
+        memcpy(out, in[0], sizeof(float) * (size_t)n * in_d);
+        for (int i = 0; i < n; i++) ink2_l2_clip(out + (size_t)i * in_d, in_d, thr);
+    } else if (!strcmp(op, "log_scale")) {
+        for (int i = 0; i < n; i++) {
+            float tau = ink2_log_tau(s, iin[i]);
+            for (int j = 0; j < in_d; j++) out[(size_t)i * in_d + j] = in[0][(size_t)i * in_d + j] * tau;
+        }
+    } else if (!strcmp(op, "router") || !strcmp(op, "experts")) {
+        ink2_moe_w M;
+        ink2_status st = ink2_moe_bind(s, w, b, &M);
+        if (st != INK2_OK) return st;
+        int E = s->n_expert, K = s->n_used, F = s->ff;
+        float *sc = malloc(sizeof(float) * (2 * (size_t)E + 2 * (size_t)F + (size_t)H));
+        unsigned char *chosen = malloc((size_t)E);
+        if (!sc || !chosen) { free(sc); free(chosen); return INK2_BAD_INPUT; }
+        float *wt = sc + E, *act = wt + E, *down = act + 2 * F;
+        for (int i = 0; i < n && st == INK2_OK; i++) {
+            if (op[0] == 'r') {
+                ink2_route_one(s, &M, in[0] + (size_t)i * H, out + (size_t)i * E, sc, chosen, wt);
+                for (int e = 0, k = 0; e < E; e++) if (chosen[e]) { iout[(size_t)i * K + k] = e; out2[(size_t)i * K + k] = wt[e]; k++; }
+            } else {   // the given selection and weights
+                for (int e = 0; e < E; e++) { chosen[e] = 0; wt[e] = 0.0f; }
+                for (int k = 0; k < K; k++) {
+                    int e = iin[(size_t)i * K + k];
+                    if (e < 0 || e >= E || chosen[e]) { st = INK2_BAD_INPUT; break; }
+                    chosen[e] = 1; wt[e] = in[1][(size_t)i * K + k];
+                }
+                if (st == INK2_OK) ink2_experts_one(s, &M, in[0] + (size_t)i * H, chosen, wt, act, down, out + (size_t)i * H);
+            }
+        }
+        free(sc); free(chosen);
+        return st;
+    } else if (!strcmp(op, "score_fn")) {
+        for (int i = 0; i < n; i++) out[i] = ink2_sigmoid(in[0][i]);
+    } else if (!strcmp(op, "act_fn")) {
+        for (int i = 0; i < n; i++) out[i] = ink2_swiglu(s, in[0][i], in[1][i]);
+    } else if (!strcmp(op, "softcap")) {
+        float cap = strstr(module, "gate_softcap") ? s->gate_cap : strstr(module, "up_softcap") ? s->up_cap : s->final_cap;
+        for (int i = 0; i < n; i++) out[i] = ink2_softcap(in[0][i], cap);
+    } else return INK2_BAD_INPUT;
+    return INK2_OK;
 }

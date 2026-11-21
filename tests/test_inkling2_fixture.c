@@ -702,7 +702,8 @@ static void bound_attn_dx(const ink2_shape *s, const attn_wd *A, int T, const do
 }
 // bound_moe with an input error dx, one position; returns 1 if the selection is stable under the bounds, else 0
 static int moe_dx(const double *x, const double *dx, const float *wr, const float *br, const float *w13, const float *w2, int H, int E,
-                  int K, int F, double R, double capg, double capu, double *y, double *bound) {
+                  int K, int F, double R, double capg, double capu, double *y, double *bound, int *sel_out, double *v_out,
+                  double *dv_out) {
     double *l = malloc(sizeof(double) * (size_t)(4 * E + 6 * F + 2 * H)), *A = l + E, *sg = A + E, *ds = sg + E;
     double *gu = ds + E, *G = gu + 2 * F, *act = G + 2 * F, *dact = act + F, *down = dact + F, *ddown = down + H;
     unsigned char *ch = calloc((size_t)E, 1); int *sel = malloc(sizeof(int) * (size_t)K);
@@ -721,10 +722,12 @@ static int moe_dx(const double *x, const double *dx, const float *wr, const floa
     for (int e = 0; e < E; e++) {
         double v = sg[e] + br[e], dv = ds[e] + U * fabs(v);
         if (ch[e]) { if (v - dv < lo) lo = v - dv; } else if (v + dv > hi) hi = v + dv;
+        if (v_out) { v_out[e] = v; dv_out[e] = dv; }
     }
     int stable = E == K || lo > hi;
     int ns = 0; double S = 0, dS = 0;
     for (int e = 0; e < E; e++) if (ch[e]) { sel[ns++] = e; S += sg[e]; dS += ds[e]; }
+    if (sel_out) for (int i = 0; i < K; i++) sel_out[i] = sel[i];
     double *acc = calloc((size_t)H, sizeof(double));
     for (int h = 0; h < H; h++) { y[h] = 0; bound[h] = 0; }
     for (int i = 0; i < K; i++) {
@@ -762,8 +765,10 @@ static const float *wptr(const st_file *W, const char *fmt, int b) {
 }
 // The composed layer: the same order as ink2_decoder_layer (inkling2.h). x [T][H], bs [T][nb][H], msg [T][4][H] or
 // NULL, exact; y, dy [T][H]. Returns the number of positions whose expert selection is not stable (0: bounded).
+// sel [T][K], v, dv [T][E]: the double chain's expert selection and its scores (sigmoid + bias) with their bounds
 static int bound_layer(const ink2_shape *s, const st_file *W, int b, int T, const float *x, const float *bs, int nb,
-                       const float *msg, const int *pos, const float *mask, const int64_t *rd, double *y, double *dy) {
+                       const float *msg, const int *pos, const float *mask, const int64_t *rd, double *y, double *dy,
+                       int *sel, double *v, double *dv) {
     int H = s->hidden, g = s->block_global[b], bnd = b % s->attn_res_block == 0, unstable = 0;
     size_t TH = (size_t)T * H;
     double *M = calloc(TH * 24 + (size_t)(nb + 2) * H * 2 + (size_t)6 * H, sizeof(double));
@@ -836,7 +841,8 @@ static int bound_layer(const ink2_shape *s, const st_file *W, int b, int T, cons
         unstable += !moe_dx(nv + (size_t)t * H, nd + (size_t)t * H, wptr(W, "model.layers.%d.mlp.gate.weight", b),
                             wptr(W, "model.layers.%d.mlp.gate.e_score_correction_bias", b), wptr(W, "model.layers.%d.mlp.experts.gate_up_proj", b),
                             wptr(W, "model.layers.%d.mlp.experts.down_proj", b), H, s->n_expert, s->n_used, s->ff, s->route_scale,
-                            s->gate_cap, s->up_cap, ev + (size_t)t * H, ed + (size_t)t * H);
+                            s->gate_cap, s->up_cap, ev + (size_t)t * H, ed + (size_t)t * H, sel + (size_t)t * s->n_used,
+                            v + (size_t)t * s->n_expert, dv + (size_t)t * s->n_expert);
     }
     postconv_dx(wptr(W, "model.layers.%d.post_mlp_convolution.conv1d.weight", b), H, s->conv_k, T, ev, ed, cv, cd);
     for (size_t i = 0; i < TH; i++) { y[i] = res[i] + cv[i]; dy[i] = dres[i] + cd[i] + U * fabs(y[i]); }
@@ -887,6 +893,352 @@ static long clip_engaged = 0, clip_vectors = 0;
 static int moe_sel_diff = 0, moe_tie_done = 0, moe_tie_ok = 0;
 static double moe_harness_rel = 0, moe_tie_frac = 0, attn_harness_rel[2] = {0, 0}, attn_frac[2] = {0, 0};
 
+// ---------------------------------------------------------------- expert selection: ours against the truth's
+// The truth's selection at one position, in double from the recorded router input, as bound_moe: v_e = sigmoid(W x)_e
+// + bias_e, the n_used largest (ties lowest index first); dv_e the score's own error bound in float32 (bound_moe's
+// ds_e = s (1 - s) c H u A_e + 3 u s, plus the bias add's u |v_e|). brd: the bias in double (the planted case edits it).
+static void select_d(const float *x, const float *wr, const double *brd, int H, int E, int K, int *sel, double *v, double *dv) {
+    unsigned char ch[256] = {0};
+    for (int e = 0; e < E; e++) {
+        double a = 0, m = 0;
+        for (int h = 0; h < H; h++) { double p = (double)wr[(size_t)e * H + h] * x[h]; a += p; m += fabs(p); }
+        double sg = 1.0 / (1.0 + exp(-a));
+        v[e] = sg + brd[e]; dv[e] = sg * (1 - sg) * CB * H * U * m + 3 * U * sg + U * fabs(v[e]);
+    }
+    for (int k = 0; k < K; k++) {
+        int best = -1;
+        for (int e = 0; e < E; e++) if (!ch[e] && (best < 0 || v[e] > v[best])) best = e;
+        ch[best] = 1;
+    }
+    for (int e = 0, k = 0; e < E; e++) if (ch[e]) sel[k++] = e;
+}
+// ours and the truth's selection at one position (each [K], ascending): 0 the same; 1 different at a NEAR-TIE (every
+// expert in one set and not the other has a score within its bound of the truth's cut: either side is a correct
+// choice for an engine within the bound); 2 different OUTSIDE the bound (a wrong selection). gap: the truth's last
+// chosen score minus its first unchosen; gapb: the two scores' bounds summed (gap < gapb: a near-tie).
+static int sel_classify(const int *ours, const int *tr, const double *v, const double *dv, int E, int K, double *gap, double *gapb) {
+    unsigned char in_t[256] = {0}, in_o[256] = {0};
+    for (int k = 0; k < K; k++) { in_t[tr[k]] = 1; in_o[ours[k]] = 1; }
+    int last = -1, first = -1; double lo = 1e300, hi = -1e300;
+    for (int e = 0; e < E; e++) {
+        if (in_t[e]) { if (last < 0 || v[e] < v[last]) last = e; if (v[e] - dv[e] < lo) lo = v[e] - dv[e]; }
+        else { if (first < 0 || v[e] > v[first]) first = e; if (v[e] + dv[e] > hi) hi = v[e] + dv[e]; }
+    }
+    *gap = first < 0 ? INFINITY : v[last] - v[first]; *gapb = first < 0 ? 0 : dv[last] + dv[first];
+    int same = 1, near = 1;
+    for (int e = 0; e < E; e++) {
+        if (in_o[e] == in_t[e]) continue;
+        same = 0;
+        if (in_o[e] && !(v[e] + dv[e] >= lo)) near = 0;   // we chose it, the truth did not: it must reach the cut
+        if (in_t[e] && !(v[e] - dv[e] <= hi)) near = 0;   // the truth chose it, we did not: it must fall to the cut
+    }
+    return same ? 0 : near ? 1 : 2;
+}
+typedef struct { int pos, near_differ, hard_differ, near_ties, file_differ; double min_gap, near_gap_max; } selstat;
+static void selstat_add(selstat *S, int cls, double gap, double gapb) {
+    S->pos++;
+    if (gap < S->min_gap) S->min_gap = gap;
+    if (gap < gapb) S->near_ties++;
+    if (cls == 1) { S->near_differ++; if (gap > S->near_gap_max) S->near_gap_max = gap; }
+    if (cls == 2) S->hard_differ++;
+}
+static selstat SEL_P = {0, 0, 0, 0, 0, INFINITY, 0}, SEL_L = {0, 0, 0, 0, 0, INFINITY, 0};
+static int plant_done = 0, plant_cls[2] = {-1, -1};
+static double plant_gap[2], plant_gapb[2];
+
+// ---------------------------------------------------------------- the coverage registry (line 4z)
+// Every check of a recorded module call marks "<module>#call<k>" with the line that made it.
+#define COV_MAX 4096
+static char cov_key[COV_MAX][256]; static const char *cov_line[COV_MAX]; static int cov_n = 0;
+static void cov_mark(const char *line, const char *key) {
+    for (int i = 0; i < cov_n; i++) if (!strcmp(cov_key[i], key)) return;
+    if (cov_n < COV_MAX) { snprintf(cov_key[cov_n], sizeof cov_key[0], "%s", key); cov_line[cov_n++] = line; }
+}
+static const char *cov_find(const char *key) {
+    for (int i = 0; i < cov_n; i++) if (!strcmp(cov_key[i], key)) return cov_line[i];
+    return NULL;
+}
+static void cov_markf(const char *line, const char *fmt, int b, int k) { char key[160]; snprintf(key, sizeof key, fmt, b, k); cov_mark(line, key); }
+
+// ---------------------------------------------------------------- single-step lines (4a..4m)
+// Each operation on its recorded inputs (exact) against the float64 truth of that call, under its one-step bound;
+// torch's float32 dump under the same bound; a perturbation (one weight or input of the step + 0.25) must leave it.
+//   linear                y = W x (length n):                 c n u sum |W x|
+//   rms_norm (weighted)   z = w (x r), r = (mean x^2 + eps)^-1/2: |w| c (n + 5) u |x r| + u |z|
+//   unweighted_norm       z = x r:                             c (n + 5) u |z|
+//   short_conv            z = (sum_j w_j x_j + x) / sqrt(K + 1): (c K u sum |w x| + u |sum + x|) / D + 1.5 u |z| (postconv_dx)
+//   embed                 the row (exact), then rms_norm
+//   l2_clip               clip_d (no scale, no tau)
+//   log_scale             z = y tau(pos): |y| dtau + u |z| (headclip_d's dtau)
+//   router                logits: linear; weights w_i = s_i / S * R: w_i (ds_i / s_i + sum ds / S + c (K + 3) u),
+//                         ds = s (1 - s) dl + 3 u s (bound_moe); the indices by the selection classifier
+//   score_fn              s = sigmoid(l): 3 u s
+//   experts (given        bound_moe from gate/up on, the weights exact: sum_i |w_i| d(down)_i + c K u sum_i |w_i down_i|
+//     indices, weights)
+//   act_fn                bound_moe's d(act) with exact gate and up
+//   softcap               y = c tanh(x / c): u |x| + 3 u |y| (the quotient's rounding through tanh' <= 1, tanh 2 ulp, the product)
+static bstat SL[13];
+enum { L_LIN, L_WN, L_UN, L_CONV, L_EMB, L_L2, L_LS, L_RT, L_SF, L_EX, L_ACT, L_CAP, L_RES };
+static const char *sl_name[13] = { "linear", "rms_norm", "unweighted_norm", "post_convolution", "embed_tokens", "l2_clip",
+    "log_scale", "router", "score_fn", "experts", "act_fn", "softcap", "residual" };
+static const char *sl_what[13] = {
+    "every nn.Linear call (attention projections, sink, output gate, dynamic conv taps, message gate projections, lm_head alone)",
+    "input_layernorm, q/k/v_input_layernorm, post_attention_layernorm, model.norm, embed_tokens.embed_norm",
+    "the norms of attention_input, mlp_input, final_input, message_input and the message gates",
+    "post_attention_convolution, post_mlp_convolution", "model.embed_tokens: the row, then its norm",
+    "q_proj.norm.l2_clip, relative_position_bias.norm.l2_clip", "q_proj.norm.log_scale, relative_position_bias.norm.log_scale",
+    "mlp.gate: logits, weights; its indices in the expert_selection line", "mlp.gate.score_fn",
+    "mlp.experts on the recorded indices and weights", "mlp.experts.act_fn", "act_fn.gate_softcap, act_fn.up_softcap, logit_softcap alone",
+    "the decoder layer's output = residual + post-MLP conv, rebuilt from the recorded submodule outputs (elementwise)" };
+static int res_bits_eq = 0, res_bits_n = 0, wire_n = 0, wire_bad = 0;
+static int cov_calls = 0, cov_single = 0, cov_composite = 0, cov_unnamed = 0, cov_uncovered = 0, cov_nlines = 0, cov_per_line[64];
+static const char *cov_lines[64]; static char cov_first_unnamed[160] = "", cov_first_unc[160] = "";
+static uint64_t g_digest3 = 1469598103934665603ULL;
+static char wire_first[160] = "";
+// the experts on given indices and weights (exact), one row: bound_moe from gate/up on
+static void experts_d(const float *x, const int64_t *idx, const float *wts, const float *w13, const float *w2, int H, int K, int F,
+                      double capg, double capu, double *y, double *bound) {
+    double *gu = malloc(sizeof(double) * (size_t)(4 * F + 3 * H)), *G = gu + 2 * F, *act = G + 2 * F, *dact = act + F, *acc = dact + F;
+    for (int h = 0; h < H; h++) { y[h] = 0; bound[h] = 0; acc[h] = 0; }
+    for (int i = 0; i < K; i++) {
+        int e = (int)idx[i]; double wi = wts[i];
+        const float *g13 = w13 + (size_t)e * 2 * F * H, *g2 = w2 + (size_t)e * H * F;
+        for (int j = 0; j < 2 * F; j++) {
+            double a = 0, m = 0;
+            for (int h = 0; h < H; h++) { double p = (double)g13[(size_t)j * H + h] * x[h]; a += p; m += fabs(p); }
+            gu[j] = a; G[j] = m;
+        }
+        for (int j = 0; j < F; j++) {
+            double g = gu[j], u = gu[F + j], dg = CB * H * U * G[j], du = CB * H * U * G[F + j];
+            double cg = tanh(g / capg) * capg, cu = tanh(u / capu) * capu, sgm = 1.0 / (1.0 + exp(-g));
+            double dcg = dg + 3 * U * fabs(cg), dcu = du + 3 * U * fabs(cu), dsg = sgm * (1 - sgm) * dg + 3 * U * sgm;
+            act[j] = cg * sgm * cu;
+            dact[j] = fabs(sgm * cu) * dcg + fabs(cg * cu) * dsg + fabs(cg * sgm) * dcu + 2 * U * fabs(act[j]);
+        }
+        for (int h = 0; h < H; h++) {
+            double a = 0, m = 0, p = 0;
+            for (int j = 0; j < F; j++) { double ww = g2[(size_t)h * F + j]; a += ww * act[j]; m += fabs(ww * act[j]); p += fabs(ww) * dact[j]; }
+            y[h] += wi * a; acc[h] += fabs(wi * a); bound[h] += fabs(wi) * (CB * F * U * m + p);
+        }
+    }
+    for (int h = 0; h < H; h++) bound[h] += CB * K * U * acc[h];
+    free(gu);
+}
+static const double *tf64(const st_file *f, const char *key, size_t n) {
+    const st_t *t = st_get(f, key); return t && t->dtype == ST_F64 && st_count(t) == n ? (const double *)(const void *)t->data : NULL;
+}
+static const float *tf32(const st_file *f, const char *key, size_t n) {
+    const st_t *t = st_get(f, key); return t && t->dtype == ST_F32 && st_count(t) == n ? (const float *)t->data : NULL;
+}
+// One recorded call of module mod (#call k) through op, line li: ours, torch and the perturbed run against the truth
+static void run_step(const ink2_shape *s, const ink2_weights *w, st_file *W, const st_file *In, const st_file *D, const st_file *TR,
+                     const char *mod, int k, const char *op, int li) {
+    char key[256], tk[256], dk[256], wn[192];
+    int H = s->hidden, E = s->n_expert, K = s->n_used, F = s->ff;
+    snprintf(key, sizeof key, "%s#call%d#in0", mod, k); const st_t *i0 = st_get(In, key);
+    snprintf(key, sizeof key, "%s#call%d#in1", mod, k); const st_t *i1 = st_get(In, key);
+    snprintf(key, sizeof key, "%s#call%d#in2", mod, k); const st_t *i2 = st_get(In, key);
+    if (!strcmp(mod, "lm_head") || !strcmp(mod, "logit_softcap")) snprintf(tk, sizeof tk, "%s.alone#call%d", mod, k);
+    else snprintf(tk, sizeof tk, "%s#call%d", mod, k);
+    snprintf(dk, sizeof dk, "%s#call%d", mod, k);
+    if (!i0) { bstat_add(&SL[li], INK2_BAD_INPUT, 0, 0, -1); return; }
+    size_t n0 = st_count(i0), no = 0;
+    const float *x = i0->dtype == ST_F32 ? (const float *)i0->data : NULL;
+    int n = 0, d = 0, *ids = NULL;
+    float *wt = NULL;   // the weight the perturbation moves (NULL: the input's first element)
+    double *bb = NULL;
+    // sizes, weights and the bound
+    if (!strcmp(op, "linear")) {
+        snprintf(wn, sizeof wn, "%s.weight", mod); const st_t *t = st_get(W, wn);
+        if (!t || t->n_dims != 2 || !x) { bstat_add(&SL[li], INK2_NO_TENSOR, 0, 0, -1); return; }
+        int no_ = (int)t->shape[0], ni = (int)t->shape[1]; n = (int)(n0 / ni); no = (size_t)n * no_;
+        bb = malloc(sizeof(double) * no); wt = (float *)(void *)t->data;
+        for (int r = 0; r < n; r++) for (int o = 0; o < no_; o++) {
+            double m = 0; for (int i = 0; i < ni; i++) m += fabs((double)wt[(size_t)o * ni + i] * x[(size_t)r * ni + i]);
+            bb[(size_t)r * no_ + o] = CB * ni * U * m;
+        }
+    } else if (!strcmp(op, "rms_norm") || !strcmp(op, "embed")) {
+        const char *wm = !strcmp(op, "embed") ? "model.embed_tokens.embed_norm" : mod;
+        snprintf(wn, sizeof wn, "%s.weight", wm); const st_t *t = st_get(W, wn);
+        const st_t *et = st_get(W, "model.embed_tokens.weight");
+        if (!t || !et) { bstat_add(&SL[li], INK2_NO_TENSOR, 0, 0, -1); return; }
+        d = (int)t->shape[0];
+        float *rows;
+        if (!strcmp(op, "embed")) {
+            n = (int)n0; ids = malloc(sizeof(int) * (size_t)n); rows = malloc(sizeof(float) * (size_t)n * d);
+            for (int i = 0; i < n; i++) { ids[i] = (int)((const int64_t *)(const void *)i0->data)[i]; memcpy(rows + (size_t)i * d, (const float *)et->data + (size_t)ids[i] * d, sizeof(float) * d); }
+            wt = (float *)(void *)et->data + (size_t)ids[0] * d;
+        } else { n = (int)(n0 / d); rows = (float *)x; wt = (float *)(void *)t->data; }
+        no = (size_t)n * d; bb = malloc(sizeof(double) * 2 * no);
+        for (int r = 0; r < n; r++) {
+            double *z = bb + no + (size_t)r * d; const float *xr = rows + (size_t)r * d; double ss = 0;
+            for (int i = 0; i < d; i++) ss += (double)xr[i] * xr[i];
+            double rr = 1.0 / sqrt(ss / d + cfd.eps);
+            for (int i = 0; i < d; i++) { z[i] = xr[i] * rr; double wz = (double)((const float *)t->data)[i] * z[i];
+                bb[(size_t)r * d + i] = fabs((double)((const float *)t->data)[i]) * CB * (d + 5) * U * fabs(z[i]) + U * fabs(wz); }
+        }
+        if (rows != x) free(rows);
+    } else if (!strcmp(op, "unweighted_norm")) {
+        double eps = strstr(mod, "_message_gate.norm") ? cfd.eps : 1e-6;
+        n = (int)(n0 / H); no = n0; bb = malloc(sizeof(double) * no);
+        for (int r = 0; r < n; r++) {
+            double ss = 0; for (int i = 0; i < H; i++) ss += (double)x[(size_t)r * H + i] * x[(size_t)r * H + i];
+            double rr = 1.0 / sqrt(ss / H + eps);
+            for (int i = 0; i < H; i++) bb[(size_t)r * H + i] = CB * (H + 5) * U * fabs(x[(size_t)r * H + i] * rr);
+        }
+    } else if (!strcmp(op, "short_conv")) {
+        snprintf(wn, sizeof wn, "%s.conv1d.weight", mod); const st_t *t = st_get(W, wn);
+        if (!t) { bstat_add(&SL[li], INK2_NO_TENSOR, 0, 0, -1); return; }
+        n = (int)(n0 / H); no = n0; bb = malloc(sizeof(double) * no * 4);
+        double *xv = bb + no, *dz = xv + no, *zv = dz + no;
+        for (size_t i = 0; i < no; i++) { xv[i] = x[i]; dz[i] = 0; }
+        postconv_dx((const float *)t->data, H, s->conv_k, n, xv, dz, zv, bb);
+        wt = (float *)(void *)t->data + (s->conv_k - 1);
+    } else if (!strcmp(op, "l2_clip")) {
+        d = (int)i0->shape[i0->n_dims - 1]; n = (int)(n0 / d); no = n0; bb = malloc(sizeof(double) * no * 2);
+        double thr = strstr(mod, "relative_position_bias") ? cfd.rel : cfd.qk, *yv = bb + no;
+        for (size_t i = 0; i < no; i++) { yv[i] = x[i]; bb[i] = 0; }
+        for (int r = 0; r < n; r++) clip_d(yv + (size_t)r * d, bb + (size_t)r * d, d, NULL, thr, 0, 0);
+    } else if (!strcmp(op, "log_scale")) {
+        if (!i1 || i1->dtype != ST_I64) { bstat_add(&SL[li], INK2_BAD_INPUT, 0, 0, -1); return; }
+        n = (int)st_count(i1); d = (int)(n0 / n); no = n0; bb = malloc(sizeof(double) * no);
+        ids = malloc(sizeof(int) * (size_t)n);
+        for (int r = 0; r < n; r++) {
+            ids[r] = (int)((const int64_t *)(const void *)i1->data)[r];
+            double A = (double)(ids[r] + 1) / s->log_floor; if (A < 1) A = 1;
+            double L = log(A), dL = A > 1 ? U + 2 * U * fabs(L) : 0, tau = 1 + cfd.alpha * L;
+            double dtau = fabs(cfd.alpha) * dL + 1.5 * U * fabs(cfd.alpha * L) + U * tau;
+            for (int j = 0; j < d; j++) { double y = x[(size_t)r * d + j]; bb[(size_t)r * d + j] = fabs(y) * dtau + U * fabs(y * tau); }
+        }
+    } else if (!strcmp(op, "router")) {
+        int b = -1; sscanf(mod, "model.layers.%d.", &b);
+        const float *wr = wptr(W, "model.layers.%d.mlp.gate.weight", b), *br = wptr(W, "model.layers.%d.mlp.gate.e_score_correction_bias", b);
+        n = (int)(n0 / H); no = (size_t)n * (E + K);   // logits [n][E] then weights [n][K]
+        bb = malloc(sizeof(double) * no); wt = (float *)(void *)wr;
+        for (int r = 0; r < n; r++) for (int e = 0; e < E; e++) {
+            double m = 0; for (int h = 0; h < H; h++) m += fabs((double)wr[(size_t)e * H + h] * x[(size_t)r * H + h]);
+            bb[(size_t)r * E + e] = CB * H * U * m;
+        }
+        (void)br;
+    } else if (!strcmp(op, "score_fn")) {
+        no = n0; n = (int)n0; bb = malloc(sizeof(double) * no);
+        for (size_t i = 0; i < no; i++) bb[i] = 3 * U / (1.0 + exp(-(double)x[i]));
+    } else if (!strcmp(op, "experts")) {
+        int b = -1; sscanf(mod, "model.layers.%d.", &b);
+        if (!i1 || !i2 || i1->dtype != ST_I64) { bstat_add(&SL[li], INK2_BAD_INPUT, 0, 0, -1); return; }
+        const float *w13 = wptr(W, "model.layers.%d.mlp.experts.gate_up_proj", b), *w2 = wptr(W, "model.layers.%d.mlp.experts.down_proj", b);
+        n = (int)(n0 / H); no = n0; bb = malloc(sizeof(double) * no * 2);
+        ids = malloc(sizeof(int) * (size_t)n * K);
+        for (int i = 0; i < n * K; i++) ids[i] = (int)((const int64_t *)(const void *)i1->data)[i];
+        for (int r = 0; r < n; r++)
+            experts_d(x + (size_t)r * H, (const int64_t *)(const void *)i1->data + (size_t)r * K, (const float *)i2->data + (size_t)r * K,
+                      w13, w2, H, K, F, s->gate_cap, s->up_cap, bb + no + (size_t)r * H, bb + (size_t)r * H);
+        wt = (float *)(void *)w2 + (size_t)ids[0] * H * F;
+    } else if (!strcmp(op, "act_fn")) {
+        if (!i1) { bstat_add(&SL[li], INK2_BAD_INPUT, 0, 0, -1); return; }
+        no = n0; n = (int)n0; bb = malloc(sizeof(double) * no); const float *up = (const float *)i1->data;
+        for (size_t i = 0; i < no; i++) {
+            double g = x[i], u = up[i], cg = tanh(g / s->gate_cap) * s->gate_cap, cu = tanh(u / s->up_cap) * s->up_cap, sg = 1.0 / (1.0 + exp(-g));
+            bb[i] = fabs(sg * cu) * 3 * U * fabs(cg) + fabs(cg * cu) * 3 * U * sg + fabs(cg * sg) * 3 * U * fabs(cu) + 2 * U * fabs(cg * sg * cu);
+        }
+    } else if (!strcmp(op, "softcap")) {
+        double cap = strstr(mod, "gate_softcap") ? s->gate_cap : strstr(mod, "up_softcap") ? s->up_cap : s->final_cap;
+        no = n0; n = (int)n0; bb = malloc(sizeof(double) * no);
+        for (size_t i = 0; i < no; i++) bb[i] = U * fabs((double)x[i]) + 3 * U * fabs(tanh(x[i] / cap) * cap);
+    } else { bstat_add(&SL[li], INK2_BAD_INPUT, 0, 0, -1); return; }
+    // ours, the perturbed run, the comparisons
+    float *ours = calloc(no + (size_t)n * K + 16, sizeof(float)), *pert = calloc(no + (size_t)n * K + 16, sizeof(float));
+    float *xin = malloc(sizeof(float) * (n0 + 1)); int *iout = malloc(sizeof(int) * ((size_t)n * K + 1));
+    if (x) memcpy(xin, x, sizeof(float) * n0);
+    const float *in[3] = { xin, i1 && i1->dtype == ST_F32 ? (const float *)i1->data : NULL, i2 && i2->dtype == ST_F32 ? (const float *)i2->data : NULL };
+    if (!strcmp(op, "experts")) in[1] = in[2];   // experts(hidden, top_k_index, top_k_weights): the weights are #in2
+    int ind = d ? d : 1;
+    int nrows = !strcmp(op, "short_conv") ? n : n;
+    ink2_status st = ink2_op_step(s, w, mod, op, nrows, ind, in, ids, ours, ours + (strcmp(op, "router") ? 0 : (size_t)n * E), iout);
+    double frac = 0, tfrac = 0, pf = -1;
+    if (st == INK2_OK) {
+        // the truth and torch's dump as one array in the layout of ours
+        double *tv = malloc(sizeof(double) * no); float *tfv = malloc(sizeof(float) * no); int have_t = 1, have_f = 1;
+        if (!strcmp(op, "router")) {
+            char k0[256], k1[256], k2[256];
+            snprintf(k0, sizeof k0, "%s#call%d#out0", mod, k); snprintf(k1, sizeof k1, "%s#call%d#out1", mod, k); snprintf(k2, sizeof k2, "%s#call%d#out2", mod, k);
+            const double *t0 = tf64(TR, k0, (size_t)n * E), *t1 = tf64(TR, k1, (size_t)n * K), *t2 = tf64(TR, k2, (size_t)n * K);
+            const float *f0 = tf32(D, k0, (size_t)n * E), *f1 = tf32(D, k1, (size_t)n * K);
+            const st_t *f2 = st_get(D, k2);
+            int b = -1; sscanf(mod, "model.layers.%d.", &b);
+            const float *wr = wptr(W, "model.layers.%d.mlp.gate.weight", b), *br = wptr(W, "model.layers.%d.mlp.gate.e_score_correction_bias", b);
+            if (!t0 || !t1 || !t2 || !f0 || !f1 || !f2) have_t = 0;
+            else {
+                memcpy(tv, t0, sizeof(double) * (size_t)n * E); memcpy(tfv, f0, sizeof(float) * (size_t)n * E);
+                double brd[256]; for (int e = 0; e < E; e++) brd[e] = br[e];
+                for (int r = 0; r < n; r++) {
+                    // the selection: ours against the truth's (the truth file's indices; the harness's double agrees or
+                    // is counted), then the weights in ascending expert order where the selections agree
+                    int ts[64], hs[64]; double v[256], dv[256], gap, gapb;
+                    for (int i = 0; i < K; i++) ts[i] = (int)t2[(size_t)r * K + i];
+                    for (int i = 0; i < K; i++) for (int j = i + 1; j < K; j++) if (ts[j] < ts[i]) { int z = ts[i]; ts[i] = ts[j]; ts[j] = z; }
+                    select_d(x + (size_t)r * H, wr, brd, H, E, K, hs, v, dv);
+                    for (int i = 0; i < K; i++) if (hs[i] != ts[i]) { SEL_P.file_differ++; break; }
+                    int cls = sel_classify(iout + (size_t)r * K, ts, v, dv, E, K, &gap, &gapb);
+                    selstat_add(&SEL_P, cls, gap, gapb);
+                    // the planted case, once: the truth's bias edited (on the truth's side only) so its first unchosen
+                    // expert beats its last chosen by 0.5x, then 10x, the two scores' bounds; ours stays on the
+                    // recorded router, so the two selections differ, first inside the bound, then outside it
+                    if (!plant_done) {
+                        int last = ts[0], first = -1;
+                        for (int i = 0; i < K; i++) if (v[ts[i]] < v[last]) last = ts[i];
+                        for (int e = 0; e < E; e++) { int c = 0; for (int i = 0; i < K; i++) c |= ts[i] == e; if (!c && (first < 0 || v[e] > v[first])) first = e; }
+                        if (first >= 0) for (int pi = 0; pi < 2; pi++) {
+                            double b2[256], v2[256], dv2[256]; int ts2[64];
+                            memcpy(b2, brd, sizeof(double) * E);
+                            b2[first] += (v[last] - v[first]) + (pi ? 10.0 : 0.5) * (dv[last] + dv[first]);
+                            select_d(x + (size_t)r * H, wr, b2, H, E, K, ts2, v2, dv2);
+                            plant_cls[pi] = sel_classify(iout + (size_t)r * K, ts2, v2, dv2, E, K, &plant_gap[pi], &plant_gapb[pi]);
+                        }
+                        plant_done = 1;
+                    }
+                    // the weights: dw_i = w_i (ds_i / s_i + sum ds / S + c (K + 3) u), s, ds from the logits (bound_moe)
+                    int same_o = 1, same_f = 1; const int64_t *fi = (const int64_t *)(const void *)f2->data + (size_t)r * K;
+                    for (int i = 0; i < K; i++) same_o &= iout[(size_t)r * K + i] == ts[i];
+                    for (int i = 0; i < K; i++) { int c = 0; for (int j = 0; j < K; j++) c |= fi[j] == ts[i]; same_f &= c; }
+                    double S = 0, dS = 0, sg[64], ds[64];
+                    for (int i = 0; i < K; i++) {
+                        int e = ts[i]; double l = t0[(size_t)r * E + e]; sg[i] = 1.0 / (1.0 + exp(-l));
+                        ds[i] = sg[i] * (1 - sg[i]) * bb[(size_t)r * E + e] + 3 * U * sg[i]; S += sg[i]; dS += ds[i];
+                    }
+                    for (int i = 0; i < K; i++) {
+                        size_t at = (size_t)n * E + (size_t)r * K + i; int e = ts[i];
+                        double wi = 0; for (int j = 0; j < K; j++) if ((int)t2[(size_t)r * K + j] == e) wi = t1[(size_t)r * K + j];
+                        tv[at] = wi; bb[at] = wi * (ds[i] / sg[i] + dS / S + CB * (K + 3) * U);
+                        float fw = 0; for (int j = 0; j < K; j++) if (fi[j] == e) fw = f1[(size_t)r * K + j];
+                        tfv[at] = same_f ? fw : (float)wi;   // torch's own differing selection is counted by the classifier
+                        if (!same_o) ours[at] = (float)wi;   // a differing selection is the classifier's, not the bound's
+                    }
+                }
+            }
+        } else {
+            const double *t = tf64(TR, tk, no); const float *f = tf32(D, dk, no);
+            if (t) memcpy(tv, t, sizeof(double) * no); else have_t = 0;
+            if (f) memcpy(tfv, f, sizeof(float) * no); else have_f = 0;
+        }
+        if (!have_t) st = INK2_BAD_INPUT;
+        else {
+            frac = frac_used(ours, tv, bb, no);
+            tfrac = have_f ? frac_used(tfv, tv, bb, no) : 0;
+            float keep;
+            if (wt) { keep = *wt; *wt += 0.25f; } else { keep = xin[0]; xin[0] += 0.25f; }
+            ink2_op_step(s, w, mod, op, nrows, ind, in, ids, pert, pert + (strcmp(op, "router") ? 0 : (size_t)n * E), iout);
+            if (wt) *wt = keep; else xin[0] = keep;
+            // the router's perturbation moves the logits; its weights block keeps ours (the same rows)
+            if (!strcmp(op, "router")) memcpy(pert + (size_t)n * E, ours + (size_t)n * E, sizeof(float) * (size_t)n * K);
+            pf = frac_used(pert, tv, bb, no);
+            cov_mark(sl_name[li], dk);
+        }
+        free(tv); free(tfv);
+    }
+    bstat_add(&SL[li], st, frac, tfrac, pf);
+    free(bb); free(ours); free(pert); free(xin); free(iout); free(ids);
+}
 // the forward's lines: 3a the decoder layer, 3b gate A (wiring), 3c gate B (chunked = whole, bit for bit)
 static bstat BL = {"decoder_layer",0,0,0,0,0,0,-1,""};
 static int layer_unstable = 0, layer_positions = 0, layer_nctl = 0, layer_ctl_app[16], layer_ctl_seq[16];
@@ -943,12 +1295,14 @@ int main(int argc, char **argv) {
                     nm && nm->n ? "see engagement.json" : "none");
         if (ej) jv_free(ej);
     }
+    for (int i = 0; i < 13; i++) { SL[i].piece = sl_name[i]; SL[i].pert_mult = -1; }
     const char *seqs[] = { "s16", "s24" };
     bstat BM = {"expert_layer",0,0,0,0,0,0,-1,""}, BA = {"attention",0,0,0,0,0,0,-1,""}, SS[N_ASTEP], SC = {"clip",0,0,0,0,0,0,-1,""}, BH = {"head",0,0,0,0,0,0,-1,""};
     for (int i = 0; i < N_ASTEP; i++) { memset(&SS[i], 0, sizeof SS[i]); SS[i].piece = astep[i]; SS[i].pert_mult = -1; }
     bstat B[3] = { {"block_read",0,0,0,0,0,0,-1,""}, {"message_input",0,0,0,0,0,0,-1,""}, {"message_step",0,0,0,0,0,0,-1,""} };
     for (int q = 0; q < 2; q++) {
         st_file D, In;
+        cov_n = 0;   // the coverage registry is per sequence
         snprintf(path, sizeof path, "%s/dumps-%s.safetensors", dir, seqs[q]);
         if (st_load(&D, path)) { printf("FAIL: cannot read %s\n", path); return 1; }
         snprintf(path, sizeof path, "%s/inputs-%s.safetensors", dir, seqs[q]);
@@ -1039,6 +1393,7 @@ int main(int argc, char **argv) {
                     }
                 }
                 bstat_add(&BM, st, frac, tfrac, pert);
+                if (st == INK2_OK) cov_markf("expert_layer", "model.layers.%d.mlp#call%d", b, k);
             }
             free(yd); free(bd); free(po); free(sel);
         }
@@ -1106,6 +1461,7 @@ int main(int argc, char **argv) {
                     pert = fmax(q0, q1);
                 }
                 bstat_add(&BA, st, frac, tfrac, pert);
+                if (st == INK2_OK) cov_markf("attention", "model.layers.%d.self_attn#call%d", b, k);
                 if (st != INK2_OK) continue;
                 // the sub-steps. Buffers: dm[4..13] double inputs and their (zero) bounds, fm[2..8] float inputs and outputs
                 for (int si = 0; si < N_ASTEP; si++) {
@@ -1172,6 +1528,10 @@ int main(int argc, char **argv) {
                         } else sst = INK2_BAD_INPUT;
                     }
                     bstat_add(&SS[si], sst, sf, stf, -1);
+                    if (sst == INK2_OK && strcmp(sn, "core")) {
+                        static char sline[N_ASTEP][64]; snprintf(sline[si], sizeof sline[si], "attention.%s", sn);
+                        char kk[200]; snprintf(kk, sizeof kk, "model.layers.%d.self_attn.%s#call%d", b, sn, k); cov_mark(sline[si], kk);
+                    }
                 }
                 // the clips never engage on the recorded data (head norms far below the thresholds): the three clip
                 // steps once more on their recorded inputs times 64 (exact), so the clip branch runs; no torch dump here
@@ -1225,6 +1585,7 @@ int main(int argc, char **argv) {
                     free(bb); free(po);
                 }
                 bstat_add(&BH, st, frac, tfrac, pert);
+                if (st == INK2_OK) cov_mark("head", "logit_softcap#call0");
             }
         }
         // 2d-2f in BOUND mode against the float64 truth: the block-state reads, the cross-pass message read, the
@@ -1276,6 +1637,7 @@ int main(int argc, char **argv) {
                     }
                 }
                 bstat_add(&B[0], st, frac, tfrac, pert);
+                if (st == INK2_OK) { char kk[200]; snprintf(kk, sizeof kk, "%s#call%d", mod, k); cov_mark("block_read", kk); }
             }
         }
         // (e) the cross-pass message read
@@ -1307,6 +1669,7 @@ int main(int argc, char **argv) {
                     pert = frac_used(pout, (const double *)(const void *)tr->data, bnd, cnt);
                 }
                 bstat_add(&B[1], st, frac, tfrac, pert);
+                if (st == INK2_OK) { char kk[200]; snprintf(kk, sizeof kk, "model.message_input#call%d", k); cov_mark("message_input", kk); }
             }
         }
         // (f) the message gates
@@ -1339,6 +1702,7 @@ int main(int argc, char **argv) {
                     pert = frac_used(pout, (const double *)(const void *)tr->data, bnd, cnt);
                 }
                 bstat_add(&B[2], st, frac, tfrac, pert);
+                if (st == INK2_OK) { char kk[200]; snprintf(kk, sizeof kk, "model.layers.%d.%s_message_gate#call%d", b, roles[r], k); cov_mark("message_step", kk); }
             }
         }
         g_dig = &g_digest2;   // the forward's lines feed the second digest
@@ -1362,11 +1726,19 @@ int main(int argc, char **argv) {
                 int nb = (int)bs->shape[bs->n_dims - 2], P[4096];
                 for (int t = 0; t < Tn; t++) P[t] = (int)((const int64_t *)(const void *)pz->data)[t];
                 const float *msg = ms ? (const float *)ms->data : NULL;
-                ink2_status st = ink2_decoder_layer(&s, &w, &lc, a, Tn, P, (const float *)x->data, (const float *)bs->data, nb, msg, lo);
+                int Kx = s.n_used, Ex = s.n_expert, *osel = malloc(sizeof(int) * (size_t)Tn * Kx * 2), *tsel = osel + (size_t)Tn * Kx;
+                double *sv = malloc(sizeof(double) * (size_t)Tn * Ex * 2), *sdv = sv + (size_t)Tn * Ex;
+                ink2_status st = ink2_decoder_layer_sel(&s, &w, &lc, a, Tn, P, (const float *)x->data, (const float *)bs->data, nb, msg, lo, osel);
                 double frac = 0, tfrac = 0, pert = -1;
                 if (st == INK2_OK) {
                     int un = bound_layer(&s, &W, b, Tn, (const float *)x->data, (const float *)bs->data, nb, msg, P,
-                                                  (const float *)mk->data, (const int64_t *)(const void *)rd->data, ly, lb);
+                                         (const float *)mk->data, (const int64_t *)(const void *)rd->data, ly, lb, tsel, sv, sdv);
+                    // our selection against the double chain's (the truth's), classified under the chain's score bounds
+                    for (int t = 0; t < Tn; t++) {
+                        double gap, gapb;
+                        int cls = sel_classify(osel + (size_t)t * Kx, tsel + (size_t)t * Kx, sv + (size_t)t * Ex, sdv + (size_t)t * Ex, Ex, Kx, &gap, &gapb);
+                        selstat_add(&SEL_L, cls, gap, gapb);
+                    }
                     layer_unstable += un; layer_positions += Tn;
                     const double *tv = (const double *)(const void *)tr->data; double dmx = 0, tm = 0;
                     for (size_t i = 0; i < TH; i++) { double d = fabs(ly[i] - tv[i]); if (d > dmx) dmx = d; if (fabs(tv[i]) > tm) tm = fabs(tv[i]); }
@@ -1382,6 +1754,7 @@ int main(int argc, char **argv) {
                     if (un) { if (layer_nun < 32) { layer_un_app[layer_nun] = a; layer_un_seq[layer_nun] = q; layer_un_n[layer_nun] = un; } layer_nun++; }
                 }
                 bstat_add(&BL, st, frac, tfrac, pert);
+                free(osel); free(sv);
             }
             free(ly); free(lo); ink2_cache_free(&lc);
         }
@@ -1447,6 +1820,182 @@ int main(int argc, char **argv) {
             gate_b_run(&s, &w, Tn, ids, c2, 4, L0, S0, 2);
             free(ids); free(L0); free(S0); free(Lm); free(Sm);
         }
+        // 4. SINGLE-STEP LINES over every recorded module call of the sequence, by THE COVERAGE TABLE: each module
+        // (layer index as B) maps to the op its single-step line runs, or to the piece line that already checks it, or
+        // (one row) to a named composite. The table is the whole list: a call whose module is not in it is unnamed.
+        g_dig = &g_digest3;
+        {
+            static const struct { const char *pat, *op, *line; } TAB[] = {
+                { "lm_head", "linear", NULL }, { "logit_softcap", "softcap", NULL }, { "model.embed_tokens", "embed", NULL },
+                { "model.embed_tokens.embed_norm", "rms_norm", NULL }, { "model.norm", "rms_norm", NULL },
+                { "model.final_input", NULL, "block_read" }, { "model.final_input.norm", "unweighted_norm", NULL },
+                { "model.message_input", NULL, "message_input" }, { "model.message_input.norm", "unweighted_norm", NULL },
+                { "model.layers.B", NULL, "COMPOSITE" },
+                { "model.layers.B.attention_input", NULL, "block_read" }, { "model.layers.B.attention_input.norm", "unweighted_norm", NULL },
+                { "model.layers.B.mlp_input", NULL, "block_read" }, { "model.layers.B.mlp_input.norm", "unweighted_norm", NULL },
+                { "model.layers.B.input_layernorm", "rms_norm", NULL }, { "model.layers.B.q_input_layernorm", "rms_norm", NULL },
+                { "model.layers.B.k_input_layernorm", "rms_norm", NULL }, { "model.layers.B.v_input_layernorm", "rms_norm", NULL },
+                { "model.layers.B.post_attention_layernorm", "rms_norm", NULL },
+                { "model.layers.B.post_attention_convolution", "short_conv", NULL }, { "model.layers.B.post_mlp_convolution", "short_conv", NULL },
+                { "model.layers.B.q_message_gate", NULL, "message_step" }, { "model.layers.B.k_message_gate", NULL, "message_step" },
+                { "model.layers.B.v_message_gate", NULL, "message_step" }, { "model.layers.B.mlp_message_gate", NULL, "message_step" },
+                { "model.layers.B.q_message_gate.norm", "unweighted_norm", NULL }, { "model.layers.B.k_message_gate.norm", "unweighted_norm", NULL },
+                { "model.layers.B.v_message_gate.norm", "unweighted_norm", NULL }, { "model.layers.B.mlp_message_gate.norm", "unweighted_norm", NULL },
+                { "model.layers.B.q_message_gate.down_proj", "linear", NULL }, { "model.layers.B.k_message_gate.down_proj", "linear", NULL },
+                { "model.layers.B.v_message_gate.down_proj", "linear", NULL }, { "model.layers.B.mlp_message_gate.down_proj", "linear", NULL },
+                { "model.layers.B.q_message_gate.forget_gate_proj", "linear", NULL }, { "model.layers.B.k_message_gate.forget_gate_proj", "linear", NULL },
+                { "model.layers.B.v_message_gate.forget_gate_proj", "linear", NULL }, { "model.layers.B.mlp_message_gate.forget_gate_proj", "linear", NULL },
+                { "model.layers.B.q_message_gate.message_gate_proj", "linear", NULL }, { "model.layers.B.k_message_gate.message_gate_proj", "linear", NULL },
+                { "model.layers.B.v_message_gate.message_gate_proj", "linear", NULL }, { "model.layers.B.mlp_message_gate.message_gate_proj", "linear", NULL },
+                { "model.layers.B.mlp", NULL, "expert_layer" }, { "model.layers.B.mlp.gate", "router", NULL },
+                { "model.layers.B.mlp.gate.score_fn", "score_fn", NULL }, { "model.layers.B.mlp.experts", "experts", NULL },
+                { "model.layers.B.mlp.experts.act_fn", "act_fn", NULL }, { "model.layers.B.mlp.experts.act_fn.gate_softcap", "softcap", NULL },
+                { "model.layers.B.mlp.experts.act_fn.up_softcap", "softcap", NULL },
+                { "model.layers.B.self_attn", NULL, "attention" },
+                { "model.layers.B.self_attn.q_proj", NULL, "attention.q_proj" }, { "model.layers.B.self_attn.q_proj.linear", "linear", NULL },
+                { "model.layers.B.self_attn.q_proj.norm", NULL, "attention.q_proj.norm" },
+                { "model.layers.B.self_attn.q_proj.norm.l2_clip", "l2_clip", NULL }, { "model.layers.B.self_attn.q_proj.norm.log_scale", "log_scale", NULL },
+                { "model.layers.B.self_attn.k_proj", NULL, "attention.k_proj" }, { "model.layers.B.self_attn.k_proj.linear", "linear", NULL },
+                { "model.layers.B.self_attn.k_proj.sconv", NULL, "attention.k_proj.sconv" }, { "model.layers.B.self_attn.k_proj.sconv.weight_proj", "linear", NULL },
+                { "model.layers.B.self_attn.k_proj.norm", NULL, "attention.k_proj.norm" },
+                { "model.layers.B.self_attn.v_proj", NULL, "attention.v_proj" }, { "model.layers.B.self_attn.v_proj.linear", "linear", NULL },
+                { "model.layers.B.self_attn.v_proj.sconv", NULL, "attention.v_proj.sconv" }, { "model.layers.B.self_attn.v_proj.sconv.weight_proj", "linear", NULL },
+                { "model.layers.B.self_attn.v_proj.norm", NULL, "attention.v_proj.norm" },
+                { "model.layers.B.self_attn.relative_position_bias", NULL, "attention.relative_position_bias" },
+                { "model.layers.B.self_attn.relative_position_bias.linear", "linear", NULL },
+                { "model.layers.B.self_attn.relative_position_bias.norm", NULL, "attention.relative_position_bias.norm" },
+                { "model.layers.B.self_attn.relative_position_bias.norm.l2_clip", "l2_clip", NULL },
+                { "model.layers.B.self_attn.relative_position_bias.norm.log_scale", "log_scale", NULL },
+                { "model.layers.B.self_attn.sink_proj", NULL, "attention.sink_proj" },
+                { "model.layers.B.self_attn.o_proj", NULL, "attention.o_proj" }, { "model.layers.B.self_attn.o_proj.gate_proj", "linear", NULL },
+                { "model.layers.B.self_attn.o_proj.linear", "linear", NULL },
+            };
+            const int NT = (int)(sizeof TAB / sizeof TAB[0]);
+            // the calls: every dump tensor's "<module>#call<k>", the applicationNN aliases and the bare logits excluded
+            int ncall = 0; char (*calls)[160] = malloc(sizeof *calls * (size_t)D.nt);
+            for (int i = 0; i < D.nt; i++) {
+                const char *nm = D.t[i].name, *c = strstr(nm, "#call");
+                if (!strncmp(nm, "application", 11) || !c) continue;
+                char ck[160]; int len = (int)(c - nm) + 5; while (nm[len] >= '0' && nm[len] <= '9') len++;
+                snprintf(ck, sizeof ck, "%.*s", len, nm);
+                int dup = 0; for (int j = 0; j < ncall && !dup; j++) dup = !strcmp(calls[j], ck);
+                if (!dup) snprintf(calls[ncall++], sizeof calls[0], "%s", ck);
+            }
+            // run every op row's calls
+            int *row_of = malloc(sizeof(int) * (size_t)ncall);
+            for (int ci = 0; ci < ncall; ci++) {
+                char mod[160], pat[160]; int k = -1, b = -1;
+                const char *c = strstr(calls[ci], "#call"); snprintf(mod, sizeof mod, "%.*s", (int)(c - calls[ci]), calls[ci]); k = atoi(c + 5);
+                if (sscanf(mod, "model.layers.%d", &b) == 1) { const char *rest = strchr(mod + 13, '.'); snprintf(pat, sizeof pat, "model.layers.B%s", rest ? rest : ""); }
+                else snprintf(pat, sizeof pat, "%s", mod);
+                row_of[ci] = -1;
+                for (int r = 0; r < NT; r++) if (!strcmp(TAB[r].pat, pat)) { row_of[ci] = r; break; }
+                if (row_of[ci] >= 0 && TAB[row_of[ci]].op) {
+                    int li = 0; const char *op = TAB[row_of[ci]].op;
+                    for (int j = 0; j < 12; j++) if (!strcmp(sl_name[j], op) || (!strcmp(op, "short_conv") && j == L_CONV) || (!strcmp(op, "embed") && j == L_EMB)) { li = j; break; }
+                    run_step(&s, &w, &W, &In, &D, &TR, mod, k, op, li);
+                }
+            }
+            // 4m. the decoder layer's own last step, ELEMENTWISE on the recorded tensors: residual = x + post-attention
+            // conv (no add at a block boundary), out = residual + post-MLP conv; BITS against torch's recorded output
+            // (the same float32 adds in the same order), then against the truth (the exact sum of the same operands)
+            // under its one-rounding bound u |residual| (when added) + u |out|; perturbation: the post-MLP conv
+            // output's first element + 0.25. And the WIRING on recorded tensors, by memcmp: each application's hidden
+            // input (the previous output; at a pass restart the pre-loop state), its block states (the reference's
+            // growth: a boundary layer's input appended after it; restart: the pre-loop states), the MLP read's states
+            // and partial, the messages and the message read's inputs (the previous pass's states after the one its
+            // first core layer appended, and its last output), the final read's inputs.
+            {
+                size_t TH = (size_t)Tn * H;
+                const float **bsl = malloc(sizeof(float *) * (size_t)(s.n_app + 2)), **pre_bsl = malloc(sizeof(float *) * (size_t)(s.n_app + 2));
+                const float **prev_bsl = malloc(sizeof(float *) * (size_t)(s.n_app + 2));
+                int nb = 0, pre_nb = 0, n_prev = 0, msg_k = 0;
+                const float *h_in = tf32(&D, "model.embed_tokens#call0", TH), *pre_h = NULL, *prev_last = NULL, *last_out = NULL;
+                float *pack = malloc(sizeof(float) * TH * (size_t)(s.n_app + 2)), *rb = malloc(sizeof(float) * TH * 3);
+                double *rt = malloc(sizeof(double) * TH * 2);
+#define WIRE(what, got, want, n) do { wire_n++; if (!(got) || !(want) || memcmp(got, want, sizeof(float) * (n))) { wire_bad++; \
+                    if (!wire_first[0]) snprintf(wire_first, sizeof wire_first, "%s %s app %d", seqs[q], what, a); } } while (0)
+#define PACK(list, cnt) do { for (int t = 0; t < Tn; t++) for (int j = 0; j < (cnt); j++) memcpy(pack + ((size_t)t * (cnt) + j) * H, (list)[j] + (size_t)t * H, sizeof(float) * H); } while (0)
+                for (int a = 0; a < s.n_app; a++) {
+                    int b = s.app_block[a], p = s.app_pass[a], k = 0; for (int j = 0; j < a; j++) k += s.app_block[j] == b;
+                    int bnd = b % s.attn_res_block == 0;
+                    if (b == s.loop_start) {
+                        if (p == 0) { pre_h = h_in; pre_nb = nb; for (int j = 0; j < nb; j++) pre_bsl[j] = bsl[j]; }
+                        else { n_prev = nb - pre_nb - 1; for (int j = 0; j < n_prev; j++) prev_bsl[j] = bsl[pre_nb + 1 + j]; prev_last = last_out;
+                               h_in = pre_h; nb = pre_nb; for (int j = 0; j < nb; j++) bsl[j] = pre_bsl[j]; }
+                    }
+                    char kk[200];
+                    snprintf(kk, sizeof kk, "model.layers.%d#call%d#in0", b, k); const float *x = tf32(&In, kk, TH);
+                    snprintf(kk, sizeof kk, "model.layers.%d#call%d#in1", b, k); const float *bsr = tf32(&In, kk, TH * (size_t)nb);
+                    WIRE("hidden input", x, h_in, TH);
+                    PACK(bsl, nb); WIRE("block states", nb ? bsr : pack, pack, TH * (size_t)nb);
+                    if (b >= s.loop_start && b < s.loop_end && p > 0) {   // the message read's inputs and the messages
+                        snprintf(kk, sizeof kk, "model.message_input#call%d#in0", msg_k); const float *m0 = tf32(&In, kk, TH * (size_t)n_prev);
+                        snprintf(kk, sizeof kk, "model.message_input#call%d#in1", msg_k); const float *m1 = tf32(&In, kk, TH);
+                        snprintf(kk, sizeof kk, "model.message_input#call%d", msg_k); const float *mo = tf32(&D, kk, TH * 4);
+                        snprintf(kk, sizeof kk, "model.layers.%d#call%d#in2", b, k); const float *mi = tf32(&In, kk, TH * 4);
+                        PACK(prev_bsl, n_prev); WIRE("message read states", n_prev ? m0 : pack, pack, TH * (size_t)n_prev);
+                        WIRE("message read partial", m1, prev_last, TH); WIRE("messages", mi, mo, TH * 4);
+                        msg_k++;
+                    }
+                    snprintf(kk, sizeof kk, "model.layers.%d.post_attention_convolution#call%d", b, k); const float *pac = tf32(&D, kk, TH);
+                    snprintf(kk, sizeof kk, "model.layers.%d.post_mlp_convolution#call%d", b, k); const float *pmc = tf32(&D, kk, TH);
+                    snprintf(kk, sizeof kk, "model.layers.%d#call%d", b, k); const float *lout = tf32(&D, kk, TH);
+                    int nb2 = bnd ? nb + 1 : nb;
+                    snprintf(kk, sizeof kk, "model.layers.%d.mlp_input#call%d#in0", b, k); const float *mis = tf32(&In, kk, TH * (size_t)nb2);
+                    snprintf(kk, sizeof kk, "model.layers.%d.mlp_input#call%d#in1", b, k); const float *mip = tf32(&In, kk, TH);
+                    if (!x || !pac || !pmc || !lout) { bstat_add(&SL[L_RES], INK2_BAD_INPUT, 0, 0, -1); }
+                    else {
+                        float *res = rb, *out = rb + TH, *po = rb + 2 * TH; double *rd_ = rt, *bd = rt + TH;
+                        for (size_t i = 0; i < TH; i++) res[i] = bnd ? pac[i] : x[i] + pac[i];
+                        for (size_t i = 0; i < TH; i++) out[i] = res[i] + pmc[i];
+                        res_bits_n++; res_bits_eq += !memcmp(out, lout, sizeof(float) * TH);
+                        WIRE("MLP read partial", mip, res, TH);
+                        if (bnd) { bsl[nb] = x; PACK(bsl, nb + 1); } else PACK(bsl, nb);
+                        WIRE("MLP read states", mis, pack, TH * (size_t)nb2);
+                        for (size_t i = 0; i < TH; i++) {
+                            double r = bnd ? (double)pac[i] : (double)x[i] + pac[i], o = r + pmc[i];
+                            rd_[i] = o; bd[i] = (bnd ? 0 : U * fabs(r)) + U * fabs(o);
+                        }
+                        double fr = frac_used(out, rd_, bd, TH), tfr = frac_used(lout, rd_, bd, TH);
+                        memcpy(po, out, sizeof(float) * TH); po[0] = res[0] + (pmc[0] + 0.25f);
+                        double pf = frac_used(po, rd_, bd, TH);
+                        bstat_add(&SL[L_RES], INK2_OK, fr, tfr, pf);
+                        cov_markf("residual", "model.layers.%d#call%d", b, k);
+                    }
+                    if (bnd) bsl[nb++] = x;
+                    last_out = lout; h_in = lout;
+                }
+                {
+                    int a = s.n_app;
+                    const float *f0 = tf32(&In, "model.final_input#call0#in0", TH * (size_t)nb), *f1 = tf32(&In, "model.final_input#call0#in1", TH);
+                    PACK(bsl, nb); WIRE("final read states", f0, pack, TH * (size_t)nb); WIRE("final read partial", f1, last_out, TH);
+                }
+#undef WIRE
+#undef PACK
+                free(bsl); free(pre_bsl); free(prev_bsl); free(pack); free(rb); free(rt);
+            }
+            // 4z. the coverage of this sequence's calls
+            for (int ci = 0; ci < ncall; ci++) {
+                int r = row_of[ci]; cov_calls++;
+                if (r < 0) { cov_unnamed++; if (!cov_first_unnamed[0]) snprintf(cov_first_unnamed, sizeof cov_first_unnamed, "%s", calls[ci]); continue; }
+                if (TAB[r].line && !strcmp(TAB[r].line, "COMPOSITE")) {
+                    // model.layers.<b>: its own last step in the residual line, its children each in theirs (checked
+                    // below), its composition in gates A and B
+                    const char *ln = cov_find(calls[ci]);
+                    if (!ln) { cov_uncovered++; if (!cov_first_unc[0]) snprintf(cov_first_unc, sizeof cov_first_unc, "%s", calls[ci]); }
+                    else cov_composite++;
+                    continue;
+                }
+                const char *ln = cov_find(calls[ci]);
+                if (!ln) { cov_uncovered++; if (!cov_first_unc[0]) snprintf(cov_first_unc, sizeof cov_first_unc, "%s", calls[ci]); continue; }
+                cov_single++;
+                int li = -1; for (int j = 0; j < cov_nlines; j++) if (!strcmp(cov_lines[j], ln)) li = j;
+                if (li < 0 && cov_nlines < 64) { li = cov_nlines; cov_lines[cov_nlines++] = ln; }
+                if (li >= 0) cov_per_line[li]++;
+            }
+            free(calls); free(row_of);
+        }
         g_dig = &g_digest;
         free(bnd); free(pout);
         free(out); free(probs);
@@ -1506,24 +2055,21 @@ int main(int argc, char **argv) {
         if (!ok) bad = 1;
     }
     {
-        // GREEN only when the bound is established everywhere and the control leaves it everywhere; OPEN when nothing is
-        // out of bound but the bound is not established (an expert selection it cannot prove) or the control stays
-        // inside it somewhere; FAIL when anything is out of bound. OPEN counts as failing unless --allow-red names it.
-        const bstat *b = &BL; int pert_ok = b->pert_mult > 1.0;
-        int hard = !b->calls || b->fail || b->nob || b->red, ok = !hard && pert_ok && !layer_unstable;
-        char ctl[512] = "", un[1024] = "";
-        for (int i = 0; i < layer_nctl; i++) snprintf(ctl + strlen(ctl), sizeof ctl - strlen(ctl), "%s%s a%02d", i ? ", " : " ", seqs[layer_ctl_seq[i]], layer_ctl_app[i]);
-        for (int i = 0; i < layer_nun && i < 32; i++)
-            snprintf(un + strlen(un), sizeof un - strlen(un), "%s%s a%02d:%d", i ? ", " : "", seqs[layer_un_seq[i]], layer_un_app[i], layer_un_n[i]);
-        printf("%s decoder_layer (bound mode, c = %.0f, one application on its recorded inputs vs the per-application float64 "
-               "truth, the pieces' bounds composed first order): %d calls, %d failed, %d out of bound; largest fraction %.3g; "
-               "torch %.3g%s; perturbation (post_mlp_convolution tap + 0.25) leaves the bound at %d of %d applications, "
-               "smallest %.3g times the bound%s%s%s; expert selections not provably stable: %d of %d positions%s%s%s; the "
-               "harness's double vs the truth: %.2g normwise\n", hard ? "FAIL" : ok ? "GREEN" : "OPEN", CB, b->calls, b->fail,
-               b->nob, b->frac, b->torch_frac, b->torch_frac > 1.0 ? " (TORCH OUTSIDE THE BOUND)" : "", b->calls - layer_nctl,
-               b->calls, b->pert_mult, layer_nctl ? " (NOT at" : "", ctl, layer_nctl ? ")" : "", layer_unstable, layer_positions,
-               layer_unstable ? " (THOSE POSITIONS ARE NOT BOUNDED: " : "", un, layer_unstable ? ")" : "", layer_harness_rel);
-        if (!ok && !(!hard && strstr(allow, "decoder_layer"))) bad = 1;
+        // a REPORT line (the coordinator's ruling 2026-11-21): the one-level composition is too loose to gate on; every
+        // operation of the layer is gated by its single-step line, the composition by gates A and B
+        const bstat *b = &BL;
+        char ctl[512] = "";
+        for (int i = 0; i < layer_nctl; i++) snprintf(ctl + strlen(ctl), sizeof ctl - strlen(ctl), "%s%s a%02d", i ? ", " : "", seqs[layer_ctl_seq[i]], layer_ctl_app[i]);
+        printf("INFO decoder_layer (a REPORT, not a gate: one application on its recorded inputs vs the per-application float64 "
+               "truth, the pieces' bounds composed first order, GIVEN THE SAME EXPERT SELECTION): %d calls, %d failed, %d out of "
+               "bound; largest fraction %.3g; torch %.3g; the one-level composition lets a 0.25 post-MLP tap through at %d of %d "
+               "applications (%s; smallest %.3g times the bound); the operations are each gated by their single-step lines; "
+               "selection, ours vs the double chain's: %d of %d positions differ, %d at near-ties (largest gap there %.3g), %d "
+               "outside the bound; %d positions have a gap below the chain's propagated score bound (smallest gap %.3g); the "
+               "harness's double vs the truth: %.2g normwise\n", b->calls, b->fail, b->nob, b->frac, b->torch_frac, layer_nctl,
+               b->calls, layer_nctl ? ctl : "none", b->pert_mult, SEL_L.near_differ + SEL_L.hard_differ, SEL_L.pos,
+               SEL_L.near_differ, SEL_L.near_gap_max, SEL_L.hard_differ, SEL_L.near_ties, SEL_L.min_gap, layer_harness_rel);
+        (void)layer_nun; (void)layer_un_app; (void)layer_un_seq; (void)layer_un_n;
     }
     {
         int ok0 = !GA[0].st_bad && !GA[0].argmax_bad && GA[0].worst_ratio <= 8.0 && GA[0].positions;
@@ -1554,7 +2100,56 @@ int main(int argc, char **argv) {
                gb_bad_states[2], gb_fail ? " (A CHUNK FAILED TO RUN)" : "");
         if (!ok) bad = 1;
     }
+    {
+        // the expert selection: ours vs the truth's at every router call, the near-tie branch, the planted cases
+        const selstat *S = &SEL_P;
+        int planted_ok = plant_cls[0] == 1 && plant_cls[1] == 2;
+        int ok = S->pos && !S->hard_differ && !S->file_differ && planted_ok;
+        char nt[160] = "";
+        if (S->near_differ) snprintf(nt, sizeof nt, "; selection differs at a near-tie of %.3g at %d positions", S->near_gap_max, S->near_differ);
+        printf("%s expert_selection (every mlp.gate call on its recorded input: our float32 choice vs the float64 truth's; the "
+               "expert_layer, router and experts bounds hold GIVEN THE SAME SELECTION): %d positions, %d differ outside the "
+               "bound%s; the harness's double selection vs the truth file's indices: %d differ; smallest gap between the last "
+               "chosen and the first unchosen score %.3g; %d positions with the gap below the scores' own error bound (near-ties, "
+               "where two correct engines may choose differently); planted (the truth's bias edited, ours on the recorded router): "
+               "0.5x the bound apart %s (gap %.3g, bound %.3g), 10x apart %s (gap %.3g, bound %.3g)\n", ok ? "GREEN" : "FAIL",
+               S->pos, S->hard_differ, nt, S->file_differ, S->min_gap, S->near_ties,
+               plant_cls[0] == 1 ? "reports a near-tie, as it must" : "DID NOT REPORT A NEAR-TIE", plant_gap[0], plant_gapb[0],
+               plant_cls[1] == 2 ? "FAILS, as it must" : "DID NOT FAIL", plant_gap[1], plant_gapb[1]);
+        if (!ok) bad = 1;
+    }
+    for (int i = 0; i < 13; i++) {
+        bstat *b = &SL[i]; b->piece = sl_name[i];
+        int pert_ok = b->pert_mult > 1.0, ok = b->calls && !b->fail && !b->nob && !b->red && pert_ok;
+        if (i == L_RES) ok = ok && res_bits_eq == res_bits_n;
+        printf("%s %s (single step on its recorded inputs vs the float64 truth of the call, c = %.0f: %s): %d calls, %d failed, "
+               "%d out of bound; largest fraction %.3g; torch %.3g%s; perturbation %.3g times the bound%s", ok ? "GREEN" : "FAIL",
+               b->piece, CB, sl_what[i], b->calls, b->fail, b->nob, b->frac, b->torch_frac,
+               b->torch_frac > 1.0 ? " (TORCH OUTSIDE THE BOUND)" : "", b->pert_mult, pert_ok ? "" : " (THE CONTROL DID NOT FAIL)");
+        if (i == L_RES) printf("; BITS: rebuilt from the recorded operands = torch's recorded output at %d of %d applications", res_bits_eq, res_bits_n);
+        printf("\n");
+        if (!ok) bad = 1;
+    }
+    {
+        printf("%s wiring (recorded tensors by memcmp, the reference's rules restated: hidden inputs, block-state growth with no add "
+               "at a boundary, the pass restart, the MLP read's states and partial, the message read's inputs and the messages, the "
+               "final read's inputs): %d tensors compared, %d differ%s%s\n", wire_n && !wire_bad ? "GREEN" : "FAIL", wire_n, wire_bad,
+               wire_bad ? ", first: " : "", wire_bad ? wire_first : "");
+        if (!wire_n || wire_bad) bad = 1;
+    }
+    {
+        int ok = cov_calls && !cov_unnamed && !cov_uncovered;
+        char per[2048] = "";
+        for (int i = 0; i < cov_nlines; i++) snprintf(per + strlen(per), sizeof per - strlen(per), "%s%s %d", i ? ", " : "", cov_lines[i], cov_per_line[i]);
+        printf("%s coverage: %d calls, every one in a single-step line except %d named (composite: model.layers.<b>, its own last "
+               "step in the residual line, each child in its own line, its composition in forward gates A and B); %d unnamed "
+               "(not in the table)%s%s, %d in the table but not checked%s%s; by line: %s\n", ok ? "GREEN" : "FAIL", cov_calls,
+               cov_composite, cov_unnamed, cov_unnamed ? ", first: " : "", cov_first_unnamed, cov_uncovered,
+               cov_uncovered ? ", first: " : "", cov_first_unc, per);
+        if (!ok) bad = 1;
+    }
     printf("outputs digest: %016llx\n", (unsigned long long)g_digest);
     printf("outputs digest (forward lines): %016llx\n", (unsigned long long)g_digest2);
+    printf("outputs digest (single-step lines): %016llx\n", (unsigned long long)g_digest3);
     return bad;
 }
