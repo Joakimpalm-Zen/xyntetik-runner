@@ -21,6 +21,7 @@
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <ftw.h>
 #include <utime.h>
 #define setenv_compat(k, v) setenv(k, v, 1)
 #endif
@@ -253,6 +254,13 @@ static void listed_descriptors_close(void) {
 #endif
 #endif
 
+#ifndef _WIN32
+static int rm_entry(const char *path, const struct stat *st, int flag, struct FTW *ftw) {
+    (void)st; (void)ftw;
+    return flag == FTW_DP ? rmdir(path) : unlink(path);
+}
+#endif
+
 int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--internal-instance-sweep")) {
 #ifndef _WIN32
@@ -267,7 +275,13 @@ int main(int argc, char **argv) {
     _mkdir(tmpl);
     setenv_compat("APPDATA", tmpl);
 #else
-    snprintf(tmpl, sizeof tmpl, "/tmp/xyntetik-test-%ld", (long)getpid());
+    // under TMPDIR when it is set (a test run must not write outside the
+    // place its operator gave it), else /tmp; removed again at the end
+    const char *tmpdir = getenv("TMPDIR");
+    if (!tmpdir || !*tmpdir) tmpdir = "/tmp";
+    size_t tn = strlen(tmpdir);
+    while (tn > 1 && tmpdir[tn - 1] == '/') tn--;
+    snprintf(tmpl, sizeof tmpl, "%.*s/xyntetik-test-%ld", (int)tn, tmpdir, (long)getpid());
     mkdir(tmpl, 0755);
     setenv_compat("HOME", tmpl);
 #endif
@@ -629,6 +643,11 @@ int main(int argc, char **argv) {
 #endif
     }
 
+#ifndef _WIN32
+    // the private HOME goes with the run, on success and on failure
+    if (nftw(tmpl, rm_entry, 16, FTW_DEPTH | FTW_PHYS) != 0)
+        fprintf(stderr, "test_instances: note: could not remove %s\n", tmpl);
+#endif
     if (fails) { fprintf(stderr, "test_instances: %d FAILURES\n", fails); return 1; }
     printf("instances registry tests ok\n");
     return 0;

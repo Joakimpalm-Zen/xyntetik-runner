@@ -616,6 +616,16 @@ class _CudaGateCopy:
 
     SETTINGS = ("GATE_MODEL", "GATE_PYTHON", "RUNNER_LLAMA_CPP_BIN", "RUNNER_IQ_FIXTURES")
 
+    @staticmethod
+    def as_evidence(path):
+        """The temp directory as the summary records it: from ~ when it is
+        under the home directory the gate runs with (this test's own)."""
+        home = os.path.expanduser("~").replace("\\", "/").rstrip("/")
+        p = path.replace("\\", "/")
+        if home and (p.lower() == home.lower() or p.lower().startswith(home.lower() + "/")):
+            return "~" + p[len(home):]
+        return path
+
     def run_gate(self, env_file=None, prepare=None, bash_args=()):
         """prepare(base) makes what a case needs in the scratch directory and
         returns environment changes (None removes a variable); the summary
@@ -777,6 +787,22 @@ class CudaGateRefusesADegradedLaunch(_CudaGateCopy, unittest.TestCase):
         self.assertEqual(env["degraded"], [])
         self.assertEqual(env["warned"], ["user name"])
 
+    @unittest.skipIf(os.name == "nt", "the stand-in runner is a POSIX script")
+    def test_a_temp_directory_under_home_is_recorded_from_tilde(self):
+        """The summary is committed as evidence: a TMPDIR under the home
+        directory (a login name in its path) is written from ~, and no part
+        of the home path reaches the record. Found on a second machine whose
+        TMPDIR sat inside its user's home folder."""
+        def prepare(base):
+            home = base / "home-of-someone"
+            (home / "t").mkdir(parents=True)
+            return self.ready(base, HOME=home.as_posix(), TMPDIR=(home / "t").as_posix())
+        r, base, _ = self.run_gate(prepare=prepare)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)  # no CUDA here: --caps stops it
+        self.assertIn("caps reports no CUDA device", r.stdout)
+        self.assertEqual(self.summary[0]["env"]["tempdir"], "~/t")
+        self.assertNotIn("home-of-someone", json.dumps(self.summary[0]))
+
     def test_no_user_name_at_all_is_refused(self):
         var = "USERNAME" if os.name == "nt" else "USER"
         def prepare(base):
@@ -811,7 +837,7 @@ class CudaGateRefusesADegradedLaunch(_CudaGateCopy, unittest.TestCase):
         self.assertIn("caps reports no CUDA device", r.stdout)
         env = self.summary[0]["env"]
         self.assertEqual(env["degraded"], ["user name"])
-        self.assertEqual(env["tempdir"], base + "/tmp")
+        self.assertEqual(env["tempdir"], self.as_evidence(base + "/tmp"))
         self.assertRegex(env["shell"], r"bash")
         self.assertIs(env["login_shell"], False)
 

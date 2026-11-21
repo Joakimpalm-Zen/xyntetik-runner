@@ -77,4 +77,12 @@ size_t ecdsa_spki_encode(ec_curve c, const uint8_t *pub, uint8_t *out);
 bool ecdsa_private_key_parse(const uint8_t *der, size_t der_len,
                              ec_curve *curve_out, uint8_t *priv_out);
 
+// Whether a private key the parser refused carries its curve as explicit
+// parameters (a SEQUENCE of field, coefficients and generator) where a named
+// curve's OID belongs: in a PKCS#8 AlgorithmIdentifier, or in SEC1's [0].
+// Such keys are refused (only the named P-256, P-384 and P-521 are read); this
+// lets the error say so. macOS's own /usr/bin/openssl (LibreSSL) writes them
+// from `genpkey` unless asked for `-pkeyopt ec_param_enc:named_curve`.
+bool ecdsa_key_has_explicit_params(const uint8_t *der, size_t der_len);
+
 #endif

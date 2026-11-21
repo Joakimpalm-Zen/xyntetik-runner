@@ -70,8 +70,12 @@ def _key(d, curve, form):
     if form == "sec1":
         cmd = [OPENSSL, "ecparam", "-name", curve, "-genkey", "-noout", "-out", priv]
     else:
+        # ec_param_enc:named_curve: OpenSSL 3 writes the curve's name by
+        # default, macOS's own openssl (LibreSSL) its explicit parameters,
+        # which this build refuses (test_explicit_curve_parameters_are_refused)
         cmd = [OPENSSL, "genpkey", "-algorithm", "EC", "-pkeyopt",
-               f"ec_paramgen_curve:{curve}", "-out", priv]
+               f"ec_paramgen_curve:{curve}", "-pkeyopt", "ec_param_enc:named_curve",
+               "-out", priv]
     subprocess.run(list(map(str, cmd)), check=True, stderr=subprocess.DEVNULL)
     subprocess.run([OPENSSL, "pkey", "-in", str(priv), "-pubout", "-out", str(pub)],
                    check=True, stderr=subprocess.DEVNULL)
@@ -102,6 +106,38 @@ def _openssl_verifies(bundle, pub, dgst, tmp):
                         str(tmp / "sig.der"), str(tmp / "pae")],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return v.returncode == 0 and b"Verified OK" in v.stdout
+
+
+@pytest.mark.parametrize("form", ["sec1", "pkcs8"])
+def test_explicit_curve_parameters_are_refused(runner_bin, model, tmp_path, form):
+    """A key whose curve is written as explicit parameters (field, coefficients,
+    generator) instead of the named curve's OID is refused, in both PEM forms,
+    and the error says so and names the command that writes a named curve:
+    macOS's own /usr/bin/openssl (LibreSSL) writes such keys from `genpkey`.
+    Explicit parameters stay refused: only the named curves are read."""
+    named, _ = _key(tmp_path, "prime256v1", "sec1")
+    sec1 = tmp_path / "explicit-sec1.pem"
+    subprocess.run([OPENSSL, "ec", "-in", str(named), "-param_enc", "explicit",
+                    "-out", str(sec1)], check=True, stderr=subprocess.DEVNULL)
+    key = sec1
+    if form == "pkcs8":
+        key = tmp_path / "explicit-pkcs8.pem"
+        subprocess.run([OPENSSL, "pkcs8", "-topk8", "-nocrypt", "-in", str(sec1),
+                        "-out", str(key)], check=True, stderr=subprocess.DEVNULL)
+    head = key.read_text().splitlines()[0]
+    assert head == ("-----BEGIN EC PRIVATE KEY-----" if form == "sec1"
+                    else "-----BEGIN PRIVATE KEY-----"), head
+    m = tmp_path / "m.gguf"
+    shutil.copyfile(model, m)
+    p = _run(runner_bin, "--sign-model", m, "--model-key", key)
+    err = p.stderr.decode(errors="replace")
+    assert p.returncode != 0, err
+    assert "gives its curve as explicit parameters" in err, err
+    assert "ec_param_enc:named_curve" in err, err
+    assert not (tmp_path / "m.gguf.sig").exists()
+    # the same key with its curve named signs: the refusal is the encoding's
+    p = _run(runner_bin, "--sign-model", m, "--model-key", named)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
 
 
 @pytest.mark.parametrize("curve,form", [("prime256v1", "sec1"),

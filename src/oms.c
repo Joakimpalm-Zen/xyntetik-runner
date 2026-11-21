@@ -516,7 +516,18 @@ bool oms_sign_file(const char *model_path, const char *key_pem_path,
     ec_curve curve;
     uint8_t d[66];
     bool key_ok = der && ecdsa_private_key_parse(der, dn, &curve, d);
+    bool explicit_params = der && !key_ok && ecdsa_key_has_explicit_params(der, dn);
     if (der) { memset(der, 0, dn); free(der); }
+    if (explicit_params) {
+        fprintf(stderr, "error: --sign-model: %s gives its curve as explicit "
+                "parameters, not by name; this build reads the named curves "
+                "P-256, P-384 and P-521 only. Write the key with a named curve: "
+                "openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 "
+                "-pkeyopt ec_param_enc:named_curve -out KEY.pem (macOS's own "
+                "openssl, LibreSSL, writes explicit parameters without the "
+                "second -pkeyopt)\n", key_pem_path);
+        return false;
+    }
     if (!key_ok) {
         fprintf(stderr, "error: --sign-model: %s is not an EC private key on "
                 "P-256, P-384 or P-521 (PEM \"EC PRIVATE KEY\" or \"PRIVATE "
