@@ -393,3 +393,17 @@ const ink2_tensor *ink2p_get_expert(void *ctx, const char *stack, int e) {
     s->t.ne[0] = E->dims[2]; s->t.ne[1] = E->dims[1]; s->t.ne[2] = s->t.ne[3] = 1;
     return &s->t;
 }
+
+int ink2p_fill_expert(void *ctx, const char *stack, int e, float *dst, int64_t *rows, int64_t *cols) {
+    ink2p *p = ctx;
+    int i = ink2p_find(p, stack);
+    if (i < 0 || p->ent[i].op != OP_DEQ || e < 0 || e >= p->ent[i].dims[0]) return -1;
+    const ent_t *E = &p->ent[i];
+    *rows = E->dims[1]; *cols = E->dims[2];
+    if (dst) {
+        double t0 = now_s();
+        deq_expert(p, E, e, dst);
+        p->st.decode_s_expert += now_s() - t0; p->st.decoded_floats_expert += (uint64_t)E->dims[1] * E->dims[2];
+    }
+    return 0;
+}

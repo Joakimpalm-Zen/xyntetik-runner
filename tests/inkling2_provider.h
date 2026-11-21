@@ -53,6 +53,11 @@ int ink2p_is_stack(const ink2p *p, int i);          // an expert stack (Inkling2
 
 void ink2p_set_control(ink2p *p, int flags);   // also empties both caches
 
+// Decode expert e of stack into dst ([rows][cols] float32, the same bits get_expert returns), bypassing the
+// provider's own caches; dst NULL: rows and cols only. 0, or -1 for a name that is not a stack. This is the fill the
+// decoded-expert cache (tests/inkling2_ecache.h) takes, with ctx = the provider.
+int ink2p_fill_expert(void *ctx, const char *stack, int e, float *dst, int64_t *rows, int64_t *cols);
+
 typedef struct {
     uint64_t gets, get_hits, experts, expert_hits;
     double decode_s_tensor, decode_s_expert;    // wall seconds spent decoding

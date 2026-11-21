@@ -444,3 +444,4 @@ test-sample-nan-*.exe
 /.sample-nan/
 test-sample-nan-asan
 test-inkling2-fixture-bin
+test-inkling2-provider-bin

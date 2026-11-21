@@ -9,6 +9,7 @@
 #include "pmath.h"
 
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -97,6 +98,105 @@ void ink2_cache_free(ink2_cache *c) {
 // is the reference's on every machine where the reference's pow is within an ulp.
 float ink2_inv_sqrt(int n) { return (float)(1.0 / sqrt((double)n)); }
 
+// ---- threads over OUTPUTS. A parallel loop splits a range of independent outputs (rows of a matvec, experts' rows,
+// vocabulary rows, heads) into contiguous chunks; each output is computed by the same serial loop as with one thread,
+// so no reduction is split or reordered and the bits do not depend on the thread count. At 1 thread (the default)
+// the loop body is called once over the whole range, on the caller's thread: today's code path. A parallel loop
+// inside a parallel loop runs serially. The pool is persistent; its workers wait on a condition variable.
+typedef void (*ink2_range_fn)(void *ctx, int64_t i0, int64_t i1);
+static struct {
+    pthread_mutex_t mu; pthread_cond_t go, done;
+    pthread_t th[INK2_MAX_THREADS];
+    int n_workers, quit, pending;
+    uint64_t gen;
+    ink2_range_fn fn; void *ctx; int64_t n, chunk, next;
+} ink2_pool = { .mu = PTHREAD_MUTEX_INITIALIZER, .go = PTHREAD_COND_INITIALIZER, .done = PTHREAD_COND_INITIALIZER };
+static int ink2_n_threads = 0;    // 0: not yet read from INK2_THREADS
+static long ink2_par_min = -1;    // the least work (multiply-adds) a chunk gets; INK2_PAR_MIN, default 16384
+static __thread int ink2_in_par;
+static pthread_mutex_t ink2_cfg_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static void ink2_run_chunks(ink2_range_fn fn, void *ctx, int64_t n, int64_t chunk) {
+    for (;;) {
+        int64_t i0 = __atomic_fetch_add(&ink2_pool.next, chunk, __ATOMIC_RELAXED);
+        if (i0 >= n) break;
+        fn(ctx, i0, i0 + chunk < n ? i0 + chunk : n);
+    }
+}
+static void *ink2_worker(void *arg) {
+    (void)arg;
+    ink2_in_par = 1;
+    uint64_t seen = 0;
+    pthread_mutex_lock(&ink2_pool.mu);
+    for (;;) {
+        while (!ink2_pool.quit && ink2_pool.gen == seen) pthread_cond_wait(&ink2_pool.go, &ink2_pool.mu);
+        if (ink2_pool.quit) break;
+        seen = ink2_pool.gen;
+        ink2_range_fn fn = ink2_pool.fn; void *ctx = ink2_pool.ctx; int64_t n = ink2_pool.n, chunk = ink2_pool.chunk;
+        pthread_mutex_unlock(&ink2_pool.mu);
+        ink2_run_chunks(fn, ctx, n, chunk);
+        pthread_mutex_lock(&ink2_pool.mu);
+        if (--ink2_pool.pending == 0) pthread_cond_signal(&ink2_pool.done);
+    }
+    pthread_mutex_unlock(&ink2_pool.mu);
+    return NULL;
+}
+static void ink2_pool_stop(void) {
+    pthread_mutex_lock(&ink2_pool.mu); ink2_pool.quit = 1; pthread_cond_broadcast(&ink2_pool.go); pthread_mutex_unlock(&ink2_pool.mu);
+    for (int i = 0; i < ink2_pool.n_workers; i++) pthread_join(ink2_pool.th[i], NULL);
+    ink2_pool.n_workers = 0; ink2_pool.quit = 0;
+}
+int ink2_set_threads(int n) {
+    if (n < 1) n = 1;
+    if (n > INK2_MAX_THREADS) n = INK2_MAX_THREADS;
+    pthread_mutex_lock(&ink2_cfg_mu);
+    if (ink2_pool.n_workers && ink2_pool.n_workers != n - 1) ink2_pool_stop();
+    ink2_n_threads = n;
+    pthread_mutex_unlock(&ink2_cfg_mu);
+    return n;
+}
+int ink2_get_threads(void) {
+    if (!ink2_n_threads) {
+        const char *e = getenv("INK2_THREADS");
+        ink2_set_threads(e && *e ? atoi(e) : 1);
+    }
+    if (ink2_par_min < 0) {
+        const char *e = getenv("INK2_PAR_MIN");
+        ink2_par_min = e && *e ? atol(e) : 16384;
+        if (ink2_par_min < 1) ink2_par_min = 1;
+    }
+    return ink2_n_threads;
+}
+// fn over [0, n): each index costs about `work` multiply-adds (it sizes the chunks)
+static void ink2_par(int64_t n, int64_t work, ink2_range_fn fn, void *ctx) {
+    int nt = ink2_get_threads();
+    if (work < 1) work = 1;
+    int64_t chunk = (ink2_par_min + work - 1) / work;
+    if (chunk < 1) chunk = 1;
+    if (nt == 1 || ink2_in_par || n <= chunk) { fn(ctx, 0, n); return; }
+    // at least one chunk a thread when the work allows, up to four a thread for balance
+    int64_t per = (n + 4 * (int64_t)nt - 1) / (4 * (int64_t)nt);
+    if (per > chunk) chunk = per;
+    pthread_mutex_lock(&ink2_cfg_mu);
+    if (ink2_pool.n_workers != nt - 1) {
+        if (ink2_pool.n_workers) ink2_pool_stop();
+        for (int i = 0; i < nt - 1; i++)
+            if (pthread_create(&ink2_pool.th[i], NULL, ink2_worker, NULL) == 0) ink2_pool.n_workers++;
+    }
+    pthread_mutex_lock(&ink2_pool.mu);
+    ink2_pool.fn = fn; ink2_pool.ctx = ctx; ink2_pool.n = n; ink2_pool.chunk = chunk; ink2_pool.next = 0;
+    ink2_pool.pending = ink2_pool.n_workers; ink2_pool.gen++;
+    pthread_cond_broadcast(&ink2_pool.go);
+    pthread_mutex_unlock(&ink2_pool.mu);
+    ink2_in_par = 1;
+    ink2_run_chunks(fn, ctx, n, chunk);
+    ink2_in_par = 0;
+    pthread_mutex_lock(&ink2_pool.mu);
+    while (ink2_pool.pending) pthread_cond_wait(&ink2_pool.done, &ink2_pool.mu);
+    pthread_mutex_unlock(&ink2_pool.mu);
+    pthread_mutex_unlock(&ink2_cfg_mu);
+}
+
 // x * rsqrt(mean(x^2) + eps), the reference's Inkling2LoopUnweightedRMSNorm: a serial sum of squares, the mean, the
 // epsilon, 1/sqrt, one multiply an element
 static void ink2_unweighted_norm(const float *x, int n, float eps, float *y) {
@@ -137,6 +237,7 @@ static void ink2_depth_attn(const float *q, int nq, const float *states, int n_k
 
 // ---- the pieces (a stub returns INK2_NOT_IMPLEMENTED until its piece lands)
 
+static void ink2_matvec(const float *W, int n_out, int n_in, const float *x, float *y);
 // The softcap, tanh(v / cap) * cap: a true division by the float cap (torch's tensor / scalar), then the product
 static inline float ink2_softcap(float v, float cap) { return p_tanhf(v / cap) * cap; }
 // torch.sigmoid as 1 / (1 + exp(-x)), with the portable exp
@@ -181,16 +282,22 @@ static ink2_status ink2_moe_expert(const ink2_shape *s, const ink2_moe_w *M, int
     *g13 = d13; *g2 = t2->data;
     return INK2_OK;
 }
+typedef struct { const float *wr, *xt; float *lg, *sc; int H; } ink2_route_ctx;
+static void ink2_route_range(void *c, int64_t e0, int64_t e1) {
+    const ink2_route_ctx *r = c;
+    for (int64_t e = e0; e < e1; e++) {
+        float l = 0.0f; const float *row = r->wr + (size_t)e * r->H;
+        for (int h = 0; h < r->H; h++) l += row[h] * r->xt[h];
+        if (r->lg) r->lg[e] = l;
+        r->sc[e] = ink2_sigmoid(l);
+    }
+}
 // the router at one position: logits (if lg), sc = sigmoid scores, chosen[E], wt[e] = sc / (sum chosen + 1e-20) * scale
 static void ink2_route_one(const ink2_shape *s, const ink2_moe_w *M, const float *xt, float *lg, float *sc,
                            unsigned char *chosen, float *wt) {
     int H = s->hidden, E = s->n_expert, K = s->n_used;
-    for (int e = 0; e < E; e++) {
-        float l = 0.0f; const float *row = M->wr + (size_t)e * H;
-        for (int h = 0; h < H; h++) l += row[h] * xt[h];
-        if (lg) lg[e] = l;
-        sc[e] = ink2_sigmoid(l);
-    }
+    ink2_route_ctx rc = { M->wr, xt, lg, sc, H };
+    ink2_par(E, H, ink2_route_range, &rc);   // threads over experts: each score its own serial dot
     for (int e = 0; e < E; e++) chosen[e] = 0;
     for (int k = 0; k < K; k++) {
         int best = -1; float bv = 0.0f;
@@ -221,17 +328,10 @@ static ink2_status ink2_experts_one(const ink2_shape *s, const ink2_moe_w *M, co
         const float *g13, *g2;
         ink2_status st = ink2_moe_expert(s, M, e, &g13, &g2);
         if (st != INK2_OK) return st;
-        for (int j = 0; j < 2 * F; j++) {
-            float a = 0.0f; const float *row = g13 + (size_t)j * H;
-            for (int h = 0; h < H; h++) a += row[h] * xt[h];
-            act[j] = a;
-        }
+        // threads over each projection's rows (ink2_matvec); the experts' sum stays serial, ascending expert order
+        ink2_matvec(g13, 2 * F, H, xt, act);
         for (int j = 0; j < F; j++) act[j] = ink2_swiglu(s, act[j], act[F + j]);
-        for (int h = 0; h < H; h++) {
-            float a = 0.0f; const float *row = g2 + (size_t)h * F;
-            for (int j = 0; j < F; j++) a += row[j] * act[j];
-            down[h] = a;
-        }
+        ink2_matvec(g2, H, F, act, down);
         for (int h = 0; h < H; h++) ot[h] += down[h] * wt[e];
     }
     return INK2_OK;
@@ -269,13 +369,19 @@ ink2_status ink2_expert_selection(const ink2_shape *s, const ink2_weights *w, in
     return INK2_OK;
 }
 
-// y[o] = sum_i W[o][i] x[i], a serial dot in index order per output (nn.Linear without bias)
-static void ink2_matvec(const float *W, int n_out, int n_in, const float *x, float *y) {
-    for (int o = 0; o < n_out; o++) {
-        float a = 0.0f; const float *row = W + (size_t)o * n_in;
-        for (int i = 0; i < n_in; i++) a += row[i] * x[i];
-        y[o] = a;
+// y[o] = sum_i W[o][i] x[i], a serial dot in index order per output (nn.Linear without bias); threads over o
+typedef struct { const float *W, *x; float *y; int n_in; } ink2_mv_ctx;
+static void ink2_matvec_range(void *c, int64_t o0, int64_t o1) {
+    const ink2_mv_ctx *m = c; const int n_in = m->n_in;
+    for (int64_t o = o0; o < o1; o++) {
+        float a = 0.0f; const float *row = m->W + (size_t)o * n_in;
+        for (int i = 0; i < n_in; i++) a += row[i] * m->x[i];
+        m->y[o] = a;
     }
+}
+static void ink2_matvec(const float *W, int n_out, int n_in, const float *x, float *y) {
+    ink2_mv_ctx m = { W, x, y, n_in };
+    ink2_par(n_out, n_in, ink2_matvec_range, &m);
 }
 // Inkling2LoopL2Clip on one head vector: norm = sqrt(sum y^2) (vector_norm), then y * min(thr / (norm + 1e-6), 1),
 // the quotient as torch computes a Python float over a tensor: f32(1 / (norm + 1e-6)) * f32(thr)
@@ -402,6 +508,15 @@ static void ink2_attn_kv(const ink2_shape *s, const ink2_attn_layer *L, int kv, 
     ink2_kv_norm(s, L, kv, T, out);
     ink2_conv_hist_store(hist, L->K, L->C, p0, T, lin);
 }
+typedef struct { const float *rt, *proj; float *rl; int dr, ext; } ink2_bank_ctx;
+static void ink2_bank_range(void *c, int64_t h0, int64_t h1) {
+    const ink2_bank_ctx *b = c; const int dr = b->dr, ext = b->ext;
+    for (int64_t h = h0; h < h1; h++) for (int e = 0; e < ext; e++) {
+        float a = 0.0f;
+        for (int r = 0; r < dr; r++) a += b->rt[(size_t)h * dr + r] * b->proj[(size_t)r * ext + e];
+        b->rl[(size_t)h * ext + e] = a;
+    }
+}
 // relative_position_bias up to the bank: rs = linear [heads][d_rel], the scaled clip at rel_clip ((full) with tau),
 // rl[t][h][e] = sum_r rs[h][r] proj[r][e]: the bias of distance e, read by the core for 0 <= q - k < extent
 static void ink2_attn_rel(const ink2_shape *s, const ink2_attn_layer *L, int T, const int *pos, const float *x, float *rs,
@@ -411,11 +526,8 @@ static void ink2_attn_rel(const ink2_shape *s, const ink2_attn_layer *L, int T, 
     for (int t = 0; t < T; t++) {
         float *rt = rs + (size_t)t * nh * dr;
         ink2_scaled_clip(s, L->g, rt, L->wt[WRS], nh, dr, s->rel_clip, pos[t]);
-        for (int h = 0; h < nh; h++) for (int e = 0; e < ext; e++) {
-            float a = 0.0f;
-            for (int r = 0; r < dr; r++) a += rt[(size_t)h * dr + r] * L->wt[WRP][(size_t)r * ext + e];
-            rl[((size_t)t * nh + h) * ext + e] = a;
-        }
+        ink2_bank_ctx bc = { rt, L->wt[WRP], rl + (size_t)t * nh * ext, dr, ext };
+        ink2_par(nh, (int64_t)ext * dr, ink2_bank_range, &bc);   // threads over heads
     }
 }
 // eager_attention_forward with the sink, head by head, query by query: logits = (Q . K) * head_dim^-0.5 + bias over
@@ -426,13 +538,22 @@ static void ink2_attn_rel(const ink2_shape *s, const ink2_attn_layer *L, int T, 
 // The keys are nk rows of k and v, row j at position kp0 + j (the application's cache rows 0..p0+T-1, or a recorded
 // block); a query reads them in ascending position, so a query's arithmetic does not depend on how many queries the
 // call holds. probs is [n_head][T][nk].
-static void ink2_attn_core(const ink2_shape *s, const ink2_attn_layer *L, int T, const int *pos, const float *q,
-                           const float *k, const float *v, int nk, int kp0, const float *rl, const float *sk, float *lg,
-                           float *att, float *probs) {
+typedef struct {
+    const ink2_shape *s; const ink2_attn_layer *L; int T; const int *pos; const float *q, *k, *v; int nk, kp0;
+    const float *rl, *sk; float *lg, *att, *probs;
+} ink2_core_ctx;
+// heads h0..h1-1 (threads over heads; each head's arithmetic is the serial loop below, in its own logit row)
+static void ink2_attn_core_range(void *cv, int64_t h0, int64_t h1) {
+    const ink2_core_ctx *c = cv;
+    const ink2_shape *s = c->s; const ink2_attn_layer *L = c->L;
+    const int T = c->T, nk = c->nk, kp0 = c->kp0; const int *pos = c->pos;
+    const float *q = c->q, *k = c->k, *v = c->v, *rl = c->rl, *sk = c->sk; float *att = c->att, *probs = c->probs;
     int nh = L->nh, hd = L->hd, C = L->C, Q = L->Q, ext = L->ext;
+    float *lg = c->lg, *own = NULL;
+    if (h0 != 0 || h1 != nh) { own = malloc(sizeof(float) * ((size_t)nk + 1)); if (!own) abort(); lg = own; }
     const float scale = ink2_inv_sqrt(hd);   // head_dim ** -0.5 (see ink2_inv_sqrt; no pow)
 #define INK2_ADMIT(i, j) (pos[i] - (kp0 + (j)) >= 0 && (L->g || pos[i] - (kp0 + (j)) < s->window))
-    for (int h = 0; h < nh; h++) {
+    for (int h = (int)h0; h < (int)h1; h++) {
         int kh = h / (nh / L->nkv);
         for (int i = 0; i < T; i++) {
             const float *qi = q + (size_t)i * Q + (size_t)h * hd;
@@ -465,6 +586,13 @@ static void ink2_attn_core(const ink2_shape *s, const ink2_attn_layer *L, int T,
         }
     }
 #undef INK2_ADMIT
+    free(own);
+}
+static void ink2_attn_core(const ink2_shape *s, const ink2_attn_layer *L, int T, const int *pos, const float *q,
+                           const float *k, const float *v, int nk, int kp0, const float *rl, const float *sk, float *lg,
+                           float *att, float *probs) {
+    ink2_core_ctx c = { s, L, T, pos, q, k, v, nk, kp0, rl, sk, lg, att, probs };
+    ink2_par(L->nh, (int64_t)T * nk * 2 * L->hd, ink2_attn_core_range, &c);
 }
 // o_proj (Inkling2LoopGatedOutputProjection): att times sigmoid(gate_proj(x)) (att is overwritten), then linear
 static void ink2_attn_out(const ink2_shape *s, const ink2_attn_layer *L, int T, const float *x, float *att, float *ga,
@@ -583,18 +711,23 @@ ink2_status ink2_attention_step(const ink2_shape *s, const ink2_weights *w, int 
     return st;
 }
 
+typedef struct { const float *W, *xt; float *lg; int H; float cap; } ink2_head_ctx;
+static void ink2_head_range(void *c, int64_t v0, int64_t v1) {
+    const ink2_head_ctx *h = c;
+    for (int64_t v = v0; v < v1; v++) {
+        float a = 0.0f; const float *row = h->W + (size_t)v * h->H;
+        for (int i = 0; i < h->H; i++) a += row[i] * h->xt[i];
+        h->lg[v] = ink2_softcap(a, h->cap);
+    }
+}
 // The head: lm_head (built UNPADDED by the reference: vocab_used rows) then logit_softcap, tanh(l / cap) * cap
 ink2_status ink2_head(const ink2_shape *s, const ink2_weights *w, int T, const float *x, float *logits) {
     const ink2_tensor *wo = w->get(w->ctx, "lm_head.weight");
     int H = s->hidden, V = s->vocab_used;
     if (!wo || wo->ne[0] != H || wo->ne[1] < V) return INK2_NO_TENSOR;
-    for (int t = 0; t < T; t++) {
-        const float *xt = x + (size_t)t * H;
-        for (int v = 0; v < V; v++) {                  // rows from vocab_used on, if a layout keeps them, never enter
-            float a = 0.0f; const float *row = wo->data + (size_t)v * H;
-            for (int h = 0; h < H; h++) a += row[h] * xt[h];
-            logits[(size_t)t * V + v] = ink2_softcap(a, s->final_cap);
-        }
+    for (int t = 0; t < T; t++) {   // rows from vocab_used on, if a layout keeps them, never enter
+        ink2_head_ctx hc = { wo->data, x + (size_t)t * H, logits + (size_t)t * V, H, s->final_cap };
+        ink2_par(V, H, ink2_head_range, &hc);   // threads over vocabulary rows
     }
     return INK2_OK;
 }
@@ -639,6 +772,17 @@ ink2_status ink2_message_input(const ink2_shape *s, const ink2_weights *w, int l
     return INK2_OK;
 }
 
+typedef struct { const float *wf, *wg, *d, *xt, *mt; float *ot; int r; } ink2_gate_ctx;
+static void ink2_gate_range(void *c, int64_t h0, int64_t h1) {
+    const ink2_gate_ctx *q = c; const int r = q->r;
+    for (int64_t h = h0; h < h1; h++) {
+        float fa = 0.0f, ga = 0.0f;
+        const float *fr = q->wf + (size_t)h * r, *gr = q->wg + (size_t)h * r;
+        for (int k = 0; k < r; k++) { fa += fr[k] * q->d[k]; ga += gr[k] * q->d[k]; }
+        float f = p_tanhf(fa), g = p_tanhf(ga);
+        q->ot[h] = (1.0f - f) * q->xt[h] + g * q->mt[h];
+    }
+}
 ink2_status ink2_message_step(const ink2_shape *s, const ink2_weights *w, int block, const char *role, int T,
                               const float *x, const float *message, float *out) {
     char n1[160], n2[160], n3[160];
@@ -656,19 +800,10 @@ ink2_status ink2_message_step(const ink2_shape *s, const ink2_weights *w, int bl
         const float *xt = x + (size_t)t * H, *mt = message + (size_t)t * H;
         ink2_unweighted_norm(xt, H, s->eps, gh);          // cat([norm(x), norm(message)])
         ink2_unweighted_norm(mt, H, s->eps, gh + H);
-        for (int k = 0; k < r; k++) {
-            float a = 0.0f; const float *row = wd->data + (size_t)k * 2 * H;
-            for (int i = 0; i < 2 * H; i++) a += row[i] * gh[i];
-            d[k] = a;
-        }
-        float *ot = out + (size_t)t * H;
-        for (int h = 0; h < H; h++) {
-            float fa = 0.0f, ga = 0.0f;
-            const float *fr = wf->data + (size_t)h * r, *gr = wg->data + (size_t)h * r;
-            for (int k = 0; k < r; k++) { fa += fr[k] * d[k]; ga += gr[k] * d[k]; }
-            float f = p_tanhf(fa), g = p_tanhf(ga);
-            ot[h] = (1.0f - f) * xt[h] + g * mt[h];
-        }
+        ink2_matvec(wd->data, r, 2 * H, gh, d);   // the down projection, threads over its r rows
+        ink2_gate_ctx gc = { wf->data, wg->data, d, xt, mt, out + (size_t)t * H, r };
+        ink2_par(H, 2 * r, ink2_gate_range, &gc);   // threads over the hidden rows
+
     }
     free(gh);
     return INK2_OK;

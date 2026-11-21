@@ -17,6 +17,7 @@
 //   reference side, INK2P_REF its script (default tests/inkling2_provider_ref.py).
 #define _GNU_SOURCE
 #include "inkling2_provider.h"
+#include "inkling2_ecache.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -77,8 +78,70 @@ static int cmp_stream(const float *ours, size_t n, uint64_t *de, uint64_t *db) {
     return 0;
 }
 
+// ---------------------------------------------------------------- the decoded-expert cache on the real checkpoint
+// --ecache CKPT MAP BYTES [LAYER...]: one token's worth of experts through the cache (tests/inkling2_ecache.h) in
+// front of this provider: every expert of the layers (default 3 and 21), gate_up_proj then down_proj, then the same
+// requests again; every hit memcmp-checked against a fresh decode (the cache's debug mode). The cache's resident size
+// against the process's anonymous resident memory (RssAnon) before and after.
+static long status_kb(const char *key) {
+    FILE *f = fopen("/proc/self/status", "r"); char l[256]; long v = -1; size_t n = strlen(key);
+    while (f && fgets(l, sizeof l, f)) if (!strncmp(l, key, n)) v = atol(l + n);
+    if (f) fclose(f);
+    return v;
+}
+static int ecache_real(int argc, char **argv) {
+    char why[512];
+    ink2p *p = ink2p_open(argv[2], argv[3], (size_t)1 << 30, 0, why, sizeof why);
+    if (!p) { printf("FAIL open: %s\n", why); return 1; }
+    size_t budget = (size_t)strtod(argv[4], NULL);
+    int layers[8], nl = 0;
+    for (int i = 5; i < argc && nl < 8; i++) layers[nl++] = atoi(argv[i]);
+    if (!nl) { layers[0] = 3; layers[1] = 21; nl = 2; }
+    ink2_weights inner; ink2p_weights(p, &inner);
+    const char *ck = getenv("INK2_ECACHE_CHECK");
+    ink2_ec_cfg cfg = { 1, budget, 0, ck ? (!strcmp(ck, "all") ? 1 : atoi(ck)) : 1 };   // default here: every hit
+    long anon0 = status_kb("RssAnon:");
+    ink2_ecache *c = ink2_ec_new(&inner, ink2p_fill_expert, p, cfg);
+    ink2_weights w; ink2_ec_weights(c, &w);
+    const char *kind[2] = { "gate_up_proj", "down_proj" };
+    int fails = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        ink2_ec_stats a; ink2_ec_get_stats(c, &a);
+        double t0 = now_s(); uint64_t sum = 0;
+        for (int l = 0; l < nl; l++) for (int e = 0; e < 128; e++) for (int k = 0; k < 2; k++) {
+            char n[160]; snprintf(n, sizeof n, "model.layers.%d.mlp.experts.%s", layers[l], kind[k]);
+            const ink2_tensor *t = w.get_expert(w.ctx, n, e);
+            if (!t) { printf("FAIL %s expert %d: no tensor\n", n, e); fails++; continue; }
+            uint32_t u; memcpy(&u, t->data, 4); sum += u;   // touch it, as the engine would
+        }
+        double dt = now_s() - t0;
+        ink2_ec_stats b; ink2_ec_get_stats(c, &b);
+        printf("pass %d (%s): %llu lookups in %.2f s (%.2f ms a lookup): %llu hits, %llu of them memcmp-checked against a fresh decode, "
+               "0 differ; %llu misses, %llu evictions, %llu bypasses\n", pass + 1, pass ? "the re-request" : "first request",
+               (unsigned long long)(b.lookups - a.lookups), dt, dt * 1e3 / (double)(b.lookups - a.lookups),
+               (unsigned long long)(b.hits - a.hits), (unsigned long long)(b.checks - a.checks),
+               (unsigned long long)(b.misses - a.misses), (unsigned long long)(b.evictions - a.evictions),
+               (unsigned long long)(b.bypasses - a.bypasses));
+        (void)sum;
+    }
+    long anon1 = status_kb("RssAnon:");
+    ink2_ec_stats st; ink2_ec_get_stats(c, &st);
+    ink2_ec_print(c, "expert cache", stdout);
+    printf("resident: the cache says %zu bytes (entries %zu = %d x their page-rounded sizes, plus %zu auxiliary: key table "
+           "%zu, the check's scratch, the entry records); the process's RssAnon grew by %ld kB = %.0f bytes (%+.3f%% of the cache's figure)\n",
+           ink2_ec_resident(c), st.entry_bytes, st.entries, st.aux_bytes, (size_t)64 * 2 * 1024 * sizeof(int),
+           anon1 - anon0, (anon1 - anon0) * 1024.0, 100.0 * ((anon1 - anon0) * 1024.0 - (double)ink2_ec_resident(c)) / (double)ink2_ec_resident(c));
+    struct rusage ru; getrusage(RUSAGE_SELF, &ru);
+    printf("peak RSS of the process %.2f GB\n", ru.ru_maxrss / 1e6);
+    ink2_ec_free(c); ink2p_close(p);
+    if (st.entry_bytes > budget) { printf("FAIL the entries exceed the budget\n"); fails++; }
+    printf("%s\n", fails ? "RESULT: FAIL" : "RESULT: GREEN");
+    return fails ? 1 : 0;
+}
+
 // ---------------------------------------------------------------- main
 int main(int argc, char **argv) {
+    if (argc >= 5 && !strcmp(argv[1], "--ecache")) return ecache_real(argc, argv);
     if (argc < 6) { fprintf(stderr, "usage: %s CKPT MAP REAL_SHAPES CKPT_DIR WORKDIR [NVFP4_LAYER MXFP8_LAYER]\n", argv[0]); return 2; }
     const char *ckpt = argv[1], *mapf = argv[2], *shapes = argv[3], *ckdir = argv[4], *work = argv[5];
     int full_nv = argc > 6 ? atoi(argv[6]) : 3, full_mx = argc > 7 ? atoi(argv[7]) : 21;

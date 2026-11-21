@@ -24,6 +24,7 @@
 //
 // usage: test-inkling2-fixture FIXTURE_DIR [--allow-red piece,piece,...]
 #include "inkling2.h"
+#include "inkling2_ecache.h"
 #include "json.h"
 
 #include <math.h>
@@ -90,6 +91,21 @@ static const ink2_tensor *w_get_expert(void *ctx, const char *name, int e) {
     o->n_dims = 2; o->ne[0] = t->shape[2]; o->ne[1] = t->shape[1]; o->ne[2] = o->ne[3] = 1;
     return o;
 }
+
+// the decode the expert cache fills from (tests/inkling2_ecache.h): row e of the float32 stack, copied
+static int w_fill_expert(void *ctx, const char *name, int e, float *dst, int64_t *rows, int64_t *cols) {
+    wctx *c = ctx; const st_t *t = st_get(c->f, name);
+    if (!t || t->dtype != ST_F32 || t->n_dims != 3 || e < 0 || e >= t->shape[0]) return -1;
+    *rows = t->shape[1]; *cols = t->shape[2];
+    size_t n = (size_t)t->shape[1] * (size_t)t->shape[2];
+    if (dst) memcpy(dst, (const float *)t->data + (size_t)e * n, n * sizeof(float));
+    return 0;
+}
+// the expert cache, when INK2_ECACHE_BYTES or INK2_ECACHE_ENTRIES is set: the harness changes expert weights in place
+// for its perturbation controls, so it drops the cache after each change and each restore (ec_changed); a stale copy
+// would also fail the cache's memcmp check on a hit
+static ink2_ecache *g_ec;
+static void ec_changed(void) { if (g_ec) ink2_ec_clear(g_ec); }
 
 // ---------------------------------------------------------------- the config
 // the config's constants as the doubles the float64 truth uses (ink2_shape holds them rounded to float32)
@@ -1235,9 +1251,9 @@ static void run_step(const ink2_shape *s, const ink2_weights *w, st_file *W, con
             frac = frac_used(ours, tv, bb, no);
             tfrac = have_f ? frac_used(tfv, tv, bb, no) : 0;
             float keep;
-            if (wt) { keep = *wt; *wt += 0.25f; } else { keep = xin[0]; xin[0] += 0.25f; }
+            if (wt) { keep = *wt; *wt += 0.25f; ec_changed(); } else { keep = xin[0]; xin[0] += 0.25f; }
             ink2_op_step(s, w, mod, op, nrows, ind, in, ids, pert, pert + (strcmp(op, "router") ? 0 : (size_t)n * E), iout);
-            if (wt) *wt = keep; else xin[0] = keep;
+            if (wt) { *wt = keep; ec_changed(); } else xin[0] = keep;
             // the router's perturbation moves the logits; its weights block keeps ours (the same rows)
             if (!strcmp(op, "router")) memcpy(pert + (size_t)n * E, ours + (size_t)n * E, sizeof(float) * (size_t)n * K);
             pf = frac_used(pert, tv, bb, no);
@@ -1293,6 +1309,8 @@ int main(int argc, char **argv) {
     // NULL). The outputs and digests are the same either way.
     const char *stk = getenv("INK2_FIXTURE_STACKS");
     wctx wc = { &W, {{0}}, 0 }; ink2_weights w = { w_get, &wc, stk && !strcmp(stk, "1") ? NULL : w_get_expert };
+    ink2_ec_cfg ecc = ink2_ec_cfg_env();
+    if (ecc.enabled && w.get_expert) { g_ec = ink2_ec_new(&w, w_fill_expert, &wc, ecc); ink2_ec_weights(g_ec, &w); }
     int bad = 0;
     // the engagement table (engage.py, from the reference run itself): no side of any clip, cap, gate, branch or window
     // may be 0 unless the table names it with a reason
@@ -1382,9 +1400,9 @@ int main(int argc, char **argv) {
                     frac = frac_used(out, tv, bd, (size_t)Tn * H);
                     tfrac = tf ? frac_used((const float *)tf->data, tv, bd, (size_t)Tn * H) : 0;
                     // perturbation: the down projection's first weight of the first expert position 0 chose
-                    float *w0 = (float *)(void *)w2->data + (size_t)sel[0] * H * F; float keep = w0[0]; w0[0] += 0.25f;
+                    float *w0 = (float *)(void *)w2->data + (size_t)sel[0] * H * F; float keep = w0[0]; w0[0] += 0.25f; ec_changed();
                     ink2_expert_layer(&s, &w, b, Tn, (const float *)x->data, po);
-                    w0[0] = keep;
+                    w0[0] = keep; ec_changed();
                     pert = frac_used(po, tv, bd, (size_t)Tn * H);
                     // the TIE case, once: every router row equal to row 0 and every bias equal, so all scores tie; our
                     // rule must choose experts 0..K-1, and the piece must equal the harness's double with that choice
@@ -2263,5 +2281,6 @@ int main(int argc, char **argv) {
     printf("outputs digest: %016llx\n", (unsigned long long)g_digest);
     printf("outputs digest (forward lines): %016llx\n", (unsigned long long)g_digest2);
     printf("outputs digest (single-step lines): %016llx\n", (unsigned long long)g_digest3);
+    if (g_ec) { ink2_ec_print(g_ec, "expert cache", stderr); ink2_ec_free(g_ec); }
     return bad;
 }

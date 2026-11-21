@@ -17,6 +17,7 @@
 
 #define INK2_MAX_BLOCK 64     // physical layers
 #define INK2_MAX_APP   256    // layer applications
+#define INK2_MAX_THREADS 64
 
 // INK2_REWIND: a call at 0 < p0 != the cache's n_past (a rewind into, or a gap past, what the cache holds): refused,
 // see ink2_cache.
@@ -51,6 +52,14 @@ int ink2_shape_derive(ink2_shape *s, char *why, size_t why_n);
 static inline int ink2_app_global(const ink2_shape *s, int a) { return s->block_global[s->app_block[a]]; }
 // n ** -0.5 rounded to float32, without pow (the attention and depth-read scales; see the definition)
 float ink2_inv_sqrt(int n);
+
+// Threads over independent OUTPUTS (matvec rows, the experts' rows, the router's experts, vocabulary rows, attention
+// heads, message-gate rows): each output is computed by the same serial loop at any thread count, so the bits do not
+// depend on it. The count: ink2_set_threads(n), or INK2_THREADS at the first parallel loop; default 1 (the serial
+// code path). INK2_PAR_MIN: the least work (multiply-adds) a chunk gets, default 16384 (1 forces every loop parallel,
+// for the tests). Returns the count set (1..INK2_MAX_THREADS).
+int ink2_set_threads(int n);
+int ink2_get_threads(void);
 
 // A tensor as the pieces see it: float32, row-major, ne[0] the fastest dimension (GGUF order). The fixture's reader
 // and, later, the GGUF reader both hand pieces this; names are the reference's module paths for now.

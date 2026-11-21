@@ -5185,8 +5185,8 @@ fuzz-replay-%: tests/fuzz/fuzz_%.c tests/fuzz/replay.c tests/fuzz/fuzz_files.h $
 # (-fno-fast-math -ffp-contract=off): inkling2.c's claim is a serial, uncontracted order. Not part of `make test` until
 # the fixture ships with the repository.
 TEST_INKLING2 = test-inkling2-fixture-bin
-$(TEST_INKLING2): tests/test_inkling2_fixture.c src/inkling2.c src/inkling2.h src/json.c $(HDR)
-	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I src tests/test_inkling2_fixture.c src/inkling2.c src/json.c -o $@ $(LDFLAGS)
+$(TEST_INKLING2): tests/test_inkling2_fixture.c tests/inkling2_ecache.c tests/inkling2_ecache.h src/inkling2.c src/inkling2.h src/json.c $(HDR)
+	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I src -I tests tests/test_inkling2_fixture.c tests/inkling2_ecache.c src/inkling2.c src/json.c -o $@ $(LDFLAGS)
 .PHONY: test-inkling2-fixture
 test-inkling2-fixture: $(TEST_INKLING2)
 	@if [ -z "$(INKLING2_FIXTURE)" ]; then echo "test-inkling2-fixture: no fixture (set INKLING2_FIXTURE=<dir>)"; \
@@ -5195,5 +5195,5 @@ test-inkling2-fixture: $(TEST_INKLING2)
 # reference loader's name map from tests/inkling2_provider_map.py, decode on lookup) and its identity test against
 # the reference loader (tests/test_inkling2_provider.c + tests/inkling2_provider_ref.py). Built strict, as inkling2.c.
 TEST_INKLING2_PROVIDER = test-inkling2-provider-bin
-$(TEST_INKLING2_PROVIDER): tests/test_inkling2_provider.c tests/inkling2_provider.c tests/inkling2_provider.h src/inkling2.h src/json.c $(HDR)
-	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I src -I tests tests/test_inkling2_provider.c tests/inkling2_provider.c src/json.c -o $@ $(LDFLAGS)
+$(TEST_INKLING2_PROVIDER): tests/test_inkling2_provider.c tests/inkling2_provider.c tests/inkling2_provider.h tests/inkling2_ecache.c tests/inkling2_ecache.h src/inkling2.h src/json.c $(HDR)
+	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I src -I tests tests/test_inkling2_provider.c tests/inkling2_provider.c tests/inkling2_ecache.c src/json.c -o $@ $(LDFLAGS)
