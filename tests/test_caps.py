@@ -153,8 +153,19 @@ def test_caps_reads_a_cgroup1_layout(tmp_path):
         "memory/memory.limit_in_bytes": "536870912\n",
         "memory/memory.usage_in_bytes": "0\n",
     })
+    # A fixture cannot loosen the limits of the cgroup this test itself runs
+    # in (plat_capacity_get lowers a fixture's reading to the real one), so on
+    # a host with a CPU quota of its own the fixture's "no quota" reads as
+    # that quota, and a smaller real memory limit wins. On a host without
+    # limits these are None and the fixture's 512 MiB, as before.
+    real = _caps()
+    real_quota = real["limits"]["cpu_quota"]
+    real_mem = real["limits"]["memory_max_bytes"]
+    want_mem = 536870912 if real_mem is None else min(real_mem, 536870912)
     caps = _caps(tmp_path)
-    assert caps["limits"] == {"source": "cgroup1", "cpu_quota": None,
-                              "memory_max_bytes": 536870912}
-    assert caps["cpu_cores"] == caps["host"]["cpu_cores"]
-    assert caps["ram_bytes"] == min(caps["host"]["ram_bytes"], 536870912)
+    assert caps["limits"] == {"source": "cgroup1", "cpu_quota": real_quota,
+                              "memory_max_bytes": want_mem}
+    assert caps["cpu_cores"] == real["cpu_cores"]
+    if real_quota is None:
+        assert caps["cpu_cores"] == caps["host"]["cpu_cores"]
+    assert caps["ram_bytes"] == min(caps["host"]["ram_bytes"], want_mem)
