@@ -878,6 +878,29 @@ static bool sec1_parse(const uint8_t *d, size_t n, bool have, ec_curve *c,
     return true;
 }
 
+bool ecdsa_key_has_explicit_params(const uint8_t *der, size_t der_len) {
+    if (!der) return false;
+    size_t len, off = der_tlv(der, der_len, 0, 0x30, &len);
+    if (!off || off + len != der_len) return false;
+    size_t after_ver = off;
+    int ver;
+    if (!der_small_int(der, der_len, &after_ver, &ver)) return false;
+    if (after_ver < der_len && der[after_ver] == 0x04) {   // SEC1: version, scalar, [0]
+        size_t klen, k = der_tlv(der, der_len, after_ver, 0x04, &klen);
+        if (!k || k + klen >= der_len || der[k + klen] != 0xa0) return false;
+        size_t plen, p = der_tlv(der, der_len, k + klen, 0xa0, &plen);
+        return p && plen > 0 && der[p] == 0x30;
+    }
+    // PKCS#8: version, AlgorithmIdentifier { id-ecPublicKey, parameters }
+    size_t alen, a = der_tlv(der, der_len, after_ver, 0x30, &alen);
+    if (!a) return false;
+    size_t olen, o = der_tlv(der, der_len, a, 0x06, &olen);
+    if (!o || olen != sizeof OID_EC_PUBLIC_KEY ||
+        memcmp(der + o, OID_EC_PUBLIC_KEY, olen) != 0)
+        return false;
+    return o + olen < a + alen && der[o + olen] == 0x30;
+}
+
 bool ecdsa_private_key_parse(const uint8_t *der, size_t der_len,
                              ec_curve *curve_out, uint8_t *priv_out) {
     if (!der || !curve_out || !priv_out) return false;

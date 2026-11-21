@@ -423,7 +423,10 @@ def test_an_fp8_checkpoint_on_the_cpu_is_the_exact_float32_dequantization(tmp_pa
     with torch.no_grad():
         want = want_model(input_ids=ids).logits
     got_model = cls.from_pretrained(ckpt, dtype=torch.float32).eval()
-    assert gold.float32_stragglers(got_model)   # the load left some at BF16
+    # transformers 5.14 and 5.16 left the BF16-stored tensors at BF16 here
+    # (the helper casts them); a later release loads them as float32 itself,
+    # and the helper then finds none. Either way what follows must hold.
+    gold.float32_stragglers(got_model)
     for k, v in got_model.state_dict().items():
         assert v.dtype == torch.float32, k
         assert torch.equal(v, exact[k]), k

@@ -145,7 +145,7 @@ finish() {  # result exit_code
   local user_ok=false; [ -n "$ENV_USER" ] && user_ok=true
   printf '{"schema":"xyntetik.runner.cuda-gate.v2","stamp":"%s","class":"%s","commit":"%s","result":"%s","env":{"tempdir":%s,"user_resolved":%s,"shell":%s,"login_shell":%s,"msystem":%s,"degraded":[%s],"warned":[%s]},"steps":[%s]}\n' \
     "$STAMP" "$CLASS" "$(git rev-parse HEAD 2>/dev/null || echo unknown)" "$1" \
-    "$(json_str "$ENV_TMP")" "$user_ok" "$(json_str "${BASH:-}")" "$ENV_LOGIN" \
+    "$(json_str "$(evidence_path "$ENV_TMP")")" "$user_ok" "$(json_str "${BASH:-}")" "$ENV_LOGIN" \
     "$(json_str "${MSYSTEM:-}")" "$ENV_DEGRADED" "$ENV_WARNED" "$STEPS" > "$SUMMARY"
   note "result: $1 ($SUMMARY)"
   [ -n "${GATE_LOCK:-}" ] && [ -n "${LOCKED:-}" ] && rm -f "$GATE_LOCK"
@@ -233,6 +233,21 @@ lines = (str(x).replace("\n", " ") for x in (t, unused, w, u, why, root))
 sys.stdout.buffer.write(("\n".join(lines) + "\n").encode("utf-8", "replace"))
 '
 path_key() { printf '%s' "$1" | tr '\\' / | tr '[:upper:]' '[:lower:]' | sed 's:/*$::'; }
+# The summary is committed as evidence: a temp directory under the user's home
+# (HOME, or USERPROFILE on Windows) is written from ~, so the record names no
+# login and no home layout. The console notes keep the path as it is.
+evidence_path() {
+  local p="$1" h hk
+  for h in "${HOME:-}" "${USERPROFILE:-}"; do
+    hk=$(path_key "$h")
+    [ -n "$hk" ] || continue
+    case "$(path_key "$p")" in
+      "$hk") printf '~'; return ;;
+      "$hk"/*) printf '~%s' "$(printf '%s' "${p:${#hk}}" | tr '\\' /)"; return ;;
+    esac
+  done
+  printf '%s' "$p"
+}
 env_check() {
   local probe unused writable why root win="" uvar=USER uval login
   case $UNAME in MINGW*|MSYS*|CYGWIN*) win=1; uvar=USERNAME ;; esac

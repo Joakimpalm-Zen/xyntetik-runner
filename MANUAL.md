@@ -3615,7 +3615,10 @@ the parts' directory, and a missing part refuses the signature. The key hint is 
 sha256 of the PEM public key, the reference's identifier. The digest is the curve's own
 (SHA-256, -384, -512), and the signature is deterministic ECDSA (RFC 6979): signing the
 same model with the same key twice gives the same bytes, so a bundle can be re-derived
-and compared instead of trusted. Encrypted keys, other curves and RSA keys are refused.
+and compared instead of trusted. Encrypted keys, other curves and RSA keys are refused,
+and so is a key that gives its curve as explicit parameters instead of by name: macOS's
+own `/usr/bin/openssl` (LibreSSL) writes such keys from `genpkey` unless it is given
+`-pkeyopt ec_param_enc:named_curve`, and the refusal says so.
 The signer runs the same sequence of point operations for every key, but the field
 arithmetic is not constant-time: sign on a machine you control, not a shared host.
 Anchored in `tests/test_ecdsa.c` (the RFC 6979 appendix A.2.5-A.2.7 signatures from the

@@ -161,6 +161,12 @@ def test_keygen(runner_bin, fx, tmp_path):
 def test_python_siphash_is_openssls():
     if not OPENSSL:
         pytest.skip("openssl not available")
+    # OpenSSL 3 has `openssl mac`; macOS's own /usr/bin/openssl (LibreSSL)
+    # answers it with "invalid command" on stderr and exit status 0
+    probe = subprocess.run([OPENSSL, "mac", "-help"], stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT)
+    if b"Usage: mac" not in probe.stdout:
+        pytest.skip("this openssl has no `mac` command (LibreSSL): no SipHash to compare with")
     for key, msg in ((bytes(range(16)), bytes(range(15))),
                      (hashlib.sha256(b"k").digest()[:16], struct.pack("<I", 1234))):
         f = pathlib.Path(ROOT / ".wm-siphash-msg.tmp")
