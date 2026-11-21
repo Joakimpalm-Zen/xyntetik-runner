@@ -269,7 +269,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td colspan="5"><b>DeepSeek-V2-Lite-Chat (DeepSeek)</b></td></tr>
-<tr><td><a href="#deepseek-v2-lite-chat-q6_k"><code>DeepSeek-V2-Lite-Chat.Q6_K.gguf</code></a></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td nowrap>✅ 1.16.0<sup>b</sup><br>2026-11-11</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: multi-head latent attention (deepseek2)</td></tr>
+<tr><td><a href="#deepseek-v2-lite-chat-q6_k"><code>DeepSeek-V2-Lite-Chat.Q6_K.gguf</code></a></td><td nowrap>✅ 1.21.0<sup>b</sup><br>2026-11-21</td><td nowrap>✅ 1.16.0<sup>b</sup><br>2026-11-11</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: multi-head latent attention (deepseek2)</td></tr>
 <tr><td><a href="#deepseek-v2-lite-chat-q8_0"><code>DeepSeek-V2-Lite-Chat.Q8_0.gguf</code></a></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td nowrap>✅ 1.16.0<sup>b</sup><br>2026-11-11</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: multi-head latent attention (deepseek2)</td></tr>
 </tbody>
 </table>
@@ -630,7 +630,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td colspan="5"><b>Qwen3.8-35B-A3B-Distill (empero-ai's finetune of Qwen3.6-35B-A3B)</b></td></tr>
-<tr><td><a href="#empero-qwen3.8-35b-a3b-distill-q6_k"><code>Qwen3.8-35B-A3B-Q6_K.gguf</code></a></td><td nowrap>✅ 1.14.0<sup>b</sup><br>2026-11-06</td><td nowrap>✅ 1.16.0<sup>b</sup><br>2026-11-11</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE on a Gated DeltaNet model</td></tr>
+<tr><td><a href="#empero-qwen3.8-35b-a3b-distill-q6_k"><code>Qwen3.8-35B-A3B-Q6_K.gguf</code></a></td><td nowrap>✅ 1.21.0<sup>b</sup><br>2026-11-21</td><td nowrap>✅ 1.21.0<sup>b</sup><br>2026-11-21</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE on a Gated DeltaNet model</td></tr>
 <tr><td colspan="5"><b>Sage-A1.5 (InternScience's, built on Qwen3.6-35B-A3B and Agents-A1)</b></td></tr>
 <tr><td><a href="#sage-a1.5-q6_k"><code>Sage-A1.5-Q6_K.gguf</code></a></td><td nowrap>✅ 1.14.0<sup>b</sup><br>2026-11-06</td><td nowrap>✅ 1.14.0<sup>b</sup><br>2026-11-06</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE on a Gated DeltaNet model</td></tr>
 </tbody>
@@ -710,7 +710,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td colspan="5"><b>Trinity Nano</b></td></tr>
-<tr><td><a href="#trinity-nano-preview-q8_0"><code>Trinity-Nano-Preview-Q8_0.gguf</code></a></td><td nowrap>✅ 1.20.0<br>2026-11-20</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE router gating other than softmax</td></tr>
+<tr><td><a href="#trinity-nano-preview-q8_0"><code>Trinity-Nano-Preview-Q8_0.gguf</code></a></td><td nowrap>✅ 1.21.0<sup>b</sup><br>2026-11-21</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE router gating other than softmax</td></tr>
 </tbody>
 </table>
 </details>
@@ -947,11 +947,11 @@ A third party's Q6_K (mradermacher, static), the smallest DeepSeek-V2-Lite-Chat 
 - **Still missing:** The Metal row (a Metal build runs the model on the CPU) and the Windows CUDA host's cells; the KV cache's size and decode past the window (R4.4.5 step e); a live tool gate (the template has none); task quality.
 - **Evidence:** [docs/compat-reports/deepseek-v2-lite-chat-2026-11-04/README.md](compat-reports/deepseek-v2-lite-chat-2026-11-04/README.md).
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.16.0 on 2026-11-11.
-- **CPU:** ✅ v1.12.0 2026-11-04 on linux-x86_64-cuda (borrowed hardware) at commit `0676f2639410`, output sha256 `eae8d81a35486506`, [pin](../tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q6_k.linux-x86_64-cuda.cpu.txt)
+- **CPU:** ✅ v1.21.0 2026-11-21 on linux-x86_64-cuda (borrowed hardware) at commit `7b0d9e4cd938`, output sha256 `70827d501fa8dc01`, [pin](../tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q6_k.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** ✅ v1.16.0 2026-11-11 on linux-x86_64-cuda (borrowed hardware) at commit `d30ae1f825af`, output sha256 `70827d501fa8dc01`, [pin](../tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q6_k.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): deepseek2's multi-head latent attention is validated on the CPU and CUDA only; a Metal build runs the model on the CPU and says why.
-- **LoRA training:** no: multi-head latent attention (deepseek2) (runner 1.16.0, 2026-11-11).
-- **LoRA adapter serving:** no: --lora does not cover multi-head latent attention yet (deepseek2) (runner 1.16.0, 2026-11-11).
+- **LoRA training:** no: multi-head latent attention (deepseek2) (runner 1.21.0, 2026-11-21).
+- **LoRA adapter serving:** no: --lora does not cover multi-head latent attention yet (deepseek2) (runner 1.21.0, 2026-11-21).
 
 <a id="deepseek-v2-lite-chat-q8_0"></a>
 ##### `DeepSeek-V2-Lite-Chat.Q8_0.gguf`
@@ -2478,12 +2478,12 @@ Text path only (the vision projector is not loaded): empero-ai's Q6_K of its Qwe
 - **Known limitations:** CPU and CUDA for this file (29.2 GB: on a CUDA MIG slice, 1g.24gb, sm_120, the fitted split places 34 of 40 blocks on the device). A partial split runs some layers on the CPU, where compiler codegen changes the last bits, and that flips a greedy choice only where the prompt meets a near-tie. Metal runs qwen35moe on toy models only. Text only: the vision projector empero-ai ships beside it is not loaded. A finetune, not a Qwen release: empero-ai's off-policy distillation (SFT on teacher traces) of Qwen3.6-35B-A3B; the name is the publisher's. Its tokenizer reads with the qwen2 split by R4.27.5's rule, keyed on header fields empero-ai's converter wrote (general.name "Ours", the empero-ai tag, the base model's URL); a requant that rewrites them reads the qwen35 split. The publisher's Q4_K_M (0.128) and Q5_K_M (0.051) miss the bar; its Q4_K_M reads 2.7x the base's Q4_K_M by the same method (bartowski's, 0.0475), not examined further. A system message after the conversation has started is refused, as the template refuses it. Licence: apache-2.0.
 - **Still missing:** A Metal run on a Mac that holds the file (29.2 GB), and the Windows CUDA host's cells; task quality and the tool protocol on the real checkpoint.
 - **Evidence:** [docs/compat-reports/empero-qwen3.8-35b-a3b-distill-2026-11-06/README.md](compat-reports/empero-qwen3.8-35b-a3b-distill-2026-11-06/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.14.0 on 2026-11-06.
-- **CPU:** ✅ v1.14.0 2026-11-06 on linux-x86_64-cuda (borrowed hardware) at commit `bae5907817e4`, output sha256 `f3a25e63edc8ebf7`, [pin](../tests/compatibility/tier-smoke/empero-qwen3.8-35b-a3b-distill-q6_k.linux-x86_64-cuda.cpu.txt)
-- **CUDA:** ✅ v1.16.0 2026-11-11 on linux-x86_64-cuda (borrowed hardware) at commit `d30ae1f825af`, output sha256 `4ac464a064329c34`, [pin](../tests/compatibility/tier-smoke/empero-qwen3.8-35b-a3b-distill-q6_k.linux-x86_64-cuda.cuda.txt)
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.21.0 on 2026-11-21.
+- **CPU:** ✅ v1.21.0 2026-11-21 on linux-x86_64-cuda (borrowed hardware) at commit `7b0d9e4cd938`, output sha256 `4ac464a064329c34`, [pin](../tests/compatibility/tier-smoke/empero-qwen3.8-35b-a3b-distill-q6_k.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.21.0 2026-11-21 on linux-x86_64-cuda (borrowed hardware) at commit `7b0d9e4cd938`, output sha256 `f3a25e63edc8ebf7`, [pin](../tests/compatibility/tier-smoke/empero-qwen3.8-35b-a3b-distill-q6_k.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): Not measured: Metal runs qwen35moe on toy models (make test-metal-qwen35moe, to the CPU's logits at 1e-5), but this file (29.2 GB) has not been run on a Mac that holds it.
-- **LoRA training:** no: MoE on a Gated DeltaNet model (runner 1.16.0, 2026-11-11).
-- **LoRA adapter serving:** supported (runner 1.16.0, 2026-11-11).
+- **LoRA training:** no: MoE on a Gated DeltaNet model (runner 1.21.0, 2026-11-21).
+- **LoRA adapter serving:** supported (runner 1.21.0, 2026-11-21).
 
 #### Sage-A1.5 (InternScience's, built on Qwen3.6-35B-A3B and Agents-A1)
 
@@ -2847,12 +2847,12 @@ Arcee's Q8_0 of Trinity Nano Preview, text path, CPU only by admission: the one 
 - **Context tested:** not recorded.
 - **Still missing:** Pinned output.
 - **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [docs/model-evidence.md](model-evidence.md).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.20.0 on 2026-11-20.
-- **CPU:** ✅ v1.20.0 2026-11-20 on windows-x86_64-cuda at commit `afde61fa957c`, output sha256 `244682eddd94535f`, [pin](../tests/compatibility/tier-smoke/trinity-nano-preview-q8_0.windows-x86_64-cuda.cpu.txt)
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.21.0 on 2026-11-21.
+- **CPU:** ✅ v1.21.0 2026-11-21 on linux-x86_64-cuda (borrowed hardware) at commit `7b0d9e4cd938`, output sha256 `dd5cc4932b696923`, [pin](../tests/compatibility/tier-smoke/trinity-nano-preview-q8_0.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** [n/a](../MANUAL.md#support-matrix): afmoe (gated attention with sparse MoE) has no CUDA path; CUDA refuses it and the file runs on the CPU.
 - **Metal:** [n/a](../MANUAL.md#support-matrix): afmoe (gated attention with sparse MoE) has no Metal path; Metal refuses it and the file runs on the CPU.
-- **LoRA training:** no: MoE router gating other than softmax (runner 1.20.0, 2026-11-20).
-- **LoRA adapter serving:** supported (runner 1.20.0, 2026-11-20).
+- **LoRA training:** no: MoE router gating other than softmax (runner 1.21.0, 2026-11-21).
+- **LoRA adapter serving:** supported (runner 1.21.0, 2026-11-21).
 
 ### Xyntetik-Kvist-14B
 
