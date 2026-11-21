@@ -185,17 +185,288 @@ ink2_status ink2_expert_layer(const ink2_shape *s, const ink2_weights *w, int bl
 }
 
 // y[o] = sum_i W[o][i] x[i], a serial dot in index order per output (nn.Linear without bias)
+static void ink2_matvec(const float *W, int n_out, int n_in, const float *x, float *y) {
+    for (int o = 0; o < n_out; o++) {
+        float a = 0.0f; const float *row = W + (size_t)o * n_in;
+        for (int i = 0; i < n_in; i++) a += row[i] * x[i];
+        y[o] = a;
+    }
+}
+// Inkling2LoopL2Clip on one head vector: norm = sqrt(sum y^2) (vector_norm), then y * min(thr / (norm + 1e-6), 1),
+// the quotient as torch computes a Python float over a tensor: f32(1 / (norm + 1e-6)) * f32(thr)
+static void ink2_l2_clip(float *y, int n, float thr) {
+    float ss = 0.0f;
+    for (int i = 0; i < n; i++) ss += y[i] * y[i];
+    float f = (1.0f / (sqrtf(ss) + 1e-6f)) * thr;
+    if (f > 1.0f) f = 1.0f;                               // .clamp(max=1.0)
+    for (int i = 0; i < n; i++) y[i] = y[i] * f;
+}
+// Inkling2LoopLogScale's factor at one position: 1 + alpha * log(max((pos + 1) / n_floor, 1)), in float32
+static float ink2_log_tau(const ink2_shape *s, int pos) {
+    float a = (float)(pos + 1) / (float)s->log_floor;
+    if (a < 1.0f) a = 1.0f;
+    return 1.0f + s->log_alpha * p_logf(a);
+}
+// The head-vector norm of Q and of the relative states: times the learned scale [n][d], the L2 clip, and on full
+// layers (Inkling2LoopLogScaledL2Clip) the log-length scale
+static void ink2_scaled_clip(const ink2_shape *s, int g, float *y, const float *scale, int n, int d, float thr, int pos) {
+    float tau = g ? ink2_log_tau(s, pos) : 1.0f;
+    for (int h = 0; h < n; h++) {
+        float *yh = y + (size_t)h * d;
+        for (int i = 0; i < d; i++) yh[i] = yh[i] * scale[(size_t)h * d + i];
+        ink2_l2_clip(yh, d, thr);
+        if (g) for (int i = 0; i < d; i++) yh[i] = yh[i] * tau;
+    }
+}
+// One layer's self_attn: its sizes (by layer type) and its weights by role, looked up once (pointers only: a lookup
+// may reuse its slot)
+enum { WQ, WQS, WK, WKC, WKD, WV, WVC, WVD, WR, WRS, WRP, WS, WG, WO, NW };
+typedef struct { int g, nh, nkv, hd, K, ext, dr, C, Q; const float *wt[NW]; } ink2_attn_layer;
+static ink2_status ink2_attn_bind(const ink2_shape *s, const ink2_weights *w, int app, ink2_attn_layer *L) {
+    if (!s || !w || app < 0 || app >= s->n_app) return INK2_BAD_INPUT;
+    int g = ink2_app_global(s, app), H = s->hidden;
+    L->g = g; L->nh = g ? s->n_head : s->swa_n_head; L->nkv = g ? s->n_kv : s->swa_n_kv; L->hd = g ? s->head_dim : s->swa_head_dim;
+    L->K = s->conv_k; L->ext = g ? s->rel_extent : s->window; L->dr = s->d_rel; L->C = L->nkv * L->hd; L->Q = L->nh * L->hd;
+    int nh = L->nh, nkv = L->nkv, hd = L->hd, K = L->K, ext = L->ext, dr = L->dr, C = L->C, Q = L->Q;
+    if (nkv <= 0 || nh % nkv || hd < 1 || K < 1 || ext < 1 || dr < 1) return INK2_BAD_INPUT;
+    const char *nm[NW] = { "q_proj.linear.weight", "q_proj.norm.scale", "k_proj.linear.weight",
+        g ? "k_proj.sconv.static_weight" : "k_proj.sconv.conv1d.weight", g ? "k_proj.sconv.weight_proj.weight" : NULL,
+        "v_proj.linear.weight", g ? "v_proj.sconv.static_weight" : "v_proj.sconv.conv1d.weight",
+        g ? "v_proj.sconv.weight_proj.weight" : NULL, "relative_position_bias.linear.weight",
+        "relative_position_bias.norm.scale", "relative_position_bias.proj", "sink_proj.weight", "o_proj.gate_proj.weight",
+        "o_proj.linear.weight" };
+    // the expected ne[0] and element count of each
+    const int64_t n0[NW] = { H, hd, H, g ? C : K, H, H, g ? C : K, H, H, dr, ext, H, H, Q };
+    const int64_t nn[NW] = { (int64_t)H * Q, Q, (int64_t)H * C, (int64_t)C * K, (int64_t)H * nkv * K, (int64_t)H * C,
+                             (int64_t)C * K, (int64_t)H * nkv * K, (int64_t)H * nh * dr, nh * dr, dr * ext, (int64_t)H * nh,
+                             (int64_t)H * Q, (int64_t)Q * H };
+    for (int i = 0; i < NW; i++) {
+        L->wt[i] = NULL;
+        if (!nm[i]) continue;
+        char name[192]; snprintf(name, sizeof name, "model.layers.%d.self_attn.%s", s->app_block[app], nm[i]);
+        const ink2_tensor *t = w->get(w->ctx, name);
+        if (!t || t->ne[0] != n0[i] || t->ne[0] * t->ne[1] * t->ne[2] * t->ne[3] != nn[i]) return INK2_NO_TENSOR;
+        L->wt[i] = t->data;
+    }
+    return INK2_OK;
+}
+static void ink2_rows(const float *W, int n_out, int n_in, int T, const float *x, float *y) {
+    for (int t = 0; t < T; t++) ink2_matvec(W, n_out, n_in, x + (size_t)t * n_in, y + (size_t)t * n_out);
+}
+// q_proj (Inkling2LoopQueryProjection): linear, then per head the scale, the L2 clip at qk_clip, (full) tau(pos)
+static void ink2_attn_q(const ink2_shape *s, const ink2_attn_layer *L, int T, const int *pos, const float *x, float *q) {
+    ink2_rows(L->wt[WQ], L->Q, s->hidden, T, x, q);
+    for (int t = 0; t < T; t++) ink2_scaled_clip(s, L->g, q + (size_t)t * L->Q, L->wt[WQS], L->nh, L->hd, s->qk_clip, pos[t]);
+}
+// The convolution of k_proj / v_proj (kv = 0 / 1) over all T positions, lin [T][C] in, out [T][C]:
+//   sliding (Inkling2LoopShortConvolution): conv[t][c] = sum_j w[c][j] lin[t - (K-1) + j][c], j ascending (F.conv1d,
+//     left zero padding: w[c][K-1] weights the current position); (conv + lin) / sqrt(K + 1);
+//   full (Inkling2LoopDynamicShortConvolution): taps[t][c][lag] = static[lag][c] + dyn[t][c / hd][lag], dyn = Wd x
+//     (x is the projection's own input, the dynamic input); conv[t][c] = sum_lag lin[t - lag][c] taps[lag], lag
+//     ascending; (conv + lin) / sqrt(2K + 1).
+// The positions before 0 are the zero padding of a prefill: the convolution histories are not read or written yet
+// (the fixture calls each application once, on positions 0..T-1); decode must carry them in c->conv.
+static void ink2_kv_conv(const ink2_shape *s, const ink2_attn_layer *L, int kv, int T, const float *lin, const float *x,
+                         float *dyn, float *out) {
+    int g = L->g, C = L->C, K = L->K, R = L->nkv * K, hd = L->hd;
+    const float *cw = L->wt[kv ? WVC : WKC];
+    if (g) ink2_rows(L->wt[kv ? WVD : WKD], R, s->hidden, T, x, dyn);
+    const float div = (float)sqrt((double)(g ? 2 * K + 1 : K + 1));   // math.sqrt, a float32 scalar to torch
+    for (int t = 0; t < T; t++) for (int ch = 0; ch < C; ch++) {
+        float a = 0.0f;
+        if (!g) {
+            for (int j = 0; j < K; j++) { int u = t - (K - 1) + j; if (u >= 0) a += cw[(size_t)ch * K + j] * lin[(size_t)u * C + ch]; }
+        } else {
+            for (int l = 0; l < K && t - l >= 0; l++) {
+                float tap = cw[(size_t)l * C + ch] + dyn[(size_t)t * R + (size_t)(ch / hd) * K + l];
+                a += lin[(size_t)(t - l) * C + ch] * tap;
+            }
+        }
+        out[(size_t)t * C + ch] = (a + lin[(size_t)t * C + ch]) / div;
+    }
+}
+// the norm of k_proj (the L2 clip at qk_clip) or v_proj (the unweighted RMS norm), per head, in place
+static void ink2_kv_norm(const ink2_shape *s, const ink2_attn_layer *L, int kv, int T, float *z) {
+    for (int t = 0; t < T; t++) for (int h = 0; h < L->nkv; h++) {
+        float *zh = z + (size_t)t * L->C + (size_t)h * L->hd;
+        if (kv) ink2_unweighted_norm(zh, L->hd, s->eps, zh); else ink2_l2_clip(zh, L->hd, s->qk_clip);
+    }
+}
+static void ink2_attn_kv(const ink2_shape *s, const ink2_attn_layer *L, int kv, int T, const float *x, float *lin,
+                         float *dyn, float *out) {
+    ink2_rows(L->wt[kv ? WV : WK], L->C, s->hidden, T, x, lin);
+    ink2_kv_conv(s, L, kv, T, lin, x, dyn, out);
+    ink2_kv_norm(s, L, kv, T, out);
+}
+// relative_position_bias up to the bank: rs = linear [heads][d_rel], the scaled clip at rel_clip ((full) with tau),
+// rl[t][h][e] = sum_r rs[h][r] proj[r][e]: the bias of distance e, read by the core for 0 <= q - k < extent
+static void ink2_attn_rel(const ink2_shape *s, const ink2_attn_layer *L, int T, const int *pos, const float *x, float *rs,
+                          float *rl) {
+    int nh = L->nh, dr = L->dr, ext = L->ext;
+    ink2_rows(L->wt[WR], nh * dr, s->hidden, T, x, rs);
+    for (int t = 0; t < T; t++) {
+        float *rt = rs + (size_t)t * nh * dr;
+        ink2_scaled_clip(s, L->g, rt, L->wt[WRS], nh, dr, s->rel_clip, pos[t]);
+        for (int h = 0; h < nh; h++) for (int e = 0; e < ext; e++) {
+            float a = 0.0f;
+            for (int r = 0; r < dr; r++) a += rt[(size_t)h * dr + r] * L->wt[WRP][(size_t)r * ext + e];
+            rl[((size_t)t * nh + h) * ext + e] = a;
+        }
+    }
+}
+// eager_attention_forward with the sink, head by head, query by query: logits = (Q . K) * head_dim^-0.5 + bias over
+// the keys the mask admits (k <= q, and on sliding layers q - k < window), the sink as one more logit with a zero
+// value: softmax over [keys, sink] (max, exp, serial sum with the sink last, a division); probs = the keys' columns;
+// att = probs V (keys ascending). Head h reads KV head h / (n_head / n_kv) (repeat_kv). Masked keys get probability 0
+// (the reference adds the float minimum, whose exp is 0) and stay out of the sums (their zero terms change no bits).
+static void ink2_attn_core(const ink2_shape *s, const ink2_attn_layer *L, int T, const int *pos, const float *q,
+                           const float *k, const float *v, const float *rl, const float *sk, float *lg, float *att,
+                           float *probs) {
+    int nh = L->nh, hd = L->hd, C = L->C, Q = L->Q, ext = L->ext;
+    const float scale = (float)pow((double)hd, -0.5);   // head_dim ** -0.5, a float32 scalar to torch
+#define INK2_ADMIT(i, j) (pos[i] - pos[j] >= 0 && (L->g || pos[i] - pos[j] < s->window))
+    for (int h = 0; h < nh; h++) {
+        int kh = h / (nh / L->nkv);
+        for (int i = 0; i < T; i++) {
+            const float *qi = q + (size_t)i * Q + (size_t)h * hd;
+            float mx = sk[(size_t)i * nh + h];
+            for (int j = 0; j < T; j++) {
+                int d = pos[i] - pos[j];
+                lg[j] = 0.0f;
+                if (!INK2_ADMIT(i, j)) continue;
+                const float *kj = k + (size_t)j * C + (size_t)kh * hd;
+                float a = 0.0f;
+                for (int e = 0; e < hd; e++) a += qi[e] * kj[e];
+                a = a * scale;
+                lg[j] = a + (d < ext ? rl[((size_t)i * nh + h) * ext + d] : 0.0f);
+                if (lg[j] > mx) mx = lg[j];
+            }
+            float sum = 0.0f;
+            for (int j = 0; j < T; j++) {
+                if (!INK2_ADMIT(i, j)) continue;   // lg[j] is 0 already
+                lg[j] = p_expf(lg[j] - mx); sum += lg[j];
+            }
+            sum += p_expf(sk[(size_t)i * nh + h] - mx);   // the sink, last in the concatenation
+            for (int j = 0; j < T; j++) lg[j] = lg[j] / sum;
+            if (probs) for (int j = 0; j < T; j++) probs[((size_t)h * T + i) * T + j] = lg[j];
+            float *ai = att + (size_t)i * Q + (size_t)h * hd;
+            for (int e = 0; e < hd; e++) {
+                float a = 0.0f;
+                for (int j = 0; j < T; j++) if (INK2_ADMIT(i, j)) a += lg[j] * v[(size_t)j * C + (size_t)kh * hd + e];
+                ai[e] = a;
+            }
+        }
+    }
+#undef INK2_ADMIT
+}
+// o_proj (Inkling2LoopGatedOutputProjection): att times sigmoid(gate_proj(x)) (att is overwritten), then linear
+static void ink2_attn_out(const ink2_shape *s, const ink2_attn_layer *L, int T, const float *x, float *att, float *ga,
+                          float *out) {
+    for (int t = 0; t < T; t++) {
+        ink2_matvec(L->wt[WG], L->Q, s->hidden, x + (size_t)t * s->hidden, ga);
+        float *at = att + (size_t)t * L->Q;
+        for (int i = 0; i < L->Q; i++) at[i] = at[i] * ink2_sigmoid(ga[i]);
+        ink2_matvec(L->wt[WO], s->hidden, L->Q, at, out + (size_t)t * s->hidden);
+    }
+}
+// scratch for T positions: q [T][Q], k, v, lin [T][C], dyn [T][n_kv K], rs [T][heads d_rel], rl [T][heads][extent],
+// sinks [T][heads], att [T][Q], the logit row [T + 1], the gate row [Q]
+static float *ink2_attn_scratch(const ink2_attn_layer *L, int T, float **p) {
+    size_t n[11] = { (size_t)T * L->Q, (size_t)T * L->C, (size_t)T * L->C, (size_t)T * L->C, (size_t)T * L->nkv * L->K,
+                     (size_t)T * L->nh * L->dr, (size_t)T * L->nh * L->ext, (size_t)T * L->nh, (size_t)T * L->Q,
+                     (size_t)T + 1, (size_t)L->Q }, tot = 0;
+    for (int i = 0; i < 11; i++) tot += n[i];
+    float *buf = malloc(sizeof(float) * tot);
+    if (buf) { size_t o = 0; for (int i = 0; i < 11; i++) { p[i] = buf + o; o += n[i]; } }
+    return buf;
+}
+enum { SQ, SK, SV, SLIN, SDYN, SRS, SRL, SSK, SATT, SLG, SGA };
+
+// Inkling2LoopSlidingAttention (hybrid_sliding) / Inkling2LoopFullAttention (hybrid), in the reference's order:
+// Q = q_proj(xq); K = k_proj(xk), V = v_proj(xv) (each: linear, convolution, norm); K, V into the application's
+// cache slot at rows pos[t]; the relative bias and the sinks from xq; the core; o_proj gated by xq.
 ink2_status ink2_attention(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int app, int T,
                            const int *pos, const float *xq, const float *xk, const float *xv,
                            float *out, float *probs) {
-    (void)s; (void)w; (void)c; (void)app; (void)T; (void)pos; (void)xq; (void)xk; (void)xv; (void)out; (void)probs;
-    return INK2_NOT_IMPLEMENTED;
+    ink2_attn_layer L;
+    if (!c || app >= c->n_app || T <= 0 || T > c->n_ctx) return INK2_BAD_INPUT;
+    for (int t = 0; t < T; t++) if (pos[t] < 0 || pos[t] >= c->n_ctx) return INK2_BAD_INPUT;
+    ink2_status st = ink2_attn_bind(s, w, app, &L);
+    if (st != INK2_OK) return st;
+    float *p[11], *buf = ink2_attn_scratch(&L, T, p);
+    if (!buf) return INK2_BAD_INPUT;
+    ink2_attn_q(s, &L, T, pos, xq, p[SQ]);
+    ink2_attn_kv(s, &L, 0, T, xk, p[SLIN], p[SDYN], p[SK]);
+    ink2_attn_kv(s, &L, 1, T, xv, p[SLIN], p[SDYN], p[SV]);
+    for (int t = 0; t < T; t++) {
+        memcpy(c->k[app] + (size_t)pos[t] * L.C, p[SK] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
+        memcpy(c->v[app] + (size_t)pos[t] * L.C, p[SV] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
+        if (pos[t] + 1 > c->n_past[app]) c->n_past[app] = pos[t] + 1;
+    }
+    ink2_attn_rel(s, &L, T, pos, xq, p[SRS], p[SRL]);
+    ink2_rows(L.wt[WS], L.nh, s->hidden, T, xq, p[SSK]);
+    ink2_attn_core(s, &L, T, pos, p[SQ], p[SK], p[SV], p[SRL], p[SSK], p[SLG], p[SATT], probs);
+    ink2_attn_out(s, &L, T, xq, p[SATT], p[SGA], out);
+    free(buf);
+    return INK2_OK;
 }
 
+// The sub-steps one at a time, for the fixture harness (which declares it; inkling2.h lists only the pieces): step is
+// the reference's submodule under self_attn, in its recorded inputs, the same code as ink2_attention; layouts are the
+// piece's ([T][heads][dim] per head):
+//   "q_proj"                        in[0] x [T][H]                    -> out [T][n_head][hd]
+//   "q_proj.norm"                   in[0] [T][n_head][hd]             -> out, same
+//   "k_proj", "v_proj"              in[0] x [T][H]                    -> out [T][n_kv][hd]
+//   "k_proj.sconv", "v_proj.sconv"  in[0] lin [T][n_kv hd], in[1] the dynamic input [T][H] -> out [T][n_kv hd]
+//   "k_proj.norm", "v_proj.norm"    in[0] [T][n_kv][hd]               -> out, same
+//   "relative_position_bias"        in[0] x                           -> out [n_head][T][T] (q - k outside the extent: 0)
+//   "relative_position_bias.norm"   in[0] [T][n_head][d_rel]          -> out, same
+//   "sink_proj"                     in[0] x                           -> out [T][n_head]
+//   "core"                          in[0] q [T][n_head][hd], in[1] k, in[2] v [T][n_kv][hd], in[3] the bias
+//                                   [n_head][T][T], in[4] sinks [T][n_head] -> out [T][n_head hd], out2 probs [n_head][T][T]
+//   "o_proj"                        in[0] the attention output [T][n_head hd], in[1] x -> out [T][H]
+ink2_status ink2_attention_step(const ink2_shape *s, const ink2_weights *w, int app, const char *step, int T,
+                                const int *pos, const float *const *in, float *out, float *out2);
 ink2_status ink2_attention_step(const ink2_shape *s, const ink2_weights *w, int app, const char *step, int T,
                                 const int *pos, const float *const *in, float *out, float *out2) {
-    (void)s; (void)w; (void)app; (void)step; (void)T; (void)pos; (void)in; (void)out; (void)out2;
-    return INK2_NOT_IMPLEMENTED;
+    ink2_attn_layer L;
+    if (!step || T <= 0) return INK2_BAD_INPUT;
+    ink2_status st = ink2_attn_bind(s, w, app, &L);
+    if (st != INK2_OK) return st;
+    float *p[11], *buf = ink2_attn_scratch(&L, T, p);
+    if (!buf) return INK2_BAD_INPUT;
+    int nh = L.nh, ext = L.ext, kv = step[0] == 'v';
+    if (!strcmp(step, "q_proj")) ink2_attn_q(s, &L, T, pos, in[0], out);
+    else if (!strcmp(step, "q_proj.norm")) {
+        memcpy(out, in[0], sizeof(float) * (size_t)T * L.Q);
+        for (int t = 0; t < T; t++) ink2_scaled_clip(s, L.g, out + (size_t)t * L.Q, L.wt[WQS], nh, L.hd, s->qk_clip, pos[t]);
+    } else if (!strcmp(step, "k_proj") || !strcmp(step, "v_proj")) ink2_attn_kv(s, &L, kv, T, in[0], p[SLIN], p[SDYN], out);
+    else if (!strcmp(step, "k_proj.sconv") || !strcmp(step, "v_proj.sconv")) ink2_kv_conv(s, &L, kv, T, in[0], in[1], p[SDYN], out);
+    else if (!strcmp(step, "k_proj.norm") || !strcmp(step, "v_proj.norm")) {
+        memcpy(out, in[0], sizeof(float) * (size_t)T * L.C); ink2_kv_norm(s, &L, kv, T, out);
+    } else if (!strcmp(step, "relative_position_bias")) {
+        ink2_attn_rel(s, &L, T, pos, in[0], p[SRS], p[SRL]);
+        for (int h = 0; h < nh; h++) for (int i = 0; i < T; i++) for (int j = 0; j < T; j++) {
+            int d = pos[i] - pos[j];
+            out[((size_t)h * T + i) * T + j] = d >= 0 && d < ext ? p[SRL][((size_t)i * nh + h) * ext + d] : 0.0f;
+        }
+    } else if (!strcmp(step, "relative_position_bias.norm")) {
+        memcpy(out, in[0], sizeof(float) * (size_t)T * nh * L.dr);
+        for (int t = 0; t < T; t++) ink2_scaled_clip(s, L.g, out + (size_t)t * nh * L.dr, L.wt[WRS], nh, L.dr, s->rel_clip, pos[t]);
+    } else if (!strcmp(step, "sink_proj")) ink2_rows(L.wt[WS], nh, s->hidden, T, in[0], out);
+    else if (!strcmp(step, "core")) {
+        // the bias matrix back to the bank form the core reads: rl[i][h][q - k] (distances with no key stay 0)
+        memset(p[SRL], 0, sizeof(float) * (size_t)T * nh * ext);
+        for (int h = 0; h < nh; h++) for (int i = 0; i < T; i++) for (int j = 0; j < T; j++) {
+            int d = pos[i] - pos[j];
+            if (d >= 0 && d < ext) p[SRL][((size_t)i * nh + h) * ext + d] = in[3][((size_t)h * T + i) * T + j];
+        }
+        ink2_attn_core(s, &L, T, pos, in[0], in[1], in[2], p[SRL], in[4], p[SLG], out, out2);
+    } else if (!strcmp(step, "o_proj")) {
+        memcpy(p[SATT], in[0], sizeof(float) * (size_t)T * L.Q); ink2_attn_out(s, &L, T, in[1], p[SATT], p[SGA], out);
+    } else st = INK2_BAD_INPUT;
+    free(buf);
+    return st;
 }
 
 // The head: lm_head (built UNPADDED by the reference: vocab_used rows) then logit_softcap, tanh(l / cap) * cap
@@ -288,4 +559,3 @@ ink2_status ink2_message_step(const ink2_shape *s, const ink2_weights *w, int bl
     free(gh);
     return INK2_OK;
 }
-
