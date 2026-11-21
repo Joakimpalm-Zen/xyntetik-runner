@@ -118,30 +118,6 @@
     },
     "trinity-nano-preview-q8_0": {
       "pins": {
-        "linux-x86_64-cuda/cpu": {
-          "path": "tests/compatibility/tier-smoke/trinity-nano-preview-q8_0.linux-x86_64-cuda.cpu.txt",
-          "sha256": "b26e284a3452dbbafff6653a45966966cb5d9e42ba9503bd01d202f7b224ea96",
-          "bytes": 215,
-          "finish_reason": "length",
-          "completion_tokens": 48,
-          "spec": {
-            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
-            "n_predict": 48,
-            "ctx": 512,
-            "server_args": [
-              "-b",
-              "64"
-            ],
-            "request": {
-              "enable_thinking": false
-            }
-          },
-          "pinned": {
-            "date": "2026-10-23",
-            "runner_version": "1.5.1",
-            "commit": "eefc9dda277cc4f3901e51a46d15366a81b7015b"
-          }
-        },
         "windows-x86_64-cuda/cpu": {
           "path": "tests/compatibility/tier-smoke/trinity-nano-preview-q8_0.windows-x86_64-cuda.cpu.txt",
           "sha256": "244682eddd94535fc0103d2ce866af322f5437fd907d50021997f3dff9c24f4e",
@@ -168,6 +144,36 @@
               "binary_sha256": "1a105a3fe79430b9dbcb09bfa07697caa83a6e5c5f8e4057a56c380658567667",
               "compiler": "16.2.0",
               "commit": "afde61fa957ccf1c0038d69dad7e5998b03778de",
+              "dirty": false
+            }
+          }
+        },
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/trinity-nano-preview-q8_0.linux-x86_64-cuda.cpu.txt",
+          "sha256": "dd5cc4932b6969238bf5f31f41aa4d1cb10b55d50385dd03957683229446a632",
+          "bytes": 233,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-21",
+            "runner_version": "1.21.0",
+            "commit": "7b0d9e4cd938ec20866e14544dadeae237d9d546",
+            "build": {
+              "binary_sha256": "3e0d296ad851d65aa52096031ae8a00f5ff6459d5832dbabd3882a911fb5ce3d",
+              "compiler": "13.3.0",
+              "commit": "7b0d9e4cd938ec20866e14544dadeae237d9d546",
               "dirty": false
             }
           }
@@ -3358,30 +3364,6 @@
     },
     "deepseek-v2-lite-chat-q6_k": {
       "pins": {
-        "linux-x86_64-cuda/cpu": {
-          "path": "tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q6_k.linux-x86_64-cuda.cpu.txt",
-          "sha256": "eae8d81a354865063f6edb2a6e83c627b6c4b6d7f8c8749e5fac353dca7b294b",
-          "bytes": 185,
-          "finish_reason": "length",
-          "completion_tokens": 48,
-          "spec": {
-            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
-            "n_predict": 48,
-            "ctx": 512,
-            "server_args": [
-              "-b",
-              "64"
-            ],
-            "request": {
-              "enable_thinking": false
-            }
-          },
-          "pinned": {
-            "date": "2026-11-04",
-            "runner_version": "1.12.0",
-            "commit": "0676f2639410c3db4b322e81c914187d0a190552"
-          }
-        },
         "linux-x86_64-cuda/cuda": {
           "path": "tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q6_k.linux-x86_64-cuda.cuda.txt",
           "sha256": "70827d501fa8dc01eb53edd654e02da4829cf3aa439af54f451148fdf32baf12",
@@ -3407,6 +3389,36 @@
             "build": {
               "binary_sha256": "34bfcad2833665d9325f7076e8d54a5dd4d75c05adce9146761f7c77a47aba0a",
               "compiler": "13.3.0"
+            }
+          }
+        },
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q6_k.linux-x86_64-cuda.cpu.txt",
+          "sha256": "70827d501fa8dc01eb53edd654e02da4829cf3aa439af54f451148fdf32baf12",
+          "bytes": 193,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-21",
+            "runner_version": "1.21.0",
+            "commit": "7b0d9e4cd938ec20866e14544dadeae237d9d546",
+            "build": {
+              "binary_sha256": "3e0d296ad851d65aa52096031ae8a00f5ff6459d5832dbabd3882a911fb5ce3d",
+              "compiler": "13.3.0",
+              "commit": "7b0d9e4cd938ec20866e14544dadeae237d9d546",
+              "dirty": false
             }
           }
         }
@@ -3632,30 +3644,6 @@
       "pins": {
         "linux-x86_64-cuda/cpu": {
           "path": "tests/compatibility/tier-smoke/empero-qwen3.8-35b-a3b-distill-q6_k.linux-x86_64-cuda.cpu.txt",
-          "sha256": "f3a25e63edc8ebf782ae5bb9ede7de145de7761ed2bcc1cb407cd7c1a9e384e2",
-          "bytes": 228,
-          "finish_reason": "length",
-          "completion_tokens": 48,
-          "spec": {
-            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
-            "n_predict": 48,
-            "ctx": 512,
-            "server_args": [
-              "-b",
-              "64"
-            ],
-            "request": {
-              "enable_thinking": false
-            }
-          },
-          "pinned": {
-            "date": "2026-11-06",
-            "runner_version": "1.14.0",
-            "commit": "bae5907817e428b2c3b1bdc931c3a4ccd4402653"
-          }
-        },
-        "linux-x86_64-cuda/cuda": {
-          "path": "tests/compatibility/tier-smoke/empero-qwen3.8-35b-a3b-distill-q6_k.linux-x86_64-cuda.cuda.txt",
           "sha256": "4ac464a064329c34fd324bd617ff5db8bea657b825fc921320ffce1b6d666f93",
           "bytes": 221,
           "finish_reason": "length",
@@ -3673,12 +3661,44 @@
             }
           },
           "pinned": {
-            "date": "2026-11-11",
-            "runner_version": "1.16.0",
-            "commit": "d30ae1f825afc84e77a014fd1d32d2857b58ede2",
+            "date": "2026-11-21",
+            "runner_version": "1.21.0",
+            "commit": "7b0d9e4cd938ec20866e14544dadeae237d9d546",
             "build": {
-              "binary_sha256": "34bfcad2833665d9325f7076e8d54a5dd4d75c05adce9146761f7c77a47aba0a",
-              "compiler": "13.3.0"
+              "binary_sha256": "3e0d296ad851d65aa52096031ae8a00f5ff6459d5832dbabd3882a911fb5ce3d",
+              "compiler": "13.3.0",
+              "commit": "7b0d9e4cd938ec20866e14544dadeae237d9d546",
+              "dirty": false
+            }
+          }
+        },
+        "linux-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/empero-qwen3.8-35b-a3b-distill-q6_k.linux-x86_64-cuda.cuda.txt",
+          "sha256": "f3a25e63edc8ebf782ae5bb9ede7de145de7761ed2bcc1cb407cd7c1a9e384e2",
+          "bytes": 228,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-21",
+            "runner_version": "1.21.0",
+            "commit": "7b0d9e4cd938ec20866e14544dadeae237d9d546",
+            "build": {
+              "binary_sha256": "3e0d296ad851d65aa52096031ae8a00f5ff6459d5832dbabd3882a911fb5ce3d",
+              "compiler": "13.3.0",
+              "commit": "7b0d9e4cd938ec20866e14544dadeae237d9d546",
+              "dirty": false
             }
           }
         }

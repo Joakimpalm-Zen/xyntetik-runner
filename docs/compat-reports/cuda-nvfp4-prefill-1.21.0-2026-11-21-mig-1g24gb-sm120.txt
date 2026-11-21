@@ -1,0 +1,22 @@
+# NVFP4 prefill, runner 1.21.0 (release/1.21.0 at 7b0d9e4c, the version pins on main 87f863ef), a CUDA MIG slice, 1g.24gb, sm_120, driver 610.43.02
+# binary: built at 7b0d9e4c with the pinned PTX by the release recipe, gcc 13.3.0 (Ubuntu 13.3.0-6ubuntu2~24.04.1) with -O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=x86-64-v3 (STRICT: -Werror -Wshadow), 0 warnings, sha256 3e0d296ad851d65a..., ./runner --version = runner 1.21.0.
+# The card alone: the CUDA gate (06:12:07Z to 06:29:37Z), the smoke and probe, and the MoE replay (06:29:55Z to
+#   06:31:01Z) had ended, and the lane's pin table and model fetch were stopped (SIGSTOP) for the whole run. The host's
+#   CPUs carry outside tenants (1-min load 3.2 to 3.5, below). A speed read comparable with 1.20.0's on the same prompt
+#   (1,713.49 against 85.11 tok/s).
+# qwen3.5-4b-nvfp4.gguf, FreedomAISVR/Qwen3.5-4B-NVFP4-GGUF at fb9f8b9ec432e38872ec9d9707183642cf885ad6,
+#   sha256 317ef79785a9380ac72d23ab33af9376afd926b4c0781fae246f033daf91a05f; -f tests/fixtures/nvfp4-prefill-prompt.txt,
+#   -n 32 --temp 0 -c 4096, every layer on the device
+# The prompt's sha256, as release-cuda-gate printed it:
+#   a25ab76dfd7ba46f22a8e2c94a7ee0ad91dcf997336bc77786ae23a825136f3d (1,971 tokens), the same prompt as 1.15.0's to 1.20.0's reads.
+== RUNNER_CUDA_TC_NVFP4=default
+exit 0
+gpu-split: budget=25.13GB fixed=0.93GB G=32/32 full=1 used=3.07GB
+prompt: 1971 tok, 1703.65 tok/s | gen: 32 tok, 64.16 tok/s
+== RUNNER_CUDA_TC_NVFP4=0
+exit 0
+gpu-split: budget=25.13GB fixed=0.93GB G=32/32 full=1 used=3.07GB
+prompt: 1971 tok, 85.02 tok/s | gen: 32 tok, 64.22 tok/s
+start 2026-11-21T06:31:05Z, load 3.51 5.14 8.06; end 2026-11-21T06:31:22Z, load 3.47 5.05 7.98
+start 2026-11-21T06:31:22Z, load 3.47 5.05 7.98; end 2026-11-21T06:31:47Z, load 3.24 4.87 7.85
+output sha256: default b9b8c69d2349fac84ee54e0d09967532b2e0a2c07d459b88afdd20a9c9461c79, =0 b9b8c69d2349fac84ee54e0d09967532b2e0a2c07d459b88afdd20a9c9461c79 (the same 32 tokens as 1.20.0's)
