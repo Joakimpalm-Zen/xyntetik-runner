@@ -1,6 +1,9 @@
 // Discovery-registry gate: register/list roundtrip, port rewrite, stale
 // sweep, multi-record listing, unregister. Runs against a private HOME
 // (or APPDATA on Windows) so it never touches the user's real registry.
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE   // glibc declares nftw, FTW_DEPTH and FTW_PHYS only under XSI or GNU
+#endif
 #include "instances.h"
 #include "compat.h"
 
