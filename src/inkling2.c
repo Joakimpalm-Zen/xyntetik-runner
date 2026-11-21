@@ -937,6 +937,10 @@ static void ink2_pack_states(float *const *slab, int n, int T, int H, float *dst
 // Inkling2LoopNormedEmbedding, the loop of Inkling2LoopTextModel.forward, final_input, norm, the head; see inkling2.h
 ink2_status ink2_forward_chunk(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int p0, int T,
                                const int *ids, float *logits, int flags, float *app_states) {
+    return ink2_forward_chunk_sel(s, w, c, p0, T, ids, logits, flags, app_states, NULL);
+}
+ink2_status ink2_forward_chunk_sel(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int p0, int T,
+                                   const int *ids, float *logits, int flags, float *app_states, int *app_sel) {
     if (!s || !w || !c || T <= 0 || p0 < 0 || p0 + T > c->n_ctx || c->n_app != s->n_app) return INK2_BAD_INPUT;
     // a continuation must start where every slot ends (refused before any slot is touched); p0 = 0 starts over
     if (p0 > 0) for (int a = 0; a < s->n_app; a++) if (c->n_past[a] != p0) return INK2_REWIND;
@@ -993,7 +997,8 @@ ink2_status ink2_forward_chunk(const ink2_shape *s, const ink2_weights *w, ink2_
             m = msgs;
         }
         ink2_pack_states(cur, nb, T, H, packed);
-        INK2_TRY(ink2_decoder_layer(s, w, c, a, T, pos, h, packed, nb, m, hn));
+        INK2_TRY(ink2_decoder_layer_sel(s, w, c, a, T, pos, h, packed, nb, m, hn,
+                                        app_sel ? app_sel + (size_t)a * T * s->n_used : NULL));
         if (ink2_block_boundary(s, b)) {   // the layer's INPUT joins the block states
             if (nb >= maxb || next >= n_slab) { st = INK2_BAD_INPUT; goto done; }
             float *slab = INK2_SLAB(); memcpy(slab, h, sizeof(float) * TH); cur[nb++] = slab;

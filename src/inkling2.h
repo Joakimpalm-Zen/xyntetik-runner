@@ -188,6 +188,11 @@ ink2_status ink2_forward(const ink2_shape *s, const ink2_weights *w, int T, cons
 #define INK2_MISWIRE_OWN_PASS 2   // later passes read their own pass's block states for the messages
 ink2_status ink2_forward_chunk(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int p0, int T,
                                const int *ids, float *logits, int flags, float *app_states);
+// TEST-ONLY (the first-light comparison): the same forward, also returning every application's expert selection
+// app_sel [n_app][T][n_used] (each position's chosen experts in ascending index, from ink2_decoder_layer_sel: the
+// router run again on the same MLP input, so nothing else changes). app_sel NULL is ink2_forward_chunk exactly.
+ink2_status ink2_forward_chunk_sel(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int p0, int T,
+                                   const int *ids, float *logits, int flags, float *app_states, int *app_sel);
 
 // One operation of a layer or the model on recorded inputs, for the fixture harness's single-step lines (the ops and
 // their layouts are listed beside the definition in inkling2.c); the same code the forward runs.
