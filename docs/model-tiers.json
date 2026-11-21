@@ -8901,7 +8901,7 @@
         {
           "name": "LFM2.5-24B-A2B-Q4_K_M.gguf",
           "repo": "LiquidAI/LFM2.5-24B-A2B-GGUF",
-          "revision": "0912d33141f77e10705345a6732bfd83f0252fdc",
+          "revision": "d790f111166905bfb36a81e12a403701ac23a1ca",
           "sha256": "d3334405b96228eb9908cdebb5c6194908f2da64282bda852afc3a3910c64e7d",
           "bytes": 14526258464
         }

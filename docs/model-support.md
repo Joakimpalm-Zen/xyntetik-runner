@@ -1614,7 +1614,7 @@ Text path, LiquidAI's own Q8_0 of LFM2.5-1.2B-Instruct, the fidelity file of the
 
 Text path, LiquidAI's own Q4_K_M of LFM2.5-24B-A2B, which fails the fidelity bar: against the BF16 parent with float32 arithmetic it reads 0.144 mean KLD against 0.05 (84.0% top-1, 90.5% margin-qualified against 97%). The publisher's Q8_0 is the fidelity file (0.0297, 99.1% margin-qualified).
 
-- **File:** `LFM2.5-24B-A2B-Q4_K_M.gguf` (sha256 `d3334405b96228eb9908cdebb5c6194908f2da64282bda852afc3a3910c64e7d`, 14,526,258,464 bytes, from [LiquidAI/LFM2.5-24B-A2B-GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF) at revision `0912d33141f7`).
+- **File:** `LFM2.5-24B-A2B-Q4_K_M.gguf` (sha256 `d3334405b96228eb9908cdebb5c6194908f2da64282bda852afc3a3910c64e7d`, 14,526,258,464 bytes, from [LiquidAI/LFM2.5-24B-A2B-GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF) at revision `d790f1111669`).
 - **Upstream checkpoint:** LiquidAI/LFM2.5-24B-A2B at revision `3fcfdbfa1a1b`.
 - **Quantization:** Q4_K_M (publisher).
 - **Licence:** `lfm1.0`, as the LiquidAI/LFM2.5-24B-A2B model card states it.
