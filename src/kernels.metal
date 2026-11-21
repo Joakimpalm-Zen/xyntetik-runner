@@ -3698,11 +3698,11 @@ static inline float kv_dot_coop(device const uchar *row, device const float *qh,
     /* exp + sum */ \
     float sum = 0; \
     for (int t = t0 + tid; t <= pos; t += tpg) { \
-        float e = exp(ah[t] - mx); \
+        float e = precise::exp(ah[t] - mx); \
         ah[t] = e; \
         sum += e; \
     } \
-    if (a.has_sinks && tid == 0) sum += exp(sinks[h] - mx); \
+    if (a.has_sinks && tid == 0) sum += precise::exp(sinks[h] - mx); \
     red[tid] = sum; \
     threadgroup_barrier(mem_flags::mem_threadgroup); \
     for (uint off = tpg / 2; off > 0; off >>= 1) { \
@@ -3926,11 +3926,11 @@ kernel void k_attn_tile(device const float *q_all   [[buffer(0)]],
         threadgroup_barrier(mem_flags::mem_threadgroup);
         float sum = 0;
         for (int t = t0 + (int)tid; t <= pc; t += (int)tpg) {
-            float e = exp(ah[t] - mx);
+            float e = precise::exp(ah[t] - mx);
             ah[t] = e;
             sum += e;
         }
-        if (a.has_sinks && tid == 0) sum += exp(sinks[h] - mx);
+        if (a.has_sinks && tid == 0) sum += precise::exp(sinks[h] - mx);
         red[tid] = sum;
         threadgroup_barrier(mem_flags::mem_threadgroup);
         for (uint off = tpg / 2; off > 0; off >>= 1) {
@@ -4079,7 +4079,7 @@ struct attn_chunk_args {
  \
     float sum = 0; \
     for (int t = lo + (int)tid; t <= hi; t += tpg) { \
-        float e = exp(ah[t] - mx); \
+        float e = precise::exp(ah[t] - mx); \
         ah[t] = e; \
         sum += e; \
     } \
@@ -4191,7 +4191,7 @@ kernel void k_attn_chunk_gqa(device const float *q_all   [[buffer(0)]],
 
         float sum = 0;
         for (int t = lo + (int)tid; t <= hi; t += tpg) {
-            float e = exp(ah[t] - mx);
+            float e = precise::exp(ah[t] - mx);
             ah[t] = e;
             sum += e;
         }
@@ -4284,15 +4284,15 @@ kernel void k_attn_combine(device const float *acc_all [[buffer(0)]],
     if (a.has_sinks) M = max(M, sinks[h]);
 
     float denom = 0;
-    for (int z = 0; z < a.n_chunks; z++) denom += ms[z * 2 + 1] * exp(ms[z * 2] - M);
+    for (int z = 0; z < a.n_chunks; z++) denom += ms[z * 2 + 1] * precise::exp(ms[z * 2] - M);
     // A sink joins the denominator only -- it contributes no value vector --
     // exactly as the single-pass kernel treats it.
-    if (a.has_sinks) denom += exp(sinks[h] - M);
+    if (a.has_sinks) denom += precise::exp(sinks[h] - M);
 
     for (int i = tid; i < hd; i += tpg) {
         float o = 0;
         for (int z = 0; z < a.n_chunks; z++)
-            o += acc_all[((ulong)h * a.n_chunks + z) * hd + i] * exp(ms[z * 2] - M);
+            o += acc_all[((ulong)h * a.n_chunks + z) * hd + i] * precise::exp(ms[z * 2] - M);
         out_all[h * hd + i] = o / denom;
     }
 }
@@ -4316,7 +4316,7 @@ kernel void k_silu_mul(device float       *g [[buffer(0)]],
         device float *gp = g + (ulong)gid.y * gs;
         device const float *up = u + (ulong)gid.y * us;
         float x = gp[gid.x];
-        gp[gid.x] = (x / (1.0f + exp(-x))) * up[gid.x];
+        gp[gid.x] = (x / (1.0f + precise::exp(-x))) * up[gid.x];
     }
 }
 
@@ -4333,7 +4333,7 @@ kernel void k_head_sigmoid_mul(device float       *x [[buffer(0)]],
     if ((int)gid.x < n) {
         device float *xp = x + (ulong)gid.y * xs;
         device const float *gp = g + (ulong)gid.y * gs;
-        xp[gid.x] *= 1.0f / (1.0f + exp(-gp[(int)gid.x / hd]));
+        xp[gid.x] *= 1.0f / (1.0f + precise::exp(-gp[(int)gid.x / hd]));
     }
 }
 
@@ -4350,7 +4350,7 @@ kernel void k_sigmoid_mul(device float       *x [[buffer(0)]],
     if ((int)gid.x < n) {
         device float *xp = x + (ulong)gid.y * xs;
         device const float *gp = g + (ulong)gid.y * gs;
-        xp[gid.x] *= 1.0f / (1.0f + exp(-gp[gid.x]));
+        xp[gid.x] *= 1.0f / (1.0f + precise::exp(-gp[gid.x]));
     }
 }
 
@@ -4387,7 +4387,7 @@ static inline float erf_as(float x) {
     float a = fabs(x);
     float t = 1.0f / (1.0f + 0.3275911f * a);
     float y = 1.0f - (((((1.061405429f * t - 1.453152027f) * t + 1.421413741f) * t
-                        - 0.284496736f) * t + 0.254829592f) * t) * exp(-a * a);
+                        - 0.284496736f) * t + 0.254829592f) * t) * precise::exp(-a * a);
     return copysign(y, x);
 }
 
@@ -4448,7 +4448,7 @@ kernel void k_moe_route(device const float *logits [[buffer(0)]],
         if (lg[e] > mx) mx = lg[e];
     float sum = 0.0f;
     for (int e = 0; e < ne; e++) {
-        float p = exp(lg[e] - mx);
+        float p = precise::exp(lg[e] - mx);
         lg[e] = p;
         sum += p;
     }
@@ -4503,7 +4503,7 @@ kernel void k_moe_route_replay(device const float *logits [[buffer(0)]],
         if (lg[e] > mx) mx = lg[e];
     float sum = 0.0f;
     for (int e = 0; e < ne; e++) {
-        float p = exp(lg[e] - mx);
+        float p = precise::exp(lg[e] - mx);
         lg[e] = p;
         sum += p;
     }
@@ -5478,7 +5478,7 @@ static inline float swiglu_oai(float g, float u) {
     const float alpha = 1.702f, limit = 7.0f;
     float x = g < limit ? g : limit;
     float y = clamp(u, -limit, limit);
-    float gl = x < -50.0f ? 0.0f : x / (1.0f + exp(alpha * -x));
+    float gl = x < -50.0f ? 0.0f : x / (1.0f + precise::exp(alpha * -x));
     return gl * (y + 1.0f);
 }
 
@@ -5506,7 +5506,7 @@ kernel void k_moe_actmul(device float       *gbuf [[buffer(0)]],
                              -16.0f, 16.0f));
         g[i] = 0.5f * x * (1.0f + t) * u[i];
     } else {
-        g[i] = (x / (1.0f + exp(-x))) * u[i];
+        g[i] = (x / (1.0f + precise::exp(-x))) * u[i];
     }
 }
 
@@ -5560,7 +5560,7 @@ kernel void NAME(device const uchar *wb    [[buffer(0)]], \
                              -16.0f, 16.0f)); \
         out = 0.5f * sg * (1.0f + t) * su; \
     } else { \
-        out = (sg / (1.0f + exp(-sg))) * su; \
+        out = (sg / (1.0f + precise::exp(-sg))) * su; \
     } \
     y[(ulong)slot * a.ys + row] = out; \
 }
@@ -5650,7 +5650,7 @@ kernel void k_dn_conv(device const float *in   [[buffer(0)]],
                               : in[(ulong)(e - a.histn) * a.in_stride + c];
         sum += wc[k] * v;
     }
-    out[(ulong)b * a.convdim + c] = sum < -80.0f ? 0.0f : sum / (1.0f + exp(-sum));
+    out[(ulong)b * a.convdim + c] = sum < -80.0f ? 0.0f : sum / (1.0f + precise::exp(-sum));
 }
 
 // thread c: the window after the n columns, the last histn rows of the
@@ -5687,7 +5687,7 @@ kernel void k_dn_l2norm(device float     *x [[buffer(0)]],
 // log(1 + e^a) without losing the small end, as the CPU's log1pf keeps it
 static inline float dn_softplus(float x) {
     if (x > 20.0f) return x;
-    float e = exp(x);
+    float e = precise::exp(x);
     return e < 1e-4f ? e - 0.5f * e * e : log(1.0f + e);
 }
 
@@ -5721,8 +5721,8 @@ kernel void k_dn_recur(device const float *cv    [[buffer(0)]],
         device const float *k = c + a.keydim + group * a.sk;
         float v = c[2 * a.keydim + h * hv + j];
         float bt = braw[(ulong)b * a.nh + h];
-        float beta = bt < -80.0f ? 0.0f : bt > 80.0f ? 1.0f : 1.0f / (1.0f + exp(-bt));
-        float decay = exp(A[h] * dn_softplus(araw[(ulong)b * a.nh + h] + dt[h]));
+        float beta = bt < -80.0f ? 0.0f : bt > 80.0f ? 1.0f : 1.0f / (1.0f + precise::exp(-bt));
+        float decay = precise::exp(A[h] * dn_softplus(araw[(ulong)b * a.nh + h] + dt[h]));
         float pred = 0.0f;
         for (int t = 0; t < 8; t++) {
             int i = lane + 32 * t;
@@ -5761,7 +5761,7 @@ kernel void k_dn_gnorm(device float       *y [[buffer(0)]],
     float r = 1.0f / sqrt(s / a.hv + a.rms_eps);
     for (int j = lane; j < a.hv; j += 32) {
         float zz = zh[j];
-        float g = zz < -80.0f ? 0.0f : zz / (1.0f + exp(-zz));
+        float g = zz < -80.0f ? 0.0f : zz / (1.0f + precise::exp(-zz));
         yh[j] = yh[j] * r * w[j] * g;
     }
 }
@@ -5821,7 +5821,7 @@ kernel void k_m2_conv(device const float *proj [[buffer(0)]],
                               : in[(ulong)(e - a.histn) * a.d_in_proj + c];
         sum += wc[k] * v;
     }
-    out[(ulong)b * a.conv_dim + c] = sum / (1.0f + exp(-sum));
+    out[(ulong)b * a.conv_dim + c] = sum / (1.0f + precise::exp(-sum));
 }
 
 // R3.42: LFM2's short convolution (model.c lfm2_shortconv), a FIR over the
@@ -5910,8 +5910,8 @@ kernel void k_m2_scan(device const float *xbc   [[buffer(0)]],
         device const float *Bg = xc + a.inner + g * ds;
         device const float *Cg = xc + a.inner + a.ng * ds + g * ds;
         float dr = proj[(ulong)b * a.d_in_proj + a.inner + a.conv_dim + h] + dtb[h];
-        float dt = dr > 20.0f ? dr : log(1.0f + exp(dr));
-        float dA = exp(dt * A[h]);
+        float dt = dr > 20.0f ? dr : log(1.0f + precise::exp(dr));
+        float dA = precise::exp(dt * A[h]);
         float x = xc[h * a.hd + p];
         float x_dt = x * dt;
         float sum = 0.0f;
@@ -5947,7 +5947,7 @@ kernel void k_m2_gnorm(device float       *y    [[buffer(0)]],
     float s = 0.0f;
     for (int i = tid; i < per_g; i += 256) {
         float zz = zg[i];
-        float v = yg[i] * (zz < -80.0f ? 0.0f : zz / (1.0f + exp(-zz)));
+        float v = yg[i] * (zz < -80.0f ? 0.0f : zz / (1.0f + precise::exp(-zz)));
         yg[i] = v;
         s += v * v;
     }
