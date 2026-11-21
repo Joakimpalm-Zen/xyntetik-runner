@@ -5178,3 +5178,16 @@ test-decide-race-gpu: test.gguf
 fuzz-replay-%: tests/fuzz/fuzz_%.c tests/fuzz/replay.c tests/fuzz/fuzz_files.h $(wildcard src/*.c) $(HDR)
 	$(FUZZ_CLANG) $(filter-out $(FUZZ_INSTRUMENTATION),$(FUZZ_FLAGS)) -fsanitize=address,undefined tests/fuzz/replay.c tests/fuzz/fuzz_$*.c $(FUZZ_SRC_$*) -o $@ -lm -lpthread
 
+
+# R4.48: the Inkling2Loop fixture harness (tests/test_inkling2_fixture.c). It checks the structure and every piece of
+# src/inkling2.c against the reference fixture from the lab's record store (weights, dumps, inputs, the float64 truth,
+# the engagement table), given as INKLING2_FIXTURE=<dir>; without it the target says so and does nothing. Built strict
+# (-fno-fast-math -ffp-contract=off): inkling2.c's claim is a serial, uncontracted order. Not part of `make test` until
+# the fixture ships with the repository.
+TEST_INKLING2 = test-inkling2-fixture-bin
+$(TEST_INKLING2): tests/test_inkling2_fixture.c src/inkling2.c src/inkling2.h src/json.c $(HDR)
+	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I src tests/test_inkling2_fixture.c src/inkling2.c src/json.c -o $@ $(LDFLAGS)
+.PHONY: test-inkling2-fixture
+test-inkling2-fixture: $(TEST_INKLING2)
+	@if [ -z "$(INKLING2_FIXTURE)" ]; then echo "test-inkling2-fixture: no fixture (set INKLING2_FIXTURE=<dir>)"; \
+	else ./$(TEST_INKLING2) $(INKLING2_FIXTURE); fi
