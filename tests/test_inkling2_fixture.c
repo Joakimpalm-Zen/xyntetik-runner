@@ -684,13 +684,20 @@ int main(int argc, char **argv) {
                     }
                     double fo = frac_used(out, tv0, b0, n0), fp = frac_used(probs, tv1, b1, n1);
                     frac = fmax(fo, fp); attn_frac[0] = fmax(attn_frac[0], fo); attn_frac[1] = fmax(attn_frac[1], fp);
-                    if (f0 && f1 && st_count(f0) == n0 && st_count(f1) == n1)
-                        tfrac = fmax(frac_used((const float *)f0->data, tv0, b0, n0), frac_used((const float *)f1->data, tv1, b1, n1));
+                    if (f0 && f1 && st_count(f0) == n0 && st_count(f1) == n1) {
+                        // two statements, not two arguments: frac_used feeds the outputs digest, and C leaves the
+                        // order of a call's arguments unspecified (gcc and clang took them in opposite orders)
+                        double tq0 = frac_used((const float *)f0->data, tv0, b0, n0);
+                        double tq1 = frac_used((const float *)f1->data, tv1, b1, n1);
+                        tfrac = fmax(tq0, tq1);
+                    }
                     float *w0 = (float *)(void *)A.w[AQ]; float keep = w0[0]; w0[0] += 0.25f;
                     ink2_attention(&s, &w, &cache, a, Tn, P, (const float *)xq->data, (const float *)xk->data,
                                    (const float *)xv->data, po, pp);
                     w0[0] = keep;
-                    pert = fmax(frac_used(po, tv0, b0, n0), frac_used(pp, tv1, b1, n1));
+                    double q0 = frac_used(po, tv0, b0, n0);   // sequenced, as above
+                    double q1 = frac_used(pp, tv1, b1, n1);
+                    pert = fmax(q0, q1);
                 }
                 bstat_add(&BA, st, frac, tfrac, pert);
                 if (st != INK2_OK) continue;
