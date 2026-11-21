@@ -48,19 +48,19 @@
         "gpu_backend": "cuda"
       },
       "last_verified": {
-        "date": "2026-11-16",
-        "commit": "77c3578cfee93c420c0467a65e9339d51b7311a4",
-        "ran": "scripts/cuda-gate.sh on the release-recipe build of 77c3578c, release/1.20.0 with the loader fix bfd607c2 (conda-forge gcc 16.2.0-5, -O3 -ffast-math -std=gnu11 -march=x86-64-v3, STRICT, 0 warnings; this host has no gcc 13.3.0; every make through tools/release-make, the runner byte-identical before and after), 26 of 26 steps pass: test-tc-overflow, test-cuda-iquants, test-cuda-gated, test-cuda-kv-fp4, test-cuda-kv-f32, test-cuda-nvfp4, test-cuda-qwen4exp, test-cuda-qwen35moe, test-cuda-q3k, test-cuda-tc-kq, test-cuda-i8, test-cuda-moe-legacy, test-cuda-varff, test-cuda-tc2-bytes, test-cuda-moe-twin, test-cuda-keepn, test-cuda-moe-replay, test-cuda-batch-identity, test-cuda-hybrids, test-cuda-attn-wide, test-cuda-spec-identity, test-cuda-longrope, test-cuda-batch-columns, cpu_cuda_check (qwen3-0.6b-q8_0.gguf, 64 tokens); test-cuda-gated 457 passed, 15 skipped, 0 failed",
+        "date": "2026-11-21",
+        "commit": "7b0d9e4cd938ec20866e14544dadeae237d9d546",
+        "ran": "scripts/cuda-gate.sh on the release-recipe build of 7b0d9e4c, the release/1.21.0 pin (gcc 13.3.0, -O3 -ffast-math -std=gnu11 -march=x86-64-v3, STRICT, 0 warnings; every make through tools/release-make, the runner byte-identical before and after), 28 of 28 steps pass (caps, 26 device steps, binary-unchanged): test-tc-overflow, test-cuda-iquants, test-cuda-gated, test-cuda-kv-fp4, test-cuda-kv-f32, test-cuda-nvfp4, test-cuda-qwen4exp, test-cuda-qwen35moe, test-cuda-q3k, test-cuda-tc-kq, test-cuda-i8, test-cuda-moe-legacy, test-cuda-varff, test-cuda-tc2-bytes, test-cuda-moe-twin, test-cuda-keepn, test-cuda-moe-replay, test-cuda-batch-identity, test-cuda-hybrids, test-cuda-attn-wide, test-cuda-spec-identity, test-cuda-longrope, test-cuda-batch-columns, test-cuda-batch-q35, test-cuda-moe-limb, cpu_cuda_check (qwen3-0.6b-q8_0.gguf, 64 tokens); test-cuda-gated 491 tests, 19 skipped, 0 failed",
         "result": "pass",
         "caps": {
-          "version": "1.20.0",
+          "version": "1.21.0",
           "os": "linux",
           "arch": "x86_64",
           "cpu_cores": 26,
           "gpu_backend": "cuda",
           "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
         },
-        "evidence": "docs/device-runs-2026-11-16/linux-x86_64-cuda/cuda-gate-20261116T165031Z.json"
+        "evidence": "docs/device-runs-2026-11-21/linux-x86_64-cuda/cuda-gate-20261121T061207Z.json"
       }
     },
     {
