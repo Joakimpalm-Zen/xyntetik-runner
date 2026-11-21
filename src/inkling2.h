@@ -56,7 +56,13 @@ float ink2_inv_sqrt(int n);
 // and, later, the GGUF reader both hand pieces this; names are the reference's module paths for now.
 typedef struct { const char *name; const float *data; int n_dims; int64_t ne[4]; } ink2_tensor;
 typedef const ink2_tensor *(*ink2_lookup_fn)(void *ctx, const char *name);
-typedef struct { ink2_lookup_fn get; void *ctx; } ink2_weights;
+// OPTIONAL: one expert of an expert stack (`model.layers.<b>.mlp.experts.gate_up_proj` [E][2F][H] or `.down_proj`
+// [E][H][F]), as a 2-D tensor (ne[0] the stack's ne[0], ne[1] its ne[1]): the same float32 values as row e of the
+// stack `get` would return, without the stack. A provider that decodes on lookup offers it so a token touches only
+// its chosen experts (a whole real stack is 2.7 GB in float32). NULL: the pieces take the stack from `get`.
+// The pieces hold at most two expert results at a time (the expert's gate_up_proj, then its down_proj).
+typedef const ink2_tensor *(*ink2_expert_fn)(void *ctx, const char *stack_name, int e);
+typedef struct { ink2_lookup_fn get; void *ctx; ink2_expert_fn get_expert; } ink2_weights;
 
 // The cache, indexed by APPLICATION. Each application owns its K and V rows and its convolution histories; two
 // passes over one physical layer never share a slot.

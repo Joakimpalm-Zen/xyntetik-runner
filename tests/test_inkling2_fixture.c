@@ -81,6 +81,15 @@ static const ink2_tensor *w_get(void *ctx, const char *name) {
     for (int d = 0; d < 4; d++) o->ne[d] = d < t->n_dims ? t->shape[t->n_dims - 1 - d] : 1;
     return o;
 }
+// one expert of a stack (ink2_weights.get_expert): row e of the stack, the same bytes
+static const ink2_tensor *w_get_expert(void *ctx, const char *name, int e) {
+    wctx *c = ctx; const st_t *t = st_get(c->f, name);
+    if (!t || t->dtype != ST_F32 || t->n_dims != 3 || e < 0 || e >= t->shape[0]) return NULL;
+    ink2_tensor *o = &c->tmp[c->k++ & 7];
+    o->name = t->name; o->data = (const float *)t->data + (size_t)e * (size_t)t->shape[1] * (size_t)t->shape[2];
+    o->n_dims = 2; o->ne[0] = t->shape[2]; o->ne[1] = t->shape[1]; o->ne[2] = o->ne[3] = 1;
+    return o;
+}
 
 // ---------------------------------------------------------------- the config
 // the config's constants as the doubles the float64 truth uses (ink2_shape holds them rounded to float32)
@@ -1280,7 +1289,10 @@ int main(int argc, char **argv) {
     if (cfg_load(&s, path, why, sizeof why)) { printf("FAIL structure: %s\n", why); return 1; }
     st_file W; snprintf(path, sizeof path, "%s/fixture-weights.safetensors", dir);
     if (st_load(&W, path)) { printf("FAIL: cannot read %s\n", path); return 1; }
-    wctx wc = { &W, {{0}}, 0 }; ink2_weights w = { w_get, &wc };
+    // the experts by get_expert, as a decoding provider serves them; INK2_FIXTURE_STACKS=1: by the stacks (get_expert
+    // NULL). The outputs and digests are the same either way.
+    const char *stk = getenv("INK2_FIXTURE_STACKS");
+    wctx wc = { &W, {{0}}, 0 }; ink2_weights w = { w_get, &wc, stk && !strcmp(stk, "1") ? NULL : w_get_expert };
     int bad = 0;
     // the engagement table (engage.py, from the reference run itself): no side of any clip, cap, gate, branch or window
     // may be 0 unless the table names it with a reason

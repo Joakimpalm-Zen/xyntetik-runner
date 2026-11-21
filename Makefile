@@ -5191,3 +5191,9 @@ $(TEST_INKLING2): tests/test_inkling2_fixture.c src/inkling2.c src/inkling2.h sr
 test-inkling2-fixture: $(TEST_INKLING2)
 	@if [ -z "$(INKLING2_FIXTURE)" ]; then echo "test-inkling2-fixture: no fixture (set INKLING2_FIXTURE=<dir>)"; \
 	else ./$(TEST_INKLING2) $(INKLING2_FIXTURE); fi
+# R4.48: the test-side weight provider for the real Inkling-2-Mini checkpoint (tests/inkling2_provider.c: the
+# reference loader's name map from tests/inkling2_provider_map.py, decode on lookup) and its identity test against
+# the reference loader (tests/test_inkling2_provider.c + tests/inkling2_provider_ref.py). Built strict, as inkling2.c.
+TEST_INKLING2_PROVIDER = test-inkling2-provider-bin
+$(TEST_INKLING2_PROVIDER): tests/test_inkling2_provider.c tests/inkling2_provider.c tests/inkling2_provider.h src/inkling2.h src/json.c $(HDR)
+	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I src -I tests tests/test_inkling2_provider.c tests/inkling2_provider.c src/json.c -o $@ $(LDFLAGS)
