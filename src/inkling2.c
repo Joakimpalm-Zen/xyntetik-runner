@@ -71,6 +71,42 @@ void ink2_cache_free(ink2_cache *c) {
 
 // x * rsqrt(mean(x^2) + eps), the reference's Inkling2LoopUnweightedRMSNorm: a serial sum of squares, the mean, the
 // epsilon, 1/sqrt, one multiply an element
+static void ink2_unweighted_norm(const float *x, int n, float eps, float *y) {
+    float ss = 0.0f;
+    for (int i = 0; i < n; i++) ss += x[i] * x[i];
+    float r = 1.0f / sqrtf(ss / (float)n + eps);
+    for (int i = 0; i < n; i++) y[i] = x[i] * r;
+}
+
+// The depth-wise attention of Inkling2LoopBlockAttentionResidual and Inkling2LoopMessageAttentionResidual at one
+// position: states [n_kv][H] are normed (keys = values = the normed states), each of the nq queries scores them
+// (dot, then times H^-0.5, as eager_attention_forward), a softmax over the n_kv states, the weighted sum.
+static void ink2_depth_attn(const float *q, int nq, const float *states, int n_kv, int H, float *normed,
+                            float *scores, float *out) {
+    for (int j = 0; j < n_kv; j++) ink2_unweighted_norm(states + (size_t)j * H, H, 1e-6f, normed + (size_t)j * H);
+    const float scale = (float)(1.0 / sqrt((double)H));   // H ** -0.5, rounded to float as torch's scalar is
+    for (int i = 0; i < nq; i++) {
+        const float *qi = q + (size_t)i * H;
+        float mx = -INFINITY;
+        for (int j = 0; j < n_kv; j++) {
+            const float *nj = normed + (size_t)j * H;
+            float d = 0.0f;
+            for (int h = 0; h < H; h++) d += qi[h] * nj[h];
+            scores[j] = d * scale;
+            if (scores[j] > mx) mx = scores[j];
+        }
+        float sum = 0.0f;
+        for (int j = 0; j < n_kv; j++) { scores[j] = p_expf(scores[j] - mx); sum += scores[j]; }
+        for (int j = 0; j < n_kv; j++) scores[j] = scores[j] / sum;
+        float *oi = out + (size_t)i * H;
+        for (int h = 0; h < H; h++) {
+            float a = 0.0f;
+            for (int j = 0; j < n_kv; j++) a += scores[j] * normed[(size_t)j * H + h];
+            oi[h] = a;
+        }
+    }
+}
+
 // ---- the pieces (a stub returns INK2_NOT_IMPLEMENTED until its piece lands)
 
 ink2_status ink2_expert_layer(const ink2_shape *s, const ink2_weights *w, int block, int T,
@@ -99,19 +135,76 @@ ink2_status ink2_head(const ink2_shape *s, const ink2_weights *w, int T, const f
 
 ink2_status ink2_block_read(const ink2_shape *s, const ink2_weights *w, const char *which, int T, int n_blocks,
                             const float *block_states, const float *partial, float *out, int *n_out) {
-    (void)s; (void)w; (void)which; (void)T; (void)n_blocks; (void)block_states; (void)partial; (void)out;
-    if (n_out) *n_out = 0;
-    return INK2_NOT_IMPLEMENTED;
+    char name[160];
+    snprintf(name, sizeof name, "%s.query", which);
+    const ink2_tensor *q = w->get(w->ctx, name);
+    if (!q || q->ne[0] != s->hidden) return INK2_NO_TENSOR;
+    int H = s->hidden, nq = q->n_dims == 1 ? 1 : (int)q->ne[1], nkv = n_blocks + 1;
+    float *st = malloc(sizeof(float) * (size_t)nkv * H * 2 + sizeof(float) * (size_t)nkv + sizeof(float) * (size_t)nq * H);
+    if (!st) return INK2_BAD_INPUT;
+    float *normed = st + (size_t)nkv * H, *scores = normed + (size_t)nkv * H, *o = scores + nkv;
+    for (int t = 0; t < T; t++) {
+        memcpy(st, block_states + (size_t)t * n_blocks * H, sizeof(float) * (size_t)n_blocks * H);
+        memcpy(st + (size_t)n_blocks * H, partial + (size_t)t * H, sizeof(float) * (size_t)H);
+        ink2_depth_attn(q->data, nq, st, nkv, H, normed, scores, o);
+        for (int i = 0; i < nq; i++) memcpy(out + ((size_t)i * T + t) * H, o + (size_t)i * H, sizeof(float) * (size_t)H);
+    }
+    free(st);
+    if (n_out) *n_out = nq;
+    return INK2_OK;
 }
 
 ink2_status ink2_message_input(const ink2_shape *s, const ink2_weights *w, int loop_layer, int T, int n_prev,
                                const float *prev_block_states, const float *x, float *out) {
-    (void)s; (void)w; (void)loop_layer; (void)T; (void)n_prev; (void)prev_block_states; (void)x; (void)out;
-    return INK2_NOT_IMPLEMENTED;
+    const ink2_tensor *q = w->get(w->ctx, "model.message_input.query");   // [loop layers][4][H]
+    int H = s->hidden, nloop = s->loop_end - s->loop_start, nkv = n_prev + 1;
+    if (!q || q->ne[0] != H || q->ne[1] != 4 || q->ne[2] != nloop || loop_layer < 0 || loop_layer >= nloop)
+        return INK2_NO_TENSOR;
+    const float *ql = q->data + (size_t)loop_layer * 4 * H;
+    float *st = malloc(sizeof(float) * ((size_t)nkv * H * 2 + (size_t)nkv));
+    if (!st) return INK2_BAD_INPUT;
+    float *normed = st + (size_t)nkv * H, *scores = normed + (size_t)nkv * H;
+    for (int t = 0; t < T; t++) {
+        memcpy(st, prev_block_states + (size_t)t * n_prev * H, sizeof(float) * (size_t)n_prev * H);
+        memcpy(st + (size_t)n_prev * H, x + (size_t)t * H, sizeof(float) * (size_t)H);
+        ink2_depth_attn(ql, 4, st, nkv, H, normed, scores, out + (size_t)t * 4 * H);   // [T][4][H]
+    }
+    free(st);
+    return INK2_OK;
 }
 
 ink2_status ink2_message_step(const ink2_shape *s, const ink2_weights *w, int block, const char *role, int T,
                               const float *x, const float *message, float *out) {
-    (void)s; (void)w; (void)block; (void)role; (void)T; (void)x; (void)message; (void)out;
-    return INK2_NOT_IMPLEMENTED;
+    char n1[160], n2[160], n3[160];
+    snprintf(n1, sizeof n1, "model.layers.%d.%s_message_gate.down_proj.weight", block, role);
+    snprintf(n2, sizeof n2, "model.layers.%d.%s_message_gate.forget_gate_proj.weight", block, role);
+    snprintf(n3, sizeof n3, "model.layers.%d.%s_message_gate.message_gate_proj.weight", block, role);
+    const ink2_tensor *wd = w->get(w->ctx, n1), *wf = w->get(w->ctx, n2), *wg = w->get(w->ctx, n3);
+    int H = s->hidden, r = s->loop_gate_rank;
+    if (!wd || !wf || !wg || wd->ne[0] != 2 * H || wd->ne[1] != r || wf->ne[0] != r || wf->ne[1] != H ||
+        wg->ne[0] != r || wg->ne[1] != H) return INK2_NO_TENSOR;
+    float *gh = malloc(sizeof(float) * ((size_t)2 * H + (size_t)r));
+    if (!gh) return INK2_BAD_INPUT;
+    float *d = gh + 2 * H;
+    for (int t = 0; t < T; t++) {
+        const float *xt = x + (size_t)t * H, *mt = message + (size_t)t * H;
+        ink2_unweighted_norm(xt, H, s->eps, gh);          // cat([norm(x), norm(message)])
+        ink2_unweighted_norm(mt, H, s->eps, gh + H);
+        for (int k = 0; k < r; k++) {
+            float a = 0.0f; const float *row = wd->data + (size_t)k * 2 * H;
+            for (int i = 0; i < 2 * H; i++) a += row[i] * gh[i];
+            d[k] = a;
+        }
+        float *ot = out + (size_t)t * H;
+        for (int h = 0; h < H; h++) {
+            float fa = 0.0f, ga = 0.0f;
+            const float *fr = wf->data + (size_t)h * r, *gr = wg->data + (size_t)h * r;
+            for (int k = 0; k < r; k++) { fa += fr[k] * d[k]; ga += gr[k] * d[k]; }
+            float f = p_tanhf(fa), g = p_tanhf(ga);
+            ot[h] = (1.0f - f) * xt[h] + g * mt[h];
+        }
+    }
+    free(gh);
+    return INK2_OK;
 }
+
