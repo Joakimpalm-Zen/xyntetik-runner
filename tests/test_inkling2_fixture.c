@@ -476,7 +476,16 @@ static void tr_ntd(const float *src, int n, int T, int d, float *dst) {
 }
 static void f2d(const float *x, size_t n, double *y, double *dy) { for (size_t i = 0; i < n; i++) { y[i] = x[i]; dy[i] = 0; } }
 // got (float32) and torch (float32, may be NULL) against truth (float64) under bound; returns the fraction used
+// The OUTPUTS DIGEST: FNV-1a 64 over the bytes of every array compared here (our pieces' outputs, the perturbed runs,
+// and torch's constant dumps), in call order. Two builds of inkling2.c with the same digest gave the same bits on
+// every piece output: the Runner-against-Runner gate (a strict build is the same on every machine and compiler).
+static uint64_t g_digest = 1469598103934665603ULL;
+static void digest(const void *p, size_t nbytes) {
+    const unsigned char *b = p;
+    for (size_t i = 0; i < nbytes; i++) { g_digest ^= b[i]; g_digest *= 1099511628211ULL; }
+}
 static double frac_used(const float *got, const double *truth, const double *bound, size_t n) {
+    digest(got, n * sizeof *got);
     double w = 0;
     for (size_t i = 0; i < n; i++) {
         double e = fabs((double)got[i] - truth[i]), b = bound[i] > 0 ? bound[i] : 1e-300;
@@ -976,5 +985,6 @@ int main(int argc, char **argv) {
                b->torch_frac > 1.0 ? " (TORCH OUTSIDE THE BOUND)" : "", b->pert_mult);
         if (!ok) bad = 1;
     }
+    printf("outputs digest: %016llx\n", (unsigned long long)g_digest);
     return bad;
 }
