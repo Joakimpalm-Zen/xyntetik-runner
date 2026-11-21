@@ -891,7 +891,7 @@ static const char *astep[N_ASTEP] = { "q_proj", "q_proj.norm", "k_proj", "k_proj
     "v_proj.norm", "relative_position_bias", "relative_position_bias.norm", "sink_proj", "core", "o_proj" };
 static long clip_engaged = 0, clip_vectors = 0;
 static int moe_sel_diff = 0, moe_tie_done = 0, moe_tie_ok = 0;
-static double moe_harness_rel = 0, moe_tie_frac = 0, attn_harness_rel[2] = {0, 0}, attn_frac[2] = {0, 0};
+static double moe_harness_rel = 0, moe_tie_frac = 0, attn_harness_rel[2] = {0, 0}, attn_frac[2] = {0, 0}, astep_harness_rel[N_ASTEP];
 
 // ---------------------------------------------------------------- expert selection: ours against the truth's
 // The truth's selection at one position, in double from the recorded router input, as bound_moe: v_e = sigmoid(W x)_e
@@ -1249,6 +1249,7 @@ static struct { int st_bad, argmax_bad, positions; double worst_ratio, worst_our
                 double logit_ours, logit_torch; } GA[3];
 static double ga_min_margin = 1e300;
 static int gb_rows[3], gb_bad_logits[3], gb_bad_states[3], gb_fail = 0;
+static int rw_tries = 0, rw_refused = 0, rw_restart_n = 0, rw_restart_eq = 0;
 static const char *gb_name[3] = { "token by token", "split at 1 and 7", "split at 5 and T-2" };
 // a sequence through the forward in chunks [cut_i, cut_{i+1}); logits and states vs the whole sequence's, by memcmp
 static void gate_b_run(const ink2_shape *s, const ink2_weights *w, int T, const int *ids, const int *cuts, int ncut,
@@ -1514,27 +1515,69 @@ int main(int argc, char **argv) {
                         }
                     }
 #undef SUB
+                    // THE REFERENCE: a step that is a module call is compared with the truth file's float64 re-run of
+                    // that call (model.layers.<b>.self_attn.<step>#call<k>; q_proj, k_proj, v_proj return [heads][T][hd],
+                    // brought to the piece's [T][heads][hd]); the harness's own double (y0 above, the same bound's
+                    // value) is kept as a diagnostic. The core is not a module call (eager_attention_forward): it keeps
+                    // the harness's double as its reference.
+                    int is_core = !strcmp(sn, "core");
+                    const double *ref = y0;
+                    if (!is_core) {
+                        snprintf(key, sizeof key, "model.layers.%d.self_attn.%s#call%d", b, sn, k);
+                        const st_t *tt0 = st_get(&TRa, key);
+                        double *rt = dm + 4 * M;   // the sub-step's double inputs are no longer needed here
+                        if (!tt0 || tt0->dtype != ST_F64 || st_count(tt0) != n) { bstat_add(&SS[si], INK2_BAD_INPUT, 0, 0, -1); continue; }
+                        const double *tv = (const double *)(const void *)tt0->data;
+                        int nhh = !strcmp(sn, "q_proj") ? nh : (!strcmp(sn, "k_proj") || !strcmp(sn, "v_proj")) ? A.nkv : 0;
+                        if (nhh) { for (int h = 0; h < nhh; h++) for (int t = 0; t < Tn; t++) memcpy(rt + ((size_t)t * nhh + h) * hd, tv + ((size_t)h * Tn + t) * hd, sizeof(double) * hd); }
+                        else memcpy(rt, tv, sizeof(double) * n);
+                        double dmx = 0, tm = 0;
+                        for (size_t i = 0; i < n; i++) { double dd = fabs(y0[i] - rt[i]); if (dd > dmx) dmx = dd; if (fabs(rt[i]) > tm) tm = fabs(rt[i]); }
+                        if (tm > 0 && dmx / tm > astep_harness_rel[si]) astep_harness_rel[si] = dmx / tm;
+                        ref = rt;
+                    }
                     ink2_status sst = ink2_attention_step(&s, &w, a, sn, Tn, P, in, c0, c1);
-                    double sf = 0, stf = 0;
+                    double sf = 0, stf = 0, spf = -1;
                     if (sst == INK2_OK) {
-                        sf = frac_used(c0, y0, b0, n); if (n2) sf = fmax(sf, frac_used(c1, y1, b1, n2));
+                        sf = frac_used(c0, ref, b0, n); if (n2) sf = fmax(sf, frac_used(c1, y1, b1, n2));
                         if (tdump && st_count(tdump) == n) {
                             const float *tf = (const float *)tdump->data;
                             // q_proj, k_proj, v_proj return [heads][T][hd]: to the piece's [T][heads][hd]
                             if (!strcmp(sn, "q_proj")) { tr_ntd(tf, nh, Tn, hd, tt); tf = tt; }
                             else if (!strcmp(sn, "k_proj") || !strcmp(sn, "v_proj")) { tr_ntd(tf, A.nkv, Tn, hd, tt); tf = tt; }
-                            stf = frac_used(tf, y0, b0, n);
+                            stf = frac_used(tf, ref, b0, n);
                             if (n2 && tdump2 && st_count(tdump2) == n2) stf = fmax(stf, frac_used((const float *)tdump2->data, y1, b1, n2));
                         } else sst = INK2_BAD_INPUT;
                     }
-                    bstat_add(&SS[si], sst, sf, stf, -1);
+                    // THE PERTURBATION CONTROL: + 0.25 on one weight the step reads (its first element), or for the
+                    // weightless steps on an input: k_proj.norm and v_proj.norm (an L2 clip, an unweighted norm) the first
+                    // element of their input, the core the first element of V; the perturbed outputs feed the
+                    // single-step digest, so the pieces' digest keeps its arrays
+                    if (sst == INK2_OK) {
+                        const float *pw_ = !strcmp(sn, "q_proj") ? A.w[AQ] : !strcmp(sn, "q_proj.norm") ? A.w[AQS] : !strcmp(sn, "k_proj") ? A.w[AK]
+                            : !strcmp(sn, "k_proj.sconv") ? A.w[AKC] : !strcmp(sn, "v_proj") ? A.w[AV] : !strcmp(sn, "v_proj.sconv") ? A.w[AVC]
+                            : !strcmp(sn, "relative_position_bias") ? A.w[AR] : !strcmp(sn, "relative_position_bias.norm") ? A.w[ARS]
+                            : !strcmp(sn, "sink_proj") ? A.w[ASK] : !strcmp(sn, "o_proj") ? A.w[AO] : NULL;
+                        float *pt = (float *)(void *)pw_, *xin = fm + 5 * M; const float *pin[5] = { in[0], in[1], in[2], in[3], in[4] };
+                        if (!pt && is_core) pt = (float *)(void *)pin[2];   // the core: v[0] (its own buffer fx[2]), which every
+                                                                             // query attending key 0 reads (a q element reaches one query only)
+                        else if (!pt) { memcpy(xin, in[0], sizeof(float) * n); pin[0] = xin; pt = xin; }   // the norms: a copy
+                        float keep = pt[0]; pt[0] += 0.25f;
+                        uint64_t *dsave = g_dig; g_dig = &g_digest3;
+                        ink2_attention_step(&s, &w, a, sn, Tn, P, pin, po, pp);
+                        spf = frac_used(po, ref, b0, n); if (n2) spf = fmax(spf, frac_used(pp, y1, b1, n2));
+                        g_dig = dsave;
+                        pt[0] = keep;
+                    }
+                    bstat_add(&SS[si], sst, sf, stf, spf);
                     if (sst == INK2_OK && strcmp(sn, "core")) {
                         static char sline[N_ASTEP][64]; snprintf(sline[si], sizeof sline[si], "attention.%s", sn);
                         char kk[200]; snprintf(kk, sizeof kk, "model.layers.%d.self_attn.%s#call%d", b, sn, k); cov_mark(sline[si], kk);
                     }
                 }
-                // the clips never engage on the recorded data (head norms far below the thresholds): the three clip
-                // steps once more on their recorded inputs times 64 (exact), so the clip branch runs; no torch dump here
+                // the three clip steps once more on their recorded inputs times 64 (exact), against the harness's double:
+                // the clips engage on the recorded data too (engagement.json: every clip fires on a real share of head
+                // vectors), so this adds a heavily clipped case, not the only one; no torch dump here
                 for (int ci = 0; ci < 3; ci++) {
                     const char *sn = ci == 0 ? "q_proj.norm" : ci == 1 ? "k_proj.norm" : "relative_position_bias.norm";
                     snprintf(key, sizeof key, "model.layers.%d.self_attn.%s#call%d#in0", b, sn, k);
@@ -1818,6 +1861,30 @@ int main(int argc, char **argv) {
             int c1[4] = { 0, 1, 7, Tn }, c2[4] = { 0, 5, Tn - 2, Tn };
             gate_b_run(&s, &w, Tn, ids, c1, 4, L0, S0, 1);
             gate_b_run(&s, &w, Tn, ids, c2, 4, L0, S0, 2);
+            // 3d. a REWIND is refused: on a used cache, a chunk at 0 < p0 < n_past must return INK2_REWIND; a restart
+            // at p0 = 0 on the used cache must give the fresh cache's bits (logits and states, memcmp), and so must a
+            // restart in two chunks (0..4, then 5..T-1: the continuation after a restart is not a rewind)
+            {
+                ink2_cache rc; if (ink2_cache_init(&rc, &s, Tn)) { printf("FAIL: cache\n"); return 1; }
+                float *lg = malloc(sizeof(float) * (size_t)Tn * V), *ap = malloc(sizeof(float) * (size_t)s.n_app * Tn * H);
+                float *ap2 = malloc(sizeof(float) * (size_t)s.n_app * Tn * H);
+                ink2_status r0 = ink2_forward_chunk(&s, &w, &rc, 0, Tn, ids, lg, 0, ap);   // the cache now holds 0..T-1
+                int pr = Tn / 2;
+                ink2_status r1 = ink2_forward_chunk(&s, &w, &rc, pr, Tn - pr, ids + pr, lg, 0, ap);
+                rw_tries++; rw_refused += r0 == INK2_OK && r1 == INK2_REWIND;
+                ink2_status r2 = ink2_forward_chunk(&s, &w, &rc, 0, Tn, ids, lg, 0, ap);
+                rw_restart_n++;
+                rw_restart_eq += r2 == INK2_OK && !memcmp(lg, L0, sizeof(float) * (size_t)Tn * V) && !memcmp(ap, S0, sizeof(float) * (size_t)s.n_app * Tn * H);
+                int c5 = Tn > 5 ? 5 : 1;
+                ink2_status r3 = ink2_forward_chunk(&s, &w, &rc, 0, c5, ids, lg, 0, ap2);
+                ink2_status r4 = r3 == INK2_OK ? ink2_forward_chunk(&s, &w, &rc, c5, Tn - c5, ids + c5, lg + (size_t)c5 * V, 0, ap) : r3;
+                int eq = r4 == INK2_OK && !memcmp(lg, L0, sizeof(float) * (size_t)Tn * V);
+                for (int a = 0; a < s.n_app && eq; a++)
+                    eq = !memcmp(ap2 + (size_t)a * c5 * H, S0 + (size_t)a * Tn * H, sizeof(float) * (size_t)c5 * H) &&
+                         !memcmp(ap + (size_t)a * (Tn - c5) * H, S0 + ((size_t)a * Tn + c5) * H, sizeof(float) * (size_t)(Tn - c5) * H);
+                rw_restart_n++; rw_restart_eq += eq;
+                free(lg); free(ap); free(ap2); ink2_cache_free(&rc);
+            }
             free(ids); free(L0); free(S0); free(Lm); free(Sm);
         }
         // 4. SINGLE-STEP LINES over every recorded module call of the sequence, by THE COVERAGE TABLE: each module
@@ -2022,10 +2089,17 @@ int main(int argc, char **argv) {
         if (!ok && !(b->red && strstr(allow, "attention"))) bad = 1;
     }
     for (int i = 0; i < N_ASTEP; i++) {
-        const bstat *b = &SS[i]; int ok = b->calls && !b->fail && !b->nob && !b->red, stub = BA.red > 0 && !b->calls;
-        printf("%s attention.%s (one step on its recorded inputs, its own bound, vs the harness's double): %d calls, %d failed, "
-               "%d out of bound; largest fraction %.3g; torch's float32 dump %.3g%s\n", b->red || stub ? "RED" : ok ? "GREEN" : "FAIL",
-               b->piece, b->calls, b->fail, b->nob, b->frac, b->torch_frac, b->torch_frac > 1.0 ? " (TORCH OUTSIDE THE BOUND)" : "");
+        // GREEN: in bound, the control leaves the bound, and torch's own float32 dump inside the same bound
+        const bstat *b = &SS[i]; int pert_ok = b->pert_mult > 1.0, tok = b->torch_frac <= 1.0;
+        int ok = b->calls && !b->fail && !b->nob && !b->red && pert_ok && tok, stub = BA.red > 0 && !b->calls, core = !strcmp(b->piece, "core");
+        char hr[96] = "";
+        if (!core) snprintf(hr, sizeof hr, "; the harness's double vs the truth %.2g normwise", astep_harness_rel[i]);
+        printf("%s attention.%s (one step on its recorded inputs, its own bound, vs %s): %d calls, %d failed, %d out of bound; "
+               "largest fraction %.3g; torch's float32 dump %.3g%s; perturbation %.3g times the bound%s%s\n",
+               b->red || stub ? "RED" : ok ? "GREEN" : "FAIL", b->piece,
+               core ? "the harness's double (not a module call: eager_attention_forward)" : "the float64 truth of the call",
+               b->calls, b->fail, b->nob, b->frac, b->torch_frac, tok ? "" : " (TORCH OUTSIDE THE BOUND)", b->pert_mult,
+               pert_ok ? "" : " (THE CONTROL DID NOT FAIL)", hr);
         if (!ok && !(b->red && strstr(allow, "attention"))) bad = 1;
     }
     {
@@ -2101,6 +2175,30 @@ int main(int argc, char **argv) {
         if (!ok) bad = 1;
     }
     {
+        int ok = rw_tries && rw_refused == rw_tries && rw_restart_eq == rw_restart_n;
+        printf("%s forward rewind (a chunk at 0 < p0 < n_past on a used cache must be REFUSED with INK2_REWIND: the convolution "
+               "rings hold the newest rows, not the rows before p0; a restart at p0 = 0 on the used cache must give the fresh "
+               "cache's bits): refused %d of %d; restart whole and restart in two chunks equal to the fresh cache, by memcmp: "
+               "%d of %d\n", ok ? "GREEN" : "FAIL", rw_refused, rw_tries, rw_restart_eq, rw_restart_n);
+        if (!ok) bad = 1;
+    }
+    {
+        // the attention and depth-read scale n ** -0.5 as the float32 operand: the engine's route (1 / sqrt in double,
+        // no pow) against the CORRECTLY ROUNDED float32 of n ** -0.5, computed offline from a 60-digit decimal value
+        // (2026-11-21), for the fixture's head and hidden sizes (8, 32) and real head sizes (96, 128). It cannot fail
+        // on a libm whose pow is within an ulp (glibc's is); it pins the operand where one is not.
+        static const struct { int n; float want; } SCL[] = { { 8, 0x1.6a09e6p-2f }, { 32, 0x1.6a09e6p-3f }, { 96, 0x1.a20bd8p-4f },
+                                                            { 128, 0x1.6a09e6p-4f } };
+        int nbad = 0; char txt[256] = "";
+        for (int i = 0; i < 4; i++) {
+            float got = ink2_inv_sqrt(SCL[i].n); nbad += memcmp(&got, &SCL[i].want, sizeof got) != 0;
+            snprintf(txt + strlen(txt), sizeof txt - strlen(txt), "%s%d: %a", i ? ", " : "", SCL[i].n, (double)got);
+        }
+        printf("%s scale constants (n ** -0.5 as the float32 operand, by 1 / sqrt in double, no pow; against the correctly "
+               "rounded float32): %d of 4 differ (%s)\n", nbad ? "FAIL" : "GREEN", nbad, txt);
+        if (nbad) bad = 1;
+    }
+    {
         // the expert selection: ours vs the truth's at every router call, the near-tie branch, the planted cases
         const selstat *S = &SEL_P;
         int planted_ok = plant_cls[0] == 1 && plant_cls[1] == 2;
@@ -2142,7 +2240,9 @@ int main(int argc, char **argv) {
         char per[2048] = "";
         for (int i = 0; i < cov_nlines; i++) snprintf(per + strlen(per), sizeof per - strlen(per), "%s%s %d", i ? ", " : "", cov_lines[i], cov_per_line[i]);
         printf("%s coverage: %d calls, every one in a single-step line except %d named (composite: model.layers.<b>, its own last "
-               "step in the residual line, each child in its own line, its composition in forward gates A and B); %d unnamed "
+               "step in the residual line, each child in its own line, its composition in forward gates A and B); steps that are not "
+               "module calls, against the harness's own double, named: attention.core (eager_attention_forward), attention clips "
+               "engaged (the clip steps on inputs x 64); %d unnamed "
                "(not in the table)%s%s, %d in the table but not checked%s%s; by line: %s\n", ok ? "GREEN" : "FAIL", cov_calls,
                cov_composite, cov_unnamed, cov_unnamed ? ", first: " : "", cov_first_unnamed, cov_uncovered,
                cov_uncovered ? ", first: " : "", cov_first_unc, per);

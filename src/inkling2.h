@@ -18,7 +18,9 @@
 #define INK2_MAX_BLOCK 64     // physical layers
 #define INK2_MAX_APP   256    // layer applications
 
-typedef enum { INK2_OK = 0, INK2_NOT_IMPLEMENTED = 1, INK2_BAD_INPUT = 2, INK2_NO_TENSOR = 3 } ink2_status;
+// INK2_REWIND: a call at 0 < p0 != the cache's n_past (a rewind into, or a gap past, what the cache holds): refused,
+// see ink2_cache.
+typedef enum { INK2_OK = 0, INK2_NOT_IMPLEMENTED = 1, INK2_BAD_INPUT = 2, INK2_NO_TENSOR = 3, INK2_REWIND = 4 } ink2_status;
 
 typedef struct {
     // the loop, as read
@@ -47,6 +49,8 @@ typedef struct {
 // Returns 0, or -1 with a reason in why.
 int ink2_shape_derive(ink2_shape *s, char *why, size_t why_n);
 static inline int ink2_app_global(const ink2_shape *s, int a) { return s->block_global[s->app_block[a]]; }
+// n ** -0.5 rounded to float32, without pow (the attention and depth-read scales; see the definition)
+float ink2_inv_sqrt(int n);
 
 // A tensor as the pieces see it: float32, row-major, ne[0] the fastest dimension (GGUF order). The fixture's reader
 // and, later, the GGUF reader both hand pieces this; names are the reference's module paths for now.
@@ -57,7 +61,16 @@ typedef struct { ink2_lookup_fn get; void *ctx; } ink2_weights;
 // The cache, indexed by APPLICATION. Each application owns its K and V rows and its convolution histories; two
 // passes over one physical layer never share a slot.
 // A call over positions p0..p0+T-1 reads the slot's K and V rows below p0 and its convolution histories (only when
-// p0 > 0: a call at p0 = 0 is a prefill whatever the slot holds), and writes its own rows and histories.
+// p0 > 0: a call at p0 = 0 is a prefill whatever the slot holds), and writes its own rows and histories; n_past is
+// then p0 + T.
+// A REWIND (0 < p0 < n_past: a shared prefix, then a different continuation) is REFUSED with INK2_REWIND, and so is
+// a gap (p0 > n_past). The K and V rows of 0..p0-1 would still be right, but each convolution history is a ring of
+// the NEWEST conv_k - 1 input rows, so after a rewind it holds rows at and past p0, not p0-K+1..p0-1. A real rewind
+// will need, per application, the four histories as of p0: either saved with the rows (each history row kept per
+// position, as K and V are, or a snapshot at each point a caller may rewind to), or recomputed from the inputs of
+// positions p0-K+1..p0-1 (the K and V convolutions' inputs are their linear outputs, so the K/V projection inputs of
+// those positions, or the linear outputs themselves, kept per position; the post convolutions' inputs are the
+// attention output and the expert output of those positions).
 typedef struct {
     int n_app, n_ctx;
     float **k, **v;          // [n_app] -> [n_ctx][n_kv * head_dim] (that application's layer type's sizes)

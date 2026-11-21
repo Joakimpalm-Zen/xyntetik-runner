@@ -88,6 +88,15 @@ void ink2_cache_free(ink2_cache *c) {
     memset(c, 0, sizeof *c);
 }
 
+// n ** -0.5 as the float32 operand torch multiplies by (the reference's `head_dim**-0.5` and `hidden_size**-0.5`:
+// a Python float from the C library's pow, rounded to float32 when it scales a float32 tensor). pow is not required
+// to be correctly rounded, so it is not used: 1 / sqrt(n) in double is two IEEE operations, each correctly rounded,
+// so the same double on every IEEE machine. That double can differ from a correctly rounded n ** -0.5 in its last
+// bit (it does for n = 8, 32, 96 and 128 against glibc's pow), but its float32 rounding equals the correctly rounded
+// float32 of n ** -0.5 for every n in 1..65536 (checked against a 60-digit decimal value, 2026-11-21): the operand
+// is the reference's on every machine where the reference's pow is within an ulp.
+float ink2_inv_sqrt(int n) { return (float)(1.0 / sqrt((double)n)); }
+
 // x * rsqrt(mean(x^2) + eps), the reference's Inkling2LoopUnweightedRMSNorm: a serial sum of squares, the mean, the
 // epsilon, 1/sqrt, one multiply an element
 static void ink2_unweighted_norm(const float *x, int n, float eps, float *y) {
@@ -103,7 +112,7 @@ static void ink2_unweighted_norm(const float *x, int n, float eps, float *y) {
 static void ink2_depth_attn(const float *q, int nq, const float *states, int n_kv, int H, float *normed,
                             float *scores, float *out) {
     for (int j = 0; j < n_kv; j++) ink2_unweighted_norm(states + (size_t)j * H, H, 1e-6f, normed + (size_t)j * H);
-    const float scale = (float)(1.0 / sqrt((double)H));   // H ** -0.5, rounded to float as torch's scalar is
+    const float scale = ink2_inv_sqrt(H);   // hidden_size ** -0.5 (see ink2_inv_sqrt)
     for (int i = 0; i < nq; i++) {
         const float *qi = q + (size_t)i * H;
         float mx = -INFINITY;
@@ -402,7 +411,7 @@ static void ink2_attn_core(const ink2_shape *s, const ink2_attn_layer *L, int T,
                            const float *k, const float *v, int nk, int kp0, const float *rl, const float *sk, float *lg,
                            float *att, float *probs) {
     int nh = L->nh, hd = L->hd, C = L->C, Q = L->Q, ext = L->ext;
-    const float scale = (float)pow((double)hd, -0.5);   // head_dim ** -0.5, a float32 scalar to torch
+    const float scale = ink2_inv_sqrt(hd);   // head_dim ** -0.5 (see ink2_inv_sqrt; no pow)
 #define INK2_ADMIT(i, j) (pos[i] - (kp0 + (j)) >= 0 && (L->g || pos[i] - (kp0 + (j)) < s->window))
     for (int h = 0; h < nh; h++) {
         int kh = h / (nh / L->nkv);
@@ -473,7 +482,9 @@ ink2_status ink2_attention(const ink2_shape *s, const ink2_weights *w, ink2_cach
     if (!c || app < 0 || app >= c->n_app || T <= 0 || T > c->n_ctx) return INK2_BAD_INPUT;
     int p0 = pos[0];
     for (int t = 0; t < T; t++) if (pos[t] != p0 + t || pos[t] < 0 || pos[t] >= c->n_ctx) return INK2_BAD_INPUT;
-    if (p0 > c->n_past[app]) return INK2_BAD_INPUT;   // rows below p0 must have been written
+    // p0 = 0 starts over (nothing below it is read); otherwise p0 must be exactly where the slot ends: a rewind
+    // (p0 < n_past) would read convolution rings that hold the newest rows, not the rows before p0 (see ink2_cache)
+    if (p0 > 0 && p0 != c->n_past[app]) return INK2_REWIND;
     ink2_status st = ink2_attn_bind(s, w, app, &L);
     if (st != INK2_OK) return st;
     int nk = p0 + T;
@@ -485,8 +496,8 @@ ink2_status ink2_attention(const ink2_shape *s, const ink2_weights *w, ink2_cach
     for (int t = 0; t < T; t++) {
         memcpy(c->k[app] + (size_t)pos[t] * L.C, p[SK] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
         memcpy(c->v[app] + (size_t)pos[t] * L.C, p[SV] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
-        if (pos[t] + 1 > c->n_past[app]) c->n_past[app] = pos[t] + 1;
     }
+    c->n_past[app] = p0 + T;   // what the slot now holds consistently: rows and histories of 0..p0+T-1
     ink2_attn_rel(s, &L, T, pos, xq, p[SRS], p[SRL]);
     ink2_rows(L.wt[WS], L.nh, s->hidden, T, xq, p[SSK]);
     ink2_attn_core(s, &L, T, pos, p[SQ], c->k[app], c->v[app], nk, 0, p[SRL], p[SSK], p[SLG], p[SATT], probs);
@@ -688,6 +699,8 @@ ink2_status ink2_decoder_layer_sel(const ink2_shape *s, const ink2_weights *w, i
     int loop = b >= s->loop_start && b < s->loop_end, bound = ink2_block_boundary(s, b);
     if (messages && !loop) return INK2_BAD_INPUT;   // only the loop classes take messages
     if (b == 0 && n_blocks) return INK2_BAD_INPUT;  // layer 0 has no attention_input: it reads no block state
+    // the post convolutions' rings follow the attention's slot: refuse a rewind before anything is written
+    if (pos[0] > 0 && pos[0] != c->n_past[app]) return INK2_REWIND;
     size_t TH = (size_t)T * H;
     // scratch: the three attention inputs (read, then normed), one message, the attention output, the residual,
     // the MLP input, the expert output, and the MLP's block states [T][n_blocks + 1][H]
@@ -771,6 +784,8 @@ static void ink2_pack_states(float *const *slab, int n, int T, int H, float *dst
 ink2_status ink2_forward_chunk(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int p0, int T,
                                const int *ids, float *logits, int flags, float *app_states) {
     if (!s || !w || !c || T <= 0 || p0 < 0 || p0 + T > c->n_ctx || c->n_app != s->n_app) return INK2_BAD_INPUT;
+    // a continuation must start where every slot ends (refused before any slot is touched); p0 = 0 starts over
+    if (p0 > 0) for (int a = 0; a < s->n_app; a++) if (c->n_past[a] != p0) return INK2_REWIND;
     int H = s->hidden;
     size_t TH = (size_t)T * H;
     const ink2_tensor *emb = w->get(w->ctx, "model.embed_tokens.weight");
