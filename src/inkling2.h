@@ -56,10 +56,15 @@ typedef struct { ink2_lookup_fn get; void *ctx; } ink2_weights;
 
 // The cache, indexed by APPLICATION. Each application owns its K and V rows and its convolution histories; two
 // passes over one physical layer never share a slot.
+// A call over positions p0..p0+T-1 reads the slot's K and V rows below p0 and its convolution histories (only when
+// p0 > 0: a call at p0 = 0 is a prefill whatever the slot holds), and writes its own rows and histories.
 typedef struct {
     int n_app, n_ctx;
     float **k, **v;          // [n_app] -> [n_ctx][n_kv * head_dim] (that application's layer type's sizes)
-    float **conv;            // [n_app] -> the layer's short-convolution histories, (conv_k - 1) rows each
+    float **conv;            // [n_app] -> the layer's four short-convolution histories, by the reference's conv_idx
+                             // (0 k_proj.sconv, 1 v_proj.sconv, 2 post_attention_convolution, 3 post_mlp_convolution):
+                             // each a ring of conv_k - 1 input rows, position u in row u % (conv_k - 1), rows as wide
+                             // as the widest of the four
     size_t *conv_floats;     // [n_app]
     int *n_past;             // [n_app]
 } ink2_cache;
@@ -78,9 +83,11 @@ ink2_status ink2_expert_layer(const ink2_shape *s, const ink2_weights *w, int bl
 // Inkling2LoopFullAttention): Q, K, V projections with their norms, L2 clips and (full layers) the log-length scale,
 // the short and (full layers) dynamic K and V convolutions, the hidden-conditioned relative bias, the per-token
 // sinks, the gated output projection. Q, K and V each take their own input (the reference's hidden_states,
-// key_hidden_states and value_hidden_states: three block reads). pos[T] are the positions; the cache slot is the
-// application's. out is [T][hidden]; probs, if not NULL, gets the attention probabilities [n_head][T][keys], the
-// reference's second output (the sink's column excluded, as the reference returns them).
+// key_hidden_states and value_hidden_states: three block reads). pos[T] are the positions, consecutive from p0 =
+// pos[0]; the cache slot is the application's: K and V rows below p0 and the K and V convolution histories are read
+// from it (p0 > 0), this call's rows and histories written to it. out is [T][hidden]; probs, if not NULL, gets the
+// attention probabilities [n_head][T][p0 + T], the reference's second output (the sink's column excluded, as the
+// reference returns them).
 ink2_status ink2_attention(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int app, int T,
                            const int *pos, const float *xq, const float *xk, const float *xv,
                            float *out, float *probs);
@@ -106,6 +113,44 @@ ink2_status ink2_message_input(const ink2_shape *s, const ink2_weights *w, int l
 // layer in passes after the first: x and message are [T][hidden].
 ink2_status ink2_message_step(const ink2_shape *s, const ink2_weights *w, int block, const char *role, int T,
                               const float *x, const float *message, float *out);
+
+// Whether physical layer `block` is a block boundary, as the reference decides it (is_block_boundary = layer_idx %
+// n_layers_per_attn_res_block == 0). At a boundary the layer's INPUT joins the block states: inside the layer, before
+// its MLP input reads them (and the attention output starts the new partial block, with no residual add); and in the
+// model's loop, after the layer, for every later layer. Block states are per position: a token never reads
+// another token's.
+static inline int ink2_block_boundary(const ink2_shape *s, int block) { return block % s->attn_res_block == 0; }
+
+// One decoder-layer application (`model.layers.<b>` at its visit `app`: Inkling2LoopSlidingDecoderLayer,
+// FullDecoderLayer, SlidingLoopDecoderLayer or FullLoopDecoderLayer by the layer's type and the loop range), in the
+// reference's order:
+//   reads = attention_input(block_states, x) (1 query sliding, 3 full; layer 0 has none: x);
+//   per role r of q, k, v: (messages given) r_message_gate(read_r, message_r); then input_layernorm (sliding, shared)
+//     or r_input_layernorm (full), weighted;
+//   a = post_attention_convolution(self_attn(Q, K, V inputs));
+//   boundary: residual = a and the MLP reads block_states + [x]; otherwise residual = x + a, block_states;
+//   m = mlp_input(those, residual); (messages) mlp_message_gate(m, message_mlp); post_attention_layernorm; mlp;
+//   post_mlp_convolution; out = residual + that.
+// block_states [T][n_blocks][hidden] are the states before this layer; messages [T][4][hidden] (q, k, v, mlp) are
+// model.message_input's output in passes after the first on a loop layer, NULL otherwise. The caller grows its block
+// states by x after the call when ink2_block_boundary(s, app_block[app]).
+ink2_status ink2_decoder_layer(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int app, int T,
+                               const int *pos, const float *x, const float *block_states, int n_blocks,
+                               const float *messages, float *out);
+
+// The whole text model on token ids, logits [T][vocab_used]: Inkling2LoopNormedEmbedding; the pre-loop layers; the
+// first pass over the core; each later pass restarting from the pre-loop hidden and block states, its messages read
+// from the PREVIOUS pass's block states (those after the one its first core layer appended) and final hidden state;
+// the post-loop layers; final_input; norm; lm_head and the softcap. ink2_forward is one prefill on a fresh cache.
+ink2_status ink2_forward(const ink2_shape *s, const ink2_weights *w, int T, const int *ids, float *logits);
+// The same over positions p0..p0+T-1 on a cache that holds positions 0..p0-1 (one slot per application): a prefill
+// at p0 = 0, a chunk or one token after. ink2_forward is this at p0 = 0: one code path. app_states, if not NULL, gets
+// every application's output [n_app][T][hidden]. flags: 0, or the TEST-ONLY mis-wirings below (the harness's
+// controls, which must fail its wiring gate).
+#define INK2_MISWIRE_RESTART  1   // later passes restart from the input of the last pre-loop layer, not its output
+#define INK2_MISWIRE_OWN_PASS 2   // later passes read their own pass's block states for the messages
+ink2_status ink2_forward_chunk(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int p0, int T,
+                               const int *ids, float *logits, int flags, float *app_states);
 
 // The attention's sub-steps one at a time, on a sub-module's recorded inputs, for the fixture harness (the steps and
 // their inputs are listed beside the definition in inkling2.c).

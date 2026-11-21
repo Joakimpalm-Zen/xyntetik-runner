@@ -36,6 +36,12 @@ int ink2_shape_derive(ink2_shape *s, char *why, size_t why_n) {
 #undef INK2_REFUSE
 }
 
+// the widest of an application's four convolutions: hidden (post-attention, post-MLP) or n_kv * head_dim (K, V)
+static int ink2_conv_width(const ink2_shape *s, int a) {
+    int g = ink2_app_global(s, a), C = g ? s->n_kv * s->head_dim : s->swa_n_kv * s->swa_head_dim;
+    return C > s->hidden ? C : s->hidden;
+}
+
 int ink2_cache_init(ink2_cache *c, const ink2_shape *s, int n_ctx) {
     memset(c, 0, sizeof *c);
     c->n_app = s->n_app; c->n_ctx = n_ctx;
@@ -50,13 +56,26 @@ int ink2_cache_init(ink2_cache *c, const ink2_shape *s, int n_ctx) {
         size_t kv = (size_t)(g ? s->n_kv * s->head_dim : s->swa_n_kv * s->swa_head_dim);
         c->k[a] = calloc((size_t)n_ctx * kv, sizeof(float));
         c->v[a] = calloc((size_t)n_ctx * kv, sizeof(float));
-        // the six short convolutions of a layer (attention input, MLP input, K, V, post-attention, post-MLP) keep
-        // conv_k - 1 rows each; sized generously by the widest (hidden) until the attention piece fixes them
-        c->conv_floats[a] = (size_t)6 * (size_t)(s->conv_k > 1 ? s->conv_k - 1 : 0) * (size_t)s->hidden;
+        // the four short convolutions of a layer, by the reference's conv_idx (0 k_proj.sconv, 1 v_proj.sconv,
+        // 2 post_attention_convolution, 3 post_mlp_convolution), each a ring of conv_k - 1 input rows (ink2_conv_hist)
+        c->conv_floats[a] = (size_t)4 * (size_t)(s->conv_k > 1 ? s->conv_k - 1 : 0) * (size_t)ink2_conv_width(s, a);
         c->conv[a] = c->conv_floats[a] ? calloc(c->conv_floats[a], sizeof(float)) : NULL;
         if (!c->k[a] || !c->v[a] || (c->conv_floats[a] && !c->conv[a])) { ink2_cache_free(c); return -1; }
     }
     return 0;
+}
+
+// The convolution history of application app, convolution idx (0..3): conv_k - 1 rows of the widest convolution's
+// width; the input row of position u sits in row u % (conv_k - 1). NULL when conv_k is 1 (no history).
+static float *ink2_conv_hist(const ink2_shape *s, ink2_cache *c, int app, int idx) {
+    if (!c || s->conv_k <= 1 || !c->conv[app]) return NULL;
+    return c->conv[app] + (size_t)idx * (size_t)(s->conv_k - 1) * (size_t)ink2_conv_width(s, app);
+}
+// After a call over positions p0..p0+T-1 has read its history: the last conv_k - 1 input rows (x [T][C]) into it
+static void ink2_conv_hist_store(float *hist, int K, int C, int p0, int T, const float *x) {
+    if (!hist) return;
+    for (int u = T - (K - 1) < 0 ? 0 : T - (K - 1); u < T; u++)
+        memcpy(hist + (size_t)((p0 + u) % (K - 1)) * C, x + (size_t)u * C, sizeof(float) * (size_t)C);
 }
 
 void ink2_cache_free(ink2_cache *c) {
@@ -264,27 +283,44 @@ static void ink2_attn_q(const ink2_shape *s, const ink2_attn_layer *L, int T, co
 //   full (Inkling2LoopDynamicShortConvolution): taps[t][c][lag] = static[lag][c] + dyn[t][c / hd][lag], dyn = Wd x
 //     (x is the projection's own input, the dynamic input); conv[t][c] = sum_lag lin[t - lag][c] taps[lag], lag
 //     ascending; (conv + lin) / sqrt(2K + 1).
-// The positions before 0 are the zero padding of a prefill: the convolution histories are not read or written yet
-// (the fixture calls each application once, on positions 0..T-1); decode must carry them in c->conv.
+// The call covers positions p0..p0+T-1. Positions below 0 are the zero padding (skipped: no term); positions in
+// p0-K+1..p0-1 come from the history ring hist (ink2_conv_hist; read only when p0 > 0, so a call at p0 = 0 is a
+// prefill whatever the ring holds); the rest from lin. The same terms in the same order whether a position's input is
+// current or historical, so a sequence fed in chunks gives the bits of the whole.
+#define INK2_CONV_IN(u, ch) ((u) >= 0 ? lin[(size_t)(u) * C + (ch)] : hist[(size_t)((p0 + (u)) % (K - 1)) * C + (ch)])
 static void ink2_kv_conv(const ink2_shape *s, const ink2_attn_layer *L, int kv, int T, const float *lin, const float *x,
-                         float *dyn, float *out) {
+                         float *dyn, float *out, int p0, const float *hist) {
     int g = L->g, C = L->C, K = L->K, R = L->nkv * K, hd = L->hd;
     const float *cw = L->wt[kv ? WVC : WKC];
     if (g) ink2_rows(L->wt[kv ? WVD : WKD], R, s->hidden, T, x, dyn);
     const float div = (float)sqrt((double)(g ? 2 * K + 1 : K + 1));   // math.sqrt, a float32 scalar to torch
+    if (!hist) p0 = 0;
     for (int t = 0; t < T; t++) for (int ch = 0; ch < C; ch++) {
         float a = 0.0f;
         if (!g) {
-            for (int j = 0; j < K; j++) { int u = t - (K - 1) + j; if (u >= 0) a += cw[(size_t)ch * K + j] * lin[(size_t)u * C + ch]; }
+            for (int j = 0; j < K; j++) { int u = t - (K - 1) + j; if (p0 + u >= 0) a += cw[(size_t)ch * K + j] * INK2_CONV_IN(u, ch); }
         } else {
-            for (int l = 0; l < K && t - l >= 0; l++) {
+            for (int l = 0; l < K && p0 + t - l >= 0; l++) {
                 float tap = cw[(size_t)l * C + ch] + dyn[(size_t)t * R + (size_t)(ch / hd) * K + l];
-                a += lin[(size_t)(t - l) * C + ch] * tap;
+                a += INK2_CONV_IN(t - l, ch) * tap;
             }
         }
         out[(size_t)t * C + ch] = (a + lin[(size_t)t * C + ch]) / div;
     }
 }
+// Inkling2LoopShortConvolution on hidden-width states (post_attention_convolution, post_mlp_convolution): the
+// sliding branch above with the layer's own taps w [C][K]: conv[t][c] = sum_j w[c][j] x[t - (K-1) + j][c], j
+// ascending; (conv + x) / sqrt(K + 1); the history as above
+static void ink2_short_conv(const float *cw, int C, int K, int T, const float *lin, float *out, int p0, const float *hist) {
+    const float div = (float)sqrt((double)(K + 1));
+    if (!hist) p0 = 0;
+    for (int t = 0; t < T; t++) for (int ch = 0; ch < C; ch++) {
+        float a = 0.0f;
+        for (int j = 0; j < K; j++) { int u = t - (K - 1) + j; if (p0 + u >= 0) a += cw[(size_t)ch * K + j] * INK2_CONV_IN(u, ch); }
+        out[(size_t)t * C + ch] = (a + lin[(size_t)t * C + ch]) / div;
+    }
+}
+#undef INK2_CONV_IN
 // the norm of k_proj (the L2 clip at qk_clip) or v_proj (the unweighted RMS norm), per head, in place
 static void ink2_kv_norm(const ink2_shape *s, const ink2_attn_layer *L, int kv, int T, float *z) {
     for (int t = 0; t < T; t++) for (int h = 0; h < L->nkv; h++) {
@@ -292,11 +328,13 @@ static void ink2_kv_norm(const ink2_shape *s, const ink2_attn_layer *L, int kv, 
         if (kv) ink2_unweighted_norm(zh, L->hd, s->eps, zh); else ink2_l2_clip(zh, L->hd, s->qk_clip);
     }
 }
+// linear, convolution (history hist, NULL for none), norm; the conv's input rows then go into the history
 static void ink2_attn_kv(const ink2_shape *s, const ink2_attn_layer *L, int kv, int T, const float *x, float *lin,
-                         float *dyn, float *out) {
+                         float *dyn, float *out, int p0, float *hist) {
     ink2_rows(L->wt[kv ? WV : WK], L->C, s->hidden, T, x, lin);
-    ink2_kv_conv(s, L, kv, T, lin, x, dyn, out);
+    ink2_kv_conv(s, L, kv, T, lin, x, dyn, out, p0, hist);
     ink2_kv_norm(s, L, kv, T, out);
+    ink2_conv_hist_store(hist, L->K, L->C, p0, T, lin);
 }
 // relative_position_bias up to the bank: rs = linear [heads][d_rel], the scaled clip at rel_clip ((full) with tau),
 // rl[t][h][e] = sum_r rs[h][r] proj[r][e]: the bias of distance e, read by the core for 0 <= q - k < extent
@@ -319,19 +357,22 @@ static void ink2_attn_rel(const ink2_shape *s, const ink2_attn_layer *L, int T, 
 // value: softmax over [keys, sink] (max, exp, serial sum with the sink last, a division); probs = the keys' columns;
 // att = probs V (keys ascending). Head h reads KV head h / (n_head / n_kv) (repeat_kv). Masked keys get probability 0
 // (the reference adds the float minimum, whose exp is 0) and stay out of the sums (their zero terms change no bits).
+// The keys are nk rows of k and v, row j at position kp0 + j (the application's cache rows 0..p0+T-1, or a recorded
+// block); a query reads them in ascending position, so a query's arithmetic does not depend on how many queries the
+// call holds. probs is [n_head][T][nk].
 static void ink2_attn_core(const ink2_shape *s, const ink2_attn_layer *L, int T, const int *pos, const float *q,
-                           const float *k, const float *v, const float *rl, const float *sk, float *lg, float *att,
-                           float *probs) {
+                           const float *k, const float *v, int nk, int kp0, const float *rl, const float *sk, float *lg,
+                           float *att, float *probs) {
     int nh = L->nh, hd = L->hd, C = L->C, Q = L->Q, ext = L->ext;
     const float scale = (float)pow((double)hd, -0.5);   // head_dim ** -0.5, a float32 scalar to torch
-#define INK2_ADMIT(i, j) (pos[i] - pos[j] >= 0 && (L->g || pos[i] - pos[j] < s->window))
+#define INK2_ADMIT(i, j) (pos[i] - (kp0 + (j)) >= 0 && (L->g || pos[i] - (kp0 + (j)) < s->window))
     for (int h = 0; h < nh; h++) {
         int kh = h / (nh / L->nkv);
         for (int i = 0; i < T; i++) {
             const float *qi = q + (size_t)i * Q + (size_t)h * hd;
             float mx = sk[(size_t)i * nh + h];
-            for (int j = 0; j < T; j++) {
-                int d = pos[i] - pos[j];
+            for (int j = 0; j < nk; j++) {
+                int d = pos[i] - (kp0 + j);
                 lg[j] = 0.0f;
                 if (!INK2_ADMIT(i, j)) continue;
                 const float *kj = k + (size_t)j * C + (size_t)kh * hd;
@@ -342,17 +383,17 @@ static void ink2_attn_core(const ink2_shape *s, const ink2_attn_layer *L, int T,
                 if (lg[j] > mx) mx = lg[j];
             }
             float sum = 0.0f;
-            for (int j = 0; j < T; j++) {
+            for (int j = 0; j < nk; j++) {
                 if (!INK2_ADMIT(i, j)) continue;   // lg[j] is 0 already
                 lg[j] = p_expf(lg[j] - mx); sum += lg[j];
             }
             sum += p_expf(sk[(size_t)i * nh + h] - mx);   // the sink, last in the concatenation
-            for (int j = 0; j < T; j++) lg[j] = lg[j] / sum;
-            if (probs) for (int j = 0; j < T; j++) probs[((size_t)h * T + i) * T + j] = lg[j];
+            for (int j = 0; j < nk; j++) lg[j] = lg[j] / sum;
+            if (probs) for (int j = 0; j < nk; j++) probs[((size_t)h * T + i) * nk + j] = lg[j];
             float *ai = att + (size_t)i * Q + (size_t)h * hd;
             for (int e = 0; e < hd; e++) {
                 float a = 0.0f;
-                for (int j = 0; j < T; j++) if (INK2_ADMIT(i, j)) a += lg[j] * v[(size_t)j * C + (size_t)kh * hd + e];
+                for (int j = 0; j < nk; j++) if (INK2_ADMIT(i, j)) a += lg[j] * v[(size_t)j * C + (size_t)kh * hd + e];
                 ai[e] = a;
             }
         }
@@ -370,11 +411,11 @@ static void ink2_attn_out(const ink2_shape *s, const ink2_attn_layer *L, int T, 
     }
 }
 // scratch for T positions: q [T][Q], k, v, lin [T][C], dyn [T][n_kv K], rs [T][heads d_rel], rl [T][heads][extent],
-// sinks [T][heads], att [T][Q], the logit row [T + 1], the gate row [Q]
-static float *ink2_attn_scratch(const ink2_attn_layer *L, int T, float **p) {
+// sinks [T][heads], att [T][Q], the logit row [nk + 1] (nk keys), the gate row [Q]
+static float *ink2_attn_scratch(const ink2_attn_layer *L, int T, int nk, float **p) {
     size_t n[11] = { (size_t)T * L->Q, (size_t)T * L->C, (size_t)T * L->C, (size_t)T * L->C, (size_t)T * L->nkv * L->K,
                      (size_t)T * L->nh * L->dr, (size_t)T * L->nh * L->ext, (size_t)T * L->nh, (size_t)T * L->Q,
-                     (size_t)T + 1, (size_t)L->Q }, tot = 0;
+                     (size_t)nk + 1, (size_t)L->Q }, tot = 0;
     for (int i = 0; i < 11; i++) tot += n[i];
     float *buf = malloc(sizeof(float) * tot);
     if (buf) { size_t o = 0; for (int i = 0; i < 11; i++) { p[i] = buf + o; o += n[i]; } }
@@ -384,20 +425,25 @@ enum { SQ, SK, SV, SLIN, SDYN, SRS, SRL, SSK, SATT, SLG, SGA };
 
 // Inkling2LoopSlidingAttention (hybrid_sliding) / Inkling2LoopFullAttention (hybrid), in the reference's order:
 // Q = q_proj(xq); K = k_proj(xk), V = v_proj(xv) (each: linear, convolution, norm); K, V into the application's
-// cache slot at rows pos[t]; the relative bias and the sinks from xq; the core; o_proj gated by xq.
+// cache slot at rows pos[t]; the relative bias and the sinks from xq; the core over the slot's rows 0..p0+T-1; o_proj
+// gated by xq. The positions must run p0, p0+1, ... (p0 = pos[0]); rows below p0 and the K and V convolution
+// histories are the slot's, read only when p0 > 0 (a call at p0 = 0 is a prefill).
 ink2_status ink2_attention(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int app, int T,
                            const int *pos, const float *xq, const float *xk, const float *xv,
                            float *out, float *probs) {
     ink2_attn_layer L;
-    if (!c || app >= c->n_app || T <= 0 || T > c->n_ctx) return INK2_BAD_INPUT;
-    for (int t = 0; t < T; t++) if (pos[t] < 0 || pos[t] >= c->n_ctx) return INK2_BAD_INPUT;
+    if (!c || app < 0 || app >= c->n_app || T <= 0 || T > c->n_ctx) return INK2_BAD_INPUT;
+    int p0 = pos[0];
+    for (int t = 0; t < T; t++) if (pos[t] != p0 + t || pos[t] < 0 || pos[t] >= c->n_ctx) return INK2_BAD_INPUT;
+    if (p0 > c->n_past[app]) return INK2_BAD_INPUT;   // rows below p0 must have been written
     ink2_status st = ink2_attn_bind(s, w, app, &L);
     if (st != INK2_OK) return st;
-    float *p[11], *buf = ink2_attn_scratch(&L, T, p);
+    int nk = p0 + T;
+    float *p[11], *buf = ink2_attn_scratch(&L, T, nk, p);
     if (!buf) return INK2_BAD_INPUT;
     ink2_attn_q(s, &L, T, pos, xq, p[SQ]);
-    ink2_attn_kv(s, &L, 0, T, xk, p[SLIN], p[SDYN], p[SK]);
-    ink2_attn_kv(s, &L, 1, T, xv, p[SLIN], p[SDYN], p[SV]);
+    ink2_attn_kv(s, &L, 0, T, xk, p[SLIN], p[SDYN], p[SK], p0, ink2_conv_hist(s, c, app, 0));
+    ink2_attn_kv(s, &L, 1, T, xv, p[SLIN], p[SDYN], p[SV], p0, ink2_conv_hist(s, c, app, 1));
     for (int t = 0; t < T; t++) {
         memcpy(c->k[app] + (size_t)pos[t] * L.C, p[SK] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
         memcpy(c->v[app] + (size_t)pos[t] * L.C, p[SV] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
@@ -405,7 +451,7 @@ ink2_status ink2_attention(const ink2_shape *s, const ink2_weights *w, ink2_cach
     }
     ink2_attn_rel(s, &L, T, pos, xq, p[SRS], p[SRL]);
     ink2_rows(L.wt[WS], L.nh, s->hidden, T, xq, p[SSK]);
-    ink2_attn_core(s, &L, T, pos, p[SQ], p[SK], p[SV], p[SRL], p[SSK], p[SLG], p[SATT], probs);
+    ink2_attn_core(s, &L, T, pos, p[SQ], c->k[app], c->v[app], nk, 0, p[SRL], p[SSK], p[SLG], p[SATT], probs);
     ink2_attn_out(s, &L, T, xq, p[SATT], p[SGA], out);
     free(buf);
     return INK2_OK;
@@ -433,15 +479,15 @@ ink2_status ink2_attention_step(const ink2_shape *s, const ink2_weights *w, int 
     if (!step || T <= 0) return INK2_BAD_INPUT;
     ink2_status st = ink2_attn_bind(s, w, app, &L);
     if (st != INK2_OK) return st;
-    float *p[11], *buf = ink2_attn_scratch(&L, T, p);
+    float *p[11], *buf = ink2_attn_scratch(&L, T, T, p);
     if (!buf) return INK2_BAD_INPUT;
     int nh = L.nh, ext = L.ext, kv = step[0] == 'v';
     if (!strcmp(step, "q_proj")) ink2_attn_q(s, &L, T, pos, in[0], out);
     else if (!strcmp(step, "q_proj.norm")) {
         memcpy(out, in[0], sizeof(float) * (size_t)T * L.Q);
         for (int t = 0; t < T; t++) ink2_scaled_clip(s, L.g, out + (size_t)t * L.Q, L.wt[WQS], nh, L.hd, s->qk_clip, pos[t]);
-    } else if (!strcmp(step, "k_proj") || !strcmp(step, "v_proj")) ink2_attn_kv(s, &L, kv, T, in[0], p[SLIN], p[SDYN], out);
-    else if (!strcmp(step, "k_proj.sconv") || !strcmp(step, "v_proj.sconv")) ink2_kv_conv(s, &L, kv, T, in[0], in[1], p[SDYN], out);
+    } else if (!strcmp(step, "k_proj") || !strcmp(step, "v_proj")) ink2_attn_kv(s, &L, kv, T, in[0], p[SLIN], p[SDYN], out, 0, NULL);
+    else if (!strcmp(step, "k_proj.sconv") || !strcmp(step, "v_proj.sconv")) ink2_kv_conv(s, &L, kv, T, in[0], in[1], p[SDYN], out, 0, NULL);
     else if (!strcmp(step, "k_proj.norm") || !strcmp(step, "v_proj.norm")) {
         memcpy(out, in[0], sizeof(float) * (size_t)T * L.C); ink2_kv_norm(s, &L, kv, T, out);
     } else if (!strcmp(step, "relative_position_bias")) {
@@ -461,7 +507,7 @@ ink2_status ink2_attention_step(const ink2_shape *s, const ink2_weights *w, int 
             int d = pos[i] - pos[j];
             if (d >= 0 && d < ext) p[SRL][((size_t)i * nh + h) * ext + d] = in[3][((size_t)h * T + i) * T + j];
         }
-        ink2_attn_core(s, &L, T, pos, in[0], in[1], in[2], p[SRL], in[4], p[SLG], out, out2);
+        ink2_attn_core(s, &L, T, pos, in[0], in[1], in[2], T, pos[0], p[SRL], in[4], p[SLG], out, out2);
     } else if (!strcmp(step, "o_proj")) {
         memcpy(p[SATT], in[0], sizeof(float) * (size_t)T * L.Q); ink2_attn_out(s, &L, T, in[1], p[SATT], p[SGA], out);
     } else st = INK2_BAD_INPUT;
@@ -558,4 +604,212 @@ ink2_status ink2_message_step(const ink2_shape *s, const ink2_weights *w, int bl
     }
     free(gh);
     return INK2_OK;
+}
+
+// ---- the layer and the forward
+
+// Inkling2LoopRMSNorm: x * rsqrt(mean(x^2) + eps) as the unweighted norm, then weight * that (the reference's order)
+static void ink2_rms_norm(const float *x, int n, float eps, const float *wt, float *y) {
+    ink2_unweighted_norm(x, n, eps, y);
+    for (int i = 0; i < n; i++) y[i] = wt[i] * y[i];
+}
+static ink2_status ink2_norm_rows(const ink2_shape *s, const ink2_weights *w, const char *name, int T, const float *x,
+                                  float *y) {
+    const ink2_tensor *t = w->get(w->ctx, name);
+    if (!t || t->ne[0] != s->hidden || t->n_dims != 1) return INK2_NO_TENSOR;
+    for (int i = 0; i < T; i++) ink2_rms_norm(x + (size_t)i * s->hidden, s->hidden, s->eps, t->data, y + (size_t)i * s->hidden);
+    return INK2_OK;
+}
+// post_attention_convolution / post_mlp_convolution (conv_idx 2 / 3) of block b at application app, with its history
+static ink2_status ink2_post_conv(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int app, int idx, int T,
+                                  int p0, const float *x, float *y) {
+    char name[160];
+    snprintf(name, sizeof name, "model.layers.%d.%s.conv1d.weight", s->app_block[app],
+             idx == 2 ? "post_attention_convolution" : "post_mlp_convolution");
+    const ink2_tensor *t = w->get(w->ctx, name);
+    int H = s->hidden, K = s->conv_k;
+    if (!t || t->ne[0] != K || t->ne[0] * t->ne[1] * t->ne[2] * t->ne[3] != (int64_t)H * K) return INK2_NO_TENSOR;
+    float *hist = ink2_conv_hist(s, c, app, idx);
+    ink2_short_conv(t->data, H, K, T, x, y, p0, hist);
+    ink2_conv_hist_store(hist, K, H, p0, T, x);
+    return INK2_OK;
+}
+
+// One application of a decoder layer, the reference's four classes in one (see inkling2.h for the order).
+ink2_status ink2_decoder_layer(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int app, int T,
+                               const int *pos, const float *x, const float *block_states, int n_blocks,
+                               const float *messages, float *out) {
+    if (!s || !w || !c || app < 0 || app >= s->n_app || T <= 0 || n_blocks < 0 || (n_blocks && !block_states))
+        return INK2_BAD_INPUT;
+    int b = s->app_block[app], g = s->block_global[b], H = s->hidden;
+    int loop = b >= s->loop_start && b < s->loop_end, bound = ink2_block_boundary(s, b);
+    if (messages && !loop) return INK2_BAD_INPUT;   // only the loop classes take messages
+    if (b == 0 && n_blocks) return INK2_BAD_INPUT;  // layer 0 has no attention_input: it reads no block state
+    size_t TH = (size_t)T * H;
+    // scratch: the three attention inputs (read, then normed), one message, the attention output, the residual,
+    // the MLP input, the expert output, and the MLP's block states [T][n_blocks + 1][H]
+    float *buf = malloc(sizeof(float) * (TH * 13 + (size_t)T * (n_blocks + 1) * H));
+    if (!buf) return INK2_BAD_INPUT;
+    float *rd = buf, *qkv = rd + 3 * TH, *msg = qkv + 3 * TH, *att = msg + TH, *res = att + TH, *mi = res + TH,
+          *mo = mi + TH, *gt = mo + TH, *bs2 = gt + TH;
+    ink2_status st = INK2_OK;
+    char name[160];
+    const char *role[4] = { "q", "k", "v", "mlp" };
+#define INK2_TRY(e) do { if ((st = (e)) != INK2_OK) goto done; } while (0)
+    // 1. the attention inputs: attention_input (one query sliding, three full) or, at layer 0, x itself
+    int n_rd = g ? 3 : 1;
+    if (b > 0) {
+        int nq = 0;
+        snprintf(name, sizeof name, "model.layers.%d.attention_input", b);
+        INK2_TRY(ink2_block_read(s, w, name, T, n_blocks, block_states, x, rd, &nq));
+        if (nq != n_rd) { st = INK2_NO_TENSOR; goto done; }
+    } else for (int r = 0; r < n_rd; r++) memcpy(rd + (size_t)r * TH, x, sizeof(float) * TH);   // q = k = v = x
+    // 2. Q, K, V inputs: (loop layers, later passes) the q/k/v message gates on the read for that role (sliding: the
+    // one read for all three), then the role's input norm (sliding: input_layernorm shared; full: q/k/v_input_layernorm)
+    for (int r = 0; r < 3; r++) {
+        const float *src = rd + (size_t)(g ? r : 0) * TH;
+        if (messages) {
+            for (int t = 0; t < T; t++) memcpy(msg + (size_t)t * H, messages + ((size_t)t * 4 + r) * H, sizeof(float) * H);
+            INK2_TRY(ink2_message_step(s, w, b, role[r], T, src, msg, gt));
+            src = gt;
+        } else if (!g && r > 0) { memcpy(qkv + r * TH, qkv, sizeof(float) * TH); continue; }   // one norm of one read
+        if (g) snprintf(name, sizeof name, "model.layers.%d.%s_input_layernorm.weight", b, role[r]);
+        else snprintf(name, sizeof name, "model.layers.%d.input_layernorm.weight", b);
+        INK2_TRY(ink2_norm_rows(s, w, name, T, src, qkv + r * TH));
+    }
+    // 3. self_attn, then post_attention_convolution (conv_idx 2)
+    INK2_TRY(ink2_attention(s, w, c, app, T, pos, qkv, qkv + TH, qkv + 2 * TH, att, NULL));
+    INK2_TRY(ink2_post_conv(s, w, c, app, 2, T, pos[0], att, res));
+    // 4. the residual: at a block boundary the attention output STARTS the new partial block (no add) and x joins
+    // the block states the MLP input reads; otherwise x + attention
+    int nb2 = n_blocks;
+    if (bound) {
+        for (int t = 0; t < T; t++) {
+            if (n_blocks) memcpy(bs2 + (size_t)t * (n_blocks + 1) * H, block_states + (size_t)t * n_blocks * H, sizeof(float) * (size_t)n_blocks * H);
+            memcpy(bs2 + ((size_t)t * (n_blocks + 1) + n_blocks) * H, x + (size_t)t * H, sizeof(float) * H);
+        }
+        nb2 = n_blocks + 1;
+    } else {
+        for (size_t i = 0; i < TH; i++) res[i] = x[i] + res[i];
+        if (n_blocks) memcpy(bs2, block_states, sizeof(float) * (size_t)T * n_blocks * H);
+    }
+    // 5. mlp_input over those block states and the residual; (loop, later passes) the mlp message gate;
+    // post_attention_layernorm; the experts; post_mlp_convolution (conv_idx 3); out = residual + that
+    {
+        int nq = 0;
+        snprintf(name, sizeof name, "model.layers.%d.mlp_input", b);
+        INK2_TRY(ink2_block_read(s, w, name, T, nb2, bs2, res, mi, &nq));
+        if (nq != 1) { st = INK2_NO_TENSOR; goto done; }
+    }
+    if (messages) {
+        for (int t = 0; t < T; t++) memcpy(msg + (size_t)t * H, messages + ((size_t)t * 4 + 3) * H, sizeof(float) * H);
+        INK2_TRY(ink2_message_step(s, w, b, "mlp", T, mi, msg, gt));
+        memcpy(mi, gt, sizeof(float) * TH);
+    }
+    snprintf(name, sizeof name, "model.layers.%d.post_attention_layernorm.weight", b);
+    INK2_TRY(ink2_norm_rows(s, w, name, T, mi, gt));
+    INK2_TRY(ink2_expert_layer(s, w, b, T, gt, mo));
+    INK2_TRY(ink2_post_conv(s, w, c, app, 3, T, pos[0], mo, gt));
+    for (size_t i = 0; i < TH; i++) out[i] = res[i] + gt[i];
+#undef INK2_TRY
+done:
+    free(buf);
+    return st;
+}
+
+// [T][H] slabs -> [T][n][H], the layout the block reads take
+static void ink2_pack_states(float *const *slab, int n, int T, int H, float *dst) {
+    for (int t = 0; t < T; t++) for (int j = 0; j < n; j++)
+        memcpy(dst + ((size_t)t * n + j) * H, slab[j] + (size_t)t * H, sizeof(float) * (size_t)H);
+}
+
+// Inkling2LoopNormedEmbedding, the loop of Inkling2LoopTextModel.forward, final_input, norm, the head; see inkling2.h
+ink2_status ink2_forward_chunk(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int p0, int T,
+                               const int *ids, float *logits, int flags, float *app_states) {
+    if (!s || !w || !c || T <= 0 || p0 < 0 || p0 + T > c->n_ctx || c->n_app != s->n_app) return INK2_BAD_INPUT;
+    int H = s->hidden;
+    size_t TH = (size_t)T * H;
+    const ink2_tensor *emb = w->get(w->ctx, "model.embed_tokens.weight");
+    if (!emb || emb->ne[0] != H) return INK2_NO_TENSOR;
+    for (int t = 0; t < T; t++) if (ids[t] < 0 || ids[t] >= emb->ne[1]) return INK2_BAD_INPUT;
+    // slabs [T][H]: every appended block state gets its own (a pass's states outlive its restart, for the messages),
+    // plus the hidden state ping-pong, the pre-loop state, the pre-pre-loop state (control 1) and the previous pass's
+    // final state. At most one append per application, plus the embedding.
+    int n_slab = s->n_app + 6, maxb = s->n_app + 1;
+    float *pool = malloc(sizeof(float) * (TH * (size_t)n_slab + (size_t)T * maxb * H + (size_t)T * 4 * H + TH));
+    float **cur = malloc(sizeof(float *) * (size_t)maxb * 2), **prev = cur + maxb;
+    int *pos = malloc(sizeof(int) * (size_t)T);
+    if (!pool || !cur || !pos) { free(pool); free(cur); free(pos); return INK2_BAD_INPUT; }
+    float *packed = pool + TH * (size_t)n_slab, *msgs = packed + (size_t)T * maxb * H, *fin = msgs + (size_t)T * 4 * H;
+    int next = 0;
+#define INK2_SLAB() (pool + TH * (size_t)(next++))
+    float *h = INK2_SLAB(), *hn = INK2_SLAB(), *pre_h = INK2_SLAB(), *pre2_h = INK2_SLAB(), *last_h = INK2_SLAB();
+    ink2_status st = INK2_OK;
+#define INK2_TRY(e) do { if ((st = (e)) != INK2_OK) goto done; } while (0)
+    for (int t = 0; t < T; t++) pos[t] = p0 + t;
+    for (int t = 0; t < T; t++) memcpy(h + (size_t)t * H, emb->data + (size_t)ids[t] * H, sizeof(float) * H);
+    INK2_TRY(ink2_norm_rows(s, w, "model.embed_tokens.embed_norm.weight", T, h, hn));
+    { float *tmp = h; h = hn; hn = tmp; }
+    int nb = 0, n_prev = 0, pre_nb = 0;
+    memcpy(pre2_h, h, sizeof(float) * TH);
+    for (int a = 0; a < s->n_app; a++) {
+        int b = s->app_block[a], p = s->app_pass[a], loop = b >= s->loop_start && b < s->loop_end;
+        if (loop && b == s->loop_start) {
+            if (p == 0) { memcpy(pre_h, h, sizeof(float) * TH); pre_nb = nb; }   // pre_loop_hidden_states, _block_states
+            else {
+                // the previous pass's block states after the one appended at the core's first layer, and its final
+                // hidden state; then restart from the pre-loop states
+                n_prev = nb - pre_nb - 1;
+                if (n_prev < 0) { st = INK2_BAD_INPUT; goto done; }
+                for (int j = 0; j < n_prev; j++) prev[j] = cur[pre_nb + 1 + j];
+                memcpy(last_h, h, sizeof(float) * TH);
+                memcpy(h, (flags & INK2_MISWIRE_RESTART) ? pre2_h : pre_h, sizeof(float) * TH);
+                nb = pre_nb;
+            }
+        }
+        const float *m = NULL;
+        if (loop && p > 0) {
+            if (flags & INK2_MISWIRE_OWN_PASS) {   // control: this pass's own states so far, not the previous pass's
+                int n_own = nb - pre_nb - 1 < 0 ? 0 : nb - pre_nb - 1;
+                ink2_pack_states(cur + pre_nb + 1, n_own, T, H, packed);
+                INK2_TRY(ink2_message_input(s, w, b - s->loop_start, T, n_own, packed, h, msgs));
+            } else {
+                ink2_pack_states(prev, n_prev, T, H, packed);
+                INK2_TRY(ink2_message_input(s, w, b - s->loop_start, T, n_prev, packed, last_h, msgs));
+            }
+            m = msgs;
+        }
+        ink2_pack_states(cur, nb, T, H, packed);
+        INK2_TRY(ink2_decoder_layer(s, w, c, a, T, pos, h, packed, nb, m, hn));
+        if (ink2_block_boundary(s, b)) {   // the layer's INPUT joins the block states
+            if (nb >= maxb || next >= n_slab) { st = INK2_BAD_INPUT; goto done; }
+            float *slab = INK2_SLAB(); memcpy(slab, h, sizeof(float) * TH); cur[nb++] = slab;
+        }
+        if (a + 2 == s->loop_start) memcpy(pre2_h, hn, sizeof(float) * TH);   // the input of the last pre-loop layer
+        { float *tmp = h; h = hn; hn = tmp; }
+        if (app_states) memcpy(app_states + (size_t)a * TH, h, sizeof(float) * TH);
+    }
+    // final_input over every block state and the last hidden state, the norm, the head
+    {
+        int nq = 0;
+        ink2_pack_states(cur, nb, T, H, packed);
+        INK2_TRY(ink2_block_read(s, w, "model.final_input", T, nb, packed, h, fin, &nq));
+        if (nq != 1) { st = INK2_NO_TENSOR; goto done; }
+        INK2_TRY(ink2_norm_rows(s, w, "model.norm.weight", T, fin, hn));
+        INK2_TRY(ink2_head(s, w, T, hn, logits));
+    }
+#undef INK2_TRY
+#undef INK2_SLAB
+done:
+    free(pool); free(cur); free(pos);
+    return st;
+}
+
+ink2_status ink2_forward(const ink2_shape *s, const ink2_weights *w, int T, const int *ids, float *logits) {
+    ink2_cache c;
+    if (!s || T <= 0) return INK2_BAD_INPUT;
+    if (ink2_cache_init(&c, s, T)) return INK2_BAD_INPUT;
+    ink2_status st = ink2_forward_chunk(s, w, &c, 0, T, ids, logits, 0, NULL);
+    ink2_cache_free(&c);
+    return st;
 }
