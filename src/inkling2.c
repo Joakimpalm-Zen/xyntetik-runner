@@ -109,12 +109,82 @@ static void ink2_depth_attn(const float *q, int nq, const float *states, int n_k
 
 // ---- the pieces (a stub returns INK2_NOT_IMPLEMENTED until its piece lands)
 
+// The softcap, tanh(v / cap) * cap: a true division by the float cap (torch's tensor / scalar), then the product
+static inline float ink2_softcap(float v, float cap) { return p_tanhf(v / cap) * cap; }
+// torch.sigmoid as 1 / (1 + exp(-x)), with the portable exp
+static inline float ink2_sigmoid(float x) { return 1.0f / (1.0f + p_expf(-x)); }
+
+// Inkling2LoopSparseMoeBlock at one block (model.layers.<b>.mlp), per position:
+//   router: logits = W x (float32), scores = sigmoid(logits); the n_used experts with the largest scores + bias, TIES
+//   BROKEN LOWEST INDEX FIRST (the reference's torch.topk(..., sorted=False) leaves ties open; this is our rule, stated
+//   and tested by the harness's tie case); weights = score / (sum of the chosen scores + 1e-20) * route_scale, the sum
+//   in ascending expert order;
+//   experts in ASCENDING expert index (the reference's eager loop order): gate, up = W13 x; act = softcap(gate, gate
+//   cap) * sigmoid(gate) * softcap(up, up cap); down = W2 act; out += down * weight.
 ink2_status ink2_expert_layer(const ink2_shape *s, const ink2_weights *w, int block, int T,
                               const float *x, float *out) {
-    (void)s; (void)w; (void)block; (void)T; (void)x; (void)out;
-    return INK2_NOT_IMPLEMENTED;
+    char n1[160], n2[160], n3[160], n4[160];
+    snprintf(n1, sizeof n1, "model.layers.%d.mlp.gate.weight", block);
+    snprintf(n2, sizeof n2, "model.layers.%d.mlp.gate.e_score_correction_bias", block);
+    snprintf(n3, sizeof n3, "model.layers.%d.mlp.experts.gate_up_proj", block);
+    snprintf(n4, sizeof n4, "model.layers.%d.mlp.experts.down_proj", block);
+    const ink2_tensor *wr = w->get(w->ctx, n1), *br = w->get(w->ctx, n2), *w13 = w->get(w->ctx, n3), *w2 = w->get(w->ctx, n4);
+    int H = s->hidden, E = s->n_expert, K = s->n_used, F = s->ff;
+    if (!wr || !br || !w13 || !w2 || wr->ne[0] != H || wr->ne[1] != E || br->ne[0] != E ||
+        w13->ne[0] != H || w13->ne[1] != 2 * F || w13->ne[2] != E || w2->ne[0] != F || w2->ne[1] != H || w2->ne[2] != E ||
+        K < 1 || K > E) return INK2_NO_TENSOR;
+    float *sc = malloc(sizeof(float) * ((size_t)E + 2 * (size_t)F + (size_t)H));
+    unsigned char *chosen = malloc((size_t)E);
+    if (!sc || !chosen) { free(sc); free(chosen); return INK2_BAD_INPUT; }
+    float *act = sc + E, *down = act + 2 * F;
+    for (int t = 0; t < T; t++) {
+        const float *xt = x + (size_t)t * H;
+        float *ot = out + (size_t)t * H;
+        for (int e = 0; e < E; e++) {
+            float l = 0.0f; const float *row = wr->data + (size_t)e * H;
+            for (int h = 0; h < H; h++) l += row[h] * xt[h];
+            sc[e] = ink2_sigmoid(l);
+        }
+        memset(chosen, 0, (size_t)E);
+        for (int k = 0; k < K; k++) {
+            int best = -1; float bv = 0.0f;
+            for (int e = 0; e < E; e++) {
+                if (chosen[e]) continue;
+                float v = sc[e] + br->data[e];
+                if (best < 0 || v > bv) { best = e; bv = v; }   // strict >: the lowest index wins a tie
+            }
+            chosen[best] = 1;
+        }
+        float sum = 0.0f;
+        for (int e = 0; e < E; e++) if (chosen[e]) sum += sc[e];
+        float den = sum + 1e-20f;
+        for (int h = 0; h < H; h++) ot[h] = 0.0f;
+        for (int e = 0; e < E; e++) {
+            if (!chosen[e]) continue;
+            float wt = sc[e] / den * s->route_scale;
+            const float *g13 = w13->data + (size_t)e * 2 * F * H, *g2 = w2->data + (size_t)e * H * F;
+            for (int j = 0; j < 2 * F; j++) {
+                float a = 0.0f; const float *row = g13 + (size_t)j * H;
+                for (int h = 0; h < H; h++) a += row[h] * xt[h];
+                act[j] = a;
+            }
+            for (int j = 0; j < F; j++) {
+                float g = act[j], u = act[F + j];
+                act[j] = ink2_softcap(g, s->gate_cap) * ink2_sigmoid(g) * ink2_softcap(u, s->up_cap);
+            }
+            for (int h = 0; h < H; h++) {
+                float a = 0.0f; const float *row = g2 + (size_t)h * F;
+                for (int j = 0; j < F; j++) a += row[j] * act[j];
+                down[h] = a;
+            }
+            for (int h = 0; h < H; h++) ot[h] += down[h] * wt;
+        }
+    }
+    free(sc); free(chosen);
+    return INK2_OK;
 }
 
+// y[o] = sum_i W[o][i] x[i], a serial dot in index order per output (nn.Linear without bias)
 ink2_status ink2_attention(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int app, int T,
                            const int *pos, const float *xq, const float *xk, const float *xv,
                            float *out, float *probs) {
@@ -128,9 +198,20 @@ ink2_status ink2_attention_step(const ink2_shape *s, const ink2_weights *w, int 
     return INK2_NOT_IMPLEMENTED;
 }
 
+// The head: lm_head (built UNPADDED by the reference: vocab_used rows) then logit_softcap, tanh(l / cap) * cap
 ink2_status ink2_head(const ink2_shape *s, const ink2_weights *w, int T, const float *x, float *logits) {
-    (void)s; (void)w; (void)T; (void)x; (void)logits;
-    return INK2_NOT_IMPLEMENTED;
+    const ink2_tensor *wo = w->get(w->ctx, "lm_head.weight");
+    int H = s->hidden, V = s->vocab_used;
+    if (!wo || wo->ne[0] != H || wo->ne[1] < V) return INK2_NO_TENSOR;
+    for (int t = 0; t < T; t++) {
+        const float *xt = x + (size_t)t * H;
+        for (int v = 0; v < V; v++) {                  // rows from vocab_used on, if a layout keeps them, never enter
+            float a = 0.0f; const float *row = wo->data + (size_t)v * H;
+            for (int h = 0; h < H; h++) a += row[h] * xt[h];
+            logits[(size_t)t * V + v] = ink2_softcap(a, s->final_cap);
+        }
+    }
+    return INK2_OK;
 }
 
 ink2_status ink2_block_read(const ink2_shape *s, const ink2_weights *w, const char *which, int T, int n_blocks,
