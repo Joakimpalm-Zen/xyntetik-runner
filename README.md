@@ -74,9 +74,9 @@ It takes about a minute to try: [quick start](#quick-start).
   <a href="docs/community-results.md">Community results</a>
 </p>
 
-> **Published release: 1.20.0.** The [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) is for constrained output and for the GPUs. A JSON Schema `pattern` is enforced for any regular ECMA-262 pattern, a bounded number is never led past its bound, and pydantic 1.10's titled or defaulted fields compile. LFM2.5's Q4_K_M files run on the Apple GPU, measured on an Apple M1 at 2.7x to 3.0x the CPU's prompt speed and 1.6x to 2.6x its decode, and no further from the publisher's float32 model than the CPU. On CUDA a Phi-3.5 LongRoPE model's factor set follows each sequence past its original context, and several such sequences still share one device microbatch. A turn on the Apple GPU's opt-in tiled microbatch now replays under `--verify`. `runner derive` gives a fidelity verdict only with the interval it rests on, and on x86 the gpt-oss experts' MXFP4 decode is SIMD, to the same bits. LFM2's Q8_0 files and every other type stay on the CPU (their Metal decode gained 1.17x to 1.23x), the tiled microbatch stays opt-in (it was slower on a small file at every width measured), and no speed claim is made for the release as a whole.
+> **Published release: 1.21.0.** The [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) is for prompt speed on a mixture-of-experts model on CUDA, for training on the GPU, and for the same reply on every host. Gemma-4-26B-A4B's QAT Q4_0 file takes a new route for its expert products by default on CUDA: measured on one CUDA device class under Linux, its prompt runs 2.81x faster at 512 tokens and 2.41x at 2,048, no further from the publisher's float32 model than before (a paired ratio of 1.0018, 95% interval 0.9979 to 1.0069), and its decode is 0.6% slower. `--train-gpu` runs the whole training step on the device, 2.67x faster a step than 1.20.0 on an RTX 5070 host. A training record says how its run can be replayed, and `runner attest` checks it: a replay, an unlearning, a lineage, a segment or a sample of steps. Concurrent requests on a Qwen3.5-family model share one decode step on CUDA, 3.00x the total at 8 streams with every request's bytes unchanged. A Windows build takes the portable math by default, so one `runner.exe` gives the same reply on every Windows host, and the rope position table is computed the same way in every build. Output bytes change once for many users: every Windows reply, a model with rotary positions on any build that is not strict, and that Gemma 4 file on CUDA; the pinned replies that moved are recorded again. The new route and the shared decode step were each measured on one CUDA device class, the training claim of one adapter on every build is for the measured model (Qwen3-4B) and does not hold on Phi-3.5 mini, and no speed claim is made for the release as a whole.
 
-> **Version `1.20.0`.** The command line, the HTTP API, the record formats and
+> **Version `1.21.0`.** The command line, the HTTP API, the record formats and
 > the model files that load stay compatible across 1.x
 > ([versioning policy](docs/versioning.md)). This page is the short version;
 > every flag, endpoint, limit and measurement is in the [manual](MANUAL.md).
@@ -511,7 +511,7 @@ passing evaluation made for those exact bytes.
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 1.20.0
+./runner --version   # -> runner 1.21.0
 ```
 
 Linux, macOS and Windows. NVIDIA GPUs need a driver with CUDA 13.0 support
