@@ -5,6 +5,7 @@
 // The weights come from the test-side provider (tests/inkling2_provider.c) on the publisher's checkpoint, behind the
 // decoded-expert cache (tests/inkling2_ecache.c) when INK2_ECACHE_BYTES is set. The forward runs as chunks of
 // INK2_READ_CHUNK positions (default 500) over one cache (ink2_forward_chunk, p0 = 0, chunk, 2 x chunk, ...).
+// INK2_READ_PREFILL=P: one chunk of P positions, then ONE position per call (the decode route), each step timed.
 // INK2_THREADS sets the engine's threads (the outputs do not depend on it: threads split outputs, not sums).
 // INK2P_TENSOR_BYTES and INK2P_EXPERT_BYTES (suffixes K, M, G as powers of 1024) size the provider's caches.
 // OUT.logits.f32: raw little-endian float32 [N][vocab_used], row-major; OUT.json: the run's numbers.
@@ -162,14 +163,24 @@ int main(int argc, char **argv) {
     if (!rows || !fo) { fprintf(stderr, "cannot allocate or open %s\n", path); return 1; }
     long long nonfinite = 0;
     double t1 = now_s();
-    for (int p0 = 0; p0 < N; p0 += chunk) {
-        const int T = p0 + chunk <= N ? chunk : N - p0;
+    const int prefill = getenv("INK2_READ_PREFILL") ? atoi(getenv("INK2_READ_PREFILL")) : 0;
+    double step_sum = 0, step_max = 0;
+    int steps = 0;
+    for (int p0 = 0; p0 < N;) {
+        int T = p0 + chunk <= N ? chunk : N - p0;
+        if (prefill > 0) T = p0 == 0 ? (prefill < N ? prefill : N) : 1;
+        const double ts = now_s();
         ink2_status st = ink2_forward_chunk(&s, &w, &c, p0, T, ids + p0, rows, 0, NULL);
         if (st != INK2_OK) { fprintf(stderr, "forward at %d: status %d\n", p0, (int)st); return 1; }
         for (size_t i = 0; i < V * (size_t)T; i++) nonfinite += !isfinite(rows[i]);
         if (fwrite(rows, sizeof(float), V * (size_t)T, fo) != V * (size_t)T) { fprintf(stderr, "write failed\n"); return 1; }
-        fprintf(stderr, "chunk %d..%d done, %.1f s\n", p0, p0 + T - 1, now_s() - t1);
+        const double dt = now_s() - ts;
+        if (prefill > 0 && p0 > 0) { step_sum += dt; if (dt > step_max) step_max = dt; steps++; }
+        fprintf(stderr, "chunk %d..%d done, %.3f s (total %.1f s)\n", p0, p0 + T - 1, dt, now_s() - t1);
+        p0 += T;
     }
+    if (steps) fprintf(stderr, "decode: %d single-position steps, mean %.3f s, max %.3f s (%.2f tokens/s)\n", steps,
+                       step_sum / steps, step_max, steps / step_sum);
     fclose(fo);
     const double t_fwd = now_s() - t1;
     struct rusage ru;

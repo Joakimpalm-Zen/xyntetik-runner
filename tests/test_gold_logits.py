@@ -597,3 +597,98 @@ def test_the_summary_counts_positions_dropped_for_their_prefix():
     src = (ROOT / "scripts" / "gold-logits.py").read_text(encoding="utf-8")
     assert '"positions_skipped_prefix": skipped_prefix' in src
     assert 'print(f"pos {pos:4d} skipped: {why}", file=sys.stderr)' in src
+
+
+def _tiny_with_tokenizer(tmp_path, torch, transformers):
+    """A random tiny LFM2 saved in float32 with a word-level tokenizer beside it, so
+    the script's own main can load it as the reference (--hf)."""
+    tokenizers = __import__("pytest").importorskip("tokenizers")
+    words = [f"w{i}" for i in range(90)]
+    vocab = {"<unk>": 0, **{w: i + 1 for i, w in enumerate(words)}}
+    tk = tokenizers.Tokenizer(tokenizers.models.WordLevel(vocab, unk_token="<unk>"))
+    tk.pre_tokenizer = tokenizers.pre_tokenizers.WhitespaceSplit()
+    tk.decoder = tokenizers.decoders.WordPiece(prefix="##")
+    fast = transformers.PreTrainedTokenizerFast(tokenizer_object=tk, unk_token="<unk>")
+    _, model = _tiny_lfm2(torch, transformers, moe=False)
+    ckpt = tmp_path / "ref"
+    model.save_pretrained(ckpt)
+    fast.save_pretrained(ckpt)
+    corpus = tmp_path / "corpus.txt"
+    g = torch.Generator().manual_seed(2)
+    corpus.write_text(" ".join(words[int(i)] for i in torch.randint(0, 90, (60,), generator=g)), encoding="utf-8")
+    return ckpt, corpus, fast
+
+
+def _run_main(argv, monkeypatch, capsys):
+    monkeypatch.setattr(gold.sys, "argv", ["gold-logits.py"] + [str(a) for a in argv])
+    gold.main()
+    capsys.readouterr()
+
+
+def test_precomputed_gold_rows_and_rows_sides_score_as_the_in_process_reference(tmp_path, monkeypatch, capsys):
+    """--gold-rows/--gold-ids (the reference's rows computed elsewhere) and --rows-a/--rows-b
+    (a side as full rows) go through the same metric code as the in-process reference and a
+    score file: on a tiny model the two runs' records are byte-identical apart from the fields
+    that name the gold's source, and a control (one scored gold row perturbed) changes them."""
+    pytest = __import__("pytest")
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    ckpt, corpus, tok = _tiny_with_tokenizer(tmp_path, torch, transformers)
+    model = transformers.Lfm2ForCausalLM.from_pretrained(ckpt, dtype=torch.float32).eval()
+    ids = tok(corpus.read_text(encoding="utf-8"), add_special_tokens=False)["input_ids"]
+    npos, stride, minp = 20, 2, 8
+    span = ids[: minp + npos * stride + 1]
+    scored = [minp + n * stride - 1 for n in range(npos)]
+    torch.set_num_threads(1)   # the threads the runs below use (--threads 1): the same matmul bits
+    with torch.no_grad():
+        full = model(torch.tensor([span])).logits[0].float()
+        kept = model(torch.tensor([span]), logits_to_keep=torch.tensor(sorted(scored))).logits[0].float()
+    gold_rows = full.clone()
+    gold_rows[sorted(scored)] = kept           # the scored rows exactly as the in-process path computes them
+    torch.manual_seed(3)
+    side = full + 0.05 * torch.randn_like(full)   # a side that is not the reference
+    paths = {}
+    for name, t in (("gold", gold_rows), ("side", side)):
+        paths[name] = tmp_path / f"{name}.f32"
+        t.numpy().astype("<f4").tofile(paths[name])
+    ids_file = tmp_path / "ids.txt"
+    ids_file.write_text(" ".join(map(str, span)), encoding="utf-8")
+    score = tmp_path / "score.json"
+    heads = []
+    for r in range(len(span)):   # one row at a time, as a server reports each position
+        top = torch.topk(torch.log_softmax(side[r].clone(), dim=-1), 20)
+        heads.append([[int(i), float(v)] for v, i in zip(top.values, top.indices)])
+    score.write_text(json.dumps({"tokens": span, "n_vocab": side.shape[1], "top": heads}), encoding="utf-8")
+    common = ["--hf", ckpt, "--corpus", corpus, "--max-positions", npos, "--stride", stride,
+              "--min-prefix", minp, "--top-n", 20, "--threads", 1]
+    out_a, out_b, out_c = (tmp_path / f"{k}.json" for k in "abc")
+    _run_main(common + ["--score-a", score, "--rows-b", paths["side"], "--gold-ids", ids_file, "--out", out_a],
+              monkeypatch, capsys)
+    _run_main(common + ["--gold-rows", paths["gold"], "--gold-ids", ids_file, "--rows-a", paths["side"],
+                        "--rows-b", paths["side"], "--out", out_b], monkeypatch, capsys)
+    a, b = json.loads(out_a.read_text()), json.loads(out_b.read_text())
+    source = ("reference_class", "reference_logits", "hf")
+    for d in (a, b):
+        for k in source:
+            d["summary"].pop(k, None)
+        for sd in d["summary"]["sides"].values():
+            sd.pop("endpoint", None); sd.pop("model", None); sd.pop("engine", None)
+    diffs = [(k, r, a["rows"][r][k], b["rows"][r][k]) for r in range(len(a["rows"])) for k in a["rows"][r]
+             if a["rows"][r][k] != b["rows"][r][k]]
+    assert not diffs, [(k, r, x["kld"], y["kld"]) for k, r, x, y in diffs][:8]
+    assert json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True), [
+        (k, a["summary"].get(k), b["summary"].get(k)) for k in a["summary"] if a["summary"].get(k) != b["summary"].get(k)]
+    assert a["summary"]["positions"] == npos and a["summary"]["sides"]["a"]["mean_kld_vs_gold"] > 0
+    # the control: one scored gold row moved, the record must move with it
+    bad = gold_rows.clone()
+    bad[scored[3]] = bad[scored[3]].flip(0)
+    bad.numpy().astype("<f4").tofile(paths["gold"])
+    _run_main(common + ["--gold-rows", paths["gold"], "--gold-ids", ids_file, "--rows-a", paths["side"],
+                        "--out", out_c], monkeypatch, capsys)
+    c = json.loads(out_c.read_text())
+    assert c["rows"][3]["a"]["kld"] != b["rows"][3]["a"]["kld"]
+    # ids that are not the corpus's are refused
+    ids_file.write_text(" ".join(map(str, [span[0] + 1] + span[1:])), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        _run_main(common + ["--gold-rows", paths["gold"], "--gold-ids", ids_file, "--rows-a", paths["side"],
+                            "--out", out_c], monkeypatch, capsys)
