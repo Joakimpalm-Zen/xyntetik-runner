@@ -920,6 +920,25 @@
     "metal": "NOT RUN"
    },
    "note": "R4.4.5: template conformance 16 of 16 token-identical against the publisher's jinja (make template-conformance, family deepseek2), rerun on main 0676f26 for step (d); the gates in this row have not run"
+  },
+  "inkling2": {
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "native TP_INKLING2 protocol, closure, and reasoning transitions pass on fixtures (test_tools, tests/test_inkling2_protocol.py); no live weights gate has run"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "publisher sampling anchor and live weight fidelity gates are pending weights"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   },
+   "note": "R4.48.13: tokenizer 721/721 and 197,979 whole-UTF-8 vocab differential pass, 37/37 template conformance token-identical, native TP_INKLING2 protocol/closure/budget/loop-guard/turn-header-stop pass on fixtures"
   }
  },
  "architectures": {

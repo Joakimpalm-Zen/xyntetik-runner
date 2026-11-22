@@ -278,6 +278,12 @@ static void append_top_map(sbuf *r, slot_t *s, engine *e, const lp_alt *row, int
 // 2026-09-22). When the turn ended on a token, its id and spelling ride
 // beside finish_reason on the OpenAI surfaces, buffered and on the final
 // chunk; a stop-string, budget or constraint end carries neither.
+static const char *inkling_ended_turn_header(const slot_t *s, const engine *e, bool chat) {
+    if (!chat || s->tmpl != TMPL_INKLING2 || !e->hit_stop || e->stop_id < 0) return NULL;
+    const char *sp = tok_raw(s->tok, e->stop_id);
+    return template_is_inkling_turn_header(sp) ? sp : NULL;
+}
+
 static void append_stop_token(sbuf *r, slot_t *s, engine *e) {
     if (!e->hit_stop || e->stop_id < 0) return;
     const char *sp = tok_raw(s->tok, e->stop_id);
@@ -976,6 +982,7 @@ typedef struct {
     bool        par_default; // parallel_tool_calls when the request is silent
     // R4.12.19: a JSON array, or NULL when no emitted call repeats one
     const char *repeated_calls;
+    const char *turn_header;
 } resp_doc;
 
 // What one request was served with, reported in runner_telemetry so a client
@@ -1403,6 +1410,11 @@ static void telemetry_json(sbuf *r, const resp_doc *d) {
     if (d->fault && *d->fault) {
         sb_lit(r, ",\"fault\":\"");
         sb_esc(r, d->fault, strlen(d->fault));
+        sb_lit(r, "\"");
+    }
+    if (d->turn_header && *d->turn_header) {
+        sb_lit(r, ",\"ended_at\":\"turn_header\",\"turn_header\":\"");
+        sb_esc(r, d->turn_header, strlen(d->turn_header));
         sb_lit(r, "\"");
     }
     // Reasoning budget: present only when one was in force. `forced` says the
@@ -2259,16 +2271,18 @@ static int envelope_map_buffered(const tool_envelope *env, gen_ctx *g, sbuf *tc,
         // would have. A fault (an invalid block, a call left open) does not
         // void the turn: the valid calls and the prose are the model's real
         // output and are kept; the finish reason names the fault.
+        bool keep_reason = env->proto == TP_INKLING2 || env->proto == TP_INKLING_PLAIN;
         int n_calls = 0;
         int rc = tool_stream_map_channels_ex(env, doc, doc_n, truncated,
-                                             &mapped_reason, &mapped, tc,
+                                             keep_reason ? &mapped_reason : NULL,
+                                             &mapped, tc,
                                              &n_calls, &g->tool_implicit);
         free(turn.s);
-        if (mapped_reason.failed || mapped.failed || tc->failed) {
+        if ((keep_reason && mapped_reason.failed) || mapped.failed || tc->failed) {
             free(mapped_reason.s); free(mapped.s); return -1;
         }
         *fault = rc < 0;
-        if (mapped_reason.n) { free(g->reason.s); g->reason = mapped_reason; }
+        if (keep_reason && mapped_reason.n) { free(g->reason.s); g->reason = mapped_reason; }
         else free(mapped_reason.s);
         free(g->out.s);
         g->out = mapped;
@@ -3001,6 +3015,12 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
     // request's deadline, the drain) ends at a token the model did not
     // choose; --verify replays the recorded tokens and no further
     if (cut) sb_fmt(&sj, ",\"cut\":\"%s\"", cut);
+    const char *hdr = inkling_ended_turn_header(s, e, chat);
+    if (hdr) {
+        sb_lit(&sj, ",\"ended_at\":\"turn_header\",\"turn_header\":\"");
+        sb_esc(&sj, hdr, strlen(hdr));
+        sb_lit(&sj, "\"");
+    }
     // R1.12.2: the KV snapshot this request's prompt started from
     char origin[256];
     if (ctx_id && (kvsnap_auto_origin(e, ctx_id, origin, sizeof origin) ||
@@ -3127,7 +3147,7 @@ typedef struct {
     const char *ctx_id;
     const char *stops[4];
     int n_stops;
-    int req_stops[8];
+    int req_stops[16];
     int n_req_stops;
     bool constrain;                   // tools under a grammar
     jv *sch;                          // the request's own schema, when no envelope constrains
@@ -3783,7 +3803,7 @@ static bool creq_stops(const creq_ctx *c, completion_req *q, creq_err *err) {
     // exactly stops on the token (control tokens decode to no bytes, so the text
     // matcher never sees them); `stop_token_ids` (the vLLM spelling) names ids
     // directly, up to eight, each within the vocabulary.
-    int req_stops[8];
+    int req_stops[16];
     int n_req_stops = 0;
     for (int i = 0; i < n_stops; i++) {
         int id = tok_find(s->tok, stops[i]);
@@ -4040,6 +4060,16 @@ static bool completion_read(slot_t *s, sock_t fd, int api, jv *req,
             if (err.status) creq_send(fd, &err);
             return false;
         }
+    if (chat && s->tmpl == TMPL_INKLING2 && !q->constrain && !q->schema && !q->json_mode) {
+        int hdr_stops[4];
+        int nh = template_inkling_turn_header_stops(s->tok, hdr_stops, 4);
+        for (int i = 0; i < nh && q->n_req_stops < 16; i++) {
+            bool dup = false;
+            for (int j = 0; j < q->n_req_stops; j++)
+                if (q->req_stops[j] == hdr_stops[i]) { dup = true; break; }
+            if (!dup) q->req_stops[q->n_req_stops++] = hdr_stops[i];
+        }
+    }
     return true;
 }
 
@@ -4130,7 +4160,7 @@ static void completion_apply(slot_t *s, const completion_req *q, const char *pro
     } else if (chat && s->tmpl == TMPL_INKLING2 && !e->schema && !e->json_mode) {
         e->n_spell = template_inkling_spell_ids(
             e->tok, e->spell_ids,
-            (int)(sizeof e->spell_ids / sizeof *e->spell_ids));
+            (int)(sizeof e->spell_ids / sizeof *e->spell_ids), env != NULL);
     }
     e->constraint_includes_prelude = q->constrain && env &&
                                      (env->proto == TP_HARMONY ||
@@ -4685,7 +4715,8 @@ static void respond_stream_responses(const turn_result *t) {
                        .json_mode = e->json_mode, .spec = spec_used,
                        SPEC_DOC_FIELDS(e), .diag = &prep->diag,
                        .req = req,
-                       .repeated_calls = g->repeat_json };
+                       .repeated_calls = g->repeat_json,
+                       .turn_header = inkling_ended_turn_header(s, e, t->chat) };
         sbuf f = {0};
         sb_lit(&f, ",\"response\":");
         size_t body_at = f.n;
@@ -4809,6 +4840,12 @@ static void respond_stream_openai(const turn_result *t) {
             sb_esc(&c, e->constraint_fault, strlen(e->constraint_fault));
             sb_lit(&c, "\"");
         }
+        const char *hdr = inkling_ended_turn_header(s, e, chat);
+        if (hdr) {
+            sb_lit(&c, ",\"ended_at\":\"turn_header\",\"turn_header\":\"");
+            sb_esc(&c, hdr, strlen(hdr));
+            sb_lit(&c, "\"");
+        }
         if (g->repeat_json)
             sb_fmt(&c, ",\"repeated_tool_calls\":%s", g->repeat_json);
         diag_json(&c, &prep->diag);
@@ -4892,7 +4929,8 @@ static void respond_buffered_messages(const turn_result *t, sbuf *tc, int n_tc) 
                    .json_mode = e->json_mode, .spec = spec_used,
                    SPEC_DOC_FIELDS(e), .diag = &prep->diag,
                    .req = req,
-                   .repeated_calls = g->repeat_json };
+                   .repeated_calls = g->repeat_json,
+                   .turn_header = inkling_ended_turn_header(s, e, t->chat) };
     sbuf r = {0};
     anth_body(&r, g, &d);
     send_built(fd, &r);
@@ -4945,7 +4983,8 @@ static void respond_buffered_responses(const turn_result *t, sbuf *tc, int n_tc)
                    .json_mode = e->json_mode, .spec = spec_used,
                    SPEC_DOC_FIELDS(e), .diag = &prep->diag,
                    .req = req,
-                   .repeated_calls = g->repeat_json };
+                   .repeated_calls = g->repeat_json,
+                   .turn_header = inkling_ended_turn_header(s, e, t->chat) };
     sbuf r = {0};
     responses_body(&r, g, &d);
     if (!r.failed) responses_store_keep(req, g->id, r.s, r.n);
@@ -5091,7 +5130,8 @@ static void respond_buffered_openai(const turn_result *t, sbuf *tc, int n_tc) {
                     .fault = e->constraint_fault,
                     .json_mode = e->json_mode, .spec = spec_used,
                     SPEC_DOC_FIELDS(e), .diag = &prep->diag,
-                    .repeated_calls = g->repeat_json };
+                    .repeated_calls = g->repeat_json,
+                    .turn_header = inkling_ended_turn_header(s, e, chat) };
     telemetry_json(&r, &td);
     sb_lit(&r, "}");
     send_built(fd, &r);
@@ -5124,7 +5164,7 @@ static void request_id(char *out, size_t cap, const char *prefix) {
 // reads this one. File-scope: the stream keeps the pointer for the turn.
 static const tool_envelope MUSE_PLAIN_ENV = {.proto = TP_MUSE_PLAIN};
 static const tool_envelope INKLING_PLAIN_ENV = {
-    .proto = TP_INKLING2,
+    .proto = TP_INKLING_PLAIN,
     .parse_only = true,
 };
 
@@ -5326,7 +5366,8 @@ static bool turn_open(turn_result *t) {
     bool demux_channels = stream_env &&
                           (stream_env->proto == TP_HARMONY ||
                            stream_env->proto == TP_GEMMA4 ||
-                           stream_env->proto == TP_INKLING2);
+                           stream_env->proto == TP_INKLING2 ||
+                           stream_env->proto == TP_INKLING_PLAIN);
     t->primed = t->reasoning_open && !demux_channels;
     // ...and that demultiplexer, streamed and buffered, reads the turn from
     // the opener the prompt wrote, as the model does: a Gemma 4 or Inkling
@@ -5669,11 +5710,14 @@ static void turn_respond(turn_result *t) {
     else {
         sbuf tc = {0};
         int n_tc = 0;
-        if (env) {
+        const tool_envelope *buf_env = env ? env
+            : (chat && s->tmpl == TMPL_INKLING2 && !q->schema && !q->json_mode)
+            ? &INKLING_PLAIN_ENV : NULL;
+        if (buf_env) {
             bool fault = false;
-            n_tc = envelope_map_buffered(env, g, &tc, t->turn_cut,
+            n_tc = envelope_map_buffered(buf_env, g, &tc, t->turn_cut,
                                          t->demux_opener, &fault);
-            if (n_tc >= 1 && !strcmp(t->finish, "stop")) t->finish = "tool_calls";
+            if (env && n_tc >= 1 && !strcmp(t->finish, "stop")) t->finish = "tool_calls";
             // The document was dropped, so the turn has no answer to report.
             // Saying "stop" over the resulting empty content would claim the
             // model chose to say nothing; the streamed path names the same
@@ -5682,12 +5726,6 @@ static void turn_respond(turn_result *t) {
             // a parse-only fault keeps what was valid and says what went wrong
             if (fault) t->finish = "envelope_error";
             if (g->tool_implicit && !t->cut_detail) t->cut_detail = "tool_call_implicit_close";
-        } else if (chat && s->tmpl == TMPL_INKLING2 && !q->schema && !q->json_mode) {
-            bool fault = false;
-            n_tc = envelope_map_buffered(&INKLING_PLAIN_ENV, g, &tc, t->turn_cut,
-                                         t->demux_opener, &fault);
-            if (n_tc >= 1 && !strcmp(t->finish, "stop")) t->finish = "tool_calls";
-            if (n_tc < 0) n_tc = 0;
         } else if (chat) {
             if (s->tmpl == TMPL_MUSE && q->schema)
                 muse_user_payload_strip(&g->out);

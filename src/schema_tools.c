@@ -2670,6 +2670,7 @@ static snode *inkling_text_branch(jv *tools, const char *only_tool, jv *final_sc
     }
     snode *seq = atem_seq(2);
     snode *prose = seq ? atem_raw("<|end_message|>") : NULL;
+    if (prose) prose->raw_control_sentinel = true;
     snode *tail = prose ? atem_raw_bounded("<|content_model_end_sampling|>", NATIVE_GAP_BYTES) : NULL;
     snode *calls = tail ? inkling_calls(tools, only_tool, false, max_calls, err, errcap) : NULL;
     if (!seq || !prose || !tail || !calls ||
@@ -2753,11 +2754,14 @@ static snode *inkling_turn(jv *tools, bool allow_final, const char *only_tool,
     }
     if (allow_reasoning) {
         after_t = inkling_turn(tools, allow_final, only_tool, final_schema, false, max_calls, err, errcap);
-        think_b = after_t ? atem_seq(2) : NULL;
+        snode *raw_think = after_t ? atem_raw("<|end_message|>") : NULL;
+        if (raw_think) raw_think->raw_control_sentinel = true;
+        think_b = raw_think ? atem_seq(2) : NULL;
         disc->lits[disc->n_lits] = strdup("<|content_thinking|>");
-        if (!after_t || !think_b || !disc->lits[disc->n_lits] ||
-            !atem_seq_add(think_b, atem_raw("<|end_message|>")) ||
+        if (!after_t || !raw_think || !think_b || !disc->lits[disc->n_lits] ||
+            !atem_seq_add(think_b, raw_think) ||
             !atem_seq_add(think_b, after_t)) {
+            if (!think_b || think_b->n_props < 1) schema_free(raw_think);
             if (!think_b || think_b->n_props < 2) schema_free(after_t);
             schema_free(think_b);
             goto ctrl_fail;
@@ -2832,6 +2836,7 @@ snode *schema_compile_inkling2_turn(struct jv *tools, bool allow_final,
     snode *n = schema_compile_inkling2_turn_raw(r.tools, allow_final, only_tool, r.final,
                                                 allow_reasoning, parallel, err, errcap);
     refd_free(&r);
+    if (n) n->has_control_sentinel = true;
     return n;
 }
 

@@ -2219,15 +2219,19 @@ static bool constraint_spelling_ok(engine *e, int id, bool schema) {
     int splen = (int)strlen(sp);
     if (sval_in_free_content(&e->sv) &&
         !sval_raw_marker_opens(&e->sv, sp, splen)) return false;
-    // Also reject a control token absorbed as raw free text when entering
-    // SN_RAW across a lazy SN_SEQ/SN_COND boundary before SN_RAW is pushed.
-    sval t = e->sv;
-    t.trial = true;
-    if (!sval_feed(&t, sp, splen)) return false;
-    if (!t.done && t.depth > 0 && sval_in_free_content(&t)) {
-        const sframe *tf = &t.stack[t.depth - 1];
-        if (!tf->node || tf->node->kind != SN_RAW || (tf->sub == 0 && tf->lit_pos == 0))
-            return false;
+    if (!constraint_payload_trial(e, true, sp, splen)) return false;
+    // Inkling frames terminate raw blocks with a single control token:
+    // reject a non-sentinel control token absorbed as raw/string content
+    // across a lazy SN_SEQ/SN_COND boundary before SN_RAW is pushed.
+    if (e->schema && ((const snode *)e->schema)->has_control_sentinel) {
+        sval t = e->sv;
+        t.trial = true;
+        if (!sval_feed(&t, sp, splen)) return false;
+        if (!t.done && t.depth > 0 && sval_in_free_content(&t)) {
+            const sframe *tf = &t.stack[t.depth - 1];
+            if (!tf->node || tf->node->kind != SN_RAW || (tf->sub == 0 && tf->lit_pos == 0))
+                return false;
+        }
     }
     return true;
 }

@@ -30,6 +30,16 @@
         "gemma4"
       ],
       "file": "gemma4.gguf"
+    },
+    "inkling2": {
+      "make": [
+        "scripts/make-test-model.py",
+        "--control",
+        "<|message_system|>,<|message_user|>,<|message_model|>,<|message_tool|>,<|content_text|>,<|content_model_end_sampling|>,<|content_thinking|>,<|end_message|>,<|content_invoke_tool_json|>",
+        "--eos-token",
+        "<|content_model_end_sampling|>"
+      ],
+      "file": "inkling2.gguf"
     }
   },
   "families": {
@@ -84,6 +94,11 @@
     "hermes4": {
       "fixture": "plain",
       "reasoning": "tags"
+    },
+    "inkling2": {
+      "fixture": "inkling2",
+      "reasoning": "none",
+      "note": "/v1/messages returns 400 until its native Inkling adapter lands; channels/tools run on /v1/chat/completions"
     },
     "llama2": {
       "fixture": "plain",

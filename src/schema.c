@@ -3829,7 +3829,7 @@ bool sval_raw_marker_opens(const sval *v, const char *spelling, int n) {
         }
         if (ok && at > f->sub) return true;
     }
-    if (f->node->sentinel && f->node->sentinel_len > 0) {
+    if (f->node->raw_control_sentinel && f->node->sentinel && f->node->sentinel_len > 0) {
         const char *sent = f->node->sentinel;
         int sl = f->node->sentinel_len;
         int pos = f->lit_pos;

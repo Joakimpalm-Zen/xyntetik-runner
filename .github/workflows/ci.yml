@@ -943,8 +943,10 @@ jobs:
         run: |
           python3 -m venv .anchor-venv
           .anchor-venv/bin/python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
+          # certifi by name: model-signing 1.1.1 imports it without declaring it, and since sigstore
+          # 4.6.0 (2026-11-22) replaced requests with urllib3 nothing else brings it in.
           .anchor-venv/bin/python -m pip install --quiet pytest numpy transformers accelerate safetensors \
-            tokenizers cryptography model-signing pyopenssl
+            tokenizers cryptography model-signing pyopenssl certifi
       - name: anchored tests, no skip allowed
         run: python3 scripts/ci-run.py --timeout 1800 anchors -- make -j2 test-anchors PYTHON=.anchor-venv/bin/python
       - name: CI timing and test reports

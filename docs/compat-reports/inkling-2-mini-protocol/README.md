@@ -132,18 +132,32 @@ fields they receive and do not invent missing structured data.
   `<|content_invoke_tool_text|>` blocks, and parallel call sequences up to
   `<|content_model_end_sampling|>`.
 - `src/schema.c:sval_raw_marker_opens` and `src/engine.c:constraint_spelling_ok`
-  admit single control-token closers (`<|end_message|>`) in `SN_RAW` frames
-  while rejecting arbitrary control tokens before or inside raw content;
+  (`has_control_sentinel`) admit single control-token closers (`<|end_message|>`)
+  in Inkling `SN_RAW` frames while rejecting arbitrary control tokens before or
+  inside Inkling raw content without altering other families;
   `sval_close` closes truncated turns cut at any token or byte boundary to a
   schema-valid turn with parseable arguments (`tests/test_tools.c:test_inkling2_native_protocol`,
-  `tests/test_inkling2_protocol.py`).
+  `tests/test_inkling2_protocol.py`, `tests/test_choice_mass.c`).
 - `src/engine.c:engine_bind_think_tokens` binds `<|content_thinking|>` and
   `<|end_message|>` as single control tokens so `--reasoning-budget`
   (`reasoning_max_tokens`) and `--loop-guard` terminate deliberation cleanly via
   `<|end_message|>` without stopping generation, and
-  `src/completion.c` spells the seven non-stop control tokens on unconstrained
-  chat turns for `INKLING_PLAIN_ENV` demultiplexing. Models lacking a
-  single-token `<|end_message|>` return HTTP 400 on `reasoning_max_tokens`.
+  `src/completion.c` spells the six channel control tokens (`INK_TOOL_JSON` only
+  when tools are declared) on unconstrained chat turns for `INKLING_PLAIN_ENV`
+  (`TP_INKLING_PLAIN`) demultiplexing. Models lacking a single-token
+  `<|end_message|>` return HTTP 400 on `reasoning_max_tokens`.
+- Plain chat without declared tools (`TP_INKLING_PLAIN`) never emits `tool_calls`
+  or `finish_reason="tool_calls"`, and reports frame or call faults with
+  `envelope_error` in both streamed and buffered paths.
+- **Deliberate chat-serving deviation (`--verify` covered)**: publisher EOS-only
+  `tok_stop_ids` is preserved verbatim for tokenizer fidelity and raw
+  `/v1/completions`; unconstrained Inkling `/v1/chat/completions` turns and
+  interactive CLI `-i` chat (`src/main.c:run_chat`) add `<|message_user|>`,
+  `<|message_system|>`, and `<|message_tool|>` as per-request `req_stop_ids` so
+  generation halts at the turn header before decoding another token, reports
+  `ended_at="turn_header"` and `turn_header` (`runner_telemetry`, receipt `serve`,
+  and CLI stderr), and replays `VERIFIED` under `--verify`
+  (`tests/test_inkling2_protocol.py`).
 
 This work completes protocol parsing and reasoning transitions; weights
 download, CUDA/Metal inference fidelity runs, and model admission remain
