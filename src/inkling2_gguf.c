@@ -444,6 +444,7 @@ ink2g *ink2g_attach(void *gguf_file_, ink2_shape *s, char *why, size_t wn) {
     return ink2g_bind(g, s, why, wn);
 }
 static ink2g *ink2g_bind(ink2g *g, ink2_shape *s, char *why, size_t wn) {
+    f16_init();   // the half-float table dequant_row's block scales read (a no-op after the first call)
     if (read_shape(g->fp, &g->s, why, wn) || check_stacks(g, why, wn)) { ink2g_close(g); return NULL; }
     chk_ctx c = { g, why, wn, 0 };
     if (each_ref(&g->s, chk_one, &c) || check_no_extra(g, why, wn)) { ink2g_close(g); return NULL; }

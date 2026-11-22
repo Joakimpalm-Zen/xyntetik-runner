@@ -4514,6 +4514,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_hybrid_admission.py \
     tests/test_idle_coexistence.py \
     tests/test_ignore_eos_request.py \
+    tests/test_inkling2_hardening.py \
     tests/test_iquants.py \
     tests/test_k2_horizon.py \
     tests/test_kld_compare.py \
@@ -4849,7 +4850,7 @@ FUZZ_TIME    ?= 20
 FUZZ_RSS_MB  ?= 2048
 FUZZ_TARGETS = json_parse schema_compile sval_feed sval_trial jsonv_feed \
                gguf_open http_request tokenizer model_load gguf_split \
-               tool_stream record_check session_read train_record
+               tool_stream record_check session_read train_record inkling_open
 # -O1 -g: libFuzzer wants speed but ASan reports want frames.
 # No -march=native and no -ffast-math: the point here is defined behaviour,
 # and UBSan must abort rather than warn or the run cannot gate anything.
@@ -4871,6 +4872,7 @@ FUZZ_SRC_http_request   = src/http.c src/json.c src/compat.c
 FUZZ_SRC_tokenizer      = src/tokenizer.c src/gguf.c src/compat.c src/quants.c
 FUZZ_SRC_model_load     = src/model.c $(INKLING2_SRC) src/gguf.c src/compat.c src/quants.c src/vramreg.c src/gpu_none.c
 FUZZ_SRC_gguf_split     = src/gguf.c src/compat.c src/quants.c
+FUZZ_SRC_inkling_open  = src/inkling2_gguf.c src/inkling2.c src/gguf.c src/compat.c src/quants.c
 FUZZ_SRC_tool_stream    = src/template.c src/gguf.c src/tokenizer.c $(SCHEMA_SRC) src/jsonmode.c \
                           src/json.c src/compat.c src/quants.c
 FUZZ_SRC_record_check   = src/envelope.c src/ed25519.c $(MLDSA_SRC) src/json.c src/compat.c
