@@ -1564,7 +1564,21 @@ static void test_chat_text_spelled_exhausted_refuses(void) {
     ta_tmpl = TMPL_HARMONY;
 }
 
+static void test_inkling_protocol_surface_limits(void) {
+    ta_tmpl = TMPL_INKLING2;
+    ta_run(handle_chat, "{\"messages\":[{\"role\":\"developer\",\"content\":\"x\"}]}");
+    ta_expect_bad_request("Inkling developer", "Unknown message role");
+    ta_run(handle_chat, "{\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"image_url\"}]}]}");
+    ta_expect_bad_request("Inkling text path", "only text is accepted");
+    ta_run(handle_responses, "{\"input\":\"Hello\"}");
+    ta_expect_bad_request("Inkling Responses adapter", "/v1/chat/completions");
+    ta_run(handle_messages, "{\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}");
+    ta_expect_bad_request("Inkling Messages adapter", "/v1/chat/completions");
+    ta_tmpl = TMPL_HARMONY;
+}
+
 int main(void) {
+    test_inkling_protocol_surface_limits();
     test_history_serialization_contract();
     test_declaration_rendering_contract();
     test_padded_content_contract();

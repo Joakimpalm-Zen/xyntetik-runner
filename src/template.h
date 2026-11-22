@@ -321,6 +321,8 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // template, or in the vocabulary when there is no template text (2509's
        // has neither). Appended last.
        TMPL_APERTUS15,
+       // Thinking Machines Inkling 2: message/content channel framing.
+       TMPL_INKLING2,
        // Not a family: how many there are, so a test can walk every one (R2.4.8).
        TMPL_COUNT };
 
@@ -359,6 +361,9 @@ static inline bool think_split_is_control(const char *think_open, const char *sp
                                           bool chat, bool constrained) {
     return chat && !constrained && !think_open && split_open;
 }
+// Unconstrained Inkling 2 Mini turns decode these non-stop control tokens by
+// vocabulary spelling so the demultiplexer can split channels; returns count.
+int template_inkling_spell_ids(tokenizer *tok, int *out, int cap);
 
 // True for EITHER gemma-4 template family. The mainline and the E-series
 // differ at exactly one generation-prompt site (see TMPL_GEMMA4_MAINLINE
@@ -518,6 +523,8 @@ typedef struct {
     // Qwen 3.8 with preserve_thinking false: this turn writes no thought block,
     // where one with no reasoning writes an empty block.
     bool no_thought;
+    // Structured history for templates with one segment per content part.
+    const struct jv *source, *effort;
 } chat_msg;
 int         template_detect(const char *meta_tmpl, tokenizer *tok);
 int         template_from_name(const char *name); // -1 if unknown
@@ -803,6 +810,7 @@ enum tool_proto {
     TP_ARGKV,         // Spark <tool_call>N<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>
     TP_IFM_ARGKV,     // K2-Horizon: the same pairs in <ifm|...> tags, inside <ifm|tool_calls>
     TP_LFM2_RAW,      // LFM2.5-8B: TP_LFM2 with its string values written raw
+    TP_INKLING2,      // Inkling 2: <|message_model|>NAME<|content_invoke_tool_json|>{"name":...,"args":{...}}<|end_message|>
 };
 static inline bool proto_lfm2(int p) {
     return p == TP_LFM2 || p == TP_LFM2_RAW;
@@ -1008,6 +1016,12 @@ int  tool_stream_map(const tool_envelope *e, const char *doc, size_t n,
 int  tool_stream_map_ex(const tool_envelope *e, const char *doc, size_t n,
                         bool truncated, struct sbuf *content, struct sbuf *tc,
                         int *n_calls, bool *implicit_close);
+// tool_stream_map_ex with a reasoning output buffer (NULL drops reasoning).
+int  tool_stream_map_channels_ex(const tool_envelope *e, const char *doc,
+                                 size_t n, bool truncated,
+                                 struct sbuf *reasoning, struct sbuf *content,
+                                 struct sbuf *tc, int *n_calls,
+                                 bool *implicit_close);
 // Parse-only bound on calls per turn (the grammar bounds constrained turns).
 #define TOOL_STREAM_MAX_CALLS 32
 // true once a tool branch was selected, i.e. finish_reason is "tool_calls"

@@ -2406,11 +2406,439 @@ bool schema_gemma4_constrainable(struct jv *tools, char *err, int errcap) {
     return ok;
 }
 
+// --------------------------------------------------------------- Inkling 2
+//
+// Inkling 2 Mini renders assistant turns as message/content blocks:
+//   <|message_model|><|content_thinking|>...<|end_message|>
+//   <|message_model|><|content_text|>...<|end_message|>
+//   <|message_model|>NAME<|content_invoke_tool_json|>{"name":"NAME","args":{...}}<|end_message|>
+// followed by <|content_model_end_sampling|> (EOS). The engine feeds control
+// tokens by their raw spellings (constraint_spelling_ok / sval_raw_marker_opens),
+// so this automaton enforces the trained headers and JSON arguments directly.
+
+static snode *inkling_call_tail(jv *tool, char *err, int errcap) {
+    jv *fn = jv_get(tool, "function");
+    if (!fn) fn = tool;
+    const char *name = jv_str(jv_get(fn, "name"), "tool");
+    jv *params = jv_get(fn, "parameters");
+    if (params && params->type != J_OBJ) {
+        snprintf(err, errcap, "inkling2 tool %s parameters must be an object", name);
+        return NULL;
+    }
+    char *esc = name_json_lit(name);
+    if (!esc) {
+        snprintf(err, errcap, "out of memory compiling inkling2 call");
+        return NULL;
+    }
+    static const char PFX[] = "<|content_invoke_tool_json|>{\"name\":\"";
+    static const char MID[] = "\",\"args\":";
+    size_t plen = sizeof(PFX) - 1 + strlen(esc) + sizeof(MID) - 1;
+    char *hdr = malloc(plen + 1);
+    if (!hdr) {
+        free(esc);
+        snprintf(err, errcap, "out of memory compiling inkling2 call");
+        return NULL;
+    }
+    memcpy(hdr, PFX, sizeof(PFX) - 1);
+    memcpy(hdr + sizeof(PFX) - 1, esc, strlen(esc));
+    memcpy(hdr + sizeof(PFX) - 1 + strlen(esc), MID, sizeof(MID));
+    free(esc);
+
+    snode *seq = atem_seq(3);
+    snode *prefix = seq ? atem_lit(hdr) : NULL;
+    free(hdr);
+    snode *args = prefix ? (params ? compile_node(params, err, errcap, 0) : atem_lit("{}")) : NULL;
+    snode *close = args ? atem_lit("}<|end_message|>") : NULL;
+    if (!seq || !prefix || !args || !close ||
+        !atem_seq_add(seq, prefix) || !atem_seq_add(seq, args) || !atem_seq_add(seq, close)) {
+        if (!seq || seq->n_props < 1) schema_free(prefix);
+        if (!seq || seq->n_props < 2) schema_free(args);
+        if (!seq || seq->n_props < 3) schema_free(close);
+        schema_free(seq);
+        if (!err[0]) snprintf(err, errcap, "out of memory compiling inkling2 call");
+        return NULL;
+    }
+    seq->whitespace_significant = true;
+    return seq;
+}
+
+// Bare tool call body after (optional) <|content_invoke_tool_json|> prefix:
+// `{"name":"<tool>","args":<schema>}<|end_message|>`.
+static snode *inkling_bare_body(jv *tools, const char *only_tool,
+                                const char *prefix, char *err, int errcap) {
+    int selected = 0;
+    for (int i = 0; i < tools->n; i++) {
+        jv *fn = jv_get(tools->items[i], "function");
+        if (!fn) fn = tools->items[i];
+        const char *name = jv_str(jv_get(fn, "name"), NULL);
+        if (!only_tool || (name && !strcmp(name, only_tool))) selected++;
+    }
+    if (!selected) {
+        snprintf(err, errcap, "named inkling2 tool is not declared");
+        return NULL;
+    }
+    snode *root = atem_seq(prefix ? 4 : 3);
+    snode *jnames = root ? sn_new(SN_ENUM) : NULL;
+    snode *jchoice = jnames ? sn_new(SN_COND) : NULL;
+    if (!root || !jnames || !jchoice) goto fail;
+    jnames->lits = calloc((size_t)selected, sizeof(*jnames->lits));
+    jchoice->alts = calloc((size_t)selected, sizeof(*jchoice->alts));
+    if (!jnames->lits || !jchoice->alts) goto fail;
+    jnames->min_items = 1;
+    jnames->whitespace_significant = true;
+    jchoice->whitespace_significant = true;
+    root->whitespace_significant = true;
+    if (prefix && !atem_seq_add(root, atem_lit(prefix))) goto fail;
+    if (!atem_seq_add(root, atem_lit("{\"name\":\""))) goto fail;
+    for (int i = 0; i < tools->n; i++) {
+        jv *fn = jv_get(tools->items[i], "function");
+        if (!fn) fn = tools->items[i];
+        const char *name = jv_str(jv_get(fn, "name"), NULL);
+        if (!name || !name[0]) {
+            snprintf(err, errcap, "inkling2 tool %d has no function name", i);
+            goto fail;
+        }
+        if (only_tool && strcmp(name, only_tool)) continue;
+        jnames->lits[jnames->n_lits] = name_json_lit(name);
+        if (!jnames->lits[jnames->n_lits]) goto fail;
+        jnames->n_lits++;
+        snode *tail = atem_seq(3);
+        jv *params = jv_get(fn, "parameters");
+        snode *args = tail ? (params ? compile_node(params, err, errcap, 0) : atem_lit("{}")) : NULL;
+        snode *close = args ? atem_lit("}<|end_message|>") : NULL;
+        if (!tail || !args || !close ||
+            !atem_seq_add(tail, atem_lit("\",\"args\":")) ||
+            !atem_seq_add(tail, args) || !atem_seq_add(tail, close)) {
+            if (!tail || tail->n_props < 2) schema_free(args);
+            if (!tail || tail->n_props < 3) schema_free(close);
+            schema_free(tail);
+            goto fail;
+        }
+        tail->whitespace_significant = true;
+        jchoice->alts[jchoice->n_alts++] = tail;
+    }
+    if (!enum_index(jnames) || !atem_seq_add(root, jnames)) goto fail;
+    jnames = NULL;
+    if (!atem_seq_add(root, jchoice)) goto fail;
+    jchoice = NULL;
+    return root;
+fail:
+    if (!err[0]) snprintf(err, errcap, "out of memory compiling inkling2 call");
+    schema_free(jchoice); schema_free(jnames); schema_free(root);
+    return NULL;
+}
+
+static snode *inkling_named_call(jv *tools, const char *only_tool,
+                                 char *err, int errcap) {
+    int selected = 0;
+    for (int i = 0; i < tools->n; i++) {
+        jv *fn = jv_get(tools->items[i], "function");
+        if (!fn) fn = tools->items[i];
+        const char *name = jv_str(jv_get(fn, "name"), NULL);
+        if (!only_tool || (name && !strcmp(name, only_tool))) selected++;
+    }
+    if (!selected) {
+        snprintf(err, errcap, "named inkling2 tool is not declared");
+        return NULL;
+    }
+    snode *root = atem_seq(2);
+    snode *names = root ? sn_new(SN_ENUM) : NULL;
+    snode *choice = names ? sn_new(SN_COND) : NULL;
+    if (!root || !names || !choice) goto fail;
+    names->lits = calloc((size_t)selected, sizeof(*names->lits));
+    choice->alts = calloc((size_t)selected, sizeof(*choice->alts));
+    if (!names->lits || !choice->alts) goto fail;
+    names->min_items = 1;
+    names->whitespace_significant = true;
+    choice->whitespace_significant = true;
+    root->whitespace_significant = true;
+    for (int i = 0; i < tools->n; i++) {
+        jv *fn = jv_get(tools->items[i], "function");
+        if (!fn) fn = tools->items[i];
+        const char *name = jv_str(jv_get(fn, "name"), NULL);
+        if (!name || !name[0]) {
+            snprintf(err, errcap, "inkling2 tool %d has no function name", i);
+            goto fail;
+        }
+        if (only_tool && strcmp(name, only_tool)) continue;
+        // Tool name sits bare between <|message_model|> and <|content_invoke_tool_json|>:
+        // '<' opens the channel token and whitespace breaks the recipient header.
+        if (!syntax_carries("inkling2", "tool name", name, "<\n\r\t", err, errcap)) goto fail;
+        names->lits[names->n_lits] = strdup(name);
+        if (!names->lits[names->n_lits]) goto fail;
+        names->n_lits++;
+        choice->alts[choice->n_alts] = inkling_call_tail(tools->items[i], err, errcap);
+        if (!choice->alts[choice->n_alts]) goto fail;
+        choice->n_alts++;
+    }
+    if (!enum_index(names) || !atem_seq_add(root, names)) goto fail;
+    names = NULL;
+    if (!atem_seq_add(root, choice)) goto fail;
+    choice = NULL;
+    return root;
+fail:
+    if (!err[0]) snprintf(err, errcap, "out of memory compiling inkling2 call");
+    schema_free(choice); schema_free(names); schema_free(root);
+    return NULL;
+}
+
+static snode *inkling_call(jv *tools, const char *only_tool, bool lead,
+                           char *err, int errcap) {
+    snode *root = lead ? atem_seq(2) : NULL;
+    snode *u = sn_new(SN_UNION);
+    snode *named = u ? inkling_named_call(tools, only_tool, err, errcap) : NULL;
+    snode *bare = named ? inkling_bare_body(tools, only_tool, "<|content_invoke_tool_json|>", err, errcap) : NULL;
+    if ((lead && !root) || !u || !(u->alts = calloc(2, sizeof(*u->alts))) || !named || !bare) {
+        schema_free(bare); schema_free(named); schema_free(u); schema_free(root);
+        if (!err[0]) snprintf(err, errcap, "out of memory compiling inkling2 call");
+        return NULL;
+    }
+    u->whitespace_significant = true;
+    u->alts[u->n_alts++] = named;
+    u->alts[u->n_alts++] = bare;
+    if (!lead) return u;
+    root->whitespace_significant = true;
+    if (!atem_seq_add(root, atem_lit("<|message_model|>")) || !atem_seq_add(root, u)) {
+        schema_free(u); schema_free(root);
+        return NULL;
+    }
+    return root;
+}
+
+static snode *inkling_more_calls(jv *tools, const char *only, int remaining,
+                                 char *err, int errcap) {
+    snode *raw = atem_raw_bounded("<|content_model_end_sampling|>",
+                                  remaining ? NATIVE_GAP_BYTES : NATIVE_END_BYTES);
+    if (!raw) goto oom;
+    raw->whitespace_significant = true;
+    if (!remaining) return raw;
+    snode *seq = atem_seq(2);
+    snode *call = seq ? inkling_call(tools, only, false, err, errcap) : NULL;
+    snode *tail = call ? inkling_more_calls(tools, only, remaining - 1, err, errcap) : NULL;
+    raw->lits = calloc(1, sizeof(*raw->lits));
+    raw->alts = calloc(1, sizeof(*raw->alts));
+    if (!seq || !call || !tail || !raw->lits || !raw->alts ||
+        !(raw->lits[0] = strdup("<|message_model|>"))) {
+        schema_free(seq); schema_free(call); schema_free(tail); schema_free(raw);
+        goto oom;
+    }
+    raw->n_lits = 1;
+    atem_seq_add(seq, call);
+    atem_seq_add(seq, tail);
+    seq->whitespace_significant = true;
+    raw->alts[raw->n_alts++] = seq;
+    return raw;
+oom:
+    if (!err[0]) snprintf(err, errcap, "out of memory compiling parallel inkling2 calls");
+    return NULL;
+}
+
+static snode *inkling_calls(jv *tools, const char *only, bool lead, int max_calls,
+                            char *err, int errcap) {
+    snode *seq = atem_seq(2);
+    snode *call = seq ? inkling_call(tools, only, lead, err, errcap) : NULL;
+    snode *rest = call ? inkling_more_calls(tools, only, max_calls - 1, err, errcap) : NULL;
+    if (!seq || !call || !rest) {
+        schema_free(seq); schema_free(call); schema_free(rest);
+        if (!err[0]) snprintf(err, errcap, "out of memory compiling inkling2 calls");
+        return NULL;
+    }
+    seq->whitespace_significant = true;
+    atem_seq_add(seq, call);
+    atem_seq_add(seq, rest);
+    return seq;
+}
+
+static snode *inkling_text_branch(jv *tools, const char *only_tool, jv *final_schema,
+                                  int max_calls, char *err, int errcap) {
+    if (final_schema) {
+        snode *seq = atem_seq(3);
+        snode *body = seq ? compile_node(final_schema, err, errcap, 0) : NULL;
+        snode *endm = body ? atem_lit("<|end_message|>") : NULL;
+        snode *tail = endm ? atem_raw_bounded("<|content_model_end_sampling|>", NATIVE_END_BYTES) : NULL;
+        if (!seq || !body || !endm || !tail ||
+            !atem_seq_add(seq, body) || !atem_seq_add(seq, endm) || !atem_seq_add(seq, tail)) {
+            if (!seq || seq->n_props < 1) schema_free(body);
+            if (!seq || seq->n_props < 2) schema_free(endm);
+            if (!seq || seq->n_props < 3) schema_free(tail);
+            schema_free(seq);
+            if (!err[0]) snprintf(err, errcap, "out of memory compiling inkling2 answer");
+            return NULL;
+        }
+        seq->whitespace_significant = true;
+        return seq;
+    }
+    snode *seq = atem_seq(2);
+    snode *prose = seq ? atem_raw("<|end_message|>") : NULL;
+    snode *tail = prose ? atem_raw_bounded("<|content_model_end_sampling|>", NATIVE_GAP_BYTES) : NULL;
+    snode *calls = tail ? inkling_calls(tools, only_tool, false, max_calls, err, errcap) : NULL;
+    if (!seq || !prose || !tail || !calls ||
+        !(tail->lits = calloc(1, sizeof(*tail->lits))) ||
+        !(tail->alts = calloc(1, sizeof(*tail->alts))) ||
+        !(tail->lits[0] = strdup("<|message_model|>"))) {
+        schema_free(calls);
+        schema_free(tail);
+        schema_free(prose);
+        schema_free(seq);
+        if (!err[0]) snprintf(err, errcap, "out of memory compiling inkling2 answer");
+        return NULL;
+    }
+    tail->n_lits = 1;
+    tail->alts[tail->n_alts++] = calls;
+    tail->whitespace_significant = true;
+    seq->whitespace_significant = true;
+    atem_seq_add(seq, prose);
+    atem_seq_add(seq, tail);
+    return seq;
+}
+
+static snode *inkling_turn(jv *tools, bool allow_final, const char *only_tool,
+                           jv *final_schema, bool allow_reasoning, int max_calls,
+                           char *err, int errcap) {
+    if (!allow_final && !allow_reasoning)
+        return inkling_calls(tools, only_tool, true, max_calls, err, errcap);
+
+    // Every branch opens with <|message_model|>, then either:
+    //  - a named tool call (<name><|content_invoke_tool_json|>..., non-'<' first byte)
+    //  - a control tag (<|content_invoke_tool_json|>, <|content_text|>,
+    //    or <|content_thinking|>, all starting with '<', discriminated in one enum).
+    snode *root = atem_seq(2);
+    snode *lead = root ? atem_lit("<|message_model|>") : NULL;
+    snode *u = lead ? sn_new(SN_UNION) : NULL;
+    if (u) u->alts = calloc(2, sizeof(*u->alts));
+    snode *named = u && u->alts ? inkling_named_call(tools, only_tool, err, errcap) : NULL;
+    snode *rest = named ? inkling_more_calls(tools, only_tool, max_calls - 1, err, errcap) : NULL;
+    snode *named_calls = rest ? atem_seq(2) : NULL;
+    if (!root || !lead || !u || !u->alts || !named || !rest || !named_calls) {
+        schema_free(rest); schema_free(named); schema_free(named_calls);
+        schema_free(u); schema_free(lead); schema_free(root);
+        if (!err[0]) snprintf(err, errcap, "out of memory compiling inkling2 turn");
+        return NULL;
+    }
+    named_calls->whitespace_significant = true;
+    atem_seq_add(named_calls, named);
+    atem_seq_add(named_calls, rest);
+
+    int n_ctrl = 1 + (allow_final ? 1 : 0) + (allow_reasoning ? 1 : 0);
+    snode *ctrl = atem_seq(2);
+    snode *disc = ctrl ? sn_new(SN_ENUM) : NULL;
+    snode *choice = disc ? sn_new(SN_COND) : NULL;
+    snode *bare_body = choice ? inkling_bare_body(tools, only_tool, NULL, err, errcap) : NULL;
+    snode *bare_rest = bare_body ? inkling_more_calls(tools, only_tool, max_calls - 1, err, errcap) : NULL;
+    snode *bare_seq = bare_rest ? atem_seq(2) : NULL;
+    snode *text_b = NULL, *think_b = NULL, *after_t = NULL;
+    if (!ctrl || !disc || !choice || !bare_body || !bare_rest || !bare_seq ||
+        !(disc->lits = calloc((size_t)n_ctrl, sizeof(*disc->lits))) ||
+        !(choice->alts = calloc((size_t)n_ctrl, sizeof(*choice->alts)))) {
+        schema_free(bare_rest); schema_free(bare_body); schema_free(bare_seq);
+        schema_free(choice); schema_free(disc); schema_free(ctrl);
+        schema_free(named_calls); schema_free(u); schema_free(lead); schema_free(root);
+        if (!err[0]) snprintf(err, errcap, "out of memory compiling inkling2 channels");
+        return NULL;
+    }
+    bare_seq->whitespace_significant = true;
+    atem_seq_add(bare_seq, bare_body);
+    atem_seq_add(bare_seq, bare_rest);
+    disc->lits[disc->n_lits++] = strdup("<|content_invoke_tool_json|>");
+    choice->alts[choice->n_alts++] = bare_seq;
+    if (!disc->lits[0]) goto ctrl_fail;
+
+    if (allow_final) {
+        text_b = inkling_text_branch(tools, only_tool, final_schema, max_calls, err, errcap);
+        disc->lits[disc->n_lits] = strdup("<|content_text|>");
+        if (!text_b || !disc->lits[disc->n_lits]) goto ctrl_fail;
+        disc->n_lits++;
+        choice->alts[choice->n_alts++] = text_b;
+        text_b = NULL;
+    }
+    if (allow_reasoning) {
+        after_t = inkling_turn(tools, allow_final, only_tool, final_schema, false, max_calls, err, errcap);
+        think_b = after_t ? atem_seq(2) : NULL;
+        disc->lits[disc->n_lits] = strdup("<|content_thinking|>");
+        if (!after_t || !think_b || !disc->lits[disc->n_lits] ||
+            !atem_seq_add(think_b, atem_raw("<|end_message|>")) ||
+            !atem_seq_add(think_b, after_t)) {
+            if (!think_b || think_b->n_props < 2) schema_free(after_t);
+            schema_free(think_b);
+            goto ctrl_fail;
+        }
+        after_t = NULL;
+        disc->n_lits++;
+        think_b->whitespace_significant = true;
+        choice->alts[choice->n_alts++] = think_b;
+        think_b = NULL;
+    }
+    disc->min_items = 1;
+    disc->whitespace_significant = true;
+    choice->whitespace_significant = true;
+    ctrl->whitespace_significant = true;
+    if (!enum_index(disc)) goto ctrl_fail;
+    atem_seq_add(ctrl, disc);
+    atem_seq_add(ctrl, choice);
+
+    u->whitespace_significant = true;
+    u->alts[u->n_alts++] = named_calls;
+    u->alts[u->n_alts++] = ctrl;
+    root->whitespace_significant = true;
+    atem_seq_add(root, lead);
+    atem_seq_add(root, u);
+    return root;
+
+ctrl_fail:
+    schema_free(text_b);
+    schema_free(choice); schema_free(disc); schema_free(ctrl);
+    schema_free(named_calls); schema_free(u); schema_free(lead); schema_free(root);
+    if (!err[0]) snprintf(err, errcap, "out of memory compiling inkling2 channels");
+    return NULL;
+}
+
+static snode *schema_compile_inkling2_turn_raw(jv *tools, bool allow_final,
+                                               const char *only_tool, jv *final_schema,
+                                               bool allow_reasoning, bool parallel,
+                                               char *err, int errcap) {
+    err[0] = 0;
+    if (!tools || tools->type != J_ARR || tools->n <= 0 || tools->n > 60) {
+        snprintf(err, errcap, "inkling2 tools must be a non-empty array of at most 60 tools");
+        return NULL;
+    }
+    return inkling_turn(tools, allow_final, only_tool, final_schema, allow_reasoning,
+                        parallel ? NATIVE_PARALLEL_MAX_CALLS : 1, err, errcap);
+}
+
+static bool schema_inkling2_constrainable_raw(jv *tools, char *err, int errcap) {
+    snode *probe = schema_compile_inkling2_turn_raw(tools, true, NULL, NULL, true, false,
+                                                    err, errcap);
+    if (!probe) return false;
+    schema_free(probe);
+    return true;
+}
+
 bool schema_qwen_xml_constrainable(struct jv *tools, const char *only_tool,
                                    bool parallel, char *err, int errcap) {
     refd r;
     if (!refd_init(&r, tools, NULL, err, errcap)) return false;
     bool ok = schema_qwen_xml_constrainable_raw(r.tools, only_tool, parallel, err, errcap);
+    refd_free(&r);
+    return ok;
+}
+
+snode *schema_compile_inkling2_turn(struct jv *tools, bool allow_final,
+                                    const char *only_tool,
+                                    struct jv *final_schema,
+                                    bool allow_reasoning, bool parallel,
+                                    char *err, int errcap) {
+    refd r;
+    if (!refd_init(&r, tools, final_schema, err, errcap)) return NULL;
+    snode *n = schema_compile_inkling2_turn_raw(r.tools, allow_final, only_tool, r.final,
+                                                allow_reasoning, parallel, err, errcap);
+    refd_free(&r);
+    return n;
+}
+
+bool schema_inkling2_constrainable(struct jv *tools, char *err, int errcap) {
+    refd r;
+    if (!refd_init(&r, tools, NULL, err, errcap)) return false;
+    bool ok = schema_inkling2_constrainable_raw(r.tools, err, errcap);
     refd_free(&r);
     return ok;
 }

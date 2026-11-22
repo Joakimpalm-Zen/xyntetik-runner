@@ -756,7 +756,7 @@ $(TEST_ATEM_OOM): $(TEST_ATEM_OOM_SRC) src/template.c src/json.c $(SCHEMA_SRC) $
 # thinking reach, the tool protocol, and capacity at every buffer size.
 TEST_TMPL_FAMILIES_SRC = tests/test_template_families.c $(OBJDIR)/gguf.o $(OBJDIR)/tokenizer.o $(OBJDIR)/template.o \
                 $(SCHEMA_OBJ) $(OBJDIR)/jsonmode.o $(OBJDIR)/json.o $(OBJDIR)/compat.o $(QUANTS_OBJ)
-$(TEST_TEMPLATE_FAMILIES): $(TEST_TMPL_FAMILIES_SRC) $(HDR)
+$(TEST_TEMPLATE_FAMILIES): $(TEST_TMPL_FAMILIES_SRC) tests/inkling_template_cases.h $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_TMPL_FAMILIES_SRC) -o $@ -lm
 
 # schema.c, schema_tools.c and json.c compile into the test: enum/const
@@ -4515,6 +4515,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_idle_coexistence.py \
     tests/test_ignore_eos_request.py \
     tests/test_inkling2_hardening.py \
+    tests/test_inkling2_protocol.py \
     tests/test_iquants.py \
     tests/test_k2_horizon.py \
     tests/test_kld_compare.py \
@@ -4645,6 +4646,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_tc_gate_eligibility.py \
     tests/test_tc_route_label.py \
     tests/test_tc_spark_promotion.py \
+    tests/test_template_conformance_refusal.py \
     tests/test_template_conformance_token_only.py \
     tests/test_template_kwargs.py \
     tests/test_think_replay.py \
