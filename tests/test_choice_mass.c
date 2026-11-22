@@ -146,6 +146,88 @@ int main(int argc, char **argv) {
     }
     engine_gen_end(&e, sink_cb, NULL, NULL);
 
+    // F1: a control piece spelled "\n" is insignificant whitespace before a
+    // JSON object and must be masked identically to decoded whitespace.
+    {
+        const char *osrc = "{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"integer\"}},\"required\":[\"a\"]}";
+        jv *oj = json_parse(osrc, (int)strlen(osrc));
+        snode *oschema = oj ? schema_compile(oj, err, sizeof(err)) : NULL;
+        jv_free(oj);
+        int brace = one_token(&tok, "{");
+        int quote = one_token(&tok, "\"");
+        ck(oschema != NULL && brace >= 0 && quote >= 0, "F1 object schema compiles");
+        if (oschema && brace >= 0 && quote >= 0) {
+            char *orig_s = tok.tokens[bad].s;
+            int orig_n = tok.tokens[bad].n;
+            uint8_t orig_t = tok.ttype[bad];
+            tok.tokens[bad].s = "\n";
+            tok.tokens[bad].n = 1;
+            tok.ttype[bad] = 3; // TT_CONTROL
+
+            e.schema = oschema;
+            e.cl_cap = 0;
+            e.cl_recs = NULL;
+            engine_reset(&e);
+            ck(engine_feed(&e, prompt, 4) != NULL, "F1 prompt feeds");
+            for (int i = 0; i < V; i++) fx[i] = -1e30f;
+            fx[brace] = 0.0f;
+            engine_gen_begin(&e, 2);
+            engine_gen_step(&e, fx, sink_cb, NULL, &next, &pos);
+            for (int i = 0; i < V; i++) fx[i] = -1e30f;
+            fx[bad] = 50.0f;
+            fx[quote] = 0.0f;
+            engine_gen_step(&e, fx, sink_cb, NULL, &next, &pos);
+            int picked = e.hist ? e.hist[e.gen_start + 1] : -1;
+            ck(picked == quote, "control piece spelled \\n is masked inside JSON object");
+            engine_gen_end(&e, sink_cb, NULL, NULL);
+
+            tok.tokens[bad].s = orig_s;
+            tok.tokens[bad].n = orig_n;
+            tok.ttype[bad] = orig_t;
+        }
+        schema_free(oschema);
+    }
+
+    // F1 residue: non-Inkling families must not trigger Inkling's lazy raw/str
+    // absorption refusal in constraint_spelling_ok (Gemma 4 prose raw frame).
+    {
+        const char *gtools_src =
+            "[{\"type\":\"function\",\"function\":{\"name\":\"add\",\"parameters\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"integer\"}},\"required\":[\"a\"]}}}]";
+        jv *gj = json_parse(gtools_src, (int)strlen(gtools_src));
+        snode *g4 = gj ? schema_compile_gemma4_turn(gj, true, NULL, NULL, false, false, false,
+                                                    err, sizeof(err)) : NULL;
+        jv_free(gj);
+        ck(g4 != NULL, "Gemma 4 auto turn schema compiles for F1 residue");
+        if (g4) {
+            char *orig_s = tok.tokens[bad].s;
+            int orig_n = tok.tokens[bad].n;
+            uint8_t orig_t = tok.ttype[bad];
+            tok.tokens[bad].s = "ok";
+            tok.tokens[bad].n = 2;
+            tok.ttype[bad] = 3; // TT_CONTROL
+
+            e.schema = g4;
+            e.cl_cap = 0;
+            e.cl_recs = NULL;
+            engine_reset(&e);
+            ck(engine_feed(&e, prompt, 4) != NULL, "Gemma 4 F1 prompt feeds");
+            for (int i = 0; i < V; i++) fx[i] = -1e30f;
+            fx[bad] = 50.0f;
+            fx[one] = 0.0f;
+            engine_gen_begin(&e, 1);
+            engine_gen_step(&e, fx, sink_cb, NULL, &next, &pos);
+            int picked = e.hist ? e.hist[e.gen_start] : -1;
+            ck(picked == bad,
+               "non-marker control piece at start of Gemma 4 prose raw frame is admitted as at 2fc588b9");
+            engine_gen_end(&e, sink_cb, NULL, NULL);
+
+            tok.tokens[bad].s = orig_s;
+            tok.tokens[bad].n = orig_n;
+            tok.ttype[bad] = orig_t;
+            schema_free(g4);
+        }
+    }
+
     free(fx);
     free(e.hist);
     schema_free(schema);

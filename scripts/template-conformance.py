@@ -188,6 +188,14 @@ class Family:
 
 
 FAMILIES = {
+    "inkling2": Family(
+        "inkling2", ("hf", "thinkingmachines/Inkling-2-Mini"),
+        note="Publisher revision b85c3cfa615fc413cc9af3379f491b963f3b586a",
+        tool_family=True, content_parts=True, reasoning_history=True, hostile_args=True,
+        developer_role=True,
+        cannot={"developer-turn": ("reference", "publisher raises Unknown message role"),
+                "developer-mid-history": ("reference", "publisher raises Unknown message role")},
+        tokenizer=("Inkling-2-Mini-tokenizer.gguf",)),
     "qwen3-coder": Family(
         "qwen3-coder", ("hf", "Qwen/Qwen3-Coder-30B-A3B-Instruct"),
         tool_family=True,
@@ -1073,6 +1081,19 @@ def matrix(family):
             {"role": "assistant", "content": A1},
             {"role": "developer", "content": "From now on, answer in Swedish."},
             {"role": "user", "content": U2}], True, "default"))
+    if family.runner == "inkling2":
+        cases.extend([
+            ("image-user", [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "https://example.invalid/image"}}]}], True, "default"),
+            ("image-tool", [{"role": "tool", "content": [{"type": "image", "image": "fixture"}]}], True, "default"),
+            ("tool-orphan-result", [{"role": "tool", "content": "unattributed"}], True, "default"),
+            ("tool-empty-arguments", [{"role": "assistant", "content": "", "tool_calls": [{"id": "empty", "type": "function", "function": {"name": "get_weather", "arguments": ""}}]}], True, "default"),
+        ])
+        for effort in ("none", "minimal", "low", "medium", "high", "xhigh", "max"):
+            cases.append(("effort-" + effort, [{"role": "user", "content": U1}],
+                          True, "effort:" + effort))
+        for effort in (0, 0.37, 0.99):
+            cases.append(("numeric-effort-" + str(effort), [{"role": "user", "content": U1}],
+                          True, "number:" + str(effort)))
     return [c if len(c) == 5 else (c + (None,)) for c in cases]
 
 
@@ -1105,6 +1126,9 @@ def request_body(family, msgs, thinking, tools):
         # runner reads this off the request (template.c:req_thinking_mode);
         # the reference takes it as a jinja variable named per family.
         req["enable_thinking"] = (thinking == "on")
+    if thinking.startswith(("effort:", "number:")):
+        value = thinking.split(":", 1)[1]
+        req["reasoning_effort"] = float(value) if thinking.startswith("number:") else value
     return req
 
 
@@ -1426,6 +1450,9 @@ def render_reference(env, tmpl_src, meta, msgs, add_gen, thinking,
         kwargs["tools"] = tools
     if thinking_var and thinking != "default":
         kwargs[thinking_var] = (thinking == "on")
+    if thinking.startswith(("effort:", "number:")):
+        value = thinking.split(":", 1)[1]
+        kwargs["reasoning_effort"] = float(value) if thinking.startswith("number:") else value
     return env.from_string(tmpl_src).render(**kwargs)
 
 
@@ -1574,7 +1601,8 @@ class Deviation:
                                   raw.get("corroborating_cite")) if c]
         self.kind = raw.get("kind", "text")
         self.case = raw.get("case")
-        if self.kind == TOKEN_ONLY:
+        self.runner_error = raw.get("runner_error", "")
+        if self.kind in (TOKEN_ONLY, "refusal"):
             if not self.case or "patch" in raw:
                 raise SystemExit("allowlist: %s: a token-only deviation names "
                                  "one `case` and carries no `patch`" % self.id)
@@ -1583,10 +1611,19 @@ class Deviation:
             self.patch_spec = raw["patch"]
         else:
             raise SystemExit("allowlist: %s: unknown kind %r" % (self.id, self.kind))
+        if self.kind == "refusal" and not self.runner_error:
+            raise SystemExit("allowlist: %s: a refusal requires runner_error" % self.id)
         self.used = 0
 
     def key(self):
         return self.id.split("/", 1)[-1]
+
+
+def refusal_matches(dev, oracle, refused, runner_error):
+    """A refusal never substitutes for a missing oracle or an unrelated error."""
+    return (isinstance(oracle, str) and refused is not None and
+            refused[0] == "runner" and bool(runner_error) and
+            bool(dev.runner_error) and dev.runner_error in runner_error)
 
 
 def compile_patch(dev, bos):
@@ -1991,8 +2028,8 @@ def run(args):
                 omsgs = json.loads(json.dumps(omsgs, allow_nan=False))
                 for m in omsgs:
                     for c in m.get("tool_calls") or []:
-                        c["function"]["arguments"] = json.loads(
-                            c["function"]["arguments"])
+                        value = c["function"]["arguments"]
+                        c["function"]["arguments"] = {} if n == "inkling2" and value == "" else json.loads(value)
             mine, mine_err, mine_ids = got[cid]
 
             refused = None
@@ -2018,6 +2055,17 @@ def run(args):
             if refused is None and mine_err:
                 refused = ("runner", mine_err)
 
+            # An intentional API refusal is permitted only for its named case,
+            # a successfully rendered oracle and the exact documented error.
+            refusal = next((d for d in fam_devs if d.kind == "refusal" and d.case == cid), None)
+            if refusal and not args.raw:
+                if not refusal_matches(refusal, want, refused, mine_err):
+                    rot_skips.append("STALE REFUSAL %s: oracle/refusal no longer matches" % refusal.id)
+                else:
+                    refusal.used += 1
+                results.append((n, cid, "intentional-refusal", refusal.why))
+                continue
+
             # ---- a case this family genuinely cannot express
             #
             # A declared skip is re-verified, never assumed: if the side that
@@ -2026,6 +2074,9 @@ def run(args):
             # that has become checkable.
             if declined:
                 want_side, why = declined
+                if n == "inkling2" and want_side == "reference" and not mine_err:
+                    rot_skips.append("%s: runner accepted a publisher-refused role" % cid_full)
+
                 if refused is None:
                     rot_skips.append(
                         "STALE SKIP %s: declared as unexpressible (%s refuses: "
@@ -2257,6 +2308,9 @@ def report(args, results, not_checked, structural, rot, moved, oracle_meta,
                  "%d NEEDS ATTENTION, %d known" % (len(bad), len(kn)))
         if cant:
             state += " (%d n/a)" % len(cant)
+        refused_count = sum(v == "intentional-refusal" for _c, v, _d in per_family[n])
+        if refused_count:
+            state += " (%d intentional refusals)" % refused_count
         tk = ("tok:%s" % os.path.basename(tok_sources[n])
               if n in tok_sources else "tok:NOT-CHECKED")
         print("%-15s %-30s [%s %s] %s"
@@ -2271,6 +2325,9 @@ def report(args, results, not_checked, structural, rot, moved, oracle_meta,
           "%d new, %d changed, %d fixed-but-still-listed, "
           "%d not expressible by the family"
           % (checked, known_total, new_drift, changed, fixed, cannot_total))
+    refused_total = sum(v == "intentional-refusal" for _n, _c, v, _d in results)
+    if refused_total:
+        print("%d intentional API refusals, not counted as comparisons" % refused_total)
 
     tok_same = sum(1 for v in tokens.values() if v[0] == "same")
     tok_diff = sum(1 for v in tokens.values() if v[0] == "differ")

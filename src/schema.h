@@ -80,6 +80,8 @@ struct snode {
     // SN_RAW's terminator. Its own field: this used to borrow the pattern
     // prefix, which tied two unrelated features to one pointer.
     char   *sentinel; int sentinel_len;
+    bool    raw_control_sentinel;   // sentinel is a single control token (Inkling <|end_message|>)
+    bool    has_control_sentinel;   // root schema uses single control-token raw sentinels (Inkling)
 };
 
 struct jv;
@@ -191,6 +193,16 @@ bool schema_gemma4_constrainable(struct jv *tools, char *err, int errcap);
 // enforce (a string with a length or pattern constraint, ...).
 bool schema_qwen_xml_constrainable(struct jv *tools, const char *only_tool,
                                    bool parallel, char *err, int errcap);
+// Compile one native Inkling 2 assistant turn: optional <|message_model|>
+// <|content_thinking|>...<|end_message|> prelude, optional text or schema
+// response, and <|message_model|>NAME<|content_invoke_tool_json|>{"name":NAME,
+// "args":{...}}<|end_message|> calls, terminated by <|content_model_end_sampling|>.
+snode *schema_compile_inkling2_turn(struct jv *tools, bool allow_final,
+                                    const char *only_tool,
+                                    struct jv *final_schema,
+                                    bool allow_reasoning, bool parallel,
+                                    char *err, int errcap);
+bool schema_inkling2_constrainable(struct jv *tools, char *err, int errcap);
 // Local $ref inlining (R2.9.2), which every entry above applies first: `s`
 // itself when it has nothing to resolve (*owned NULL), else a copy with each
 // local, non-recursive $ref replaced by its target and $defs/definitions

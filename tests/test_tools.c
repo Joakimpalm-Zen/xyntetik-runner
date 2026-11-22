@@ -3615,6 +3615,10 @@ static void test_native_truncation_closes_to_a_legal_turn(void) {
                              true, false, false, err, sizeof(err)) },
         { "gemma4_par",  schema_compile_gemma4_parallel(tools, NULL, err,
                              sizeof(err)) },
+        { "inkling2",    schema_compile_inkling2_turn(tools, true, NULL, NULL,
+                             true, false, err, sizeof(err)) },
+        { "inkling2_par",schema_compile_inkling2_turn(tools, false, NULL, NULL,
+                             true, true, err, sizeof(err)) },
     };
     int closed = 0;
     for (size_t g = 0; g < sizeof(G) / sizeof(*G); g++) {
@@ -4978,6 +4982,332 @@ static void test_generic_stream_decodes_the_tool_name(void) {
     jv_free(tools);
 }
 
+static void test_inkling2_native_protocol(void) {
+    jv *tools = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"add\",\"parameters\":"
+        "{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"integer\"},"
+        "\"b\":{\"type\":\"integer\"}},\"required\":[\"a\",\"b\"]}}},"
+        "{\"type\":\"function\",\"function\":{\"name\":\"ping\",\"parameters\":"
+        "{\"type\":\"object\",\"properties\":{}}}}]");
+    char err[256];
+    tool_envelope e;
+    bool skip = false;
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof err) == 1);
+    assert(tool_decl_native(TMPL_INKLING2, true, true, tools, &e, &skip));
+    assert(e.proto == TP_INKLING2 && skip);
+
+    tool_envelope e_par;
+    assert(tool_envelope_build_ex(tools, NULL, NULL, true, &e_par, err, sizeof err) == 1);
+    assert(tool_decl_native(TMPL_INKLING2, true, true, tools, &e_par, &skip));
+    assert(e_par.proto == TP_INKLING2 && skip);
+
+    snode *g_auto = schema_compile_inkling2_turn(tools, true, NULL, NULL, true, false,
+                                                 err, sizeof err);
+    snode *g_req = schema_compile_inkling2_turn(tools, false, NULL, NULL, true, false,
+                                                err, sizeof err);
+    snode *g_named = schema_compile_inkling2_turn(tools, false, "add", NULL, false, false,
+                                                  err, sizeof err);
+    snode *g_par = schema_compile_inkling2_turn(tools, true, NULL, NULL, true, true,
+                                                err, sizeof err);
+    assert(g_auto && g_req && g_named && g_par);
+
+    const char *bare_call =
+        "<|message_model|><|content_invoke_tool_json|>"
+        "{\"name\":\"add\",\"args\":{\"a\":1,\"b\":2}}"
+        "<|end_message|><|content_model_end_sampling|>";
+    const char *named_call =
+        "<|message_model|>add<|content_invoke_tool_json|>"
+        "{\"name\":\"add\",\"args\":{\"a\":3,\"b\":4}}"
+        "<|end_message|><|content_model_end_sampling|>";
+    const char *empty_args_call =
+        "<|message_model|>ping<|content_invoke_tool_json|>"
+        "{\"name\":\"ping\",\"args\":{}}"
+        "<|end_message|><|content_model_end_sampling|>";
+    const char *think_then_call =
+        "<|message_model|><|content_thinking|>planning step<|end_message|>"
+        "<|message_model|>add<|content_invoke_tool_json|>"
+        "{\"name\":\"add\",\"args\":{\"a\":5,\"b\":6}}"
+        "<|end_message|><|content_model_end_sampling|>";
+    const char *think_then_text =
+        "<|message_model|><|content_thinking|>reasoning<|end_message|>"
+        "<|message_model|><|content_text|>The sum is 11.<|end_message|>"
+        "<|content_model_end_sampling|>";
+    const char *parallel_calls =
+        "<|message_model|><|content_invoke_tool_json|>"
+        "{\"name\":\"add\",\"args\":{\"a\":1,\"b\":2}}<|end_message|>"
+        "<|message_model|>ping<|content_invoke_tool_json|>"
+        "{\"name\":\"ping\",\"args\":{}}<|end_message|>"
+        "<|content_model_end_sampling|>";
+
+    assert(accepts(g_auto, bare_call));
+    assert(accepts(g_auto, named_call));
+    assert(accepts(g_auto, empty_args_call));
+    assert(accepts(g_auto, think_then_call));
+    assert(accepts(g_auto, think_then_text));
+    assert(accepts(g_req, bare_call));
+    assert(accepts(g_req, think_then_call));
+    assert(accepts(g_named, named_call));
+    assert(accepts(g_par, parallel_calls));
+
+    one_reader(&e, bare_call, 1);
+    one_reader(&e, named_call, 1);
+    one_reader(&e, empty_args_call, 1);
+    one_reader(&e, think_then_call, 1);
+    one_reader(&e, think_then_text, 0);
+    one_reader(&e_par, parallel_calls, 2);
+
+    // Raw tool_calls_parse_for round-trip and demux boundary equivalence.
+    for (int step = 1; step <= (int)strlen(think_then_call); step++) {
+        demux_log log;
+        demux_step(&e, think_then_call, (size_t)step, &log);
+        assert(log.begins == 1 && log.ends == 1);
+        assert(!strcmp(log.name, "add"));
+        assert(!strcmp(log.reasoning.s, "planning step"));
+        assert(!strcmp(log.args.s, "{\"a\":5,\"b\":6}"));
+        log_free(&log);
+    }
+    sbuf raw_out = {0}, raw_tc = {0};
+    sb_put(&raw_out, parallel_calls, strlen(parallel_calls));
+    assert(tool_calls_parse_for(TMPL_INKLING2, &raw_out, &raw_tc) == 2);
+    free(raw_out.s);
+    free(raw_tc.s);
+
+    // Every byte boundary cut inside the call closes to a schema-valid turn.
+    const char *cuts[] = { think_then_call, parallel_calls };
+    for (size_t c = 0; c < 2; c++) {
+        const char *doc = cuts[c];
+        snode *gr = c == 0 ? g_req : g_par;
+        const tool_envelope *env = c == 0 ? &e : &e_par;
+        size_t len = strlen(doc);
+        for (size_t p = 1; p < len; p++) {
+            sval v;
+            sval_init(&v, gr);
+            assert(sval_feed(&v, doc, (int)p));
+            if (v.done) continue;
+            char tail[2048];
+            int tn = sval_close(&v, tail, sizeof tail);
+            assert(tn > 0);
+            size_t tot = p + (size_t)tn;
+            char *closed = malloc(tot + 1);
+            assert(closed);
+            memcpy(closed, doc, p);
+            memcpy(closed + p, tail, (size_t)tn);
+            closed[tot] = 0;
+            if (!accepts(gr, closed)) {
+                fprintf(stderr, "inkling2 cut %zu/%zu not accepted:\n%s\n", p, len, closed);
+            }
+            assert(accepts(gr, closed));
+            sbuf r = {0}, out = {0}, tc = {0};
+            int ncalls = tool_envelope_map_channels(env, closed, tot, &r, &out, &tc);
+            assert(ncalls >= 1);
+            free(r.s); free(out.s); free(tc.s);
+            free(closed);
+        }
+    }
+
+    // Negative controls: disallowed branch, wrong recipient, malformed JSON, unclosed call.
+    assert(!accepts(g_req, think_then_text));
+    assert(!accepts(g_auto, parallel_calls));
+    assert(!accepts(g_named, empty_args_call));
+    assert(!accepts(g_named, think_then_call)); // g_named has allow_reasoning=false
+    assert(!accepts(g_named,
+        "<|message_model|>ping<|content_invoke_tool_json|>"
+        "{\"name\":\"add\",\"args\":{\"a\":1,\"b\":2}}<|end_message|><|content_model_end_sampling|>"));
+    assert(!accepts(g_auto,
+        "<|message_model|>add<|content_invoke_tool_json|>"
+        "{\"name\":\"ping\",\"args\":{}}<|end_message|><|content_model_end_sampling|>"));
+    one_reader(&e, "<|message_model|>add<|content_invoke_tool_json|>{\"name\":\"ping\",\"args\":{}}<|end_message|>", -1);
+    one_reader(&e, "<|message_model|><|content_invoke_tool_json|>{\"name\":\"add\",\"args\":{", -1);
+    one_reader(&e, "<|message_model|>bad name<|content_invoke_tool_json|>{\"name\":\"add\",\"args\":{\"a\":1,\"b\":2}}<|end_message|>", -1);
+
+    // Constrainability refuses tool names containing syntax delimiters.
+    jv *bad_tools = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"bad<name\",\"parameters\":"
+        "{\"type\":\"object\",\"properties\":{}}}}]");
+    assert(!schema_inkling2_constrainable(bad_tools, err, sizeof err));
+    jv_free(bad_tools);
+
+    schema_free(g_auto);
+    schema_free(g_req);
+    schema_free(g_named);
+    schema_free(g_par);
+    tool_envelope_free(&e);
+    tool_envelope_free(&e_par);
+    jv_free(tools);
+}
+
+static void test_f2_raw_marker_restricted_to_inkling(void) {
+    jv *tools = parse(TOOLS);
+    char err[256];
+
+    // Gemma 4 constrained thought (<channel|>) and native string (<|"|>):
+    // neither terminator sentinel may open for a decoded-empty control token.
+    snode *g4 = schema_compile_gemma4_turn(tools, true, NULL, NULL, true, false, false,
+                                           err, sizeof err);
+    assert(g4);
+    {
+        sval v;
+        sval_init(&v, g4);
+        const char *pre = "<|channel>thought\nhi";
+        assert(sval_feed(&v, pre, (int)strlen(pre)));
+        assert(!sval_raw_marker_opens(&v, "<channel|>", 10));
+        assert(!sval_raw_marker_opens(&v, "<", 1));
+    }
+    {
+        sval v;
+        sval_init(&v, g4);
+        const char *pre = "<|tool_call>call:get_weather{city:<|\"|>Os";
+        assert(sval_feed(&v, pre, (int)strlen(pre)));
+        assert(!sval_raw_marker_opens(&v, "<|\"|>", 5));
+    }
+    schema_free(g4);
+
+    // Inkling constrained thinking (<|end_message|>): DOES open so the single
+    // control token <|end_message|> can close SN_RAW.
+    snode *ink = schema_compile_inkling2_turn(tools, true, NULL, NULL, true, false,
+                                              err, sizeof err);
+    assert(ink);
+    {
+        sval v;
+        sval_init(&v, ink);
+        const char *pre = "<|message_model|><|content_thinking|>hi";
+        assert(sval_feed(&v, pre, (int)strlen(pre)));
+        assert(sval_raw_marker_opens(&v, "<|end_message|>", 15));
+    }
+    schema_free(ink);
+    jv_free(tools);
+}
+
+static void test_inkling2_t3_edge_cases(void) {
+    static const char *T3_TOOLS =
+        "[{\"type\":\"function\",\"function\":{\"name\":\"add\",\"description\":\"Add\",\"parameters\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"integer\"},\"b\":{\"type\":\"integer\"}},\"required\":[\"a\",\"b\"]}}},"
+        "{\"type\":\"function\",\"function\":{\"name\":\"echo\",\"description\":\"Echo\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]";
+    jv *tools = parse(T3_TOOLS);
+
+    // T3a: unknown tool name in parse_only mode sets a fault, drops the unknown
+    // call, and preserves valid calls around it.
+    {
+        tool_envelope po = { .proto = TP_INKLING2, .tools = tools, .parse_only = true, .max_calls = 8 };
+        const char *doc_only_unknown =
+            "<|message_model|>unknown_fn<|content_invoke_tool_json|>"
+            "{\"name\":\"unknown_fn\",\"args\":{\"x\":1}}"
+            "<|end_message|><|content_model_end_sampling|>";
+        sbuf reason = {0}, content = {0}, tc = {0};
+        int nc = -1;
+        assert(tool_stream_map_channels_ex(&po, doc_only_unknown, strlen(doc_only_unknown),
+                                           false, &reason, &content, &tc, &nc, NULL) == -1);
+        assert(tc.n == 0);
+        free(reason.s); free(content.s); free(tc.s);
+
+        const char *doc_mixed =
+            "<|message_model|>unknown_fn<|content_invoke_tool_json|>"
+            "{\"name\":\"unknown_fn\",\"args\":{\"x\":1}}<|end_message|>"
+            "<|message_model|>add<|content_invoke_tool_json|>"
+            "{\"name\":\"add\",\"args\":{\"a\":2,\"b\":3}}<|end_message|>"
+            "<|content_model_end_sampling|>";
+        tool_stream s;
+        demux_log dl = {0};
+        tool_stream_sink sink = { &dl, log_reasoning, log_content, log_begin, log_args, log_end };
+        tool_stream_init(&s, &po, &sink);
+        for (size_t i = 0; i < strlen(doc_mixed); i++)
+            assert(tool_stream_feed(&s, doc_mixed + i, 1) == 0);
+        assert(tool_stream_finish_ex(&s, false) == -1);
+        assert(s.fault);
+        assert(dl.begins == 1 && dl.ends == 1 && !strcmp(dl.name, "add"));
+        assert(dl.args.s && strstr(dl.args.s, "\"a\":2,\"b\":3") != NULL);
+        free(dl.reasoning.s); free(dl.content.s); free(dl.args.s); free(dl.names.s);
+        tool_stream_free(&s);
+    }
+
+    // T3b: a JSON string argument spelling "<|end_message|>" does not prematurely
+    // close the call frame (grammar/sval_close and buffered + 1-byte stream).
+    {
+        char err[256];
+        snode *sch = schema_compile_inkling2_turn(tools, true, NULL, NULL, true, false, err, sizeof err);
+        assert(sch);
+        const char *call_doc =
+            "<|message_model|>echo<|content_invoke_tool_json|>"
+            "{\"name\":\"echo\",\"args\":{\"text\":\"left <|end_message|> right\"}}"
+            "<|end_message|><|content_model_end_sampling|>";
+        sval v;
+        sval_init(&v, sch);
+        assert(sval_feed(&v, call_doc, (int)strlen(call_doc)) && v.done);
+        schema_free(sch);
+
+        tool_envelope env = { .proto = TP_INKLING2, .tools = tools, .parallel = true, .max_calls = 8 };
+        sbuf reason = {0}, content = {0}, tc = {0};
+        int nc = 0;
+        assert(tool_stream_map_channels_ex(&env, call_doc, strlen(call_doc), false, &reason, &content, &tc, &nc, NULL) == 0);
+        assert(nc == 1);
+        assert(tc.s && strstr(tc.s, "left <|end_message|> right") != NULL);
+        free(reason.s); free(content.s); free(tc.s);
+
+        tool_stream s;
+        demux_log dl = {0};
+        tool_stream_sink sink = { &dl, log_reasoning, log_content, log_begin, log_args, log_end };
+        tool_stream_init(&s, &env, &sink);
+        for (size_t i = 0; i < strlen(call_doc); i++)
+            assert(tool_stream_feed(&s, call_doc + i, 1) == 0);
+        assert(tool_stream_finish_ex(&s, false) == 0);
+        assert(dl.begins == 1 && dl.ends == 1 && !strcmp(dl.name, "echo"));
+        assert(dl.args.s && strstr(dl.args.s, "left <|end_message|> right") != NULL);
+        free(dl.reasoning.s); free(dl.content.s); free(dl.args.s); free(dl.names.s);
+        tool_stream_free(&s);
+    }
+
+    // T3c (#5): plain chat text followed directly by spelled <|end_message|>
+    // outside a channel stops before <|end_message|> and never leaks it.
+    {
+        tool_envelope plain = { .proto = TP_INKLING_PLAIN, .parse_only = true, .max_calls = 8 };
+        const char *stray = "hello<|end_message|><|content_model_end_sampling|>";
+        sbuf reason = {0}, content = {0}, tc = {0};
+        int nc = -1;
+        assert(tool_stream_map_channels_ex(&plain, stray, strlen(stray), false,
+                                           &reason, &content, &tc, &nc, NULL) == 0);
+        assert(nc == 0 && content.n == 5 && !memcmp(content.s, "hello", 5));
+        free(reason.s); free(content.s); free(tc.s);
+
+        tool_stream s;
+        demux_log dl = {0};
+        tool_stream_sink sink = { &dl, log_reasoning, log_content, log_begin, log_args, log_end };
+        tool_stream_init(&s, &plain, &sink);
+        for (size_t i = 0; i < strlen(stray); i++)
+            assert(tool_stream_feed(&s, stray + i, 1) == 0);
+        assert(tool_stream_finish_ex(&s, false) == 0);
+        assert(dl.begins == 0 && dl.content.n == 5 && !memcmp(dl.content.s, "hello", 5));
+        free(dl.reasoning.s); free(dl.content.s); free(dl.args.s); free(dl.names.s);
+        tool_stream_free(&s);
+    }
+
+    // F3 C contract: non-Inkling parse_only mappers passing NULL reasoning
+    // (as envelope_map_buffered does via keep_reason) extract 0 reasoning
+    // even when Gemma 4 or Harmony thought channels precede the call.
+    {
+        tool_envelope g4_po = { .proto = TP_GEMMA4, .tools = tools, .parse_only = true, .max_calls = 8 };
+        const char *g4_doc = "<|channel>thought\nplan<channel|><|tool_call>call:add{a:1,b:2}<tool_call|>";
+        sbuf content = {0}, tc = {0}, reason = {0};
+        int nc = 0;
+        assert(tool_stream_map_channels_ex(&g4_po, g4_doc, strlen(g4_doc), false,
+                                           NULL, &content, &tc, &nc, NULL) == 0 && nc == 1);
+        assert(tool_stream_map_channels_ex(&g4_po, g4_doc, strlen(g4_doc), false,
+                                           &reason, &content, &tc, &nc, NULL) == 0 && reason.n > 0);
+        free(content.s); free(tc.s); free(reason.s);
+
+        tool_envelope h_po = { .proto = TP_HARMONY, .tools = tools, .parse_only = true, .max_calls = 8 };
+        const char *h_doc =
+            "<|channel|>analysis<|message|>plan<|end|>"
+            "<|start|>assistant<|channel|>commentary to=functions.add<|constrain|>json<|message|>{\"a\":1,\"b\":2}";
+        content = (sbuf){0}; tc = (sbuf){0}; reason = (sbuf){0}; nc = 0;
+        assert(tool_stream_map_channels_ex(&h_po, h_doc, strlen(h_doc), false,
+                                           NULL, &content, &tc, &nc, NULL) == 0 && nc == 1);
+        assert(tool_stream_map_channels_ex(&h_po, h_doc, strlen(h_doc), false,
+                                           &reason, &content, &tc, &nc, NULL) == 0 && reason.n > 0);
+        free(content.s); free(tc.s); free(reason.s);
+    }
+
+    jv_free(tools);
+}
+
 int main(void) {
     test_whitespace_after_a_native_number_is_protocol();
     test_coder_constrained_turn();
@@ -5085,6 +5415,9 @@ int main(void) {
     test_native_truncation_closes_to_a_legal_turn();
     test_buffered_turn_is_read_by_the_stream_reader();
     test_generic_stream_decodes_the_tool_name();
+    test_inkling2_native_protocol();
+    test_f2_raw_marker_restricted_to_inkling();
+    test_inkling2_t3_edge_cases();
     puts("tool envelope tests ok");
     return 0;
 }

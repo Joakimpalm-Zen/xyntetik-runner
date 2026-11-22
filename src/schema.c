@@ -3817,16 +3817,30 @@ bool sval_raw_marker_opens(const sval *v, const char *spelling, int n) {
     if (v->depth <= 0 || n <= 0) return false;
     const sframe *f = &v->stack[v->depth - 1];
     if (!f->node || f->node->kind != SN_RAW || f->phase != P_RAW) return false;
-    if (!f->node->n_lits || !f->node->n_alts) return false;
-    const char *marker = f->node->lits[0];
-    size_t ml = strlen(marker);
-    int at = f->sub;
-    for (int i = 0; i < n; i++) {
-        if ((size_t)at >= ml) return true;   // the marker completed inside the spelling
-        if ((unsigned char)spelling[i] != (unsigned char)marker[at]) return false;
-        at++;
+    if (f->node->n_lits && f->node->n_alts) {
+        const char *marker = f->node->lits[0];
+        size_t ml = strlen(marker);
+        int at = f->sub;
+        bool ok = true;
+        for (int i = 0; i < n; i++) {
+            if ((size_t)at >= ml) return true;   // the marker completed inside the spelling
+            if ((unsigned char)spelling[i] != (unsigned char)marker[at]) { ok = false; break; }
+            at++;
+        }
+        if (ok && at > f->sub) return true;
     }
-    return at > f->sub;
+    if (f->node->raw_control_sentinel && f->node->sentinel && f->node->sentinel_len > 0) {
+        const char *sent = f->node->sentinel;
+        int sl = f->node->sentinel_len;
+        int pos = f->lit_pos;
+        for (int i = 0; i < n; i++) {
+            if (pos >= sl) return true;
+            if ((unsigned char)spelling[i] != (unsigned char)sent[pos]) return false;
+            pos++;
+        }
+        return pos > f->lit_pos;
+    }
+    return false;
 }
 
 bool sval_ws_is_content(const sval *v) {

@@ -610,6 +610,10 @@ static bool responses_expand_previous(sock_t fd, jv *req) {
 }
 
 void handle_responses(slot_t *s, sock_t fd, jv *req) {
+    if (s->tmpl == TMPL_INKLING2) {
+        send_error(fd, 400, "Inkling structured history is supported on /v1/chat/completions only");
+        return;
+    }
     if (responses_reject_stateful(fd, req)) return;
     if (!responses_expand_previous(fd, req)) return;
     if (!req_thinking_mode_valid(req)) {

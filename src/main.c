@@ -521,6 +521,7 @@ static int train_eot_id(tokenizer *tok, int tmpl) {
     case TMPL_MUSE: s = "<|eot|>"; break;
     case TMPL_PHI3: case TMPL_PHI4: s = "<|end|>"; break;
     case TMPL_HARMONY: s = "<|return|>"; break;
+    case TMPL_INKLING2: s = "<|content_model_end_sampling|>"; break;
     default: break;
     }
     int id = s ? tok_find(tok, s) : -1;
@@ -7208,7 +7209,7 @@ static int replay_stop_cb(void *ud, const char *bytes, int n) {
 // The record's stop constraint, read for the replay: false with the reason in
 // why when it is malformed or the record cannot say where the turn began.
 static bool replay_stop_read(jv *rec, const model_t *m, bool constrained, replay_stop *r,
-                             int ids[8], int *n_ids, char *why, size_t cap) {
+                             int ids[16], int *n_ids, char *why, size_t cap) {
     jv *cons = jv_get(rec, "constraints");
     jv *stop = NULL;
     for (int i = 0; cons && cons->type == J_ARR && i < cons->n; i++)
@@ -7218,7 +7219,7 @@ static bool replay_stop_read(jv *rec, const model_t *m, bool constrained, replay
     if (!stop) return true;
     jv *seq = jv_get(stop, "sequences"), *tid = jv_get(stop, "token_ids");
     if (!seq || seq->type != J_ARR || seq->n > 4 ||
-        (tid && (tid->type != J_ARR || tid->n > 8))) {
+        (tid && (tid->type != J_ARR || tid->n > 16))) {
         snprintf(why, cap, "malformed stop constraint");
         return false;
     }
@@ -7558,18 +7559,20 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     }
     // The serving template can supply thinking tags the model lacks. Bind it
     // before resetting the constraint phase, just as server slot setup does.
+    int vtmpl = -1;
     if (jv_get(vr->rec, "serve")) {
         const char *name = jv_str(jv_get(jv_get(vr->rec, "config"), "template"), "");
-        int tmpl = template_from_name(name);
-        if (strcmp(name, "raw") && tmpl < 0) {
+        vtmpl = template_from_name(name);
+        if (strcmp(name, "raw") && vtmpl < 0) {
             fprintf(stderr, "UNVERIFIABLE: unknown served template: %s\n", name);
             jv_free(vr->rec);
             return 3;
         }
-        if (tmpl >= 0) {
-            template_bind_think_tags(tmpl, &rt->m.think_open, &rt->m.think_close);
-            template_bind_split_tags(tmpl, &rt->tok, rt->m.think_open,
+        if (vtmpl >= 0) {
+            template_bind_think_tags(vtmpl, &rt->m.think_open, &rt->m.think_close);
+            template_bind_split_tags(vtmpl, &rt->tok, rt->m.think_open,
                                      &rt->m.split_open, &rt->m.split_close);
+            engine_bind_think_tokens(&rt->e);
         }
     }
     jv *vserve = jv_get(vr->rec, "serve");
@@ -7627,7 +7630,7 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     double gt = 0;
     outcap_t replay_out = {0};
     replay_stop rs = { .cap = &replay_out, .e = &rt->e };
-    int stop_ids[8], n_stop_ids = 0;
+    int stop_ids[16], n_stop_ids = 0;
     {
         char why[512];
         if (!replay_stop_read(vr->rec, &rt->m, rt->e.schema || rt->e.json_mode, &rs,
@@ -7661,11 +7664,22 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     // replay decodes the same bytes, or every such turn would read MISMATCH
     rt->e.spell_think = vserve && think_split_is_control(rt->m.think_open, rt->m.split_open,
                                                          vchat, rt->e.schema || rt->e.json_mode);
+    if (vserve && vchat && vtmpl == TMPL_INKLING2 && !rt->e.schema && !rt->e.json_mode)
+        rt->e.n_spell = template_inkling_spell_ids(
+            &rt->tok, rt->e.spell_ids,
+            (int)(sizeof rt->e.spell_ids / sizeof *rt->e.spell_ids),
+            replay_has_kind(vr->rec, "tools"));
     // the served completions turn spelled its control tokens (special_tokens):
     // the replay decodes the same bytes, and a stop string matches where it did
     rt->e.render_special = vserve && replay_has_kind(vr->rec, "special_tokens");
-    if (jv_bool(jv_get(vserve, "reasoning_open"), false))
-        engine_think_started(&rt->e);
+    if (jv_bool(jv_get(vserve, "reasoning_open"), false)) {
+        if (rt->e.constraint_includes_prelude) {
+            rt->e.think_on = true;
+            rt->e.think_open_match = rt->e.think_close_match = 0;
+        } else {
+            engine_think_started(&rt->e);
+        }
+    }
     bool stop_on = rs.n_strs > 0 || n_stop_ids > 0;
     engine_set_request_stops(&rt->e, stop_ids, n_stop_ids);
     int n_gen = stop_on
@@ -8205,6 +8219,7 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
     template_bind_think_tags(dt, &rt->m.think_open, &rt->m.think_close);
     template_bind_split_tags(dt, &rt->tok, rt->m.think_open, &rt->m.split_open,
                              &rt->m.split_close);
+    engine_bind_think_tokens(&rt->e);
     static const char question[] = "What is 2+2? Answer with just the number.";
     chat_msg dmsg[1] = { { .role = "user", .content = question } };
     char *rendered = render_prompt_alloc(dt, dmsg, 1, true, THINK_OFF, NULL,
@@ -8756,6 +8771,7 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
     template_bind_think_tags(tmpl, &rt->m.think_open, &rt->m.think_close);
     template_bind_split_tags(tmpl, &rt->tok, rt->m.think_open, &rt->m.split_open,
                              &rt->m.split_close);
+    engine_bind_think_tokens(&rt->e);
     if (!o->system_prompt)
         o->system_prompt = template_default_system(
             tmpl, gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL),
@@ -8831,12 +8847,23 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
         // spelled for the split, by the same rule (R2.15)
         rt->e.spell_think = think_split_is_control(rt->m.think_open, rt->m.split_open, true,
                                                    rt->e.schema || rt->e.json_mode);
+        if (tmpl == TMPL_INKLING2 && !rt->e.schema && !rt->e.json_mode) {
+            int hdr_stops[4];
+            int nh = template_inkling_turn_header_stops(&rt->tok, hdr_stops, 4);
+            engine_set_request_stops(&rt->e, hdr_stops, nh);
+        } else {
+            engine_set_request_stops(&rt->e, NULL, 0);
+        }
         think_trim_newlines(&co.ts, rt->m.think_trim_nl);
         n_gen = engine_generate(&rt->e, logits, o->n_predict, chat_cb, &co, &gtime);
+        const char *hdr = (tmpl == TMPL_INKLING2 && rt->e.hit_stop && rt->e.stop_id >= 0)
+                        ? tok_raw(&rt->tok, rt->e.stop_id) : NULL;
         think_finish(&co.ts, chat_emit, &co);
         if (co.in_think) fputs("\n[/thinking]", stdout);
         think_free(&co.ts);
         printf("\n");
+        if (hdr && template_is_inkling_turn_header(hdr))
+            fprintf(stderr, "[ended_at=turn_header %s]\n", hdr);
         fprintf(stderr, "[%d tok, %.1f tok/s]\n",
                 n_gen, n_gen / (gtime > 0 ? gtime : 1e-9));
     }

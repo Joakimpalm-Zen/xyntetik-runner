@@ -57,10 +57,9 @@ typedef struct {
     int  stop_ids[TOK_STOP_MAX];
     int  n_stop;
     // Stop ids the REQUEST added: a stop string that spells a control token
-    // exactly, or stop_token_ids. Live for one request; completion_cleanup
-    // clears them. Control tokens decode to no bytes, so the text matcher
-    // could never see `<|eom|>`; these end the turn on the id itself.
-    int  req_stop_ids[8];
+    // exactly, stop_token_ids, or Inkling turn-header stops in unconstrained chat.
+    // Live for one request; completion_cleanup clears them.
+    int  req_stop_ids[16];
     int  n_req_stop;
     bool ignore_eos;
     bool hit_stop;         // last generate ended on a stop token / json done
@@ -78,7 +77,7 @@ typedef struct {
     // Control ids a parse-only tool protocol reads by spelling: decoded to
     // their vocabulary text although control (LFM2's two call markers).
     // Live for one request; engine_request_defaults clears them.
-    int  spell_ids[2];
+    int  spell_ids[8];
     int  n_spell;
     // A chat turn of a model whose think tags are single CONTROL tokens
     // (Apertus's <|inner_prefix|> and <|inner_suffix|>): those two are decoded
@@ -135,7 +134,8 @@ typedef struct {
     bool    constraint_tag_possible;
     bool    constraint_payload_dead;   // a probe token matched the tag only
     int     constraint_tag_match, constraint_close_match;
-    int     think_end_id;       // Muse <|eom|>: decoded-empty reasoning close
+    int     think_start_id;     // control-token reasoning open, e.g. Inkling <|content_thinking|>
+    int     think_end_id;       // single control-token reasoning close (<|eom|>, <|end_message|>)
     int     prelude_max, prelude_count;
     // R4.12.16 reasoning budget (budget forcing, s1-style). A distilled
     // student can state its answer in the first sentence of a reasoning turn
@@ -463,6 +463,8 @@ void engine_release(engine *e);
 // Returns false if the per-context history buffer could not be allocated;
 // the caller must not use the engine in that case.
 bool   engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp);
+// Rebind control-token reasoning markers after template_bind_think_tags.
+void   engine_bind_think_tokens(engine *e);
 void   engine_reset(engine *e); // clear KV position + sampler + json state
 // Every option one REQUEST sets on the engine, back to its default: the
 // stops, the schema and JSON mode, ignore_eos, the reasoning budget and its

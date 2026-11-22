@@ -38,7 +38,7 @@
     "in-progress": "someone is actively fixing this; see `note`"
   },
   "generated_by": "scripts/template-conformance.py --write-baseline",
-  "generated_at": "2026-11-19T19:32:36+00:00",
+  "generated_at": "2026-11-22T19:47:09+00:00",
   "oracles": {
     "apertus": {
       "source": "hf:swiss-ai/Apertus-8B-Instruct-2509",
@@ -91,6 +91,10 @@
     "hermes4": {
       "source": "hf:NousResearch/Hermes-4-14B",
       "sha256": "6a0543ce2179f4b1"
+    },
+    "inkling2": {
+      "source": "hf:thinkingmachines/Inkling-2-Mini",
+      "sha256": "53a9035f32559457"
     },
     "k2-horizon": {
       "source": "gguf:models/K2-Horizon-1B-Q8_0.gguf",
