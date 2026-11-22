@@ -4495,6 +4495,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_hybrid_admission.py \
     tests/test_idle_coexistence.py \
     tests/test_ignore_eos_request.py \
+    tests/test_inkling2_protocol.py \
     tests/test_iquants.py \
     tests/test_k2_horizon.py \
     tests/test_kld_compare.py \
@@ -4625,6 +4626,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_tc_gate_eligibility.py \
     tests/test_tc_route_label.py \
     tests/test_tc_spark_promotion.py \
+    tests/test_template_conformance_refusal.py \
     tests/test_template_conformance_token_only.py \
     tests/test_template_kwargs.py \
     tests/test_think_replay.py \
