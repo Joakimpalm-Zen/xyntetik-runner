@@ -191,10 +191,13 @@ static void capacity_sweep(int t, const jv *tools) {
     CHECK(full != SIZE_MAX && full + 2 < sizeof A, "%s: full render failed (%zu)", name, full);
     if (full == SIZE_MAX || full + 2 >= sizeof A) { conv_free(&c); return; }
     CHECK(strlen(A) == full, "%s: full render length %zu, strlen %zu", name, full, strlen(A));
+    if (t == TMPL_INKLING2)
+        CHECK(render(t, c.m, c.n, true, THINK_DEFAULT, tools, NULL, 0) == full,
+              "inkling2: NULL size query differs from full render");
     enum { GUARD = 16 };
     char *buf = malloc(full + 2 + GUARD);
     bool ok = true;
-    for (size_t cap = 1; cap <= full + 2 && ok; cap++) {
+    for (size_t cap = 0; cap <= full + 2 && ok; cap++) {
         memset(buf, 0xA5, cap + GUARD);
         size_t r = render(t, c.m, c.n, true, THINK_DEFAULT, tools, buf, cap);
         size_t w = strnlen(buf, cap);
@@ -203,6 +206,7 @@ static void capacity_sweep(int t, const jv *tools) {
             if ((unsigned char)buf[cap + g] != 0xA5) guard = false;
         if (r == SIZE_MAX) { CHECK(0, "%s cap %zu: allocation failure reported", name, cap); ok = false; break; }
         if (!guard) { CHECK(0, "%s cap %zu: wrote past the buffer", name, cap); ok = false; break; }
+        if (!cap) continue; // a size query must not touch even the first byte
         if (w >= cap) { CHECK(0, "%s cap %zu: no NUL inside the buffer", name, cap); ok = false; break; }
         if (memcmp(buf, A, w)) { CHECK(0, "%s cap %zu: not a prefix of the full render", name, cap); ok = false; break; }
         if (cap <= full && caller_accepts(r, buf, cap)) {

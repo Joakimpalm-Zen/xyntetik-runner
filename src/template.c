@@ -4748,7 +4748,7 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
     *st = (render_state){ .reasoning_open = false, .opener = NULL,
                           .think_mode = thinking & THINK_MODE_MASK };
     size_t off = 0;
-    out[0] = 0;
+    if (cap) out[0] = 0;
     switch (tmpl) {
     case TMPL_NEMOTRON:
         return render_nemotron_nano(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
