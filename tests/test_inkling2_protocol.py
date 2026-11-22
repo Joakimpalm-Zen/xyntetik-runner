@@ -256,7 +256,12 @@ def test_constrained_tool_choices_and_truncation(server):
     args = json.loads(tc[0]["function"]["arguments"])
     assert isinstance(args["a"], int) and isinstance(args["b"], int), args
 
-    # Very tight max_tokens mid-call closes cleanly with schema-valid JSON args.
+    # T1: Tight max_tokens mid-call closes cleanly with a non-empty, schema-valid call.
+    partial_source = (
+        '<|message_model|>add<|content_invoke_tool_json|>'
+        '{"name":"add","args":{"a":42,"b":99}}<|end_message|>'
+        '<|content_model_end_sampling|>'
+    )
     code, d_cut = _post(
         server,
         "/v1/chat/completions",
@@ -265,15 +270,18 @@ def test_constrained_tool_choices_and_truncation(server):
             "messages": [{"role": "user", "content": "add"}],
             "tools": [ADD_TOOL],
             "tool_choice": "required",
-            "max_tokens": 12,
+            "max_tokens": 34,
             "temperature": 0,
+            "runner_test_reply": partial_source,
         },
     )
     assert code == 200, d_cut
-    assert d_cut["choices"][0]["finish_reason"] in ("length", "tool_calls"), d_cut
-    for item in d_cut["choices"][0]["message"].get("tool_calls") or []:
-        parsed = json.loads(item["function"]["arguments"])
-        assert isinstance(parsed["a"], int) and isinstance(parsed["b"], int), parsed
+    assert d_cut["choices"][0]["finish_reason"] == "length", d_cut
+    cut_calls = d_cut["choices"][0]["message"].get("tool_calls") or []
+    assert len(cut_calls) == 1 and cut_calls[0]["function"]["name"] == "add", d_cut
+    assert d_cut.get("runner_telemetry", {}).get("closure", {}).get("closed") is True, d_cut
+    cut_args = json.loads(cut_calls[0]["function"]["arguments"])
+    assert cut_args["a"] == 42 and isinstance(cut_args["b"], int), cut_args
 
     # Streamed constrained tool call reproduces a parseable call.
     ev = _post_stream(
@@ -582,6 +590,24 @@ def test_d1_plain_chat_without_tools_emits_no_tool_calls(server):
     assert not streamed_calls, chunks
     assert all(ch.get("finish_reason") != "tool_calls" for ch in chunks), chunks
 
+    # tool_choice="none" with tools declared also emits no tool_calls.
+    code, d_none = _post(
+        server,
+        "/v1/chat/completions",
+        {
+            "model": server.model_id,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [ADD_TOOL],
+            "tool_choice": "none",
+            "max_tokens": 64,
+            "temperature": 0,
+            "runner_test_reply": call_reply,
+        },
+    )
+    assert code == 200, d_none
+    assert not d_none["choices"][0]["message"].get("tool_calls"), d_none
+    assert d_none["choices"][0]["finish_reason"] != "tool_calls", d_none
+
 
 @pytest.mark.parametrize(
     "bad_reply",
@@ -709,9 +735,8 @@ def test_r2_turn_header_stops_chat_before_tail_buffered_and_streamed(server, hdr
     assert raw.get("runner_telemetry", {}).get("ended_at") is None, raw
 
 
-def _patch_embd_to_emit_then_header(gguf_path, first_piece, header_piece):
-    """Patch token_embd.weight in a --zero-branches GGUF so greedy decode from
-    <|message_model|> deterministically emits `first_piece` then `header_piece`."""
+def _patch_zero_branch_embd(gguf_path, plan_fn):
+    """Patch selected token_embd.weight rows in a --zero-branches GGUF."""
     import struct
 
     data = bytearray(gguf_path.read_bytes())
@@ -741,8 +766,7 @@ def _patch_embd_to_emit_then_header(gguf_path, first_piece, header_piece):
             return rd_str()
         if vtype == 9:
             (et, n) = rd("<IQ")
-            out = [skip_val(et) for _ in range(n)]
-            return out
+            return [skip_val(et) for _ in range(n)]
         raise ValueError(f"unknown gguf type {vtype}")
 
     magic, ver, n_tensors, n_kv = rd("<IIQQ")
@@ -767,20 +791,27 @@ def _patch_embd_to_emit_then_header(gguf_path, first_piece, header_piece):
             emb_off = off
     data_start = (pos + 31) & ~31
     assert tokens is not None and n_embd is not None and emb_off is not None
-    tid_end = tokens.index("<|end_message|>")
-    tid_first = tokens.index(first_piece) if first_piece in tokens else tokens.index("<0x61>")
-    tid_hdr = tokens.index(header_piece)
-
-    def write_row(tid, c0, c1):
+    rows, result = plan_fn(tokens)
+    for tid, (c0, c1) in rows.items():
         row = [c0, c1] + [0.0] * (n_embd - 2)
         off = data_start + emb_off + tid * n_embd * 4
         struct.pack_into(f"<{n_embd}f", data, off, *row)
-
-    write_row(tid_end, 1.0, 0.0)
-    write_row(tid_first, 20.0, 1.0)
-    write_row(tid_hdr, 0.0, 1000.0)
     gguf_path.write_bytes(data)
-    return tid_first, tid_hdr
+    return result
+
+
+def _patch_embd_to_emit_then_header(gguf_path, first_piece, header_piece):
+    """Patch token_embd.weight so greedy decode emits `first_piece` then `header_piece`."""
+    def _plan(tokens):
+        tid_end = tokens.index("<|end_message|>")
+        tid_first = tokens.index(first_piece) if first_piece in tokens else tokens.index("<0x61>")
+        tid_hdr = tokens.index(header_piece)
+        return (
+            {tid_end: (1.0, 0.0), tid_first: (20.0, 1.0), tid_hdr: (0.0, 1000.0)},
+            (tid_first, tid_hdr),
+        )
+
+    return _patch_zero_branch_embd(gguf_path, _plan)
 
 
 def test_r2_turn_header_stop_replays_with_verify(tmp_path):
@@ -894,5 +925,144 @@ def test_r2_turn_header_stop_replays_with_verify(tmp_path):
     )
     vt_err = vt.stderr.decode(errors="replace")
     assert vt.returncode != 0 and ("DIVERGED" in vt_err or "UNVERIFIABLE" in vt_err), vt_err[-600:]
+
+
+def test_t2_loop_guard_unscripted_emits_end_message_and_continues(tmp_path):
+    """T2: On an unscripted loop inside <|content_thinking|>, loop_guard fires
+    think_arm_close, emits <|end_message|>, leaves ended_turn=False, and
+    continues generating tokens past the forced close."""
+    m = tmp_path / "ink_loop_real.gguf"
+    subprocess.run(
+        [
+            sys.executable,
+            ROOT / "scripts/make-test-model.py",
+            "--zero-branches",
+            "--control",
+            INKLING_CONTROLS,
+            "--eos-token",
+            "<|content_model_end_sampling|>",
+            str(m),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+
+    def _plan(tokens):
+        tid_think = tokens.index("<|content_thinking|>")
+        tid_loop = next(tokens.index(t) for t in ("x", "<0x78>", "<0x78>".upper()) if t in tokens)
+        tid_end = tokens.index("<|end_message|>")
+        tid_after = next(tokens.index(t) for t in ("z", "<0x7A>", "<0x7a>") if t in tokens)
+        # <|content_thinking|> -> self-repeating 'x'; once loop_guard forces
+        # <|end_message|>, <|end_message|> selects post-close 'z'.
+        return (
+            {
+                tid_think: (1.0, 0.0),
+                tid_loop: (50.0, 0.0),
+                tid_end: (0.0, 1.0),
+                tid_after: (0.0, 50.0),
+            },
+            (tid_loop, tid_end, tid_after),
+        )
+
+    tid_loop, tid_end, tid_after = _patch_zero_branch_embd(m, _plan)
+    rdir = tmp_path / "loop_receipts"
+    exe = find_runner(ROOT)
+    with RunnerServer(
+        exe,
+        m,
+        ctx=1024,
+        parallel=1,
+        extra_args=["--gpu", "off", "-t", "2", "--chat-template", "inkling2", "--receipts", str(rdir)],
+    ) as srv:
+        code, d = _post(
+            srv,
+            "/v1/completions",
+            {
+                "prompt": "<|message_model|><|content_thinking|>",
+                "max_tokens": 12,
+                "temperature": 0,
+                "loop_guard": True,
+                "loop_guard_span": 2,
+                "loop_guard_repeats": 2,
+                "cache_prompt": False,
+            },
+        )
+    assert code == 200, d
+    lg = d.get("runner_telemetry", {}).get("loop_guard")
+    assert lg is not None and lg["interventions"] == 1 and lg["ended_turn"] is False, d
+    assert d["usage"]["completion_tokens"] == 12, d
+
+    toks = json.loads(next(rdir.iterdir()).read_text())["output"]["tokens"]
+    assert tid_loop in toks and tid_end in toks and tid_after in toks, toks
+    close_at = toks.index(tid_end)
+    assert toks[:close_at] == [tid_loop] * close_at and close_at >= 3, toks
+    assert all(t == tid_after for t in toks[close_at + 1 :]) and len(toks) > close_at + 1, toks
+
+
+def test_t3_end_message_inside_json_string_argument_http(server):
+    """T3: A JSON string argument containing literal '<|end_message|>' stays a
+    single call argument in both buffered and streamed /v1/chat/completions."""
+    echo_tool = {
+        "type": "function",
+        "function": {
+            "name": "echo",
+            "description": "Echo a string",
+            "parameters": {
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
+            },
+        },
+    }
+    # Encode '<' as \u003c in the scripted string so tok_encode does not match
+    # the control token <|end_message|>; JSON decoding restores '<|end_message|>',
+    # verifying literal '<|end_message|>' inside arguments survives demux & JSON.
+    reply = (
+        '<|message_model|>echo<|content_invoke_tool_json|>'
+        '{"name":"echo","args":{"text":"alpha \\u003c|end_message|> omega"}}'
+        '<|end_message|><|content_model_end_sampling|>'
+    )
+    code, d = _post(
+        server,
+        "/v1/chat/completions",
+        {
+            "model": server.model_id,
+            "messages": [{"role": "user", "content": "echo"}],
+            "tools": [echo_tool],
+            "tool_choice": "required",
+            "max_tokens": 128,
+            "temperature": 0,
+            "stream": False,
+            "runner_test_reply": reply,
+        },
+    )
+    assert code == 200, d
+    assert d["choices"][0]["finish_reason"] == "tool_calls", d
+    tc = d["choices"][0]["message"]["tool_calls"]
+    assert len(tc) == 1 and tc[0]["function"]["name"] == "echo", tc
+    assert json.loads(tc[0]["function"]["arguments"]) == {"text": "alpha <|end_message|> omega"}, tc
+
+    ev = _post_stream(
+        server,
+        "/v1/chat/completions",
+        {
+            "model": server.model_id,
+            "messages": [{"role": "user", "content": "echo"}],
+            "tools": [echo_tool],
+            "tool_choice": "required",
+            "max_tokens": 128,
+            "temperature": 0,
+            "stream": True,
+            "runner_test_reply": reply,
+        },
+    )
+    chunks = [c["choices"][0] for c in ev if c.get("choices")]
+    arg_str = "".join(
+        tc_part.get("function", {}).get("arguments", "")
+        for ch in chunks
+        for tc_part in ch.get("delta", {}).get("tool_calls", [])
+    )
+    assert json.loads(arg_str) == {"text": "alpha <|end_message|> omega"}, chunks
+
 
 

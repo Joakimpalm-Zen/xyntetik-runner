@@ -5178,6 +5178,86 @@ static void test_f2_raw_marker_restricted_to_inkling(void) {
     jv_free(tools);
 }
 
+static void test_inkling2_t3_edge_cases(void) {
+    static const char *T3_TOOLS =
+        "[{\"type\":\"function\",\"function\":{\"name\":\"add\",\"description\":\"Add\",\"parameters\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"integer\"},\"b\":{\"type\":\"integer\"}},\"required\":[\"a\",\"b\"]}}},"
+        "{\"type\":\"function\",\"function\":{\"name\":\"echo\",\"description\":\"Echo\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]";
+    jv *tools = parse(T3_TOOLS);
+
+    // T3a: unknown tool name in parse_only mode sets a fault, drops the unknown
+    // call, and preserves valid calls around it.
+    {
+        tool_envelope po = { .proto = TP_INKLING2, .tools = tools, .parse_only = true, .max_calls = 8 };
+        const char *doc_only_unknown =
+            "<|message_model|>unknown_fn<|content_invoke_tool_json|>"
+            "{\"name\":\"unknown_fn\",\"args\":{\"x\":1}}"
+            "<|end_message|><|content_model_end_sampling|>";
+        sbuf reason = {0}, content = {0}, tc = {0};
+        int nc = -1;
+        assert(tool_stream_map_channels_ex(&po, doc_only_unknown, strlen(doc_only_unknown),
+                                           false, &reason, &content, &tc, &nc, NULL) == -1);
+        assert(tc.n == 0);
+        free(reason.s); free(content.s); free(tc.s);
+
+        const char *doc_mixed =
+            "<|message_model|>unknown_fn<|content_invoke_tool_json|>"
+            "{\"name\":\"unknown_fn\",\"args\":{\"x\":1}}<|end_message|>"
+            "<|message_model|>add<|content_invoke_tool_json|>"
+            "{\"name\":\"add\",\"args\":{\"a\":2,\"b\":3}}<|end_message|>"
+            "<|content_model_end_sampling|>";
+        tool_stream s;
+        demux_log dl = {0};
+        tool_stream_sink sink = { &dl, log_reasoning, log_content, log_begin, log_args, log_end };
+        tool_stream_init(&s, &po, &sink);
+        for (size_t i = 0; i < strlen(doc_mixed); i++)
+            assert(tool_stream_feed(&s, doc_mixed + i, 1) == 0);
+        assert(tool_stream_finish_ex(&s, false) == -1);
+        assert(s.fault);
+        assert(dl.begins == 1 && dl.ends == 1 && !strcmp(dl.name, "add"));
+        assert(dl.args.s && strstr(dl.args.s, "\"a\":2,\"b\":3") != NULL);
+        free(dl.reasoning.s); free(dl.content.s); free(dl.args.s); free(dl.names.s);
+        tool_stream_free(&s);
+    }
+
+    // T3b: a JSON string argument spelling "<|end_message|>" does not prematurely
+    // close the call frame (grammar/sval_close and buffered + 1-byte stream).
+    {
+        char err[256];
+        snode *sch = schema_compile_inkling2_turn(tools, true, NULL, NULL, true, false, err, sizeof err);
+        assert(sch);
+        const char *call_doc =
+            "<|message_model|>echo<|content_invoke_tool_json|>"
+            "{\"name\":\"echo\",\"args\":{\"text\":\"left <|end_message|> right\"}}"
+            "<|end_message|><|content_model_end_sampling|>";
+        sval v;
+        sval_init(&v, sch);
+        assert(sval_feed(&v, call_doc, (int)strlen(call_doc)) && v.done);
+        schema_free(sch);
+
+        tool_envelope env = { .proto = TP_INKLING2, .tools = tools, .parallel = true, .max_calls = 8 };
+        sbuf reason = {0}, content = {0}, tc = {0};
+        int nc = 0;
+        assert(tool_stream_map_channels_ex(&env, call_doc, strlen(call_doc), false, &reason, &content, &tc, &nc, NULL) == 0);
+        assert(nc == 1);
+        assert(tc.s && strstr(tc.s, "left <|end_message|> right") != NULL);
+        free(reason.s); free(content.s); free(tc.s);
+
+        tool_stream s;
+        demux_log dl = {0};
+        tool_stream_sink sink = { &dl, log_reasoning, log_content, log_begin, log_args, log_end };
+        tool_stream_init(&s, &env, &sink);
+        for (size_t i = 0; i < strlen(call_doc); i++)
+            assert(tool_stream_feed(&s, call_doc + i, 1) == 0);
+        assert(tool_stream_finish_ex(&s, false) == 0);
+        assert(dl.begins == 1 && dl.ends == 1 && !strcmp(dl.name, "echo"));
+        assert(dl.args.s && strstr(dl.args.s, "left <|end_message|> right") != NULL);
+        free(dl.reasoning.s); free(dl.content.s); free(dl.args.s); free(dl.names.s);
+        tool_stream_free(&s);
+    }
+
+    jv_free(tools);
+}
+
 int main(void) {
     test_whitespace_after_a_native_number_is_protocol();
     test_coder_constrained_turn();
@@ -5287,6 +5367,7 @@ int main(void) {
     test_generic_stream_decodes_the_tool_name();
     test_inkling2_native_protocol();
     test_f2_raw_marker_restricted_to_inkling();
+    test_inkling2_t3_edge_cases();
     puts("tool envelope tests ok");
     return 0;
 }
