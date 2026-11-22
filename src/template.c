@@ -958,7 +958,31 @@ bool template_think_tags(int tmpl, const char **open, const char **close) {
         *close = "</ifm|think>";
         return true;
     }
+    if (tmpl == TMPL_INKLING2) {
+        *open = "<|content_thinking|>";
+        *close = "<|end_message|>";
+        return true;
+    }
     return false;
+}
+
+int template_inkling_spell_ids(tokenizer *tok, int *out, int cap) {
+    if (!tok || !out || cap <= 0) return 0;
+    static const char *const tags[] = {
+        "<|message_model|>",
+        "<|content_thinking|>",
+        "<|content_text|>",
+        "<|end_message|>",
+        "<|content_invoke_tool_json|>",
+        "<|content_invoke_tool_text|>",
+        "<|content_tool_error|>",
+    };
+    int n = 0;
+    for (size_t i = 0; i < sizeof tags / sizeof *tags && n < cap; i++) {
+        int id = tok_find(tok, tags[i]);
+        if (id >= 0 && tok_is_control(tok, id)) out[n++] = id;
+    }
+    return n;
 }
 
 // Apertus deliberates between two CONTROL tokens, which decode to no bytes.
@@ -6412,7 +6436,6 @@ void tool_envelope_free(tool_envelope *e) {
 
 const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
                            jv *tools, tool_envelope *env, bool *skip_generic) {
-    if (tmpl == TMPL_INKLING2) { *skip_generic = true; return tools; }
     bool qwen = tmpl_hermes_json(tmpl);
     // The function/parameter XML families. Qwen3-Coder's turn is constrained
     // to the XML grammar (schema_tools.c) as it has been since the template was
@@ -6575,6 +6598,15 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
             fprintf(stderr, "tools: gemma4 native syntax unavailable for this "
                             "request (%s); using the generic envelope\n", why);
         }
+    } else if (strict && tmpl == TMPL_INKLING2) {
+        char why[192];
+        if (!tools || schema_inkling2_constrainable(tools, why, sizeof(why))) {
+            env->proto = TP_INKLING2;
+            env->tools = tools;
+        } else {
+            fprintf(stderr, "tools: inkling2 native syntax unavailable for this "
+                            "request (%s); using the generic envelope\n", why);
+        }
     }
     // gemma4 and Apertus render declarations whenever tools are present,
     // strict or not: tool_choice is a concept their templates lack, so
@@ -6617,11 +6649,12 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
                      (!strict || env->proto == TP_ARGKV)) ||
                     (tmpl == TMPL_K2H &&
                      (!strict || env->proto == TP_IFM_ARGKV));
+    bool ink_native = tmpl == TMPL_INKLING2 && (env->proto == TP_INKLING2 || !strict);
     *skip_generic = qwen || g4_native || nemo_native || tmpl_apertus(tmpl) ||
-                    mcp_decl ||
+                    mcp_decl || ink_native ||
                     (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||
                     tmpl == TMPL_HARMONY || xml_in_template;
-    return qwen || xml_in_template || mcp_decl ||
+    return qwen || xml_in_template || mcp_decl || ink_native ||
            (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||
            (tmpl == TMPL_HARMONY && env->proto == TP_HARMONY) ||
            g4_native || nemo_native || tmpl_apertus(tmpl)
@@ -6634,6 +6667,7 @@ const char *tool_envelope_protocol_name(const tool_envelope *e) {
         case TP_MUSE_PLAIN: return "atem";
         case TP_HARMONY:    return "harmony";
         case TP_GEMMA4:     return "gemma4";
+        case TP_INKLING2:   return "inkling2";
         case TP_QWEN:       return "qwen_json";
         case TP_QWEN_XML:   return "qwen3_xml";
         case TP_MINICPM_XML: return "minicpm5_xml";
@@ -6659,6 +6693,7 @@ const char *tool_protocol_name(int tmpl, bool *native) {
         case TP_ATEM:     return "atem";
         case TP_HARMONY:  return "harmony";
         case TP_GEMMA4:   return "gemma4";
+        case TP_INKLING2: return "inkling2";
         case TP_QWEN:     return "qwen_json";
         case TP_QWEN_XML: return "qwen3_xml";
         case TP_MINICPM_XML: return "minicpm5_xml";
@@ -8244,6 +8279,8 @@ enum { TS_TOOL, TS_ARGS, TS_FINAL_KEY, TS_FINAL_STR, TS_VALUE, TS_ATEM,
        // being held to the end of the turn -- unlike TS_ATEM, whose answer
        // branch waits for <|eot|> before the client sees a byte.
        TS_G4_START, TS_G4_THOUGHT, TS_G4_CALLS, TS_G4_TEXT,
+       TS_INK_START, TS_INK_HEADER, TS_INK_THINK, TS_INK_BODY_TEXT,
+       TS_INK_CALL, TS_INK_TEXT,
        TS_QWEN_START, TS_QWEN_CALLS, TS_QWEN_TEXT,
        // MiniCPM5's native turn: prose, then bare <function name=...> blocks
        // (no <tool_call> framing), each held until its </function> closes
@@ -8578,6 +8615,7 @@ void tool_stream_init(tool_stream *s, const tool_envelope *e,
     if (sink) s->sink = *sink;
     s->state = e && e->proto == TP_HARMONY ? TS_HARMONY
              : e && e->proto == TP_GEMMA4 ? TS_G4_START
+             : e && e->proto == TP_INKLING2 ? TS_INK_START
              : e && (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) ? TS_QWEN_START
              : e && proto_bare_xml(e->proto) ? TS_MCP_START
              : e && (e->proto == TP_NEMOTRON || e->proto == TP_MISTRAL ||
@@ -9296,6 +9334,317 @@ static int ts_gemma4(tool_stream *s, const char *bytes, int n) {
     }
 }
 
+// ---- Thinking Machines Inkling 2 native channel & tool-call stream
+//
+// Inkling 2 generates zero or more blocks delimited by <|message_model|>
+// [RECIPIENT] <|content_*|> BODY <|end_message|>, ending with
+// <|content_model_end_sampling|> (EOS). Reasoning lives in
+// <|content_thinking|>, visible text in <|content_text|> (or
+// <|content_tool_error|> / <|content_invoke_tool_text|>), and tool calls in
+// <|content_invoke_tool_json|> holding {"name": NAME, "args": {...}}.
+#define INK_MSG_MODEL "<|message_model|>"
+#define INK_END_MSG   "<|end_message|>"
+#define INK_END_TURN  "<|content_model_end_sampling|>"
+#define INK_THINK     "<|content_thinking|>"
+#define INK_TEXT      "<|content_text|>"
+#define INK_ERR       "<|content_tool_error|>"
+#define INK_TOOL_TEXT "<|content_invoke_tool_text|>"
+#define INK_TOOL_JSON "<|content_invoke_tool_json|>"
+
+enum { INK_BAD = -1, INK_MORE = 0, INK_OK = 1 };
+
+static bool ink_valid_header_name(const char *p, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        char c = p[i];
+        if (c == '<' || c == '\n' || c == '\r' || c == '\t') return false;
+    }
+    return true;
+}
+
+// Parse one JSON tool call body starting right after <|content_invoke_tool_json|>
+// up to its closing <|end_message|>. Advances *pp past <|end_message|> and
+// appends one OpenAI tool_calls[] entry to tc (without leading comma).
+static int inkling_parse_call(const tool_envelope *env, const char *hdr_name,
+                              size_t hdr_n, const char **pp, const char *end,
+                              int index, sbuf *tc) {
+    const char *body = trim_left(*pp, end);
+    const char *close = atem_find(body, end, INK_END_MSG);
+    jv *obj = NULL;
+    while (close) {
+        const char *bend = trim_right(body, close);
+        obj = json_parse(body, (size_t)(bend - body));
+        if (obj) break;
+        close = atem_find(close + strlen(INK_END_MSG), end, INK_END_MSG);
+    }
+    if (!close) {
+        // Turn terminator reached without a parseable closed call: cannot grow.
+        return atem_find(*pp, end, INK_END_TURN) ? INK_BAD : INK_MORE;
+    }
+    if (obj->type != J_OBJ || obj->n != 2) { jv_free(obj); return INK_BAD; }
+    const char *name = jv_str(jv_get(obj, "name"), NULL);
+    jv *args = jv_get(obj, "args");
+    if (!name || !name[0] || !args || args->type != J_OBJ) {
+        jv_free(obj);
+        return INK_BAD;
+    }
+    if (hdr_n && (strlen(name) != hdr_n || memcmp(name, hdr_name, hdr_n))) {
+        jv_free(obj);
+        return INK_BAD;
+    }
+    jv *fn = NULL;
+    if (env && env->tools) {
+        fn = tool_fn_named(env, name, strlen(name));
+        if (!fn) { jv_free(obj); return INK_BAD; }
+        if (env->kind == TCH_NAMED &&
+            (!env->named || strcmp(env->named, name))) {
+            jv_free(obj);
+            return INK_BAD;
+        }
+    }
+    sbuf encoded = {0};
+    jv_dump(args, &encoded);
+    if (encoded.failed || !encoded.s) {
+        jv_free(obj);
+        free(encoded.s);
+        return INK_BAD;
+    }
+    if (fn) {
+        jv *params = jv_get(fn, "parameters");
+        if (params) {
+            char err[192];
+            snode *schema = schema_compile(params, err, sizeof err);
+            sval st;
+            if (schema) sval_init(&st, schema);
+            bool valid = schema && sval_feed(&st, encoded.s, (int)encoded.n) && st.done;
+            schema_free(schema);
+            if (!valid) {
+                jv_free(obj);
+                free(encoded.s);
+                return INK_BAD;
+            }
+        }
+    }
+    sb_fmt(tc, "{\"id\":\"call_%d\",\"type\":\"function\",\"function\":{\"name\":\"", index);
+    sb_esc(tc, name, strlen(name));
+    sb_lit(tc, "\",\"arguments\":\"");
+    sb_esc(tc, encoded.s, encoded.n);
+    sb_lit(tc, "\"}}");
+    jv_free(obj);
+    free(encoded.s);
+    if (tc->failed) return INK_BAD;
+    *pp = close + strlen(INK_END_MSG);
+    return INK_OK;
+}
+
+static size_t ts_tail_keep(const tool_stream *s, const char *const *markers, int n_markers) {
+    size_t keep = 0;
+    for (int m = 0; m < n_markers; m++) {
+        size_t k = strlen(markers[m]) - 1;
+        if (k > s->head_n) k = s->head_n;
+        while (k && memcmp(s->head + s->head_n - k, markers[m], k)) k--;
+        if (k > keep) keep = k;
+    }
+    return keep;
+}
+
+static int ts_inkling(tool_stream *s, const char *bytes, int n) {
+    head_put(s, bytes, (size_t)n);
+    bool lenient = s->env && s->env->parse_only;
+    static const char *const START_MARKERS[] = {
+        INK_MSG_MODEL, INK_END_TURN, INK_THINK, INK_TEXT,
+        INK_ERR, INK_TOOL_TEXT, INK_TOOL_JSON
+    };
+    static const char *const END_MARKERS[] = { INK_END_MSG, INK_END_TURN };
+    for (;;) {
+        switch (s->state) {
+        case TS_DONE:
+            return 0;
+        case TS_INK_START: {
+            if (!s->head_n) return 0;
+            if (ts_starts(s, INK_END_TURN)) {
+                s->state = TS_DONE;
+                s->head_n = 0;
+                return 0;
+            }
+            if (ts_starts(s, INK_MSG_MODEL)) {
+                head_drop(s, strlen(INK_MSG_MODEL));
+                free(s->name);
+                s->name = NULL;
+                s->state = TS_INK_HEADER;
+                break;
+            }
+            if (ts_starts(s, INK_THINK)) {
+                head_drop(s, strlen(INK_THINK));
+                s->state = TS_INK_THINK;
+                break;
+            }
+            const char *txt_tag = ts_starts(s, INK_TEXT) ? INK_TEXT
+                                : ts_starts(s, INK_ERR) ? INK_ERR
+                                : ts_starts(s, INK_TOOL_TEXT) ? INK_TOOL_TEXT : NULL;
+            if (txt_tag) {
+                head_drop(s, strlen(txt_tag));
+                s->state = TS_INK_BODY_TEXT;
+                break;
+            }
+            if (ts_starts(s, INK_TOOL_JSON)) {
+                head_drop(s, strlen(INK_TOOL_JSON));
+                free(s->name);
+                s->name = NULL;
+                s->state = TS_INK_CALL;
+                break;
+            }
+            bool partial = false;
+            for (int m = 0; m < (int)(sizeof START_MARKERS / sizeof *START_MARKERS); m++)
+                if (ts_partial(s, START_MARKERS[m])) { partial = true; break; }
+            if (partial) return 0;
+            s->state = TS_INK_TEXT;
+            break;
+        }
+        case TS_INK_HEADER: {
+            const char *tags[] = { INK_THINK, INK_TEXT, INK_ERR, INK_TOOL_TEXT,
+                                   INK_TOOL_JSON, INK_END_MSG, INK_END_TURN };
+            const char *hit = NULL;
+            int hit_idx = -1;
+            for (int i = 0; i < (int)(sizeof tags / sizeof *tags); i++) {
+                const char *at = head_find(s, tags[i]);
+                if (at && (!hit || at < hit)) { hit = at; hit_idx = i; }
+            }
+            if (!hit) return 0;
+            size_t hlen = (size_t)(hit - s->head);
+            size_t tlen = strlen(tags[hit_idx]);
+            if (hit_idx == 0) { // <|content_thinking|>
+                head_drop(s, hlen + tlen);
+                s->state = TS_INK_THINK;
+                break;
+            }
+            if (hit_idx >= 1 && hit_idx <= 3) { // text channels
+                head_drop(s, hlen + tlen);
+                s->state = TS_INK_BODY_TEXT;
+                break;
+            }
+            if (hit_idx == 4) { // <|content_invoke_tool_json|>
+                free(s->name);
+                s->name = NULL;
+                if (hlen > 0) {
+                    if (!ink_valid_header_name(s->head, hlen)) {
+                        s->fault = true;
+                        s->state = TS_DONE;
+                        return 0;
+                    }
+                    s->name = malloc(hlen + 1);
+                    if (!s->name) { s->fault = true; s->state = TS_DONE; return 0; }
+                    memcpy(s->name, s->head, hlen);
+                    s->name[hlen] = 0;
+                }
+                head_drop(s, hlen + tlen);
+                s->state = TS_INK_CALL;
+                break;
+            }
+            // <|end_message|> or <|content_model_end_sampling|> before any channel
+            s->fault = true;
+            head_drop(s, hlen + tlen);
+            s->state = hit_idx == 6 ? TS_DONE : TS_INK_START;
+            break;
+        }
+        case TS_INK_THINK:
+        case TS_INK_BODY_TEXT: {
+            bool is_think = s->state == TS_INK_THINK;
+            const char *endm = head_find(s, INK_END_MSG);
+            const char *endt = head_find(s, INK_END_TURN);
+            const char *hit = endm && (!endt || endm < endt) ? endm : endt;
+            if (hit) {
+                size_t upto = (size_t)(hit - s->head);
+                int rc = 0;
+                if (upto) {
+                    rc = is_think
+                       ? (s->sink.reasoning ? s->sink.reasoning(s->sink.ud, s->head, (int)upto) : 0)
+                       : (s->sink.content ? s->sink.content(s->sink.ud, s->head, (int)upto) : 0);
+                }
+                bool done = hit == endt;
+                head_drop(s, upto + strlen(done ? INK_END_TURN : INK_END_MSG));
+                s->state = done ? TS_DONE : TS_INK_START;
+                if (done) s->head_n = 0;
+                if (rc) return rc;
+                if (done) return 0;
+                break;
+            }
+            size_t keep = ts_tail_keep(s, END_MARKERS, 2);
+            size_t emit = s->head_n - keep;
+            int rc = 0;
+            if (emit) {
+                rc = is_think
+                   ? (s->sink.reasoning ? s->sink.reasoning(s->sink.ud, s->head, (int)emit) : 0)
+                   : (s->sink.content ? s->sink.content(s->sink.ud, s->head, (int)emit) : 0);
+                head_drop(s, emit);
+            }
+            return rc;
+        }
+        case TS_INK_CALL: {
+            const char *at = s->head ? s->head : "";
+            const char *end = at + s->head_n;
+            sbuf tc = {0};
+            bool past_bound = s->env && s->env->max_calls > 0 && s->n_calls >= s->env->max_calls;
+            int prc = inkling_parse_call(s->env, s->name, s->name ? strlen(s->name) : 0,
+                                         &at, end, 0, &tc);
+            if (prc == INK_MORE) {
+                free(tc.s);
+                return 0;
+            }
+            if (prc == INK_BAD || past_bound) {
+                free(tc.s);
+                free(s->name);
+                s->name = NULL;
+                s->fault = true;
+                if (!lenient) { s->state = TS_DONE; return 0; }
+                const char *close = head_find(s, INK_END_MSG);
+                if (close) {
+                    head_drop(s, (size_t)(close - s->head) + strlen(INK_END_MSG));
+                    s->state = TS_INK_START;
+                    break;
+                }
+                s->head_n = 0;
+                s->state = TS_DONE;
+                return 0;
+            }
+            int rc = 0;
+            if (!ts_emit_calls(s, &tc, &rc)) s->fault = true;
+            free(tc.s);
+            free(s->name);
+            s->name = NULL;
+            head_drop(s, (size_t)(at - s->head));
+            s->state = TS_INK_START;
+            if (rc) return rc;
+            break;
+        }
+        case TS_INK_TEXT: {
+            const char *hit = NULL;
+            for (int m = 0; m < (int)(sizeof START_MARKERS / sizeof *START_MARKERS); m++) {
+                const char *at = head_find(s, START_MARKERS[m]);
+                if (at && (!hit || at < hit)) hit = at;
+            }
+            if (hit) {
+                size_t prefix = (size_t)(hit - s->head);
+                int rc = prefix && s->sink.content
+                       ? s->sink.content(s->sink.ud, s->head, (int)prefix) : 0;
+                head_drop(s, prefix);
+                s->state = TS_INK_START;
+                if (rc) return rc;
+                break;
+            }
+            size_t keep = ts_tail_keep(s, START_MARKERS,
+                                       (int)(sizeof START_MARKERS / sizeof *START_MARKERS));
+            size_t emit = s->head_n - keep;
+            int rc = emit && s->sink.content
+                   ? s->sink.content(s->sink.ud, s->head, (int)emit) : 0;
+            head_drop(s, emit);
+            return rc;
+        }
+        default:
+            return 0;
+        }
+    }
+}
+
 int tool_stream_feed(tool_stream *s, const char *bytes, int n) {
     if (n <= 0) return 0;
     switch (s->state) {
@@ -9308,6 +9657,12 @@ int tool_stream_feed(tool_stream *s, const char *bytes, int n) {
     case TS_G4_THOUGHT:
     case TS_G4_CALLS:
     case TS_G4_TEXT:   return ts_gemma4(s, bytes, n);
+    case TS_INK_START:
+    case TS_INK_HEADER:
+    case TS_INK_THINK:
+    case TS_INK_BODY_TEXT:
+    case TS_INK_CALL:
+    case TS_INK_TEXT:  return ts_inkling(s, bytes, n);
     case TS_QWEN_START:
     case TS_QWEN_CALLS:
     case TS_QWEN_TEXT: return ts_qwen(s, bytes, n);
@@ -9447,6 +9802,34 @@ int tool_stream_finish_ex(tool_stream *s, bool truncated) {
         if (s->fault) rc = -1;
         return rc;
     }
+    if (s->state == TS_INK_START || s->state == TS_INK_HEADER ||
+        s->state == TS_INK_THINK || s->state == TS_INK_BODY_TEXT ||
+        s->state == TS_INK_CALL || s->state == TS_INK_TEXT) {
+        int rc = 0;
+        bool framing = s->state == TS_INK_CALL || s->state == TS_INK_HEADER ||
+                       (s->state == TS_INK_START &&
+                        (ts_partial(s, INK_MSG_MODEL) || ts_partial(s, INK_END_TURN) ||
+                         ts_partial(s, INK_THINK) || ts_partial(s, INK_TEXT) ||
+                         ts_partial(s, INK_ERR) || ts_partial(s, INK_TOOL_TEXT) ||
+                         ts_partial(s, INK_TOOL_JSON)));
+        if ((s->state == TS_INK_CALL || (s->state == TS_INK_HEADER && s->head_n)) &&
+            !truncated)
+            s->fault = true;
+        if (s->head_n && !framing) {
+            if (s->state == TS_INK_THINK)
+                rc = s->sink.reasoning
+                       ? s->sink.reasoning(s->sink.ud, s->head, (int)s->head_n) : 0;
+            else
+                rc = s->sink.content
+                       ? s->sink.content(s->sink.ud, s->head, (int)s->head_n) : 0;
+        }
+        free(s->name);
+        s->name = NULL;
+        s->head_n = 0;
+        s->state = TS_DONE;
+        if (s->fault) rc = -1;
+        return rc;
+    }
     if (s->state == TS_ATEM) {
         // What the feed left held. An answer whose <|eot|> never arrived is
         // still the answer, to its last byte (the buffered mapper always read
@@ -9546,12 +9929,12 @@ int tool_stream_map(const tool_envelope *e, const char *doc, size_t n,
     return tool_stream_map_ex(e, doc, n, truncated, content, tc, n_calls, NULL);
 }
 
-int tool_stream_map_ex(const tool_envelope *e, const char *doc, size_t n,
-                       bool truncated, sbuf *content, sbuf *tc, int *n_calls,
-                       bool *implicit_close) {
-    map_sink m = { content, tc, 0, {0}, NULL, false, 0 };
-    tool_stream_sink sink = { &m, NULL, map_content, map_call_begin,
-                              map_call_args, map_call_end };
+int tool_stream_map_channels_ex(const tool_envelope *e, const char *doc, size_t n,
+                                bool truncated, sbuf *reasoning, sbuf *content,
+                                sbuf *tc, int *n_calls, bool *implicit_close) {
+    map_sink m = { content, tc, 0, {0}, reasoning, false, 0 };
+    tool_stream_sink sink = { &m, reasoning ? map_reasoning : NULL, map_content,
+                              map_call_begin, map_call_args, map_call_end };
     tool_stream s;
     tool_stream_init(&s, e, &sink);
     int rc = n ? tool_stream_feed(&s, doc, (int)n) : 0;
@@ -9560,8 +9943,16 @@ int tool_stream_map_ex(const tool_envelope *e, const char *doc, size_t n,
     tool_stream_free(&s);
     free(m.args.s);
     *n_calls = m.n;
-    if (content->failed || tc->failed) return -1;
+    if ((reasoning && reasoning->failed) || content->failed || tc->failed)
+        return -1;
     return rc || fin ? -1 : 0;
+}
+
+int tool_stream_map_ex(const tool_envelope *e, const char *doc, size_t n,
+                       bool truncated, sbuf *content, sbuf *tc, int *n_calls,
+                       bool *implicit_close) {
+    return tool_stream_map_channels_ex(e, doc, n, truncated, NULL, content,
+                                       tc, n_calls, implicit_close);
 }
 
 // The buffered mapper for a strict native envelope: the demultiplexer over
@@ -9858,11 +10249,73 @@ static int gemma4_tool_calls_parse(sbuf *content, sbuf *tc) {
     return n_calls;
 }
 
+static int inkling2_tool_calls_parse(sbuf *content, sbuf *tc) {
+    if (!content->s) return 0;
+    int n_calls = 0;
+    char *w = content->s;
+    const char *p = content->s, *end = content->s + content->n;
+    while (p < end) {
+        const char *m = atem_find(p, end, INK_MSG_MODEL);
+        const char *j = atem_find(p, end, INK_TOOL_JSON);
+        if (!j && !m) {
+            memmove(w, p, (size_t)(end - p));
+            w += end - p;
+            break;
+        }
+        const char *block = NULL, *hdr_name = NULL;
+        size_t hdr_n = 0;
+        const char *json_at = NULL;
+        if (m && (!j || m < j)) {
+            const char *after_m = m + strlen(INK_MSG_MODEL);
+            const char *next_lt = memchr(after_m, '<', (size_t)(end - after_m));
+            if (next_lt && (size_t)(end - next_lt) >= strlen(INK_TOOL_JSON) &&
+                !memcmp(next_lt, INK_TOOL_JSON, strlen(INK_TOOL_JSON)) &&
+                ink_valid_header_name(after_m, (size_t)(next_lt - after_m))) {
+                block = m;
+                hdr_name = after_m;
+                hdr_n = (size_t)(next_lt - after_m);
+                json_at = next_lt + strlen(INK_TOOL_JSON);
+            } else {
+                size_t pass = (size_t)(after_m - p);
+                memmove(w, p, pass);
+                w += pass;
+                p = after_m;
+                continue;
+            }
+        } else {
+            block = j;
+            json_at = j + strlen(INK_TOOL_JSON);
+        }
+        memmove(w, p, (size_t)(block - p));
+        w += block - p;
+        const char *at = json_at;
+        size_t before = tc->n;
+        if (n_calls) sb_lit(tc, ",");
+        if (inkling_parse_call(NULL, hdr_name, hdr_n, &at, end, n_calls, tc) != INK_OK) {
+            tc->n = before;
+            if (tc->s) tc->s[tc->n] = 0;
+            size_t skip = (size_t)(json_at - block);
+            memmove(w, block, skip);
+            w += skip;
+            p = json_at;
+            continue;
+        }
+        n_calls++;
+        p = at;
+        if (n_calls && (size_t)(end - p) >= strlen(INK_END_TURN) &&
+            !memcmp(p, INK_END_TURN, strlen(INK_END_TURN)))
+            p += strlen(INK_END_TURN);
+    }
+    if (n_calls) content->n = (size_t)(w - content->s);
+    return n_calls;
+}
+
 int tool_calls_parse_for(int tmpl, sbuf *content, sbuf *tc) {
     return tmpl_hermes_json(tmpl)
                                ? qwen_tool_calls_parse(content, tc)
          : tmpl_ornith_like(tmpl) || tmpl == TMPL_QWEN38 ||
            tmpl_granite42_like(tmpl) ? ornith_tool_calls_parse(content, tc)
          : is_gemma4(tmpl)     ? gemma4_tool_calls_parse(content, tc)
+         : tmpl == TMPL_INKLING2 ? inkling2_tool_calls_parse(content, tc)
                                : tool_calls_parse(content, tc);
 }

@@ -122,6 +122,29 @@ The CLI's generated-tool history and reasoning transitions still need their
 protocol gate. The public rendering wrappers in `template.c` forward the
 fields they receive and do not invent missing structured data.
 
-Generated-call parsing/grammar closure, forced reasoning-budget and loop-guard
-transitions, and the complete CPU suite remain pending. This is protocol
-progress, not model admission.
+## Generated protocol, grammar closure, and reasoning transitions
+
+- `TP_INKLING2` (`src/schema_tools.c:schema_compile_inkling2_turn`,
+  `src/template.c:ts_inkling`, `inkling2_tool_calls_parse`) handles both
+  named (`<|message_model|><name><|content_invoke_tool_json|>`) and bare
+  (`<|content_invoke_tool_json|>`) calls, `<|content_thinking|>`,
+  `<|content_text|>`, `<|content_tool_error|>`, and
+  `<|content_invoke_tool_text|>` blocks, and parallel call sequences up to
+  `<|content_model_end_sampling|>`.
+- `src/schema.c:sval_raw_marker_opens` and `src/engine.c:constraint_spelling_ok`
+  admit single control-token closers (`<|end_message|>`) in `SN_RAW` frames
+  while rejecting arbitrary control tokens before or inside raw content;
+  `sval_close` closes truncated turns cut at any token or byte boundary to a
+  schema-valid turn with parseable arguments (`tests/test_tools.c:test_inkling2_native_protocol`,
+  `tests/test_inkling2_protocol.py`).
+- `src/engine.c:engine_bind_think_tokens` binds `<|content_thinking|>` and
+  `<|end_message|>` as single control tokens so `--reasoning-budget`
+  (`reasoning_max_tokens`) and `--loop-guard` terminate deliberation cleanly via
+  `<|end_message|>` without stopping generation, and
+  `src/completion.c` spells the seven non-stop control tokens on unconstrained
+  chat turns for `INKLING_PLAIN_ENV` demultiplexing. Models lacking a
+  single-token `<|end_message|>` return HTTP 400 on `reasoning_max_tokens`.
+
+This work completes protocol parsing and reasoning transitions; weights
+download, CUDA/Metal inference fidelity runs, and model admission remain
+outside this branch.

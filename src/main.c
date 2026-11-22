@@ -521,6 +521,7 @@ static int train_eot_id(tokenizer *tok, int tmpl) {
     case TMPL_MUSE: s = "<|eot|>"; break;
     case TMPL_PHI3: case TMPL_PHI4: s = "<|end|>"; break;
     case TMPL_HARMONY: s = "<|return|>"; break;
+    case TMPL_INKLING2: s = "<|content_model_end_sampling|>"; break;
     default: break;
     }
     int id = s ? tok_find(tok, s) : -1;
@@ -7558,18 +7559,20 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     }
     // The serving template can supply thinking tags the model lacks. Bind it
     // before resetting the constraint phase, just as server slot setup does.
+    int vtmpl = -1;
     if (jv_get(vr->rec, "serve")) {
         const char *name = jv_str(jv_get(jv_get(vr->rec, "config"), "template"), "");
-        int tmpl = template_from_name(name);
-        if (strcmp(name, "raw") && tmpl < 0) {
+        vtmpl = template_from_name(name);
+        if (strcmp(name, "raw") && vtmpl < 0) {
             fprintf(stderr, "UNVERIFIABLE: unknown served template: %s\n", name);
             jv_free(vr->rec);
             return 3;
         }
-        if (tmpl >= 0) {
-            template_bind_think_tags(tmpl, &rt->m.think_open, &rt->m.think_close);
-            template_bind_split_tags(tmpl, &rt->tok, rt->m.think_open,
+        if (vtmpl >= 0) {
+            template_bind_think_tags(vtmpl, &rt->m.think_open, &rt->m.think_close);
+            template_bind_split_tags(vtmpl, &rt->tok, rt->m.think_open,
                                      &rt->m.split_open, &rt->m.split_close);
+            engine_bind_think_tokens(&rt->e);
         }
     }
     jv *vserve = jv_get(vr->rec, "serve");
@@ -7661,11 +7664,21 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     // replay decodes the same bytes, or every such turn would read MISMATCH
     rt->e.spell_think = vserve && think_split_is_control(rt->m.think_open, rt->m.split_open,
                                                          vchat, rt->e.schema || rt->e.json_mode);
+    if (vserve && vchat && vtmpl == TMPL_INKLING2 && !rt->e.schema && !rt->e.json_mode)
+        rt->e.n_spell = template_inkling_spell_ids(
+            &rt->tok, rt->e.spell_ids,
+            (int)(sizeof rt->e.spell_ids / sizeof *rt->e.spell_ids));
     // the served completions turn spelled its control tokens (special_tokens):
     // the replay decodes the same bytes, and a stop string matches where it did
     rt->e.render_special = vserve && replay_has_kind(vr->rec, "special_tokens");
-    if (jv_bool(jv_get(vserve, "reasoning_open"), false))
-        engine_think_started(&rt->e);
+    if (jv_bool(jv_get(vserve, "reasoning_open"), false)) {
+        if (rt->e.constraint_includes_prelude) {
+            rt->e.think_on = true;
+            rt->e.think_open_match = rt->e.think_close_match = 0;
+        } else {
+            engine_think_started(&rt->e);
+        }
+    }
     bool stop_on = rs.n_strs > 0 || n_stop_ids > 0;
     engine_set_request_stops(&rt->e, stop_ids, n_stop_ids);
     int n_gen = stop_on
@@ -8205,6 +8218,7 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
     template_bind_think_tags(dt, &rt->m.think_open, &rt->m.think_close);
     template_bind_split_tags(dt, &rt->tok, rt->m.think_open, &rt->m.split_open,
                              &rt->m.split_close);
+    engine_bind_think_tokens(&rt->e);
     static const char question[] = "What is 2+2? Answer with just the number.";
     chat_msg dmsg[1] = { { .role = "user", .content = question } };
     char *rendered = render_prompt_alloc(dt, dmsg, 1, true, THINK_OFF, NULL,
@@ -8756,6 +8770,7 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
     template_bind_think_tags(tmpl, &rt->m.think_open, &rt->m.think_close);
     template_bind_split_tags(tmpl, &rt->tok, rt->m.think_open, &rt->m.split_open,
                              &rt->m.split_close);
+    engine_bind_think_tokens(&rt->e);
     if (!o->system_prompt)
         o->system_prompt = template_default_system(
             tmpl, gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL),

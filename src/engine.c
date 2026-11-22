@@ -63,12 +63,12 @@ bool engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp) {
     e->m = m;
     e->tok = tok;
     e->smp = smp;
+    e->think_start_id = -1;
     e->think_end_id = -1;
     e->pending_pos = -1;
     e->n_stop = tok_stop_ids(tok, m->arch, e->stop_ids,
                              (int)(sizeof(e->stop_ids) / sizeof(*e->stop_ids)));
-    if (m->ad && m->ad->id == ARCH_MUSE_GLIMMER)
-        e->think_end_id = tok_find(tok, "<|eom|>");
+    engine_bind_think_tokens(e);
     // A stop token is not repetition: penalising one the model generated can
     // leave it unable to end its turn at all. (The window holds generated
     // tokens only; the prompt no longer seeds it, see the note in engine_feed.)
@@ -94,6 +94,21 @@ bool engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp) {
     e->model_key = model_identity(m, tok, false);
     e->model_key_prior = m->rec_slot ? model_identity(m, tok, true) : e->model_key;
     return true;
+}
+
+void engine_bind_think_tokens(engine *e) {
+    if (!e || !e->tok || !e->m) return;
+    e->think_start_id = -1;
+    e->think_end_id = -1;
+    if (e->m->ad && e->m->ad->id == ARCH_MUSE_GLIMMER)
+        e->think_end_id = tok_find(e->tok, "<|eom|>");
+    if (e->think_end_id < 0 && e->m->think_open && e->m->think_close &&
+        !strcmp(e->m->think_close, "<|end_message|>")) {
+        int s = tok_find(e->tok, e->m->think_open);
+        int c = tok_find(e->tok, e->m->think_close);
+        if (s >= 0 && tok_is_control(e->tok, s)) e->think_start_id = s;
+        if (c >= 0 && tok_is_control(e->tok, c)) e->think_end_id = c;
+    }
 }
 
 void engine_request_defaults(engine *e) {
@@ -2201,11 +2216,20 @@ static bool constraint_spelling_ok(engine *e, int id, bool schema) {
     // (sval_in_free_content, not sval_ws_is_content: the latter is also true
     // at whitespace-significant PROTOCOL positions, the whole atem header,
     // and refused Muse's own `<|message|>` after the recipient name)
+    int splen = (int)strlen(sp);
     if (sval_in_free_content(&e->sv) &&
-        !sval_raw_marker_opens(&e->sv, sp, (int)strlen(sp))) return false;
-    // CP_OUTPUT is guaranteed by the first line, so this is exactly what
-    // constraint_feed would do with these bytes.
-    return constraint_payload_trial(e, true, sp, (int)strlen(sp));
+        !sval_raw_marker_opens(&e->sv, sp, splen)) return false;
+    // Also reject a control token absorbed as raw free text when entering
+    // SN_RAW across a lazy SN_SEQ/SN_COND boundary before SN_RAW is pushed.
+    sval t = e->sv;
+    t.trial = true;
+    if (!sval_feed(&t, sp, splen)) return false;
+    if (!t.done && t.depth > 0 && sval_in_free_content(&t)) {
+        const sframe *tf = &t.stack[t.depth - 1];
+        if (!tf->node || tf->node->kind != SN_RAW || (tf->sub == 0 && tf->lit_pos == 0))
+            return false;
+    }
+    return true;
 }
 
 // validity filter for constrained mode. Before a declared thinking block
@@ -2442,7 +2466,12 @@ static void think_track(engine *e, int tok, const char *bytes, int n) {
         e->think_open_match = e->think_close_match = 0;
         return;
     }
-    if (e->schema || e->json_mode) {
+    if (e->think_start_id >= 0) {
+        if (tok == e->think_start_id) {
+            e->think_on = true;
+            e->think_open_match = e->think_close_match = 0;
+        }
+    } else if (e->schema || e->json_mode) {
         e->think_on = e->constraint_phase == CP_THINK;
     } else if (e->m->think_open && e->m->think_close) {
         for (int i = 0; i < n; i++) {

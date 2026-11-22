@@ -115,7 +115,7 @@ static const struct {
     // Qwen 3.6: Qwen 3.5's framing and calls
     { "qwen36",           0,  34, 0, 0, 1, "qwen3_xml",     1 },
     { "mistral-sys",      0,   0, 1, 0, 0, "mistral_args",  1 },
-    { "inkling2", 79, 79, 1, 0, 0, "generic", 0 },
+    { "inkling2", 79, 79, 1, 0, 0, "inkling2", 1 },
 };
 #define N_FAMILY ((int)(sizeof FAMILY / sizeof *FAMILY))
 

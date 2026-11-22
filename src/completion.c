@@ -2260,11 +2260,16 @@ static int envelope_map_buffered(const tool_envelope *env, gen_ctx *g, sbuf *tc,
         // void the turn: the valid calls and the prose are the model's real
         // output and are kept; the finish reason names the fault.
         int n_calls = 0;
-        int rc = tool_stream_map_ex(env, doc, doc_n, truncated, &mapped, tc,
-                                    &n_calls, &g->tool_implicit);
+        int rc = tool_stream_map_channels_ex(env, doc, doc_n, truncated,
+                                             &mapped_reason, &mapped, tc,
+                                             &n_calls, &g->tool_implicit);
         free(turn.s);
-        if (mapped.failed || tc->failed) { free(mapped.s); return -1; }
+        if (mapped_reason.failed || mapped.failed || tc->failed) {
+            free(mapped_reason.s); free(mapped.s); return -1;
+        }
         *fault = rc < 0;
+        if (mapped_reason.n) { free(g->reason.s); g->reason = mapped_reason; }
+        else free(mapped_reason.s);
         free(g->out.s);
         g->out = mapped;
         return n_calls;
@@ -2722,6 +2727,12 @@ static snode *tool_schema_compile(const tool_envelope *env, jv *final,
             env->kind == TCH_NAMED ? env->named : NULL,
             env->kind == TCH_AUTO ? final : NULL,
             env->parallel, err, cap);
+    } else if (env->proto == TP_INKLING2) {
+        const char *only = env->kind == TCH_NAMED ? env->named : NULL;
+        schema = schema_compile_inkling2_turn(
+            env->tools, env->kind == TCH_AUTO, only,
+            env->kind == TCH_AUTO ? final : NULL,
+            thinking, env->parallel, err, cap);
     } else if (env->proto == TP_ATEM) {
         const char *only = env->kind == TCH_NAMED ? env->named : NULL;
         final = env->kind == TCH_AUTO ? final : NULL;
@@ -2756,9 +2767,9 @@ static snode *tool_schema_compile(const tool_envelope *env, jv *final,
 static const struct { int proto; const char *name; } tool_grammars[] = {
     {TP_GENERIC, "generic"}, {TP_MUSE_USER, "muse_user"},
     {TP_ATEM, "atem"}, {TP_HARMONY, "harmony"}, {TP_GEMMA4, "gemma4"},
-    {TP_QWEN, "qwen_json"}, {TP_QWEN_XML, "qwen3_xml"},
-    {TP_NEMOTRON, "nemotron_json"}, {TP_MISTRAL, "mistral_json"},
-    {TP_MISTRAL_SYS, "mistral_args"},
+    {TP_INKLING2, "inkling2"}, {TP_QWEN, "qwen_json"},
+    {TP_QWEN_XML, "qwen3_xml"}, {TP_NEMOTRON, "nemotron_json"},
+    {TP_MISTRAL, "mistral_json"}, {TP_MISTRAL_SYS, "mistral_args"},
 };
 
 static const char *tool_grammar_name(int proto) {
@@ -2853,8 +2864,9 @@ bool completion_replay_tools(engine *e, jv *shape, jv *final,
     schema_free((snode *)e->schema);
     e->schema = schema;
     sval_init(&e->sv, schema);
-    e->constraint_includes_prelude = proto == TP_HARMONY;
-    e->emit_think_prelude = e->m->think_open && proto != TP_HARMONY;
+    e->constraint_includes_prelude = proto == TP_HARMONY || proto == TP_INKLING2;
+    e->emit_think_prelude = e->m->think_open && proto != TP_HARMONY &&
+                            proto != TP_INKLING2;
     return true;
 }
 
@@ -4115,13 +4127,20 @@ static void completion_apply(slot_t *s, const completion_req *q, const char *pro
         int b = tok_find(e->tok, "<|tool_call_end|>");
         if (a >= 0) e->spell_ids[e->n_spell++] = a;
         if (b >= 0) e->spell_ids[e->n_spell++] = b;
+    } else if (chat && s->tmpl == TMPL_INKLING2 && !e->schema && !e->json_mode) {
+        e->n_spell = template_inkling_spell_ids(
+            e->tok, e->spell_ids,
+            (int)(sizeof e->spell_ids / sizeof *e->spell_ids));
     }
-    e->constraint_includes_prelude = q->constrain && env->proto == TP_HARMONY;
+    e->constraint_includes_prelude = q->constrain && env &&
+                                     (env->proto == TP_HARMONY ||
+                                      env->proto == TP_INKLING2);
     // chat responses split a thinking prelude into the reasoning channel;
     // constrained generation forwards it only when asked (raw completions
     // keep the payload-only contract)
     e->emit_think_prelude = chat && m->think_open != NULL &&
-                            !(env && env->proto == TP_HARMONY);
+                            !(env && (env->proto == TP_HARMONY ||
+                                      env->proto == TP_INKLING2));
     // a chat turn's reasoning split reads bytes: think tags that are control
     // tokens are spelled for it (R2.15), and the split is armed with them,
     // by one rule; never under a constraint, and the constraint layer does
@@ -5104,6 +5123,10 @@ static void request_id(char *out, size_t cap, const char *prefix) {
 // The Muse plain-schema stream has no envelope of its own; its demultiplexer
 // reads this one. File-scope: the stream keeps the pointer for the turn.
 static const tool_envelope MUSE_PLAIN_ENV = {.proto = TP_MUSE_PLAIN};
+static const tool_envelope INKLING_PLAIN_ENV = {
+    .proto = TP_INKLING2,
+    .parse_only = true,
+};
 
 // Phase 1 of a turn: the prompt into the model inside one device turn, reusing
 // what the slot or the shared store holds (the slot's KV is free; the store
@@ -5292,14 +5315,22 @@ static bool turn_open(turn_result *t) {
     gen_ctx *g = t->g;
     const completion_req *q = t->q;
     completion_prep *prep = t->prep;
-    // A protocol whose own demultiplexer follows the channels (the Harmony
-    // and Gemma 4 envelopes) starts the splitter cold and owns that state;
-    // any other turn starts where its prompt left it.
-    bool demux_channels = env && (env->proto == TP_HARMONY || env->proto == TP_GEMMA4);
+    const tool_envelope *stream_env = env ? env
+        : chat && s->tmpl == TMPL_INKLING2 && !q->schema && !q->json_mode
+        ? &INKLING_PLAIN_ENV
+        : q->stream && chat && s->tmpl == TMPL_MUSE && q->schema
+        ? &MUSE_PLAIN_ENV : NULL;
+    // A protocol whose own demultiplexer follows the channels (Harmony,
+    // Gemma 4, and Inkling 2 Mini) starts the splitter cold and owns that
+    // state; any other turn starts where its prompt left it.
+    bool demux_channels = stream_env &&
+                          (stream_env->proto == TP_HARMONY ||
+                           stream_env->proto == TP_GEMMA4 ||
+                           stream_env->proto == TP_INKLING2);
     t->primed = t->reasoning_open && !demux_channels;
     // ...and that demultiplexer, streamed and buffered, reads the turn from
-    // the opener the prompt wrote, as the model does: a Gemma 4 continuation
-    // whose prompt opened the thought channel is reasoning until it closes.
+    // the opener the prompt wrote, as the model does: a Gemma 4 or Inkling
+    // continuation whose prompt opened the thought channel is reasoning until it closes.
     t->demux_opener = demux_channels && t->reasoning_open ? rs->opener : NULL;
     if (t->primed)
         engine_think_started(e);
@@ -5315,15 +5346,12 @@ static bool turn_open(turn_result *t) {
     else
         think_init(&g->ts, chat ? m->think_open : NULL, m->think_close);
     think_trim_newlines(&g->ts, m->think_trim_nl);
-    const tool_envelope *stream_env = env ? env
-        : q->stream && chat && s->tmpl == TMPL_MUSE && q->schema
-        ? &MUSE_PLAIN_ENV : NULL;
     if (q->stream && stream_env) {
         tool_stream_sink sink = { g, sink_reasoning, sink_content, sink_call_begin,
                                   sink_call_args, sink_call_end };
         tool_stream_init(&g->tsx, stream_env, &sink);
         g->tsx_on = true;
-        if (t->demux_opener && stream_env == env)
+        if (t->demux_opener)
             tool_stream_feed(&g->tsx, t->demux_opener, (int)strlen(t->demux_opener));
     }
 
@@ -5654,6 +5682,12 @@ static void turn_respond(turn_result *t) {
             // a parse-only fault keeps what was valid and says what went wrong
             if (fault) t->finish = "envelope_error";
             if (g->tool_implicit && !t->cut_detail) t->cut_detail = "tool_call_implicit_close";
+        } else if (chat && s->tmpl == TMPL_INKLING2 && !q->schema && !q->json_mode) {
+            bool fault = false;
+            n_tc = envelope_map_buffered(&INKLING_PLAIN_ENV, g, &tc, t->turn_cut,
+                                         t->demux_opener, &fault);
+            if (n_tc >= 1 && !strcmp(t->finish, "stop")) t->finish = "tool_calls";
+            if (n_tc < 0) n_tc = 0;
         } else if (chat) {
             if (s->tmpl == TMPL_MUSE && q->schema)
                 muse_user_payload_strip(&g->out);

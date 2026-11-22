@@ -31,6 +31,7 @@ MTP_LAYERS = 0   # extra trailing blocks declared as NextN/MTP predictor heads
 # load cost minutes of CPU. Not a model feature -- a load-cost fixture.
 SPECIALS = 0
 CONTROL = []  # --control: named control tokens appended to the vocabulary
+EOS_TOKEN = None  # --eos-token: set tokenizer.ggml.eos_token_id to this vocab piece
 CHAT_TEMPLATE = None  # --chat-template-file: tokenizer.chat_template text
 # Gemma-4 E-series: per-layer embeddings plus a tail of layers that own no KV
 # cache. Both mechanisms are structural, so a tiny random model exercises the
@@ -405,6 +406,9 @@ while i < len(args):
         # bytes, which is the whole point of testing it
         i += 1
         CONTROL = [x for x in args[i].split(",") if x]
+    elif a == "--eos-token":
+        i += 1
+        EOS_TOKEN = args[i]
     elif a == "--chat-template-file":
         # embed this file's text as tokenizer.chat_template, so a test can
         # pin template detection on a vocabulary it chose (--control)
@@ -838,7 +842,7 @@ meta_kvs = [
     kaf("tokenizer.ggml.scores", [0.0] * N_VOCAB),
     kai("tokenizer.ggml.token_type", TTYPE),
     ku("tokenizer.ggml.bos_token_id", 1),
-    ku("tokenizer.ggml.eos_token_id", 2),
+    ku("tokenizer.ggml.eos_token_id", VOCAB.index(EOS_TOKEN) if EOS_TOKEN else 2),
     kb("tokenizer.ggml.add_bos_token", True),
 ]
 if ARCH == "deepseek2":
