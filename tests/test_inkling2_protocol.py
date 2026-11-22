@@ -496,16 +496,19 @@ def test_loop_guard_closes_thinking_and_scopes_to_reasoning(server, server_loop)
 
 
 def test_f3_buffered_parse_only_other_family_keeps_no_reasoning(tmp_path):
-    """F3: non-Inkling buffered parse_only turns keep 2fc588b9 behaviour:
-    envelope_map_buffered does not pull reasoning via tool_stream_map_channels_ex
-    for non-Inkling protocols (verified with qwen3-coder parse_only auto)."""
+    """F3: non-Inkling buffered parse_only and auto turns preserve 2fc588b9 behaviour:
+    - qwen3-coder auto (parse_only=True) splits <think> via think_init without
+      tool_stream_map_channels_ex touching reasoning;
+    - gemma4 auto (!parse_only) maps via tool_envelope_map_turn (as at 2fc588b9);
+    while C tests in tests/test_tools.c verify NULL reasoning on parse_only
+    TP_GEMMA4 / TP_HARMONY."""
     m = tmp_path / "q3c_po.gguf"
     subprocess.run(
         [
             sys.executable,
             ROOT / "scripts/make-test-model.py",
             "--control",
-            "<|im_start|>,<|im_end|>",
+            "<|im_start|>,<|im_end|>,<|tool_call>,<tool_call|>,<turn|>,<|tool_response>",
             str(m),
         ],
         check=True,
@@ -534,6 +537,7 @@ def test_f3_buffered_parse_only_other_family_keeps_no_reasoning(tmp_path):
                 "temperature": 0,
                 "stream": False,
                 "runner_test_reply": (
+                    "<think>plan</think>\n"
                     "<tool_call>\n<function=add>\n<parameter=a>\n1\n</parameter>\n"
                     "<parameter=b>\n2\n</parameter>\n</function>\n</tool_call><|im_end|>"
                 ),
@@ -544,6 +548,40 @@ def test_f3_buffered_parse_only_other_family_keeps_no_reasoning(tmp_path):
         msg = d["choices"][0]["message"]
         assert len(msg.get("tool_calls") or []) == 1, d
         assert not msg.get("reasoning_content"), d
+        assert msg.get("content") == "<think>plan</think>\n", d
+
+    with RunnerServer(
+        exe,
+        m,
+        ctx=2048,
+        parallel=1,
+        extra_args=["--gpu", "off", "-t", "2", "--chat-template", "gemma4"],
+        env={"RUNNER_TEST_SCRIPTED_REPLY": "1"},
+    ) as gsrv:
+        with urllib.request.urlopen(gsrv.base_url + "/v1/models", timeout=30) as r:
+            gmodel = json.load(r)["data"][0]["id"]
+        code, gd = _post(
+            gsrv,
+            "/v1/chat/completions",
+            {
+                "model": gmodel,
+                "messages": [{"role": "user", "content": "call"}],
+                "tools": [ADD_TOOL],
+                "tool_choice": "auto",
+                "max_tokens": 200,
+                "temperature": 0,
+                "stream": False,
+                "runner_test_reply": (
+                    "<|channel>thought\nplan<channel|>"
+                    "<|tool_call>call:add{a:1,b:2}<tool_call|><|tool_response>"
+                ),
+            },
+        )
+        assert code == 200, gd
+        assert gd["runner_telemetry"]["tool_protocol"]["parse_only"] is False, gd
+        gmsg = gd["choices"][0]["message"]
+        assert len(gmsg.get("tool_calls") or []) == 1, gd
+        assert gmsg.get("reasoning_content") == "plan", gd
 
 
 def test_d1_plain_chat_without_tools_emits_no_tool_calls(server):
@@ -999,9 +1037,101 @@ def test_t2_loop_guard_unscripted_emits_end_message_and_continues(tmp_path):
     assert all(t == tid_after for t in toks[close_at + 1 :]) and len(toks) > close_at + 1, toks
 
 
+def test_r2_cli_chat_stops_at_turn_header(tmp_path):
+    """R2 residue: CLI -i chat on Inkling adds turn-header stops and halts at
+    <|message_user|> without decoding further tokens."""
+    m = tmp_path / "ink_cli.gguf"
+    subprocess.run(
+        [
+            sys.executable,
+            ROOT / "scripts/make-test-model.py",
+            "--zero-branches",
+            "--control",
+            INKLING_CONTROLS,
+            "--eos-token",
+            "<|content_model_end_sampling|>",
+            str(m),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    _patch_embd_to_emit_then_header(m, "a", "<|message_user|>")
+    exe = find_runner(ROOT)
+    p = subprocess.run(
+        [
+            str(exe),
+            "-m",
+            str(m),
+            "--chat-template",
+            "inkling2",
+            "-i",
+            "-n",
+            "16",
+            "--temp",
+            "0",
+            "--no-tray",
+            "-c",
+            "1024",
+        ],
+        input=b"hi\n/exit\n",
+        capture_output=True,
+        timeout=60,
+    )
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    out = p.stdout.decode(errors="replace")
+    err = p.stderr.decode(errors="replace")
+    assert "a" in out and "<|message_user|>" not in out, (out, err)
+    assert "[1 tok," in err and "ended_at=turn_header <|message_user|>" in err, err
+
+
+def test_plain_chat_strips_spelled_end_message_outside_channel(server):
+    """Spelled <|end_message|> in bare TS_INK_TEXT outside any channel does
+    not leak into content in buffered or streamed plain chat."""
+    reply = "hello<|end_message|><|content_model_end_sampling|>"
+    code, d = _post(
+        server,
+        "/v1/chat/completions",
+        {
+            "model": server.model_id,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 32,
+            "temperature": 0,
+            "stream": False,
+            "runner_test_reply": reply,
+        },
+    )
+    assert code == 200, d
+    assert d["choices"][0]["finish_reason"] == "stop", d
+    assert d["choices"][0]["message"]["content"] == "hello", d
+    assert not d["choices"][0]["message"].get("tool_calls"), d
+
+    ev = _post_stream(
+        server,
+        "/v1/chat/completions",
+        {
+            "model": server.model_id,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 32,
+            "temperature": 0,
+            "stream": True,
+            "runner_test_reply": reply,
+        },
+    )
+    chunks = [c["choices"][0] for c in ev if c.get("choices")]
+    txt = "".join(ch.get("delta", {}).get("content", "") for ch in chunks)
+    assert txt == "hello", chunks
+
+
 def test_t3_end_message_inside_json_string_argument_http(server):
-    """T3: A JSON string argument containing literal '<|end_message|>' stays a
-    single call argument in both buffered and streamed /v1/chat/completions."""
+    """T3 HTTP checks:
+    (a) JSON Unicode escape '\\u003c|end_message|>' preserves '<|end_message|>'
+        across JSON serialization in buffered and streamed calls.
+    (b) Scripted control token '<|end_message|>' inside a constrained JSON string
+        argument is masked inside SN_STR by constraint_spelling_ok and closes
+        cleanly instead of leaking the control token or corrupting the frame.
+    (Note: raw ASCII '<|end_message|>' retry in inkling_parse_call is covered
+    in tests/test_tools.c:test_inkling2_t3_edge_cases because runner_test_reply
+    encodes '<|end_message|>' as control token TT_CONTROL.)"""
     echo_tool = {
         "type": "function",
         "function": {
@@ -1014,35 +1144,62 @@ def test_t3_end_message_inside_json_string_argument_http(server):
             },
         },
     }
-    # Encode '<' as \u003c in the scripted string so tok_encode does not match
-    # the control token <|end_message|>; JSON decoding restores '<|end_message|>',
-    # verifying literal '<|end_message|>' inside arguments survives demux & JSON.
-    reply = (
+    esc_reply = (
         '<|message_model|>echo<|content_invoke_tool_json|>'
         '{"name":"echo","args":{"text":"alpha \\u003c|end_message|> omega"}}'
         '<|end_message|><|content_model_end_sampling|>'
     )
-    code, d = _post(
-        server,
-        "/v1/chat/completions",
-        {
-            "model": server.model_id,
-            "messages": [{"role": "user", "content": "echo"}],
-            "tools": [echo_tool],
-            "tool_choice": "required",
-            "max_tokens": 128,
-            "temperature": 0,
-            "stream": False,
-            "runner_test_reply": reply,
-        },
-    )
-    assert code == 200, d
-    assert d["choices"][0]["finish_reason"] == "tool_calls", d
-    tc = d["choices"][0]["message"]["tool_calls"]
-    assert len(tc) == 1 and tc[0]["function"]["name"] == "echo", tc
-    assert json.loads(tc[0]["function"]["arguments"]) == {"text": "alpha <|end_message|> omega"}, tc
+    for stream_mode in (False, True):
+        if not stream_mode:
+            code, d = _post(
+                server,
+                "/v1/chat/completions",
+                {
+                    "model": server.model_id,
+                    "messages": [{"role": "user", "content": "echo"}],
+                    "tools": [echo_tool],
+                    "tool_choice": "required",
+                    "max_tokens": 128,
+                    "temperature": 0,
+                    "stream": False,
+                    "runner_test_reply": esc_reply,
+                },
+            )
+            assert code == 200, d
+            assert d["choices"][0]["finish_reason"] == "tool_calls", d
+            tc = d["choices"][0]["message"]["tool_calls"]
+            assert len(tc) == 1 and tc[0]["function"]["name"] == "echo", tc
+            assert json.loads(tc[0]["function"]["arguments"]) == {"text": "alpha <|end_message|> omega"}, tc
+        else:
+            ev = _post_stream(
+                server,
+                "/v1/chat/completions",
+                {
+                    "model": server.model_id,
+                    "messages": [{"role": "user", "content": "echo"}],
+                    "tools": [echo_tool],
+                    "tool_choice": "required",
+                    "max_tokens": 128,
+                    "temperature": 0,
+                    "stream": True,
+                    "runner_test_reply": esc_reply,
+                },
+            )
+            chunks = [c["choices"][0] for c in ev if c.get("choices")]
+            arg_str = "".join(
+                tc_part.get("function", {}).get("arguments", "")
+                for ch in chunks
+                for tc_part in ch.get("delta", {}).get("tool_calls", [])
+            )
+            assert json.loads(arg_str) == {"text": "alpha <|end_message|> omega"}, chunks
 
-    ev = _post_stream(
+    # Real control token <|end_message|> inside constrained SN_STR is blocked:
+    raw_ctrl_reply = (
+        '<|message_model|>echo<|content_invoke_tool_json|>'
+        '{"name":"echo","args":{"text":"alpha <|end_message|> omega"}}'
+        '<|end_message|><|content_model_end_sampling|>'
+    )
+    code, d_blk = _post(
         server,
         "/v1/chat/completions",
         {
@@ -1052,17 +1209,13 @@ def test_t3_end_message_inside_json_string_argument_http(server):
             "tool_choice": "required",
             "max_tokens": 128,
             "temperature": 0,
-            "stream": True,
-            "runner_test_reply": reply,
+            "runner_test_reply": raw_ctrl_reply,
         },
     )
-    chunks = [c["choices"][0] for c in ev if c.get("choices")]
-    arg_str = "".join(
-        tc_part.get("function", {}).get("arguments", "")
-        for ch in chunks
-        for tc_part in ch.get("delta", {}).get("tool_calls", [])
-    )
-    assert json.loads(arg_str) == {"text": "alpha <|end_message|> omega"}, chunks
+    assert code == 200, d_blk
+    tc_blk = d_blk["choices"][0]["message"]["tool_calls"]
+    assert len(tc_blk) == 1 and tc_blk[0]["function"]["name"] == "echo", tc_blk
+    assert json.loads(tc_blk[0]["function"]["arguments"]) == {"text": "alpha "}, tc_blk
 
 
 

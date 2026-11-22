@@ -2836,6 +2836,7 @@ snode *schema_compile_inkling2_turn(struct jv *tools, bool allow_final,
     snode *n = schema_compile_inkling2_turn_raw(r.tools, allow_final, only_tool, r.final,
                                                 allow_reasoning, parallel, err, errcap);
     refd_free(&r);
+    if (n) n->has_control_sentinel = true;
     return n;
 }
 

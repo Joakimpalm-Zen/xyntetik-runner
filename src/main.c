@@ -8847,12 +8847,23 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
         // spelled for the split, by the same rule (R2.15)
         rt->e.spell_think = think_split_is_control(rt->m.think_open, rt->m.split_open, true,
                                                    rt->e.schema || rt->e.json_mode);
+        if (tmpl == TMPL_INKLING2 && !rt->e.schema && !rt->e.json_mode) {
+            int hdr_stops[4];
+            int nh = template_inkling_turn_header_stops(&rt->tok, hdr_stops, 4);
+            engine_set_request_stops(&rt->e, hdr_stops, nh);
+        } else {
+            engine_set_request_stops(&rt->e, NULL, 0);
+        }
         think_trim_newlines(&co.ts, rt->m.think_trim_nl);
         n_gen = engine_generate(&rt->e, logits, o->n_predict, chat_cb, &co, &gtime);
+        const char *hdr = (tmpl == TMPL_INKLING2 && rt->e.hit_stop && rt->e.stop_id >= 0)
+                        ? tok_raw(&rt->tok, rt->e.stop_id) : NULL;
         think_finish(&co.ts, chat_emit, &co);
         if (co.in_think) fputs("\n[/thinking]", stdout);
         think_free(&co.ts);
         printf("\n");
+        if (hdr && template_is_inkling_turn_header(hdr))
+            fprintf(stderr, "[ended_at=turn_header %s]\n", hdr);
         fprintf(stderr, "[%d tok, %.1f tok/s]\n",
                 n_gen, n_gen / (gtime > 0 ? gtime : 1e-9));
     }

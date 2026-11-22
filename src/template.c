@@ -9488,7 +9488,7 @@ static int ts_inkling(tool_stream *s, const char *bytes, int n) {
     bool no_tools = s->env && s->env->proto == TP_INKLING_PLAIN;
     bool lenient = s->env && s->env->parse_only;
     static const char *const START_MARKERS[] = {
-        INK_MSG_MODEL, INK_END_TURN, INK_THINK, INK_TEXT,
+        INK_MSG_MODEL, INK_END_MSG, INK_END_TURN, INK_THINK, INK_TEXT,
         INK_ERR, INK_TOOL_TEXT, INK_TOOL_JSON
     };
     static const char *const END_MARKERS[] = { INK_END_MSG, INK_END_TURN };
@@ -9502,6 +9502,10 @@ static int ts_inkling(tool_stream *s, const char *bytes, int n) {
                 s->state = TS_DONE;
                 s->head_n = 0;
                 return 0;
+            }
+            if (ts_starts(s, INK_END_MSG)) {
+                head_drop(s, strlen(INK_END_MSG));
+                break;
             }
             if (ts_starts(s, INK_MSG_MODEL)) {
                 head_drop(s, strlen(INK_MSG_MODEL));
@@ -9854,7 +9858,8 @@ int tool_stream_finish_ex(tool_stream *s, bool truncated) {
         int rc = 0;
         bool framing = s->state == TS_INK_CALL || s->state == TS_INK_HEADER ||
                        (s->state == TS_INK_START &&
-                        (ts_partial(s, INK_MSG_MODEL) || ts_partial(s, INK_END_TURN) ||
+                        (ts_partial(s, INK_MSG_MODEL) || ts_partial(s, INK_END_MSG) ||
+                         ts_partial(s, INK_END_TURN) ||
                          ts_partial(s, INK_THINK) || ts_partial(s, INK_TEXT) ||
                          ts_partial(s, INK_ERR) || ts_partial(s, INK_TOOL_TEXT) ||
                          ts_partial(s, INK_TOOL_JSON)));

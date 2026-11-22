@@ -5255,6 +5255,56 @@ static void test_inkling2_t3_edge_cases(void) {
         tool_stream_free(&s);
     }
 
+    // T3c (#5): plain chat text followed directly by spelled <|end_message|>
+    // outside a channel stops before <|end_message|> and never leaks it.
+    {
+        tool_envelope plain = { .proto = TP_INKLING_PLAIN, .parse_only = true, .max_calls = 8 };
+        const char *stray = "hello<|end_message|><|content_model_end_sampling|>";
+        sbuf reason = {0}, content = {0}, tc = {0};
+        int nc = -1;
+        assert(tool_stream_map_channels_ex(&plain, stray, strlen(stray), false,
+                                           &reason, &content, &tc, &nc, NULL) == 0);
+        assert(nc == 0 && content.n == 5 && !memcmp(content.s, "hello", 5));
+        free(reason.s); free(content.s); free(tc.s);
+
+        tool_stream s;
+        demux_log dl = {0};
+        tool_stream_sink sink = { &dl, log_reasoning, log_content, log_begin, log_args, log_end };
+        tool_stream_init(&s, &plain, &sink);
+        for (size_t i = 0; i < strlen(stray); i++)
+            assert(tool_stream_feed(&s, stray + i, 1) == 0);
+        assert(tool_stream_finish_ex(&s, false) == 0);
+        assert(dl.begins == 0 && dl.content.n == 5 && !memcmp(dl.content.s, "hello", 5));
+        free(dl.reasoning.s); free(dl.content.s); free(dl.args.s); free(dl.names.s);
+        tool_stream_free(&s);
+    }
+
+    // F3 C contract: non-Inkling parse_only mappers passing NULL reasoning
+    // (as envelope_map_buffered does via keep_reason) extract 0 reasoning
+    // even when Gemma 4 or Harmony thought channels precede the call.
+    {
+        tool_envelope g4_po = { .proto = TP_GEMMA4, .tools = tools, .parse_only = true, .max_calls = 8 };
+        const char *g4_doc = "<|channel>thought\nplan<channel|><|tool_call>call:add{a:1,b:2}<tool_call|>";
+        sbuf content = {0}, tc = {0}, reason = {0};
+        int nc = 0;
+        assert(tool_stream_map_channels_ex(&g4_po, g4_doc, strlen(g4_doc), false,
+                                           NULL, &content, &tc, &nc, NULL) == 0 && nc == 1);
+        assert(tool_stream_map_channels_ex(&g4_po, g4_doc, strlen(g4_doc), false,
+                                           &reason, &content, &tc, &nc, NULL) == 0 && reason.n > 0);
+        free(content.s); free(tc.s); free(reason.s);
+
+        tool_envelope h_po = { .proto = TP_HARMONY, .tools = tools, .parse_only = true, .max_calls = 8 };
+        const char *h_doc =
+            "<|channel|>analysis<|message|>plan<|end|>"
+            "<|start|>assistant<|channel|>commentary to=functions.add<|constrain|>json<|message|>{\"a\":1,\"b\":2}";
+        content = (sbuf){0}; tc = (sbuf){0}; reason = (sbuf){0}; nc = 0;
+        assert(tool_stream_map_channels_ex(&h_po, h_doc, strlen(h_doc), false,
+                                           NULL, &content, &tc, &nc, NULL) == 0 && nc == 1);
+        assert(tool_stream_map_channels_ex(&h_po, h_doc, strlen(h_doc), false,
+                                           &reason, &content, &tc, &nc, NULL) == 0 && reason.n > 0);
+        free(content.s); free(tc.s); free(reason.s);
+    }
+
     jv_free(tools);
 }
 
