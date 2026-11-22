@@ -966,25 +966,6 @@ bool template_think_tags(int tmpl, const char **open, const char **close) {
     return false;
 }
 
-int template_inkling_spell_ids(tokenizer *tok, int *out, int cap) {
-    if (!tok || !out || cap <= 0) return 0;
-    static const char *const tags[] = {
-        "<|message_model|>",
-        "<|content_thinking|>",
-        "<|content_text|>",
-        "<|end_message|>",
-        "<|content_invoke_tool_json|>",
-        "<|content_invoke_tool_text|>",
-        "<|content_tool_error|>",
-    };
-    int n = 0;
-    for (size_t i = 0; i < sizeof tags / sizeof *tags && n < cap; i++) {
-        int id = tok_find(tok, tags[i]);
-        if (id >= 0 && tok_is_control(tok, id)) out[n++] = id;
-    }
-    return n;
-}
-
 // Apertus deliberates between two CONTROL tokens, which decode to no bytes.
 // They are not a text pair (template_think_tags gives the family none, so a
 // constrained turn has no prelude to probe for); a chat turn spells them for
@@ -9350,6 +9331,25 @@ static int ts_gemma4(tool_stream *s, const char *bytes, int n) {
 #define INK_ERR       "<|content_tool_error|>"
 #define INK_TOOL_TEXT "<|content_invoke_tool_text|>"
 #define INK_TOOL_JSON "<|content_invoke_tool_json|>"
+
+int template_inkling_spell_ids(tokenizer *tok, int *out, int cap) {
+    if (!tok || !out || cap <= 0) return 0;
+    static const char *const tags[] = {
+        INK_MSG_MODEL,
+        INK_THINK,
+        INK_TEXT,
+        INK_END_MSG,
+        INK_TOOL_JSON,
+        INK_TOOL_TEXT,
+        INK_ERR,
+    };
+    int n = 0;
+    for (size_t i = 0; i < sizeof tags / sizeof *tags && n < cap; i++) {
+        int id = tok_find(tok, tags[i]);
+        if (id >= 0 && tok_is_control(tok, id)) out[n++] = id;
+    }
+    return n;
+}
 
 enum { INK_BAD = -1, INK_MORE = 0, INK_OK = 1 };
 
