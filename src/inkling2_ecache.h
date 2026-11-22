@@ -1,4 +1,4 @@
-// R4.48: a DECODED-EXPERT CACHE for ink2_weights.get_expert (test-side). It sits between the engine and a provider
+// R4.48: a DECODED-EXPERT CACHE for ink2_weights.get_expert. It sits between the engine and a provider
 // that can decode one expert into a buffer (the real checkpoint's provider, tests/inkling2_provider.c, or the
 // fixture's float32 stacks): the engine sees an ordinary ink2_weights and does not know whether it is cached.
 //

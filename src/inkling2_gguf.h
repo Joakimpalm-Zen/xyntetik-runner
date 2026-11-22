@@ -31,7 +31,15 @@ typedef struct ink2g ink2g;
 // Opens path, reads the shape from its metadata into *s (ink2_shape_derive included) and checks every tensor.
 // NULL with a sentence in why on any refusal.
 ink2g *ink2g_open(const char *path, ink2_shape *s, char *why, size_t wn);
+// The same on a GGUF the caller has open and keeps open (Runner's model_t holds it): nothing is mapped twice.
+// gguf_file is a gguf_file * (src/gguf.h).
+ink2g *ink2g_attach(void *gguf_file, ink2_shape *s, char *why, size_t wn);
 void   ink2g_close(ink2g *g);
+// The shape alone, from an open file's metadata (a header-only handle is enough): 0, or -1 with a sentence.
+int    ink2g_shape(void *gguf_file, ink2_shape *s, char *why, size_t wn);
+// Decode every non-expert tensor now (get is then read-only, safe from several threads); *bytes, if given: the
+// float32 bytes they hold.
+int    ink2g_decode_all(ink2g *g, size_t *bytes);
 void   ink2g_weights(ink2g *g, ink2_weights *w);   // get + get_expert, ctx = g
 const ink2_tensor *ink2g_get(void *ctx, const char *name);
 const ink2_tensor *ink2g_get_expert(void *ctx, const char *stack, int e);
@@ -43,6 +51,7 @@ int ink2g_fill_expert(void *ctx, const char *stack, int e, float *dst, int64_t *
 #define INK2G_CTRL_NO_FLIP      2   // static_weight transposed back without reversing the taps
 #define INK2G_CTRL_SWAP_NIBBLE  4   // NVFP4 element j in the high nibble
 void ink2g_set_control(ink2g *g, int flags);
-// The expert storage of physical layer b: 'N' NVFP4 + .scale, 'B' BF16, 'F' F32.
+// The expert storage of physical layer b's gate_up stack: 'N' NVFP4 + .scale, 'B' BF16, 'F' F32, 'Q' another ggml type
+// (Runner's dequantizer; with a .scale beside it, the decoded value times the expert's factor).
 char ink2g_expert_kind(const ink2g *g, int b);
 #endif

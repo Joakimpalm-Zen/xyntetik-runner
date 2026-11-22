@@ -154,7 +154,18 @@ int main(int argc, char **argv) {
     const double t_open = now_s() - t0;
 
     ink2_cache c;
-    if (ink2_cache_init(&c, &s, N)) { fprintf(stderr, "cache init failed\n"); return 1; }
+    const int prefill = getenv("INK2_READ_PREFILL") ? atoi(getenv("INK2_READ_PREFILL")) : 0;
+    // INK2_READ_WINDOW=1: the sliding applications' K/V held for the window only (ink2_cache_init_window)
+    const int windowed = getenv("INK2_READ_WINDOW") ? atoi(getenv("INK2_READ_WINDOW")) : 0;
+    const int widest = prefill > chunk ? prefill : chunk;
+    if (windowed ? ink2_cache_init_window(&c, &s, N, widest) : ink2_cache_init(&c, &s, N)) {
+        fprintf(stderr, "cache init failed\n");
+        return 1;
+    }
+    if (windowed == 2) c.test_drop_key = 1;   // INK2_READ_WINDOW=2: the cap's control (must change the rows)
+    fprintf(stderr, "cache: %s, %.1f MiB\n", windowed == 2 ? "CONTROL: windowed, first admitted key dropped" :
+            windowed ? "sliding K/V for the window only" : "full size",
+            ink2_cache_bytes(&c, &s) / 1048576.0);
     const size_t V = (size_t)s.vocab_used;
     float *rows = malloc(sizeof(float) * V * (size_t)chunk);
     char path[4096];
@@ -163,7 +174,6 @@ int main(int argc, char **argv) {
     if (!rows || !fo) { fprintf(stderr, "cannot allocate or open %s\n", path); return 1; }
     long long nonfinite = 0;
     double t1 = now_s();
-    const int prefill = getenv("INK2_READ_PREFILL") ? atoi(getenv("INK2_READ_PREFILL")) : 0;
     double step_sum = 0, step_max = 0;
     int steps = 0;
     for (int p0 = 0; p0 < N;) {

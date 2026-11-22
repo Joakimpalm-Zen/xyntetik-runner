@@ -3,6 +3,7 @@
 #include "micro_sched.h"   // R3.72: a tiled turn's decode schedule
 #include "decide.h"
 #include "clef.h"
+#include "inkling2_model.h"
 #include "fpclass.h"
 #include "dpo.h"
 #include "hfhub.h"
@@ -1750,6 +1751,12 @@ static int run_fit_check(const char *path, int n_ctx_want,
                          const model_params *mp, int n_seq) {
     gguf_file g;
     if (!gguf_open_header(&g, path)) return 1;   // already reported why
+    // inkling2_loop: its own engine's parts, not the llama-style KV formats and split
+    if (!strcmp(gguf_get_str(&g, "general.architecture", ""), "inkling2_loop")) {
+        int rc = model_inkling2_fit_print(&g, path, n_ctx_want, mp->n_batch);
+        gguf_close(&g);
+        return rc;
+    }
 
     model_fit f;
     if (!model_fit_report(&g, n_ctx_want, mp->mtp, &f)) {

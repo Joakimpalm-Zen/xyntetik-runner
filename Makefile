@@ -430,6 +430,25 @@ $(QUANTS_OBJ): src/quants.c $(HDR)
 	mkdir -p $(dir $@)
 	$(CC) $(QUANTS_CFLAGS) -I src -c src/quants.c -o $@
 
+# R4.48.6: Inkling 2 Mini's engine, its GGUF weight source, its decoded-expert cache and the model_t seam. The engine's
+# claim is a serial, uncontracted float32 order (bit for bit against the publisher's reference), so these build with
+# fast-math off and contraction off, as the engine's own test targets do; the rest of the binary keeps -ffast-math.
+INKLING2_CFLAGS = $(filter-out -ffast-math,$(CFLAGS)) -fno-fast-math -ffp-contract=off
+INKLING2_SRC = src/inkling2.c src/inkling2_gguf.c src/inkling2_ecache.c src/inkling2_model.c
+INKLING2_OBJS = $(OBJDIR)/inkling2.o $(OBJDIR)/inkling2_gguf.o $(OBJDIR)/inkling2_ecache.o $(OBJDIR)/inkling2_model.o
+$(OBJDIR)/inkling2.o: src/inkling2.c $(HDR)
+	mkdir -p $(dir $@)
+	$(CC) $(INKLING2_CFLAGS) -I src -c src/inkling2.c -o $@
+$(OBJDIR)/inkling2_gguf.o: src/inkling2_gguf.c $(HDR)
+	mkdir -p $(dir $@)
+	$(CC) $(INKLING2_CFLAGS) -I src -c src/inkling2_gguf.c -o $@
+$(OBJDIR)/inkling2_ecache.o: src/inkling2_ecache.c $(HDR)
+	mkdir -p $(dir $@)
+	$(CC) $(INKLING2_CFLAGS) -I src -c src/inkling2_ecache.c -o $@
+$(OBJDIR)/inkling2_model.o: src/inkling2_model.c $(HDR)
+	mkdir -p $(dir $@)
+	$(CC) $(INKLING2_CFLAGS) -I src -c src/inkling2_model.c -o $@
+
 $(QUANTIZE_OBJ): src/quantize.c $(HDR) Makefile
 	mkdir -p $(dir $@)
 	$(CC) $(QUANTIZE_CFLAGS) -I src -c src/quantize.c -o $@
@@ -531,7 +550,7 @@ CROSS_TARGET ?= riscv64-linux-musl
 CROSS_CFLAGS = -O3 -fno-fast-math -ffp-contract=off -std=gnu11 -Wno-unused-parameter \
                -DRUNNER_GPU_CUDA -DRUNNER_PORTABLE_MATH -DRUNNER_CANON_KERNELS \
                -include src/pmath.h -D_GNU_SOURCE
-CROSS_SRC = $(filter-out $(GPU_SRC) $(TRAY_SRC),$(filter %.c,$(SRC))) \
+CROSS_SRC = $(filter-out $(GPU_SRC) $(TRAY_SRC),$(filter %.c,$(SRC))) $(INKLING2_SRC) \
             src/quants.c src/quantize.c src/cuda.c src/tray.c src/tray_stub.c
 cross-riscv64:
 	@rm -rf .build/cross-$(CROSS_TARGET) && mkdir -p .build/cross-$(CROSS_TARGET)
@@ -550,7 +569,7 @@ cross-riscv64:
 # quantization and crypto objects keep their existing compilation rules.
 RUNNER_OBJ = $(patsubst src/%.c,$(OBJDIR)/%.o,$(filter-out $(MLDSA_SRC),$(filter %.c,$(SRC)))) \
              $(patsubst src/%.m,$(OBJDIR)/%.o,$(filter %.m,$(SRC))) \
-             $(QUANTS_OBJ) $(QUANTIZE_OBJ) $(MLDSA_OBJ)
+             $(QUANTS_OBJ) $(QUANTIZE_OBJ) $(MLDSA_OBJ) $(INKLING2_OBJS)
 # The Windows executable's resources: the UTF-8 application manifest. A build
 # without it is a runner that reads a non-ASCII -p prompt in the ANSI code
 # page (cp1252 on a Western European system, "?" for what that cannot
@@ -621,7 +640,7 @@ runner-turn-guard: $(SRC) $(HDR) src/kernels_ptx.h $(OBJDIR)/build-commit.stamp
 # An optimized object linked into this binary silently loses its sanitizer gate.
 SAN_FLAGS = -O0 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined \
             -fno-omit-frame-pointer -fno-fast-math -std=gnu11 -Wall $(GPU_BACKEND_DEF)
-SAN_SRC = $(filter-out $(QUANTS_OBJ) $(QUANTIZE_OBJ),$(SRC)) src/quants.c src/quantize.c
+SAN_SRC = $(filter-out $(QUANTS_OBJ) $(QUANTIZE_OBJ),$(SRC)) src/quants.c src/quantize.c $(INKLING2_SRC)
 debug: $(SAN_SRC) $(HDR) $(OBJDIR)/build-commit.stamp
 	$(CC) $(SAN_FLAGS) $(BUILD_STAMP) $(SAN_SRC) -o runner-debug $(LDFLAGS)
 
@@ -749,7 +768,7 @@ $(TEST_SCHEMA_OOM): tests/test_schema_oom.c $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJ
 # shared model weights: needs the real model + backend, so it links the same
 # sources the runner does minus the CLI/server front end
 TEST_SHARED_SRC = tests/test_shared_weights.c src/gguf.c src/compat.c \
-                  $(QUANTS_OBJ) src/model.c src/vramreg.c $(GPU_SRC)
+                  $(QUANTS_OBJ) src/model.c $(INKLING2_SRC) src/vramreg.c $(GPU_SRC)
 $(TEST_SHARED): $(TEST_SHARED_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_SHARED_SRC) -o $@ $(LDFLAGS)
 
@@ -758,7 +777,7 @@ $(TEST_SHARED): $(TEST_SHARED_SRC) $(HDR)
 # the kernel's locked-memory limit. The fixture's per-layer token table sits
 # between hot ranges, several pages wide at either page size.
 TEST_MLOCK_SRC = tests/test_mlock.c src/gguf.c src/compat.c \
-                 $(QUANTS_OBJ) src/model.c src/vramreg.c $(GPU_SRC)
+                 $(QUANTS_OBJ) src/model.c $(INKLING2_SRC) src/vramreg.c $(GPU_SRC)
 $(TEST_MLOCK): $(TEST_MLOCK_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_MLOCK_SRC) -o $@ $(LDFLAGS)
 # R3.41: plat_willneed brings a whole unaligned range in on Linux
@@ -821,7 +840,7 @@ test-shared-noid: $(TEST_SHARED) fixture-scale-note
 # (the fixture-scale gates can never see the >2 GB stat() cliff that did it)
 TEST_FILE_ID = $(TEST_BATCH:test-batch%=test-file-identity%)
 TEST_FILE_ID_SRC = tests/test_file_identity.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
-                   $(QUANTS_OBJ) $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                   $(QUANTS_OBJ) $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_FILE_ID): $(TEST_FILE_ID_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_FILE_ID_SRC) -o $@ $(LDFLAGS)
 
@@ -906,7 +925,7 @@ test-help-interface: runner
 # Windows was unaffected only because `test-batch.exe` yields a distinct name.
 TEST_SPLIT_GUARD = $(TEST_BATCH:test-batch%=test-split-guard-bin%)
 TEST_SPLIT_GUARD_SRC = tests/test_split_guard.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
-                       $(QUANTS_OBJ) $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                       $(QUANTS_OBJ) $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_SPLIT_GUARD): $(TEST_SPLIT_GUARD_SRC) $(HDR)
 	$(CC) $(CFLAGS) $(GPU_BACKEND_DEF) -I src $(TEST_SPLIT_GUARD_SRC) -o $@ $(LDFLAGS)
 
@@ -930,7 +949,7 @@ test-split-guard: $(TEST_SPLIT_GUARD) test.gguf
 # batched decode: same sources as the shared-weights test (real model +
 # backend), because the property under test is a backend property
 TEST_BATCH_SRC = tests/test_batch.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
-                 $(QUANTS_OBJ) $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                 $(QUANTS_OBJ) $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_BATCH): $(TEST_BATCH_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_BATCH_SRC) -o $@ $(LDFLAGS)
 
@@ -949,7 +968,7 @@ $(TEST_HOST_HEADER): tests/test_host_header.c $(OBJDIR)/http.o $(OBJDIR)/json.o 
 # engine, because the property under test is that a forked cache produces the
 # same logits the model would have produced by prefilling
 TEST_PREFIX_SRC = tests/test_prefix.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o \
                   $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_PREFIX): $(TEST_PREFIX_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_PREFIX_SRC) -o $@ $(LDFLAGS)
@@ -958,10 +977,10 @@ $(TEST_PREFIX): $(TEST_PREFIX_SRC) $(HDR)
 # prefix gate, because the property under test is the same — bit-identical
 # logits — but on the recurrent (SSM) fold that a rewind must snapshot/restore.
 TEST_RECURRENT_SRC = tests/test_recurrent_rewind.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o \
                   $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 TEST_PENALTY_WINDOW_SRC = tests/test_penalty_window.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o \
                   $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_PENALTY_WINDOW): $(TEST_PENALTY_WINDOW_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_PENALTY_WINDOW_SRC) -o $@ $(LDFLAGS)
@@ -970,7 +989,7 @@ $(TEST_PENALTY_WINDOW): $(TEST_PENALTY_WINDOW_SRC) $(HDR)
 # unrounded, transformers' default rounded); the same link set as the
 # penalty-window gate, since model_load is the interface under test
 TEST_ROPE_YARN_SRC = tests/test_rope_yarn.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o \
                   $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_ROPE_YARN): $(TEST_ROPE_YARN_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_ROPE_YARN_SRC) -o $@ $(LDFLAGS)
@@ -1080,7 +1099,7 @@ test-cuda-batch-q35: runner $(TEST_CUDA_BATCH_Q35) test-ornith.gguf
 # It includes src/cuda.c and needs no driver or device, so it runs on any host,
 # under ASan and UBSan; a borrowed reference is a use-after-free there and an
 # unreturned one a leak. test-cuda-batch-q35 runs it first.
-TEST_BATCH_OWNER_SRC = tests/test_batch_owner.c src/gguf.c src/compat.c src/quants.c src/model.c src/vramreg.c
+TEST_BATCH_OWNER_SRC = tests/test_batch_owner.c src/gguf.c src/compat.c src/quants.c src/model.c $(INKLING2_SRC) src/vramreg.c
 # MinGW's gcc ships no sanitizer runtime (it stops at 'cannot read spec file
 # libsanitizer.spec'), so a Windows build runs the same test without the
 # sanitizers: its reference-count checks still fail a missing retain or release
@@ -1113,7 +1132,7 @@ test-cuda-batch-columns: runner $(TEST_CUDA_BATCH_COLS) test.gguf test-q8.gguf t
 # widening that loop into a public test API; the generated recurrent fixture
 # makes stale-fold reuse observable as byte divergence.
 TEST_REQUEST_STOP_SRC = tests/test_request_stop.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
-                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
+                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/sample.o \
                   $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                   $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(GPU_OBJ)
 $(TEST_REQUEST_STOP): $(TEST_REQUEST_STOP_SRC) src/scheduler.c $(HDR) test-ornith.gguf test-ornith-draft.gguf
@@ -1122,7 +1141,7 @@ $(TEST_REQUEST_STOP): $(TEST_REQUEST_STOP_SRC) src/scheduler.c $(HDR) test-ornit
 # grammar fast-forward: same full-engine link as the prefix test — the gate
 # is byte identity of a real constrained generation with the walk on and off
 TEST_GRAMMAR_FF_SRC = tests/test_grammar_ff.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
-                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
+                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/sample.o \
                   $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                   $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_GRAMMAR_FF): $(TEST_GRAMMAR_FF_SRC) $(HDR)
@@ -1138,7 +1157,7 @@ $(TEST_CHOICE_MASS): $(TEST_CHOICE_MASS_SRC) $(HDR)
 # absolute anchor of --draft-lookup; the CLI identity gate is in
 # tests/test_draft_lookup.py). Links the engine, so it takes engine.c's deps.
 TEST_LOOKUP_DRAFT_SRC = tests/test_lookup_draft.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
-                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
+                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/sample.o \
                   $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                   $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_LOOKUP_DRAFT): $(TEST_LOOKUP_DRAFT_SRC) $(HDR)
@@ -1158,13 +1177,13 @@ $(TEST_UPLOAD_REPORT): tests/test_upload_report.c src/upload_report.h
 # q8 KV tolerance gate: needs the tokenizer too, because it teacher-forces a
 # fixed piece of real text rather than synthetic token ids
 TEST_KV_TOL_SRC = tests/test_kv_tol.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_KV_TOL): $(TEST_KV_TOL_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_KV_TOL_SRC) -o $@ $(LDFLAGS)
 
 # R6.41: a prompt's layer-0 KV rows are a batch-1 prefill's on CUDA's scalar route
 TEST_PREFILL_BITS_SRC = tests/test_prefill_bits.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                        $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                        $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_PREFILL_BITS): $(TEST_PREFILL_BITS_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_PREFILL_BITS_SRC) -o $@ $(LDFLAGS)
 
@@ -1324,7 +1343,7 @@ $(FINITE_CHECK_OBJ): tests/finite_check.c tests/finite_check.h
 	$(CC) $(QUANTS_CFLAGS) -I tests -c tests/finite_check.c -o $@
 
 TEST_TC_TOL_SRC = tests/test_tc_tol.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ) \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ) \
                   $(FINITE_CHECK_OBJ)
 $(TEST_TC_TOL): $(TEST_TC_TOL_SRC) $(HDR) tests/finite_check.h
 	$(CC) $(CFLAGS) -I src -I tests $(TEST_TC_TOL_SRC) -o $@ $(LDFLAGS)
@@ -1332,7 +1351,7 @@ $(TEST_TC_TOL): $(TEST_TC_TOL_SRC) $(HDR) tests/finite_check.h
 # adaptation D3: finite-difference gradient gate over the full-coverage
 # adapter fixture (rank-2 pairs on every hooked projection of every layer)
 TEST_LORA_GRAD_SRC = tests/test_lora_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
-                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o \
+                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o \
                   $(GPU_OBJ)
 $(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-apertus-train.gguf test-lora-apertus.full.gguf test-apertus-wide.gguf test-lora-apertus-wide.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-prope.gguf test-lora-prope.full.gguf test-prope-neox.gguf test-lora-prope-neox.full.gguf test-ornith.gguf test-lora-ornith.full.gguf test-clef.gguf test-lora-clef.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf test-gemma3.gguf test-lora-gemma3.full.gguf test-gemma4.gguf test-lora-gemma4.full.gguf test-g4v.gguf test-lora-g4v.full.gguf test-es8.gguf test-lora-es8.full.gguf test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n.full.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_LORA_GRAD_SRC) -o $@ $(LDFLAGS)
@@ -1340,7 +1359,7 @@ $(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf te
 # R8.25.2 gate A1: full-weight training's dense gradient against finite
 # differences, its determinism, and the Q8_0 read copy after a step
 TEST_FULL_GRAD_SRC = tests/test_full_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
-                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o \
+                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o \
                   $(GPU_OBJ)
 $(TEST_FULL_GRAD): $(TEST_FULL_GRAD_SRC) $(HDR) test.gguf test-q8.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_FULL_GRAD_SRC) -o $@ $(LDFLAGS)
@@ -1357,7 +1376,7 @@ test-lora.full.gguf: test.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
 # directional derivative against central differences of the actual loss)
 # before any training wall clock is spent on the objective.
 TEST_DPO_GRAD_SRC = tests/test_dpo_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
-                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o \
+                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) \
                   $(OBJDIR)/dpo.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_DPO_GRAD): $(TEST_DPO_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_DPO_GRAD_SRC) -o $@ $(LDFLAGS)
@@ -1367,7 +1386,7 @@ $(TEST_DPO_GRAD): $(TEST_DPO_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf
 # teacher, an independent loss formula, and central differences of the loss,
 # on the plain, logit-scaled (granite) and soft-capped (gemma4) heads
 TEST_KD_GRAD_SRC = tests/test_kd_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
-                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o \
+                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) \
                   $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_KD_GRAD): $(TEST_KD_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-granite.gguf test-lora-granite.full.gguf test-gemma4.gguf test-lora-gemma4.full.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_KD_GRAD_SRC) -o $@ $(LDFLAGS)
@@ -1378,7 +1397,7 @@ test-lora-q8.full.gguf: test-q8.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LI
 # D8 slice 1: device transposed matvec vs the CPU trainer's chain (skips
 # without a CUDA device; the three fixture runs cover F32, Q8_0 and BF16)
 TEST_MVT_SRC = tests/test_mvt.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_MVT): $(TEST_MVT_SRC) $(HDR) test.gguf test-q8.gguf test-bf16.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_MVT_SRC) -o $@ $(LDFLAGS)
 
@@ -1386,7 +1405,7 @@ $(TEST_MVT): $(TEST_MVT_SRC) $(HDR) test.gguf test-q8.gguf test-bf16.gguf
 # blocks: the transposed product the CPU chain's bytes, the forward product
 # batch-invariant (skips without a CUDA device)
 TEST_TRAIN_GPU_SRC = tests/test_train_gpu.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_TRAIN_GPU): $(TEST_TRAIN_GPU_SRC) $(HDR) tests/dn_ref.h tests/attn_ref.h
 	$(CC) $(CFLAGS) -I src $(TEST_TRAIN_GPU_SRC) -o $@ $(LDFLAGS)
 
@@ -1397,7 +1416,7 @@ $(TEST_TRAIN_GPU): $(TEST_TRAIN_GPU_SRC) $(HDR) tests/dn_ref.h tests/attn_ref.h
 # QUANTS_CFLAGS, not CFLAGS: under -ffast-math gcc reassociates the host
 # Q4_K kernel, and the reference stops being the canonical order (R12.1b).
 TEST_MVCANON_SRC = tests/test_mvcanon.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
-                   $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o \
+                   $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o \
                    $(GPU_OBJ)
 $(TEST_MVCANON): $(TEST_MVCANON_SRC) src/quants.c $(HDR) test.gguf test-q8.gguf
 	$(CC) $(QUANTS_CFLAGS) -ffp-contract=off -DRUNNER_CANON_KERNELS -I src \
@@ -1534,7 +1553,7 @@ test-lora-qk.full.gguf: test-qk.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LI
 # forced logits, 0/64 top-1 flips + bounded deviation, per (type, model) via
 # the model argument. CPU-only, so it needs no GPU backend to be meaningful.
 TEST_I8_TOL_SRC = tests/test_i8_tol.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o src/quants.c \
-                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_I8_TOL): $(TEST_I8_TOL_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_I8_TOL_SRC) -o $@ $(LDFLAGS)
 
@@ -1542,14 +1561,14 @@ $(TEST_I8_TOL): $(TEST_I8_TOL_SRC) $(HDR)
 # forced logits, 0/64 top-1 flips + bounded deviation, per (type, model) via
 # the model argument. Self-skips on backends with no fast matvec kernel.
 TEST_MV_TOL_SRC = tests/test_mv_tol.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_MV_TOL): $(TEST_MV_TOL_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_MV_TOL_SRC) -o $@ $(LDFLAGS)
 
 # cooperative-KV attention read: same shape as the fast-matvec gate, for the
 # other reassociating Metal route. Self-skips where it never dispatches.
 TEST_ATTN_TOL_SRC = tests/test_attn_tol.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                    $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                    $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_ATTN_TOL): $(TEST_ATTN_TOL_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_ATTN_TOL_SRC) -o $@ $(LDFLAGS)
 
@@ -1560,7 +1579,7 @@ $(TEST_ATTN_TOL): $(TEST_ATTN_TOL_SRC) $(HDR)
 # compares the logit vectors themselves.
 TEST_CUDA_TEARDOWN = $(TEST_BATCH:test-batch%=test-cuda-teardown%)
 TEST_CUDA_TEARDOWN_SRC = tests/test_cuda_teardown.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_CUDA_TEARDOWN): $(TEST_CUDA_TEARDOWN_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src -I tests $(TEST_CUDA_TEARDOWN_SRC) -o $@ $(LDFLAGS)
 
@@ -1570,7 +1589,7 @@ $(TEST_CUDA_TEARDOWN): $(TEST_CUDA_TEARDOWN_SRC) $(HDR)
 # experts are the route's scope; MOE_LIMB_LAYERS=all (default) or 0,15,29.
 TEST_CUDA_MOE_LIMB = $(TEST_BATCH:test-batch%=test-moe-limb-cuda%)
 TEST_CUDA_MOE_LIMB_SRC = tests/test_cuda_moe_limb.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_CUDA_MOE_LIMB): $(TEST_CUDA_MOE_LIMB_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src -I tests $(TEST_CUDA_MOE_LIMB_SRC) -o $@ $(LDFLAGS)
 MOE_LIMB_LAYERS ?= all
@@ -1595,7 +1614,7 @@ test-cuda-moe-limb: $(TEST_CUDA_MOE_LIMB)
 	else ./$(TEST_CUDA_MOE_LIMB) "$(MOE_LIMB_MODEL)" $(MOE_LIMB_LAYERS); fi
 
 TEST_GPU_ID_SRC = tests/test_gpu_identity.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ) \
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ) \
                   $(FINITE_CHECK_OBJ)
 $(TEST_GPU_ID): $(TEST_GPU_ID_SRC) $(HDR) tests/finite_check.h
 	$(CC) $(CFLAGS) -I src -I tests $(TEST_GPU_ID_SRC) -o $@ $(LDFLAGS)
@@ -1603,7 +1622,7 @@ $(TEST_GPU_ID): $(TEST_GPU_ID_SRC) $(HDR) tests/finite_check.h
 # GPU-matvec vs GPU-grouped-MMA on the house fidelity columns (the routing
 # half of the account is scripts/moe-mm-flips.py). Same link as gpu-identity.
 TEST_MOE_MM_AB_SRC = tests/test_moe_mm_ab.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                     $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                     $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_MOE_MM_AB): $(TEST_MOE_MM_AB_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_MOE_MM_AB_SRC) -o $@ $(LDFLAGS)
 
@@ -1611,14 +1630,14 @@ $(TEST_MOE_MM_AB): $(TEST_MOE_MM_AB_SRC) $(HDR)
 # engagement check so a declined batch cannot pass by comparing the
 # sequential path against itself.
 TEST_BATCH_ID_SRC = tests/test_batch_identity.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                    $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                    $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_BATCH_ID): $(TEST_BATCH_ID_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_BATCH_ID_SRC) -o $@ $(LDFLAGS)
 
 # Speculative verify rows vs solo decode steps: byte identity on every row of
 # rounds 2..16 wide with rewinds (tests/test_spec_identity.c).
 TEST_SPEC_ID_SRC = tests/test_spec_identity.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                   $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                   $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_SPEC_ID): $(TEST_SPEC_ID_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_SPEC_ID_SRC) -o $@ $(LDFLAGS)
 
@@ -1630,7 +1649,7 @@ $(TEST_SPEC_ID): $(TEST_SPEC_ID_SRC) $(HDR)
 # ones (width 48, f16 and fp4), a width no slice divides (muse, 24), a
 # sliding-window ring, tied-V (gemma4-hetero) and attention sinks (gpt-oss).
 TEST_ATTN_SPLIT_SRC = tests/test_attn_split.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
-                      $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o \
+                      $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) \
                       $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_ATTN_SPLIT): $(TEST_ATTN_SPLIT_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_ATTN_SPLIT_SRC) -o $@ $(LDFLAGS)
@@ -1661,26 +1680,26 @@ test-attn-split: $(TEST_ATTN_SPLIT) test.gguf test-muse.gguf
 # the same self-skipping shape (no GPU / not MoE / no full offload / the fused
 # router never engaged all skip rather than pass)
 TEST_MOE_TOL_SRC = tests/test_moe_tol.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_MOE_TOL): $(TEST_MOE_TOL_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_MOE_TOL_SRC) -o $@ $(LDFLAGS)
 
 TEST_MOE_ROUTER_SRC = tests/test_moe_router.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_MOE_ROUTER): $(TEST_MOE_ROUTER_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_MOE_ROUTER_SRC) -o $@ $(LDFLAGS)
 
 # residency-warning wording: needs the loader (the hot-set estimate has to
 # agree with the actual tensor set), so it takes the same link as the two above
 TEST_PAGING_WARN_SRC = tests/test_paging_warn.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_PAGING_WARN): $(TEST_PAGING_WARN_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_PAGING_WARN_SRC) -o $@ $(LDFLAGS)
 # reservation auto-fit arithmetic: no model file, no GPU, no fixture -- the
 # regime it covers is unreachable on a dev machine, so it is fed real 7B/24 GB
 # numbers directly. See the header of tests/test_autofit.c.
 TEST_AUTOFIT_SRC = tests/test_autofit.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_AUTOFIT): $(TEST_AUTOFIT_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_AUTOFIT_SRC) -o $@ $(LDFLAGS)
 # the Responses framing state machine, driven directly over a socketpair.
@@ -1688,7 +1707,7 @@ $(TEST_AUTOFIT): $(TEST_AUTOFIT_SRC) $(HDR)
 # around it — the runner's object set minus main.c, server.c and the file the
 # test itself includes.
 TEST_RESP_SM_SRC = tests/test_responses_sm.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
-                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
+                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/sample.o \
                   $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                   $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(OBJDIR)/clef.o $(GPU_OBJ)
 $(TEST_RESP_SM): $(TEST_RESP_SM_SRC) src/completion.c $(HDR)
@@ -1699,7 +1718,7 @@ $(TEST_RESP_SM): $(TEST_RESP_SM_SRC) src/completion.c $(HDR)
 # completion.c, and the property under test is that the engine's validator and
 # that sink agree on what the client received, so neither side may be stubbed.
 TEST_STOP_CONSTRAINT_SRC = tests/test_stop_constraint.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
-                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
+                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/sample.o \
                   $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                   $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o \
                   $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(OBJDIR)/clef.o $(GPU_OBJ)
@@ -1713,7 +1732,7 @@ $(TEST_STOP_CONSTRAINT): $(TEST_STOP_CONSTRAINT_SRC) src/completion.c $(HDR)
 # left out of the link; completion.c is out too, because the test captures the
 # prompt instead of generating from it.
 TEST_BUDGET_SRC = tests/test_prompt_budget.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
-                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
+                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/sample.o \
                   $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                   $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o \
                   $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(OBJDIR)/clef.o $(OBJDIR)/api_responses.o $(OBJDIR)/api_anthropic.o \
@@ -1727,7 +1746,7 @@ $(TEST_BUDGET): $(TEST_BUDGET_SRC) src/server.c $(HDR)
 # link -- plus a socketpair, because half of what is asserted is the 400 a
 # request that cannot be attributed gets back.
 TEST_ATTRIB_SRC = tests/test_tool_attribution.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
-                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
+                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/sample.o \
                   $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                   $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o \
                   $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(OBJDIR)/clef.o $(OBJDIR)/api_responses.o $(OBJDIR)/api_anthropic.o \
@@ -1760,7 +1779,7 @@ $(TEST_MSG_OOM): $(TEST_MSG_OOM_SRC) src/server.c src/api_anthropic.c \
 # keeps the add_generation_prompt interception (see the driver's header
 # comment) confined to one translation unit.
 TMPL_CONF_RENDER_SRC = scripts/template-conformance-render.c $(OBJDIR)/gguf.o \
-                  $(OBJDIR)/compat.o $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o \
+                  $(OBJDIR)/compat.o $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) \
                   $(OBJDIR)/sample.o $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o \
                   $(OBJDIR)/engine.o $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o \
                   $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o $(OBJDIR)/scheduler.o $(OBJDIR)/decide.o $(OBJDIR)/clef.o $(OBJDIR)/session.o $(GPU_OBJ)
@@ -1771,7 +1790,7 @@ $(TMPL_CONF_RENDER): $(TMPL_CONF_RENDER_SRC) src/server.c $(HDR)
 # hide forever, because nothing ever asks the state to come back.
 TEST_RESTART = $(TEST_BATCH:test-batch%=test-server-restart%)
 TEST_RESTART_SRC = tests/test_server_restart.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
-                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
+                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/sample.o \
                    $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                    $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o \
                    $(OBJDIR)/scheduler.o $(OBJDIR)/completion.o $(OBJDIR)/decide.o $(OBJDIR)/clef.o $(OBJDIR)/api_responses.o \
@@ -1785,7 +1804,7 @@ $(TEST_RESTART): $(TEST_RESTART_SRC) $(HDR)
 # added to `make test` -- same shape as test-shared-asan above. Kept out of the
 # default run because it starts a real server and drives it for a few seconds.
 TEST_SWAP_RACE_SRC = tests/test_swap_race.c src/gguf.c src/compat.c \
-                     src/quants.c src/tokenizer.c src/model.c src/sample.c \
+                     src/quants.c src/tokenizer.c src/model.c $(INKLING2_SRC) src/sample.c \
                      src/jsonmode.c $(SCHEMA_SRC) src/json.c src/engine.c \
                      src/template.c src/vramreg.c src/http.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/registry.c src/provenance.c src/lineage.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c \
                      src/scheduler.c src/completion.c src/api_responses.c \
@@ -1837,7 +1856,7 @@ $(TEST_CAPACITY): tests/test_capacity.c $(OBJDIR)/compat.o $(HDR)
 # test (the turnstile is static) so it is NOT linked here.
 TEST_SCHED_TURN = $(TEST_BATCH:test-batch%=test-sched-turn%)
 TEST_SCHED_TURN_SRC = tests/test_sched_turn.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
-                      $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
+                      $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/sample.o \
                       $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                       $(OBJDIR)/template.o $(OBJDIR)/vramreg.o $(OBJDIR)/http.o $(OBJDIR)/envelope.o $(OBJDIR)/ed25519.o $(MLDSA_OBJ) $(OBJDIR)/ecdsa.o $(OBJDIR)/oms.o $(OBJDIR)/registry.o $(OBJDIR)/provenance.o $(OBJDIR)/respstore.o $(OBJDIR)/receipts.o $(OBJDIR)/watermark.o $(OBJDIR)/kvsnap.o $(GPU_OBJ)
 $(TEST_SCHED_TURN): $(TEST_SCHED_TURN_SRC) src/scheduler.c $(HDR)
@@ -1855,7 +1874,7 @@ test-turn-guard: runner-turn-guard test.gguf
 # snapshot persistence: the round trip, and the refusals that matter more
 TEST_PFX_PERSIST = $(TEST_BATCH:test-batch%=test-prefix-persist%)
 TEST_PFX_PERSIST_SRC = tests/test_prefix_persist.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
-                       $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/sample.o \
+                       $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/sample.o \
                        $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJDIR)/engine.o \
                        $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_PFX_PERSIST): $(TEST_PFX_PERSIST_SRC) $(HDR)
@@ -2063,7 +2082,7 @@ $(TEST_SLOW_NOTE): tests/test_slow_note.c $(OBJDIR)/compat.o src/compat.h $(QUAN
 	$(CC) $(CFLAGS) -I src tests/test_slow_note.c $(OBJDIR)/compat.o $(QUANTS_OBJ) -o $@ $(LDFLAGS)
 
 TEST_MODEL_LOAD_FAILURE_SRC = tests/test_model_load_failure.c $(OBJDIR)/gguf.o \
-                              $(OBJDIR)/compat.o $(QUANTS_OBJ) $(OBJDIR)/model.o \
+                              $(OBJDIR)/compat.o $(QUANTS_OBJ) $(OBJDIR)/model.o $(INKLING2_OBJS) \
                               $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_MODEL_LOAD_FAILURE): $(TEST_MODEL_LOAD_FAILURE_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_MODEL_LOAD_FAILURE_SRC) -o $@ $(LDFLAGS)
@@ -2071,7 +2090,7 @@ $(TEST_MODEL_LOAD_FAILURE): $(TEST_MODEL_LOAD_FAILURE_SRC) $(HDR)
 # Every allocation of a model load failed in turn (tests/test_model_load_oom.c):
 # model.c is compiled into the test with its allocators substituted, so it
 # links every other engine object model.o would, and not model.o itself.
-TEST_MODEL_LOAD_OOM_SRC = tests/test_model_load_oom.c $(OBJDIR)/gguf.o \
+TEST_MODEL_LOAD_OOM_SRC = $(INKLING2_OBJS) tests/test_model_load_oom.c $(OBJDIR)/gguf.o \
                           $(OBJDIR)/compat.o $(QUANTS_OBJ) \
                           $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_MODEL_LOAD_OOM): $(TEST_MODEL_LOAD_OOM_SRC) src/model.c $(HDR)
@@ -2079,7 +2098,7 @@ $(TEST_MODEL_LOAD_OOM): $(TEST_MODEL_LOAD_OOM_SRC) src/model.c $(HDR)
 
 # The host MoE bridge (--cpu-moe on CUDA) against the CPU forward's FFN
 # (tests/test_moe_host_bridge.c), built the same way: model.c compiled in.
-TEST_MOE_HOST_BRIDGE_SRC = tests/test_moe_host_bridge.c $(OBJDIR)/gguf.o \
+TEST_MOE_HOST_BRIDGE_SRC = $(INKLING2_OBJS) tests/test_moe_host_bridge.c $(OBJDIR)/gguf.o \
                            $(OBJDIR)/compat.o $(QUANTS_OBJ) \
                            $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_MOE_HOST_BRIDGE): $(TEST_MOE_HOST_BRIDGE_SRC) src/model.c $(HDR)
@@ -2091,7 +2110,7 @@ $(TEST_MOE_HOST_BRIDGE): $(TEST_MOE_HOST_BRIDGE_SRC) src/model.c $(HDR)
 # -ffast-math may reassociate an fmaf chain into a vector reduction (it did
 # at -march=native on a Zen 5, each loop its own way; the release ISAs and
 # clang keep the chains). See the test's header.
-TEST_LORA_CHAINS_SRC = tests/test_lora_chains.c $(OBJDIR)/gguf.o \
+TEST_LORA_CHAINS_SRC = $(INKLING2_OBJS) tests/test_lora_chains.c $(OBJDIR)/gguf.o \
                        $(OBJDIR)/compat.o $(QUANTS_OBJ) \
                        $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_LORA_CHAINS): $(TEST_LORA_CHAINS_SRC) src/model.c $(HDR)
@@ -2099,7 +2118,7 @@ $(TEST_LORA_CHAINS): $(TEST_LORA_CHAINS_SRC) src/model.c $(HDR)
 
 # The trainer's transposed product (matvec_t's tiles) against its per-element
 # contract on every weight type (tests/test_mvt_chains.c), model.c compiled in.
-TEST_MVT_CHAINS_SRC = tests/test_mvt_chains.c $(OBJDIR)/gguf.o \
+TEST_MVT_CHAINS_SRC = $(INKLING2_OBJS) tests/test_mvt_chains.c $(OBJDIR)/gguf.o \
                       $(OBJDIR)/compat.o $(QUANTS_OBJ) \
                       $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_MVT_CHAINS): $(TEST_MVT_CHAINS_SRC) src/model.c $(HDR)
@@ -2108,7 +2127,7 @@ $(TEST_MVT_CHAINS): $(TEST_MVT_CHAINS_SRC) src/model.c $(HDR)
 # The CPU trainer's Gated DeltaNet recurrence (the recompute and the sweep
 # through time) against a double-precision reference (tests/dn_ref.h, the
 # device's reference too), model.c compiled in (tests/test_dn_recurrence.c).
-TEST_DN_RECURRENCE_SRC = tests/test_dn_recurrence.c $(OBJDIR)/gguf.o \
+TEST_DN_RECURRENCE_SRC = $(INKLING2_OBJS) tests/test_dn_recurrence.c $(OBJDIR)/gguf.o \
                          $(OBJDIR)/compat.o $(QUANTS_OBJ) \
                          $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_DN_RECURRENCE): $(TEST_DN_RECURRENCE_SRC) src/model.c $(HDR) tests/dn_ref.h
@@ -2116,7 +2135,7 @@ $(TEST_DN_RECURRENCE): $(TEST_DN_RECURRENCE_SRC) src/model.c $(HDR) tests/dn_ref
 
 # The CPU trainer's attention backward against a double-precision reference
 # (tests/attn_ref.h, the device's reference too), model.c compiled in.
-TEST_ATTN_BW_SRC = tests/test_attn_bw.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
+TEST_ATTN_BW_SRC = $(INKLING2_OBJS) tests/test_attn_bw.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                    $(QUANTS_OBJ) $(OBJDIR)/vramreg.o $(GPU_OBJ)
 $(TEST_ATTN_BW): $(TEST_ATTN_BW_SRC) src/model.c $(HDR) tests/attn_ref.h
 	$(CC) $(CFLAGS) -I src $(TEST_ATTN_BW_SRC) -o $@ $(LDFLAGS)
@@ -4850,7 +4869,7 @@ FUZZ_SRC_jsonv_feed     = src/jsonmode.c
 FUZZ_SRC_gguf_open      = src/gguf.c src/compat.c src/quants.c
 FUZZ_SRC_http_request   = src/http.c src/json.c src/compat.c
 FUZZ_SRC_tokenizer      = src/tokenizer.c src/gguf.c src/compat.c src/quants.c
-FUZZ_SRC_model_load     = src/model.c src/gguf.c src/compat.c src/quants.c src/vramreg.c src/gpu_none.c
+FUZZ_SRC_model_load     = src/model.c $(INKLING2_SRC) src/gguf.c src/compat.c src/quants.c src/vramreg.c src/gpu_none.c
 FUZZ_SRC_gguf_split     = src/gguf.c src/compat.c src/quants.c
 FUZZ_SRC_tool_stream    = src/template.c src/gguf.c src/tokenizer.c $(SCHEMA_SRC) src/jsonmode.c \
                           src/json.c src/compat.c src/quants.c
@@ -5185,8 +5204,8 @@ fuzz-replay-%: tests/fuzz/fuzz_%.c tests/fuzz/replay.c tests/fuzz/fuzz_files.h $
 # (-fno-fast-math -ffp-contract=off): inkling2.c's claim is a serial, uncontracted order. Not part of `make test` until
 # the fixture ships with the repository.
 TEST_INKLING2 = test-inkling2-fixture-bin
-$(TEST_INKLING2): tests/test_inkling2_fixture.c tests/inkling2_ecache.c tests/inkling2_ecache.h src/inkling2.c src/inkling2.h src/json.c $(HDR)
-	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I src -I tests tests/test_inkling2_fixture.c tests/inkling2_ecache.c src/inkling2.c src/json.c -o $@ $(LDFLAGS)
+$(TEST_INKLING2): tests/test_inkling2_fixture.c src/inkling2_ecache.c src/inkling2_ecache.h src/inkling2.c src/inkling2.h src/json.c $(HDR)
+	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I src -I tests tests/test_inkling2_fixture.c src/inkling2_ecache.c src/inkling2.c src/json.c -o $@ $(LDFLAGS)
 .PHONY: test-inkling2-fixture
 test-inkling2-fixture: $(TEST_INKLING2)
 	@if [ -z "$(INKLING2_FIXTURE)" ]; then echo "test-inkling2-fixture: no fixture (set INKLING2_FIXTURE=<dir>)"; \
@@ -5195,8 +5214,8 @@ test-inkling2-fixture: $(TEST_INKLING2)
 # reference loader's name map from tests/inkling2_provider_map.py, decode on lookup) and its identity test against
 # the reference loader (tests/test_inkling2_provider.c + tests/inkling2_provider_ref.py). Built strict, as inkling2.c.
 TEST_INKLING2_PROVIDER = test-inkling2-provider-bin
-$(TEST_INKLING2_PROVIDER): tests/test_inkling2_provider.c tests/inkling2_provider.c tests/inkling2_provider.h tests/inkling2_ecache.c tests/inkling2_ecache.h src/inkling2.h src/json.c $(HDR)
-	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I src -I tests tests/test_inkling2_provider.c tests/inkling2_provider.c tests/inkling2_ecache.c src/json.c -o $@ $(LDFLAGS)
+$(TEST_INKLING2_PROVIDER): tests/test_inkling2_provider.c tests/inkling2_provider.c tests/inkling2_provider.h src/inkling2_ecache.c src/inkling2_ecache.h src/inkling2.h src/json.c $(HDR)
+	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I src -I tests tests/test_inkling2_provider.c tests/inkling2_provider.c src/inkling2_ecache.c src/json.c -o $@ $(LDFLAGS)
 # R4.48.6: the inkling2_loop GGUF as the engine's weight source (src/inkling2_gguf.c) against the test-side provider on
 # the publisher's safetensors, every tensor and every expert bit for bit, with three controls that must fail
 # (tests/test_inkling2_gguf.c); and the read harness (tests/inkling2_read.c: ids in, full logits rows out, from either
@@ -5207,8 +5226,8 @@ TEST_INKLING2_GGUF = test-inkling2-gguf-bin
 $(TEST_INKLING2_GGUF): tests/test_inkling2_gguf.c src/inkling2_gguf.h $(INKLING2_GGUF_SRC) tests/inkling2_provider.h src/inkling2.h $(HDR)
 	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I src -I tests tests/test_inkling2_gguf.c $(INKLING2_GGUF_SRC) -o $@ $(LDFLAGS)
 INKLING2_READ = inkling2-read-bin
-$(INKLING2_READ): tests/inkling2_read.c src/inkling2_gguf.h $(INKLING2_GGUF_SRC) tests/inkling2_ecache.c tests/inkling2_ecache.h tests/inkling2_provider.h src/inkling2.h $(HDR)
-	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I src -I tests tests/inkling2_read.c $(INKLING2_GGUF_SRC) tests/inkling2_ecache.c -o $@ $(LDFLAGS)
+$(INKLING2_READ): tests/inkling2_read.c src/inkling2_gguf.h $(INKLING2_GGUF_SRC) src/inkling2_ecache.c src/inkling2_ecache.h tests/inkling2_provider.h src/inkling2.h $(HDR)
+	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I src -I tests tests/inkling2_read.c $(INKLING2_GGUF_SRC) src/inkling2_ecache.c -o $@ $(LDFLAGS)
 .PHONY: test-inkling2-gguf
 test-inkling2-gguf: $(TEST_INKLING2_GGUF)
 	@if [ -z "$(INKLING2_GGUF)" ]; then echo "test-inkling2-gguf: no files (set INKLING2_GGUF, INKLING2_CKPT, INKLING2_MAP, INKLING2_SHAPES)"; \

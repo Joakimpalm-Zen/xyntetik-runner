@@ -24,7 +24,8 @@ typedef struct {
 } stack_t;
 
 struct ink2g {
-    gguf_file f;
+    gguf_file own;    // the file when ink2g_open opened it
+    gguf_file *fp;    // the file read: &own, or the caller's (ink2g_attach)
     int open;
     ink2_shape s;
     slot_t **slots;   // each slot its own allocation: a served ink2_tensor never moves
@@ -232,6 +233,13 @@ static int gguf_name(const ink2_shape *s, const char *name, char *out, size_t on
 
 static int64_t nelem(const gguf_tensor *t) { return (int64_t)(t->ne[0] * t->ne[1] * t->ne[2] * t->ne[3]); }
 
+// a type this loader decodes for a dense tensor or a stack: F32 and BF16 exactly; any other ggml type Runner's own
+// dequantizer takes (src/quants.c dequant_row), each gated against ggml's dequantize; NVFP4 only as an expert stack
+static int dense_type_ok(uint32_t type) {
+    return type == T_F32 || type == T_BF16 || (type != T_NVFP4 && ggml_type_supported((int)type));
+}
+
+// elements off .. off+n-1 of t as float32 (off and n whole blocks for a block type)
 static int decode_float(const gguf_tensor *t, int64_t off, int64_t n, float *dst) {
     if (t->type == T_F32) { memcpy(dst, (const float *)t->data + off, sizeof(float) * (size_t)n); return 0; }
     if (t->type == T_BF16) {
@@ -239,7 +247,18 @@ static int decode_float(const gguf_tensor *t, int64_t off, int64_t n, float *dst
         for (int64_t i = 0; i < n; i++) dst[i] = bf16_to_f32(h[i]);
         return 0;
     }
-    return -1;
+    if (t->type == T_NVFP4 || !ggml_type_supported((int)t->type)) return -1;
+    const int bs = ggml_block_size((int)t->type);
+    if (bs < 1 || off % bs || n % bs) return -1;
+    const size_t ts = ggml_type_size((int)t->type);
+    const unsigned char *src = (const unsigned char *)t->data + (size_t)(off / bs) * ts;
+    // row by row in whole blocks: dequant_row's n is an int
+    const int64_t step = (int64_t)bs * 65536;
+    for (int64_t k = 0; k < n; k += step) {
+        const int64_t m = n - k < step ? n - k : step;
+        dequant_row((int)t->type, src + (size_t)(k / bs) * ts, dst + k, (int)m);
+    }
+    return 0;
 }
 
 // the stored tensor's elements, squeezing size-1 dims, must equal the reference's (op: transposed or not)
@@ -253,18 +272,20 @@ static int check_tensor(const ink2_shape *s, ink2g *g, const char *ref, char *wh
     if (op == OP_MSGQ) {
         for (int b = s->loop_start; b < s->loop_end; b++) {
             snprintf(gn, sizeof gn, "blk.%d.loop_msg_query.weight", b);
-            gguf_tensor *t = gguf_find_tensor(&g->f, gn);
+            gguf_tensor *t = gguf_find_tensor(g->fp, gn);
             if (!t) return refuse(why, wn, "the file has no %s, which the loop's messages need", gn);
             if (t->ne[0] != (uint64_t)s->hidden || t->ne[1] != 4 || t->ne[2] * t->ne[3] != 1)
                 return refuse(why, wn, "%s is %llux%llu, not %dx4", gn, (unsigned long long)t->ne[0], (unsigned long long)t->ne[1], s->hidden);
-            if (t->type != T_F32 && t->type != T_BF16) return refuse(why, wn, "%s is type %u; this loader takes BF16 or F32 there", gn, t->type);
+            if (!dense_type_ok(t->type)) return refuse(why, wn, "%s is type %u, which this loader does not decode", gn, t->type);
         }
         return 0;
     }
-    gguf_tensor *t = gguf_find_tensor(&g->f, gn);
+    gguf_tensor *t = gguf_find_tensor(g->fp, gn);
     if (!t) return refuse(why, wn, "the file has no %s (the reference's %s)", gn, ref);
-    if (t->type != T_F32 && t->type != T_BF16)
-        return refuse(why, wn, "%s is type %u; this loader takes BF16 or F32 for it", gn, t->type);
+    if (!dense_type_ok(t->type))
+        return refuse(why, wn, "%s is type %u, which this loader does not decode", gn, t->type);
+    if ((op == OP_STATIC || op == OP_TRANSPOSE) && t->type != T_F32 && t->type != T_BF16)
+        return refuse(why, wn, "%s is type %u; this loader takes it as BF16 or F32 only (it is transposed on decode)", gn, t->type);
     int64_t want = 1;
     for (int i = 0; i < nd; i++) want *= d[i];
     if (op == OP_UNPAD) {
@@ -293,8 +314,8 @@ static int check_stacks(ink2g *g, char *why, size_t wn) {
             char n[96], sn[96];
             snprintf(n, sizeof n, "blk.%d.ffn_%s_exps.weight", b, which ? "down" : "gate_up");
             snprintf(sn, sizeof sn, "blk.%d.ffn_%s_exps.scale", b, which ? "down" : "gate_up");
-            st->w = gguf_find_tensor(&g->f, n);
-            st->scale = gguf_find_tensor(&g->f, sn);
+            st->w = gguf_find_tensor(g->fp, n);
+            st->scale = gguf_find_tensor(g->fp, sn);
             st->rows = which ? s->hidden : 2 * s->ff;
             st->cols = which ? s->ff : s->hidden;
             if (!st->w) return refuse(why, wn, "the file has no %s", n);
@@ -311,12 +332,15 @@ static int check_stacks(ink2g *g, char *why, size_t wn) {
                 const float *f = st->scale->data;
                 for (int e = 0; e < s->n_expert; e++)
                     if (!(f[e] > 0.0f) || !isfinite(f[e])) return refuse(why, wn, "%s[%d] is %g, not a finite positive factor", sn, e, f[e]);
-            } else if (st->w->type == T_BF16 || st->w->type == T_F32) {
-                st->kind = st->w->type == T_BF16 ? 'B' : 'F';
-                if (st->scale) return refuse(why, wn, "%s is a float stack but has a %s beside it; this loader applies a factor only to NVFP4", n, sn);
+            } else if (dense_type_ok(st->w->type)) {
+                st->kind = st->w->type == T_BF16 ? 'B' : st->w->type == T_F32 ? 'F' : 'Q';
+                if (st->kind == 'Q' && st->cols % ggml_block_size((int)st->w->type))
+                    return refuse(why, wn, "%s rows of %lld do not divide into its type's blocks", n, (long long)st->cols);
+                // a .scale beside it is applied after the decode, as llama.cpp's graph applies it whatever the type
+                if (st->scale && (st->scale->type != T_F32 || nelem(st->scale) != s->n_expert))
+                    return refuse(why, wn, "%s must be F32 with %d values (one per expert)", sn, s->n_expert);
             } else {
-                return refuse(why, wn, "%s is type %u: this loader handles NVFP4 (with .scale), BF16 or F32 experts, not a "
-                                       "requantized type (the exact file keeps the publisher's NVFP4 and MXFP8-as-BF16)", n, st->w->type);
+                return refuse(why, wn, "%s is type %u, which this loader does not decode", n, st->w->type);
             }
             if (st->rows * st->cols > (int64_t)g->ring_floats) g->ring_floats = (size_t)(st->rows * st->cols);
         }
@@ -364,8 +388,8 @@ static int chk_one(void *c_, const char *name) {
 // an unexpected tensor is a different layout
 static int check_no_extra(ink2g *g, char *why, size_t wn) {
     const ink2_shape *s = &g->s;
-    for (uint64_t i = 0; i < g->f.n_tensors; i++) {
-        const char *n = g->f.tensors[i].name;
+    for (uint64_t i = 0; i < g->fp->n_tensors; i++) {
+        const char *n = g->fp->tensors[i].name;
         int b, k = 0;
         if (!strcmp(n, "token_embd.weight") || !strcmp(n, "token_embd_norm.weight") || !strcmp(n, "output_norm.weight") ||
             !strcmp(n, "output_res_query.weight") || !strcmp(n, "output.weight")) continue;
@@ -397,16 +421,30 @@ static int check_no_extra(ink2g *g, char *why, size_t wn) {
     return 0;
 }
 
+int ink2g_shape(void *gguf_file_, ink2_shape *s, char *why, size_t wn) {
+    return read_shape((gguf_file *)gguf_file_, s, why, wn);
+}
+static ink2g *ink2g_bind(ink2g *g, ink2_shape *s, char *why, size_t wn);
 ink2g *ink2g_open(const char *path, ink2_shape *s, char *why, size_t wn) {
     ink2g *g = calloc(1, sizeof *g);
     if (!g) { refuse(why, wn, "out of memory"); return NULL; }
-    if (!gguf_open(&g->f, path)) {
+    if (!gguf_open(&g->own, path)) {
         refuse(why, wn, "%s does not open as a GGUF (a truncated or malformed file is refused by the reader)", path);
         free(g);
         return NULL;
     }
     g->open = 1;
-    if (read_shape(&g->f, &g->s, why, wn) || check_stacks(g, why, wn)) { ink2g_close(g); return NULL; }
+    g->fp = &g->own;
+    return ink2g_bind(g, s, why, wn);
+}
+ink2g *ink2g_attach(void *gguf_file_, ink2_shape *s, char *why, size_t wn) {
+    ink2g *g = calloc(1, sizeof *g);
+    if (!g) { refuse(why, wn, "out of memory"); return NULL; }
+    g->fp = gguf_file_;
+    return ink2g_bind(g, s, why, wn);
+}
+static ink2g *ink2g_bind(ink2g *g, ink2_shape *s, char *why, size_t wn) {
+    if (read_shape(g->fp, &g->s, why, wn) || check_stacks(g, why, wn)) { ink2g_close(g); return NULL; }
     chk_ctx c = { g, why, wn, 0 };
     if (each_ref(&g->s, chk_one, &c) || check_no_extra(g, why, wn)) { ink2g_close(g); return NULL; }
     static const float e2m1[16] = { 0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f, -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f };
@@ -426,7 +464,7 @@ void ink2g_close(ink2g *g) {
     free(g->slots);
     free(g->ring[0]);
     free(g->ring[1]);
-    if (g->open) gguf_close(&g->f);
+    if (g->open) gguf_close(&g->own);
     free(g);
 }
 
@@ -467,10 +505,10 @@ const ink2_tensor *ink2g_get(void *ctx, const char *name) {
         const int64_t per = 4 * (int64_t)s->hidden;
         for (int b = s->loop_start; b < s->loop_end; b++) {
             snprintf(gn, sizeof gn, "blk.%d.loop_msg_query.weight", b);
-            if (decode_float(gguf_find_tensor(&g->f, gn), 0, per, data + (size_t)(b - s->loop_start) * per)) { free(data); return NULL; }
+            if (decode_float(gguf_find_tensor(g->fp, gn), 0, per, data + (size_t)(b - s->loop_start) * per)) { free(data); return NULL; }
         }
     } else {
-        gguf_tensor *t = gguf_find_tensor(&g->f, gn);
+        gguf_tensor *t = gguf_find_tensor(g->fp, gn);
         if (!t) { free(data); return NULL; }
         if (op == OP_RENAME || op == OP_UNPAD) {
             if (decode_float(t, 0, n, data)) { free(data); return NULL; }   // unpad: the first vocab_used rows
@@ -536,7 +574,12 @@ int ink2g_fill_expert(void *ctx, const char *stack, int e, float *dst, int64_t *
         }
         return 0;
     }
-    return decode_float(st->w, (int64_t)e * R * C, R * C, dst);
+    if (decode_float(st->w, (int64_t)e * R * C, R * C, dst)) return -1;
+    if (st->scale && !(g->ctrl & INK2G_CTRL_NO_FACTOR)) {
+        const float factor = ((const float *)st->scale->data)[e];
+        for (int64_t i = 0; i < R * C; i++) dst[i] = dst[i] * factor;
+    }
+    return 0;
 }
 
 const ink2_tensor *ink2g_get_expert(void *ctx, const char *stack, int e) {
@@ -552,6 +595,27 @@ const ink2_tensor *ink2g_get_expert(void *ctx, const char *stack, int e) {
     t->n_dims = 2;
     t->ne[0] = C; t->ne[1] = R; t->ne[2] = t->ne[3] = 1;
     return t;
+}
+
+typedef struct { ink2g *g; int bad; } pre_ctx;
+static int pre_one(void *c_, const char *name) {
+    pre_ctx *c = c_;
+    if (strstr(name, ".mlp.experts.")) return 0;
+    if (!ink2g_get(c->g, name)) { c->bad = 1; return -1; }
+    return 0;
+}
+int ink2g_decode_all(ink2g *g, size_t *bytes) {
+    pre_ctx c = { g, 0 };
+    if (each_ref(&g->s, pre_one, &c) || c.bad) return -1;
+    if (bytes) {
+        size_t n = 0;
+        for (int i = 0; i < g->n_slots; i++) {
+            const ink2_tensor *t = &g->slots[i]->t;
+            n += sizeof(float) * (size_t)(t->ne[0] * t->ne[1] * t->ne[2] * t->ne[3]);
+        }
+        *bytes = n;
+    }
+    return 0;
 }
 
 void ink2g_set_control(ink2g *g, int flags) {

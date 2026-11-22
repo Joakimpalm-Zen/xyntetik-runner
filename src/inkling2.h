@@ -95,8 +95,21 @@ typedef struct {
                              // as the widest of the four
     size_t *conv_floats;     // [n_app]
     int *n_past;             // [n_app]
+    int *rows;               // [n_app] rows each K/V buffer holds: n_ctx, or for a sliding application under
+                             // ink2_cache_init_window, window - 1 + max_chunk
+    int *k0;                 // [n_app] the position of buffer row 0 (0 for a full-size buffer)
+    int max_chunk;           // 0: any T up to n_ctx; else the widest call the sliding buffers take
+    int test_drop_key;       // TEST-ONLY (the cap's control, which must change the rows): the windowed path also
+                             // drops the first key the mask admits; 0 in use
 } ink2_cache;
 int  ink2_cache_init(ink2_cache *c, const ink2_shape *s, int n_ctx);
+// The same with each SLIDING application's K and V held for the window only: window - 1 + max_chunk rows that slide
+// forward, instead of n_ctx (40 of Inkling 2 Mini's 48 applications: 0.5 GiB of K/V at any context instead of
+// 2.5 GiB at 8K). The keys a call reads are the ones its mask admits, in the same order, so the outputs are the
+// full-size cache's bit for bit. A call wider than max_chunk is refused (INK2_BAD_INPUT).
+int  ink2_cache_init_window(ink2_cache *c, const ink2_shape *s, int n_ctx, int max_chunk);
+// the bytes of K/V, convolution and bookkeeping the cache holds
+size_t ink2_cache_bytes(const ink2_cache *c, const ink2_shape *s);
 void ink2_cache_free(ink2_cache *c);
 
 // ---- the pieces. Each is a stub until it lands; every stub returns INK2_NOT_IMPLEMENTED, so the harness is red

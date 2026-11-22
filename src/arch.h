@@ -24,7 +24,7 @@ typedef enum {
     ARCH_PHI3, ARCH_GPT_OSS, ARCH_APERTUS, ARCH_AFMOE, ARCH_MUSE_GLIMMER, ARCH_GRANITE,
     ARCH_GRANITEHYBRID, ARCH_NEMOTRON_H, ARCH_NEMOTRON_H_MOE, ARCH_CLEF, ARCH_MELLUM,
     ARCH_LFM2, ARCH_LFM2MOE, ARCH_SPARK2_5, ARCH_K2_HORIZON, ARCH_FLINT, ARCH_MISTRAL3,
-    ARCH_DEEPSEEK2,
+    ARCH_DEEPSEEK2, ARCH_INKLING2_LOOP,
     ARCH_GEMMA, ARCH_GEMMA2,   // refused: they load llama-style and compute wrong
     ARCH_COUNT
 } arch_id;
@@ -115,6 +115,9 @@ static inline const arch_desc *arch_rows(size_t *n) {
                       "sigmoid routing with shared experts) is not checked yet" },
         { .name = "mistral3", .id = ARCH_MISTRAL3 },
         // CUDA runs both forms (R4.4.5 c1 naive, c2 absorbed)
+        { .name = "inkling2_loop", .id = ARCH_INKLING2_LOOP,
+          .cpu_only = "Inkling 2 Mini runs on its own serial float32 engine "
+                      "(src/inkling2.c), which has no GPU path" },
         { .name = "deepseek2", .id = ARCH_DEEPSEEK2, .rope_neox = true,
           .cpu_only_noncuda = "deepseek2 (multi-head latent attention) is validated on "
                               "the CPU only; its GPU path is not checked yet" },

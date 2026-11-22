@@ -43,9 +43,18 @@ static int ink2_conv_width(const ink2_shape *s, int a) {
     return C > s->hidden ? C : s->hidden;
 }
 
-int ink2_cache_init(ink2_cache *c, const ink2_shape *s, int n_ctx) {
+static int ink2_cache_alloc(ink2_cache *c, const ink2_shape *s, int n_ctx, int max_chunk);
+int ink2_cache_init(ink2_cache *c, const ink2_shape *s, int n_ctx) { return ink2_cache_alloc(c, s, n_ctx, 0); }
+int ink2_cache_init_window(ink2_cache *c, const ink2_shape *s, int n_ctx, int max_chunk) {
+    if (max_chunk < 1) return -1;
+    return ink2_cache_alloc(c, s, n_ctx, max_chunk);
+}
+static int ink2_cache_alloc(ink2_cache *c, const ink2_shape *s, int n_ctx, int max_chunk) {
     memset(c, 0, sizeof *c);
-    c->n_app = s->n_app; c->n_ctx = n_ctx;
+    c->n_app = s->n_app; c->n_ctx = n_ctx; c->max_chunk = max_chunk;
+    c->rows = calloc((size_t)s->n_app, sizeof *c->rows);
+    c->k0 = calloc((size_t)s->n_app, sizeof *c->k0);
+    if (!c->rows || !c->k0) { free(c->rows); free(c->k0); memset(c, 0, sizeof *c); return -1; }
     c->k = calloc((size_t)s->n_app, sizeof *c->k);
     c->v = calloc((size_t)s->n_app, sizeof *c->v);
     c->conv = calloc((size_t)s->n_app, sizeof *c->conv);
@@ -55,8 +64,11 @@ int ink2_cache_init(ink2_cache *c, const ink2_shape *s, int n_ctx) {
     for (int a = 0; a < s->n_app; a++) {
         int g = ink2_app_global(s, a);
         size_t kv = (size_t)(g ? s->n_kv * s->head_dim : s->swa_n_kv * s->swa_head_dim);
-        c->k[a] = calloc((size_t)n_ctx * kv, sizeof(float));
-        c->v[a] = calloc((size_t)n_ctx * kv, sizeof(float));
+        int rows = n_ctx;
+        if (max_chunk && !g && (int64_t)s->window - 1 + max_chunk < n_ctx) rows = s->window - 1 + max_chunk;
+        c->rows[a] = rows;
+        c->k[a] = calloc((size_t)rows * kv, sizeof(float));
+        c->v[a] = calloc((size_t)rows * kv, sizeof(float));
         // the four short convolutions of a layer, by the reference's conv_idx (0 k_proj.sconv, 1 v_proj.sconv,
         // 2 post_attention_convolution, 3 post_mlp_convolution), each a ring of conv_k - 1 input rows (ink2_conv_hist)
         c->conv_floats[a] = (size_t)4 * (size_t)(s->conv_k > 1 ? s->conv_k - 1 : 0) * (size_t)ink2_conv_width(s, a);
@@ -85,8 +97,18 @@ void ink2_cache_free(ink2_cache *c) {
         if (c->v) free(c->v[a]);
         if (c->conv) free(c->conv[a]);
     }
-    free(c->k); free(c->v); free(c->conv); free(c->conv_floats); free(c->n_past);
+    free(c->k); free(c->v); free(c->conv); free(c->conv_floats); free(c->n_past); free(c->rows); free(c->k0);
     memset(c, 0, sizeof *c);
+}
+
+size_t ink2_cache_bytes(const ink2_cache *c, const ink2_shape *s) {
+    size_t n = 0;
+    for (int a = 0; a < c->n_app; a++) {
+        int g = ink2_app_global(s, a);
+        size_t kv = (size_t)(g ? s->n_kv * s->head_dim : s->swa_n_kv * s->swa_head_dim);
+        n += 2 * (size_t)c->rows[a] * kv * sizeof(float) + c->conv_floats[a] * sizeof(float);
+    }
+    return n + (size_t)c->n_app * (sizeof(float *) * 3 + sizeof(size_t) + sizeof(int) * 3);
 }
 
 // n ** -0.5 as the float32 operand torch multiplies by (the reference's `head_dim**-0.5` and `hidden_size**-0.5`:
@@ -627,6 +649,7 @@ ink2_status ink2_attention(const ink2_shape *s, const ink2_weights *w, ink2_cach
                            float *out, float *probs) {
     ink2_attn_layer L;
     if (!c || app < 0 || app >= c->n_app || T <= 0 || T > c->n_ctx) return INK2_BAD_INPUT;
+    if (c->max_chunk && T > c->max_chunk) return INK2_BAD_INPUT;   // the sliding buffers hold window - 1 + max_chunk
     int p0 = pos[0];
     for (int t = 0; t < T; t++) if (pos[t] != p0 + t || pos[t] < 0 || pos[t] >= c->n_ctx) return INK2_BAD_INPUT;
     // p0 = 0 starts over (nothing below it is read); otherwise p0 must be exactly where the slot ends: a rewind
@@ -634,20 +657,37 @@ ink2_status ink2_attention(const ink2_shape *s, const ink2_weights *w, ink2_cach
     if (p0 > 0 && p0 != c->n_past[app]) return INK2_REWIND;
     ink2_status st = ink2_attn_bind(s, w, app, &L);
     if (st != INK2_OK) return st;
-    int nk = p0 + T;
+    // the keys this call can admit: all of 0..p0+T-1 on a full layer; on a sliding one, from the first position
+    // the earliest query still sees (p0 - window + 1). Keys before it are masked for every query, so leaving them
+    // out changes no logit, no sum and no order (ink2_attn_core reads keys ascending and skips masked ones).
+    // (only under ink2_cache_init_window: the full-size cache keeps every key, as the fixture's probs layout reads)
+    int kp0 = (!c->max_chunk || L.g) ? 0 : (p0 - s->window + 1 > 0 ? p0 - s->window + 1 : 0);
+    if (c->max_chunk && !L.g && c->test_drop_key && kp0 > 0) kp0++;   // the control: one admitted key lost
+    int nk = p0 + T - kp0;
+    if (p0 == 0) c->k0[app] = 0;
+    if (p0 + T - c->k0[app] > c->rows[app]) {   // slide: keep kp0..p0-1 at the buffer's start
+        if (kp0 < c->k0[app]) return INK2_BAD_INPUT;
+        const size_t keep = (size_t)(p0 - kp0) * L.C, from = (size_t)(kp0 - c->k0[app]) * L.C;
+        memmove(c->k[app], c->k[app] + from, sizeof(float) * keep);
+        memmove(c->v[app], c->v[app] + from, sizeof(float) * keep);
+        c->k0[app] = kp0;
+        if (p0 + T - kp0 > c->rows[app]) return INK2_BAD_INPUT;
+    }
     float *p[11], *buf = ink2_attn_scratch(&L, T, nk, p);
     if (!buf) return INK2_BAD_INPUT;
     ink2_attn_q(s, &L, T, pos, xq, p[SQ]);
     ink2_attn_kv(s, &L, 0, T, xk, p[SLIN], p[SDYN], p[SK], p0, ink2_conv_hist(s, c, app, 0));
     ink2_attn_kv(s, &L, 1, T, xv, p[SLIN], p[SDYN], p[SV], p0, ink2_conv_hist(s, c, app, 1));
     for (int t = 0; t < T; t++) {
-        memcpy(c->k[app] + (size_t)pos[t] * L.C, p[SK] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
-        memcpy(c->v[app] + (size_t)pos[t] * L.C, p[SV] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
+        memcpy(c->k[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SK] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
+        memcpy(c->v[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SV] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
     }
     c->n_past[app] = p0 + T;   // what the slot now holds consistently: rows and histories of 0..p0+T-1
     ink2_attn_rel(s, &L, T, pos, xq, p[SRS], p[SRL]);
     ink2_rows(L.wt[WS], L.nh, s->hidden, T, xq, p[SSK]);
-    ink2_attn_core(s, &L, T, pos, p[SQ], c->k[app], c->v[app], nk, 0, p[SRL], p[SSK], p[SLG], p[SATT], probs);
+    const size_t koff = (size_t)(kp0 - c->k0[app]) * L.C;
+    ink2_attn_core(s, &L, T, pos, p[SQ], c->k[app] + koff, c->v[app] + koff, nk, kp0, p[SRL], p[SSK], p[SLG], p[SATT],
+                   probs);
     ink2_attn_out(s, &L, T, xq, p[SATT], p[SGA], out);
     free(buf);
     return INK2_OK;

@@ -289,6 +289,10 @@ typedef struct {
     // the architecture's row (arch.h), looked up once at admission; never
     // NULL on a loaded model (an unknown name gets the unknown row)
     const arch_desc *ad;
+    // inkling2_loop: the model's own engine and weight source (src/inkling2_model.c), NULL for every other family;
+    // when set, the forward, the logits rows and the recurrent seam answer from it and none of the llama-style
+    // layer state below is allocated
+    void     *ink2;
     // R6.68.29: a plan made for --info fit (model_plan): its binders keep the
     // first refusal here (bind_err) and print no informational line; a load
     // clears it before its own plan
