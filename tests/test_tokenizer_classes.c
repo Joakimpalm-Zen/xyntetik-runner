@@ -16,6 +16,24 @@
 #include <stdio.h>
 #include <string.h>
 
+// Inkling's publisher uses the o200k regex and ignore_merges=true. The
+// converter gives that rule its own name; an unknown-name fallback loses it.
+static void test_inkling_pre(void) {
+    gguf_file g;
+    assert(gguf_open(&g, "tests/fixtures/vocab-bpe-gpt4o.gguf"));
+    gguf_kv *pre = gguf_get(&g, "tokenizer.ggml.pre");
+    assert(pre && pre->type == GGUF_T_STR);
+    gg_str original = pre->str;
+    pre->str = (gg_str){ .n = 8, .s = "inkling2" };
+    tokenizer t;
+    assert(tokenizer_init(&t, &g));
+    assert(t.pre == TOK_PRE_LLAMA4);
+    assert(t.ignore_merges && !t.add_bos && !t.pre_unknown[0]);
+    tokenizer_free(&t);
+    pre->str = original;
+    gguf_close(&g);
+}
+
 enum { K_LETTER = 0, K_NUMBER = 1, K_OTHER = 2, K_SPACE = 3 };
 
 static int expected_class(uint32_t c) {
@@ -261,6 +279,7 @@ static void test_boundaries_match_the_references(void) {
 }
 
 int main(void) {
+    test_inkling_pre();
     test_classes_match_unicode();
     test_boundaries_match_the_references();
     puts("tokenizer classes ok");

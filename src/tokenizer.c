@@ -565,7 +565,8 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
     // it, all 721 (2026-10-23). Its BOS default stays GPT-2's: the
     // publisher's post-processor adds none.
     else if (strcmp(pre, "pixtral") == 0) t->pre = TOK_PRE_TEKKEN;
-    else if (strcmp(pre, "llama4") == 0 ||
+    // Inkling 2's converter names the same o200k rule "inkling2".
+    else if (strcmp(pre, "inkling2") == 0 || strcmp(pre, "llama4") == 0 ||
              strcmp(pre, "gpt-4o") == 0) t->pre = TOK_PRE_LLAMA4;
     else {
         t->pre = TOK_PRE_GPT2;
@@ -634,7 +635,8 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
     // corpus strings).
     t->ignore_merges = t->model == TOK_BPE &&
         (strcmp(pre, "llama-bpe") == 0 || strcmp(pre, "llama4") == 0 ||
-         strcmp(pre, "gpt-4o") == 0 || strcmp(pre, "tekken") == 0 ||
+         strcmp(pre, "gpt-4o") == 0 || strcmp(pre, "inkling2") == 0 ||
+         strcmp(pre, "tekken") == 0 ||
          strcmp(pre, "pixtral") == 0 || strcmp(pre, "lfm2") == 0);
 
     gguf_kv *scores = gguf_get(g, "tokenizer.ggml.scores");
