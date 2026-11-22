@@ -1,6 +1,7 @@
 // R4.48.6: the inkling2_loop GGUF as a weight source for src/inkling2.c (see inkling2_gguf.h).
 #include "inkling2_gguf.h"
 #include "fp16.h"
+#include "fpclass.h"
 #include "gguf.h"
 #include "quants.h"
 #include <math.h>
@@ -331,7 +332,7 @@ static int check_stacks(ink2g *g, char *why, size_t wn) {
                                   st->scale->type, (long long)nelem(st->scale));
                 const float *f = st->scale->data;
                 for (int e = 0; e < s->n_expert; e++)
-                    if (!(f[e] > 0.0f) || !isfinite(f[e])) return refuse(why, wn, "%s[%d] is %g, not a finite positive factor", sn, e, f[e]);
+                    if (!(f[e] > 0.0f) || !fp_isfinite(f[e])) return refuse(why, wn, "%s[%d] is %g, not a finite positive factor", sn, e, f[e]);
             } else if (dense_type_ok(st->w->type)) {
                 st->kind = st->w->type == T_BF16 ? 'B' : st->w->type == T_F32 ? 'F' : 'Q';
                 if (st->kind == 'Q' && st->cols % ggml_block_size((int)st->w->type))
