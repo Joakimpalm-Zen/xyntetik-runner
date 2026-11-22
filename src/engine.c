@@ -2219,6 +2219,7 @@ static bool constraint_spelling_ok(engine *e, int id, bool schema) {
     int splen = (int)strlen(sp);
     if (sval_in_free_content(&e->sv) &&
         !sval_raw_marker_opens(&e->sv, sp, splen)) return false;
+    if (!constraint_payload_trial(e, true, sp, splen)) return false;
     // Also reject a control token absorbed as raw free text when entering
     // SN_RAW across a lazy SN_SEQ/SN_COND boundary before SN_RAW is pushed.
     sval t = e->sv;

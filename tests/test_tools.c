@@ -5136,6 +5136,48 @@ static void test_inkling2_native_protocol(void) {
     jv_free(tools);
 }
 
+static void test_f2_raw_marker_restricted_to_inkling(void) {
+    jv *tools = parse(TOOLS);
+    char err[256];
+
+    // Gemma 4 constrained thought (<channel|>) and native string (<|"|>):
+    // neither terminator sentinel may open for a decoded-empty control token.
+    snode *g4 = schema_compile_gemma4_turn(tools, true, NULL, NULL, true, false, false,
+                                           err, sizeof err);
+    assert(g4);
+    {
+        sval v;
+        sval_init(&v, g4);
+        const char *pre = "<|channel>thought\nhi";
+        assert(sval_feed(&v, pre, (int)strlen(pre)));
+        assert(!sval_raw_marker_opens(&v, "<channel|>", 10));
+        assert(!sval_raw_marker_opens(&v, "<", 1));
+    }
+    {
+        sval v;
+        sval_init(&v, g4);
+        const char *pre = "<|tool_call>call:get_weather{city:<|\"|>Os";
+        assert(sval_feed(&v, pre, (int)strlen(pre)));
+        assert(!sval_raw_marker_opens(&v, "<|\"|>", 5));
+    }
+    schema_free(g4);
+
+    // Inkling constrained thinking (<|end_message|>): DOES open so the single
+    // control token <|end_message|> can close SN_RAW.
+    snode *ink = schema_compile_inkling2_turn(tools, true, NULL, NULL, true, false,
+                                              err, sizeof err);
+    assert(ink);
+    {
+        sval v;
+        sval_init(&v, ink);
+        const char *pre = "<|message_model|><|content_thinking|>hi";
+        assert(sval_feed(&v, pre, (int)strlen(pre)));
+        assert(sval_raw_marker_opens(&v, "<|end_message|>", 15));
+    }
+    schema_free(ink);
+    jv_free(tools);
+}
+
 int main(void) {
     test_whitespace_after_a_native_number_is_protocol();
     test_coder_constrained_turn();
@@ -5244,6 +5286,7 @@ int main(void) {
     test_buffered_turn_is_read_by_the_stream_reader();
     test_generic_stream_decodes_the_tool_name();
     test_inkling2_native_protocol();
+    test_f2_raw_marker_restricted_to_inkling();
     puts("tool envelope tests ok");
     return 0;
 }

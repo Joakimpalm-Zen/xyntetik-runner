@@ -485,3 +485,55 @@ def test_loop_guard_closes_thinking_and_scopes_to_reasoning(server, server_loop)
     assert code == 200, d_clean
     assert d_clean["runner_telemetry"]["loop_guard"]["interventions"] == 0, d_clean
     assert d_clean["choices"][0]["message"]["content"] == "seven", d_clean
+
+
+def test_f3_buffered_parse_only_other_family_keeps_no_reasoning(tmp_path):
+    """F3: non-Inkling buffered parse_only turns keep 2fc588b9 behaviour:
+    envelope_map_buffered does not pull reasoning via tool_stream_map_channels_ex
+    for non-Inkling protocols (verified with qwen3-coder parse_only auto)."""
+    m = tmp_path / "q3c_po.gguf"
+    subprocess.run(
+        [
+            sys.executable,
+            ROOT / "scripts/make-test-model.py",
+            "--control",
+            "<|im_start|>,<|im_end|>",
+            str(m),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    exe = find_runner(ROOT)
+    with RunnerServer(
+        exe,
+        m,
+        ctx=2048,
+        parallel=1,
+        extra_args=["--gpu", "off", "-t", "2", "--chat-template", "qwen3-coder"],
+        env={"RUNNER_TEST_SCRIPTED_REPLY": "1"},
+    ) as srv:
+        with urllib.request.urlopen(srv.base_url + "/v1/models", timeout=30) as r:
+            model_id = json.load(r)["data"][0]["id"]
+        code, d = _post(
+            srv,
+            "/v1/chat/completions",
+            {
+                "model": model_id,
+                "messages": [{"role": "user", "content": "call"}],
+                "tools": [ADD_TOOL],
+                "tool_choice": "auto",
+                "max_tokens": 200,
+                "temperature": 0,
+                "stream": False,
+                "runner_test_reply": (
+                    "<tool_call>\n<function=add>\n<parameter=a>\n1\n</parameter>\n"
+                    "<parameter=b>\n2\n</parameter>\n</function>\n</tool_call><|im_end|>"
+                ),
+            },
+        )
+        assert code == 200, d
+        assert d["runner_telemetry"]["tool_protocol"]["parse_only"] is True, d
+        msg = d["choices"][0]["message"]
+        assert len(msg.get("tool_calls") or []) == 1, d
+        assert not msg.get("reasoning_content"), d
+

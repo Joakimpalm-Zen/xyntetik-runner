@@ -2259,16 +2259,18 @@ static int envelope_map_buffered(const tool_envelope *env, gen_ctx *g, sbuf *tc,
         // would have. A fault (an invalid block, a call left open) does not
         // void the turn: the valid calls and the prose are the model's real
         // output and are kept; the finish reason names the fault.
+        bool keep_reason = env->proto == TP_INKLING2;
         int n_calls = 0;
         int rc = tool_stream_map_channels_ex(env, doc, doc_n, truncated,
-                                             &mapped_reason, &mapped, tc,
+                                             keep_reason ? &mapped_reason : NULL,
+                                             &mapped, tc,
                                              &n_calls, &g->tool_implicit);
         free(turn.s);
-        if (mapped_reason.failed || mapped.failed || tc->failed) {
+        if ((keep_reason && mapped_reason.failed) || mapped.failed || tc->failed) {
             free(mapped_reason.s); free(mapped.s); return -1;
         }
         *fault = rc < 0;
-        if (mapped_reason.n) { free(g->reason.s); g->reason = mapped_reason; }
+        if (keep_reason && mapped_reason.n) { free(g->reason.s); g->reason = mapped_reason; }
         else free(mapped_reason.s);
         free(g->out.s);
         g->out = mapped;

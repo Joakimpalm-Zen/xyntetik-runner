@@ -80,6 +80,7 @@ struct snode {
     // SN_RAW's terminator. Its own field: this used to borrow the pattern
     // prefix, which tied two unrelated features to one pointer.
     char   *sentinel; int sentinel_len;
+    bool    raw_control_sentinel;   // sentinel is a single control token (Inkling <|end_message|>)
 };
 
 struct jv;
