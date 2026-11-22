@@ -1,5 +1,7 @@
 // Native Inkling 2 framing, from the publisher's chat_template.jinja.
 // Included by template.c so the prompt-marker discipline stays private.
+#include "fpclass.h"
+
 static const jv *inkling_kwarg(const jv *req) {
     jv *kw = jv_get((jv *)req, "chat_template_kwargs");
     jv *v = jv_get(kw, "reasoning_effort");
@@ -23,7 +25,7 @@ static bool inkling_effort(const jv *v, double *number) {
     }
     // jinja's float filter defaults to zero for a value it cannot convert.
     *number = v->type == J_NUM ? v->num : v->type == J_BOOL && v->b ? 1 : 0;
-    return isfinite(*number) && *number >= 0 && *number <= 0.99;
+    return fp_isfinite(*number) && *number >= 0 && *number <= 0.99;
 }
 
 static void inkling_json(const jv *v, sbuf *b, bool sorted) {
