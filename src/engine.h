@@ -57,10 +57,9 @@ typedef struct {
     int  stop_ids[TOK_STOP_MAX];
     int  n_stop;
     // Stop ids the REQUEST added: a stop string that spells a control token
-    // exactly, or stop_token_ids. Live for one request; completion_cleanup
-    // clears them. Control tokens decode to no bytes, so the text matcher
-    // could never see `<|eom|>`; these end the turn on the id itself.
-    int  req_stop_ids[8];
+    // exactly, stop_token_ids, or Inkling turn-header stops in unconstrained chat.
+    // Live for one request; completion_cleanup clears them.
+    int  req_stop_ids[16];
     int  n_req_stop;
     bool ignore_eos;
     bool hit_stop;         // last generate ended on a stop token / json done

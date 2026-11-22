@@ -537,3 +537,362 @@ def test_f3_buffered_parse_only_other_family_keeps_no_reasoning(tmp_path):
         assert len(msg.get("tool_calls") or []) == 1, d
         assert not msg.get("reasoning_content"), d
 
+
+def test_d1_plain_chat_without_tools_emits_no_tool_calls(server):
+    """D1: Plain chat with NO tools declared (and no tool_calls contract) must
+    never populate tool_calls or finish with 'tool_calls', buffered or streamed."""
+    call_reply = (
+        '<|message_model|>add<|content_invoke_tool_json|>'
+        '{"name":"add","args":{"a":1,"b":2}}'
+        '<|end_message|><|content_model_end_sampling|>'
+    )
+    code, d = _post(
+        server,
+        "/v1/chat/completions",
+        {
+            "model": server.model_id,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 64,
+            "temperature": 0,
+            "stream": False,
+            "runner_test_reply": call_reply,
+        },
+    )
+    assert code == 200, d
+    msg = d["choices"][0]["message"]
+    assert not msg.get("tool_calls"), d
+    assert d["choices"][0]["finish_reason"] != "tool_calls", d
+
+    ev = _post_stream(
+        server,
+        "/v1/chat/completions",
+        {
+            "model": server.model_id,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 64,
+            "temperature": 0,
+            "stream": True,
+            "runner_test_reply": call_reply,
+        },
+    )
+    chunks = [c["choices"][0] for c in ev if c.get("choices")]
+    streamed_calls = [
+        tc_part for ch in chunks for tc_part in ch.get("delta", {}).get("tool_calls", [])
+    ]
+    assert not streamed_calls, chunks
+    assert all(ch.get("finish_reason") != "tool_calls" for ch in chunks), chunks
+
+
+@pytest.mark.parametrize(
+    "bad_reply",
+    [
+        "<|message_model|>add<|end_message|><|content_model_end_sampling|>",
+        '<|message_model|>add<|content_invoke_tool_json|>{"name":"other","args":{}}<|end_message|><|content_model_end_sampling|>',
+        "<|message_model|>add<|content_invoke_tool_json|>{bad<|end_message|><|content_model_end_sampling|>",
+    ],
+)
+def test_d2_plain_chat_fault_matches_tools_branch(server, bad_reply):
+    """D2: Buffered plain chat reports malformed frames / bad calls with
+    finish 'envelope_error' consistently with streamed plain chat & the tools branch."""
+    code, d_buf = _post(
+        server,
+        "/v1/chat/completions",
+        {
+            "model": server.model_id,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 64,
+            "temperature": 0,
+            "stream": False,
+            "runner_test_reply": bad_reply,
+        },
+    )
+    assert code == 200, d_buf
+    assert not d_buf["choices"][0]["message"].get("tool_calls"), d_buf
+    assert d_buf["choices"][0]["finish_reason"] == "error", d_buf
+    assert d_buf.get("runner_telemetry", {}).get("finish_detail") == "envelope_unmapped", d_buf
+
+    ev = _post_stream(
+        server,
+        "/v1/chat/completions",
+        {
+            "model": server.model_id,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 64,
+            "temperature": 0,
+            "stream": True,
+            "runner_test_reply": bad_reply,
+        },
+    )
+    fin_chunks = [c for c in ev if c.get("choices") and c["choices"][0].get("finish_reason")]
+    assert len(fin_chunks) == 1, ev
+    assert fin_chunks[0]["choices"][0]["finish_reason"] == "error", fin_chunks
+    assert fin_chunks[0].get("runner_telemetry", {}).get("finish_detail") == "envelope_unmapped", fin_chunks
+
+
+@pytest.mark.parametrize("hdr", ["<|message_user|>", "<|message_system|>", "<|message_tool|>"])
+def test_r2_turn_header_stops_chat_before_tail_buffered_and_streamed(server, hdr):
+    """R2: Unconstrained Inkling chat stops decoding immediately at another turn
+    header, keeps the header out of content/reasoning, names it in telemetry,
+    while raw /v1/completions keeps publisher EOS-only stops."""
+    # Prefix is 3 tokens: <|message_model|>, <|content_text|>, ok, <|end_message|> (4 tok),
+    # followed immediately by hdr, then a long tail that must NEVER be decoded.
+    reply_text = (
+        "<|message_model|><|content_thinking|>t<|end_message|>"
+        "<|message_model|><|content_text|>ok<|end_message|>"
+        f"{hdr}TRAILING_NEVER_DECODED_1_2_3_4_5<|content_model_end_sampling|>"
+    )
+    code, d = _post(
+        server,
+        "/v1/chat/completions",
+        {
+            "model": server.model_id,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 128,
+            "temperature": 0,
+            "stream": False,
+            "runner_test_reply": reply_text,
+        },
+    )
+    assert code == 200, d
+    msg = d["choices"][0]["message"]
+    assert msg["content"] == "ok", d
+    assert msg.get("reasoning_content") == "t", d
+    assert hdr not in (msg.get("content") or "") and hdr not in (msg.get("reasoning_content") or ""), d
+    assert "TRAILING" not in (msg.get("content") or ""), d
+    # Header halted decode immediately: far fewer completion tokens than full tail.
+    assert d["usage"]["completion_tokens"] < 15, d
+    assert d["choices"][0]["finish_reason"] == "stop", d
+    assert d["choices"][0].get("stop_token") == hdr, d
+    tel = d.get("runner_telemetry", {})
+    assert tel.get("ended_at") == "turn_header", tel
+    assert tel.get("turn_header") == hdr, tel
+
+    ev = _post_stream(
+        server,
+        "/v1/chat/completions",
+        {
+            "model": server.model_id,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 128,
+            "temperature": 0,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "runner_test_reply": reply_text,
+        },
+    )
+    chunks = [c["choices"][0] for c in ev if c.get("choices")]
+    txt = "".join(ch.get("delta", {}).get("content", "") for ch in chunks)
+    rsn = "".join(ch.get("delta", {}).get("reasoning_content", "") for ch in chunks)
+    assert txt == "ok" and rsn == "t", chunks
+    assert hdr not in txt and hdr not in rsn, chunks
+    fin = [c for c in ev if c.get("choices") and c["choices"][0].get("finish_reason")][0]
+    assert fin["choices"][0]["finish_reason"] == "stop", fin
+    assert fin["choices"][0].get("stop_token") == hdr, fin
+    assert fin.get("runner_telemetry", {}).get("ended_at") == "turn_header", fin
+    assert fin.get("runner_telemetry", {}).get("turn_header") == hdr, fin
+    usage_ev = [c for c in ev if c.get("usage")]
+    assert usage_ev and usage_ev[-1]["usage"]["completion_tokens"] == d["usage"]["completion_tokens"], ev
+
+    # Raw /v1/completions keeps publisher EOS-only stops (does not stop at <|message_user|>).
+    code, raw = _post(
+        server,
+        "/v1/completions",
+        {
+            "prompt": "<|message_model|><|content_text|>",
+            "max_tokens": 128,
+            "temperature": 0,
+            "runner_test_reply": f"prefix{hdr}AFTER_HDR<|content_model_end_sampling|>",
+        },
+    )
+    assert code == 200, raw
+    assert "AFTER_HDR" in raw["choices"][0]["text"], raw
+    assert raw.get("runner_telemetry", {}).get("ended_at") is None, raw
+
+
+def _patch_embd_to_emit_then_header(gguf_path, first_piece, header_piece):
+    """Patch token_embd.weight in a --zero-branches GGUF so greedy decode from
+    <|message_model|> deterministically emits `first_piece` then `header_piece`."""
+    import struct
+
+    data = bytearray(gguf_path.read_bytes())
+    pos = 0
+
+    def rd(fmt):
+        nonlocal pos
+        sz = struct.calcsize(fmt)
+        vals = struct.unpack_from(fmt, data, pos)
+        pos += sz
+        return vals
+
+    def rd_str():
+        nonlocal pos
+        (n,) = rd("<Q")
+        s = data[pos : pos + n].decode("utf-8", errors="replace")
+        pos += n
+        return s
+
+    def skip_val(vtype):
+        nonlocal pos
+        fixed = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+        if vtype in fixed:
+            pos += fixed[vtype]
+            return None
+        if vtype == 8:
+            return rd_str()
+        if vtype == 9:
+            (et, n) = rd("<IQ")
+            out = [skip_val(et) for _ in range(n)]
+            return out
+        raise ValueError(f"unknown gguf type {vtype}")
+
+    magic, ver, n_tensors, n_kv = rd("<IIQQ")
+    assert magic == 0x46554747 and ver == 3
+    tokens = None
+    for _ in range(n_kv):
+        k = rd_str()
+        (vt,) = rd("<I")
+        v = skip_val(vt)
+        if k == "tokenizer.ggml.tokens":
+            tokens = v
+    emb_off = None
+    n_embd = None
+    for _ in range(n_tensors):
+        name = rd_str()
+        (nd,) = rd("<I")
+        dims = rd(f"<{nd}Q")
+        ttype, off = rd("<IQ")
+        if name == "token_embd.weight":
+            assert ttype == 0
+            n_embd = dims[0]
+            emb_off = off
+    data_start = (pos + 31) & ~31
+    assert tokens is not None and n_embd is not None and emb_off is not None
+    tid_end = tokens.index("<|end_message|>")
+    tid_first = tokens.index(first_piece) if first_piece in tokens else tokens.index("<0x61>")
+    tid_hdr = tokens.index(header_piece)
+
+    def write_row(tid, c0, c1):
+        row = [c0, c1] + [0.0] * (n_embd - 2)
+        off = data_start + emb_off + tid * n_embd * 4
+        struct.pack_into(f"<{n_embd}f", data, off, *row)
+
+    write_row(tid_end, 1.0, 0.0)
+    write_row(tid_first, 20.0, 1.0)
+    write_row(tid_hdr, 0.0, 1000.0)
+    gguf_path.write_bytes(data)
+    return tid_first, tid_hdr
+
+
+def test_r2_turn_header_stop_replays_with_verify(tmp_path):
+    """R2 addition 3: a turn ended by an Inkling turn header records the stop in
+    the receipt and replays VERIFIED under `runner --verify`, while tampering the
+    stop constraint fails verification."""
+    m = tmp_path / "ink_verify.gguf"
+    subprocess.run(
+        [
+            sys.executable,
+            ROOT / "scripts/make-test-model.py",
+            "--zero-branches",
+            "--control",
+            INKLING_CONTROLS,
+            "--eos-token",
+            "<|content_model_end_sampling|>",
+            str(m),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    tid_first, tid_hdr = _patch_embd_to_emit_then_header(m, "a", "<|message_user|>")
+    rdir = tmp_path / "receipts"
+    exe = find_runner(ROOT)
+    with RunnerServer(
+        exe,
+        m,
+        ctx=1024,
+        parallel=1,
+        extra_args=[
+            "--gpu",
+            "off",
+            "-t",
+            "2",
+            "--chat-template",
+            "inkling2",
+            "--receipts",
+            str(rdir),
+        ],
+    ) as srv:
+        with urllib.request.urlopen(srv.base_url + "/v1/models", timeout=30) as r:
+            model_id = json.load(r)["data"][0]["id"]
+        code, d = _post(
+            srv,
+            "/v1/chat/completions",
+            {
+                "model": model_id,
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 16,
+                "temperature": 0,
+                "enable_thinking": False,
+                "cache_prompt": False,
+            },
+        )
+    assert code == 200, d
+    assert d["choices"][0]["message"]["content"] == "a", d
+    assert d["usage"]["completion_tokens"] == 1, d
+    assert d["choices"][0]["finish_reason"] == "stop", d
+    assert d["choices"][0].get("stop_token") == "<|message_user|>", d
+    tel = d.get("runner_telemetry", {})
+    assert tel.get("ended_at") == "turn_header", tel
+    assert tel.get("turn_header") == "<|message_user|>", tel
+
+    rec_path = next(rdir.iterdir())
+    rec = json.loads(rec_path.read_text())
+    assert rec["output"]["tokens"] == [tid_first], rec
+    assert rec["serve"].get("ended_at") == "turn_header", rec["serve"]
+    assert rec["serve"].get("turn_header") == "<|message_user|>", rec["serve"]
+    stop_cons = [c for c in rec.get("constraints", []) if c.get("kind") == "stop"]
+    assert len(stop_cons) == 1 and tid_hdr in stop_cons[0].get("token_ids", []), rec
+
+    v = subprocess.run(
+        [exe, "-m", m, "--verify", rec_path, "--gpu", "off", "-t", "2", "-c", "1024"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=120,
+    )
+    err = v.stderr.decode(errors="replace")
+    assert v.returncode == 0 and "VERIFIED" in err, err[-600:]
+
+    # Dropping the stop constraint makes the record fail --verify.
+    import hashlib
+
+    raw = rec_path.read_text()
+    cut = raw.rindex(',"chain":')
+    body = json.loads(raw[:cut] + "}")
+    body["constraints"] = [c for c in body["constraints"] if c.get("kind") != "stop"]
+    if not body["constraints"]:
+        del body["constraints"]
+        body["serve"]["shaped_by"] = []
+    head = json.dumps(body, separators=(",", ":"))[:-1]
+    tampered = tmp_path / "tampered.json"
+    tampered.write_text(
+        head
+        + ',"chain":'
+        + json.dumps(
+            {
+                "algo": "sha256",
+                "prev": rec["chain"]["prev"],
+                "hash": hashlib.sha256(head.encode()).hexdigest(),
+            },
+            separators=(",", ":"),
+        )
+        + "}"
+    )
+    vt = subprocess.run(
+        [exe, "-m", m, "--verify", tampered, "--gpu", "off", "-t", "2", "-c", "1024"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=120,
+    )
+    vt_err = vt.stderr.decode(errors="replace")
+    assert vt.returncode != 0 and ("DIVERGED" in vt_err or "UNVERIFIABLE" in vt_err), vt_err[-600:]
+
+

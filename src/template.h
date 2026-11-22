@@ -361,9 +361,14 @@ static inline bool think_split_is_control(const char *think_open, const char *sp
                                           bool chat, bool constrained) {
     return chat && !constrained && !think_open && split_open;
 }
-// Unconstrained Inkling 2 Mini turns decode these non-stop control tokens by
+// Unconstrained Inkling 2 Mini turns decode non-stop control tokens by
 // vocabulary spelling so the demultiplexer can split channels; returns count.
-int template_inkling_spell_ids(tokenizer *tok, int *out, int cap);
+// `include_tool_json` enables <|content_invoke_tool_json|> only when tools exist.
+int template_inkling_spell_ids(tokenizer *tok, int *out, int cap, bool include_tool_json);
+// Unconstrained Inkling 2 Mini chat turns stop immediately if the model begins
+// another participant's turn (<|message_user|>, <|message_system|>, <|message_tool|>).
+int template_inkling_turn_header_stops(tokenizer *tok, int *out, int cap);
+bool template_is_inkling_turn_header(const char *sp);
 
 // True for EITHER gemma-4 template family. The mainline and the E-series
 // differ at exactly one generation-prompt site (see TMPL_GEMMA4_MAINLINE
@@ -811,6 +816,7 @@ enum tool_proto {
     TP_IFM_ARGKV,     // K2-Horizon: the same pairs in <ifm|...> tags, inside <ifm|tool_calls>
     TP_LFM2_RAW,      // LFM2.5-8B: TP_LFM2 with its string values written raw
     TP_INKLING2,      // Inkling 2: <|message_model|>NAME<|content_invoke_tool_json|>{"name":...,"args":{...}}<|end_message|>
+    TP_INKLING_PLAIN, // Inkling 2 plain chat: channel demux only, never tool_calls
 };
 static inline bool proto_lfm2(int p) {
     return p == TP_LFM2 || p == TP_LFM2_RAW;

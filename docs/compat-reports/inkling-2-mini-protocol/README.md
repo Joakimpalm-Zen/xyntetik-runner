@@ -141,9 +141,21 @@ fields they receive and do not invent missing structured data.
   `<|end_message|>` as single control tokens so `--reasoning-budget`
   (`reasoning_max_tokens`) and `--loop-guard` terminate deliberation cleanly via
   `<|end_message|>` without stopping generation, and
-  `src/completion.c` spells the seven non-stop control tokens on unconstrained
-  chat turns for `INKLING_PLAIN_ENV` demultiplexing. Models lacking a
-  single-token `<|end_message|>` return HTTP 400 on `reasoning_max_tokens`.
+  `src/completion.c` spells the six channel control tokens (`INK_TOOL_JSON` only
+  when tools are declared) on unconstrained chat turns for `INKLING_PLAIN_ENV`
+  (`TP_INKLING_PLAIN`) demultiplexing. Models lacking a single-token
+  `<|end_message|>` return HTTP 400 on `reasoning_max_tokens`.
+- Plain chat without declared tools (`TP_INKLING_PLAIN`) never emits `tool_calls`
+  or `finish_reason="tool_calls"`, and reports frame or call faults with
+  `envelope_error` in both streamed and buffered paths.
+- **Deliberate chat-serving deviation (`--verify` covered)**: publisher EOS-only
+  `tok_stop_ids` is preserved verbatim for tokenizer fidelity and raw
+  `/v1/completions`; unconstrained Inkling `/v1/chat/completions` turns add
+  `<|message_user|>`, `<|message_system|>`, and `<|message_tool|>` as per-request
+  `req_stop_ids` so generation halts at the turn header before decoding another
+  token, emits `ended_at="turn_header"` and `turn_header` in
+  `runner_telemetry` and receipt `serve`, and replays `VERIFIED` under
+  `--verify` (`tests/test_inkling2_protocol.py`).
 
 This work completes protocol parsing and reasoning transitions; weights
 download, CUDA/Metal inference fidelity runs, and model admission remain

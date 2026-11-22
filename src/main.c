@@ -7209,7 +7209,7 @@ static int replay_stop_cb(void *ud, const char *bytes, int n) {
 // The record's stop constraint, read for the replay: false with the reason in
 // why when it is malformed or the record cannot say where the turn began.
 static bool replay_stop_read(jv *rec, const model_t *m, bool constrained, replay_stop *r,
-                             int ids[8], int *n_ids, char *why, size_t cap) {
+                             int ids[16], int *n_ids, char *why, size_t cap) {
     jv *cons = jv_get(rec, "constraints");
     jv *stop = NULL;
     for (int i = 0; cons && cons->type == J_ARR && i < cons->n; i++)
@@ -7219,7 +7219,7 @@ static bool replay_stop_read(jv *rec, const model_t *m, bool constrained, replay
     if (!stop) return true;
     jv *seq = jv_get(stop, "sequences"), *tid = jv_get(stop, "token_ids");
     if (!seq || seq->type != J_ARR || seq->n > 4 ||
-        (tid && (tid->type != J_ARR || tid->n > 8))) {
+        (tid && (tid->type != J_ARR || tid->n > 16))) {
         snprintf(why, cap, "malformed stop constraint");
         return false;
     }
@@ -7630,7 +7630,7 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     double gt = 0;
     outcap_t replay_out = {0};
     replay_stop rs = { .cap = &replay_out, .e = &rt->e };
-    int stop_ids[8], n_stop_ids = 0;
+    int stop_ids[16], n_stop_ids = 0;
     {
         char why[512];
         if (!replay_stop_read(vr->rec, &rt->m, rt->e.schema || rt->e.json_mode, &rs,
@@ -7667,7 +7667,8 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     if (vserve && vchat && vtmpl == TMPL_INKLING2 && !rt->e.schema && !rt->e.json_mode)
         rt->e.n_spell = template_inkling_spell_ids(
             &rt->tok, rt->e.spell_ids,
-            (int)(sizeof rt->e.spell_ids / sizeof *rt->e.spell_ids));
+            (int)(sizeof rt->e.spell_ids / sizeof *rt->e.spell_ids),
+            replay_has_kind(vr->rec, "tools"));
     // the served completions turn spelled its control tokens (special_tokens):
     // the replay decodes the same bytes, and a stop string matches where it did
     rt->e.render_special = vserve && replay_has_kind(vr->rec, "special_tokens");

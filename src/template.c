@@ -6648,7 +6648,8 @@ const char *tool_envelope_protocol_name(const tool_envelope *e) {
         case TP_MUSE_PLAIN: return "atem";
         case TP_HARMONY:    return "harmony";
         case TP_GEMMA4:     return "gemma4";
-        case TP_INKLING2:   return "inkling2";
+        case TP_INKLING2:
+        case TP_INKLING_PLAIN: return "inkling2";
         case TP_QWEN:       return "qwen_json";
         case TP_QWEN_XML:   return "qwen3_xml";
         case TP_MINICPM_XML: return "minicpm5_xml";
@@ -8596,7 +8597,7 @@ void tool_stream_init(tool_stream *s, const tool_envelope *e,
     if (sink) s->sink = *sink;
     s->state = e && e->proto == TP_HARMONY ? TS_HARMONY
              : e && e->proto == TP_GEMMA4 ? TS_G4_START
-             : e && e->proto == TP_INKLING2 ? TS_INK_START
+             : e && (e->proto == TP_INKLING2 || e->proto == TP_INKLING_PLAIN) ? TS_INK_START
              : e && (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) ? TS_QWEN_START
              : e && proto_bare_xml(e->proto) ? TS_MCP_START
              : e && (e->proto == TP_NEMOTRON || e->proto == TP_MISTRAL ||
@@ -9332,23 +9333,45 @@ static int ts_gemma4(tool_stream *s, const char *bytes, int n) {
 #define INK_TOOL_TEXT "<|content_invoke_tool_text|>"
 #define INK_TOOL_JSON "<|content_invoke_tool_json|>"
 
-int template_inkling_spell_ids(tokenizer *tok, int *out, int cap) {
+#define INK_MSG_USER  "<|message_user|>"
+#define INK_MSG_SYS   "<|message_system|>"
+#define INK_MSG_TOOL  "<|message_tool|>"
+
+int template_inkling_spell_ids(tokenizer *tok, int *out, int cap, bool include_tool_json) {
     if (!tok || !out || cap <= 0) return 0;
     static const char *const tags[] = {
         INK_MSG_MODEL,
         INK_THINK,
         INK_TEXT,
         INK_END_MSG,
-        INK_TOOL_JSON,
         INK_TOOL_TEXT,
         INK_ERR,
+        INK_TOOL_JSON,
     };
+    int count = (int)(sizeof tags / sizeof *tags);
+    if (!include_tool_json) count--;
     int n = 0;
-    for (size_t i = 0; i < sizeof tags / sizeof *tags && n < cap; i++) {
+    for (int i = 0; i < count && n < cap; i++) {
         int id = tok_find(tok, tags[i]);
         if (id >= 0 && tok_is_control(tok, id)) out[n++] = id;
     }
     return n;
+}
+
+int template_inkling_turn_header_stops(tokenizer *tok, int *out, int cap) {
+    if (!tok || !out || cap <= 0) return 0;
+    static const char *const hdrs[] = { INK_MSG_USER, INK_MSG_SYS, INK_MSG_TOOL };
+    int n = 0;
+    for (size_t i = 0; i < sizeof hdrs / sizeof *hdrs && n < cap; i++) {
+        int id = tok_find(tok, hdrs[i]);
+        if (id >= 0 && tok_is_control(tok, id)) out[n++] = id;
+    }
+    return n;
+}
+
+bool template_is_inkling_turn_header(const char *sp) {
+    return sp && (!strcmp(sp, INK_MSG_USER) || !strcmp(sp, INK_MSG_SYS) ||
+                  !strcmp(sp, INK_MSG_TOOL));
 }
 
 enum { INK_BAD = -1, INK_MORE = 0, INK_OK = 1 };
@@ -9447,8 +9470,22 @@ static size_t ts_tail_keep(const tool_stream *s, const char *const *markers, int
     return keep;
 }
 
+static bool ts_ink_drop_undeclared(tool_stream *s) {
+    s->fault = true;
+    const char *close = head_find(s, INK_END_MSG);
+    if (close) {
+        head_drop(s, (size_t)(close - s->head) + strlen(INK_END_MSG));
+        s->state = TS_INK_START;
+        return true;
+    }
+    s->head_n = 0;
+    s->state = TS_DONE;
+    return false;
+}
+
 static int ts_inkling(tool_stream *s, const char *bytes, int n) {
     head_put(s, bytes, (size_t)n);
+    bool no_tools = s->env && s->env->proto == TP_INKLING_PLAIN;
     bool lenient = s->env && s->env->parse_only;
     static const char *const START_MARKERS[] = {
         INK_MSG_MODEL, INK_END_TURN, INK_THINK, INK_TEXT,
@@ -9490,6 +9527,10 @@ static int ts_inkling(tool_stream *s, const char *bytes, int n) {
                 head_drop(s, strlen(INK_TOOL_JSON));
                 free(s->name);
                 s->name = NULL;
+                if (no_tools) {
+                    if (ts_ink_drop_undeclared(s)) break;
+                    return 0;
+                }
                 s->state = TS_INK_CALL;
                 break;
             }
@@ -9525,6 +9566,11 @@ static int ts_inkling(tool_stream *s, const char *bytes, int n) {
             if (hit_idx == 4) { // <|content_invoke_tool_json|>
                 free(s->name);
                 s->name = NULL;
+                if (no_tools) {
+                    head_drop(s, hlen + tlen);
+                    if (ts_ink_drop_undeclared(s)) break;
+                    return 0;
+                }
                 if (hlen > 0) {
                     if (!ink_valid_header_name(s->head, hlen)) {
                         s->fault = true;
