@@ -1,0 +1,73 @@
+{
+  "positions": 1991,
+  "hf": "thinkingmachines/Inkling-2-Mini at b85c3cfa615fc413cc9af3379f491b963f3b586a (its tokenizer and config)",
+  "corpus": "the R4.48 read's 2000 chat ids as text (chat-corpus.txt, sha256 98c78169...)",
+  "reference_class": "precomputed rows",
+  "reference_logits": "precomputed rows: the publisher's float32 forward through the R4.48 dequantizing store, ref-chat.logits.f32 sha256 f6861dc1c4b43ef7b98f2e54e59f30fcbbc02a4163a65aebea5c65e3d8c28908",
+  "special_prefix_tokens": 0,
+  "endpoint_input": "prefix text",
+  "special_prefix_forced": false,
+  "token_spelling": "in-sentence (anchored decode)",
+  "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+  "positions_skipped_no_logprobs": 0,
+  "positions_skipped_prefix": 0,
+  "fresh_prompt": false,
+  "reference_dtype": "float32",
+  "reference_device": "cpu",
+  "sides": {
+    "a": {
+      "endpoint": "score-chat.json",
+      "model": "runner Inkling-2-Mini-UD-Q8_K_XL",
+      "mean_kld_vs_gold": 1.2835818760833751e-06,
+      "max_kld_vs_gold": 0.0008375876598465359,
+      "top1_agreement_pct": 100.0,
+      "margin_qualified_top1_pct": 100.0,
+      "matched_by_id_positions": 1991,
+      "positions_with_dropped_mass": 0,
+      "max_dropped_gold_mass": 0.0,
+      "id_spelling_mismatches": 0,
+      "engine": {
+        "name": "runner",
+        "version": null,
+        "from": "score file"
+      }
+    },
+    "b": {
+      "endpoint": "llama-chat.logits.f32",
+      "model": "llama.cpp 56eea9e4 Inkling-2-Mini-UD-Q8_K_XL",
+      "mean_kld_vs_gold": 0.00374600346840191,
+      "max_kld_vs_gold": 1.1342922456363418,
+      "top1_agreement_pct": 98.64389753892516,
+      "margin_qualified_top1_pct": 99.94321408290745,
+      "matched_by_id_positions": 1991,
+      "positions_with_dropped_mass": 0,
+      "max_dropped_gold_mass": 0.0,
+      "id_spelling_mismatches": 0,
+      "engine": {
+        "name": null,
+        "version": null,
+        "from": "rows file"
+      }
+    }
+  },
+  "significance": {
+    "qualified_positions": 1761,
+    "margin_qualified_hits_a": 1761,
+    "margin_qualified_hits_b": 1760,
+    "discordant_a_only": 1,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 38.640544601047445,
+    "kld_wilcoxon_p": 0.0,
+    "kld_wilcoxon_n": 1991,
+    "large_disagreement": {
+      "threshold_nats": 1.0,
+      "positions": 1,
+      "a_worse": 0,
+      "b_worse": 1,
+      "p_a_worse": 1.0,
+      "p_b_worse": 0.5
+    },
+    "verdict": "a closer"
+  }
+}

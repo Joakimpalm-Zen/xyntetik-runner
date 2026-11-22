@@ -1,0 +1,5 @@
+type q8_0      154 tensors,   643074 blocks sampled, 0 differing elements
+type q8_0       of which both values finite: 0
+type q8_0     20000 random blocks: 0 differing elements
+type q8_0     CONTROL (one code byte changed on Runner's side): 1 differing elements -> fails, as it must
+PASS
