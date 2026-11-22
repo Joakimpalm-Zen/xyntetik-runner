@@ -113,7 +113,7 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time (LFM2's tokenizer.json post-processor and the file's add_bos_token both say it; LFM2's template opens with `{{- bos_token -}}`), so a template that also emitted it would double it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "2686",
+        "lines": "2691",
         "anchor": "BOS is the tokenizer's, as on every family."
       },
       "corroborating_cite": {
@@ -268,7 +268,7 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time from tokenizer.ggml.add_bos_token, so a template that also emitted it would double it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "2742-2747",
+        "lines": "2747-2752",
         "anchor": "BOS is added by the tokenizer,"
       },
       "corroborating_cite": {
@@ -286,7 +286,7 @@
       "why": "With no caller system message the Apertus reference substitutes a default one built around strftime_now('%Y-%m-%d'); runner omits it for the same reason as llama3's date header. NOTE the omission is WIDER than the date: the whole default system turn goes, including the 'You are Apertus...' identity line and the knowledge-cutoff line. That is a deliberate scope choice (runner does not invent a persona the caller did not ask for), but it is a bigger deviation than the cited comment's wording suggests on its own.",
       "cite": {
         "file": "src/template.c",
-        "lines": "2742-2747",
+        "lines": "2747-2752",
         "anchor": "when there is no system message the reference"
       },
       "patch": {
@@ -426,7 +426,7 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time (tokenizer.c sets add_bos for the k2-horizon pre, as IFM's tokenizer.json does; K2-Horizon's template opens with `{{- bos_token }}`), so a template that also emitted it would double it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "4615-4616",
+        "lines": "4620-4621",
         "anchor": "The template opens with `{{- bos_token }}`; that token comes from the"
       },
       "corroborating_cite": {
@@ -444,7 +444,7 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time. LFM2.5-8B-A1B's GGUF carries no add_bos_token key, and a file of pre lfm2 without one gets BOS (tokenizer.c's bos_default), so the chat prompt opens with the one <|startoftext|> the template's `{{- bos_token -}}` writes. (Its tokenizer.json, unlike the 1.2B's, adds no BOS on encode: the template is where the model's BOS comes from, and runner's chat prompt carries it the same.)",
       "cite": {
         "file": "src/template.c",
-        "lines": "2686",
+        "lines": "2691",
         "anchor": "BOS is the tokenizer's, as on every family."
       },
       "corroborating_cite": {
@@ -462,7 +462,7 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time. LFM2.5-24B-A2B's GGUF carries no add_bos_token key, and a file of pre lfm2 without one gets BOS (tokenizer.c's bos_default), so the chat prompt opens with the one <|startoftext|> the template's `{{- bos_token -}}` writes. (Its tokenizer.json, unlike the 1.2B's, adds no BOS on encode: the template is where the model's BOS comes from, and runner's chat prompt carries it the same.)",
       "cite": {
         "file": "src/template.c",
-        "lines": "2686",
+        "lines": "2691",
         "anchor": "BOS is the tokenizer's, as on every family."
       },
       "corroborating_cite": {
