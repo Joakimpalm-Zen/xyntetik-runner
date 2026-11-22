@@ -737,7 +737,7 @@ $(TEST_ATEM_OOM): $(TEST_ATEM_OOM_SRC) src/template.c src/json.c $(SCHEMA_SRC) $
 # thinking reach, the tool protocol, and capacity at every buffer size.
 TEST_TMPL_FAMILIES_SRC = tests/test_template_families.c $(OBJDIR)/gguf.o $(OBJDIR)/tokenizer.o $(OBJDIR)/template.o \
                 $(SCHEMA_OBJ) $(OBJDIR)/jsonmode.o $(OBJDIR)/json.o $(OBJDIR)/compat.o $(QUANTS_OBJ)
-$(TEST_TEMPLATE_FAMILIES): $(TEST_TMPL_FAMILIES_SRC) $(HDR)
+$(TEST_TEMPLATE_FAMILIES): $(TEST_TMPL_FAMILIES_SRC) tests/inkling_template_cases.h $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_TMPL_FAMILIES_SRC) -o $@ -lm
 
 # schema.c, schema_tools.c and json.c compile into the test: enum/const

@@ -2166,6 +2166,9 @@ int tok_stop_ids(tokenizer *t, const char *arch, int *out, int cap) {
         if (harmony && s && !strcmp(s, "<|end|>")) continue;
         stop_add_id(out, &n, cap, t->eog_ids[i]);
     }
+    // Inkling's end_message separates channels; endoftext is padding, not
+    // its end of sampling. Keep only the file's declared EOS/EOG ids.
+    if (arch && (!strcmp(arch, "inkling2_loop") || !strcmp(arch, "inkling2"))) return n;
     for (size_t i = 0; i < sizeof(stops) / sizeof(*stops); i++) {
         if (harmony && !strcmp(stops[i], "<|end|>")) continue;
         stop_add(t, out, &n, cap, stops[i]);

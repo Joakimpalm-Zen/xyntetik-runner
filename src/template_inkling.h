@@ -134,7 +134,14 @@ static size_t render_inkling(const chat_msg *msgs, int n_msgs, const jv *tools,
                 if (part->type == J_STR) inkling_text(&b, m->role, name, part->str);
                 else if (!strcmp(type, "text") || !strcmp(type, "input_text"))
                     inkling_text(&b, m->role, name, jv_str(jv_get(part, "text"), ""));
-                else { free(b.s); return SIZE_MAX; }
+                else if (!strcmp(type, "image") || !strcmp(type, "input_image") || !strcmp(type, "image_url")) {
+                    if (strcmp(m->role, "user") && strcmp(m->role, "tool")) {
+                        free(b.s); return SIZE_MAX;
+                    }
+                    // Template placeholder only; this is not image encoding.
+                    inkling_header(&b, m->role, name, "<|content_image|>");
+                    pl_lit(&b, "<|unused_200054|><|end_message|>");
+                } else { free(b.s); return SIZE_MAX; }
             }
         }
         if (!strcmp(m->role, "assistant")) {
@@ -142,6 +149,7 @@ static size_t render_inkling(const chat_msg *msgs, int n_msgs, const jv *tools,
                 jv *fn = jv_get(calls->items[k], "function");
                 const char *called = jv_str(jv_get(fn, "name"), "");
                 jv *args = jv_get(fn, "arguments"), *parsed = NULL;
+                if (args && args->type == J_STR && !args->str[0]) args = NULL;
                 if (args && args->type == J_STR) {
                     parsed = json_parse(args->str, strlen(args->str));
                     if (!parsed) { free(b.s); return SIZE_MAX; }

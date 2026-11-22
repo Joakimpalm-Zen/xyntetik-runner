@@ -34,6 +34,26 @@ static void test_inkling_pre(void) {
     gguf_close(&g);
 }
 
+// Optional metadata-only publisher fixture. No tensor payload is required.
+static void test_inkling_header(const char *path) {
+    gguf_file g;
+    assert(gguf_open(&g, path));
+    tokenizer t;
+    assert(tokenizer_init(&t, &g));
+    assert(t.n_vocab == 200058 && t.eos_id == 200006 && !t.add_bos);
+    assert(t.pre == TOK_PRE_LLAMA4 && t.ignore_merges);
+    int end_message = tok_find(&t, "<|end_message|>");
+    int end_turn = tok_find(&t, "<|content_model_end_sampling|>");
+    assert(end_message >= 0 && end_turn == 200006);
+    int stops[64], n = tok_stop_ids(&t, "inkling2_loop", stops, 64);
+    for (int i = 0; i < n; i++) assert(stops[i] != end_message);
+    printf("Inkling real header: %d tokens, end_message %d, end_turn %d, stops", t.n_vocab, end_message, end_turn);
+    for (int i = 0; i < n; i++) printf(" %d", stops[i]);
+    puts(""); fflush(stdout);
+    assert(n == 1 && stops[0] == end_turn);
+    tokenizer_free(&t); gguf_close(&g);
+}
+
 enum { K_LETTER = 0, K_NUMBER = 1, K_OTHER = 2, K_SPACE = 3 };
 
 static int expected_class(uint32_t c) {
@@ -278,7 +298,8 @@ static void test_boundaries_match_the_references(void) {
     expect_split("deepseek-llm", deepseek_llm_split_next, "\x09-|x");   // ['\t-', 'x']
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc == 2) test_inkling_header(argv[1]);
     test_inkling_pre();
     test_classes_match_unicode();
     test_boundaries_match_the_references();

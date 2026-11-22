@@ -343,7 +343,7 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
 // Validate the message envelope before any turn is rendered. Defaults and
 // `continue` are unsafe at this boundary: either can make a successful request
 // mean a different conversation from the one the caller submitted.
-static bool validate_chat_messages(const jv *msgs, char *err, size_t err_cap) {
+static bool validate_chat_messages(const jv *msgs, int tmpl, char *err, size_t err_cap) {
     for (int i = 0; i < msgs->n; i++) {
         jv *msg = msgs->items[i];
         if (!msg || msg->type != J_OBJ) {
@@ -428,7 +428,8 @@ static bool validate_chat_messages(const jv *msgs, char *err, size_t err_cap) {
                 jv *args = jv_get(fn, "arguments");
                 jv *parsed = args && args->type == J_STR
                     ? json_parse(args->str, strlen(args->str)) : NULL;
-                bool valid = parsed && parsed->type == J_OBJ;
+                bool valid = (parsed && parsed->type == J_OBJ) ||
+                    (tmpl == TMPL_INKLING2 && args && args->type == J_STR && !args->str[0]);
                 jv_free(parsed);
                 if (!valid) {
                     snprintf(err, err_cap,
@@ -620,7 +621,7 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
         return;
     }
     char merr[192];
-    if (!validate_chat_messages(msgs, merr, sizeof(merr))) {
+    if (!validate_chat_messages(msgs, s->tmpl, merr, sizeof(merr))) {
         send_error(fd, 400, merr);
         return;
     }
@@ -807,16 +808,24 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
             if (!strcmp(chat_role(msgs->items[i]), "assistant")) last_assistant = i;
     for (int i = 0; i < msgs->n; i++) {
         if (i == 0 && ornith_merged_system) continue;
+        if (s->tmpl == TMPL_INKLING2) {
+            const char *original_role = jv_str(jv_get(msgs->items[i], "role"), "");
+            if (strcmp(original_role, "system") && strcmp(original_role, "user") &&
+                strcmp(original_role, "assistant") && strcmp(original_role, "tool")) {
+                send_error(fd, 400, "Unknown message role for Inkling");
+                goto out;
+            }
+        }
         const char *role = chat_role_for(s->tmpl, msgs->items[i]);
         const char *turn_name = NULL;
         if (!strcmp(role, "tool")) {
             turn_name = chat_result_name(msgs, i, owned, &n_own);
-            if (!turn_name) turn_name = sole_tool_name(tools);
+            if (!turn_name && s->tmpl != TMPL_INKLING2) turn_name = sole_tool_name(tools);
             // A result that matches no prior call cannot be assigned safely
             // when several functions exist. Gemma4 and Muse put the resolved
             // name on the turn header; Harmony authors the turn by it; other
             // families still need the call/result relationship to be honest.
-            if (!turn_name) {
+            if (!turn_name && s->tmpl != TMPL_INKLING2) {
                 const char *id = jv_str(jv_get(msgs->items[i], "tool_call_id"),
                                         NULL);
                 char e[288];

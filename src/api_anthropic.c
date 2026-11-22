@@ -953,6 +953,10 @@ static char *messages_prompt(slot_t *s, sock_t fd, jv *req, tool_envelope *env,
 }
 
 void handle_messages(slot_t *s, sock_t fd, jv *req) {
+    if (s->tmpl == TMPL_INKLING2) {
+        send_error(fd, 400, "Inkling structured history is supported on /v1/chat/completions only");
+        return;
+    }
     if (anth_reject_unsupported(s, fd, req)) return;
     // max_tokens is required on this surface, unlike the OpenAI ones where it
     // defaults. A caller that forgot it wants a cap, not the server's.

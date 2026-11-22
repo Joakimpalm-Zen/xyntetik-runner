@@ -65,3 +65,63 @@ This step renders tool histories; it does not yet certify generated calls,
 forced reasoning closes or the complete CPU suite. The chat renderer's
 structured source fields preserve content-part and reasoning boundaries;
 other API adapters still need their protocol checks before admission.
+
+## Review checks
+
+The capacity sweep includes zero, and Inkling also permits a `NULL, 0` size
+query. Structured family fixtures now carry real source messages, content
+arrays, reasoning, calls and effort values. An exact publisher-framing anchor
+checks their output; removing content, reasoning, calls or effort changes that
+anchor. It also pins case-sensitive outer argument sorting and preserves the
+nested argument order. The model's template deliberately ignores
+`add_generation_prompt` and `enable_thinking`; it does not pre-open reasoning.
+
+The widened template matrix compares 37 text/history cases byte for byte and
+token for token, including an empty argument string (rendered as `{}`) and an
+unattributed tool result (a bare tool header). Two developer-role cases are
+refused by both sides, as the publisher requires. Two image cases are
+intentionally refused by the HTTP text path, each with a cited allowlist entry.
+The low-level renderer's user/tool image placeholders match the publisher, but
+this does not encode images or claim image understanding. A refusal is never
+counted as a byte or token comparison. Its gate requires a successful oracle
+render and the expected API error; replacing that expected error is a failing
+negative control.
+
+The vocabulary differential visits all 199,998 base entries. It compares the
+197,979 that decode to whole UTF-8 text: zero differences. The existing corpus
+builder explicitly excludes 2,019 partial-UTF-8 pieces, which are not valid
+standalone text inputs; this is not a claim of 199,998 successful encodings.
+A reference with `ignore_merges=false` differs on 337 of the 197,979 strings,
+confirming this check reaches the whole-vocabulary rule missed by 721 texts.
+
+The real metadata-only fixture also checks stop handling: `end_message` is
+200010 and is not a generation stop; `content_model_end_sampling` is 200006
+and is the stop. The generic spelling list had also stopped on padding ID
+199999 (`endoftext`); Inkling now uses only declared EOS/EOG IDs. The real-header
+test failed before that correction and passes after it:
+
+```sh
+./test-tokenizer-classes /path/to/tokenizer-only.gguf
+python3 scripts/difftok.py --gguf /path/to/tokenizer-only.gguf   --ref thinkingmachines/Inkling-2-Mini   --ref-revision b85c3cfa615fc413cc9af3379f491b963f3b586a --vocab
+```
+
+## Caller audit and remaining scope
+
+`server.c:handle_chat` supplies structured source and effort fields.
+`api_responses.c:handle_responses` and `api_anthropic.c:handle_messages` had
+flattened them away and are reachable with a forced Inkling template. Those
+surfaces now return 400 for Inkling and direct callers to
+`/v1/chat/completions`, rather than silently rendering incomplete history.
+Their native structured adapters remain work before those surfaces can be
+claimed for this model.
+
+The CLI in `main.c` builds flat text turns, and `decide.c` builds its two flat
+policy turns. Neither supplies structured reasoning or tool-call objects or
+numeric template kwargs; the flat renderer uses the publisher's default effort.
+The CLI's generated-tool history and reasoning transitions still need their
+protocol gate. The public rendering wrappers in `template.c` forward the
+fields they receive and do not invent missing structured data.
+
+Generated-call parsing/grammar closure, forced reasoning-budget and loop-guard
+transitions, and the complete CPU suite remain pending. This is protocol
+progress, not model admission.

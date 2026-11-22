@@ -137,6 +137,8 @@ static size_t render(int t, const chat_msg *m, int n, bool gen, int think,
     return render_messages_with_tools(t, m, n, gen, think, tools, out, cap);
 }
 
+#include "inkling_template_cases.h"
+
 // A conversation that reaches most of a renderer's branches: system, user,
 // an assistant turn with two calls in the family's own protocol, both
 // results, a closing assistant turn and a new user turn.
@@ -144,11 +146,23 @@ typedef struct {
     chat_msg m[8];
     int n;
     sbuf calls_text, r1, r2;
-    jv *calls;
+    jv *calls, *source, *effort;
 } conv;
 
 static void conv_build(conv *c, int t) {
     memset(c, 0, sizeof *c);
+    if (t == TMPL_INKLING2) {
+        c->source = json_parse(INKLING_HISTORY, strlen(INKLING_HISTORY));
+        c->effort = json_parse("\"low\"", 5);
+        if (!c->source || !c->effort) return;
+        for (int i = 0; i < c->source->n; i++) {
+            jv *raw = c->source->items[i];
+            c->m[c->n++] = (chat_msg){ .role = jv_str(jv_get(raw, "role"), ""),
+                .content = "", .name = i == 2 ? "get_weather" : NULL,
+                .source = raw, .effort = c->effort };
+        }
+        return;
+    }
     c->calls = json_parse(CALLS_SRC, strlen(CALLS_SRC));
     const char *turn_name = NULL;   // borrowed from c->calls
     assistant_calls_render(t, NULL, c->calls, &c->calls_text, &turn_name);
@@ -175,6 +189,8 @@ static void conv_free(conv *c) {
     free(c->r1.s);
     free(c->r2.s);
     jv_free(c->calls);
+    jv_free(c->source);
+    jv_free(c->effort);
 }
 
 // The callers' acceptance rule (render_prompt_alloc in server.c, decide.c):
@@ -348,6 +364,8 @@ static void state_matches_the_prompt(int t, const jv *tools) {
 }
 
 int main(void) {
+    test_inkling_source_contract();
+    test_inkling_edge_parts();
     CHECK(N_FAMILY == TMPL_MISTRAL_SYS + 2,
           "the table has %d rows for %d template ids", N_FAMILY, TMPL_MISTRAL_SYS + 2);
     jv *tools = json_parse(TOOL_SRC, strlen(TOOL_SRC));
