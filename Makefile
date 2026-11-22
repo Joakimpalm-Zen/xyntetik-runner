@@ -534,7 +534,7 @@ $(OBJDIR)/metal.o: src/metal.m $(HDR) src/kernels_metal.h src/kernels_tensor_met
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I src -c $< -o $@
 
-SRC = src/gguf.c src/compat.c $(QUANTS_OBJ) src/instances.c src/tokenizer.c src/model.c src/sample.c src/dpo.c \
+SRC = src/gguf.c src/compat.c $(QUANTS_OBJ) $(INKLING2_OBJS) src/instances.c src/tokenizer.c src/model.c src/sample.c src/dpo.c \
       src/vramreg.c src/npy.c \
       src/template.c src/jsonmode.c $(SCHEMA_SRC) $(QUANTIZE_OBJ) src/engine.c src/decide.c src/clef.c src/json.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/http.c src/registry.c src/provenance.c src/lineage.c src/train_record.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c src/session.c src/scheduler.c src/completion.c src/api_responses.c src/api_anthropic.c src/server.c src/hfhub.c src/bundle.c \
       src/derive.c src/main.c $(GPU_SRC) $(TRAY_SRC)
@@ -640,7 +640,7 @@ runner-turn-guard: $(SRC) $(HDR) src/kernels_ptx.h $(OBJDIR)/build-commit.stamp
 # An optimized object linked into this binary silently loses its sanitizer gate.
 SAN_FLAGS = -O0 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined \
             -fno-omit-frame-pointer -fno-fast-math -std=gnu11 -Wall $(GPU_BACKEND_DEF)
-SAN_SRC = $(filter-out $(QUANTS_OBJ) $(QUANTIZE_OBJ),$(SRC)) src/quants.c src/quantize.c $(INKLING2_SRC)
+SAN_SRC = $(filter-out $(QUANTS_OBJ) $(QUANTIZE_OBJ) $(INKLING2_OBJS),$(SRC)) src/quants.c src/quantize.c $(INKLING2_SRC)
 debug: $(SAN_SRC) $(HDR) $(OBJDIR)/build-commit.stamp
 	$(CC) $(SAN_FLAGS) $(BUILD_STAMP) $(SAN_SRC) -o runner-debug $(LDFLAGS)
 
