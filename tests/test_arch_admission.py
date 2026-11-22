@@ -109,6 +109,10 @@ ARCH_GATE_EXEMPTIONS = {
     # real file (83 GB, two parts) is admitted to the manifest with the
     # anchor runs in R4.26.3, and this entry goes with it.
     "qwen4exp": "experimental; fixture-gated only until the R4.26.3 anchor",
+    # Inkling 2 Mini (R4.48.6). The tiny file tests/test_inkling2_hardening.py writes exercises the loader and the
+    # engine in `make test`; the real files' rows (the exact NVFP4 file and UD-Q4_K_XL) join the manifest with their
+    # tier-smoke pins in the same item, and this entry goes with them.
+    "inkling2_loop": "admission in progress (R4.48.6); fixture-gated by tests/test_inkling2_hardening.py until its pins",
 }
 
 

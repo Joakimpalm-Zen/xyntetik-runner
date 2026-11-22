@@ -1,5 +1,8 @@
 // R4.48: the test-side Inkling-2-Mini weight provider; see inkling2_provider.h. Built strict, as inkling2.c is
 // (-fno-fast-math -ffp-contract=off): every decode below is one float32 operation at a time, in the loader's order.
+#ifdef _WIN32
+#error "a POSIX-only lab tool (mmap, getline, posix_memalign, setenv): not built on Windows"
+#else
 #define _GNU_SOURCE
 #include "inkling2_provider.h"
 #include "json.h"
@@ -407,3 +410,4 @@ int ink2p_fill_expert(void *ctx, const char *stack, int e, float *dst, int64_t *
     }
     return 0;
 }
+#endif   // !_WIN32

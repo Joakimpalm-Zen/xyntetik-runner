@@ -141,7 +141,7 @@ float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos,
         static int dump_read = 0;
         if (!dump_read) { dump = getenv("RUNNER_INKLING2_ROWS"); dump_read = 1; }
         if (dump && *dump) {
-            FILE *f = fopen(dump, "ab");
+            FILE *f = plat_fopen(dump, "ab");
             if (f) {
                 fwrite(r->rows, sizeof(float), (size_t)T * (size_t)m->n_vocab, f);
                 fclose(f);

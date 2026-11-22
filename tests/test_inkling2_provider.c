@@ -15,6 +15,9 @@
 // usage: test-inkling2-provider CKPT.safetensors MAP REAL_SHAPES CKPT_DIR WORKDIR [NVFP4_LAYER MXFP8_LAYER]
 //   env INK2P_PYTHON (default python3) and PYTHONPATH (the PR's src) for the
 //   reference side, INK2P_REF its script (default tests/inkling2_provider_ref.py).
+#ifdef _WIN32
+#error "a POSIX-only lab tool (mmap, getline, posix_memalign, setenv): not built on Windows"
+#else
 #define _GNU_SOURCE
 #include "inkling2_provider.h"
 #include "inkling2_ecache.h"
@@ -370,3 +373,4 @@ int main(int argc, char **argv) {
     printf("%s\n", fails ? "RESULT: FAIL" : "RESULT: GREEN");
     return fails ? 1 : 0;
 }
+#endif   // !_WIN32

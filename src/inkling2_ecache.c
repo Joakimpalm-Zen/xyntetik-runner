@@ -5,8 +5,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <sys/mman.h>
 #include <unistd.h>
+#endif
 
 #define EC_MAX_LAYER  64
 #define EC_MAX_EXPERT 1024
@@ -28,15 +32,28 @@ struct ink2_ecache {
     ink2_ec_stats st;
 };
 
+// each entry and buffer is its own anonymous mapping, page-rounded (the cache counts what is mapped)
+#ifdef _WIN32
+static size_t page_round(size_t n) {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    size_t pg = (size_t)si.dwPageSize;
+    return (n + pg - 1) / pg * pg;
+}
+static float *map_floats(size_t mapped) { return VirtualAlloc(NULL, mapped, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE); }
+static void unmap_floats(void *p, size_t mapped) { (void)mapped; VirtualFree(p, 0, MEM_RELEASE); }
+#else
 static size_t page_round(size_t n) { size_t pg = (size_t)sysconf(_SC_PAGESIZE); return (n + pg - 1) / pg * pg; }
 static float *map_floats(size_t mapped) {
     void *p = mmap(NULL, mapped, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     return p == MAP_FAILED ? NULL : p;
 }
+static void unmap_floats(void *p, size_t mapped) { munmap(p, mapped); }
+#endif
 static int buf_fit(ink2_ecache *c, ec_buf *b, size_t bytes) {
     size_t m = page_round(bytes);
     if (b->mapped >= m) return 0;
-    if (b->data) { munmap(b->data, b->mapped); c->st.aux_bytes -= b->mapped; }
+    if (b->data) { unmap_floats(b->data, b->mapped); c->st.aux_bytes -= b->mapped; }
     b->data = map_floats(m); b->mapped = b->data ? m : 0;
     if (!b->data) return -1;
     c->st.aux_bytes += m;
@@ -75,7 +92,7 @@ static int ec_key(const char *stack, int e) {
 static void ec_drop(ink2_ecache *c, int i) {
     ec_ent *x = c->ent[i];
     c->slot[x->key] = -1;
-    munmap(x->data, x->mapped);
+    unmap_floats(x->data, x->mapped);
     c->st.entry_bytes -= x->mapped; c->st.entries--;
     free(x); c->st.aux_bytes -= sizeof(ec_ent);
     c->ent[i] = c->ent[--c->n_ent];
@@ -141,11 +158,11 @@ static const ink2_tensor *ec_get_expert(void *ctx, const char *stack, int e) {
     }
     ec_ent *x = calloc(1, sizeof *x);
     float *d = map_floats(mapped);
-    if (!x || !d || c->fill(c->fctx, stack, e, d, &rows, &cols)) { free(x); if (d) munmap(d, mapped); return NULL; }
+    if (!x || !d || c->fill(c->fctx, stack, e, d, &rows, &cols)) { free(x); if (d) unmap_floats(d, mapped); return NULL; }
     if (c->n_ent == c->cap_ent) {
         int nc = c->cap_ent ? 2 * c->cap_ent : 256;
         ec_ent **ne = realloc(c->ent, sizeof *ne * (size_t)nc);
-        if (!ne) { free(x); munmap(d, mapped); return NULL; }
+        if (!ne) { free(x); unmap_floats(d, mapped); return NULL; }
         c->st.aux_bytes += sizeof *ne * (size_t)(nc - c->cap_ent);
         c->ent = ne; c->cap_ent = nc;
     }
@@ -173,8 +190,8 @@ ink2_ecache *ink2_ec_new(const ink2_weights *inner, ink2_ec_fill_fn fill, void *
 void ink2_ec_free(ink2_ecache *c) {
     if (!c) return;
     ink2_ec_clear(c);
-    for (int i = 0; i < 2; i++) if (c->bypass[i].data) munmap(c->bypass[i].data, c->bypass[i].mapped);
-    if (c->scratch.data) munmap(c->scratch.data, c->scratch.mapped);
+    for (int i = 0; i < 2; i++) if (c->bypass[i].data) unmap_floats(c->bypass[i].data, c->bypass[i].mapped);
+    if (c->scratch.data) unmap_floats(c->scratch.data, c->scratch.mapped);
     free(c->ent); free(c->slot); free(c);
 }
 void ink2_ec_weights(ink2_ecache *c, ink2_weights *w) { w->get = ec_get; w->get_expert = ec_get_expert; w->ctx = c; }

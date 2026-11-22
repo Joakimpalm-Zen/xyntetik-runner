@@ -1557,6 +1557,23 @@
     "metal": "UNSUPPORTED"
    },
    "note": "R4.4.5 step (d): two of mradermacher's static files pinned by sha256, the Q8_0 (the fidelity file) and the Q6_K (the smallest to pass the bar). Against the publisher's float32 modeling_deepseek.py on the house window, in the absorbed form, the default: Q8_0 mean KLD 0.0094 and margin-qualified top-1 100% on the CPU, 0.0096 / 100% on CUDA; Q6_K 0.0293 / 98.61% and 0.0296 / 98.61%. The Q5_K_M (0.0704 / 96.76%) and Q4_K_M (0.188 / 90.28%) miss the bar. gpu-identity's pinned-routing arm reads 1.85e-5 (Q8_0) and 1.94e-5 (Q6_K) of the logit range (limit 1e-3). make test-deepseek2 keeps the toy's CPU and CUDA arms against a plain-Python forward of the publisher's math. The q-lora pair and Metal run it on the CPU with a reason. Live tool and client loops are unmeasured. Record: docs/compat-reports/deepseek-v2-lite-chat-2026-11-04/README.md."
+  },
+  "inkling2_loop": {
+   "templates": [
+    "inkling2"
+   ],
+   "artifacts": [],
+   "tool_protocol": {
+    "status": "NOT RUN"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "UNSUPPORTED",
+    "metal": "UNSUPPORTED"
+   }
   }
  }
 }
