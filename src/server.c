@@ -832,6 +832,14 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
                 goto out;
             }
         }
+        if (s->tmpl == TMPL_INKLING2) {
+            jv *kw = jv_get(req, "chat_template_kwargs");
+            jv *effort = jv_get(kw, "reasoning_effort");
+            if (!effort) effort = jv_get(req, "reasoning_effort");
+            cm[n_cm++] = (chat_msg){ .role = role, .content = "", .name = turn_name,
+                                    .source = msgs->items[i], .effort = effort };
+            continue;
+        }
         if (s->tmpl == TMPL_MUSE && !strcmp(role, "assistant")) {
             jv *calls = jv_get(msgs->items[i], "tool_calls");
             if (calls && calls->type == J_ARR && calls->n) {

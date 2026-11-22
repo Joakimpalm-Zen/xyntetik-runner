@@ -115,6 +115,7 @@ static const struct {
     // Qwen 3.6: Qwen 3.5's framing and calls
     { "qwen36",           0,  34, 0, 0, 1, "qwen3_xml",     1 },
     { "mistral-sys",      0,   0, 1, 0, 0, "mistral_args",  1 },
+    { "inkling2", 79, 79, 1, 0, 0, "generic", 0 },
 };
 #define N_FAMILY ((int)(sizeof FAMILY / sizeof *FAMILY))
 
@@ -183,7 +184,7 @@ static bool caller_accepts(size_t ret, const char *buf, size_t cap) {
 }
 
 static void capacity_sweep(int t, const jv *tools) {
-    const char *name = FAMILY[t].name;
+    const char *name = template_name(t);
     conv c;
     conv_build(&c, t);
     size_t full = render(t, c.m, c.n, true, THINK_DEFAULT, tools, A, sizeof A);
@@ -229,7 +230,7 @@ static void capacity_sweep(int t, const jv *tools) {
 // request's bare_recipients into every family's argument -- so a family
 // that reads neither must render exactly what the mode alone renders.
 static void mode_bits_are_ignored(int t, const jv *tools) {
-    const char *name = FAMILY[t].name;
+    const char *name = template_name(t);
     bool reads_effort = t == TMPL_QWEN38 || t == TMPL_MUSE || t == TMPL_SPARK;
     bool reads_recipients = t == TMPL_MUSE;
     static const int MODES[] = { THINK_DEFAULT, THINK_ON, THINK_OFF };
@@ -297,7 +298,7 @@ static bool tail_opens(int t, const char *prompt) {
 }
 
 static void state_matches_the_prompt(int t, const jv *tools) {
-    const char *name = FAMILY[t].name;
+    const char *name = template_name(t);
     static const int MODES[] = { THINK_DEFAULT, THINK_ON, THINK_OFF };
     conv c;
     conv_build(&c, t);
@@ -343,41 +344,43 @@ static void state_matches_the_prompt(int t, const jv *tools) {
 }
 
 int main(void) {
-    CHECK(N_FAMILY == TMPL_MISTRAL_SYS + 1,
-          "the table has %d rows for %d template ids", N_FAMILY, TMPL_MISTRAL_SYS + 1);
+    CHECK(N_FAMILY == TMPL_MISTRAL_SYS + 2,
+          "the table has %d rows for %d template ids", N_FAMILY, TMPL_MISTRAL_SYS + 2);
     jv *tools = json_parse(TOOL_SRC, strlen(TOOL_SRC));
     CHECK(tools != NULL, "tool fixture parses");
     chat_msg user[1] = { { .role = "user", .content = "Hello" } };
-    for (int t = 0; t < N_FAMILY && t <= TMPL_MISTRAL_SYS; t++) {
-        const char *name = FAMILY[t].name;
+    for (int row = 0; row < N_FAMILY; row++) {
+        // Keep the legacy range and test the newly appended family by its id.
+        int t = row <= TMPL_MISTRAL_SYS ? row : TMPL_INKLING2;
+        const char *name = FAMILY[row].name;
 
         size_t e0 = render(t, NULL, 0, false, THINK_DEFAULT, NULL, A, sizeof A);
         size_t e1 = render(t, NULL, 0, true, THINK_DEFAULT, NULL, B, sizeof B);
-        CHECK(e0 == FAMILY[t].empty && strlen(A) == e0,
-              "%s: empty conversation rendered %zu bytes, expected %zu", name, e0, FAMILY[t].empty);
-        CHECK(e1 == FAMILY[t].empty_gen && strlen(B) == e1,
+        CHECK(e0 == FAMILY[row].empty && strlen(A) == e0,
+              "%s: empty conversation rendered %zu bytes, expected %zu", name, e0, FAMILY[row].empty);
+        CHECK(e1 == FAMILY[row].empty_gen && strlen(B) == e1,
               "%s: empty conversation with the generation prompt rendered %zu bytes, expected %zu",
-              name, e1, FAMILY[t].empty_gen);
+              name, e1, FAMILY[row].empty_gen);
 
         render(t, user, 1, true, THINK_DEFAULT, NULL, B, sizeof B);
         CHECK(!strstr(B, "get_weather"), "%s: a declaration with no tools", name);
         render(t, user, 1, true, THINK_DEFAULT, tools, A, sizeof A);
-        CHECK((strstr(A, "get_weather") != NULL) == FAMILY[t].tools_in_prompt,
+        CHECK((strstr(A, "get_weather") != NULL) == FAMILY[row].tools_in_prompt,
               "%s: tools argument %s a declaration", name,
-              FAMILY[t].tools_in_prompt ? "no longer renders" : "now renders");
+              FAMILY[row].tools_in_prompt ? "no longer renders" : "now renders");
 
         render(t, user, 1, true, THINK_ON, NULL, A, sizeof A);
-        CHECK((strcmp(A, B) != 0) == FAMILY[t].think_on,
-              "%s: THINK_ON %s the prompt", name, FAMILY[t].think_on ? "no longer changes" : "now changes");
+        CHECK((strcmp(A, B) != 0) == FAMILY[row].think_on,
+              "%s: THINK_ON %s the prompt", name, FAMILY[row].think_on ? "no longer changes" : "now changes");
         render(t, user, 1, true, THINK_OFF, NULL, A, sizeof A);
-        CHECK((strcmp(A, B) != 0) == FAMILY[t].think_off,
-              "%s: THINK_OFF %s the prompt", name, FAMILY[t].think_off ? "no longer changes" : "now changes");
+        CHECK((strcmp(A, B) != 0) == FAMILY[row].think_off,
+              "%s: THINK_OFF %s the prompt", name, FAMILY[row].think_off ? "no longer changes" : "now changes");
 
         bool native = false;
         const char *proto = tool_protocol_name(t, &native);
-        CHECK(proto && !strcmp(proto, FAMILY[t].protocol) && native == FAMILY[t].native,
+        CHECK(proto && !strcmp(proto, FAMILY[row].protocol) && native == FAMILY[row].native,
               "%s: tool protocol %s (native %d), expected %s (native %d)", name,
-              proto ? proto : "(none)", native, FAMILY[t].protocol, FAMILY[t].native);
+              proto ? proto : "(none)", native, FAMILY[row].protocol, FAMILY[row].native);
 
         capacity_sweep(t, NULL);
         capacity_sweep(t, tools);

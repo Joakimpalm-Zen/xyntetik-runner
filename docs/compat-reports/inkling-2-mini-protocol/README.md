@@ -1,8 +1,8 @@
 # Inkling 2 Mini protocol
 
 This records protocol checks, not model admission or numerical fidelity.
-The native renderer, tool protocol and reasoning-channel gates are still
-pending at this step. No weights are needed for the tokenizer check.
+The native chat renderer and tokenizer are checked here. Generated tool-call
+parsing, truncation closure and reasoning-channel transitions are still pending. No weights are needed for the tokenizer check.
 
 ## Tokenizer
 
@@ -42,3 +42,26 @@ python3 scripts/difftok.py --gguf /path/to/tokenizer-only.gguf \
 README impact: none at this step. This tokenizer correction does not add a
 model to the support list or publish a model artifact; the admission, site
 and model-card updates remain dependent on their engine and evidence gates.
+
+## Native chat renderer
+
+The oracle is the publisher's [chat_template.jinja](https://huggingface.co/thinkingmachines/Inkling-2-Mini/blob/b85c3cfa615fc413cc9af3379f491b963f3b586a/chat_template.jinja),
+SHA-256 prefix `53a9035f32559457`, pinned in the conformance baseline.
+It uses message/content-channel tokens, emits a thinking-effort system turn
+before the first non-system message, and appends no assistant generation
+prefix. Historical reasoning, text parts, calls and tool results retain their
+separate segments. Tool declarations sort all keys; call arguments sort only
+the outer keys, as the template does.
+
+On 2026-11-22, `scripts/template-conformance.py --family inkling2
+--require-tokens` compared 35 cases, all byte-identical and token-identical,
+with no allowlist or backlog entries. They include all named levels (`none`,
+`minimal`, `low`, `medium`, `high`, `xhigh`, `max`) and numeric 0, 0.37, 0.99.
+Changing the output's single colon in `Thinking effort level:` to a question
+mark makes the same gate fail; restoring and rebuilding makes it pass.
+`test-template-families` checks this renderer's capacity and mode contract.
+
+This step renders tool histories; it does not yet certify generated calls,
+forced reasoning closes or the complete CPU suite. The chat renderer's
+structured source fields preserve content-part and reasoning boundaries;
+other API adapters still need their protocol checks before admission.

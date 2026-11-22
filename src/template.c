@@ -79,6 +79,9 @@ static int gemma4_variant(const char *meta_tmpl) {
 
 int template_detect(const char *meta_tmpl, tokenizer *tok) {
     if (meta_tmpl) {
+        if (strstr(meta_tmpl, "<|message_model|>") && strstr(meta_tmpl, "Thinking effort level:"))
+            return TMPL_INKLING2;
+
         // apertus first: its vocabulary inherits Mistral's [INST]/[/INST]
         // tokens, so the [INST] branch below would otherwise claim it
         if (strstr(meta_tmpl, "<|assistant_start|>"))
@@ -305,6 +308,7 @@ static const struct { int tmpl; const char *name; bool flag; } TEMPLATE_NAMES[] 
     { TMPL_NEMOTRON35, "nemotron35", true },
     { TMPL_QWEN3_CODER, "qwen3-coder", true },
     { TMPL_QWEN38, "qwen38", true },
+    { TMPL_INKLING2, "inkling2", true },
     { TMPL_MUSE, "muse", true },
     { TMPL_HARMONY, "harmony", true },
     { TMPL_GRANITE, "granite", true },
@@ -750,7 +754,7 @@ static bool renderer_honours(int tmpl, int surface, const char *key) {
         "qwen38", "spark", "spark25", NULL };
     static const char *const preserve[] = { "lfm2", "lfm2-24b", "qwen36", "qwen38", NULL };
     static const char *const effort[] = {
-        "granite42", "k2-horizon", "muse", "qwen38", "spark", NULL };
+        "granite42", "inkling2", "k2-horizon", "muse", "qwen38", "spark", NULL };
     const char *name = template_name(tmpl);
     if (!strcmp(key, "enable_thinking")) return name_in(name, thinking);
     if (!strcmp(key, "preserve_thinking"))
@@ -853,8 +857,18 @@ int req_k2h_effort(struct jv *req, const char **why) {
     return -1;
 }
 
+#include "template_inkling.h"
+
 int req_template_effort(int tmpl, struct jv *req, const char **why) {
     *why = NULL;
+    if (tmpl == TMPL_INKLING2) {
+        double level;
+        if (!inkling_effort(inkling_kwarg(req), &level)) {
+            *why = "reasoning_effort must be none, minimal, low, medium, high, xhigh, max or a number in [0,0.99]";
+            return -1;
+        }
+        return 0;
+    }
     if (tmpl == TMPL_QWEN38) {
         // the template's own contract: xhigh (default), medium or low
         int e = req_reasoning_effort(req);
@@ -4829,6 +4843,8 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
         return render_apertus(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_HARMONY:
         return render_harmony(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
+    case TMPL_INKLING2:
+        return render_inkling(msgs, n_msgs, tools, out, cap);
     case TMPL_MUSE:
         return render_muse(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_GRANITE:
@@ -6396,6 +6412,7 @@ void tool_envelope_free(tool_envelope *e) {
 
 const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
                            jv *tools, tool_envelope *env, bool *skip_generic) {
+    if (tmpl == TMPL_INKLING2) { *skip_generic = true; return tools; }
     bool qwen = tmpl_hermes_json(tmpl);
     // The function/parameter XML families. Qwen3-Coder's turn is constrained
     // to the XML grammar (schema_tools.c) as it has been since the template was

@@ -3658,13 +3658,14 @@ static void test_the_generation_prompt_is_a_suffix_or_the_family_is_listed(void)
                 else without++;
             }
         // No boundary: the [INST] families, whose last message and generation
-        // prompt are one piece of text, and raw, which has no turns. None of
-        // them is a recurrent family today. Phi-3 and Phi-4 have one: they
+        // prompt are one piece of text, and raw, which has no turns.
+        // Inkling also has no generation suffix: its publisher ignores
+        // add_generation_prompt. Phi-3 and Phi-4 have a boundary: they
         // close a render without a reply with their end-of-text token, which
         // the renderer reports and the finder drops.
         bool listed = t == TMPL_LLAMA2 || t == TMPL_LLAMA2_FALLBACK || t == TMPL_MISTRAL ||
                       t == TMPL_MISTRAL_V1 || t == TMPL_MISTRAL_NEMO || t == TMPL_MISTRAL_SYS ||
-                      t == TMPL_RAW;
+                      t == TMPL_RAW || t == TMPL_INKLING2;
         if ((listed ? with : without) != 0) {
             fprintf(stderr, "%s: the generation prompt is a suffix on %d of %d renders, and the "
                     "family is %s as having no message boundary\n", template_name(t), with,

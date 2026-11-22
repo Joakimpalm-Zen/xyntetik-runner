@@ -321,6 +321,8 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // template, or in the vocabulary when there is no template text (2509's
        // has neither). Appended last.
        TMPL_APERTUS15,
+       // Thinking Machines Inkling 2: message/content channel framing.
+       TMPL_INKLING2,
        // Not a family: how many there are, so a test can walk every one (R2.4.8).
        TMPL_COUNT };
 
@@ -518,6 +520,8 @@ typedef struct {
     // Qwen 3.8 with preserve_thinking false: this turn writes no thought block,
     // where one with no reasoning writes an empty block.
     bool no_thought;
+    // Structured history for templates with one segment per content part.
+    const struct jv *source, *effort;
 } chat_msg;
 int         template_detect(const char *meta_tmpl, tokenizer *tok);
 int         template_from_name(const char *name); // -1 if unknown

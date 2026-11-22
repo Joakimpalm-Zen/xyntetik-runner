@@ -188,6 +188,11 @@ class Family:
 
 
 FAMILIES = {
+    "inkling2": Family(
+        "inkling2", ("hf", "thinkingmachines/Inkling-2-Mini"),
+        note="Publisher revision b85c3cfa615fc413cc9af3379f491b963f3b586a",
+        tool_family=True, content_parts=True, reasoning_history=True, hostile_args=True,
+        tokenizer=("Inkling-2-Mini-tokenizer.gguf",)),
     "qwen3-coder": Family(
         "qwen3-coder", ("hf", "Qwen/Qwen3-Coder-30B-A3B-Instruct"),
         tool_family=True,
@@ -1073,6 +1078,13 @@ def matrix(family):
             {"role": "assistant", "content": A1},
             {"role": "developer", "content": "From now on, answer in Swedish."},
             {"role": "user", "content": U2}], True, "default"))
+    if family.runner == "inkling2":
+        for effort in ("none", "minimal", "low", "medium", "high", "xhigh", "max"):
+            cases.append(("effort-" + effort, [{"role": "user", "content": U1}],
+                          True, "effort:" + effort))
+        for effort in (0, 0.37, 0.99):
+            cases.append(("numeric-effort-" + str(effort), [{"role": "user", "content": U1}],
+                          True, "number:" + str(effort)))
     return [c if len(c) == 5 else (c + (None,)) for c in cases]
 
 
@@ -1105,6 +1117,9 @@ def request_body(family, msgs, thinking, tools):
         # runner reads this off the request (template.c:req_thinking_mode);
         # the reference takes it as a jinja variable named per family.
         req["enable_thinking"] = (thinking == "on")
+    if thinking.startswith(("effort:", "number:")):
+        value = thinking.split(":", 1)[1]
+        req["reasoning_effort"] = float(value) if thinking.startswith("number:") else value
     return req
 
 
@@ -1426,6 +1441,9 @@ def render_reference(env, tmpl_src, meta, msgs, add_gen, thinking,
         kwargs["tools"] = tools
     if thinking_var and thinking != "default":
         kwargs[thinking_var] = (thinking == "on")
+    if thinking.startswith(("effort:", "number:")):
+        value = thinking.split(":", 1)[1]
+        kwargs["reasoning_effort"] = float(value) if thinking.startswith("number:") else value
     return env.from_string(tmpl_src).render(**kwargs)
 
 
