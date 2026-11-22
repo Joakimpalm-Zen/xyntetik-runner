@@ -445,3 +445,5 @@ test-sample-nan-*.exe
 test-sample-nan-asan
 test-inkling2-fixture-bin
 test-inkling2-provider-bin
+/test-inkling2-gguf-bin
+/inkling2-read-bin

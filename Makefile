@@ -5197,3 +5197,19 @@ test-inkling2-fixture: $(TEST_INKLING2)
 TEST_INKLING2_PROVIDER = test-inkling2-provider-bin
 $(TEST_INKLING2_PROVIDER): tests/test_inkling2_provider.c tests/inkling2_provider.c tests/inkling2_provider.h tests/inkling2_ecache.c tests/inkling2_ecache.h src/inkling2.h src/json.c $(HDR)
 	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I src -I tests tests/test_inkling2_provider.c tests/inkling2_provider.c tests/inkling2_ecache.c src/json.c -o $@ $(LDFLAGS)
+# R4.48.6: the inkling2_loop GGUF as the engine's weight source (src/inkling2_gguf.c) against the test-side provider on
+# the publisher's safetensors, every tensor and every expert bit for bit, with three controls that must fail
+# (tests/test_inkling2_gguf.c); and the read harness (tests/inkling2_read.c: ids in, full logits rows out, from either
+# source). Both need the real files, so neither is part of `make test`:
+#   make test-inkling2-gguf INKLING2_GGUF=<file.gguf> INKLING2_CKPT=<model.safetensors> INKLING2_MAP=<map> INKLING2_SHAPES=<shapes>
+INKLING2_GGUF_SRC = src/inkling2_gguf.c src/gguf.c src/compat.c src/quants.c tests/inkling2_provider.c src/inkling2.c src/json.c
+TEST_INKLING2_GGUF = test-inkling2-gguf-bin
+$(TEST_INKLING2_GGUF): tests/test_inkling2_gguf.c src/inkling2_gguf.h $(INKLING2_GGUF_SRC) tests/inkling2_provider.h src/inkling2.h $(HDR)
+	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I src -I tests tests/test_inkling2_gguf.c $(INKLING2_GGUF_SRC) -o $@ $(LDFLAGS)
+INKLING2_READ = inkling2-read-bin
+$(INKLING2_READ): tests/inkling2_read.c src/inkling2_gguf.h $(INKLING2_GGUF_SRC) tests/inkling2_ecache.c tests/inkling2_ecache.h tests/inkling2_provider.h src/inkling2.h $(HDR)
+	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I src -I tests tests/inkling2_read.c $(INKLING2_GGUF_SRC) tests/inkling2_ecache.c -o $@ $(LDFLAGS)
+.PHONY: test-inkling2-gguf
+test-inkling2-gguf: $(TEST_INKLING2_GGUF)
+	@if [ -z "$(INKLING2_GGUF)" ]; then echo "test-inkling2-gguf: no files (set INKLING2_GGUF, INKLING2_CKPT, INKLING2_MAP, INKLING2_SHAPES)"; \
+	else ./$(TEST_INKLING2_GGUF) $(INKLING2_GGUF) $(INKLING2_CKPT) $(INKLING2_MAP) $(INKLING2_SHAPES); fi
