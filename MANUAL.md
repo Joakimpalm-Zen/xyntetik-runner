@@ -2984,8 +2984,10 @@ the device or the host into paging, and the ring is what lets the context fit. O
 it stays off, because it would buy nothing and cost those hits. `-v` prints the decision
 with its figures, for example `kv ring  off (auto: weights 2512 MB + flat cache 805 MB
 fit the GPU working set 5727 MB; --kv-ring on forces it)`. `on` and `off` force it, and
-`RUNNER_KV_RING` (`1`/`on`, `0`/`off`, `auto`) overrides the flag. Models without sliding
-layers ignore it.
+`RUNNER_KV_RING` (`1`/`on`, `0`/`off`, `auto`) overrides the flag. When a forced ring cannot
+form because `window + batch >= n_ctx`, the load keeps the flat cache and says so once per
+model file and configuration on stderr (and on `-v`'s `kv ring` line). Models without
+sliding layers ignore it.
 
 <a id="cli-draft"></a>
 #### `--draft PATH`

@@ -1070,6 +1070,8 @@ uint64_t  model_gpu_budget(uint64_t driver_free, uint64_t driver_total,
 // plus one in-flight batch would not make a smaller allocation.
 int       model_kv_ring_rows(int window, int batch, int n_ctx);
 enum { KV_RING_AUTO = 0, KV_RING_ON = 1, KV_RING_OFF = 2 };
+// Effective --kv-ring mode with RUNNER_KV_RING applied; *src names the winner.
+int       model_kv_ring_resolve(int mode, const char **src);
 // Whether to warn that the KV cache, not the model's own size, is what pushed
 // layers off the device -- the one case a smaller -c can take back.
 bool      model_kv_trade_note(int gpu_layers, int n_layer, uint64_t kv_dev,

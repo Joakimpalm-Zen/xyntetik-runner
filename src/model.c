@@ -926,6 +926,17 @@ int model_kv_ring_rows(int window, int batch, int n_ctx) {
     return window + batch;
 }
 
+int model_kv_ring_resolve(int mode, const char **src) {
+    const char *e = getenv("RUNNER_KV_RING");
+    if (e && *e) {
+        if (src) *src = "RUNNER_KV_RING";
+        return !strcmp(e, "auto") ? KV_RING_AUTO
+             : !strcmp(e, "0") || !strcmp(e, "off") ? KV_RING_OFF : KV_RING_ON;
+    }
+    if (src) *src = "--kv-ring";
+    return mode;
+}
+
 // The KV width a load gives each layer, from the header alone, by the
 // loader's own rules: a layer's KV heads come from head_count_kv, scalar or
 // per layer (bind_hparams; 0 for a block whose attention --remove-sublayer
@@ -1341,10 +1352,7 @@ static int fit_swa_layers(gguf_file *g, int n_layer, bool *is_swa) {
 // device budget less its headroom, and the ring is smaller.
 static bool fit_kv_ring_on(int mode, uint64_t weights, uint64_t flat, uint64_t ring,
                            uint64_t budget, uint64_t headroom) {
-    const char *e = getenv("RUNNER_KV_RING");
-    if (e && *e)
-        mode = !strcmp(e, "auto") ? KV_RING_AUTO
-             : !strcmp(e, "0") || !strcmp(e, "off") ? KV_RING_OFF : KV_RING_ON;
+    mode = model_kv_ring_resolve(mode, NULL);
     if (mode == KV_RING_ON) return true;
     if (mode == KV_RING_OFF) return false;
     uint64_t cap = budget > headroom ? budget - headroom : 0;
@@ -6402,14 +6410,10 @@ static uint64_t kv_cache_bytes(const model_t *m, int swa_rows, int n_ctx) {
 // ring buys nothing and costs some prefix-cache hits. The reason either way
 // is kept for -v.
 static bool kv_ring_wanted(model_t *m, const model_params *p, int rows, int n_ctx) {
-    int mode = p->kv_ring;
-    const char *e = getenv("RUNNER_KV_RING");
-    if (e && *e)
-        mode = !strcmp(e, "auto") ? KV_RING_AUTO
-             : !strcmp(e, "0") || !strcmp(e, "off") ? KV_RING_OFF : KV_RING_ON;
+    const char *src = NULL;
+    int mode = model_kv_ring_resolve(p->kv_ring, &src);
     char *why = m->kv_ring_why;
     size_t cap_why = sizeof m->kv_ring_why;
-    const char *src = e && *e ? "RUNNER_KV_RING" : "--kv-ring";
     if (mode == KV_RING_ON)  { snprintf(why, cap_why, "on (%s)", src); return true; }
     if (mode == KV_RING_OFF) { snprintf(why, cap_why, "off (%s)", src); return false; }
     uint64_t slots = p->n_seq > 1 ? (uint64_t)p->n_seq : 1;
@@ -6439,6 +6443,65 @@ static bool kv_ring_wanted(model_t *m, const model_params *p, int rows, int n_ct
     return on;
 }
 
+typedef struct {
+    bool     used;
+    bool     file_id_ok;
+    uint64_t size, ino;
+    int64_t  mtime_ns, ctime_ns;
+    char     path[512];
+    int      window, batch, n_ctx;
+} kv_ring_note_key;
+
+static pthread_mutex_t g_kv_ring_note_mu = PTHREAD_MUTEX_INITIALIZER;
+static kv_ring_note_key g_kv_ring_noted[64];
+static size_t g_kv_ring_noted_next;
+
+// Emit the forced-but-unformed ring notice once per model file and geometry so
+// --parallel slots of one file stay quiet while distinct swap models still warn.
+static void kv_ring_unformed_note_once(const model_t *m, int n_ctx, const char *src) {
+    bool seen = false;
+    if (m->file_id_ok || m->path) {
+        kv_ring_note_key k = {0};
+        k.used = true;
+        k.file_id_ok = m->file_id_ok;
+        k.size = m->file_size;
+        k.ino = m->file_ino;
+        k.mtime_ns = m->file_mtime_ns;
+        k.ctime_ns = m->file_ctime_ns;
+        if (m->path) snprintf(k.path, sizeof k.path, "%s", m->path);
+        k.window = m->swa_window;
+        k.batch = m->n_batch;
+        k.n_ctx = n_ctx;
+
+        pthread_mutex_lock(&g_kv_ring_note_mu);
+        for (size_t i = 0; i < sizeof g_kv_ring_noted / sizeof g_kv_ring_noted[0]; i++) {
+            const kv_ring_note_key *e = &g_kv_ring_noted[i];
+            if (!e->used || e->window != k.window || e->batch != k.batch || e->n_ctx != k.n_ctx)
+                continue;
+            if (k.file_id_ok && e->file_id_ok) {
+                if (e->size == k.size && e->ino == k.ino &&
+                    e->mtime_ns == k.mtime_ns && e->ctime_ns == k.ctime_ns) {
+                    seen = true;
+                    break;
+                }
+            } else if (!k.file_id_ok && !e->file_id_ok && e->size == k.size &&
+                       !strcmp(e->path, k.path)) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) {
+            g_kv_ring_noted[g_kv_ring_noted_next] = k;
+            g_kv_ring_noted_next = (g_kv_ring_noted_next + 1) %
+                (sizeof g_kv_ring_noted / sizeof g_kv_ring_noted[0]);
+        }
+        pthread_mutex_unlock(&g_kv_ring_note_mu);
+    }
+    if (!seen)
+        fprintf(stderr, "kv ring: %s requested, but ring needs window %d + batch %d < ctx %d; "
+                "keeping flat cache\n", src, m->swa_window, m->n_batch, n_ctx);
+}
+
 // The KV cache's layout: the sliding-window ring (opt-in), every layer's
 // offset into the cache, the MTP head's region, and tied-V's K table (opt-in).
 static bool runtime_kv_layout(model_t *m, const model_params *p, int n_ctx) {
@@ -6466,12 +6529,21 @@ static bool runtime_kv_layout(model_t *m, const model_params *p, int n_ctx) {
     m->kv_ring_why[0] = 0;
     if (m->swa_window > 0 && m->l_is_swa) {
         int rows = model_kv_ring_rows(m->swa_window, m->n_batch, n_ctx);
+        const char *src = NULL;
+        int mode = model_kv_ring_resolve(p->kv_ring, &src);
         // Metal joined the ring on 2026-09-01: its store and attention
         // kernels resolve rows through the same modulo the CPU and CUDA
         // paths use (kv_row_off / model_kv_row_at / kv_slot), so the
         // former refusal here is gone. The microbatch decode declines
         // ring members and falls back to sequential, which is ring-aware.
-        if (rows < n_ctx && kv_ring_wanted(m, p, rows, n_ctx)) m->kv_ring = rows;
+        if (rows < n_ctx) {
+            if (kv_ring_wanted(m, p, rows, n_ctx)) m->kv_ring = rows;
+        } else if (mode == KV_RING_ON) {
+            snprintf(m->kv_ring_why, sizeof m->kv_ring_why,
+                     "off (%s forced, but ring needs window %d + batch %d < ctx %d; keeping flat cache)",
+                     src, m->swa_window, m->n_batch, n_ctx);
+            kv_ring_unformed_note_once(m, n_ctx, src);
+        }
     }
     // per-layer element offsets into the (possibly heterogeneous) KV cache
     m->kv_off = malloc(sizeof(size_t) * (m->n_layer + 2));
