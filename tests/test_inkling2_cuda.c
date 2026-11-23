@@ -35,6 +35,7 @@ static model_t *load(const char *path, bool gpu, bool no_factor, int n_batch) {
     // the CPU side is the reference route (the serial float32 engine), not the CPU's default fast route
     plat_setenv("RUNNER_INKLING2_ROUTE", gpu ? "" : "reference");
     plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_FACTOR", no_factor ? "1" : "");
+    plat_setenv("RUNNER_INKLING2_CUDA", gpu ? "1" : "");   // opt-in until the CUDA forward is complete
     model_params p;
     memset(&p, 0, sizeof p);
     p.gpu_mode = gpu ? GPU_AUTO : GPU_OFF;

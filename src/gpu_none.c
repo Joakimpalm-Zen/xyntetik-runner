@@ -466,3 +466,15 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
     (void)b; (void)idx; (void)tok; (void)pos; (void)n; (void)out;
     return false;
 }
+
+gpu_ink2 *gpu_ink2_bind(void) { return NULL; }
+int gpu_ink2_put(gpu_ink2 *h, const void *rows, size_t bytes, const float *scale, int n_scale) {
+    (void)h; (void)rows; (void)bytes; (void)scale; (void)n_scale;
+    return -1;
+}
+bool gpu_ink2_get(gpu_ink2 *h, int i, void *rows, size_t bytes, float *scale, int n_scale) {
+    (void)h; (void)i; (void)rows; (void)bytes; (void)scale; (void)n_scale;
+    return false;
+}
+size_t gpu_ink2_bytes(const gpu_ink2 *h) { (void)h; return 0; }
+void gpu_ink2_free(gpu_ink2 *h) { (void)h; }

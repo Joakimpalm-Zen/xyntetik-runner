@@ -703,3 +703,16 @@ size_t ink2g_matrix_bytes(const ink2g *g) {
     }
     return n;
 }
+
+int ink2g_each_view(ink2g *g, int (*fn)(void *c, const ink2_tensor *t), void *c) {
+    if (!g->fast) return -1;
+    char nm[96];
+    for (int b = 0; b < g->s.n_block; b++)
+        for (int k = 0; k < 2; k++) {
+            snprintf(nm, sizeof nm, "model.layers.%d.mlp.experts.%s", b, k ? "down_proj" : "gate_up_proj");
+            if (!ink2g_get(g, nm)) return -1;
+        }
+    for (int i = 0; i < g->n_slots; i++)
+        if (g->slots[i]->t.q && fn(c, &g->slots[i]->t)) return -1;
+    return 0;
+}

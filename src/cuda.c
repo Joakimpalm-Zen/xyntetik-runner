@@ -12889,3 +12889,57 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
     if (!cuda_fwd_tiles(g, m, tokens, n, pos, want_logits, partial, m_)) return false;
     return cuda_fwd_finish(g, m, n, pos, want_logits, partial, logits, m_, t_fwd0);
 }
+
+// ================================================================ R4.48.9: Inkling 2 Mini's weights on the device
+// (gpu.h). The stored rows go up byte for byte; the primary context is retained for the handle's life.
+typedef struct { CUdeviceptr rows, scale; size_t bytes; int n_scale; } ink2_dev_tensor;
+struct gpu_ink2 { CUdevice dev; CUcontext ctx; ink2_dev_tensor *t; int n, cap; size_t bytes; };
+
+gpu_ink2 *gpu_ink2_bind(void) {
+    int n = 0;
+    if (!cu_load() || cu.Init(0) != 0 || cu.DeviceGetCount(&n) != 0 || n < 1) return NULL;
+    gpu_ink2 *h = calloc(1, sizeof *h);
+    if (!h) return NULL;
+    if (cu.DeviceGet(&h->dev, 0) != 0 || cu.PrimaryCtxRetain(&h->ctx, h->dev) != 0) { free(h); return NULL; }
+    if (cu.CtxSetCurrent(h->ctx) != 0) { cu.PrimaryCtxRelease(h->dev); free(h); return NULL; }
+    return h;
+}
+int gpu_ink2_put(gpu_ink2 *h, const void *rows, size_t bytes, const float *scale, int n_scale) {
+    if (!h || !rows || !bytes || (n_scale && !scale) || cu.CtxSetCurrent(h->ctx) != 0) return -1;
+    if (h->n == h->cap) {
+        const int cap = h->cap ? 2 * h->cap : 256;
+        ink2_dev_tensor *nt = realloc(h->t, sizeof *nt * (size_t)cap);
+        if (!nt) return -1;
+        h->t = nt;
+        h->cap = cap;
+    }
+    ink2_dev_tensor d = { 0, 0, bytes, n_scale };
+    if (cu.MemAlloc(&d.rows, bytes) != 0) return -1;
+    if (cu.MemcpyHtoD(d.rows, rows, bytes) != 0) { cu.MemFree(d.rows); return -1; }
+    if (n_scale) {
+        const size_t sb = sizeof(float) * (size_t)n_scale;
+        if (cu.MemAlloc(&d.scale, sb) != 0) { cu.MemFree(d.rows); return -1; }
+        if (cu.MemcpyHtoD(d.scale, scale, sb) != 0) { cu.MemFree(d.scale); cu.MemFree(d.rows); return -1; }
+    }
+    h->t[h->n] = d;
+    h->bytes += bytes + sizeof(float) * (size_t)n_scale;
+    return h->n++;
+}
+bool gpu_ink2_get(gpu_ink2 *h, int i, void *rows, size_t bytes, float *scale, int n_scale) {
+    if (!h || i < 0 || i >= h->n || bytes != h->t[i].bytes || (scale && n_scale != h->t[i].n_scale)) return false;
+    if (cu.CtxSetCurrent(h->ctx) != 0 || cu.MemcpyDtoH(rows, h->t[i].rows, bytes) != 0) return false;
+    if (scale && n_scale && cu.MemcpyDtoH(scale, h->t[i].scale, sizeof(float) * (size_t)n_scale) != 0) return false;
+    return true;
+}
+size_t gpu_ink2_bytes(const gpu_ink2 *h) { return h ? h->bytes : 0; }
+void gpu_ink2_free(gpu_ink2 *h) {
+    if (!h) return;
+    if (cu.CtxSetCurrent(h->ctx) == 0)
+        for (int i = 0; i < h->n; i++) {
+            cu.MemFree(h->t[i].rows);
+            if (h->t[i].scale) cu.MemFree(h->t[i].scale);
+        }
+    cu.PrimaryCtxRelease(h->dev);
+    free(h->t);
+    free(h);
+}

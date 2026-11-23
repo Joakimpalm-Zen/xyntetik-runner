@@ -731,4 +731,16 @@ void       gpu_batch_release_orphaned(gpu_batch *b);
 // weight product? A policy switch alone is not evidence that a tile ran.
 bool       gpu_batch_tiles_used(const gpu_batch *b);
 
+// R4.48.9: Inkling 2 Mini's weights on the device: each tensor its rows as the file stores them (the type and row
+// stride of the fast route's views; an expert stack's per-expert factors beside its rows, never folded in). A handle
+// owns its device buffers. gpu_ink2_put copies one tensor up: its index, or -1 (no device, or no device memory).
+// gpu_ink2_get copies tensor i back (rows: the bytes put; scale: the factors put, or NULL). The test-only readback
+// (model_inkling2_cuda_readback) decodes both sides with dequant_row and compares them bit for bit.
+typedef struct gpu_ink2 gpu_ink2;
+gpu_ink2  *gpu_ink2_bind(void);
+int        gpu_ink2_put(gpu_ink2 *h, const void *rows, size_t bytes, const float *scale, int n_scale);
+bool       gpu_ink2_get(gpu_ink2 *h, int i, void *rows, size_t bytes, float *scale, int n_scale);
+size_t     gpu_ink2_bytes(const gpu_ink2 *h);   // the device bytes held
+void       gpu_ink2_free(gpu_ink2 *h);
+
 #endif // RUNNER_GPU_H

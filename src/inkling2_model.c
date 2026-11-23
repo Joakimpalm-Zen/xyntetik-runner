@@ -4,6 +4,7 @@
 #include "inkling2_ecache.h"
 #include "inkling2_gguf.h"
 #include "gpu.h"
+#include "quants.h"
 #include "compat.h"
 #include <pthread.h>
 #include <stdio.h>
@@ -28,9 +29,74 @@ typedef struct {
     size_t small_bytes;   // the small tensors decoded to float32 on either route (norms, taps, queries, the router)
     size_t ec_budget;
     char route;           // 'F' the fast route, 'R' the reference (RUNNER_INKLING2_ROUTE=reference)
+    gpu_ink2 *gpu;        // R4.48.9: the weights on CUDA (the fast route's views, stored rows), or NULL
+    const ink2_tensor **dev_of;   // [n_dev]: the view each device tensor holds, in gpu_ink2_put's order
+    int n_dev;
 } ink2_rt;
 
 static ink2_rt *rt_of(model_t *m) { return (ink2_rt *)m->ink2; }
+
+// R4.48.9: a view's rows (a stack's experts one after another) and its factors
+static int64_t view_rows(const ink2_tensor *t) { return t->ne[1] * t->ne[2] * t->ne[3]; }
+static int view_scales(const ink2_tensor *t) { return t->q_scale ? (int)t->ne[2] : 0; }
+typedef struct { ink2_rt *r; size_t need; int n; } dev_walk;
+static int dev_count(void *c_, const ink2_tensor *t) {
+    dev_walk *c = c_;
+    c->need += t->q_row_bytes * (size_t)view_rows(t) + sizeof(float) * (size_t)view_scales(t);
+    c->n++;
+    return 0;
+}
+static int dev_put(void *c_, const ink2_tensor *t) {
+    dev_walk *c = c_;
+    if (gpu_ink2_put(c->r->gpu, t->q, t->q_row_bytes * (size_t)view_rows(t), t->q_scale, view_scales(t)) != c->r->n_dev)
+        return -1;
+    c->r->dev_of[c->r->n_dev++] = t;
+    return 0;
+}
+// The weights up to the device (every view, its stored rows), or a sentence why not and the CPU route. True: on CUDA.
+static bool cuda_bind(ink2_rt *r) {
+    // until the CUDA forward is built (R4.48.9 G2) the route is opt-in: a CUDA instance computes no rows, so a default
+    // GPU load keeps the CPU
+    const char *on = getenv("RUNNER_INKLING2_CUDA");
+    if (!on || strcmp(on, "1")) {
+        fprintf(stderr, "note: inkling2_loop runs on the CPU (its CUDA route is not complete; RUNNER_INKLING2_CUDA=1 "
+                        "binds its weights only)\n");
+        return false;
+    }
+    if (r->route != 'F') {
+        fprintf(stderr, "note: inkling2_loop runs on CUDA from the fast route's stored rows only; the reference route "
+                        "runs on the CPU\n");
+        return false;
+    }
+    dev_walk c = { r, 0, 0 };
+    size_t fr = 0, tot = 0;
+    char dev[160] = "";
+    if (!gpu_available(dev, sizeof dev) || ink2g_each_view(r->g, dev_count, &c) || !gpu_mem_info(&fr, &tot)) {
+        fprintf(stderr, "note: no CUDA device for inkling2_loop; running on the CPU\n");
+        return false;
+    }
+    const size_t reserve = 512ull << 20;   // the forward's activations and K/V, later; a whole-file upload or none
+    if (c.need + reserve > fr) {
+        fprintf(stderr, "note: inkling2_loop's %.2f GB of weights do not fit the %.2f GB free on %s; running on the CPU\n",
+                c.need / 1e9, fr / 1e9, dev);
+        return false;
+    }
+    r->dev_of = calloc((size_t)c.n, sizeof *r->dev_of);
+    r->gpu = r->dev_of ? gpu_ink2_bind() : NULL;
+    c.n = 0;
+    if (!r->gpu || ink2g_each_view(r->g, dev_put, &c)) {
+        fprintf(stderr, "note: inkling2_loop's weights could not be put on %s; running on the CPU\n", dev);
+        gpu_ink2_free(r->gpu);
+        r->gpu = NULL;
+        free(r->dev_of);
+        r->dev_of = NULL;
+        r->n_dev = 0;
+        return false;
+    }
+    fprintf(stderr, "inkling2_loop: the weights on CUDA (%s): %d tensors, %.3f GB, their stored rows\n", dev, r->n_dev,
+            gpu_ink2_bytes(r->gpu) / 1e9);
+    return true;
+}
 
 // R4.48.17: the most the decoded-expert cache can hold: every expert of every layer decoded to float32 (gate_up
 // [2F][H] and down [H][F] each). The cache maps its budget lazily, so it holds at most this, whatever the budget.
@@ -135,8 +201,7 @@ static int ink2_batch_default(int n_batch, int n_ctx) {
 bool model_inkling2_runtime(model_t *m, const model_params *p) {
     ink2_rt *r = rt_of(m);
     if (!r) return false;
-    if (p->gpu_mode != GPU_OFF)
-        fprintf(stderr, "note: %s; running on the CPU\n", m->ad && m->ad->cpu_only ? m->ad->cpu_only : "inkling2_loop runs on the CPU");
+    if (p->gpu_mode != GPU_OFF) cuda_bind(r);
     int n_ctx = p->n_ctx > 0 ? p->n_ctx : (m->n_ctx_train < 4096 ? m->n_ctx_train : 4096);
     if (n_ctx > m->n_ctx_train) {
         fprintf(stderr, "error: -c %d is past this model's training context %d\n", n_ctx, m->n_ctx_train);
@@ -269,6 +334,10 @@ float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos,
         return NULL;
     }
     if (keep_all && n > r->rows_cap) return NULL;
+    if (r->gpu) {   // R4.48.9 G2: no CUDA forward yet; a CUDA instance computes no rows rather than the CPU's
+        fprintf(stderr, "error: inkling2_loop: the CUDA forward is not built yet (R4.48.9 G2)\n");
+        return NULL;
+    }
     // Bind this instance's house pool (CLI's own tpool or the server's shared_pool) onto TLS for the forward.
     // Two server slots run safely without a global thread-count lock: tpool_run serializes on shared_pool, and
     // distinct pools run concurrently on their own threads with identical bit outputs.
@@ -364,6 +433,8 @@ void model_inkling2_free(model_t *m) {
     if (!r) return;
     if (r->cache_ok) ink2_cache_free(&r->c);
     if (r->ec) ink2_ec_free(r->ec);
+    gpu_ink2_free(r->gpu);
+    free(r->dev_of);
     if (r->g) ink2g_close(r->g);
     free(r->last_sel);
     free(r->rows);
@@ -456,15 +527,40 @@ char model_inkling2_route(const model_t *m) {
     return r ? r->route : 0;
 }
 
-// R4.48.9: no CUDA route yet; the stubs say so (the G1/G2 tests are red against them).
+// R4.48.9: the instance's weights are on CUDA
 bool model_inkling2_cuda(const model_t *m) {
-    (void)m;
-    return false;
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    return r && r->gpu;
 }
+// TEST-ONLY: every device tensor copied back and decoded (dequant_row, row by row) against the host's decode of the
+// view it was put from, bit for bit; a stack's factors compared apart. False: no device, or a copy failed.
 bool model_inkling2_cuda_readback(model_t *m, int *n_tensors, int *n_differ, char *first, size_t first_cap) {
-    (void)m;
+    ink2_rt *r = m ? rt_of(m) : NULL;
     if (n_tensors) *n_tensors = 0;
     if (n_differ) *n_differ = 0;
     if (first && first_cap) first[0] = 0;
-    return false;
+    if (!r || !r->gpu) return false;
+    int bad = 0;
+    for (int i = 0; i < r->n_dev; i++) {
+        const ink2_tensor *t = r->dev_of[i];
+        const int64_t nr = view_rows(t), nc = t->ne[0];
+        const size_t bytes = t->q_row_bytes * (size_t)nr;
+        const int ns = view_scales(t);
+        unsigned char *q = malloc(bytes);
+        float *sc = ns ? malloc(sizeof(float) * (size_t)ns) : NULL, *a = malloc(sizeof(float) * (size_t)nc),
+              *b = malloc(sizeof(float) * (size_t)nc);
+        bool ok = q && a && b && (!ns || sc) && gpu_ink2_get(r->gpu, i, q, bytes, sc, ns);
+        if (!ok) { free(q); free(sc); free(a); free(b); return false; }
+        bool same = !ns || !memcmp(sc, t->q_scale, sizeof(float) * (size_t)ns);
+        for (int64_t row = 0; same && row < nr; row++) {
+            dequant_row(t->qtype, q + t->q_row_bytes * (size_t)row, a, (int)nc);
+            dequant_row(t->qtype, (const unsigned char *)t->q + t->q_row_bytes * (size_t)row, b, (int)nc);
+            same = !memcmp(a, b, sizeof(float) * (size_t)nc);
+        }
+        if (!same && !bad++ && first && first_cap) snprintf(first, first_cap, "%s", t->name);
+        free(q); free(sc); free(a); free(b);
+    }
+    if (n_tensors) *n_tensors = r->n_dev;
+    if (n_differ) *n_differ = bad;
+    return true;
 }
