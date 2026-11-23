@@ -39,6 +39,10 @@ typedef struct {
     long n_exp;           // G2b step 1: device expert-body calls run so far (one per application per forward)
     long exp_fail_at;     // TEST-ONLY (RUNNER_INKLING2_CUDA_TEST_EXP_FAIL=k): the k-th expert-body call fails; -1 none
     bool exp_on;          // this instance runs the expert body on the device (the hook is process-wide)
+    char placed;          // the bind's decision: 'W' every view the device computes, 'M' the expert stacks on the
+                          // host (--cpu-moe), 'C' the CPU; 0 when no bind was asked for
+    size_t need;          // the weights' device bytes the fit counted for that placement
+    struct ink2_share *share;   // the file's shared device copy this instance holds a reference to
 } ink2_rt;
 
 static ink2_rt *rt_of(model_t *m) { return (ink2_rt *)m->ink2; }
@@ -46,7 +50,7 @@ static ink2_rt *rt_of(model_t *m) { return (ink2_rt *)m->ink2; }
 // R4.48.9: a view's rows (a stack's experts one after another) and its factors
 static int64_t view_rows(const ink2_tensor *t) { return t->ne[1] * t->ne[2] * t->ne[3]; }
 static int view_scales(const ink2_tensor *t) { return t->q_scale ? (int)t->ne[2] : 0; }
-typedef struct { ink2_rt *r; bool cpu_moe; size_t need; int n; int fail_at; int64_t max_in, max_out; } dev_walk;
+typedef struct { ink2_rt *r; bool cpu_moe; size_t need; int n; int fail_at; int64_t max_in, max_out; bool attach; } dev_walk;
 // what goes up is what the device computes (the second read's P1): a view the handle's products take (its type's
 // kernel; a factor only on NVFP4, the one kernel that applies it), not the token embedding (read row by row on the
 // host, never a product), and no expert stack under --cpu-moe. A view left on the host runs its products on the CPU.
@@ -74,6 +78,9 @@ static int dev_count(void *c_, const ink2_tensor *t) {
 static int dev_put(void *c_, const ink2_tensor *t) {
     dev_walk *c = c_;
     if (!dev_wanted(c, t)) return 0;
+    // attach (an instance joining the file's shared device copy): the views in the same walk order as the upload that
+    // made the copy (the file's order), so view k is device tensor k; nothing goes up
+    if (c->attach) { if (c->r->n_dev >= c->n) return -1; c->r->dev_of[c->r->n_dev++] = t; return 0; }
     if (c->r->n_dev == c->fail_at) return -1;   // TEST-ONLY (RUNNER_INKLING2_CUDA_TEST_PUT_FAIL=k): the k-th put fails
     if (gpu_ink2_put(c->r->gpu, t->q, t->q_row_bytes * (size_t)view_rows(t), t->q_scale, view_scales(t)) != c->r->n_dev)
         return -1;
@@ -139,73 +146,187 @@ static int dev_experts(const ink2_shape *s, const ink2_tensor *t13, const ink2_t
     }
     return 0;
 }
-// The weights the device computes up to it (their stored rows), or a sentence why not and the CPU route. True: on
-// CUDA. n_batch: the most columns a product takes (its scratch is allocated before the fit check).
-static bool cuda_bind(ink2_rt *r, bool cpu_moe, int n_batch) {
+// G2b step 2's B1: ONE device copy of the weights per file and placement per process, shared by every instance that
+// asks for the same (the server loads each of its --parallel slots as its own instance). The key is the file's
+// identity (path, size, index, modification time) and the placement's inputs (the --cpu-moe request, the device, -c,
+// -b, the slot count, and the test-only switches that change what goes up), so two instances with different
+// placements never share. The entry holds the fit's decision for all of them ('W' every view the device computes,
+// 'M' the expert stacks on the host, 'C' the CPU): never a mixed server. Attach and release under g_share_mu; the
+// last release (model_inkling2_free) frees the copy.
+typedef struct ink2_share {
+    char key[1200];
+    gpu_ink2 *gpu;
+    char placed;
+    size_t need;
+    bool exp_dev;
+    int refs;
+    char why[200];   // 'C': the sentence each instance says
+    struct ink2_share *next;
+} ink2_share;
+static pthread_mutex_t g_share_mu = PTHREAD_MUTEX_INITIALIZER;
+static ink2_share *g_shares;
+// the device bytes ONE instance holds beyond the shared weights (its K/V and its buffers, at -c and -b). None yet:
+// the products' and the expert body's buffers belong to the shared copy (used under its lock), and the K/V stays on
+// the host until step 2a puts it on the device, which fills this in.
+static size_t dev_instance_bytes(const ink2_rt *r, int n_ctx, int n_batch) {
+    (void)r; (void)n_ctx; (void)n_batch;
+    return 0;
+}
+static void share_release(ink2_rt *r) {
+    if (!r->share) return;
+    pthread_mutex_lock(&g_share_mu);
+    ink2_share *sh = r->share;
+    if (--sh->refs == 0) {
+        for (ink2_share **pp = &g_shares; *pp; pp = &(*pp)->next)
+            if (*pp == sh) { *pp = sh->next; break; }
+        gpu_ink2_free(sh->gpu);
+        free(sh);
+    }
+    pthread_mutex_unlock(&g_share_mu);
+    r->share = NULL;
+    r->gpu = NULL;
+}
+// the fit and the upload for a new entry (under g_share_mu): the context, the module and the products' buffers first,
+// so the free memory read counts them; then the weights the placement puts up, counted as the driver allocates them,
+// plus N slots' own bytes, against the free memory with 512 MiB kept. Whole first (unless --cpu-moe was asked), then
+// the expert stacks on the host, then the CPU.
+static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batch, int n_ctx, int n_slots,
+                        const char *dev) {
+    sh->placed = 'C';
+    gpu_ink2 *h = gpu_ink2_bind();
+    if (!h) { snprintf(sh->why, sizeof sh->why, "no CUDA device for inkling2_loop"); return; }
+    r->gpu = h;   // dev_wanted asks the handle which types its products take
+    const size_t T = n_batch > 0 ? (size_t)n_batch : 1, RES = 512ull << 20;
+    const size_t inst = (size_t)n_slots * dev_instance_bytes(r, n_ctx, n_batch);
+    const char *ne = getenv("RUNNER_INKLING2_CUDA_TEST_NO_EXP");
+    const char *capv = getenv("RUNNER_INKLING2_CUDA_TEST_FREE");   // TEST-ONLY: the free figure the fit reads, capped
+    const char *pf = getenv("RUNNER_INKLING2_CUDA_TEST_PUT_FAIL");
+    size_t need_w = 0, fr = 0;
+    for (int k = cpu_moe_req ? 1 : 0; k < 2; k++) {
+        const bool cm = k == 1;
+        const bool exp_dev = !cm && gpu_ink2_experts_ok(h) && !(ne && !strcmp(ne, "1"));
+        dev_walk c = { r, cm, 0, 0, -1, 0, 0, false };
+        size_t tot = 0;
+        if (ink2g_each_view(r->g, dev_count, &c) || c.n == 0 ||
+            !gpu_ink2_reserve(h, sizeof(float) * T * (size_t)c.max_in, sizeof(float) * T * (size_t)c.max_out) ||
+            (exp_dev && !gpu_ink2_reserve_experts(h, (int)T, r->s.hidden, r->s.ff, r->s.n_expert)) ||
+            !gpu_mem_info(&fr, &tot)) {
+            snprintf(sh->why, sizeof sh->why, "inkling2_loop has no weights the device computes, or no room for its "
+                     "products' buffers, on %s", dev);
+            break;
+        }
+        if (capv && *capv) { const size_t cv = (size_t)strtoull(capv, NULL, 10); if (cv < fr) fr = cv; }
+        if (!cm) need_w = c.need;
+        if (c.need + inst + RES > fr) continue;   // this placement does not fit: the next, or the CPU
+        // fits: up it goes (the views in the file's walk order; a failed put leaves the CPU, P0)
+        r->dev_of = calloc((size_t)c.n, sizeof *r->dev_of);
+        r->n_dev = 0;
+        dev_walk u = { r, cm, 0, c.n, pf && *pf ? atoi(pf) : -1, 0, 0, false };
+        if (!r->dev_of || ink2g_each_view(r->g, dev_put, &u) || r->n_dev != c.n) {
+            snprintf(sh->why, sizeof sh->why, "inkling2_loop's weights could not be put on %s", dev);
+            free(r->dev_of); r->dev_of = NULL; r->n_dev = 0;
+            break;
+        }
+        sh->gpu = h; sh->placed = cm ? 'M' : 'W'; sh->need = c.need; sh->exp_dev = exp_dev;
+        if (cm && !cpu_moe_req)
+            fprintf(stderr, "note: inkling2_loop's %.2f GB of weights do not fit the %.2f GB free on %s for %d slot%s; "
+                            "its expert stacks stay on the host (as --cpu-moe)\n", need_w / 1e9, fr / 1e9, dev, n_slots,
+                    n_slots > 1 ? "s" : "");
+        r->gpu = NULL;
+        return;
+    }
+    if (!sh->why[0])
+        snprintf(sh->why, sizeof sh->why, "inkling2_loop's weights for the device do not fit the %.2f GB free on %s "
+                 "for %d slot%s (after its context, module and buffers, with 0.54 GB kept), not with its expert stacks "
+                 "on the host either", fr / 1e9, dev, n_slots, n_slots > 1 ? "s" : "");
+    gpu_ink2_free(h);
+    r->gpu = NULL;
+}
+// The weights the device computes on it (their stored rows), shared with the file's other instances of the same
+// placement; or a sentence why not and the CPU route for every such instance. 1: on CUDA; 0: on the CPU; -1: this
+// instance refuses its load (it could not join a copy its placement holds: never a CPU slot beside CUDA ones).
+static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
     // until the whole CUDA forward is built (R4.48.9 G2b) the route is opt-in: G2a runs only the products on the
     // device, so a default GPU load keeps the CPU
     const char *on = getenv("RUNNER_INKLING2_CUDA");
     if (!on || strcmp(on, "1")) {
         fprintf(stderr, "note: inkling2_loop runs on the CPU (its CUDA route is not complete; RUNNER_INKLING2_CUDA=1 "
                         "runs its products on the device, the rest of the forward on the CPU)\n");
-        return false;
+        return 0;
     }
     if (r->route != 'F') {
         fprintf(stderr, "note: inkling2_loop runs on CUDA from the fast route's stored rows only; the reference route "
                         "runs on the CPU\n");
-        return false;
+        return 0;
     }
     const char *a8 = getenv("RUNNER_INKLING2_ACT8");
     if (a8 && *a8 && strcmp(a8, "0")) {
         fprintf(stderr, "note: the 8-bit control (RUNNER_INKLING2_ACT8) is the CPU's; running on the CPU\n");
-        return false;
+        return 0;
     }
-    const char *pf = getenv("RUNNER_INKLING2_CUDA_TEST_PUT_FAIL");
-    dev_walk c = { r, cpu_moe, 0, 0, pf && *pf ? atoi(pf) : -1, 0, 0 };
-    size_t fr = 0, tot = 0;
     char dev[160] = "";
-    // the context, the module (its PTX loaded) and the products' scratch first, so the free memory read counts them
-    if (!gpu_available(dev, sizeof dev) || !(r->gpu = gpu_ink2_bind())) {
+    if (!gpu_available(dev, sizeof dev)) {
         fprintf(stderr, "note: no CUDA device for inkling2_loop; running on the CPU\n");
-        return false;
+        return 0;
     }
-    const size_t T = n_batch > 0 ? (size_t)n_batch : 1;
-    // G2b step 1: the expert body on the device when its kernels are in the module and the stacks go up
-    // (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_NO_EXP=1 leaves it to the per-product path, a baseline for check (j))
-    const char *ne = getenv("RUNNER_INKLING2_CUDA_TEST_NO_EXP");
-    const bool exp_dev = !cpu_moe && gpu_ink2_experts_ok(r->gpu) && !(ne && !strcmp(ne, "1"));
-    if (ink2g_each_view(r->g, dev_count, &c) || c.n == 0 ||
-        !gpu_ink2_reserve(r->gpu, sizeof(float) * T * (size_t)c.max_in, sizeof(float) * T * (size_t)c.max_out) ||
-        (exp_dev && !gpu_ink2_reserve_experts(r->gpu, (int)T, r->s.hidden, r->s.ff, r->s.n_expert)) ||
-        !gpu_mem_info(&fr, &tot)) {
-        fprintf(stderr, "note: inkling2_loop has no weights the device computes, or no room for its products' buffers, "
-                        "on %s; running on the CPU\n", dev);
-        gpu_ink2_free(r->gpu);
-        r->gpu = NULL;
-        return false;
+    const int n_slots = p->n_seq > 1 ? p->n_seq : 1;
+    uint64_t fsize = 0, fino = 0;
+    int64_t fmt = 0, fct = 0;
+    int ferr = 0;
+    if (!m->path || !plat_file_identity(m->path, &fsize, &fino, &fmt, &fct, &ferr)) {
+        fprintf(stderr, "note: inkling2_loop's file identity is unknown; running on the CPU\n");
+        return 0;
     }
-    const size_t reserve = 512ull << 20;   // the forward's activations and K/V, later; a whole upload or none
-    if (c.need + reserve > fr) {
-        fprintf(stderr, "note: inkling2_loop's %.2f GB of weights for the device do not fit the %.2f GB free on %s (after "
-                        "its context, module and buffers, with 0.54 GB kept); running on the CPU\n", c.need / 1e9, fr / 1e9,
-                dev);
-        gpu_ink2_free(r->gpu);
-        r->gpu = NULL;
-        return false;
+    const char *pf = getenv("RUNNER_INKLING2_CUDA_TEST_PUT_FAIL"), *ne = getenv("RUNNER_INKLING2_CUDA_TEST_NO_EXP");
+    const char *capv = getenv("RUNNER_INKLING2_CUDA_TEST_FREE");
+    char key[1200];
+    snprintf(key, sizeof key, "%s|%llu|%llu|%lld|moe %d|%s|c %d|b %d|slots %d|pf %s|ne %s|cap %s", m->path,
+             (unsigned long long)fsize, (unsigned long long)fino, (long long)fmt, p->cpu_moe ? 1 : 0, dev, m->n_ctx,
+             m->n_batch, n_slots, pf ? pf : "", ne ? ne : "", capv ? capv : "");
+    pthread_mutex_lock(&g_share_mu);
+    ink2_share *sh = NULL;
+    for (ink2_share *q = g_shares; q; q = q->next)
+        if (!strcmp(q->key, key)) { sh = q; break; }
+    bool made = false;
+    if (!sh) {
+        sh = calloc(1, sizeof *sh);
+        if (!sh) { pthread_mutex_unlock(&g_share_mu); fprintf(stderr, "note: out of memory binding inkling2_loop; running on the CPU\n"); return 0; }
+        snprintf(sh->key, sizeof sh->key, "%s", key);
+        share_place(sh, r, p->cpu_moe, m->n_batch, m->n_ctx, n_slots, dev);
+        sh->next = g_shares;
+        g_shares = sh;
+        made = true;
     }
-    const int n_want = c.n;
-    r->dev_of = calloc((size_t)c.n, sizeof *r->dev_of);
-    c.n = 0;
-    if (!r->dev_of || ink2g_each_view(r->g, dev_put, &c) || r->n_dev != n_want || !dev_mark(r)) {
-        fprintf(stderr, "note: inkling2_loop's weights could not be put on %s; running on the CPU\n", dev);
-        dev_unmark(r);
-        gpu_ink2_free(r->gpu);
-        r->gpu = NULL;
-        free(r->dev_of);
-        r->dev_of = NULL;
+    sh->refs++;
+    r->share = sh;
+    r->placed = sh->placed;
+    r->need = sh->need;
+    if (sh->placed == 'C') {
+        pthread_mutex_unlock(&g_share_mu);
+        fprintf(stderr, "note: %s; running on the CPU%s\n", sh->why, n_slots > 1 ? " (every slot)" : "");
+        return 0;
+    }
+    r->gpu = sh->gpu;
+    if (!made) {   // join the copy: this instance's views, in the file's walk order, as device tensors 0..n-1
+        const int n = gpu_ink2_count(sh->gpu);
+        r->dev_of = calloc((size_t)n, sizeof *r->dev_of);
         r->n_dev = 0;
-        return false;
+        dev_walk a = { r, sh->placed == 'M', 0, n, -1, 0, 0, true };
+        if (!r->dev_of || ink2g_each_view(r->g, dev_put, &a) || r->n_dev != n) {
+            free(r->dev_of); r->dev_of = NULL; r->n_dev = 0;
+            pthread_mutex_unlock(&g_share_mu);
+            fprintf(stderr, "error: inkling2_loop: this instance's views do not match the device copy its placement holds "
+                            "on %s; the load is refused (never a CPU instance beside CUDA ones)\n", dev);
+            return -1;
+        }
     }
+    if (!dev_mark(r)) {
+        pthread_mutex_unlock(&g_share_mu);
+        fprintf(stderr, "error: inkling2_loop: this instance's views could not be marked for the device; the load is "
+                        "refused\n");
+        return -1;
+    }
+    pthread_mutex_unlock(&g_share_mu);
     const char *nf = getenv("RUNNER_INKLING2_CUDA_TEST_NO_FACTOR");
     r->no_factor = nf && !strcmp(nf, "1");
     const char *lf = getenv("RUNNER_INKLING2_CUDA_TEST_LIN_FAIL");
@@ -215,14 +336,14 @@ static bool cuda_bind(ink2_rt *r, bool cpu_moe, int n_batch) {
     const char *xf = getenv("RUNNER_INKLING2_CUDA_TEST_EXP_FAIL");
     r->exp_fail_at = xf && *xf ? atol(xf) : -1;
     ink2_set_dev_lin(dev_lin_scaled);
-    r->exp_on = exp_dev;
-    if (exp_dev) ink2_set_dev_experts(dev_experts);
-    fprintf(stderr, "inkling2_loop: the weights on CUDA (%s): %d tensors, %.3f GB, their stored rows; their products on "
-                    "the device%s, the rest of the forward on the CPU (R4.48.9 G2b)%s%s\n", dev, r->n_dev,
-            gpu_ink2_bytes(r->gpu) / 1e9, exp_dev ? " and each layer's expert body whole (the router on the host)" : "",
-            cpu_moe ? "; the expert stacks on the host (--cpu-moe)" : "",
-            r->no_factor ? "; TEST-ONLY: the expert factor left out" : "");
-    return true;
+    r->exp_on = sh->exp_dev;
+    if (sh->exp_dev) ink2_set_dev_experts(dev_experts);
+    fprintf(stderr, "inkling2_loop: the weights on CUDA (%s): %d tensors, %.3f GB, their stored rows%s; their products "
+                    "on the device%s, the rest of the forward on the CPU (R4.48.9 G2b)%s%s\n", dev, r->n_dev,
+            gpu_ink2_bytes(r->gpu) / 1e9, made ? "" : ", shared with this file's other instances",
+            sh->exp_dev ? " and each layer's expert body whole (the router on the host)" : "",
+            sh->placed == 'M' ? "; the expert stacks on the host" : "", r->no_factor ? "; TEST-ONLY: the expert factor left out" : "");
+    return 1;
 }
 
 // R4.48.17: the most the decoded-expert cache can hold: every expert of every layer decoded to float32 (gate_up
@@ -365,7 +486,7 @@ bool model_inkling2_runtime(model_t *m, const model_params *p) {
         return false;
     }
     // the device last, once -c and the host buffers are known good (a refused -c uploads nothing)
-    if (p->gpu_mode != GPU_OFF) cuda_bind(r, p->cpu_moe, m->n_batch);
+    if (p->gpu_mode != GPU_OFF && cuda_bind(r, m, p) < 0) return false;   // < 0: this slot refuses (never mixed)
     fprintf(stderr, "inkling2_loop: -c %d -b %d; cache %.2f GB (sliding K/V for the window only), expert cache up to "
                     "%.2f GiB (the budget, RUNNER_INKLING2_EXPERT_CACHE)\n", n_ctx, m->n_batch,
             ink2_cache_bytes(&r->c, &r->s) / 1e9, expert_cache_held(&r->s, r->ec_budget) / 1073741824.0);
@@ -566,7 +687,7 @@ void model_inkling2_free(model_t *m) {
     if (!r) return;
     if (r->cache_ok) ink2_cache_free(&r->c);
     if (r->ec) ink2_ec_free(r->ec);
-    gpu_ink2_free(r->gpu);
+    share_release(r);   // the file's shared device copy: freed with its last instance
     free(r->dev_of);
     if (r->g) ink2g_close(r->g);
     free(r->last_sel);
@@ -663,6 +784,13 @@ char model_inkling2_route(const model_t *m) {
 // R4.48.9: the instance's weights are on CUDA
 bool model_inkling2_cuda(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    return r && r->gpu;
+}
+bool model_inkling2_cuda_placement(const model_t *m, char *placed, size_t *need, const void **handle) {
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    if (placed) *placed = r ? r->placed : 0;
+    if (need) *need = r ? r->need : 0;
+    if (handle) *handle = r ? (const void *)r->gpu : NULL;
     return r && r->gpu;
 }
 void model_inkling2_cuda_calls(const model_t *m, long *n_products, long *n_expert_bodies) {

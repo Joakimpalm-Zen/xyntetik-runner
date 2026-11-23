@@ -41,6 +41,13 @@
 //         blocks, gate rows unlike their up rows, and the factors 1e-3, 1, 10, 0.05 put gates near 0, in range, beyond
 //         +-10. A launch's position list with a repeat (test-only RUNNER_INKLING2_CUDA_TEST_DUP_IDX) refuses;
 //     (l) a --cpu-moe load runs no device expert body (its stacks are on the host).
+//  G2b step 2's B (one device copy per file and placement; the server's slots are its own instances):
+//     (p) two loads of the BF16 file share ONE device copy (the placement accessor's handle) and give the same rows;
+//         two instances forwarding at once on it give the sequential rows; the first freed, the second's rows do
+//         not move; both freed, the device's free memory is back within 2 MiB of the figure before the first bind.
+//         With the free memory capped (test-only RUNNER_INKLING2_CUDA_TEST_FREE) between the --cpu-moe need and
+//         the whole need, both loads take the expert stacks on the host (M) and share; below both, both run on the
+//         CPU (C). Never one instance on the device beside another on the CPU.
 //  LoRA on the CUDA route (the supervisor's check C, before G2b step 2): the adapter's term is added on the host after
 //  each attention product returns (ink2_lora_apply after ink2_lin_rows), on either route. Bars fixed before the run:
 //     (q) the BF16 file with tests/inkling2_tiny.py --lora's adapter (all four attention slots of every layer): the
@@ -56,6 +63,7 @@
 #include "compat.h"
 #include "quants.h"
 #include <math.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,6 +75,14 @@ static int fails;
 #define CHECK(c, ...) do { if (!(c)) { printf("FAIL: " __VA_ARGS__); printf("\n"); fails++; } else { printf("ok: " __VA_ARGS__); printf("\n"); } } while (0)
 
 static bool cpu_moe;   // the next loads' --cpu-moe
+static float *rows(model_t *m);
+// (p): forwards on two instances at once, each on its own thread, over one shared device copy
+typedef struct { model_t *m; float *out[4]; } par_job;
+static void *par_run(void *a) {
+    par_job *j = a;
+    for (int k = 0; k < 4; k++) j->out[k] = rows(j->m);
+    return NULL;
+}
 // the selection observer's C check: calls, positions, positions without exactly n_used experts, negative margins,
 // and the distinct experts summed over calls (each distinct expert of a call is two products on the per-product path)
 static struct { long calls, positions, bad_count, bad_margin, distinct; int want_used; } obs;
@@ -496,6 +512,86 @@ int main(int argc, char **argv) {
         CHECK(i13 >= 0 && !dup_ran, "(k) a launch's position list with a repeat: the call %s", dup_ran ? "RAN" : "refused");
         gpu_ink2_free(h);
         free(w13); free(w2);
+    }
+    // G2b step 2's B (p): one device copy of the weights per file and placement, shared and refcounted; the fit's
+    // outcome (W whole, M expert stacks on the host, C the CPU) the same for every instance, never mixed. Bars fixed
+    // before the run: the free memory back within 2 MiB once both are freed; the M rows within 1e-4 of the reference.
+    {
+        const size_t RES = 512ull << 20;   // the fit's reserve (src/inkling2_model.c)
+        size_t f0 = 0, tt = 0;
+        gpu_mem_info(&f0, &tt);
+        model_t *a = load(argv[2], true, false, 64), *b = load(argv[2], true, false, 64);
+        char pa = 0, pb = 0;
+        size_t na = 0, nb = 0;
+        const void *ha = NULL, *hb = NULL;
+        model_inkling2_cuda_placement(a, &pa, &na, &ha);
+        model_inkling2_cuda_placement(b, &pb, &nb, &hb);
+        const size_t n = b ? (size_t)N_TOK * (size_t)b->n_vocab : 0;
+        float *ra = a ? rows(a) : NULL, *rb = b ? rows(b) : NULL;
+        CHECK(pa == 'W' && pb == 'W' && ha && ha == hb, "(p) two loads of one file: placements %c %c, %s device copy",
+              pa ? pa : '-', pb ? pb : '-', ha && ha == hb ? "ONE shared" : "two");
+        CHECK(ra && rb && !memcmp(ra, rb, sizeof(float) * n), "(p) the second instance's rows equal the first's byte for byte");
+        {   // both instances forwarding at once on the shared copy (its buffers are used under its lock)
+            par_job ja = { a, { 0 } }, jb = { b, { 0 } };
+            pthread_t ta, tb;
+            const bool st = a && b && !pthread_create(&ta, NULL, par_run, &ja) && !pthread_create(&tb, NULL, par_run, &jb);
+            if (st) { pthread_join(ta, NULL); pthread_join(tb, NULL); }
+            int bad = 0;
+            for (int k = 0; k < 4; k++) {
+                bad += !ja.out[k] || memcmp(ja.out[k], ra, sizeof(float) * n);
+                bad += !jb.out[k] || memcmp(jb.out[k], ra, sizeof(float) * n);
+                free(ja.out[k]); free(jb.out[k]);
+            }
+            CHECK(st && bad == 0, "(p) two instances forwarding at once on one device copy, 4 forwards each: %d of 8 differ "
+                  "from the sequential rows", bad);
+        }
+        drop(a);
+        float *rb2 = b ? rows(b) : NULL;
+        CHECK(rb && rb2 && !memcmp(rb, rb2, sizeof(float) * n), "(p) the first instance freed: the second's rows unchanged");
+        drop(b);
+        size_t f1 = 0;
+        gpu_mem_info(&f1, &tt);
+        const long long df = (long long)f0 - (long long)f1;
+        CHECK(df <= (2ll << 20) && df >= -(2ll << 20), "(p) both freed: the device's free memory %zu, before the first bind %zu "
+              "(want within 2 MiB)", f1, f0);
+        free(ra); free(rb); free(rb2);
+        // the --cpu-moe placement's need, then a cap between it and the whole need: both loads take M and share
+        cpu_moe = true;
+        model_t *mm = load(argv[2], true, false, 64);
+        cpu_moe = false;
+        char pm = 0;
+        size_t nm = 0;
+        model_inkling2_cuda_placement(mm, &pm, &nm, NULL);
+        drop(mm);
+        CHECK(pm == 'M' && nm > 0 && na > nm, "(p) the needs: whole %zu bytes, the stacks on the host %zu bytes", na, nm);
+        char v[32];
+        snprintf(v, sizeof v, "%zu", RES + (na + nm) / 2);
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_FREE", v);
+        model_t *c1 = load(argv[2], true, false, 64), *c2 = load(argv[2], true, false, 64);
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_FREE", "");
+        model_t *ref = load(argv[2], false, false, 64);
+        char p1 = 0, p2 = 0;
+        const void *h1 = NULL, *h2 = NULL;
+        model_inkling2_cuda_placement(c1, &p1, NULL, &h1);
+        model_inkling2_cuda_placement(c2, &p2, NULL, &h2);
+        float *r1 = c1 ? rows(c1) : NULL, *rr = ref ? rows(ref) : NULL;
+        const double d1 = r1 && rr ? rel_diff(r1, rr, n) : 1;
+        CHECK(p1 == 'M' && p2 == 'M' && h1 && h1 == h2 && !model_inkling2_cuda_holds(c1, "model.layers.0.mlp.experts.gate_up_proj") &&
+              d1 <= 1e-4, "(p) free between the two needs: placements %c %c (want M M), %s copy, the stacks on the host, rows "
+              "within %.2e of the reference", p1 ? p1 : '-', p2 ? p2 : '-', h1 && h1 == h2 ? "one shared" : "not one", d1);
+        free(r1); free(rr);
+        drop(c1); drop(c2); drop(ref);
+        // a cap below the --cpu-moe need: the CPU for every instance
+        snprintf(v, sizeof v, "%zu", RES + nm / 2);
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_FREE", v);
+        model_t *c3 = load(argv[2], true, false, 64), *c4 = load(argv[2], true, false, 64);
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_FREE", "");
+        char p3 = 0, p4 = 0;
+        model_inkling2_cuda_placement(c3, &p3, NULL, NULL);
+        model_inkling2_cuda_placement(c4, &p4, NULL, NULL);
+        CHECK(p3 == 'C' && p4 == 'C' && c3 && c4 && !model_inkling2_cuda(c3) && !model_inkling2_cuda(c4),
+              "(p) free below both needs: placements %c %c (want C C), neither on the device", p3 ? p3 : '-', p4 ? p4 : '-');
+        drop(c3); drop(c4);
     }
     printf(fails ? "FAIL %d\n" : "PASS\n", fails);
     return fails ? 1 : 0;

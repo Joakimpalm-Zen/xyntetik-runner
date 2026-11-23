@@ -741,6 +741,7 @@ gpu_ink2  *gpu_ink2_bind(void);
 int        gpu_ink2_put(gpu_ink2 *h, const void *rows, size_t bytes, const float *scale, int n_scale);
 bool       gpu_ink2_get(gpu_ink2 *h, int i, void *rows, size_t bytes, float *scale, int n_scale);
 size_t     gpu_ink2_bytes(const gpu_ink2 *h);   // the device bytes held
+int        gpu_ink2_count(const gpu_ink2 *h);   // the tensors put
 // whether the handle's products (gpu_ink2_lin) take tensors of this ggml type: its module has the type's kernel
 bool       gpu_ink2_runs(const gpu_ink2 *h, int type);
 // the products' activation and output buffers allocated now at these sizes (the largest product's), so a fit check

@@ -13082,6 +13082,7 @@ bool gpu_ink2_get(gpu_ink2 *h, int i, void *rows, size_t bytes, float *scale, in
     return true;
 }
 size_t gpu_ink2_bytes(const gpu_ink2 *h) { return h ? h->bytes : 0; }
+int gpu_ink2_count(const gpu_ink2 *h) { return h ? h->n : 0; }
 bool gpu_ink2_runs(const gpu_ink2 *h, int type) { return h && type >= 0 && type < KT_N && h->mv[type]; }
 bool gpu_ink2_reserve(gpu_ink2 *h, size_t x_bytes, size_t y_bytes) {
     if (!h || cu.CtxSetCurrent(h->ctx) != 0) return false;
