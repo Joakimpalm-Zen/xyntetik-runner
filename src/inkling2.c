@@ -1071,6 +1071,22 @@ static void ink2_gate_range(void *c, int64_t h0, int64_t h1) {
         q->ot[h] = (1.0f - f) * q->xt[h] + g * q->mt[h];
     }
 }
+typedef struct { const float *x, *msg; float *gh, eps; int H; } ink2_msg_norm_ctx;
+static void ink2_msg_norm_range(void *c, int64_t t0, int64_t t1) {
+    const ink2_msg_norm_ctx *m = c;
+    const int H = m->H;
+    for (int64_t t = t0; t < t1; t++) {
+        float *dst = m->gh + (size_t)t * 2 * H;
+        ink2_unweighted_norm(m->x + (size_t)t * H, H, m->eps, dst);
+        ink2_unweighted_norm(m->msg + (size_t)t * H, H, m->eps, dst + H);
+    }
+}
+typedef struct { const float *fa, *ga, *x, *msg; float *out; } ink2_msg_comb_ctx;
+static void ink2_msg_comb_range(void *c, int64_t i0, int64_t i1) {
+    const ink2_msg_comb_ctx *m = c;
+    for (int64_t i = i0; i < i1; i++)
+        m->out[i] = (1.0f - p_tanhf(m->fa[i])) * m->x[i] + p_tanhf(m->ga[i]) * m->msg[i];
+}
 ink2_status ink2_message_step(const ink2_shape *s, const ink2_weights *w, int block, const char *role, int T,
                               const float *x, const float *message, float *out) {
     char n1[160], n2[160], n3[160];
@@ -1083,7 +1099,23 @@ ink2_status ink2_message_step(const ink2_shape *s, const ink2_weights *w, int bl
         wg->ne[0] != r || wg->ne[1] != H) return INK2_NO_TENSOR;
     const int fast = wd->q && wf->q && wg->q;
     if (!fast && (!wd->data || !wf->data || !wg->data)) return INK2_NO_TENSOR;
-    float *gh = malloc(sizeof(float) * ((size_t)2 * H + (size_t)r + (fast ? 2 * (size_t)H : 0)));
+    if (fast) {
+        // fast route: batch all T positions through ink2_lin's multi-column path, then combine in parallel
+        const size_t t_gh = (size_t)T * 2 * H, t_d = (size_t)T * r, t_fg = (size_t)T * H;
+        float *gh = malloc(sizeof(float) * (t_gh + t_d + 2 * t_fg));
+        if (!gh) return INK2_BAD_INPUT;
+        float *d = gh + t_gh, *fa = d + t_d, *ga = fa + t_fg;
+        ink2_msg_norm_ctx nc = { x, message, gh, s->eps, H };
+        ink2_par(T, 4 * (int64_t)H, ink2_msg_norm_range, &nc);
+        ink2_lin_rows(wd, r, 2 * H, T, gh, d);
+        ink2_lin_rows(wf, H, r, T, d, fa);
+        ink2_lin_rows(wg, H, r, T, d, ga);
+        ink2_msg_comb_ctx cc = { fa, ga, x, message, out };
+        ink2_par((int64_t)T * H, 16, ink2_msg_comb_range, &cc);
+        free(gh);
+        return INK2_OK;
+    }
+    float *gh = malloc(sizeof(float) * ((size_t)2 * H + (size_t)r));
     if (!gh) return INK2_BAD_INPUT;
     float *d = gh + 2 * H;
     for (int t = 0; t < T; t++) {
@@ -1091,16 +1123,8 @@ ink2_status ink2_message_step(const ink2_shape *s, const ink2_weights *w, int bl
         ink2_unweighted_norm(xt, H, s->eps, gh);          // cat([norm(x), norm(message)])
         ink2_unweighted_norm(mt, H, s->eps, gh + H);
         ink2_lin_rows(wd, r, 2 * H, 1, gh, d);   // the down projection, threads over its r rows
-        if (fast) {   // the forget and message gates as views, then the same combination
-            float *fa = d + r, *ga = fa + H, *ot = out + (size_t)t * H;
-            ink2_lin_rows(wf, H, r, 1, d, fa);
-            ink2_lin_rows(wg, H, r, 1, d, ga);
-            for (int h = 0; h < H; h++) ot[h] = (1.0f - p_tanhf(fa[h])) * xt[h] + p_tanhf(ga[h]) * mt[h];
-            continue;
-        }
         ink2_gate_ctx gc = { wf->data, wg->data, d, xt, mt, out + (size_t)t * H, r };
         ink2_par(H, 2 * r, ink2_gate_range, &gc);   // threads over the hidden rows
-
     }
     free(gh);
     return INK2_OK;
