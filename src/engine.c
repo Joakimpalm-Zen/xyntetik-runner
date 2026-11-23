@@ -564,6 +564,12 @@ static uint64_t model_identity(const model_t *m, const tokenizer *tok, bool prio
 // A ring layer (docs/kv-ring.md) holds at most kv_ring positions, so its part
 // of a snapshot over n tokens is the last min(n, kv_ring) positions, in
 // position order; a flat layer's is [0, n).
+// R4.48.21: the models the shared prefix tier serves, ONE predicate for its reuse, its publish, a context pin and a
+// context import, so a pin is never accepted for a model the tier will not serve (the lists had drifted: a pin on
+// inkling2_loop was taken, copied a KV it does not use, and was never forked). Not under tied-V (pfx_save would read K
+// rows kcache does not hold); not inkling2_loop (its cache is the engine's own, ink2_cache).
+static bool pfx_tier_serves(const model_t *m) { return m && !m->tied_v && !m->ink2; }
+
 static int pfx_rows(const model_t *m, int l, int n) {
     return model_kv_is_ring(m, l) && n > m->kv_ring ? m->kv_ring : n;
 }
@@ -867,7 +873,7 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
     // the slot's own KV first: it is already in place and costs nothing (below
     // any scored rows, R3.60)
     r.keep = engine_rewind_prompt(e, toks, n);
-    if (e->m->tied_v || e->m->ink2) return r;   // inkling2_loop: no shared prefix tier (its cache is the engine's own)
+    if (!pfx_tier_serves(e->m)) return r;   // tied-V, inkling2_loop: no shared prefix tier
     if (!e->hist || n < 2) return r;
 
     pthread_mutex_lock(&PFX.mu);
@@ -950,7 +956,7 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
     // does not hold. A ring holds the prompt's end only while the slot is at
     // it: past it, decode has recycled rows the snapshot would claim.
     bool ring = model_kv_ring_active(e->m);
-    if (e->m->tied_v || e->m->ink2) return;
+    if (!pfx_tier_serves(e->m)) return;
     // R3.60: rows a scoring feed wrote are the decode route's, and a later
     // request that forked them would read other bits than a cold prompt: the
     // shared tier takes only the rows below them
@@ -1091,8 +1097,8 @@ static pfx_entry **pfx_find_named(const char *name) {
 
 int prefix_context_pin(engine *e, const char *name, const int32_t *toks, int n) {
     if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
-    // the layout engine_prefix_publish refuses, for the same reason
-    if (e->m->tied_v || !e->hist)
+    // what the tier does not serve (pfx_tier_serves, as engine_prefix_reuse and _publish ask it), or no history
+    if (!pfx_tier_serves(e->m) || !e->hist)
         return PFX_CTX_UNSUPPORTED;
     // A recurrent model on a device keeps its fold there, out of the host
     // blob's reach, so engine_prefix_reuse never forks a snapshot for it. A
@@ -1543,7 +1549,7 @@ out:
 int prefix_context_import(const engine *e, const char *name, const char *path,
                           const char *origin) {
     if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
-    if (!e || !e->m || e->m->tied_v || (model_has_recurrent(e->m) && e->m->gpu))
+    if (!e || !pfx_tier_serves(e->m) || (model_has_recurrent(e->m) && e->m->gpu))
         return PFX_CTX_UNSUPPORTED;
     uint64_t bytes = 0;
     int32_t n = 0;

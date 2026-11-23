@@ -1035,6 +1035,12 @@ static void context_pin_prompt(slot_t *s, sock_t fd, const char *prompt,
     double secs = now_s() - t0;
     free(toks);
     if (!lg) { send_error(fd, 500, "prefill failed (context or memory)"); return; }
+    if (rc == PFX_CTX_UNSUPPORTED && s->m->ink2) {
+        send_error_detail(fd, 409, "this model cannot fork a pinned prefix: inkling2_loop keeps its K/V and "
+                          "convolution histories in its own cache, which the shared prefix cache does not "
+                          "serve (a request repeating a prefix re-prefills it)", NULL, "context_unsupported");
+        return;
+    }
     if (rc == PFX_CTX_UNSUPPORTED) {
         send_error_detail(fd, 409, "this model cannot fork a pinned prefix: its "
                           "KV layout has no contiguous prefix (a ring or "

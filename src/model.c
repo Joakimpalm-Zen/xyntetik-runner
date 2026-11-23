@@ -6938,6 +6938,7 @@ static bool runtime_gpu_admit(model_t *m, const model_params *p, size_t kv_claim
 static size_t recurrent_conv_bytes(const model_t *m);
 static size_t recurrent_state_bytes(const model_t *m);
 
+static bool rec_fold(const model_t *m);   // the SSM fold (below, by model_has_recurrent)
 static void runtime_report(const model_t *m, size_t kv_bytes, size_t k_bytes) {
     fprintf(stderr, "%-24s %s\n", "architecture", m->arch);
     fprintf(stderr, "%-24s %d\n", "layers", m->n_layer);
@@ -6964,7 +6965,7 @@ static void runtime_report(const model_t *m, size_t kv_bytes, size_t k_bytes) {
             m->kv_f32 ? "f32" : m->kv_fp4 ? "fp4" : m->kv_split ? "q8_0 K, fp4 V"
             : m->kv_q8 ? "q8_0" : "fp16");
     // R3.47: a hybrid's per-sequence recurrent state, one slot per layer that holds it
-    if (model_has_recurrent(m))
+    if (rec_fold(m))
         fprintf(stderr, "%-24s %.1f MB (%zu of %d layers)\n", "recurrent state",
                 (recurrent_conv_bytes(m) + recurrent_state_bytes(m)) / 1e6,
                 model_rec_count(m), m->n_layer);
@@ -10630,9 +10631,15 @@ bool model_has_recurrent(const model_t *m) {
     return m && (m->qwen35 || m->granite_hybrid || m->nemotron_h || m->lfm2) &&
            m->ssm_conv_state && m->ssm_state_mem;
 }
+// The SSM fold the functions below keep (conv ring, SSD state, PLE window): every recurrent model's but
+// inkling2_loop's. inkling2_loop counts as recurrent above only so the engine re-prefills instead of rewinding part of
+// the way; its histories live in its own cache (ink2_cache), and it has no SSM heads to size a fold by (R4.48.21: the
+// blob save divided by them and a context pin on a served inkling2_loop file died of SIGFPE). One predicate, so a
+// fold function cannot forget the exclusion.
+static bool rec_fold(const model_t *m) { return model_has_recurrent(m) && !m->ink2; }
 
 void model_recurrent_reset(model_t *m) {
-    if (!model_has_recurrent(m) || m->ink2) return;   // inkling2: the next forward at 0 starts over
+    if (!rec_fold(m)) return;   // inkling2: the next forward at 0 starts over
     memset(m->ssm_conv_state, 0, recurrent_conv_bytes(m));
     memset(m->ssm_state_mem, 0, recurrent_state_bytes(m));
     if (m->train_gpu) gpu_train_dn_reset(m);   // the states a step keeps there
@@ -10642,7 +10649,7 @@ void model_recurrent_reset(model_t *m) {
 }
 
 bool model_recurrent_snapshot(model_t *m, int pos) {
-    if (!model_has_recurrent(m) || m->ink2 || !m->ssm_conv_snap || !m->ssm_state_snap)
+    if (!rec_fold(m) || !m->ssm_conv_snap || !m->ssm_state_snap)
         return false;
     size_t pb = recurrent_ple_bytes(m);
     if (pb && !m->ple4_hist_snap && !(m->ple4_hist_snap = malloc(pb))) return false;
@@ -10660,7 +10667,7 @@ bool model_recurrent_snapshot(model_t *m, int pos) {
 }
 
 bool model_recurrent_restore(model_t *m, int pos) {
-    if (!model_has_recurrent(m) || m->ink2 || !m->ssm_conv_snap || !m->ssm_state_snap)
+    if (!rec_fold(m) || !m->ssm_conv_snap || !m->ssm_state_snap)
         return false;
     if (pos < 0 || m->ssm_snap_pos != pos) return false;   // fold not sliceable
     if (m->gpu) {
@@ -10675,7 +10682,7 @@ bool model_recurrent_restore(model_t *m, int pos) {
 }
 
 bool model_recurrent_restore_row(model_t *m, int r) {
-    if (!model_has_recurrent(m) || r < 0) return false;
+    if (!rec_fold(m) || r < 0) return false;
     if (recurrent_ple_bytes(m) && (!m->ple4_hist_keep || r >= m->ple4_keep_n)) return false;
     if (m->gpu) {
         if (!gpu_recurrent_restore_row(m, r)) return false;
@@ -10703,12 +10710,12 @@ bool model_recurrent_restore_row(model_t *m, int r) {
 // blob (conv ring + SSD state), not sliceable — so a caller may only load it at
 // the exact position it was saved. 0 bytes when the model has no recurrent state.
 size_t model_recurrent_blob_bytes(const model_t *m) {
-    if (!model_has_recurrent(m) || m->ink2) return 0;
+    if (!rec_fold(m)) return 0;
     return recurrent_conv_bytes(m) + recurrent_state_bytes(m) + recurrent_ple_bytes(m);
 }
 
 bool model_recurrent_blob_save(const model_t *m, uint8_t *dst) {
-    if (!model_has_recurrent(m)) return false;
+    if (!rec_fold(m)) return false;
     // a device-resident fold (CUDA) is pulled through the host buffers first,
     // the same seam the turn mark uses; the host rows of the offloaded layers
     // are otherwise stale (R4.26.7: prefix reuse for recurrent models on the
@@ -10723,7 +10730,7 @@ bool model_recurrent_blob_save(const model_t *m, uint8_t *dst) {
 
 bool model_recurrent_blob_load(model_t *m, const uint8_t *src,
                                const int32_t *toks, int n) {
-    if (!model_has_recurrent(m)) return false;
+    if (!rec_fold(m)) return false;
     size_t cb = recurrent_conv_bytes(m), sb = recurrent_state_bytes(m);
     memcpy(m->ssm_conv_state, src, cb);
     memcpy(m->ssm_state_mem, src + cb, sb);
@@ -10754,7 +10761,7 @@ bool model_recurrent_blob_load(model_t *m, const uint8_t *src,
 // buffers on both edges. Layers past gpu_layers already fold on the host and
 // their buffer rows are live; the backend copies only its own layers.
 bool model_recurrent_mark(model_t *m, int pos) {
-    if (!model_has_recurrent(m) || m->ink2 || pos < 0) return false;
+    if (!rec_fold(m) || pos < 0) return false;
     if (!m->ssm_conv_mark || !m->ssm_state_mark) {
         free(m->ssm_conv_mark); free(m->ssm_state_mark);
         m->ssm_conv_mark  = malloc(recurrent_conv_bytes(m) ? recurrent_conv_bytes(m) : 1);
@@ -10778,7 +10785,7 @@ bool model_recurrent_mark(model_t *m, int pos) {
 }
 
 int model_recurrent_mark_pos(const model_t *m) {
-    if (!model_has_recurrent(m) || m->ink2 || !m->ssm_conv_mark || !m->ssm_state_mark)
+    if (!rec_fold(m) || !m->ssm_conv_mark || !m->ssm_state_mark)
         return -1;
     return m->ssm_mark_pos;
 }

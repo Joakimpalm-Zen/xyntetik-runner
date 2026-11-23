@@ -132,6 +132,15 @@ int main(int argc, char **argv) {
     CHECK(other && memcmp(one, other, sizeof(float) * (size_t)a->n_vocab),
           "case 5 (control): a different prompt's rows differ from case 1's");
 
+    // 6. R4.48.21: inkling2_loop counts as recurrent (model_has_recurrent: the engine re-prefills rather than rewind
+    //    part of the way) but holds no SSM fold, so every fold function declines it. blob_save and blob_load did not:
+    //    they divided by the model's zero SSM heads (a context pin on a served inkling2_loop file died of SIGFPE).
+    unsigned char blob[64];
+    CHECK(model_has_recurrent(a) && model_recurrent_blob_bytes(a) == 0 && !model_recurrent_blob_save(a, blob) &&
+          !model_recurrent_blob_load(a, blob, PROMPT, 1) && !model_recurrent_restore_row(a, 0),
+          "case 6: the fold functions decline inkling2_loop (blob bytes %zu, save, load and restore refused)",
+          model_recurrent_blob_bytes(a));
+
     free(one); free(four); free(cli4); free(other);
     model_free(a); model_free(b); model_free(c);
     free(a); free(b); free(c);

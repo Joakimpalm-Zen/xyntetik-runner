@@ -174,3 +174,23 @@ def test_a_chat_context_is_the_prefix_of_the_chat_render(runner_bin, model):
         tel = d["runner_telemetry"]
         assert tel["context"] == {"id": "chat-sys", "tokens": pin["tokens"]}
         assert tel["prompt_cached_tokens"] >= pin["tokens"]
+
+
+def test_inkling2_refuses_a_pin_its_prefix_tier_would_not_serve(runner_bin, tmp_path):
+    # R4.48.21: inkling2_loop's cache is the engine's own (ink2_cache), and the shared prefix tier never serves it
+    # (engine_prefix_reuse returns before the tier). A pin was accepted all the same and copied the generic KV the
+    # model does not use, so every request naming it was served cold under its name. The pin now asks the tier's own
+    # predicate and refuses with the slot form's code; the tests above keep a dense model's pin working.
+    # the hardening test's tiny inkling2_loop file (a byte-level tokenizer, so the server loads it)
+    sys.path.insert(0, str(ROOT / "tests"))
+    import test_inkling2_hardening as ih
+    m = ih._write(tmp_path / "inkling2-tiny.gguf", ih._kvs(), ih._tensors())
+    with _serve(runner_bin, m) as srv:
+        st, b = _req(srv, "POST", "/v1/runner/contexts", {"id": "ink-sys", "prompt": SYS})
+        assert st == 409 and b["error"]["code"] == "context_unsupported", (st, b)
+        assert "inkling2_loop" in b["error"]["message"], b
+        # nothing was pinned: a request naming it is refused as unknown, never served cold under the name
+        st, b = _complete(srv, SYS + "Where is item 42?", context_id="ink-sys")
+        assert st == 404 and b["error"]["code"] == "context_not_found", (st, b)
+        st, lst = _req(srv, "GET", "/v1/runner/contexts")
+        assert st == 200 and lst["data"] == [], lst
