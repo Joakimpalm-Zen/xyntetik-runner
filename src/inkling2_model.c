@@ -265,22 +265,30 @@ float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos,
     if (nt != ink2_get_threads()) ink2_set_threads(nt);
     ink2_lora lcb = { m, ink2_lora_slot_cb };
     const ink2_lora *lora = m->lora ? &lcb : NULL;
+    // RUNNER_INKLING2_ROWS=FILE (TEST-ONLY, the wired path's bit-for-bit check): every forward's rows, appended
+    // in call order, raw float32 [T][n_vocab], as the read harness writes them
+    pthread_once(&rows_dump_once, rows_dump_read);
+    const char *dump = rows_dump;
+    const bool dump_on = dump && *dump;
+    const bool need_all = keep_all || dump_on;
+    int last_T = 0;
     // chunks of n_batch: the engine's rows do not depend on the split (measured bit for bit)
     for (int done = 0; done < n;) {
         const int T = n - done < r->rows_cap ? n - done : r->rows_cap;
+        const bool last_chunk = done + T == n;
+        float *chunk_out = need_all ? r->rows
+                         : (want_logits && last_chunk) ? m->logits
+                         : NULL;
+        const int chunk_flags = (!need_all && want_logits && last_chunk) ? INK2_LOGITS_LAST : 0;
         ink2_status st = ink2_forward_chunk_lora(&r->s, &r->w, lora, &r->c, pos + done, T,
-                                                 (const int *)(tokens + done), r->rows, 0,
+                                                 (const int *)(tokens + done), chunk_out, chunk_flags,
                                                  NULL, NULL);   // int32_t is int on every target Runner builds for
         if (st != INK2_OK) {
             fprintf(stderr, "error: inkling2_loop: the forward at position %d refused (status %d%s)\n", pos + done, (int)st,
                     st == INK2_REWIND ? ": not where the sequence ends, and this model does not rewind" : "");
             return NULL;
         }
-        // RUNNER_INKLING2_ROWS=FILE (TEST-ONLY, the wired path's bit-for-bit check): every forward's rows, appended
-        // in call order, raw float32 [T][n_vocab], as the read harness writes them
-        pthread_once(&rows_dump_once, rows_dump_read);
-        const char *dump = rows_dump;
-        if (dump && *dump) {
+        if (dump_on) {
             FILE *f = plat_fopen(dump, "ab");
             if (f) {
                 fwrite(r->rows, sizeof(float), (size_t)T * (size_t)m->n_vocab, f);
@@ -299,14 +307,16 @@ float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos,
                 fclose(ft);
             }
         }
+        last_T = T;
         done += T;
         if (done == n) {
-            r->kept_from = pos + done - T;
-            r->kept_n = T;
+            r->kept_from = keep_all ? pos + done - T : 0;
+            r->kept_n = keep_all ? T : 0;
         }
     }
     if (!want_logits) return NULL;
-    memcpy(m->logits, r->rows + (size_t)(r->kept_n - 1) * (size_t)m->n_vocab, sizeof(float) * (size_t)m->n_vocab);
+    if (need_all)
+        memcpy(m->logits, r->rows + (size_t)(last_T - 1) * (size_t)m->n_vocab, sizeof(float) * (size_t)m->n_vocab);
     return m->logits;
 }
 

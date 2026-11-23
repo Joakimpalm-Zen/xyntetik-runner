@@ -123,6 +123,31 @@ int main(int argc, char **argv) {
     CHECK(act8_err >= 10 * fast_err && act8_err > 0,
           "(f) control: 8-bit activations %.2e from the reference, the fast route %.2e, want at least 10x", act8_err, fast_err);
     free(x1); free(x4); free(x8); free(xr); free(xq);
+    // (g) last-row-only prefill (keep_all = false) runs the head once (on the final row of the final chunk) while
+    // leaving keep_all / row-dump callers bit-identical, and want_logits = false skips the head altogether
+    {
+        model_t *p64 = load(argv[2], NULL, false, 1, 64), *p8 = load(argv[2], NULL, false, 1, 8),
+                *p0 = load(argv[2], NULL, false, 1, 64), *rk = load(argv[2], NULL, false, 1, 64);
+        float *krows = rk ? rows(rk) : NULL;
+        const size_t nv = (size_t)t1->n_vocab;
+        const long h0 = ink2_head_rows();
+        float *last64 = p64 ? model_inkling2_forward(p64, PROMPT, N_TOK, 0, true, false) : NULL;
+        const long h1 = ink2_head_rows();
+        CHECK(last64 && h1 - h0 == 1, "(g) prefill asking for last row only (-b 64) runs the head %ld row(s), want 1", h1 - h0);
+        const long h2 = ink2_head_rows();
+        float *last8 = p8 ? model_inkling2_forward(p8, PROMPT, N_TOK, 0, true, false) : NULL;
+        const long h3 = ink2_head_rows();
+        CHECK(last8 && h3 - h2 == 1, "(g) prefill asking for last row only (-b 8) runs the head %ld row(s), want 1", h3 - h2);
+        CHECK(last64 && krows && !memcmp(last64, krows + (size_t)(N_TOK - 1) * nv, sizeof(float) * nv),
+              "(g) last-row-only prefill (-b 64) is byte-identical to keep_all final row");
+        CHECK(last8 && krows && !memcmp(last8, krows + (size_t)(N_TOK - 1) * nv, sizeof(float) * nv),
+              "(g) last-row-only prefill (-b 8) is byte-identical to keep_all final row");
+        const long h4 = ink2_head_rows();
+        float *no_lg = p0 ? model_inkling2_forward(p0, PROMPT, N_TOK, 0, false, false) : (float *)1;
+        const long h5 = ink2_head_rows();
+        CHECK(no_lg == NULL && h5 - h4 == 0, "(g) prefill with want_logits=false runs the head %ld row(s), want 0", h5 - h4);
+        free(krows); drop(p64); drop(p8); drop(p0); drop(rk);
+    }
     drop(t1); drop(t4); drop(b8); drop(ref); drop(q8);
     printf(fails ? "FAIL %d\n" : "PASS\n", fails);
     return fails ? 1 : 0;

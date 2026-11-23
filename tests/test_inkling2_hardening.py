@@ -87,3 +87,36 @@ def test_the_expert_cache_line_is_a_budget_capped_at_every_expert_decoded(runner
                         "--temp", "0"], capture_output=True, text=True, errors="replace", timeout=600, env=env)
     assert r.returncode == 0, r.stderr[-2000:]
     assert "expert cache up to 0.00 GiB (the budget, RUNNER_INKLING2_EXPERT_CACHE)" in r.stderr, r.stderr[-2000:]
+
+
+def test_score_keep_all_matches_solo_and_rows_dump(runner_bin, tiny):
+    """--score (keep_all) and RUNNER_INKLING2_ROWS still compute and emit every row identically to -b 1."""
+    import json
+    import os
+    d, good = tiny
+    prompt = "hello world, inkling2_loop score check!"
+    r_batched = _run(runner_bin, good, "--score", "1", "-b", "8", "-p", prompt)
+    assert r_batched.returncode == 0, r_batched.stderr[-2000:]
+    r_solo = _run(runner_bin, good, "--score", "1", "-b", "1", "-p", prompt)
+    assert r_solo.returncode == 0, r_solo.stderr[-2000:]
+    j_batched = json.loads(r_batched.stdout)
+    j_solo = json.loads(r_solo.stdout)
+    assert j_batched["logprobs"] == j_solo["logprobs"]
+    assert j_batched["top1"] == j_solo["top1"]
+    assert j_batched["top"] == j_solo["top"]
+    rows_file = d / "rows.f32"
+    env = dict(os.environ, RUNNER_INKLING2_ROWS=str(rows_file))
+    r_dump = subprocess.run([str(runner_bin), "-m", str(good), "--gpu", "off", "-t", "2", "-c", "64",
+                             "-b", "8", "--score", "1", "-p", prompt],
+                            capture_output=True, text=True, errors="replace", timeout=600, env=env)
+    assert r_dump.returncode == 0, r_dump.stderr[-2000:]
+    assert rows_file.exists() and rows_file.stat().st_size == len(j_batched["logprobs"]) * VUSED * 4
+    r_gen = subprocess.run([str(runner_bin), "-m", str(good), "--gpu", "off", "-t", "2", "-c", "64",
+                            "-b", "8", "-p", prompt, "-n", "1", "--temp", "0"],
+                           capture_output=True, text=True, errors="replace", timeout=600)
+    assert r_gen.returncode == 0, r_gen.stderr[-2000:]
+    r_gen_dump = subprocess.run([str(runner_bin), "-m", str(good), "--gpu", "off", "-t", "2", "-c", "64",
+                                 "-b", "8", "-p", prompt, "-n", "1", "--temp", "0"],
+                                capture_output=True, text=True, errors="replace", timeout=600, env=env)
+    assert r_gen_dump.returncode == 0, r_gen_dump.stderr[-2000:]
+    assert r_gen.stdout == r_gen_dump.stdout

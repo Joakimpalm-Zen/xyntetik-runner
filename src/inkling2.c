@@ -11,6 +11,7 @@
 
 #include <math.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1290,17 +1291,22 @@ static void ink2_head_range(void *c, int64_t v0, int64_t v1) {
         h->lg[v] = ink2_softcap(a, h->cap);
     }
 }
+static _Atomic long ink2_head_rows_count = 0;
+long ink2_head_rows(void) { return atomic_load_explicit(&ink2_head_rows_count, memory_order_relaxed); }
+
 // The head: lm_head (built UNPADDED by the reference: vocab_used rows) then logit_softcap, tanh(l / cap) * cap
 ink2_status ink2_head(const ink2_shape *s, const ink2_weights *w, int T, const float *x, float *logits) {
     const ink2_tensor *wo = w->get(w->ctx, "lm_head.weight");
     int H = s->hidden, V = s->vocab_used;
     if (!wo || wo->ne[0] != H || wo->ne[1] < V) return INK2_NO_TENSOR;
     if (wo->q) {   // the fast route: the head's rows as a view, then the softcap
+        atomic_fetch_add_explicit(&ink2_head_rows_count, (long)T, memory_order_relaxed);
         ink2_lin(wo, 0, V, H, T, x, (size_t)H, logits, (size_t)V, 1.0f);
         for (size_t i = 0; i < (size_t)T * V; i++) logits[i] = ink2_softcap(logits[i], s->final_cap);
         return INK2_OK;
     }
     if (!wo->data) return INK2_NO_TENSOR;
+    atomic_fetch_add_explicit(&ink2_head_rows_count, (long)T, memory_order_relaxed);
     for (int t = 0; t < T; t++) {   // rows from vocab_used on, if a layout keeps them, never enter
         ink2_head_ctx hc = { wo->data, x + (size_t)t * H, logits + (size_t)t * V, H, s->final_cap };
         ink2_par(V, H, ink2_head_range, &hc);   // threads over vocabulary rows
@@ -1637,8 +1643,11 @@ ink2_status ink2_forward_chunk_lora(const ink2_shape *s, const ink2_weights *w, 
         INK2_TRY(ink2_block_read(s, w, "model.final_input", T, nb, packed, h, fin, &nq));
         if (nq != 1) { st = INK2_NO_TENSOR; goto done; }
         if (logits) {
-            INK2_TRY(ink2_norm_rows(s, w, "model.norm.weight", T, fin, hn));
-            INK2_TRY(ink2_head(s, w, T, hn, logits));
+            const int last = (flags & INK2_LOGITS_LAST) != 0;
+            const int lt = last ? 1 : T;
+            const float *lfin = last ? fin + (size_t)(T - 1) * H : fin;
+            INK2_TRY(ink2_norm_rows(s, w, "model.norm.weight", lt, lfin, hn));
+            INK2_TRY(ink2_head(s, w, lt, hn, logits));
         }
     }
 #undef INK2_TRY

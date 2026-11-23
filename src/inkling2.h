@@ -153,6 +153,8 @@ ink2_status ink2_attention(const ink2_shape *s, const ink2_weights *w, ink2_cach
 // The head: `model.norm` output in, `lm_head` then `logit_softcap` out; logits are [T][vocab_used] (the padded rows
 // never reach them).
 ink2_status ink2_head(const ink2_shape *s, const ink2_weights *w, int T, const float *x, float *logits);
+// TEST-ONLY: cumulative rows evaluated by ink2_head (across all forwards in the process).
+long ink2_head_rows(void);
 
 // The block-state read: Inkling2LoopBlockAttentionResidual (`model.layers.<b>.attention_input`, `.mlp_input`,
 // `model.final_input`): a depth-wise attention over the completed block states [T][n_blocks][hidden] and the partial
@@ -216,6 +218,7 @@ ink2_status ink2_forward(const ink2_shape *s, const ink2_weights *w, int T, cons
 // controls, which must fail its wiring gate).
 #define INK2_MISWIRE_RESTART  1   // later passes restart from the input of the last pre-loop layer, not its output
 #define INK2_MISWIRE_OWN_PASS 2   // later passes read their own pass's block states for the messages
+#define INK2_LOGITS_LAST      4   // when logits != NULL, compute norm + head only for the final row (T - 1) into logits[0..vocab_used-1]
 // Optional LoRA adapter callback on attention linear projections (slots 0=Q, 1=K, 2=V, 3=O).
 // When NULL or slot returns false, the unadapted base forward runs untouched.
 typedef struct {
