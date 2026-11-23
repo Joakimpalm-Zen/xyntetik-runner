@@ -4672,6 +4672,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_spec_gpu.py \
     tests/test_spec_telemetry.py \
     tests/test_split_gguf.py \
+    tests/test_ssm_precise.py \
     tests/test_stop_latency.py \
     tests/test_stop_replay.py \
     tests/test_stop_specials.py \

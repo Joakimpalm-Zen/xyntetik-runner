@@ -6,8 +6,10 @@ the nemotron/granitehybrid fixtures showed Apple Clang 21 fusing both cores iden
 so this test directly checks the generated assembly of all five SSM_PRECISE functions.
 """
 
+import os
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -24,13 +26,20 @@ SSM_FUNCS = (
 )
 
 FMA_RE = re.compile(
-    r"\b(?:fmadd|fmsub|fnmadd|fnmsub|fmla|fmls|v?fn?m(?:add|sub)[0-9]*[ps][sd])\b"
+    r"\b(?:fmadd|fmsub|fnmadd|fnmsub|fmla|fmls|v?fn?m(?:add|sub|addsub|subadd)[0-9]*[ps][sd])\b"
 )
 
 
-def _model_compile_cmd(extra_make_args):
+def _split_cmd(line):
+    toks = shlex.split(line, posix=(os.name != "nt"))
+    if os.name == "nt":
+        toks = [t[1:-1] if len(t) >= 2 and t[0] == t[-1] == '"' else t for t in toks]
+    return toks
+
+
+def _model_compile_cmd(make_cmd, extra_make_args):
     p = subprocess.run(
-        ["make", "-Bn", "--no-print-directory", *extra_make_args, "runner"],
+        [make_cmd, "-Bn", "--no-print-directory", *extra_make_args, "runner"],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -39,12 +48,12 @@ def _model_compile_cmd(extra_make_args):
     lines = p.stdout.replace("\\\n", " ").splitlines()
     cmd_line = next(x for x in lines if " -c src/model.c " in x)
     quants_line = next((x for x in lines if " -c src/quants.c " in x), "")
-    return cmd_line.split(), quants_line.split()
+    return _split_cmd(cmd_line), _split_cmd(quants_line) if quants_line else []
 
 
 def _symbol_body(asm_lines, fn):
-    # Match either `fn:` (ELF) or `_fn:` (Mach-O), ignoring comments after `:`
-    pat = re.compile(rf"^_?{re.escape(fn)}:(?:\s|$)")
+    # Match Mach-O (`_fn:`), ELF (`fn:`), or Windows COFF (`fn:` / `_fn:`), ignoring inline comments
+    pat = re.compile(rf"^_?{re.escape(fn)}(?:\.[A-Za-z0-9_.$]+)?:\s*(?:[#;@/].*)?$")
     start = next((i for i, l in enumerate(asm_lines) if pat.match(l.strip())), None)
     if start is None:
         return None
@@ -52,7 +61,8 @@ def _symbol_body(asm_lines, fn):
     for l in asm_lines[start + 1 :]:
         s = l.strip()
         body.append(l)
-        if s == ".cfi_endproc" or s.startswith(".size "):
+        # Stop at ELF (.cfi_endproc / .size), Mach-O (.cfi_endproc / End function), or Win64 COFF (.seh_endproc)
+        if s == ".cfi_endproc" or s == ".seh_endproc" or s.startswith(".size ") or s.startswith("; -- End function"):
             break
     return body
 
@@ -63,9 +73,10 @@ def _count_ssm_fmas(cmd_words):
     is_clang = "clang" in ver.lower()
 
     src = (ROOT / "src" / "model.c").read_text(encoding="utf-8")
-    for fn in ("mamba2_ssd_core_serial(", "mamba2_ssd_core_chunked("):
-        assert "static void " + fn in src, f"missing static void {fn} in src/model.c"
-        src = src.replace("static void " + fn, "__attribute__((noinline)) static void " + fn, 1)
+    for fn in SSM_FUNCS:
+        sig = "static void " + fn + "("
+        assert sig in src, f"missing {sig} in src/model.c"
+        src = src.replace(sig, "__attribute__((noinline)) " + sig, 1)
 
     with tempfile.TemporaryDirectory() as td:
         tmp_c = pathlib.Path(td) / "model_ssm.c"
@@ -104,8 +115,25 @@ def _count_ssm_fmas(cmd_words):
 
 
 class SsmPreciseContractionTest(unittest.TestCase):
+    def test_symbol_body_stops_at_seh_endproc_and_detects_x86_fma(self):
+        fake_asm = [
+            "ssm_scan_worker:",
+            "\tmulss\t%xmm0, %xmm1",
+            "\taddss\t%xmm1, %xmm2",
+            "\t.seh_endproc",
+            "other_fast_fn:",
+            "\tvfmadd213ss\t%xmm3, %xmm4, %xmm5",
+            "\t.seh_endproc",
+        ]
+        body = _symbol_body(fake_asm, "ssm_scan_worker")
+        self.assertIsNotNone(body)
+        self.assertEqual([l.strip() for l in body if FMA_RE.search(l)], [])
+        other = _symbol_body(fake_asm, "other_fast_fn")
+        self.assertEqual([l.strip() for l in other if FMA_RE.search(l)], ["vfmadd213ss\t%xmm3, %xmm4, %xmm5"])
+
     def test_ssm_precise_uncontracted_default_and_t3(self):
-        if shutil.which("make") is None:
+        make_cmd = os.environ.get("MAKE") or shutil.which("make")
+        if not make_cmd:
             self.skipTest("make not available")
 
         for label, make_args in (
@@ -113,7 +141,7 @@ class SsmPreciseContractionTest(unittest.TestCase):
             ("T3", ["T3=1", "CFLAGS=-O3 -ffast-math"]),
         ):
             with self.subTest(build=label):
-                model_cmd, quants_cmd = _model_compile_cmd(make_args)
+                model_cmd, quants_cmd = _model_compile_cmd(make_cmd, make_args)
                 is_clang, counts = _count_ssm_fmas(model_cmd)
 
                 if quants_cmd:
