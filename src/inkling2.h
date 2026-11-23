@@ -60,6 +60,10 @@ float ink2_inv_sqrt(int n);
 // for the tests). Returns the count set (1..INK2_MAX_THREADS).
 int ink2_set_threads(int n);
 int ink2_get_threads(void);
+// What the pool really did, for the tests: the parallel loops that split their range over more than one thread since
+// the process began, and the threads (workers + the caller) the last of them ran on. A count of 1 splits nothing.
+#define INK2_PAR_STATS 1
+void ink2_par_stats(long *split_loops, int *last_pool);
 
 // A tensor as the pieces see it: float32, row-major, ne[0] the fastest dimension (GGUF order). The fixture's reader
 // and, later, the GGUF reader both hand pieces this; names are the reference's module paths for now.

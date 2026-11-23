@@ -133,10 +133,28 @@ static struct {
     uint64_t gen;
     ink2_range_fn fn; void *ctx; int64_t n, chunk, next;
 } ink2_pool = { .mu = PTHREAD_MUTEX_INITIALIZER, .go = PTHREAD_COND_INITIALIZER, .done = PTHREAD_COND_INITIALIZER };
+// The count and the pool are process-wide; two served slots run their forwards on their own threads and may set
+// the count while the other runs. Every read and write of the count is under ink2_cfg_mu, and a parallel loop holds
+// it for the whole loop, so a loop runs with the count it read and a set waits for the loop to end. The rows do not
+// depend on the count, so a count that changes between two loops of one forward changes no bits.
 static int ink2_n_threads = 0;    // 0: not yet read from INK2_THREADS
-static long ink2_par_min = -1;    // the least work (multiply-adds) a chunk gets; INK2_PAR_MIN, default 16384
+static long ink2_par_min = 16384; // the least work (multiply-adds) a chunk gets; INK2_PAR_MIN
+static long ink2_split_loops = 0; // parallel loops that split their range over the pool, since the process began
+static int ink2_last_pool = 1;    // the threads the last of them ran on (its workers + the caller)
 static __thread int ink2_in_par;
 static pthread_mutex_t ink2_cfg_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_once_t ink2_env_once = PTHREAD_ONCE_INIT;
+static void ink2_env_init(void) {
+    const char *e = getenv("INK2_PAR_MIN");
+    if (e && *e) ink2_par_min = atol(e) < 1 ? 1 : atol(e);
+    e = getenv("INK2_THREADS");
+    pthread_mutex_lock(&ink2_cfg_mu);
+    if (!ink2_n_threads) {
+        int n = e && *e ? atoi(e) : 1;
+        ink2_n_threads = n < 1 ? 1 : n > INK2_MAX_THREADS ? INK2_MAX_THREADS : n;
+    }
+    pthread_mutex_unlock(&ink2_cfg_mu);
+}
 
 static void ink2_run_chunks(ink2_range_fn fn, void *ctx, int64_t n, int64_t chunk) {
     for (;;) {
@@ -145,10 +163,11 @@ static void ink2_run_chunks(ink2_range_fn fn, void *ctx, int64_t n, int64_t chun
         fn(ctx, i0, i0 + chunk < n ? i0 + chunk : n);
     }
 }
+// A worker starts at the generation the pool had when it was created (passed in), so a worker created by a resize
+// waits for the next loop instead of taking up the previous one, whose fields are stale.
 static void *ink2_worker(void *arg) {
-    (void)arg;
     ink2_in_par = 1;
-    uint64_t seen = 0;
+    uint64_t seen = (uint64_t)(uintptr_t)arg;
     pthread_mutex_lock(&ink2_pool.mu);
     for (;;) {
         while (!ink2_pool.quit && ink2_pool.gen == seen) pthread_cond_wait(&ink2_pool.go, &ink2_pool.mu);
@@ -169,6 +188,7 @@ static void ink2_pool_stop(void) {
     ink2_pool.n_workers = 0; ink2_pool.quit = 0;
 }
 int ink2_set_threads(int n) {
+    pthread_once(&ink2_env_once, ink2_env_init);
     if (n < 1) n = 1;
     if (n > INK2_MAX_THREADS) n = INK2_MAX_THREADS;
     pthread_mutex_lock(&ink2_cfg_mu);
@@ -178,33 +198,40 @@ int ink2_set_threads(int n) {
     return n;
 }
 int ink2_get_threads(void) {
-    if (!ink2_n_threads) {
-        const char *e = getenv("INK2_THREADS");
-        ink2_set_threads(e && *e ? atoi(e) : 1);
-    }
-    if (ink2_par_min < 0) {
-        const char *e = getenv("INK2_PAR_MIN");
-        ink2_par_min = e && *e ? atol(e) : 16384;
-        if (ink2_par_min < 1) ink2_par_min = 1;
-    }
-    return ink2_n_threads;
+    pthread_once(&ink2_env_once, ink2_env_init);
+    pthread_mutex_lock(&ink2_cfg_mu);
+    const int n = ink2_n_threads;
+    pthread_mutex_unlock(&ink2_cfg_mu);
+    return n;
+}
+void ink2_par_stats(long *split_loops, int *last_pool) {
+    pthread_mutex_lock(&ink2_cfg_mu);
+    if (split_loops) *split_loops = ink2_split_loops;
+    if (last_pool) *last_pool = ink2_last_pool;
+    pthread_mutex_unlock(&ink2_cfg_mu);
 }
 // fn over [0, n): each index costs about `work` multiply-adds (it sizes the chunks)
 static void ink2_par(int64_t n, int64_t work, ink2_range_fn fn, void *ctx) {
-    int nt = ink2_get_threads();
+    if (ink2_in_par) { fn(ctx, 0, n); return; }
+    pthread_once(&ink2_env_once, ink2_env_init);
     if (work < 1) work = 1;
     int64_t chunk = (ink2_par_min + work - 1) / work;
     if (chunk < 1) chunk = 1;
-    if (nt == 1 || ink2_in_par || n <= chunk) { fn(ctx, 0, n); return; }
+    pthread_mutex_lock(&ink2_cfg_mu);
+    const int nt = ink2_n_threads;
+    if (nt == 1 || n <= chunk) { pthread_mutex_unlock(&ink2_cfg_mu); fn(ctx, 0, n); return; }
     // at least one chunk a thread when the work allows, up to four a thread for balance
     int64_t per = (n + 4 * (int64_t)nt - 1) / (4 * (int64_t)nt);
     if (per > chunk) chunk = per;
-    pthread_mutex_lock(&ink2_cfg_mu);
     if (ink2_pool.n_workers != nt - 1) {
         if (ink2_pool.n_workers) ink2_pool_stop();
+        // the generation only moves under ink2_cfg_mu (held here), so this read is the one the workers must wait past
+        const uintptr_t gen = (uintptr_t)ink2_pool.gen;
         for (int i = 0; i < nt - 1; i++)
-            if (pthread_create(&ink2_pool.th[i], NULL, ink2_worker, NULL) == 0) ink2_pool.n_workers++;
+            if (pthread_create(&ink2_pool.th[i], NULL, ink2_worker, (void *)gen) == 0) ink2_pool.n_workers++;
     }
+    ink2_split_loops++;
+    ink2_last_pool = ink2_pool.n_workers + 1;
     pthread_mutex_lock(&ink2_pool.mu);
     ink2_pool.fn = fn; ink2_pool.ctx = ctx; ink2_pool.n = n; ink2_pool.chunk = chunk; ink2_pool.next = 0;
     ink2_pool.pending = ink2_pool.n_workers; ink2_pool.gen++;

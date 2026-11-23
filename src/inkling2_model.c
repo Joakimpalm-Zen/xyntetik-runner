@@ -5,6 +5,7 @@
 #include "inkling2_gguf.h"
 #include "gpu.h"
 #include "compat.h"
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -92,7 +93,6 @@ bool model_inkling2_runtime(model_t *m, const model_params *p) {
     m->n_batch = p->n_batch > 0 ? p->n_batch : 64;
     if (m->n_batch > n_ctx) m->n_batch = n_ctx;
     m->spec_batch = m->n_batch;
-    ink2_set_threads(p->n_threads > 0 ? p->n_threads : 1);
     if (ink2_cache_init_window(&r->c, &r->s, n_ctx, m->n_batch)) {
         fprintf(stderr, "error: the inkling2_loop cache for -c %d does not fit in memory\n", n_ctx);
         return false;
@@ -118,6 +118,11 @@ bool model_inkling2_runtime(model_t *m, const model_params *p) {
     return true;
 }
 
+// RUNNER_INKLING2_ROWS, read once for every slot
+static const char *rows_dump;
+static pthread_once_t rows_dump_once = PTHREAD_ONCE_INIT;
+static void rows_dump_read(void) { rows_dump = getenv("RUNNER_INKLING2_ROWS"); }
+
 float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos, bool want_logits, bool keep_all) {
     ink2_rt *r = rt_of(m);
     if (!r || !r->cache_ok || n <= 0 || pos < 0 || pos + n > m->n_ctx) {
@@ -125,9 +130,10 @@ float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos,
         return NULL;
     }
     if (keep_all && n > r->rows_cap) return NULL;
-    // the engine's own pool takes the instance's thread count at use: a server loads each slot with a one-thread
-    // pool and swaps in the shared pool afterwards, so the count read at bind would be one. The rows do not depend
-    // on the thread count (measured bit for bit).
+    // the engine's own pool takes the instance's thread count at use, the one place it is set: a server loads each
+    // slot with a one-thread pool and swaps in the shared pool afterwards, so a count read at bind would be one. Two
+    // slots both set it from the one shared pool; a parallel loop runs with the count it read (src/inkling2.c). The
+    // rows do not depend on the count (tests/test_inkling2_threads.c).
     const int nt = m->tp ? tpool_size(m->tp) : 1;
     if (nt != ink2_get_threads()) ink2_set_threads(nt);
     // chunks of n_batch: the engine's rows do not depend on the split (measured bit for bit)
@@ -142,14 +148,25 @@ float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos,
         }
         // RUNNER_INKLING2_ROWS=FILE (TEST-ONLY, the wired path's bit-for-bit check): every forward's rows, appended
         // in call order, raw float32 [T][n_vocab], as the read harness writes them
-        static const char *dump = NULL;
-        static int dump_read = 0;
-        if (!dump_read) { dump = getenv("RUNNER_INKLING2_ROWS"); dump_read = 1; }
+        pthread_once(&rows_dump_once, rows_dump_read);
+        const char *dump = rows_dump;
         if (dump && *dump) {
             FILE *f = plat_fopen(dump, "ab");
             if (f) {
                 fwrite(r->rows, sizeof(float), (size_t)T * (size_t)m->n_vocab, f);
                 fclose(f);
+            }
+            // beside it, FILE.threads: what the pool really did for this chunk (one line a chunk)
+            char side[4096];
+            snprintf(side, sizeof side, "%s.threads", dump);
+            FILE *ft = plat_fopen(side, "a");
+            if (ft) {
+                long split = 0;
+                int last = 1;
+                ink2_par_stats(&split, &last);
+                fprintf(ft, "pos %d T %d count %d split_loops %ld last_pool %d\n", pos + done, T, ink2_get_threads(), split,
+                        last);
+                fclose(ft);
             }
         }
         done += T;

@@ -195,14 +195,18 @@ int main(int argc, char **argv) {
     const double t_fwd = now_s() - t1;
     struct rusage ru;
     getrusage(RUSAGE_SELF, &ru);
+    // what the pool really did (not the count asked for): loops split over more than one thread, and the last one's
+    long split_loops = 0;
+    int last_pool = 1;
+    ink2_par_stats(&split_loops, &last_pool);
     snprintf(path, sizeof path, "%s.json", out);
     FILE *fj = fopen(path, "w");
     if (fj) {
         fprintf(fj, "{\"source\": \"%s\", \"T\": %d, \"V\": %zu, \"chunk\": %d, \"threads\": %d, \"open_s\": %.3f, "
                     "\"forward_s\": %.3f, \"s_per_token\": %.4f, \"nonfinite_logits\": %lld, \"peak_rss_gb\": %.3f, "
-                    "\"ecache\": %s}\n",
+                    "\"ecache\": %s, \"split_loops\": %ld, \"last_pool\": %d}\n",
                 real ? "real" : "gguf", N, V, chunk, ink2_get_threads(), t_open, t_fwd, t_fwd / N, nonfinite, ru.ru_maxrss / 1e6,
-                ec ? "true" : "false");
+                ec ? "true" : "false", split_loops, last_pool);
         fclose(fj);
     }
     fprintf(stderr, "forward %.1f s (%.3f s a token), non-finite %lld, peak RSS %.2f GB\n", t_fwd, t_fwd / N, nonfinite,

@@ -382,6 +382,7 @@ TEST_MVT_CHAINS = $(TEST_BATCH:test-batch%=test-mvt-chains%)
 TEST_DN_RECURRENCE = $(TEST_BATCH:test-batch%=test-dn-recurrence%)
 TEST_ATTN_BW = $(TEST_BATCH:test-batch%=test-attn-bw%)
 TEST_THREAD_DEFAULT = $(TEST_BATCH:test-batch%=test-thread-default%)
+TEST_INKLING2_THREADS = $(TEST_BATCH:test-batch%=test-inkling2-threads%)
 TEST_SLOW_NOTE = $(TEST_BATCH:test-batch%=test-slow-note%)
 
 # Every module header, so a change to any of them rebuilds. runner.h was one
@@ -2080,6 +2081,14 @@ $(TEST_THREAD_DEFAULT): tests/test_thread_default.c $(OBJDIR)/compat.o src/compa
 # R10.29: the note a silent wait says (the GPU kernels' first JIT), checked without a GPU
 $(TEST_SLOW_NOTE): tests/test_slow_note.c $(OBJDIR)/compat.o src/compat.h $(QUANTS_OBJ)
 	$(CC) $(CFLAGS) -I src tests/test_slow_note.c $(OBJDIR)/compat.o $(QUANTS_OBJ) -o $@ $(LDFLAGS)
+
+# R4.48.6: Inkling 2 Mini's forward runs at its instance's pool size (a server swaps the slot's load pool), and two
+# slots' forwards at once give one thread's bits; on the committed tiny inkling2_loop file
+TEST_INKLING2_THREADS_SRC = tests/test_inkling2_threads.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                            $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
+INKLING2_TINY = tests/fuzz/corpus/inkling_open/tiny-valid.gguf
+$(TEST_INKLING2_THREADS): $(TEST_INKLING2_THREADS_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_INKLING2_THREADS_SRC) -o $@ $(LDFLAGS)
 
 TEST_MODEL_LOAD_FAILURE_SRC = tests/test_model_load_failure.c $(OBJDIR)/gguf.o \
                               $(OBJDIR)/compat.o $(QUANTS_OBJ) $(OBJDIR)/model.o $(INKLING2_OBJS) \
@@ -3910,7 +3919,7 @@ test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SC
       $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_TRAY_MAC_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) $(TEST_LINEAGE_OOM) $(TEST_DERIVE_OOM) test-lora.full.gguf \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_SHA256) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_PMATH_EXPF) $(TEST_PMATH_EXPF_DEFAULT) $(TEST_PMATH_SOFTMAX) $(TEST_FPCLASS) $(TEST_ACT) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
-      $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) \
+      $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_INKLING2_THREADS) \
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) $(TEST_RESTART) $(TEST_PFX_PERSIST) $(TEST_KVSNAP_REPLACE) $(TEST_PARTIAL_FDOPEN) \
       $(TEST_SCHED_TURN) $(TEST_STREAM_OUT) $(TEST_RESIDENCY) $(TEST_CAPACITY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
       $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_LONGROPE) $(TEST_PREFILL_BATCH) test-phi3-longrope.gguf $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) $(TEST_REQUEST_STOP) \
@@ -4286,6 +4295,7 @@ test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SC
 	./$(TEST_WATERMARK)
 	./$(TEST_THREAD_DEFAULT)
 	./$(TEST_SLOW_NOTE)
+	./$(TEST_INKLING2_THREADS) $(INKLING2_TINY) > test-inkling2-threads.out 2>&1 || { cat test-inkling2-threads.out; exit 1; }
 	./$(TEST_MODEL_LOAD_FAILURE)
 	@# a model load with each of its allocations failed in turn, alone and
 	@# beside an instance holding the shared weights, over one fixture per
@@ -4960,11 +4970,11 @@ clean:
 	      $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_TOOLS) $(DIFFTOK) \
 	      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
 	      $(TEST_QUANTIZE) $(TEST_KVSNAP_REPLACE) $(TEST_PARTIAL_FDOPEN) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
-	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) \
+	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_INKLING2_THREADS) test-inkling2-threads.out $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) \
 	      $(TEST_FILE_ID) test-file-identity.tmp \
 	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_LONGROPE) $(TEST_PREFILL_BATCH) $(TEST_CUDA_LONGROPE) $(TEST_CUDA_BATCH_COLS) $(TEST_CUDA_BATCH_Q35) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
 	      $(TMPL_CONF_RENDER) \
-	      $(TEST_SPLIT_GUARD) split-guard.out test-swap-race-bin test-tokenizer-race-bin test-decide-race-bin test-decide-race-gpu-bin \
+	      $(TEST_SPLIT_GUARD) split-guard.out test-swap-race-bin test-tokenizer-race-bin test-inkling2-threads-tsan-bin test-decide-race-bin test-decide-race-gpu-bin \
 	      runner-gpu-stub
 	rm -rf test-attn
 	rm -rf .build
@@ -5160,6 +5170,12 @@ test-pool-race:
 	$(CC) $(TSAN_FLAGS) tests/test_thread_default.c src/compat.c src/quants.c -o test-pool-race-bin $(LDFLAGS)
 	TSAN_OPTIONS=halt_on_error=1 ./test-pool-race-bin
 
+# R4.48.6: the Inkling 2 Mini engine's process-wide pool under two slots with different counts
+test-inkling2-threads-tsan:
+	$(CC) $(TSAN_FLAGS) -ffp-contract=off tests/test_inkling2_threads.c src/model.c $(INKLING2_SRC) src/gguf.c \
+	    src/compat.c src/quants.c src/vramreg.c src/gpu_none.c -o test-inkling2-threads-tsan-bin $(LDFLAGS)
+	TSAN_OPTIONS=halt_on_error=1 ./test-inkling2-threads-tsan-bin $(INKLING2_TINY)
+
 test-server-race-tsan: test.gguf
 	$(CC) $(TSAN_FLAGS) $(filter-out $(GPU_SRC),$(TEST_SWAP_RACE_SRC)) src/gpu_none.c -o test-server-race-tsan-bin $(LDFLAGS)
 	TSAN_OPTIONS=halt_on_error=1 ./test-server-race-tsan-bin test.gguf
@@ -5194,7 +5210,7 @@ test-decide-race-gpu: test.gguf
 	$(CC) $(DECIDE_RACE_GPU_FLAGS) $(GPU_BACKEND_DEF) tests/test_decide_race.c $(filter-out tests/test_swap_race.c,$(TEST_SWAP_RACE_SRC)) -o test-decide-race-gpu-bin $(LDFLAGS)
 	$(DECIDE_RACE_GPU_RUN) ./test-decide-race-gpu-bin test.gguf gpu
 
-.PHONY: test-pool-race test-server-race-tsan test-decide-race test-decide-race-gpu
+.PHONY: test-pool-race test-inkling2-threads-tsan test-server-race-tsan test-decide-race test-decide-race-gpu
 
 # the sources it links, as fuzz-% has them: a replay binary older than a
 # changed src/*.c replayed the old code
