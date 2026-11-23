@@ -3872,6 +3872,42 @@ static inline __attribute__((always_inline)) void dot_mxfp4_avx2_multi(const blo
     for (int c = 0; c < nc; c++) out[c] = hsum8(acc[c]);
 }
 
+// NVFP4 (R4.48.20): each 32-element half decoded once (pshufb), even and odd sub-blocks run in separate column loops
+// to keep accumulators in registers within 16 YMMs, using dot_nvfp4_avx2's exact FMAs and two-accumulator order.
+static inline __attribute__((always_inline)) void dot_nvfp4_avx2_multi(const block_nvfp4 *b, const float *const *xs,
+                                 int nc, int n, float *out) {
+    const __m128i tbl = _mm_loadu_si128((const __m128i *)kvalues_mxfp4_i8);
+    const __m128i mF  = _mm_set1_epi8(0xF);
+    __m256 acc0[VEC_DOT_MULTI_MAX], acc1[VEC_DOT_MULTI_MAX];
+    for (int c = 0; c < nc; c++) { acc0[c] = _mm256_setzero_ps(); acc1[c] = _mm256_setzero_ps(); }
+    for (int i = 0; i < n / QK_NVFP4; i++) {
+        const int xo = i * QK_NVFP4;
+        for (int h = 0; h < 2; h++) {
+            const __m128i q  = _mm_loadu_si128((const __m128i *)(b[i].qs + 16 * h));
+            const __m128i lo = _mm_shuffle_epi8(tbl, _mm_and_si128(q, mF));
+            const __m128i hi = _mm_shuffle_epi8(tbl, _mm_and_si128(_mm_srli_epi16(q, 4), mF));
+            const int off = xo + 32 * h;
+            const __m256 we0 = i8lo_ps(lo), we1 = i8lo_ps(hi);
+            const __m256 d0 = _mm256_set1_ps(g_ue4m3_half[b[i].d[2 * h]]);
+            for (int c = 0; c < nc; c++) {
+                const float *xp = xs[c] + off;
+                __m256 te = _mm256_mul_ps(we0, _mm256_loadu_ps(xp));
+                te = _mm256_fmadd_ps(we1, _mm256_loadu_ps(xp + 8), te);
+                acc0[c] = _mm256_fmadd_ps(d0, te, acc0[c]);
+            }
+            const __m256 wo0 = i8hi_ps(lo), wo1 = i8hi_ps(hi);
+            const __m256 d1 = _mm256_set1_ps(g_ue4m3_half[b[i].d[2 * h + 1]]);
+            for (int c = 0; c < nc; c++) {
+                const float *xp = xs[c] + off + 16;
+                __m256 to = _mm256_mul_ps(wo0, _mm256_loadu_ps(xp));
+                to = _mm256_fmadd_ps(wo1, _mm256_loadu_ps(xp + 8), to);
+                acc1[c] = _mm256_fmadd_ps(d1, to, acc1[c]);
+            }
+        }
+    }
+    for (int c = 0; c < nc; c++) out[c] = hsum8(_mm256_add_ps(acc0[c], acc1[c]));
+}
+
 static inline __attribute__((always_inline)) void dot_iq3_s_avx2_multi(const block_iq3_s *b, const float *const *xs,
                                  int nc, int n, float *out) {
     __m256 acc[VEC_DOT_MULTI_MAX], t[VEC_DOT_MULTI_MAX];
@@ -4301,6 +4337,33 @@ static void dot_mxfp4_neon_multi(const block_mxfp4 *b, const float *const *xs, i
     for (int c = 0; c < nc; c++) out[c] = vaddvq_f32(acc[c]);
 }
 
+// NVFP4 (R4.48.20): decode each 32-element half once (nvfp4_subs_neon + i8_to_f32x4), then run dot_nvfp4_neon's exact
+// dot16f + vfmaq_n_f32 per column in the even and odd accumulators so vec_dot_multi == vec_dot per column.
+static void dot_nvfp4_neon_multi(const block_nvfp4 *b, const float *const *xs, int nc,
+                                 int n, float *out) {
+    float32x4_t acc0[VEC_DOT_MULTI_MAX], acc1[VEC_DOT_MULTI_MAX];
+    for (int c = 0; c < nc; c++) { acc0[c] = vdupq_n_f32(0); acc1[c] = vdupq_n_f32(0); }
+    for (int i = 0; i < n / QK_NVFP4; i++) {
+        const int xo = i * QK_NVFP4;
+        for (int h = 0; h < 2; h++) {
+            int8x16_t e, o;
+            nvfp4_subs_neon(b[i].qs + 16 * h, &e, &o);
+            float32x4_t fe[4], fo[4];
+            i8_to_f32x4(e, fe);
+            i8_to_f32x4(o, fo);
+            const float d0 = g_ue4m3_half[b[i].d[2 * h]];
+            const float d1 = g_ue4m3_half[b[i].d[2 * h + 1]];
+            const int off = xo + 32 * h;
+            for (int c = 0; c < nc; c++) {
+                const float *xp = xs[c] + off;
+                acc0[c] = vfmaq_n_f32(acc0[c], dot16f(fe, xp), d0);
+                acc1[c] = vfmaq_n_f32(acc1[c], dot16f(fo, xp + 16), d1);
+            }
+        }
+    }
+    for (int c = 0; c < nc; c++) out[c] = vaddvq_f32(vaddq_f32(acc0[c], acc1[c]));
+}
+
 static void dot_iq4_nl_neon_multi(const block_iq4_nl *b, const float *const *xs, int nc,
                                   int n, float *out) {
     const int8x16_t tbl = vld1q_s8(kvalues_iq4nl);
@@ -4474,6 +4537,11 @@ void vec_dot_multi(int type, const void *row, const float *const *xs, int nc,
         case T_Q8_0:    AVX2_MULTI(dot_q8_0_avx2_multi, row, xs, nc, n, out);    return;
         case T_Q4_0:    AVX2_MULTI(dot_q4_0_avx2_multi, row, xs, nc, n, out);    return;
         case T_MXFP4:   AVX2_MULTI(dot_mxfp4_avx2_multi, row, xs, nc, n, out);   return;
+        case T_NVFP4:
+            if (nc == 1) { out[0] = dot_nvfp4_avx2(row, xs[0], n); return; }
+            if (nc == 8) { dot_nvfp4_avx2_multi(row, xs, 8, n, out); return; }
+            AVX2_MULTI(dot_nvfp4_avx2_multi, row, xs, nc, n, out);
+            return;
         case T_IQ4_NL:  AVX2_MULTI(dot_iq4_nl_avx2_multi, row, xs, nc, n, out);  return;
         case T_IQ4_XS:  AVX2_MULTI(dot_iq4_xs_avx2_multi, row, xs, nc, n, out);  return;
         case T_Q2_0:    AVX2_MULTI(dot_q2_0_avx2_multi, row, xs, nc, n, out);    return;
@@ -4487,6 +4555,10 @@ void vec_dot_multi(int type, const void *row, const float *const *xs, int nc,
         case T_Q8_0:    dot_q8_0_neon_multi(row, xs, nc, n, out);    return;
         case T_Q4_0:    dot_q4_0_neon_multi(row, xs, nc, n, out);    return;
         case T_MXFP4:   dot_mxfp4_neon_multi(row, xs, nc, n, out);   return;
+        case T_NVFP4:
+            if (nc == 1) { out[0] = dot_nvfp4_neon(row, xs[0], n); return; }
+            dot_nvfp4_neon_multi(row, xs, nc, n, out);
+            return;
         case T_IQ4_NL:  dot_iq4_nl_neon_multi(row, xs, nc, n, out);  return;
         case T_IQ4_XS:  dot_iq4_xs_neon_multi(row, xs, nc, n, out);  return;
         case T_Q2_0:    dot_q2_0_neon_multi(row, xs, nc, n, out);    return;
