@@ -6175,9 +6175,15 @@ bool gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F, int E) {
     return false;
 }
 void gpu_ink2_release_experts(gpu_ink2 *h) { (void)h; }
-gpu_ink2_kv *gpu_ink2_kv_new(gpu_ink2 *h, int n_app, const int *rows, const int *C) {
-    (void)h; (void)n_app; (void)rows; (void)C;
+gpu_ink2_kv *gpu_ink2_kv_new(gpu_ink2 *h, int n_app, const int *rows, const int *C, int hist_rows) {
+    (void)h; (void)n_app; (void)rows; (void)C; (void)hist_rows;
     return NULL;
+}
+bool gpu_ink2_block_ok(const gpu_ink2 *h) { (void)h; return false; }
+bool gpu_ink2_attn_block(gpu_ink2 *h, gpu_ink2_kv *kv, int app, const gpu_ink2_block *b, int T, const int *pos,
+                         const float *xq, const float *xk, const float *xv, float *out) {
+    (void)h; (void)kv; (void)app; (void)b; (void)T; (void)pos; (void)xq; (void)xk; (void)xv; (void)out;
+    return false;
 }
 size_t gpu_ink2_kv_bytes(const gpu_ink2_kv *kv) { (void)kv; return 0; }
 void gpu_ink2_kv_free(gpu_ink2_kv *kv) { (void)kv; }

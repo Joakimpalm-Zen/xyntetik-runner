@@ -48,6 +48,9 @@ typedef struct {
     bool attn_on;         // this instance runs the attention core on the device
     long n_attn;          // device core calls run so far (one per application per forward)
     long attn_fail_at;    // TEST-ONLY (RUNNER_INKLING2_CUDA_TEST_ATTN_FAIL=k): the k-th device core call fails; -1 none
+    bool block_on;        // G2b step 2b: this instance runs each attention block whole on the device
+    bool seq_block;       // the current sequence's blocks run on the device (its K/V histories are the device's)
+    long n_block_calls;   // device block calls run so far (one per application per forward)
 } ink2_rt;
 
 static ink2_rt *rt_of(model_t *m) { return (ink2_rt *)m->ink2; }
@@ -168,6 +171,51 @@ static int dev_attn(void *dev, int app, const ink2_attn_dims *d, int T, const in
     }
     return 0;
 }
+// G2b step 2b: one application's whole attention block on the device (gpu_ink2_attn_block). A sequence that begins
+// with a LoRA adapter active runs 2a's path to its end (the adapter's terms are host code, and its K/V histories are
+// then the host's); an adapter appearing in the middle of a sequence the device began is refused, since the host
+// holds no history for it.
+static int dev_block(void *dev, const ink2_block_call *bc) {
+    ink2_rt *r = dev;
+    if (!r->block_on) return 1;
+    if (r->gpu_err) return -1;
+    const int p0 = bc->pos[0];
+    if (bc->lora) {
+        if (p0 > 0 && r->seq_block) {
+            fprintf(stderr, "error: inkling2_loop: a LoRA adapter in the middle of a sequence its device began; start it "
+                            "again from position 0\n");
+            return -2;
+        }
+        r->seq_block = false;
+        return 1;
+    }
+    if (p0 > 0 && !r->seq_block) return 1;   // a sequence begun on 2a's path continues there
+    r->seq_block = true;
+    gpu_ink2_block gb = { bc->H, bc->nh, bc->nkv, bc->hd, bc->K, bc->dr, bc->ext, bc->window, bc->global, bc->scale,
+                          bc->qk_clip, bc->rel_clip, bc->eps, bc->log_alpha, bc->log_floor, { 0 }, { 0 }, { 0 }, { 0 } };
+    for (int k = 0; k < GI2_NV; k++) {
+        const ink2_tensor *t = bc->v[k];
+        if (!t) { gb.vi[k] = -1; gb.vtype[k] = -1; continue; }
+        if (t->dev != r) { r->gpu_err = true; return -1; }   // block_on said every view is there
+        gb.vi[k] = t->dev_i; gb.vtype[k] = t->qtype; gb.vrb[k] = t->q_row_bytes;
+    }
+    for (int k = 0; k < GI2_NF; k++) {
+        const ink2_tensor *t = bc->f[k];
+        if (!t || t->dev != r) { r->gpu_err = true; return -1; }
+        gb.fi[k] = t->dev_i;
+    }
+    r->n_block_calls++;
+    const bool inj = r->n_attn++ == r->attn_fail_at;   // TEST-ONLY: the same injected failure as the core's
+    const bool ok = !inj && gpu_ink2_attn_block(r->gpu, r->kv, bc->app, &gb, bc->T, bc->pos, bc->xq, bc->xk, bc->xv,
+                                                bc->out);
+    if (!ok) {
+        if (!r->gpu_err) fprintf(stderr, "error: inkling2_loop: the attention block of application %d failed on the device\n",
+                                 bc->app);
+        r->gpu_err = true;
+        return -1;
+    }
+    return 0;
+}
 // an application's K/V row width (its ring's rows are the host cache's: n_ctx on a full layer, window - 1 + the chunk
 // on a sliding one)
 static int app_c(const ink2_shape *s, int a) {
@@ -188,6 +236,8 @@ typedef struct ink2_share {
     bool exp_dev;
     bool attn_dev;   // step 2a: each instance's attention core (and its K/V rings) on the device
     size_t fit_free; // the free memory the deciding fit read (after its context, module and buffers; test-only cap)
+    bool block_dev;  // step 2b: the whole attention block; its small tensors follow the views in the copy
+    int n_views;     // the views in the copy (the small tensors are device tensors n_views..)
     int refs;
     char why[200];   // 'C': the sentence each instance says
     struct ink2_share *next;
@@ -218,6 +268,31 @@ static void share_release(ink2_rt *r) {
     r->share = NULL;
     r->gpu = NULL;
 }
+// G2b step 2b: each layer's small F32 attention tensors, by role (gpu.h's GI2_QS..GI2_RP), in the order the block
+// needs them on the device: layer by layer, role by role (the order an attaching instance finds them in)
+static const ink2_tensor *small_get(ink2_rt *r, int b, int role) {
+    static const char *const nm_s[GI2_NF] = { "q_proj.norm.scale", "k_proj.sconv.conv1d.weight", "v_proj.sconv.conv1d.weight",
+                                              "relative_position_bias.norm.scale", "relative_position_bias.proj" };
+    static const char *const nm_g[GI2_NF] = { "q_proj.norm.scale", "k_proj.sconv.static_weight", "v_proj.sconv.static_weight",
+                                              "relative_position_bias.norm.scale", "relative_position_bias.proj" };
+    char name[192];
+    snprintf(name, sizeof name, "model.layers.%d.self_attn.%s", b, r->s.block_global[b] ? nm_g[role] : nm_s[role]);
+    const ink2_tensor *t = ink2g_get(r->g, name);
+    return t && t->data ? t : NULL;
+}
+static size_t small_bytes(const ink2_tensor *t) { return sizeof(float) * (size_t)(t->ne[0] * t->ne[1] * t->ne[2] * t->ne[3]); }
+// the block's large views by role (gpu.h's GI2_Q..GI2_O; the dynamic taps only on a full layer), for the bind's
+// check that a layer's whole block is on the device
+static const ink2_tensor *block_view(ink2_rt *r, int b, int role) {
+    static const char *const nm[GI2_NV] = { "q_proj.linear.weight", "k_proj.linear.weight", "v_proj.linear.weight",
+                                            "k_proj.sconv.weight_proj.weight", "v_proj.sconv.weight_proj.weight",
+                                            "relative_position_bias.linear.weight", "sink_proj.weight",
+                                            "o_proj.gate_proj.weight", "o_proj.linear.weight" };
+    if ((role == GI2_KD || role == GI2_VD) && !r->s.block_global[b]) return NULL;
+    char name[192];
+    snprintf(name, sizeof name, "model.layers.%d.self_attn.%s", b, nm[role]);
+    return ink2g_get(r->g, name);
+}
 // the fit and the upload for a new entry (under g_share_mu): the context, the module and the products' buffers first,
 // so the free memory read counts them; then the weights the placement puts up, counted as the driver allocates them,
 // plus N slots' own bytes, against the free memory with 512 MiB kept. Whole first (unless --cpu-moe was asked), then
@@ -239,6 +314,18 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
                                                                                        : sp->swa_n_head * sp->swa_head_dim;
     const int nh_max = sp->n_head > sp->swa_n_head ? sp->n_head : sp->swa_n_head;
     const int ext_max = sp->rel_extent > sp->window ? sp->rel_extent : sp->window;
+    // step 2b: the whole attention block on the device when the module has its kernels (TEST-ONLY
+    // RUNNER_INKLING2_CUDA_TEST_NO_BLOCK=1 keeps 2a's path, a baseline); its small F32 tensors then go up too
+    const char *nb = getenv("RUNNER_INKLING2_CUDA_TEST_NO_BLOCK");
+    bool block_dev = attn_dev && gpu_ink2_block_ok(h) && !(nb && !strcmp(nb, "1"));
+    size_t small = 0;
+    for (int b = 0; block_dev && b < sp->n_block; b++)
+        for (int k = 0; k < GI2_NF; k++) {
+            const ink2_tensor *t = small_get(r, b, k);
+            if (!t) { block_dev = false; break; }
+            small += dev_alloc_bytes(small_bytes(t));
+        }
+    if (!block_dev) small = 0;
     const char *ne = getenv("RUNNER_INKLING2_CUDA_TEST_NO_EXP");
     const char *capv = getenv("RUNNER_INKLING2_CUDA_TEST_FREE");   // TEST-ONLY: the free figure the fit reads, capped
     const char *pf = getenv("RUNNER_INKLING2_CUDA_TEST_PUT_FAIL");
@@ -260,7 +347,7 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
         if (capv && *capv) { const size_t cv = (size_t)strtoull(capv, NULL, 10); if (cv < fr) fr = cv; }
         if (!cm) need_w = c.need;
         sh->fit_free = fr;
-        if (c.need + inst + RES > fr) {   // this placement does not fit: the next, or the CPU
+        if (c.need + small + inst + RES > fr) {   // this placement does not fit: the next, or the CPU
             // the whole-device attempt's expert-body buffers go before the retry, so it reads the memory it has
             if (exp_dev) gpu_ink2_release_experts(h);
             continue;
@@ -274,7 +361,19 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
             free(r->dev_of); r->dev_of = NULL; r->n_dev = 0;
             break;
         }
-        sh->gpu = h; sh->placed = cm ? 'M' : 'W'; sh->need = c.need; sh->exp_dev = exp_dev; sh->attn_dev = attn_dev;
+        bool small_ok = true;   // the block's small tensors after the views, layer by layer, role by role
+        for (int b = 0; block_dev && small_ok && b < sp->n_block; b++)
+            for (int role = 0; small_ok && role < GI2_NF; role++) {
+                const ink2_tensor *t = small_get(r, b, role);
+                small_ok = t && gpu_ink2_put(h, t->data, small_bytes(t), NULL, 0) == c.n + b * GI2_NF + role;
+            }
+        if (!small_ok) {
+            snprintf(sh->why, sizeof sh->why, "inkling2_loop's attention tensors could not be put on %s", dev);
+            free(r->dev_of); r->dev_of = NULL; r->n_dev = 0;
+            break;
+        }
+        sh->gpu = h; sh->placed = cm ? 'M' : 'W'; sh->need = c.need + small; sh->exp_dev = exp_dev; sh->attn_dev = attn_dev;
+        sh->block_dev = block_dev; sh->n_views = c.n;
         if (cm && !cpu_moe_req)
             fprintf(stderr, "note: inkling2_loop's %.2f GB of weights do not fit the %.2f GB free on %s for %d slot%s; "
                             "its expert stacks stay on the host (as --cpu-moe)\n", need_w / 1e9, fr / 1e9, dev, n_slots,
@@ -326,10 +425,11 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
     }
     const char *pf = getenv("RUNNER_INKLING2_CUDA_TEST_PUT_FAIL"), *ne = getenv("RUNNER_INKLING2_CUDA_TEST_NO_EXP");
     const char *capv = getenv("RUNNER_INKLING2_CUDA_TEST_FREE"), *nav = getenv("RUNNER_INKLING2_CUDA_TEST_NO_ATTN");
+    const char *nbv = getenv("RUNNER_INKLING2_CUDA_TEST_NO_BLOCK");
     char key[1200];
-    snprintf(key, sizeof key, "%s|%llu|%llu|%lld|moe %d|%s|c %d|b %d|slots %d|pf %s|ne %s|cap %s|na %s", m->path,
+    snprintf(key, sizeof key, "%s|%llu|%llu|%lld|moe %d|%s|c %d|b %d|slots %d|pf %s|ne %s|cap %s|na %s|nb %s", m->path,
              (unsigned long long)fsize, (unsigned long long)fino, (long long)fmt, p->cpu_moe ? 1 : 0, dev, m->n_ctx,
-             m->n_batch, n_slots, pf ? pf : "", ne ? ne : "", capv ? capv : "", nav ? nav : "");
+             m->n_batch, n_slots, pf ? pf : "", ne ? ne : "", capv ? capv : "", nav ? nav : "", nbv ? nbv : "");
     pthread_mutex_lock(&g_share_mu);
     ink2_share *sh = NULL;
     for (ink2_share *q = g_shares; q; q = q->next)
@@ -355,7 +455,7 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
     }
     r->gpu = sh->gpu;
     if (!made) {   // join the copy: this instance's views, in the file's walk order, as device tensors 0..n-1
-        const int n = gpu_ink2_count(sh->gpu);
+        const int n = sh->n_views;
         r->dev_of = calloc((size_t)n, sizeof *r->dev_of);
         r->n_dev = 0;
         dev_walk a = { r, sh->placed == 'M', 0, n, -1, 0, 0, true };
@@ -369,7 +469,7 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
     }
     // the instance's own device functions, read-only, in place before any of its views is marked: a forward reads
     // them through its own views and cache only, so no other instance's bind writes what it reads
-    static const ink2_dev_ops ops = { dev_lin_scaled, dev_experts, dev_attn };
+    static const ink2_dev_ops ops = { dev_lin_scaled, dev_experts, dev_attn, dev_block };
     r->hdr.ops = &ops;
     if (!dev_mark(r)) {
         pthread_mutex_unlock(&g_share_mu);
@@ -383,7 +483,7 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
     if (sh->attn_dev) {
         int *rows = malloc(sizeof(int) * (size_t)r->s.n_app), *cw = malloc(sizeof(int) * (size_t)r->s.n_app);
         for (int a = 0; rows && cw && a < r->s.n_app; a++) { rows[a] = r->c.rows[a]; cw[a] = app_c(&r->s, a); }
-        r->kv = rows && cw ? gpu_ink2_kv_new(r->gpu, r->s.n_app, rows, cw) : NULL;
+        r->kv = rows && cw ? gpu_ink2_kv_new(r->gpu, r->s.n_app, rows, cw, sh->block_dev ? r->s.conv_k - 1 : 0) : NULL;
         free(rows); free(cw);
         if (!r->kv) {
             fprintf(stderr, "error: inkling2_loop: this instance's K/V rings could not be put on %s after the fit "
@@ -399,6 +499,22 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
         r->n_attn = 0;
         r->attn_on = true;
         r->c.dev = r;   // the engine hands this cache's core to dev_attn with this instance
+        // step 2b: this instance's small tensors marked as the copy's device tensors n_views.., then the whole block
+        // on the device when every layer's block views are on it too (an F16 file's are not: 2a's path)
+        bool all = sh->block_dev;
+        for (int b = 0; all && b < r->s.n_block; b++) {
+            for (int k = 0; all && k < GI2_NF; k++) {
+                const ink2_tensor *t = small_get(r, b, k);
+                all = t && !ink2g_set_dev(r->g, t, r, sh->n_views + b * GI2_NF + k);
+            }
+            for (int k = 0; all && k < GI2_NV; k++) {
+                const ink2_tensor *t = block_view(r, b, k);
+                if ((k == GI2_KD || k == GI2_VD) && !r->s.block_global[b]) continue;
+                all = t && t->dev == r;
+            }
+        }
+        r->block_on = all;
+        r->n_block_calls = 0;
     }
     const char *nf = getenv("RUNNER_INKLING2_CUDA_TEST_NO_FACTOR");
     r->no_factor = nf && !strcmp(nf, "1");
@@ -873,6 +989,10 @@ bool model_inkling2_cuda(const model_t *m) {
 size_t model_inkling2_cuda_fit_free(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
     return r && r->share ? r->share->fit_free : 0;
+}
+long model_inkling2_cuda_block_calls(const model_t *m) {
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    return r && r->block_on ? r->n_block_calls : -1;
 }
 long model_inkling2_cuda_attn_calls(const model_t *m, size_t *kv_bytes) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;

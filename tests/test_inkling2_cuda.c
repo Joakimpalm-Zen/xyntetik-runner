@@ -184,7 +184,7 @@ static double core_case(int hd, int global, int window, int R, const int *chunks
 #undef RND
     gpu_ink2 *h = gpu_ink2_bind();
     const int rows[1] = { R }, cw[1] = { C };
-    gpu_ink2_kv *kv = h ? gpu_ink2_kv_new(h, 1, rows, cw) : NULL;
+    gpu_ink2_kv *kv = h ? gpu_ink2_kv_new(h, 1, rows, cw, 0) : NULL;
     double worst = 0, top = 0;
     bool ran = kv != NULL;
     for (int c = 0, p0 = 0; ran && c < n_chunks; p0 += chunks[c], c++) {
@@ -275,10 +275,16 @@ int main(int argc, char **argv) {
         memset(&obs, 0, sizeof obs);
         obs.want_used = sp ? ((const ink2_shape *)sp)->n_used : -1;
         ink2_set_sel_observer(obs_fn, NULL);
-        const long hc0 = ink2_attn_host_core_calls();
+        const long hc0 = ink2_attn_host_core_calls(), hg0 = ink2_attn_host_glue_calls();
         float *a = rows(g);
-        const long hc1 = ink2_attn_host_core_calls();
+        const long hc1 = ink2_attn_host_core_calls(), hg1 = ink2_attn_host_glue_calls();
         ink2_set_sel_observer(NULL, NULL);
+        {   // G2b 2b (r): each application's whole attention block on the device, no host q/k/v/bank work for it
+            const int n_app_r = sp ? ((const ink2_shape *)sp)->n_app : -1;
+            const long nb = model_inkling2_cuda_block_calls(g);
+            CHECK(on_cuda && a && nb == n_app_r && hg1 - hg0 == 0, "(r) %s: %ld device attention-block calls for one forward "
+                  "of %d applications, the host's block work %ld times (want 0)", kind[f], nb, n_app_r, hg1 - hg0);
+        }
         {   // G2b 2a (m): each application's attention core on the device, the host core not run
             const int n_app_m = sp ? ((const ink2_shape *)sp)->n_app : -1;
             size_t kvb = 0;
@@ -328,6 +334,17 @@ int main(int argc, char **argv) {
             CHECK(on_cuda && qe >= 10 * rd && qe > 0 && qe < 1e30, "(e) %s: control: the factor left out %.2e from the reference, CUDA "
                   "%.2e, want >= 10x", kind[f], qe, rd);
             free(x8); free(x2); free(xq); drop(g8); drop(g2); drop(gq);
+        }
+        {   // G2b 2b (s): -b 1, every chunk after the first a continuation (the K/V convolutions read the device
+            // history at each step, the sliding window of 8 wraps over the 24 positions): byte-identical to -b 64,
+            // within 1e-4 of the reference engine's rows
+            model_t *g1 = load(argv[1 + f], true, false, 1);
+            float *x1 = g1 ? rows(g1) : NULL;
+            const double d1 = x1 && b ? rel_diff(x1, b, n) : 1;
+            CHECK(on_cuda && g1 && model_inkling2_cuda_block_calls(g1) > 0 && x1 && a && !memcmp(a, x1, sizeof(float) * n) &&
+                  d1 <= 1e-4, "(s) %s: at -b 1 (the history read at every step) the device block's rows equal -b 64's byte "
+                  "for byte, %.2e from the reference, want <= 1e-4", kind[f], d1);
+            free(x1); drop(g1);
         }
         free(a); free(b); drop(g); drop(r);
     }
@@ -475,7 +492,12 @@ int main(int argc, char **argv) {
     }
     // (q): LoRA on the CUDA route, against the CPU fast route with the same adapter
     {
-        model_t *gb = load(argv[2], true, false, 64), *gl = load(argv[2], true, false, 64);
+        // an active adapter keeps 2a's path (its terms are host code; G2b 2b), so the base it is held to byte for byte
+        // at scale 0 runs that path too (test-only RUNNER_INKLING2_CUDA_TEST_NO_BLOCK=1): the same path, the same bits
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_BLOCK", "1");
+        model_t *gb = load(argv[2], true, false, 64);
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_BLOCK", "");
+        model_t *gl = load(argv[2], true, false, 64);
         model_t *g0 = load(argv[2], true, false, 64), *cl = load_route(argv[2], false, false, 64, "");
         const bool l1 = gl && model_lora_load(gl, argv[5], 1.0f), l0 = g0 && model_lora_load(g0, argv[5], 0.0f);
         const bool lc = cl && model_lora_load(cl, argv[5], 1.0f);

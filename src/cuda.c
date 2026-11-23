@@ -12907,6 +12907,11 @@ struct gpu_ink2 {
     CUfunction f_attn;
     CUdeviceptr aq, arl, ask, apos, aatt;
     size_t aq_cap, arl_cap, ask_cap, apos_cap, aatt_cap;
+    // G2b step 2b, the block's glue: its kernels and the chunk's inputs, K/V linear and dynamic rows, K, V, the
+    // relative states, the gate rows and the output
+    CUfunction f_sclip, f_kvconv, f_kvnorm, f_bank, f_gate;
+    CUdeviceptr bxq, bxk, bxv, blin, bdyn, bk, bv, brs, bga, bout;
+    size_t bxq_cap, bxk_cap, bxv_cap, blin_cap, bdyn_cap, bk_cap, bv_cap, brs_cap, bga_cap, bout_cap;
     pthread_mutex_t mu;
 };
 
@@ -12933,6 +12938,15 @@ gpu_ink2 *gpu_ink2_bind(void) {
     if (cu.ModuleGetFunction(&h->f_scatter, h->mod, "k_moe_scatter_add") != 0) h->f_scatter = NULL;
     if (cu.ModuleGetFunction(&h->f_swiglu, h->mod, "k_ink2_swiglu") != 0) h->f_swiglu = NULL;
     if (cu.ModuleGetFunction(&h->f_attn, h->mod, "k_ink2_attn") != 0) h->f_attn = NULL;
+    static const struct { size_t off; const char *name; } gl[] = {
+        { offsetof(gpu_ink2, f_sclip), "k_ink2_scaled_clip" }, { offsetof(gpu_ink2, f_kvconv), "k_ink2_kv_conv" },
+        { offsetof(gpu_ink2, f_kvnorm), "k_ink2_kv_norm" }, { offsetof(gpu_ink2, f_bank), "k_ink2_bank" },
+        { offsetof(gpu_ink2, f_gate), "k_ink2_gate" },
+    };
+    for (size_t k = 0; k < sizeof gl / sizeof *gl; k++) {
+        CUfunction *f = (CUfunction *)((char *)h + gl[k].off);
+        if (cu.ModuleGetFunction(f, h->mod, gl[k].name) != 0) *f = NULL;
+    }
     pthread_mutex_init(&h->mu, NULL);
     return h;
 }
@@ -13049,20 +13063,28 @@ bool gpu_ink2_experts(gpu_ink2 *h, int i13, int i2, int type13, int type2, size_
 }
 bool gpu_ink2_experts_ok(const gpu_ink2 *h) { return h && h->f_gather && h->f_scatter && h->f_swiglu; }
 // G2b step 2a (gpu.h): an instance's K/V, one ring per application on the device (row j % rows[a] holds position j)
-struct gpu_ink2_kv { gpu_ink2 *h; int n_app; int *rows, *C; CUdeviceptr *k, *v; size_t bytes; };
-gpu_ink2_kv *gpu_ink2_kv_new(gpu_ink2 *h, int n_app, const int *rows, const int *C) {
-    if (!h || n_app <= 0 || !rows || !C || cu.CtxSetCurrent(h->ctx) != 0) return NULL;
+// G2b step 2b: and the K and V convolutions' histories, a ring of hist_rows (conv_k - 1) rows of C each per
+// application (position u in row u % hist_rows: ink2_cache's layout); 0 hist_rows: none (2a's callers)
+struct gpu_ink2_kv { gpu_ink2 *h; int n_app; int *rows, *C; CUdeviceptr *k, *v, *hk, *hv; int hist_rows; size_t bytes; };
+gpu_ink2_kv *gpu_ink2_kv_new(gpu_ink2 *h, int n_app, const int *rows, const int *C, int hist_rows) {
+    if (!h || n_app <= 0 || !rows || !C || hist_rows < 0 || cu.CtxSetCurrent(h->ctx) != 0) return NULL;
     gpu_ink2_kv *kv = calloc(1, sizeof *kv);
     if (!kv) return NULL;
-    kv->h = h; kv->n_app = n_app;
+    kv->h = h; kv->n_app = n_app; kv->hist_rows = hist_rows;
     kv->rows = malloc(sizeof(int) * (size_t)n_app); kv->C = malloc(sizeof(int) * (size_t)n_app);
     kv->k = calloc((size_t)n_app, sizeof(CUdeviceptr)); kv->v = calloc((size_t)n_app, sizeof(CUdeviceptr));
-    bool ok = kv->rows && kv->C && kv->k && kv->v;
+    kv->hk = calloc((size_t)n_app, sizeof(CUdeviceptr)); kv->hv = calloc((size_t)n_app, sizeof(CUdeviceptr));
+    bool ok = kv->rows && kv->C && kv->k && kv->v && kv->hk && kv->hv;
     for (int a = 0; ok && a < n_app; a++) {
         kv->rows[a] = rows[a]; kv->C[a] = C[a];
         const size_t b = sizeof(float) * (size_t)rows[a] * (size_t)C[a];
         ok = rows[a] > 0 && C[a] > 0 && cu.MemAlloc(&kv->k[a], b) == 0 && cu.MemAlloc(&kv->v[a], b) == 0;
         if (ok) kv->bytes += 2 * b;
+        if (ok && hist_rows > 0) {
+            const size_t hb = sizeof(float) * (size_t)hist_rows * (size_t)C[a];
+            ok = cu.MemAlloc(&kv->hk[a], hb) == 0 && cu.MemAlloc(&kv->hv[a], hb) == 0;
+            if (ok) kv->bytes += 2 * hb;
+        }
     }
     if (!ok) { gpu_ink2_kv_free(kv); return NULL; }
     return kv;
@@ -13074,8 +13096,10 @@ void gpu_ink2_kv_free(gpu_ink2_kv *kv) {
         for (int a = 0; a < kv->n_app; a++) {
             if (kv->k && kv->k[a]) cu.MemFree(kv->k[a]);
             if (kv->v && kv->v[a]) cu.MemFree(kv->v[a]);
+            if (kv->hk && kv->hk[a]) cu.MemFree(kv->hk[a]);
+            if (kv->hv && kv->hv[a]) cu.MemFree(kv->hv[a]);
         }
-    free(kv->rows); free(kv->C); free(kv->k); free(kv->v); free(kv);
+    free(kv->rows); free(kv->C); free(kv->k); free(kv->v); free(kv->hk); free(kv->hv); free(kv);
 }
 bool gpu_ink2_attn_ok(const gpu_ink2 *h) { return h && h->f_attn; }
 bool gpu_ink2_reserve_attn(gpu_ink2 *h, int T, int Q, int nh, int ext) {
@@ -13090,6 +13114,14 @@ bool gpu_ink2_reserve_attn(gpu_ink2 *h, int T, int Q, int nh, int ext) {
 }
 // the kernel's argument block (src/kernels.cu k_ink2_attn): the same fields in the same order
 typedef struct { int nh, nkv, hd, C, Q, R, window, global, ext; float scale; } ink2_attn_args_host;
+// the core over application app's ring, its queries, bank, sinks and positions in h->aq, arl, ask, apos (T of them),
+// into h->aatt (under h->mu, the context current)
+static bool ink2_core_launch(gpu_ink2 *h, gpu_ink2_kv *kv, int app, int T, int nh, int nkv, int hd, int window,
+                             int global, int ext, float scale) {
+    ink2_attn_args_host a = { nh, nkv, hd, kv->C[app], nh * hd, kv->rows[app], window, global, ext, scale };
+    void *p[] = { &h->aq, &kv->k[app], &kv->v[app], &h->arl, &h->ask, &h->apos, &h->aatt, &a };
+    return cu.LaunchKernel(h->f_attn, (unsigned)T, (unsigned)nh, 1, 32, 1, 1, 0, NULL, p, NULL) == 0;
+}
 bool gpu_ink2_attn(gpu_ink2 *h, gpu_ink2_kv *kv, int app, int T, const int *pos, const float *q, const float *k,
                    const float *v, const float *rl, const float *sk, float *att, int nh, int nkv, int hd, int window,
                    int global, int ext, float scale) {
@@ -13115,9 +13147,7 @@ bool gpu_ink2_attn(gpu_ink2 *h, gpu_ink2_kv *kv, int app, int T, const int *pos,
     if (ok && n1 < T)
         ok = cu.MemcpyHtoD(kv->k[app], k + (size_t)n1 * C, row * (size_t)(T - n1)) == 0 &&
              cu.MemcpyHtoD(kv->v[app], v + (size_t)n1 * C, row * (size_t)(T - n1)) == 0;
-    ink2_attn_args_host a = { nh, nkv, hd, C, Q, R, window, global, ext, scale };
-    void *p[] = { &h->aq, &kv->k[app], &kv->v[app], &h->arl, &h->ask, &h->apos, &h->aatt, &a };
-    ok = ok && cu.LaunchKernel(h->f_attn, (unsigned)T, (unsigned)nh, 1, 32, 1, 1, 0, NULL, p, NULL) == 0;
+    ok = ok && ink2_core_launch(h, kv, app, T, nh, nkv, hd, window, global, ext, scale);
     ok = ok && cu.MemcpyDtoH(att, h->aatt, fb * (size_t)T * Q) == 0;   // the null stream: after the launch
     pthread_mutex_unlock(&h->mu);
     return ok;
@@ -13129,6 +13159,103 @@ void gpu_ink2_release_experts(gpu_ink2 *h) {
     size_t *c[] = { &h->ex_cap, &h->eo_cap, &h->exe_cap, &h->eact_cap, &h->edn_cap, &h->eidx_cap, &h->ew_cap };
     for (size_t k = 0; k < sizeof b / sizeof *b; k++) { if (*b[k]) cu.MemFree(*b[k]); *b[k] = 0; *c[k] = 0; }
     pthread_mutex_unlock(&h->mu);
+}
+bool gpu_ink2_block_ok(const gpu_ink2 *h) {
+    return h && h->f_attn && h->f_sclip && h->f_kvconv && h->f_kvnorm && h->f_bank && h->f_gate;
+}
+// one view's product over T device columns x (n_in each) into y (n_out each); false for a view the handle lacks
+static bool ink2_block_mv(gpu_ink2 *h, const gpu_ink2_block *b, int role, int n_in, int n_out, int T, CUdeviceptr x,
+                          CUdeviceptr y) {
+    const int i = b->vi[role], type = b->vtype[role];
+    if (i < 0 || i >= h->n || type < 0 || type >= KT_N || !h->mv[type]) return false;
+    return ink2_mv_cols(h, type, h->t[i].rows, 0, n_in, n_out, T, x, y, 1.0f);
+}
+static bool ink2_launch1(CUfunction f, unsigned gx, unsigned gy, void **p) {
+    return cu.LaunchKernel(f, gx, gy, 1, 128, 1, 1, 0, NULL, p, NULL) == 0;
+}
+bool gpu_ink2_attn_block(gpu_ink2 *h, gpu_ink2_kv *kv, int app, const gpu_ink2_block *b, int T, const int *pos,
+                         const float *xq, const float *xk, const float *xv, float *out) {
+    if (!h || !kv || kv->h != h || !b || !gpu_ink2_block_ok(h) || app < 0 || app >= kv->n_app || T <= 0 || !pos ||
+        !xq || !xk || !xv || !out || kv->hist_rows != b->K - 1 || b->K < 2 || b->nh <= 0 || b->nkv <= 0 ||
+        b->nh % b->nkv || b->hd <= 0 || b->hd > 256 || kv->C[app] != b->nkv * b->hd || T > kv->rows[app])
+        return false;
+    for (int t = 0; t < T; t++) if (pos[t] != pos[0] + t || pos[t] < 0) return false;
+    for (int k = 0; k < GI2_NF; k++) if (b->fi[k] < 0 || b->fi[k] >= h->n) return false;
+    const int H = b->H, nh = b->nh, nkv = b->nkv, hd = b->hd, K = b->K, C = nkv * hd, Q = nh * hd, dr = b->dr,
+              ext = b->ext, p0 = pos[0], R = nkv * K;
+    const size_t fb = sizeof(float), TH = fb * (size_t)T * H;
+    pthread_mutex_lock(&h->mu);
+    bool ok = cu.CtxSetCurrent(h->ctx) == 0 &&
+              ink2_grow(&h->bxq, &h->bxq_cap, TH) && ink2_grow(&h->bxk, &h->bxk_cap, TH) && ink2_grow(&h->bxv, &h->bxv_cap, TH) &&
+              ink2_grow(&h->blin, &h->blin_cap, fb * (size_t)T * C) && ink2_grow(&h->bdyn, &h->bdyn_cap, fb * (size_t)T * R) &&
+              ink2_grow(&h->bk, &h->bk_cap, fb * (size_t)T * C) && ink2_grow(&h->bv, &h->bv_cap, fb * (size_t)T * C) &&
+              ink2_grow(&h->brs, &h->brs_cap, fb * (size_t)T * nh * dr) && ink2_grow(&h->bga, &h->bga_cap, fb * (size_t)T * Q) &&
+              ink2_grow(&h->bout, &h->bout_cap, TH) && ink2_grow(&h->aq, &h->aq_cap, fb * (size_t)T * Q) &&
+              ink2_grow(&h->aatt, &h->aatt_cap, fb * (size_t)T * Q) && ink2_grow(&h->arl, &h->arl_cap, fb * (size_t)T * nh * ext) &&
+              ink2_grow(&h->ask, &h->ask_cap, fb * (size_t)T * nh) && ink2_grow(&h->apos, &h->apos_cap, sizeof(int) * (size_t)T);
+    // the inputs: one upload for a sliding layer's shared input
+    CUdeviceptr dxq = h->bxq, dxk = xk == xq ? h->bxq : h->bxk, dxv = xv == xq ? h->bxq : xv == xk ? dxk : h->bxv;
+    ok = ok && cu.MemcpyHtoD(h->bxq, xq, TH) == 0 && (dxk == h->bxq || cu.MemcpyHtoD(h->bxk, xk, TH) == 0) &&
+         (dxv != h->bxv || cu.MemcpyHtoD(h->bxv, xv, TH) == 0) && cu.MemcpyHtoD(h->apos, pos, sizeof(int) * (size_t)T) == 0;
+    int full = b->global ? 1 : 0;
+    float alpha = b->log_alpha, floor_ = b->log_floor, thr = b->qk_clip, rthr = b->rel_clip, eps = b->eps;
+    // Q: the product, then per head the scale, the clip, tau
+    ok = ok && ink2_block_mv(h, b, GI2_Q, H, Q, T, dxq, h->aq);
+    {
+        int n = nh, d = hd, rs = Q;
+        void *p[] = { &h->aq, &h->t[b->fi[GI2_QS]].rows, &n, &d, &rs, &thr, &full, &alpha, &floor_, &h->apos };
+        ok = ok && ink2_launch1(h->f_sclip, ((unsigned)nh + 127) / 128, (unsigned)T, p);
+    }
+    // K and V: linear, (full) the dynamic taps, the convolution over the history, the norm, the history stored
+    const float div = (float)sqrt((double)(full ? 2 * K + 1 : K + 1));
+    for (int kvi = 0; ok && kvi < 2; kvi++) {
+        CUdeviceptr x = kvi ? dxv : dxk, z = kvi ? h->bv : h->bk, hist = kvi ? kv->hv[app] : kv->hk[app];
+        CUdeviceptr taps = h->t[b->fi[kvi ? GI2_VC : GI2_KC]].rows;
+        ok = ink2_block_mv(h, b, kvi ? GI2_V : GI2_K, H, C, T, x, h->blin);
+        if (ok && full) ok = ink2_block_mv(h, b, kvi ? GI2_VD : GI2_KD, H, R, T, x, h->bdyn);
+        int c = C, k = K, hdd = hd, nk = nkv, pp = p0, fu = full;
+        float dv = div;
+        void *pc[] = { &h->blin, &hist, &h->bdyn, &taps, &z, &c, &k, &hdd, &nk, &pp, &fu, &dv };
+        ok = ok && ink2_launch1(h->f_kvconv, ((unsigned)C + 127) / 128, (unsigned)T, pc);
+        int kind = kvi;
+        void *pn[] = { &z, &nk, &hdd, &c, &thr, &eps, &kind };
+        ok = ok && ink2_launch1(h->f_kvnorm, ((unsigned)nkv + 127) / 128, (unsigned)T, pn);
+        // ink2_conv_hist_store: the chunk's last K - 1 linear rows into the ring (after the conv read it)
+        for (int u = T - (K - 1) < 0 ? 0 : T - (K - 1); ok && u < T; u++)
+            ok = cu.MemcpyDtoD(hist + fb * (size_t)C * (size_t)((p0 + u) % (K - 1)), h->blin + fb * (size_t)C * (size_t)u,
+                               fb * (size_t)C) == 0;
+    }
+    // the bank: the relative states' product, their scaled clip, rl = rs . proj
+    ok = ok && ink2_block_mv(h, b, GI2_R, H, nh * dr, T, dxq, h->brs);
+    {
+        int n = nh, d = dr, rs = nh * dr;
+        void *p[] = { &h->brs, &h->t[b->fi[GI2_RS]].rows, &n, &d, &rs, &rthr, &full, &alpha, &floor_, &h->apos };
+        ok = ok && ink2_launch1(h->f_sclip, ((unsigned)nh + 127) / 128, (unsigned)T, p);
+        int e = ext;
+        void *pb[] = { &h->brs, &h->t[b->fi[GI2_RP]].rows, &h->arl, &n, &d, &e };
+        ok = ok && ink2_launch1(h->f_bank, ((unsigned)(nh * ext) + 127) / 128, (unsigned)T, pb);
+    }
+    // the sinks, the ring, the core
+    ok = ok && ink2_block_mv(h, b, GI2_S, H, nh, T, dxq, h->ask);
+    const int Rr = kv->rows[app], s0 = p0 % Rr, n1 = T < Rr - s0 ? T : Rr - s0;
+    const size_t row = fb * (size_t)C;
+    ok = ok && cu.MemcpyDtoD(kv->k[app] + row * (size_t)s0, h->bk, row * (size_t)n1) == 0 &&
+         cu.MemcpyDtoD(kv->v[app] + row * (size_t)s0, h->bv, row * (size_t)n1) == 0;
+    if (ok && n1 < T)
+        ok = cu.MemcpyDtoD(kv->k[app], h->bk + row * (size_t)n1, row * (size_t)(T - n1)) == 0 &&
+             cu.MemcpyDtoD(kv->v[app], h->bv + row * (size_t)n1, row * (size_t)(T - n1)) == 0;
+    ok = ok && ink2_core_launch(h, kv, app, T, nh, nkv, hd, b->window, full, ext, b->scale);
+    // o_proj: att times sigmoid(gate_proj(xq)), then the product
+    ok = ok && ink2_block_mv(h, b, GI2_G, H, Q, T, dxq, h->bga);
+    {
+        int n = T * Q;
+        void *p[] = { &h->aatt, &h->bga, &n };
+        ok = ok && ink2_launch1(h->f_gate, ((unsigned)n + 127) / 128, 1, p);
+    }
+    ok = ok && ink2_block_mv(h, b, GI2_O, Q, H, T, h->aatt, h->bout);
+    ok = ok && cu.MemcpyDtoH(out, h->bout, TH) == 0;   // the null stream: after every launch above
+    pthread_mutex_unlock(&h->mu);
+    return ok;
 }
 bool gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F, int E) {
     if (!h || T <= 0 || H <= 0 || F <= 0 || E <= 0 || cu.CtxSetCurrent(h->ctx) != 0) return false;
@@ -13189,7 +13316,8 @@ void gpu_ink2_free(gpu_ink2 *h) {
         if (h->dx) cu.MemFree(h->dx);
         if (h->dy) cu.MemFree(h->dy);
         const CUdeviceptr eb[] = { h->ex, h->eo, h->exe, h->eact, h->edn, h->eidx, h->ew,
-                                   h->aq, h->arl, h->ask, h->apos, h->aatt };
+                                   h->aq, h->arl, h->ask, h->apos, h->aatt, h->bxq, h->bxk, h->bxv, h->blin,
+                                   h->bdyn, h->bk, h->bv, h->brs, h->bga, h->bout };
         for (size_t k = 0; k < sizeof eb / sizeof *eb; k++)
             if (eb[k]) cu.MemFree(eb[k]);
         if (h->mod) cu.ModuleUnload(h->mod);

@@ -772,7 +772,7 @@ void       gpu_ink2_release_experts(gpu_ink2 *h);   // those buffers freed (a fi
 // (sk [T][nh]) of (q . k) * scale + rl[t][h][d] (d < ext), att [T][nh hd] = sum p v. q [T][nh hd], rl [T][nh][ext].
 // Head h reads K/V head h / (nh / nkv). False: a device failure or arguments it does not take.
 typedef struct gpu_ink2_kv gpu_ink2_kv;
-gpu_ink2_kv *gpu_ink2_kv_new(gpu_ink2 *h, int n_app, const int *rows, const int *C);
+gpu_ink2_kv *gpu_ink2_kv_new(gpu_ink2 *h, int n_app, const int *rows, const int *C, int hist_rows);
 size_t     gpu_ink2_kv_bytes(const gpu_ink2_kv *kv);
 void       gpu_ink2_kv_free(gpu_ink2_kv *kv);
 bool       gpu_ink2_attn_ok(const gpu_ink2 *h);
@@ -780,6 +780,25 @@ bool       gpu_ink2_reserve_attn(gpu_ink2 *h, int T, int Q, int nh, int ext);
 bool       gpu_ink2_attn(gpu_ink2 *h, gpu_ink2_kv *kv, int app, int T, const int *pos, const float *q, const float *k,
                          const float *v, const float *rl, const float *sk, float *att, int nh, int nkv, int hd,
                          int window, int global, int ext, float scale);
+// G2b step 2b: one application's whole attention block on the device, as src/inkling2.c's ink2_attention_lora runs
+// it: Q = q_proj(xq) with its scaled clip (tau on a full layer); K, V = linear, convolution over the history ring
+// (read only when pos[0] > 0; the chunk's last hist_rows linear rows stored after), norm; the bank; the sinks; the
+// core over the ring (2a); out [T][H] = o_proj(att * sigmoid(gate_proj(xq))). xq, xk, xv [T][H] (a sliding layer
+// passes the same input three times: uploaded once). The views by role (gpu_ink2_put indices, types, row bytes:
+// q, k, v, the full layers' dynamic taps kd and vd (-1 on a sliding one), the bank's linear r, the sinks s, the gate
+// g, the output o) and the small F32 tensors (q scale qs, k and v taps kc and vc, the bank's scale rs and proj rp).
+enum { GI2_Q, GI2_K, GI2_V, GI2_KD, GI2_VD, GI2_R, GI2_S, GI2_G, GI2_O, GI2_NV };
+enum { GI2_QS, GI2_KC, GI2_VC, GI2_RS, GI2_RP, GI2_NF };
+typedef struct {
+    int H, nh, nkv, hd, K, dr, ext, window, global;
+    float scale, qk_clip, rel_clip, eps, log_alpha, log_floor;
+    int vi[GI2_NV], vtype[GI2_NV];
+    size_t vrb[GI2_NV];
+    int fi[GI2_NF];
+} gpu_ink2_block;
+bool       gpu_ink2_block_ok(const gpu_ink2 *h);
+bool       gpu_ink2_attn_block(gpu_ink2 *h, gpu_ink2_kv *kv, int app, const gpu_ink2_block *b, int T, const int *pos,
+                               const float *xq, const float *xk, const float *xv, float *out);
 void       gpu_ink2_free(gpu_ink2 *h);
 
 #endif // RUNNER_GPU_H

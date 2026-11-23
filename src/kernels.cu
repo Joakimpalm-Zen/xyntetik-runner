@@ -5636,6 +5636,86 @@ extern "C" __global__ void k_ink2_attn(const float *q, const float *kr, const fl
     for (int k = 0, e = lane; e < a.hd; k++, e += 32) ai[e] = acc[k] / total;
 }
 
+// R4.48.9 G2b step 2b: the attention block's glue, each kernel 1:1 with src/inkling2.c's host code, its small sums
+// serial and ascending with separate multiplies and adds (__fmul_rn / __fadd_rn: the host builds that file with
+// -ffp-contract=off), so given the same inputs they give the host's bits; CUDA's sqrtf and division are IEEE-rounded
+// (no fast math). Only tau's logf and the gate's expf differ from the host's p_logf / p_expf, to rounding.
+// ink2_scaled_clip on [T][n][d] rows (stride rs): times scale[n][d], the L2 clip at thr, on a full layer times
+// tau(pos) = 1 + alpha log(max((pos + 1) / floor, 1)). One thread per (position = blockIdx.y, head).
+extern "C" __global__ void k_ink2_scaled_clip(float *y, const float *scale, int n, int d, int rs, float thr,
+                                              int full, float alpha, float floor_, const int *pos) {
+    const int h = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;
+    if (h >= n) return;
+    float *yh = y + (ulong64)t * rs + (ulong64)h * d;
+    const float *sc = scale + (ulong64)h * d;
+    float ss = 0.0f;
+    for (int i = 0; i < d; i++) { yh[i] = __fmul_rn(yh[i], sc[i]); ss = __fadd_rn(ss, __fmul_rn(yh[i], yh[i])); }
+    float f = __fmul_rn(__fdiv_rn(1.0f, __fadd_rn(sqrtf(ss), 1e-6f)), thr);
+    if (f > 1.0f) f = 1.0f;
+    float tau = 1.0f;
+    if (full) {
+        float a = __fdiv_rn((float)(pos[t] + 1), floor_);
+        if (a < 1.0f) a = 1.0f;
+        tau = __fadd_rn(1.0f, __fmul_rn(alpha, logf(a)));
+    }
+    for (int i = 0; i < d; i++) { yh[i] = __fmul_rn(yh[i], f); if (full) yh[i] = __fmul_rn(yh[i], tau); }
+}
+// ink2_kv_conv over T positions from p0 (lin [T][C], out [T][C]): sliding taps w[c][j] (conv1d [C][K]) or full
+// dynamic taps static[lag][c] + dyn[t][c / hd][lag] (dyn [T][nkv K]); the inputs before the chunk from the history
+// ring hist (row u % (K-1)) only when p0 > 0; (conv + lin) / div. One thread per (position = blockIdx.y, channel).
+extern "C" __global__ void k_ink2_kv_conv(const float *lin, const float *hist, const float *dyn, const float *w,
+                                          float *out, int C, int K, int hd, int nkv, int p0, int full, float div) {
+    const int ch = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;
+    if (ch >= C) return;
+    const int R = nkv * K;
+    float a = 0.0f;
+    if (!full) {
+        for (int j = 0; j < K; j++) {
+            const int u = t - (K - 1) + j;
+            if (p0 + u < 0) continue;
+            const float in = u >= 0 ? lin[(ulong64)u * C + ch] : hist[(ulong64)((p0 + u) % (K - 1)) * C + ch];
+            a = __fadd_rn(a, __fmul_rn(w[(ulong64)ch * K + j], in));
+        }
+    } else {
+        for (int l = 0; l < K && p0 + t - l >= 0; l++) {
+            const int u = t - l;
+            const float in = u >= 0 ? lin[(ulong64)u * C + ch] : hist[(ulong64)((p0 + u) % (K - 1)) * C + ch];
+            const float tap = __fadd_rn(w[(ulong64)l * C + ch], dyn[(ulong64)t * R + (ulong64)(ch / hd) * K + l]);
+            a = __fadd_rn(a, __fmul_rn(in, tap));
+        }
+    }
+    out[(ulong64)t * C + ch] = __fdiv_rn(__fadd_rn(a, lin[(ulong64)t * C + ch]), div);
+}
+// ink2_kv_norm per (position = blockIdx.y, K/V head): kind 0 the L2 clip at thr (k_proj), kind 1 the unweighted RMS
+// norm x / sqrt(mean(x^2) + eps) (v_proj)
+extern "C" __global__ void k_ink2_kv_norm(float *z, int nkv, int hd, int C, float thr, float eps, int kind) {
+    const int h = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;
+    if (h >= nkv) return;
+    float *zh = z + (ulong64)t * C + (ulong64)h * hd;
+    float ss = 0.0f;
+    for (int i = 0; i < hd; i++) ss = __fadd_rn(ss, __fmul_rn(zh[i], zh[i]));
+    float f;
+    if (kind) f = __fdiv_rn(1.0f, sqrtf(__fadd_rn(__fdiv_rn(ss, (float)hd), eps)));
+    else { f = __fmul_rn(__fdiv_rn(1.0f, __fadd_rn(sqrtf(ss), 1e-6f)), thr); if (f > 1.0f) f = 1.0f; }
+    for (int i = 0; i < hd; i++) zh[i] = __fmul_rn(zh[i], f);
+}
+// the relative bank: rl[t][h][e] = sum_r rs[t][h][r] proj[r][e], r ascending. One thread per (t = blockIdx.y, h e).
+extern "C" __global__ void k_ink2_bank(const float *rs, const float *proj, float *rl, int nh, int dr, int ext) {
+    const int he = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;
+    if (he >= nh * ext) return;
+    const int h = he / ext, e = he % ext;
+    const float *rt = rs + ((ulong64)t * nh + h) * dr;
+    float a = 0.0f;
+    for (int r = 0; r < dr; r++) a = __fadd_rn(a, __fmul_rn(rt[r], proj[(ulong64)r * ext + e]));
+    rl[((ulong64)t * nh + h) * ext + e] = a;
+}
+// o_proj's gate: att *= sigmoid(ga), sigmoid = 1 / (1 + exp(-ga)), over n values
+extern "C" __global__ void k_ink2_gate(float *att, const float *ga, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    att[i] = __fmul_rn(att[i], __fdiv_rn(1.0f, __fadd_rn(1.0f, expf(-ga[i]))));
+}
+
 // Gated activation over per-column gate/up at arbitrary column strides,
 // with NO weight fold (the grouped path applies selw in the scatter, like
 // the CPU grouping). Same per-element arithmetic as k_silu_mul/k_gelu_mul.

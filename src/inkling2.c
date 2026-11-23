@@ -634,6 +634,8 @@ static void ink2_swiglu_range(void *c, int64_t b0, int64_t b1) {
 static inline const ink2_dev_ops *ink2_ops_of(const void *dev) {
     return dev ? ((const ink2_dev_hdr *)dev)->ops : NULL;
 }
+static long ink2_host_glue_n;   // TEST-ONLY: host q/k/v/bank work for an attention block (ink2_attn_host_glue_calls)
+long ink2_attn_host_glue_calls(void) { return __atomic_load_n(&ink2_host_glue_n, __ATOMIC_RELAXED); }
 static long ink2_host_core_n;   // TEST-ONLY: ink2_attn_core runs (ink2_attn_host_core_calls)
 long ink2_attn_host_core_calls(void) { return __atomic_load_n(&ink2_host_core_n, __ATOMIC_RELAXED); }
 static ink2_sel_obs_fn ink2_sel_obs;
@@ -1450,6 +1452,22 @@ static ink2_status ink2_attention_lora(const ink2_shape *s, const ink2_weights *
     if (c->max_chunk && !L.g && c->test_drop_key && kp0 > 0) kp0++;   // the control: one admitted key lost
     int nk = p0 + T - kp0;
     if (p0 + T - kp0 > c->rows[app]) return INK2_BAD_INPUT;   // the ring holds rows[app] (the device's too)
+    // R4.48.9 G2b step 2b: the whole block on the device when the instance takes it
+    const ink2_dev_ops *bo = ink2_ops_of(c->dev);
+    if (bo && bo->block && !probs) {
+        ink2_block_call bc = { app, T, pos, xq, xk, xv, out, lora != NULL, s->hidden, L.nh, L.nkv, L.hd, L.K, L.dr,
+                               L.ext, s->window, L.g ? 1 : 0, ink2_inv_sqrt(L.hd), s->qk_clip, s->rel_clip, s->eps,
+                               s->log_alpha, (float)s->log_floor,
+                               { L.tt[WQ], L.tt[WK], L.tt[WV], L.tt[WKD], L.tt[WVD], L.tt[WR], L.tt[WS], L.tt[WG], L.tt[WO] },
+                               { L.tt[WQS], L.tt[WKC], L.tt[WVC], L.tt[WRS], L.tt[WRP] } };
+        const int rc = bo->block(c->dev, &bc);
+        if (rc <= 0) {
+            if (rc < 0) for (size_t i = 0; i < (size_t)T * s->hidden; i++) out[i] = NAN;
+            c->n_past[app] = p0 + T;
+            return rc == -2 ? INK2_BAD_INPUT : INK2_OK;
+        }
+    }
+    __atomic_add_fetch(&ink2_host_glue_n, 1, __ATOMIC_RELAXED);
     int buf_owned = 0;
     int lg_rows = 0;
     float *p[NSCR], *buf = ink2_attn_scratch_c(c, &L, T, nk, p, &buf_owned, &lg_rows);

@@ -111,7 +111,25 @@ typedef struct { int nh, nkv, hd, C, Q, window, global, ext; float scale; } ink2
 typedef int (*ink2_dev_attn_fn)(void *dev, int app, const ink2_attn_dims *d, int T, const int *pos,
                                 const float *q, const float *k, const float *v, const float *rl, const float *sk,
                                 float *att);
-typedef struct ink2_dev_ops { ink2_dev_lin_fn lin; ink2_dev_experts_fn experts; ink2_dev_attn_fn attn; } ink2_dev_ops;
+// R4.48.9 G2b step 2b: the whole attention block on the device. For a cache whose dev is set, before any host work,
+// the engine offers ops->block one application's block: its inputs xq, xk, xv [T][H] (a sliding layer's are the same
+// pointer), its sizes and factors, its views by role (q, k, v, the full layer's dynamic taps kd and vd or NULL, the
+// bank's linear r, the sinks s, the gate g, the output o) and its small F32 tensors (q scale, k and v taps, the
+// bank's scale and proj), and whether a LoRA adapter is active. It returns 0 (done: out [T][H] written, the device
+// rings and histories hold the chunk), 1 (the engine runs its own path: 2a's), below 0 (a device failure: out is NaN;
+// -2: refused with a sentence, the forward refuses).
+typedef struct {
+    int app, T; const int *pos; const float *xq, *xk, *xv; float *out; int lora;
+    int H, nh, nkv, hd, K, dr, ext, window, global;
+    float scale, qk_clip, rel_clip, eps, log_alpha, log_floor;
+    const ink2_tensor *v[9];    // q, k, v, kd, vd, r, s, g, o
+    const ink2_tensor *f[5];    // q scale, k taps, v taps, bank scale, bank proj
+} ink2_block_call;
+typedef int (*ink2_dev_block_fn)(void *dev, const ink2_block_call *b);
+// TEST-ONLY: how many times the host ran an attention block's q/k/v/bank work in this process (step 2b's check)
+long ink2_attn_host_glue_calls(void);
+typedef struct ink2_dev_ops { ink2_dev_lin_fn lin; ink2_dev_experts_fn experts; ink2_dev_attn_fn attn;
+                              ink2_dev_block_fn block; } ink2_dev_ops;
 typedef struct { const ink2_dev_ops *ops; } ink2_dev_hdr;   // the first member of every binder's instance
 // TEST-ONLY: how many times the host attention core ran in this process (G2b step 2a's check that it did not)
 long ink2_attn_host_core_calls(void);
@@ -162,7 +180,7 @@ typedef struct {
     float *work_route;       // the MoE layer's routing tables over T positions (R4.48.20.4); as work_op
     size_t work_route_cap;
     void *dev;               // R4.48.9 G2b step 2a: the device binder's instance whose rings hold this cache's K/V
-                             // (ink2_set_dev_attn's fn gets it), or NULL: the host rings above
+                             // (its ink2_dev_hdr's ops get it), or NULL: the host rings above
 } ink2_cache;
 int  ink2_cache_init(ink2_cache *c, const ink2_shape *s, int n_ctx);
 // The same with each SLIDING application's K and V held for the window only: window - 1 + max_chunk rows that slide
