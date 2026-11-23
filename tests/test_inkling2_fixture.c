@@ -1,4 +1,4 @@
-// R4.48: the Inkling2Loop fixture harness. Loads the tiny reference fixture (the lab's record store, R4.48 step 1a: config.json,
+// R4.48: the Inkling2Loop fixture harness. Loads the tiny reference fixture (the record store, R4.48 step 1a: config.json,
 // fixture-weights.safetensors, dumps-<seq>.safetensors, inputs-<seq>.safetensors, from transformers pull request
 // 51050 at 6173a2f6) and checks:
 //   1. the structure: the schedule derived from the config (ink2_shape_derive) against the reference's own call order

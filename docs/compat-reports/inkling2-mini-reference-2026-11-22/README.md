@@ -2,8 +2,8 @@
 
 **Text path only.** This page is the evidence for two `inkling2_loop` files: unsloth's Mainline_Support
 `Inkling-2-Mini-UD-Q8_K_XL` (the publisher's NVFP4 and MXFP8 weights, bit for bit, in llama.cpp's layout) and
-`Inkling-2-Mini-UD-Q4_K_XL` (the same NVFP4 experts, Q8_0 elsewhere). Measured on the Linux x86_64 CPU route of the
-lab's CUDA host, which is borrowed hardware (docs/device-evidence.json, `linux-x86_64-cuda`).
+`Inkling-2-Mini-UD-Q4_K_XL` (the same NVFP4 experts, Q8_0 elsewhere). Measured on the CPU route of a Linux x86_64 host
+with CUDA, which is borrowed hardware (docs/device-evidence.json, `linux-x86_64-cuda`).
 
 **Limits first.**
 

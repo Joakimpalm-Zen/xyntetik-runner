@@ -5219,7 +5219,7 @@ fuzz-replay-%: tests/fuzz/fuzz_%.c tests/fuzz/replay.c tests/fuzz/fuzz_files.h $
 
 
 # R4.48: the Inkling2Loop fixture harness (tests/test_inkling2_fixture.c). It checks the structure and every piece of
-# src/inkling2.c against the reference fixture from the lab's record store (weights, dumps, inputs, the float64 truth,
+# src/inkling2.c against the reference fixture from the record store (weights, dumps, inputs, the float64 truth,
 # the engagement table), given as INKLING2_FIXTURE=<dir>; without it the target says so and does nothing. Built strict
 # (-fno-fast-math -ffp-contract=off): inkling2.c's claim is a serial, uncontracted order. Not part of `make test` until
 # the fixture ships with the repository.
