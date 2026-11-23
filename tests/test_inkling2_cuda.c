@@ -6,6 +6,7 @@
 //   - rows: the CUDA rows within 1e-4 of the reference route's rows, relative to the largest reference logit (the
 //     fast CPU route's T1 bound), and NOT byte-identical to them (a different order of sums);
 //   - invariance: byte-identical at -b 64 and -b 8, and across two loads (one fixed order per op);
+//   - finite: a value that is not finite (counted by its bits) fails (c), (d) and (e), whatever the distance says;
 //   - control: the expert factor left out on the device (RUNNER_INKLING2_CUDA_TEST_NO_FACTOR=1, test-only) is at least
 //     10 times further from the reference than the CUDA route.
 //
@@ -76,7 +77,10 @@ static float *rows(model_t *m) {
     return r;
 }
 static void drop(model_t *m) { if (m) { model_free(m); free(m); } }
+// a value that is not finite on either side scores as a failure (1e30), whatever the compiler makes of a NaN compare
+// (an IEEE compare with NaN is false, so a plain maximum would skip it; the second read's P1)
 static double rel_diff(const float *a, const float *ref, size_t n) {
+    if (n_nonfinite(a, n) || n_nonfinite(ref, n)) return 1e30;
     double d = 0, top = 0;
     for (size_t i = 0; i < n; i++) {
         if (fabs((double)a[i] - ref[i]) > d) d = fabs((double)a[i] - ref[i]);
@@ -87,6 +91,18 @@ static double rel_diff(const float *a, const float *ref, size_t n) {
 
 int main(int argc, char **argv) {
     if (argc < 4) { fprintf(stderr, "usage: %s TINY_F32.gguf TINY_BF16.gguf TINY_Q8_0.gguf\n", argv[0]); return 2; }
+    // the checker's own check (the second read's P1): a row of NaN must score as a failure, never 0
+    {
+        float nanrow[4], ref4[4] = { 1, -2, 3, -4 };
+        uint32_t qnan = 0x7fc00000u;
+        for (int i = 0; i < 4; i++) memcpy(nanrow + i, &qnan, sizeof qnan);
+        const double dn = rel_diff(nanrow, ref4, 4);
+        CHECK(!(dn <= 1e-4), "(0) the row checker scores a NaN row %.2e, not within 1e-4", dn);
+        float one[4] = { 1, -2, 3, -4 };   // one NaN among values equal to the reference
+        memcpy(one + 1, &qnan, sizeof qnan);
+        const double d1 = rel_diff(one, ref4, 4);
+        CHECK(!(d1 <= 1e-4), "(0) the row checker scores a row with one NaN %.2e, not within 1e-4", d1);
+    }
     char dev[160] = "";
     if (!gpu_available(dev, sizeof dev)) { printf("SKIP: no CUDA device on this host (not a pass)\n"); return 77; }
     size_t fr = 0, tot = 0;
@@ -110,17 +126,19 @@ int main(int argc, char **argv) {
         const size_t n = (size_t)N_TOK * (size_t)g->n_vocab;
         float *a = rows(g), *b = rows(r);
         const double rd = a && b ? rel_diff(a, b, n) : 1;
-        CHECK(on_cuda && a && b && rd <= 1e-4, "(c) %s: CUDA rows within %.2e of the reference rows, want <= 1e-4", kind[f], rd);
+        const size_t nf = a ? n_nonfinite(a, n) : 0;
+        CHECK(on_cuda && a && b && nf == 0 && rd <= 1e-4, "(c) %s: CUDA rows within %.2e of the reference rows, want <= 1e-4; %zu "
+              "values not finite, want 0", kind[f], rd, nf);
         CHECK(on_cuda && a && b && memcmp(a, b, sizeof(float) * n), "(c) %s: the CUDA rows are not the reference rows byte for byte",
               kind[f]);
         if (f == 1) {   // (d) and (e) on the BF16 file (the exact file's dense type)
             model_t *g8 = load(argv[2], true, false, 8), *g2 = load(argv[2], true, false, 64);
             model_t *gq = load(argv[2], true, true, 64);
             float *x8 = g8 ? rows(g8) : NULL, *x2 = g2 ? rows(g2) : NULL, *xq = gq ? rows(gq) : NULL;
-            CHECK(on_cuda && a && x8 && !memcmp(a, x8, sizeof(float) * n), "(d) the CUDA rows are byte-identical at -b 64 and -b 8");
-            CHECK(on_cuda && a && x2 && !memcmp(a, x2, sizeof(float) * n), "(d) the CUDA rows are byte-identical across two loads");
-            const double qe = xq && b ? rel_diff(xq, b, n) : 0;
-            CHECK(on_cuda && qe >= 10 * rd && qe > 0, "(e) control: the factor left out %.2e from the reference, CUDA %.2e, want >= 10x",
+            CHECK(on_cuda && a && nf == 0 && x8 && !memcmp(a, x8, sizeof(float) * n), "(d) the CUDA rows are byte-identical at -b 64 and -b 8");
+            CHECK(on_cuda && a && nf == 0 && x2 && !memcmp(a, x2, sizeof(float) * n), "(d) the CUDA rows are byte-identical across two loads");
+            const double qe = xq && b && !n_nonfinite(xq, n) ? rel_diff(xq, b, n) : 0;   // NaN rows are no control
+            CHECK(on_cuda && qe >= 10 * rd && qe > 0 && qe < 1e30, "(e) control: the factor left out %.2e from the reference, CUDA %.2e, want >= 10x",
                   qe, rd);
             free(x8); free(x2); free(xq); drop(g8); drop(g2); drop(gq);
         }
