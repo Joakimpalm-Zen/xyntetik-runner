@@ -58,6 +58,19 @@ static inline __m256 ink2_vexp8(__m256 x) {
     res = _mm256_blendv_ps(res, _mm256_set1_ps(INFINITY), imask);
     return _mm256_blendv_ps(res, _mm256_add_ps(x, x), nmask);
 }
+static inline __m256 ink2_vtanh8(__m256 x) {
+    const __m256 sgn = _mm256_set1_ps(-0.0f);
+    const __m256 one = _mm256_set1_ps(1.0f);
+    const __m256 ax = _mm256_andnot_ps(sgn, x);
+    const __m256 em2 = ink2_vexp8(_mm256_mul_ps(_mm256_set1_ps(-2.0f), ax));
+    __m256 r = _mm256_div_ps(_mm256_sub_ps(one, em2), _mm256_add_ps(one, em2));
+    r = _mm256_or_ps(r, _mm256_and_ps(x, sgn));
+    const __m256 tiny = _mm256_cmp_ps(ax, _mm256_set1_ps(1e-3f), _CMP_LT_OQ);
+    const __m256 poly = _mm256_mul_ps(x, _mm256_fnmadd_ps(_mm256_mul_ps(x, x), _mm256_set1_ps(1.0f / 3.0f), one));
+    r = _mm256_blendv_ps(r, poly, tiny);
+    const __m256 sat = _mm256_cmp_ps(ax, _mm256_set1_ps(10.0f), _CMP_GE_OQ);
+    return _mm256_blendv_ps(r, _mm256_or_ps(one, _mm256_and_ps(x, sgn)), sat);
+}
 #elif INK2_SIMD_NEON
 static inline float32x4_t ink2_vexp4(float32x4_t x) {
     const float32x4_t hi = vdupq_n_f32(88.3762626647949f);
@@ -86,6 +99,21 @@ static inline float32x4_t ink2_vexp4(float32x4_t x) {
     res = vreinterpretq_f32_u32(vbicq_u32(vreinterpretq_u32_f32(res), zmask));
     res = vbslq_f32(imask, vdupq_n_f32(INFINITY), res);
     return vbslq_f32(nmask, vaddq_f32(x, x), res);
+}
+static inline float32x4_t ink2_vtanh4(float32x4_t x) {
+    const uint32x4_t smask = vdupq_n_u32(0x80000000u);
+    const float32x4_t one = vdupq_n_f32(1.0f);
+    const float32x4_t ax = vabsq_f32(x);
+    const float32x4_t em2 = ink2_vexp4(vmulq_n_f32(ax, -2.0f));
+    float32x4_t r = vdivq_f32(vsubq_f32(one, em2), vaddq_f32(one, em2));
+    const uint32x4_t xsgn = vandq_u32(vreinterpretq_u32_f32(x), smask);
+    r = vreinterpretq_f32_u32(vorrq_u32(vreinterpretq_u32_f32(r), xsgn));
+    const uint32x4_t tiny = vcltq_f32(ax, vdupq_n_f32(1e-3f));
+    const float32x4_t poly = vmulq_f32(x, vfmsq_f32(one, vmulq_f32(x, x), vdupq_n_f32(1.0f / 3.0f)));
+    r = vbslq_f32(tiny, poly, r);
+    const uint32x4_t sat = vcgeq_f32(ax, vdupq_n_f32(10.0f));
+    const float32x4_t sone = vreinterpretq_f32_u32(vorrq_u32(vreinterpretq_u32_f32(one), xsgn));
+    return vbslq_f32(sat, sone, r);
 }
 #endif
 
@@ -456,17 +484,44 @@ static void ink2_route_one(const ink2_shape *s, const ink2_moe_w *M, const float
 static inline float ink2_swiglu(const ink2_shape *s, float g, float u) {
     return ink2_softcap(g, s->gate_cap) * ink2_sigmoid(g) * ink2_softcap(u, s->up_cap);
 }
-typedef struct { const ink2_shape *s; float *act; int F; } ink2_swiglu_ctx;
-static void ink2_swiglu_range(void *c, int64_t k0, int64_t k1) {
+typedef struct { const ink2_shape *s; float *act; int F, nb; } ink2_swiglu_ctx;
+static void ink2_swiglu_range(void *c, int64_t b0, int64_t b1) {
     const ink2_swiglu_ctx *sw = c;
     const ink2_shape *s = sw->s;
-    const int F = sw->F;
-    int64_t k = k0;
-    int i = (int)(k / F), j = (int)(k % F);
-    float *a = sw->act + (size_t)i * 2 * F;
-    for (; k < k1; k++) {
-        a[j] = ink2_swiglu(s, a[j], a[F + j]);
-        if (++j == F) { j = 0; a += 2 * F; }
+    const int F = sw->F, nb = sw->nb;
+#if INK2_SIMD_AVX2
+    const __m256 vgc = _mm256_set1_ps(s->gate_cap), vuc = _mm256_set1_ps(s->up_cap);
+    const __m256 vone = _mm256_set1_ps(1.0f), vzero = _mm256_setzero_ps();
+#elif INK2_SIMD_NEON
+    const float32x4_t vgc = vdupq_n_f32(s->gate_cap), vuc = vdupq_n_f32(s->up_cap);
+    const float32x4_t vone = vdupq_n_f32(1.0f);
+#endif
+    for (int64_t idx = b0; idx < b1; idx++) {
+        const int i = (int)(idx / nb), j0 = (int)(idx % nb) * 8;
+        float *a = sw->act + (size_t)i * 2 * F;
+        if (j0 + 8 <= F) {
+#if INK2_SIMD_AVX2
+            const __m256 g = _mm256_loadu_ps(a + j0);
+            const __m256 u = _mm256_loadu_ps(a + F + j0);
+            const __m256 sg = _mm256_mul_ps(ink2_vtanh8(_mm256_div_ps(g, vgc)), vgc);
+            const __m256 sig = _mm256_div_ps(vone, _mm256_add_ps(vone, ink2_vexp8(_mm256_sub_ps(vzero, g))));
+            const __m256 su = _mm256_mul_ps(ink2_vtanh8(_mm256_div_ps(u, vuc)), vuc);
+            _mm256_storeu_ps(a + j0, _mm256_mul_ps(_mm256_mul_ps(sg, sig), su));
+            continue;
+#elif INK2_SIMD_NEON
+            for (int k = 0; k < 8; k += 4) {
+                const float32x4_t g = vld1q_f32(a + j0 + k);
+                const float32x4_t u = vld1q_f32(a + F + j0 + k);
+                const float32x4_t sg = vmulq_f32(ink2_vtanh4(vdivq_f32(g, vgc)), vgc);
+                const float32x4_t sig = vdivq_f32(vone, vaddq_f32(vone, ink2_vexp4(vnegq_f32(g))));
+                const float32x4_t su = vmulq_f32(ink2_vtanh4(vdivq_f32(u, vuc)), vuc);
+                vst1q_f32(a + j0 + k, vmulq_f32(vmulq_f32(sg, sig), su));
+            }
+            continue;
+#endif
+        }
+        const int j1 = j0 + 8 < F ? j0 + 8 : F;
+        for (int j = j0; j < j1; j++) a[j] = ink2_swiglu(s, a[j], a[F + j]);
     }
 }
 // The fast route's experts over T positions, grouped by expert: chosen [T][E] and wt [T][E] from the router; for each
@@ -489,8 +544,9 @@ static ink2_status ink2_experts_fast(const ink2_shape *s, const ink2_moe_w *M, i
         for (int i = 0; i < n; i++) memcpy(xe + (size_t)i * H, x + (size_t)who[i] * H, sizeof(float) * (size_t)H);
         const float f13 = M->t13->q_scale ? M->t13->q_scale[e] : 1.0f, f2 = M->t2->q_scale ? M->t2->q_scale[e] : 1.0f;
         ink2_lin(M->t13, (int64_t)e * 2 * F, 2 * F, H, n, xe, (size_t)H, act, (size_t)2 * F, f13);
-        ink2_swiglu_ctx sw = { s, act, F };
-        ink2_par((int64_t)n * F, 32, ink2_swiglu_range, &sw);
+        const int nb = (F + 7) / 8;
+        ink2_swiglu_ctx sw = { s, act, F, nb };
+        ink2_par((int64_t)n * nb, 256, ink2_swiglu_range, &sw);
         ink2_lin(M->t2, (int64_t)e * H, H, F, n, act, (size_t)2 * F, dn, (size_t)H, f2);
         for (int i = 0; i < n; i++) {
             const float w = wt[(size_t)who[i] * E + e];
