@@ -56,11 +56,16 @@ static const char *route_words(char route) {
 }
 
 bool model_inkling2_bind(model_t *m, const model_params *p) {
-    (void)p;
     char why[512] = { 0 };
     ink2_rt *r = calloc(1, sizeof *r);
     if (!r) { fprintf(stderr, "error: out of memory loading an inkling2_loop model\n"); return false; }
     r->route = route_of_env();
+    if (r->route && p && p->train && r->route != 'R') {
+        // the LoRA backward (src/inkling2_bwd.c) reads the matrices as float32: a training load takes the reference route
+        fprintf(stderr, "inkling2_loop: training runs on the reference route (the serial float32 engine), whose float32 "
+                        "matrices the backward reads\n");
+        r->route = 'R';
+    }
     if (!r->route) {
         fprintf(stderr, "error: RUNNER_INKLING2_ROUTE is \"%s\"; it takes \"fast\" (the default) or \"reference\"\n",
                 getenv("RUNNER_INKLING2_ROUTE"));

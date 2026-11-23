@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from inkling2_tiny import *  # noqa: E402,F401,F403  (the tiny file's constants, for the tests that import this module)
 from inkling2_tiny import E, _kvs, _tensors, _write  # noqa: E402
 
 
@@ -63,14 +64,18 @@ def test_the_expert_cache_line_is_a_budget_capped_at_every_expert_decoded(runner
     """R4.48.17: the expert cache holds at most every expert decoded (the tiny file's: 4 blocks x 4 experts x (2 x 64 x
     64 + 64 x 64) floats, 786432 bytes), so --info fit and the load line print the budget capped there, not the
     4 GiB default as a size; fit's total counts the capped figure."""
+    import os
     import re
     _, good = tiny
+    # the expert cache is the reference route's (R4.48.15/19: the fast route keeps none, tests/test_inkling2_fast.py)
+    env = dict(os.environ, RUNNER_INKLING2_ROUTE="reference")
     r = subprocess.run([str(runner_bin), "-m", str(good), "--info", "fit", "-c", "64", "--gpu", "off"],
-                       capture_output=True, text=True, errors="replace", timeout=300)
+                       capture_output=True, text=True, errors="replace", timeout=300, env=env)
     assert r.returncode == 0, r.stdout + r.stderr
     assert "expert cache  up to 0.00 GiB (the budget, RUNNER_INKLING2_EXPERT_CACHE)" in r.stdout, r.stdout
     total = re.search(r"total\s+([0-9.]+) GiB", r.stdout)
     assert total and float(total.group(1)) < 0.01, r.stdout
-    r = _run(runner_bin, good, "-p", "hello", "-n", "1", "--temp", "0")
+    r = subprocess.run([str(runner_bin), "-m", str(good), "--gpu", "off", "-t", "2", "-c", "64", "-p", "hello", "-n", "1",
+                        "--temp", "0"], capture_output=True, text=True, errors="replace", timeout=600, env=env)
     assert r.returncode == 0, r.stderr[-2000:]
     assert "expert cache up to 0.00 GiB (the budget, RUNNER_INKLING2_EXPERT_CACHE)" in r.stderr, r.stderr[-2000:]

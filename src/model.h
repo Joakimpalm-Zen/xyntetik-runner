@@ -1240,6 +1240,9 @@ typedef struct {
     // R8.25.2: K and V rows as f32 (kind 3), for a training run only
     // (--train-kv-f32); the CPU path, no tied V, never asked by inference
     bool  kv_f32;
+    // R4.48.19: a training load (--train, --dpo, and a training record's replay). inkling2_loop takes its reference
+    // route then, whose float32 matrices its backward reads (the fast route serves views of the stored rows).
+    bool  train;
     // --kv-ring (docs/kv-ring.md): KV_RING_AUTO (0, the default) gives
     // sliding-window layers only their window when the weights and the flat
     // cache would not fit the device budget (or, on the CPU, available RAM);

@@ -5182,7 +5182,10 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
                            int tmpl_override, const oms_policy *signing, int *rc) {
     // training is the CPU path (v1), for both objectives: --train-dpo used to
     // load onto the GPU and then refuse with a message naming --train
-    if (o->train_path || o->dpo_path) o->mp.gpu_mode = GPU_OFF;
+    if (o->train_path || o->dpo_path) {
+        o->mp.gpu_mode = GPU_OFF;
+        o->mp.train = true;   // inkling2_loop: the reference route (its backward reads float32 matrices)
+    }
     // --adapt-info answers for the model, not for where it happened to load:
     // training is CPU-hosted, and the device half is named separately
     if (o->adapt_info) o->mp.gpu_mode = GPU_OFF;
