@@ -12893,7 +12893,12 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
 // ================================================================ R4.48.9: Inkling 2 Mini's weights on the device
 // (gpu.h). The stored rows go up byte for byte; the primary context is retained for the handle's life.
 typedef struct { CUdeviceptr rows, scale; size_t bytes; int n_scale; } ink2_dev_tensor;
-struct gpu_ink2 { CUdevice dev; CUcontext ctx; ink2_dev_tensor *t; int n, cap; size_t bytes; };
+struct gpu_ink2 {
+    CUdevice dev; CUcontext ctx; ink2_dev_tensor *t; int n, cap; size_t bytes;
+    CUmodule mod; CUfunction mv[KT_N];   // G2a: the batch-1 matvecs of the types Inkling's views take
+    CUdeviceptr dx, dy; size_t dx_cap, dy_cap;   // the activations and the outputs, grown as needed
+    pthread_mutex_t mu;
+};
 
 gpu_ink2 *gpu_ink2_bind(void) {
     int n = 0;
@@ -12901,8 +12906,55 @@ gpu_ink2 *gpu_ink2_bind(void) {
     gpu_ink2 *h = calloc(1, sizeof *h);
     if (!h) return NULL;
     if (cu.DeviceGet(&h->dev, 0) != 0 || cu.PrimaryCtxRetain(&h->ctx, h->dev) != 0) { free(h); return NULL; }
-    if (cu.CtxSetCurrent(h->ctx) != 0) { cu.PrimaryCtxRelease(h->dev); free(h); return NULL; }
+    if (cu.CtxSetCurrent(h->ctx) != 0 || !module_cc_ok(h->dev, GPU_CUDA_MIN_CC_MAJOR, GPU_CUDA_MIN_CC_MINOR,
+                                                        "k_ptx_src (compute_75)") ||
+        module_load_noted(&h->mod, k_ptx_src, "k_ptx_src (compute_75)") != 0) {
+        cu.PrimaryCtxRelease(h->dev);
+        free(h);
+        return NULL;
+    }
+    static const struct { int type; const char *name; } mv[] = {
+        { T_F32, "k_mv_f32" }, { T_BF16, "k_mv_bf16" }, { T_Q8_0, "k_mv_q8_0" }, { T_NVFP4, "k_mv_nvfp4" },
+        { T_IQ3_XXS, "k_mv_iq3_xxs" },
+    };
+    for (size_t k = 0; k < sizeof mv / sizeof *mv; k++)
+        if (cu.ModuleGetFunction(&h->mv[mv[k].type], h->mod, mv[k].name) != 0) h->mv[mv[k].type] = NULL;
+    pthread_mutex_init(&h->mu, NULL);
     return h;
+}
+static bool ink2_grow(CUdeviceptr *p, size_t *cap, size_t need) {
+    if (need <= *cap) return true;
+    if (*p) cu.MemFree(*p);
+    *p = 0;
+    *cap = 0;
+    if (cu.MemAlloc(p, need) != 0) return false;
+    *cap = need;
+    return true;
+}
+bool gpu_ink2_lin(gpu_ink2 *h, int i, int type, size_t row_bytes, int64_t row0, int n_out, int n_in, int T,
+                  const float *x, float *y, float scale) {
+    if (!h || i < 0 || i >= h->n || type < 0 || type >= KT_N || !h->mv[type] || T <= 0 || n_out <= 0 ||
+        (scale != 1.0f && type != T_NVFP4))
+        return false;
+    pthread_mutex_lock(&h->mu);
+    const size_t xb = sizeof(float) * (size_t)T * (size_t)n_in, yb = sizeof(float) * (size_t)T * (size_t)n_out;
+    bool ok = cu.CtxSetCurrent(h->ctx) == 0 && ink2_grow(&h->dx, &h->dx_cap, xb) && ink2_grow(&h->dy, &h->dy_cap, yb) &&
+              cu.MemcpyHtoD(h->dx, x, xb) == 0;
+    // the launch shapes cuda.c's enc_mv gives these kernels at batch 1: one warp a row, 4 rows a 128-thread block;
+    // the lane-staged NVFP4 8 rows a 256-thread block; the lane-level i-quant 8 rows a 128-thread block
+    unsigned rpb = 4, block = 128;
+    if (type == T_NVFP4) { rpb = 8; block = 256; }
+    else if (type == T_IQ3_XXS) rpb = 8;
+    CUdeviceptr w = h->t[i].rows;
+    for (int t = 0; ok && t < T; t++) {
+        CUdeviceptr xc = h->dx + sizeof(float) * (size_t)t * (size_t)n_in, yc = h->dy + sizeof(float) * (size_t)t * (size_t)n_out;
+        mv_args a = { n_in, n_out, (uint64_t)row0 * row_bytes, 0, 1, n_in, n_out };
+        void *p[] = { &w, &xc, &yc, &a, &h->dx, &scale };
+        ok = cu.LaunchKernel(h->mv[type], ((unsigned)n_out + rpb - 1) / rpb, 1, 1, block, 1, 1, 0, NULL, p, NULL) == 0;
+    }
+    ok = ok && cu.MemcpyDtoH(y, h->dy, yb) == 0;   // the null stream: after every launch above
+    pthread_mutex_unlock(&h->mu);
+    return ok;
 }
 int gpu_ink2_put(gpu_ink2 *h, const void *rows, size_t bytes, const float *scale, int n_scale) {
     if (!h || !rows || !bytes || (n_scale && !scale) || cu.CtxSetCurrent(h->ctx) != 0) return -1;
@@ -12934,11 +12986,16 @@ bool gpu_ink2_get(gpu_ink2 *h, int i, void *rows, size_t bytes, float *scale, in
 size_t gpu_ink2_bytes(const gpu_ink2 *h) { return h ? h->bytes : 0; }
 void gpu_ink2_free(gpu_ink2 *h) {
     if (!h) return;
-    if (cu.CtxSetCurrent(h->ctx) == 0)
+    if (cu.CtxSetCurrent(h->ctx) == 0) {
         for (int i = 0; i < h->n; i++) {
             cu.MemFree(h->t[i].rows);
             if (h->t[i].scale) cu.MemFree(h->t[i].scale);
         }
+        if (h->dx) cu.MemFree(h->dx);
+        if (h->dy) cu.MemFree(h->dy);
+        if (h->mod) cu.ModuleUnload(h->mod);
+    }
+    pthread_mutex_destroy(&h->mu);
     cu.PrimaryCtxRelease(h->dev);
     free(h->t);
     free(h);

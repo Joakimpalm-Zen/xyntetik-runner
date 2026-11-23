@@ -478,3 +478,9 @@ bool gpu_ink2_get(gpu_ink2 *h, int i, void *rows, size_t bytes, float *scale, in
 }
 size_t gpu_ink2_bytes(const gpu_ink2 *h) { (void)h; return 0; }
 void gpu_ink2_free(gpu_ink2 *h) { (void)h; }
+bool gpu_ink2_lin(gpu_ink2 *h, int i, int type, size_t row_bytes, int64_t row0, int n_out, int n_in, int T,
+                  const float *x, float *y, float scale) {
+    (void)h; (void)i; (void)type; (void)row_bytes; (void)row0; (void)n_out; (void)n_in; (void)T; (void)x; (void)y;
+    (void)scale;
+    return false;
+}

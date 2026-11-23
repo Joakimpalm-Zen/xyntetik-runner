@@ -716,3 +716,13 @@ int ink2g_each_view(ink2g *g, int (*fn)(void *c, const ink2_tensor *t), void *c)
         if (g->slots[i]->t.q && fn(c, &g->slots[i]->t)) return -1;
     return 0;
 }
+
+int ink2g_set_dev(ink2g *g, const ink2_tensor *t, void *dev, int dev_i) {
+    for (int i = 0; i < g->n_slots; i++)
+        if (&g->slots[i]->t == t) {
+            g->slots[i]->t.dev = dev;
+            g->slots[i]->t.dev_i = dev_i;
+            return 0;
+        }
+    return -1;
+}

@@ -66,4 +66,6 @@ size_t ink2g_matrix_bytes(const ink2g *g);
 // R4.48.9: on the fast route, every view (the matrices and both expert stacks of every layer), each once, to fn; the
 // stacks are served first if not yet. 0, -1 (a stack missing, or fn's nonzero).
 int ink2g_each_view(ink2g *g, int (*fn)(void *c, const ink2_tensor *t), void *c);
+// R4.48.9: mark view t (one ink2g_get served) as held on the device (ink2_tensor.dev, dev_i); dev NULL unmarks. 0, -1.
+int ink2g_set_dev(ink2g *g, const ink2_tensor *t, void *dev, int dev_i);
 #endif

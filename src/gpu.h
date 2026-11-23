@@ -741,6 +741,12 @@ gpu_ink2  *gpu_ink2_bind(void);
 int        gpu_ink2_put(gpu_ink2 *h, const void *rows, size_t bytes, const float *scale, int n_scale);
 bool       gpu_ink2_get(gpu_ink2 *h, int i, void *rows, size_t bytes, float *scale, int n_scale);
 size_t     gpu_ink2_bytes(const gpu_ink2 *h);   // the device bytes held
+// G2a: y[t][o] = scale * dot(row row0 + o of tensor i, x[t]) for t < T, o < n_out, on the device: the activations up,
+// one batch-1 matvec launch per column (each column's sums in that kernel's fixed order whatever T is), the rows back.
+// x is T rows n_in apart, y T rows n_out apart (contiguous; the caller gathers). type: the tensor's ggml type,
+// row_bytes its row stride. scale other than 1 only for NVFP4 (the kernel's own factor). False: a device failure.
+bool       gpu_ink2_lin(gpu_ink2 *h, int i, int type, size_t row_bytes, int64_t row0, int n_out, int n_in, int T,
+                        const float *x, float *y, float scale);
 void       gpu_ink2_free(gpu_ink2 *h);
 
 #endif // RUNNER_GPU_H

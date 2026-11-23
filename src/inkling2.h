@@ -84,7 +84,14 @@ void ink2_set_test_par_hook(void (*fn)(void *ctx), void *ctx);
 typedef struct {
     const char *name; const float *data; int n_dims; int64_t ne[4];
     int qtype; const void *q; size_t q_row_bytes; const float *q_scale; int q_act8;
+    void *dev; int dev_i;   // R4.48.9: the view's device copy (the binder's handle, its index), or NULL
 } ink2_tensor;
+// R4.48.9: the device product. A view with dev set runs its linear operation through fn (the binder's: the same
+// arguments as the engine's ink2_lin, x and y with their strides); nonzero from fn is a device failure, and the
+// output is then NaN so no row passes for the device's. NULL (the default): every view on the CPU.
+typedef int (*ink2_dev_lin_fn)(const ink2_tensor *W, int64_t row0, int n_out, int n_in, int T, const float *x,
+                               size_t x_stride, float *y, size_t y_stride, float scale);
+void ink2_set_dev_lin(ink2_dev_lin_fn fn);
 typedef const ink2_tensor *(*ink2_lookup_fn)(void *ctx, const char *name);
 // OPTIONAL: one expert of an expert stack (`model.layers.<b>.mlp.experts.gate_up_proj` [E][2F][H] or `.down_proj`
 // [E][H][F]), as a 2-D tensor (ne[0] the stack's ne[0], ne[1] its ne[1]): the same float32 values as row e of the

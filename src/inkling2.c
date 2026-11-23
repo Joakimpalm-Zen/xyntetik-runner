@@ -840,8 +840,16 @@ static void ink2_lin_range(void *c, int64_t o0, int64_t o1) {
         }
     }
 }
+static ink2_dev_lin_fn ink2_dev_lin;
+void ink2_set_dev_lin(ink2_dev_lin_fn fn) { ink2_dev_lin = fn; }
 static void ink2_lin(const ink2_tensor *W, int64_t row0, int n_out, int n_in, int T, const float *x, size_t x_stride,
                      float *y, size_t y_stride, float scale) {
+    if (W->dev && ink2_dev_lin) {
+        if (ink2_dev_lin(W, row0, n_out, n_in, T, x, x_stride, y, y_stride, scale))
+            for (int t = 0; t < T; t++)
+                for (int o = 0; o < n_out; o++) y[(size_t)t * y_stride + (size_t)o] = NAN;
+        return;
+    }
     if (!W->q) {
         for (int t = 0; t < T; t++) ink2_matvec(W->data + (size_t)row0 * n_in, n_out, n_in, x + (size_t)t * x_stride, y + (size_t)t * y_stride);
         return;

@@ -32,6 +32,8 @@ typedef struct {
     gpu_ink2 *gpu;        // R4.48.9: the weights on CUDA (the fast route's views, stored rows), or NULL
     const ink2_tensor **dev_of;   // [n_dev]: the view each device tensor holds, in gpu_ink2_put's order
     int n_dev;
+    bool gpu_err;         // a device product failed: this instance refuses every forward from then on
+    bool no_factor;       // TEST-ONLY (RUNNER_INKLING2_CUDA_TEST_NO_FACTOR=1): the device leaves out the expert factor
 } ink2_rt;
 
 static ink2_rt *rt_of(model_t *m) { return (ink2_rt *)m->ink2; }
@@ -48,9 +50,38 @@ static int dev_count(void *c_, const ink2_tensor *t) {
 }
 static int dev_put(void *c_, const ink2_tensor *t) {
     dev_walk *c = c_;
-    if (gpu_ink2_put(c->r->gpu, t->q, t->q_row_bytes * (size_t)view_rows(t), t->q_scale, view_scales(t)) != c->r->n_dev)
+    if (gpu_ink2_put(c->r->gpu, t->q, t->q_row_bytes * (size_t)view_rows(t), t->q_scale, view_scales(t)) != c->r->n_dev ||
+        ink2g_set_dev(c->r->g, t, c->r, c->r->n_dev))
         return -1;
     c->r->dev_of[c->r->n_dev++] = t;
+    return 0;
+}
+// G2a: the engine's product of a device-held view, on the device (gpu_ink2_lin); x gathered and y scattered here
+static int dev_lin_scaled(const ink2_tensor *W, int64_t row0, int n_out, int n_in, int T, const float *x, size_t xs,
+                          float *y, size_t ys, float scale) {
+    ink2_rt *r = W->dev;
+    if (r->gpu_err) return -1;
+    if (r->no_factor && W->q_scale) scale = 1.0f;
+    float *xc = (float *)x, *yc = y;
+    if (xs != (size_t)n_in) {
+        xc = malloc(sizeof(float) * (size_t)T * (size_t)n_in);
+        if (!xc) { r->gpu_err = true; return -1; }
+        for (int t = 0; t < T; t++) memcpy(xc + (size_t)t * n_in, x + (size_t)t * xs, sizeof(float) * (size_t)n_in);
+    }
+    if (ys != (size_t)n_out) {
+        yc = malloc(sizeof(float) * (size_t)T * (size_t)n_out);
+        if (!yc) { if (xc != x) free(xc); r->gpu_err = true; return -1; }
+    }
+    const bool ok = gpu_ink2_lin(r->gpu, W->dev_i, W->qtype, W->q_row_bytes, row0, n_out, n_in, T, xc, yc, scale);
+    if (ok && yc != y)
+        for (int t = 0; t < T; t++) memcpy(y + (size_t)t * ys, yc + (size_t)t * n_out, sizeof(float) * (size_t)n_out);
+    if (xc != x) free(xc);
+    if (yc != y) free(yc);
+    if (!ok) {
+        if (!r->gpu_err) fprintf(stderr, "error: inkling2_loop: a product of %s failed on the device\n", W->name);
+        r->gpu_err = true;
+        return -1;
+    }
     return 0;
 }
 // The weights up to the device (every view, its stored rows), or a sentence why not and the CPU route. True: on CUDA.
@@ -66,6 +97,11 @@ static bool cuda_bind(ink2_rt *r) {
     if (r->route != 'F') {
         fprintf(stderr, "note: inkling2_loop runs on CUDA from the fast route's stored rows only; the reference route "
                         "runs on the CPU\n");
+        return false;
+    }
+    const char *a8 = getenv("RUNNER_INKLING2_ACT8");
+    if (a8 && *a8 && strcmp(a8, "0")) {
+        fprintf(stderr, "note: the 8-bit control (RUNNER_INKLING2_ACT8) is the CPU's; running on the CPU\n");
         return false;
     }
     dev_walk c = { r, 0, 0 };
@@ -93,8 +129,12 @@ static bool cuda_bind(ink2_rt *r) {
         r->n_dev = 0;
         return false;
     }
-    fprintf(stderr, "inkling2_loop: the weights on CUDA (%s): %d tensors, %.3f GB, their stored rows\n", dev, r->n_dev,
-            gpu_ink2_bytes(r->gpu) / 1e9);
+    const char *nf = getenv("RUNNER_INKLING2_CUDA_TEST_NO_FACTOR");
+    r->no_factor = nf && !strcmp(nf, "1");
+    ink2_set_dev_lin(dev_lin_scaled);
+    fprintf(stderr, "inkling2_loop: the weights on CUDA (%s): %d tensors, %.3f GB, their stored rows; the products on "
+                    "the device, the rest of the forward on the CPU (R4.48.9 G2a)%s\n", dev, r->n_dev,
+            gpu_ink2_bytes(r->gpu) / 1e9, r->no_factor ? "; TEST-ONLY: the expert factor left out" : "");
     return true;
 }
 
@@ -334,8 +374,8 @@ float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos,
         return NULL;
     }
     if (keep_all && n > r->rows_cap) return NULL;
-    if (r->gpu) {   // R4.48.9 G2: no CUDA forward yet; a CUDA instance computes no rows rather than the CPU's
-        fprintf(stderr, "error: inkling2_loop: the CUDA forward is not built yet (R4.48.9 G2)\n");
+    if (r->gpu && r->gpu_err) {   // a device product failed earlier: its cache holds NaN states, never CPU rows
+        fprintf(stderr, "error: inkling2_loop: this instance's device failed; it computes no more rows\n");
         return NULL;
     }
     // Bind this instance's house pool (CLI's own tpool or the server's shared_pool) onto TLS for the forward.
@@ -370,6 +410,11 @@ float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos,
         ink2_status st = ink2_forward_chunk_lora(&r->s, &r->w, lora, &r->c, pos + done, T,
                                                  (const int *)(tokens + done), chunk_out, chunk_flags,
                                                  NULL, NULL);   // int32_t is int on every target Runner builds for
+        if (st == INK2_OK && r->gpu && r->gpu_err) {
+            ink2_set_tpool(prev_tp);
+            fprintf(stderr, "error: inkling2_loop: the forward at position %d failed on the device\n", pos + done);
+            return NULL;
+        }
         if (st != INK2_OK) {
             ink2_set_tpool(prev_tp);
             fprintf(stderr, "error: inkling2_loop: the forward at position %d refused (status %d%s)\n", pos + done, (int)st,

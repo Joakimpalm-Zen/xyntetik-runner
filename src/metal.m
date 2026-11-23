@@ -6139,3 +6139,23 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
     return true;
     }
 }
+
+// R4.48.9: Inkling 2 Mini's device route is CUDA's alone for now (gpu.h); on Metal no handle binds, so a load says so
+// and runs on the CPU
+gpu_ink2 *gpu_ink2_bind(void) { return NULL; }
+int gpu_ink2_put(gpu_ink2 *h, const void *rows, size_t bytes, const float *scale, int n_scale) {
+    (void)h; (void)rows; (void)bytes; (void)scale; (void)n_scale;
+    return -1;
+}
+bool gpu_ink2_get(gpu_ink2 *h, int i, void *rows, size_t bytes, float *scale, int n_scale) {
+    (void)h; (void)i; (void)rows; (void)bytes; (void)scale; (void)n_scale;
+    return false;
+}
+size_t gpu_ink2_bytes(const gpu_ink2 *h) { (void)h; return 0; }
+void gpu_ink2_free(gpu_ink2 *h) { (void)h; }
+bool gpu_ink2_lin(gpu_ink2 *h, int i, int type, size_t row_bytes, int64_t row0, int n_out, int n_in, int T,
+                  const float *x, float *y, float scale) {
+    (void)h; (void)i; (void)type; (void)row_bytes; (void)row0; (void)n_out; (void)n_in; (void)T; (void)x; (void)y;
+    (void)scale;
+    return false;
+}
