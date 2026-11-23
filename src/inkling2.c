@@ -355,6 +355,7 @@ static void ink2_route_one(const ink2_shape *s, const ink2_moe_w *M, const float
             float v = sc[e] + M->br[e];
             if (best < 0 || v > bv) { best = e; bv = v; }   // strict >: the lowest index wins a tie
         }
+        if (best < 0) break;
         chosen[best] = 1;
     }
     float sum = 0.0f;

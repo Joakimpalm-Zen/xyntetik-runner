@@ -154,14 +154,14 @@ def _tensors(no_scale_layer=None, scale_len=E, dense_nvfp4=False):
     return t
 
 
-def _kvs(drop=None):
+def _kvs(drop=None, used=USED):
     a = "inkling2_loop."
     kv = [("general.architecture", STR, "inkling2_loop"), ("general.alignment", U32, 32),
           (a + "block_count", U32, N_BLOCK), (a + "context_length", U32, 256), (a + "embedding_length", U32, H),
           (a + "feed_forward_length", U32, FF), (a + "attention.head_count", ARR, (I32, [NH] * N_BLOCK)),
           (a + "attention.head_count_kv", ARR, (I32, [NKV] * N_BLOCK)),
           (a + "attention.layer_norm_rms_epsilon", F32, 1e-6), (a + "expert_count", U32, E),
-          (a + "expert_used_count", U32, USED), (a + "attention.key_length", U32, HD),
+          (a + "expert_used_count", U32, used), (a + "attention.key_length", U32, HD),
           (a + "attention.value_length", U32, HD), (a + "loop.count", U32, PASSES), (a + "loop.start", U32, LOOP_START),
           (a + "loop.end", U32, LOOP_END), (a + "loop.gate_rank", U32, RANK), (a + "vocab_size", U32, VOCAB),
           (a + "vocab_size_unpadded", U32, VUSED), (a + "expert_feed_forward_length", U32, FF),
@@ -225,6 +225,10 @@ def test_the_tiny_file_loads_and_answers(runner_bin, tiny):
      "is NVFP4 but the file has no blk.2.ffn_down_exps.scale"),
     ("nvfp4 dense", lambda d: _write(d / "dense.gguf", _kvs(), _tensors(dense_nvfp4=True)),
      "blk.0.attn_q.weight is type 40, which this loader does not decode"),
+    ("used > expert", lambda d: _write(d / "used_high.gguf", _kvs(used=E + 1), _tensors()),
+     f"expert_used_count {E + 1} is outside 1..{E}"),
+    ("used == 0", lambda d: _write(d / "used_zero.gguf", _kvs(used=0), _tensors()),
+     f"expert_used_count 0 is outside 1..{E}"),
 ])
 def test_a_malformed_file_is_refused_with_a_sentence(runner_bin, tiny, case, make, sentence):
     d, _ = tiny

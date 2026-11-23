@@ -104,6 +104,9 @@ static int read_shape(gguf_file *f, ink2_shape *s, char *why, size_t wn) {
         get_f32(f, KEY("final_logit_softcapping"), &s->final_cap, why, wn))
         return -1;
     if (s->n_block < 1 || s->n_block > INK2_MAX_BLOCK) return refuse(why, wn, "block_count %d is outside 1..%d", s->n_block, INK2_MAX_BLOCK);
+    if (s->n_expert < 1) return refuse(why, wn, "expert_count %d must be at least 1", s->n_expert);
+    if (s->n_used < 1 || s->n_used > s->n_expert)
+        return refuse(why, wn, "expert_used_count %d is outside 1..%d (expert_count)", s->n_used, s->n_expert);
     if (s->head_dim < 1 || s->head_dim > INK2_MAX_HEAD_DIM)
         return refuse(why, wn, "head_dim %d exceeds supported limit %d", s->head_dim, INK2_MAX_HEAD_DIM);
     if (s->swa_head_dim < 1 || s->swa_head_dim > INK2_MAX_HEAD_DIM)

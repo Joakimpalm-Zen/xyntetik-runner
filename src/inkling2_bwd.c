@@ -550,6 +550,7 @@ static ink2_status b_moe_layer(const ink2_shape *s, const ink2_weights *w, int b
                 float v = sc[e] + br[e];
                 if (best < 0 || v > bv) { best = e; bv = v; }
             }
+            if (best < 0) break;
             chosen[best] = 1;
         }
         float sum = 0.0f;
