@@ -773,7 +773,23 @@ static ink2_status ink2_attention_lora(const ink2_shape *s, const ink2_weights *
         memcpy(c->v[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SV] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
     }
     c->n_past[app] = p0 + T;   // what the slot now holds consistently: rows and histories of 0..p0+T-1
-    ink2_attn_rel(s, &L, T, pos, xq, p[SRS], p[SRL]);
+    ink2_rel_probe *rp = ink2_active_rel_probe();
+    if (rp && app == rp->app) {
+        size_t n_el = (size_t)T * (size_t)s->hidden;
+        rp->T = T; rp->H = s->hidden;
+        if (rp->xq_in) memcpy(rp->xq_in, xq, sizeof(float) * n_el);
+        if (rp->eps != 0.0f && rp->d) {
+            float *xq_rel = malloc(sizeof(float) * n_el);
+            if (!xq_rel) { free(buf); return INK2_BAD_INPUT; }
+            for (size_t i = 0; i < n_el; i++) xq_rel[i] = xq[i] + rp->eps * rp->d[i];
+            ink2_attn_rel(s, &L, T, pos, xq_rel, p[SRS], p[SRL]);
+            free(xq_rel);
+        } else {
+            ink2_attn_rel(s, &L, T, pos, xq, p[SRS], p[SRL]);
+        }
+    } else {
+        ink2_attn_rel(s, &L, T, pos, xq, p[SRS], p[SRL]);
+    }
     ink2_rows(L.wt[WS], L.nh, s->hidden, T, xq, p[SSK]);
     const size_t koff = (size_t)(kp0 - c->k0[app]) * L.C;
     ink2_attn_core(s, &L, T, pos, p[SQ], c->k[app] + koff, c->v[app] + koff, nk, kp0, p[SRL], p[SSK], p[SLG], p[SATT],
@@ -1279,4 +1295,12 @@ ink2_status ink2_op_step(const ink2_shape *s, const ink2_weights *w, const char 
         for (int i = 0; i < n; i++) out[i] = ink2_softcap(in[0][i], cap);
     } else return INK2_BAD_INPUT;
     return INK2_OK;
+}
+
+static ink2_rel_probe *g_rel_probe = NULL;
+void ink2_set_rel_probe(ink2_rel_probe *p) { g_rel_probe = p; }
+ink2_rel_probe *ink2_active_rel_probe(void) {
+    if (!g_rel_probe) return NULL;
+    const char *e = getenv("RUNNER_TEST_INK2_REL_PROBE");
+    return (e && *e) ? g_rel_probe : NULL;
 }

@@ -7064,12 +7064,12 @@ static void runtime_free(model_t *m) {
 }
 
 void model_free(model_t *m) {
-    if (m && m->ink2) model_inkling2_free(m);
     if (m) { free(m->micro_steps); m->micro_steps = NULL; }   // R3.72
     gpu_free(m); // nulls kcache/vcache if the GPU owned them
     gpu_train_free(m);
     model_full_free(m);
     model_lora_free(m);
+    if (m && m->ink2) model_inkling2_free(m);
     free(m->moe_host);
     m->moe_host = NULL;
     free(m->moe_hot_slot);

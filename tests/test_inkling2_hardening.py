@@ -124,7 +124,7 @@ def _tensors(no_scale_layer=None, scale_len=E, dense_nvfp4=False):
             f(p + "attn_norm.weight", [H], value=1.0)
         f(p + "attn_gate.weight", [H, NH * HD])
         f(p + "attn_output.weight", [NH * HD, H])
-        f(p + "attn_sink_proj.weight", [H, NH])
+        f(p + "attn_sink_proj.weight", [H, NH], 0.22)
         f(p + "attn_rel_bias.weight", [DREL, EXT], 0.1)
         f(p + "attn_rel.weight", [H, NH * DREL])
         f(p + "attn_rel_clip.weight", [DREL, NH], value=1.0)
@@ -138,10 +138,10 @@ def _tensors(no_scale_layer=None, scale_len=E, dense_nvfp4=False):
         f(p + "ffn_res_query.weight", [H], 0.1)
         if LOOP_START <= b < LOOP_END:
             for r in ("q", "k", "v", "ffn"):
-                f(p + f"loop_{r}_ctrl_down.weight", [2 * H, RANK])
-                f(p + f"loop_{r}_ctrl_forget.weight", [RANK, H])
-                f(p + f"loop_{r}_ctrl_gain.weight", [RANK, H])
-            f(p + "loop_msg_query.weight", [H, 4], 0.1)
+                f(p + f"loop_{r}_ctrl_down.weight", [2 * H, RANK], 0.15)
+                f(p + f"loop_{r}_ctrl_forget.weight", [RANK, H], 0.15)
+                f(p + f"loop_{r}_ctrl_gain.weight", [RANK, H], 0.15)
+            f(p + "loop_msg_query.weight", [H, 4], 0.2)
         seed[0] += 1
         t.append((p + "ffn_gate_up_exps.weight", [H, 2 * FF, E], T_NVFP4, _nvfp4(H * 2 * FF * E, seed[0])))
         seed[0] += 1

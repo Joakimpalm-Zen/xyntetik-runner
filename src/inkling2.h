@@ -240,4 +240,16 @@ ink2_status ink2_op_step(const ink2_shape *s, const ink2_weights *w, const char 
 ink2_status ink2_attention_step(const ink2_shape *s, const ink2_weights *w, int app, const char *step, int T,
                                 const int *pos, const float *const *in, float *out, float *out2);
 
+// TEST-ONLY isolated relative-branch activation probe (inert unless RUNNER_TEST_INK2_REL_PROBE is set).
+typedef struct {
+    int app;
+    int T, H;
+    float eps;
+    const float *d;
+    float *xq_in;
+    float *g_rel;
+} ink2_rel_probe;
+void ink2_set_rel_probe(ink2_rel_probe *p);
+ink2_rel_probe *ink2_active_rel_probe(void);
+
 #endif

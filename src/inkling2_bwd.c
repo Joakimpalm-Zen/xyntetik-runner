@@ -33,9 +33,10 @@ enum {
     CTRL_THREAD_ORDER = 1 << 3,
     CTRL_DROP_ROUTER  = 1 << 4,
     CTRL_DROP_SINK    = 1 << 5,
-    CTRL_DROP_RELBIAS = 1 << 6,
-    CTRL_DROP_DYNCONV = 1 << 7,
-    CTRL_DRIFT_CKPT   = 1 << 8,
+    CTRL_DROP_RELBIAS     = 1 << 6,
+    CTRL_DROP_DYNCONV     = 1 << 7,
+    CTRL_DRIFT_CKPT       = 1 << 8,
+    CTRL_SCALE_RELBIAS_102 = 1 << 9,
 };
 
 static int read_bwd_ctrl(void) {
@@ -49,6 +50,7 @@ static int read_bwd_ctrl(void) {
     if (strstr(e, "drop_router"))      f |= CTRL_DROP_ROUTER;
     if (strstr(e, "drop_sink"))        f |= CTRL_DROP_SINK;
     if (strstr(e, "drop_relbias"))     f |= CTRL_DROP_RELBIAS;
+    if (strstr(e, "scale_relbias_102")) f |= CTRL_SCALE_RELBIAS_102;
     if (strstr(e, "drop_dynconv"))     f |= CTRL_DROP_DYNCONV;
     if (strstr(e, "drift_ckpt"))       f |= CTRL_DRIFT_CKPT;
     return f;
@@ -502,18 +504,28 @@ static ink2_status b_moe_layer(const ink2_shape *s, const ink2_weights *w, int b
     snprintf(n2e, sizeof n2e, "model.layers.%d.mlp.experts.down_proj", block);
     const ink2_tensor *wr_t = w->get(w->ctx, n1), *br_t = w->get(w->ctx, n2);
     int H = s->hidden, E = s->n_expert, K = s->n_used, F = s->ff;
-    if (!wr_t || !br_t || wr_t->ne[0] != H || wr_t->ne[1] != E || br_t->ne[0] != E) return INK2_NO_TENSOR;
+    if (!wr_t || !br_t || wr_t->ne[0] != H || wr_t->ne[1] != E || br_t->ne[0] != E) {
+        fprintf(stderr, "error: inkling2_loop b_moe_layer: missing or invalid router tensors for block %d\n", block);
+        return INK2_NO_TENSOR;
+    }
     const float *wr = wr_t->data, *br = br_t->data;
     const ink2_tensor *w13_stack = NULL, *w2_stack = NULL;
     if (!w->get_expert) {
         w13_stack = w->get(w->ctx, n13);
         w2_stack = w->get(w->ctx, n2e);
-        if (!w13_stack || !w2_stack) return INK2_NO_TENSOR;
+        if (!w13_stack || !w2_stack) {
+            fprintf(stderr, "error: inkling2_loop b_moe_layer: missing expert stack tensors for block %d\n", block);
+            return INK2_NO_TENSOR;
+        }
     }
 
-    float *scr = malloc(sizeof(float) * ((size_t)E * 3 + (size_t)F * 4 + (size_t)H * 2));
+    float *scr = bwd_alloc_fail("moe") ? NULL : malloc(sizeof(float) * ((size_t)E * 3 + (size_t)F * 4 + (size_t)H * 2));
     unsigned char *chosen = malloc((size_t)E);
-    if (!scr || !chosen) { free(scr); free(chosen); return INK2_BAD_INPUT; }
+    if (!scr || !chosen) {
+        fprintf(stderr, "error: inkling2_loop b_moe_layer: out of memory allocating router/expert scratch\n");
+        free(scr); free(chosen);
+        return INK2_BAD_INPUT;
+    }
     float *sc = scr, *wt = sc + E, *dwt = wt + E;
     float *gu = dwt + E, *act = gu + 2 * F, *dact = act + F;
     float *down = dact + F, *ddown = down + H;
@@ -552,7 +564,11 @@ static ink2_status b_moe_layer(const ink2_shape *s, const ink2_weights *w, int b
             if (w->get_expert) {
                 const ink2_tensor *t13 = w->get_expert(w->ctx, n13, e);
                 const ink2_tensor *t2 = w->get_expert(w->ctx, n2e, e);
-                if (!t13 || !t2) { free(scr); free(chosen); return INK2_NO_TENSOR; }
+                if (!t13 || !t2) {
+                    fprintf(stderr, "error: inkling2_loop b_moe_layer: failed decoding expert %d in block %d\n", e, block);
+                    free(scr); free(chosen);
+                    return INK2_NO_TENSOR;
+                }
                 g13 = t13->data; g2 = t2->data;
             } else {
                 g13 = w13_stack->data + (size_t)e * 2 * F * H;
@@ -655,7 +671,10 @@ static ink2_status bind_attn_w(const ink2_shape *s, const ink2_weights *w, int b
         char full[192];
         snprintf(full, sizeof full, "model.layers.%d.self_attn.%s", block, nm[i]);
         const ink2_tensor *t = w->get(w->ctx, full);
-        if (!t) return INK2_NO_TENSOR;
+        if (!t) {
+            fprintf(stderr, "error: inkling2_loop bind_attn_w: missing tensor '%s'\n", full);
+            return INK2_NO_TENSOR;
+        }
         L->wt[i] = t->data;
     }
     (void)H;
@@ -775,7 +794,21 @@ static ink2_status b_attn_fwd_save(const ink2_shape *s, const ink2_weights *w, m
         f_unweighted_norm(af->v_norm + (size_t)t * C + (size_t)h * hd, hd, s->eps,
                           af->v_norm + (size_t)t * C + (size_t)h * hd);
 
-    f_rows(L->wt[W_R], nh * dr, H, T, xq, af->rs_lin);
+    ink2_rel_probe *rp = ink2_active_rel_probe();
+    if (rp && app == rp->app && rp->eps != 0.0f && rp->d) {
+        size_t n_el = (size_t)T * (size_t)H;
+        float *xq_rel = malloc(sizeof(float) * n_el);
+        if (!xq_rel) {
+            fprintf(stderr, "error: inkling2_loop b_attn_fwd_save: out of memory allocating rel_probe buffer\n");
+            st = INK2_BAD_INPUT;
+            goto fail;
+        }
+        for (size_t i = 0; i < n_el; i++) xq_rel[i] = xq[i] + rp->eps * rp->d[i];
+        f_rows(L->wt[W_R], nh * dr, H, T, xq_rel, af->rs_lin);
+        free(xq_rel);
+    } else {
+        f_rows(L->wt[W_R], nh * dr, H, T, xq, af->rs_lin);
+    }
     memcpy(af->rs_clip, af->rs_lin, sizeof(float) * (size_t)T * nh * dr);
     for (int t = 0; t < T; t++) {
         float *rt = af->rs_clip + (size_t)t * nh * dr;
@@ -938,6 +971,7 @@ static ink2_status b_attn_bwd_from_saved(const ink2_shape *s, model_t *m,
     free(dp_row);
 
     if (!(ctrl & CTRL_DROP_SINK)) b_matvec_T_add(L->wt[W_S], nh, H, T, d_sk, d_xq);
+    ink2_rel_probe *rp = ink2_active_rel_probe();
     if (!(ctrl & CTRL_DROP_RELBIAS)) {
         float *d_rs_lin = calloc((size_t)T * nh * dr, sizeof(float));
         if (!d_rs_lin) {
@@ -958,8 +992,27 @@ static ink2_status b_attn_bwd_from_saved(const ink2_shape *s, model_t *m,
                                d_rs_clip + (size_t)t * nh * dr, d_rs_lin + (size_t)t * nh * dr);
             if (st != INK2_OK) { free(d_rs_lin); free(bw); return st; }
         }
-        b_matvec_T_add(L->wt[W_R], nh * dr, H, T, d_rs_lin, d_xq);
+        if ((ctrl & CTRL_SCALE_RELBIAS_102) || (rp && rp->app == app && rp->g_rel)) {
+            float *g_rel_tmp = calloc((size_t)T * (size_t)H, sizeof(float));
+            if (!g_rel_tmp) {
+                fprintf(stderr, "error: inkling2_loop b_attn_bwd_from_saved: out of memory allocating rel_probe grad\n");
+                free(d_rs_lin);
+                free(bw);
+                return INK2_BAD_INPUT;
+            }
+            b_matvec_T_add(L->wt[W_R], nh * dr, H, T, d_rs_lin, g_rel_tmp);
+            if (ctrl & CTRL_SCALE_RELBIAS_102)
+                for (size_t i = 0; i < (size_t)T * (size_t)H; i++) g_rel_tmp[i] *= 1.02f;
+            if (rp && rp->app == app && rp->g_rel)
+                memcpy(rp->g_rel, g_rel_tmp, sizeof(float) * (size_t)T * (size_t)H);
+            for (size_t i = 0; i < (size_t)T * (size_t)H; i++) d_xq[i] += g_rel_tmp[i];
+            free(g_rel_tmp);
+        } else {
+            b_matvec_T_add(L->wt[W_R], nh * dr, H, T, d_rs_lin, d_xq);
+        }
         free(d_rs_lin);
+    } else if (rp && rp->app == app && rp->g_rel) {
+        memset(rp->g_rel, 0, sizeof(float) * (size_t)T * (size_t)H);
     }
 
     float *dq_lin = af->att_raw;
@@ -1006,9 +1059,15 @@ static ink2_status b_msg_step_fwd(const ink2_shape *s, const ink2_weights *w, in
     snprintf(n3, sizeof n3, "model.layers.%d.%s_message_gate.message_gate_proj.weight", block, role);
     const ink2_tensor *wd = w->get(w->ctx, n1), *wf = w->get(w->ctx, n2), *wg = w->get(w->ctx, n3);
     int H = s->hidden, r = s->loop_gate_rank;
-    if (!wd || !wf || !wg) return INK2_NO_TENSOR;
-    float *gh = malloc(sizeof(float) * ((size_t)2 * H + (size_t)r));
-    if (!gh) return INK2_BAD_INPUT;
+    if (!wd || !wf || !wg) {
+        fprintf(stderr, "error: inkling2_loop b_msg_step_fwd: missing %s_message_gate tensors for block %d\n", role, block);
+        return INK2_NO_TENSOR;
+    }
+    float *gh = bwd_alloc_fail("msg_fwd") ? NULL : malloc(sizeof(float) * ((size_t)2 * H + (size_t)r));
+    if (!gh) {
+        fprintf(stderr, "error: inkling2_loop b_msg_step_fwd: out of memory allocating message gate forward buffer\n");
+        return INK2_BAD_INPUT;
+    }
     float *d = gh + 2 * H;
     for (int t = 0; t < T; t++) {
         const float *xt = x + (size_t)t * H, *mt = msg + (size_t)t * H;
@@ -1036,9 +1095,15 @@ static ink2_status b_msg_step_bwd(const ink2_shape *s, const ink2_weights *w, in
     snprintf(n3, sizeof n3, "model.layers.%d.%s_message_gate.message_gate_proj.weight", block, role);
     const ink2_tensor *wd = w->get(w->ctx, n1), *wf = w->get(w->ctx, n2), *wg = w->get(w->ctx, n3);
     int H = s->hidden, r = s->loop_gate_rank;
-    if (!wd || !wf || !wg) return INK2_NO_TENSOR;
-    float *scr = malloc(sizeof(float) * ((size_t)4 * H + (size_t)r * 2 + (size_t)H * 2));
-    if (!scr) return INK2_BAD_INPUT;
+    if (!wd || !wf || !wg) {
+        fprintf(stderr, "error: inkling2_loop b_msg_step_bwd: missing %s_message_gate tensors for block %d\n", role, block);
+        return INK2_NO_TENSOR;
+    }
+    float *scr = bwd_alloc_fail("msg_bwd") ? NULL : malloc(sizeof(float) * ((size_t)4 * H + (size_t)r * 2 + (size_t)H * 2));
+    if (!scr) {
+        fprintf(stderr, "error: inkling2_loop b_msg_step_bwd: out of memory allocating message gate backward buffer\n");
+        return INK2_BAD_INPUT;
+    }
     float *gh = scr, *d_gh = gh + 2 * H, *d = d_gh + 2 * H, *d_d = d + r, *d_fa = d_d + r, *d_ga = d_fa + H;
     for (int t = 0; t < T; t++) {
         const float *xt = x + (size_t)t * H, *mt = msg + (size_t)t * H, *dout = d_out + (size_t)t * H;
@@ -1096,13 +1161,22 @@ static int ink2_lora_cb(void *ctx, int block, int slot, const float **a, const f
 
 bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const float *pos_w, double *loss_out) {
     const void *sp = NULL, *wp = NULL;
-    if (!model_inkling2_parts(m, &sp, &wp) || !sp || !wp) return false;
+    if (!model_inkling2_parts(m, &sp, &wp) || !sp || !wp) {
+        fprintf(stderr, "error: inkling2_loop backward: model runtime parts unavailable\n");
+        return false;
+    }
     const ink2_shape *s = (const ink2_shape *)sp;
     const ink2_weights *w = (const ink2_weights *)wp;
-    if (!model_lora_grad_alloc(m)) return false;
+    if (!model_lora_grad_alloc(m)) {
+        fprintf(stderr, "error: inkling2_loop backward: out of memory allocating LoRA gradient buffers\n");
+        return false;
+    }
 
     int H = s->hidden, V = s->vocab_used, K = s->conv_k, n_app = s->n_app;
-    if (T < 2 || H < 1 || V < 1) return false;
+    if (T < 2 || H < 1 || V < 1) {
+        fprintf(stderr, "error: inkling2_loop backward: invalid dimensions T=%d H=%d V=%d\n", T, H, V);
+        return false;
+    }
     for (int t = 0; t < T; t++) {
         if (toks[t] < 0 || toks[t] >= V) {
             fprintf(stderr, "error: inkling2_loop backward: token id %d at pos %d out of range [0,%d)\n",
@@ -1155,7 +1229,10 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
 
     const ink2_tensor *emb = w->get(w->ctx, "model.embed_tokens.weight");
     const ink2_tensor *emb_nw = w->get(w->ctx, "model.embed_tokens.embed_norm.weight");
-    if (!emb || !emb_nw || emb->ne[0] != H || emb_nw->ne[0] != H) ok = false;
+    if (!emb || !emb_nw || emb->ne[0] != H || emb_nw->ne[0] != H) {
+        fprintf(stderr, "error: inkling2_loop backward: missing or invalid embedding tensors\n");
+        ok = false;
+    }
 
     if (ok) {
         for (int t = 0; t < T; t++) {
@@ -1164,7 +1241,12 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
         }
         ink2_lora lcb = { m, ink2_lora_cb };
         ink2_status fst = ink2_forward_chunk_lora(s, w, &lcb, &fw_c, 0, T, ids, NULL, 0, app_out_buf, sel_buf);
-        if (fst != INK2_OK || (sel_buf && !model_inkling2_save_sel(m, sel_buf, n_sel))) ok = false;
+        if (fst != INK2_OK) {
+            fprintf(stderr, "error: inkling2_loop backward: forward pass failed (status %d)\n", (int)fst);
+            ok = false;
+        } else if (sel_buf && !model_inkling2_save_sel(m, sel_buf, n_sel)) {
+            ok = false;
+        }
     }
     free(sel_buf);
 
@@ -1185,7 +1267,10 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
                     pre_nb = nb;
                 } else {
                     n_prev = nb - pre_nb - 1;
-                    if (n_prev < 0) { ok = false; break; }
+                    if (n_prev < 0) {
+                        fprintf(stderr, "error: inkling2_loop backward: invalid loop pass schedule at app %d (n_prev %d)\n", a, n_prev);
+                        ok = false; break;
+                    }
                     for (int j = 0; j < n_prev; j++) prev_ids[j] = cur_ids[pre_nb + 1 + j];
                     last_h_id = h_cur_id;
                     h_cur_id = pre_h_id;
@@ -1241,9 +1326,11 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
 
             // Recompute final_input & model.norm
             {
-                float *bscr = malloc(sizeof(float) * ((size_t)nkv * H * 2 + (size_t)nkv));
-                if (!bscr) ok = false;
-                else {
+                float *bscr = bwd_alloc_fail("bscr") ? NULL : malloc(sizeof(float) * ((size_t)nkv * H * 2 + (size_t)nkv));
+                if (!bscr) {
+                    fprintf(stderr, "error: inkling2_loop backward: out of memory allocating final_input buffer\n");
+                    ok = false;
+                } else {
                     float *sn = bscr + (size_t)nkv * H, *bsc = sn + (size_t)nkv * H;
                     for (int t = 0; t < T; t++) {
                         for (int j = 0; j < nkv; j++)
@@ -1303,8 +1390,11 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
 
         // Single-application buffers
         size_t n_rd = (size_t)(g ? 3 : 1);
-        float *lbuf = calloc(TH * 17, sizeof(float));
-        if (!lbuf) { ok = false; break; }
+        float *lbuf = bwd_alloc_fail("layer") ? NULL : calloc(TH * 17, sizeof(float));
+        if (!lbuf) {
+            fprintf(stderr, "error: inkling2_loop backward: out of memory allocating layer scratch (app %d)\n", a);
+            ok = false; break;
+        }
         float *rd       = lbuf;               // [3][T][H]
         float *qkv      = rd + 3 * TH;        // [3][T][H]
         float *gt_qkv   = qkv + 3 * TH;       // [3][T][H] pre-norm gated message output
@@ -1322,6 +1412,7 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
         float *d_msgs = M->has_msg ? calloc(TH * 4, sizeof(float)) : NULL;
         float *d_mo = calloc(TH * 10, sizeof(float));
         if ((M->has_msg && (!msgs || !d_msgs)) || !d_mo) {
+            fprintf(stderr, "error: inkling2_loop backward: out of memory allocating layer backward buffers (app %d)\n", a);
             free(lbuf); free(msgs); free(d_msgs); free(d_mo);
             ok = false; break;
         }
@@ -1342,8 +1433,10 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
         float *mdstates[INK2_MAX_APP + 2];
         if (M->has_msg) {
             mq = w->get(w->ctx, "model.message_input.query");
-            if (!mq) ok = false;
-            else {
+            if (!mq) {
+                fprintf(stderr, "error: inkling2_loop backward: missing tensor 'model.message_input.query'\n");
+                ok = false;
+            } else {
                 for (int j = 0; j < M->n_prev; j++) {
                     mstates[j] = ckpt[M->prev_id[j]];
                     mdstates[j] = d_ckpt[M->prev_id[j]];
@@ -1352,8 +1445,10 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
                 mdstates[M->n_prev] = d_ckpt[M->last_h_id];
                 int nkv_m = M->n_prev + 1;
                 float *bscr = malloc(sizeof(float) * ((size_t)nkv_m * H * 2 + (size_t)nkv_m));
-                if (!bscr) ok = false;
-                else {
+                if (!bscr) {
+                    fprintf(stderr, "error: inkling2_loop backward: out of memory allocating message_input buffer\n");
+                    ok = false;
+                } else {
                     float *sn = bscr + (size_t)nkv_m * H, *bsc = sn + (size_t)nkv_m * H;
                     const float *ql = mq->data + (size_t)(b - s->loop_start) * 4 * H;
                     for (int t = 0; t < T; t++) {
@@ -1375,12 +1470,16 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
         if (ok && b > 0) {
             snprintf(tname, sizeof tname, "model.layers.%d.attention_input.query", b);
             aq = w->get(w->ctx, tname);
-            if (!aq) ok = false;
-            else {
+            if (!aq) {
+                fprintf(stderr, "error: inkling2_loop backward: missing tensor '%s'\n", tname);
+                ok = false;
+            } else {
                 int nkv_a = M->nb + 1;
                 float *bscr = malloc(sizeof(float) * ((size_t)nkv_a * H * 2 + (size_t)nkv_a + n_rd * H));
-                if (!bscr) ok = false;
-                else {
+                if (!bscr) {
+                    fprintf(stderr, "error: inkling2_loop backward: out of memory allocating attention_input buffer\n");
+                    ok = false;
+                } else {
                     float *sn = bscr + (size_t)nkv_a * H, *bsc = sn + (size_t)nkv_a * H, *bo = bsc + nkv_a;
                     for (int t = 0; t < T; t++) {
                         for (int j = 0; j < nkv_a; j++)
@@ -1401,8 +1500,10 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
         float *role_msg_t[4] = {NULL, NULL, NULL, NULL};
         if (M->has_msg) {
             role_msg_t[0] = malloc(sizeof(float) * TH * 4);
-            if (!role_msg_t[0]) ok = false;
-            else {
+            if (!role_msg_t[0]) {
+                fprintf(stderr, "error: inkling2_loop backward: out of memory allocating role message buffer\n");
+                ok = false;
+            } else {
                 for (int r = 1; r < 4; r++) role_msg_t[r] = role_msg_t[0] + (size_t)r * TH;
                 for (int t = 0; t < T; t++)
                     for (int r = 0; r < 4; r++)
@@ -1422,7 +1523,10 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
             if (g) snprintf(tname, sizeof tname, "model.layers.%d.%s_input_layernorm.weight", b, roles[r]);
             else snprintf(tname, sizeof tname, "model.layers.%d.input_layernorm.weight", b);
             in_norm[r] = w->get(w->ctx, tname);
-            if (!in_norm[r]) { ok = false; break; }
+            if (!in_norm[r]) {
+                fprintf(stderr, "error: inkling2_loop backward: missing tensor '%s'\n", tname);
+                ok = false; break;
+            }
             for (int t = 0; t < T; t++)
                 f_rms_norm(src + (size_t)t * H, H, s->eps, in_norm[r]->data, qkv + (size_t)r * TH + (size_t)t * H);
         }
@@ -1446,7 +1550,10 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
             paln = w->get(w->ctx, tname);
             snprintf(tname, sizeof tname, "model.layers.%d.post_mlp_convolution.conv1d.weight", b);
             pmc = w->get(w->ctx, tname);
-            if (!pac || !mq_mlp || !paln || !pmc) ok = false;
+            if (!pac || !mq_mlp || !paln || !pmc) {
+                fprintf(stderr, "error: inkling2_loop backward: missing layer %d conv/mlp_input/norm tensors\n", b);
+                ok = false;
+            }
         }
         int nb2 = M->nb + (bound ? 1 : 0);
         const float *m2states[INK2_MAX_APP + 2];
@@ -1464,8 +1571,10 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
             m2states[nb2] = res; m2dstates[nb2] = d_res;
             int nkv_m2 = nb2 + 1;
             float *bscr = malloc(sizeof(float) * ((size_t)nkv_m2 * H * 2 + (size_t)nkv_m2));
-            if (!bscr) ok = false;
-            else {
+            if (!bscr) {
+                fprintf(stderr, "error: inkling2_loop backward: out of memory allocating mlp_input buffer\n");
+                ok = false;
+            } else {
                 float *sn = bscr + (size_t)nkv_m2 * H, *bsc = sn + (size_t)nkv_m2 * H;
                 for (int t = 0; t < T; t++) {
                     for (int j = 0; j < nkv_m2; j++)
@@ -1484,12 +1593,18 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
             if (ok) {
                 for (int t = 0; t < T; t++)
                     f_rms_norm(mlp_in + (size_t)t * H, H, s->eps, paln->data, mi_ln + (size_t)t * H);
-                if (ink2_expert_layer(s, w, b, T, mi_ln, mo) != INK2_OK) ok = false;
+                ink2_status est = ink2_expert_layer(s, w, b, T, mi_ln, mo);
+                if (est != INK2_OK) {
+                    fprintf(stderr, "error: inkling2_loop backward: expert forward failed in block %d (status %d)\n", b, (int)est);
+                    ok = false;
+                }
             }
             if (ok) {
                 float *mo_post = malloc(sizeof(float) * TH);
-                if (!mo_post) ok = false;
-                else {
+                if (!mo_post) {
+                    fprintf(stderr, "error: inkling2_loop backward: out of memory allocating mo_post buffer\n");
+                    ok = false;
+                } else {
                     f_short_conv(pmc->data, H, K, T, mo, mo_post);
                     for (size_t i = 0; i < TH; i++) recomp[i] = res[i] + mo_post[i];
                     free(mo_post);
@@ -1524,8 +1639,12 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
         float *d_role_msg_t[4] = {NULL, NULL, NULL, NULL};
         if (ok && M->has_msg) {
             d_role_msg_t[0] = calloc(TH * 4, sizeof(float));
-            if (!d_role_msg_t[0]) ok = false;
-            else for (int r = 1; r < 4; r++) d_role_msg_t[r] = d_role_msg_t[0] + (size_t)r * TH;
+            if (!d_role_msg_t[0]) {
+                fprintf(stderr, "error: inkling2_loop backward: out of memory allocating role message gradient buffer\n");
+                ok = false;
+            } else {
+                for (int r = 1; r < 4; r++) d_role_msg_t[r] = d_role_msg_t[0] + (size_t)r * TH;
+            }
         }
         if (ok) {
             for (int t = 0; t < T; t++)
@@ -1554,8 +1673,10 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
         free(af.buf);
         if (ok) {
             float *d_rd = calloc(TH * 3, sizeof(float));
-            if (!d_rd) ok = false;
-            else {
+            if (!d_rd) {
+                fprintf(stderr, "error: inkling2_loop backward: out of memory allocating role read gradient buffer\n");
+                ok = false;
+            } else {
                 for (int r = 2; ok && r >= 0; r--) {
                     if (!M->has_msg && !g && r > 0) {
                         for (size_t i = 0; i < TH; i++) d_qkv[i] += d_qkv[(size_t)r * TH + i];
@@ -1569,7 +1690,10 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
                                            d_rd + (size_t)(g ? r : 0) * TH + (size_t)t * H);
                     } else {
                         float *d_gt = calloc(TH, sizeof(float));
-                        if (!d_gt) { ok = false; break; }
+                        if (!d_gt) {
+                            fprintf(stderr, "error: inkling2_loop backward: out of memory allocating gate norm gradient buffer\n");
+                            ok = false; break;
+                        }
                         for (int t = 0; t < T; t++)
                             b_rms_norm_add(src + (size_t)t * H, H, s->eps, in_norm[r]->data,
                                            d_qkv + (size_t)r * TH + (size_t)t * H,

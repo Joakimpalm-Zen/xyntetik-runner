@@ -6291,7 +6291,11 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
             wsum += ws < 0 ? -ws : ws;
             tokens += ex->n;
         }
-        if (!ok) { rc = 1; break; }
+        if (!ok) {
+            fprintf(stderr, "error: training backward failed at step %d\n", step);
+            rc = 1;
+            break;
+        }
         bool resident = rt->m.train_res_windows - res_w0 == B;
         if (resident) rt->m.train_res_steps++;
         double ml = wsum > 0 ? loss_sum / wsum : loss_sum;

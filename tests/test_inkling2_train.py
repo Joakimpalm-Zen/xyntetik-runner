@@ -169,15 +169,19 @@ def test_admission_limits_and_oom_propagation(runner_bin, tiny_ink2, tmp_path):
     assert p_hd.returncode != 0
     assert "128" in p_hd.stderr and "head_dim" in p_hd.stderr
 
-    # Injected allocation failure in backward propagates cleanly and writes no adapter.
-    env_bwd_oom = dict(os.environ, RUNNER_TEST_INK2_ALLOC_FAIL="lora_proj")
-    out_oom = tmp_path / "oom_bwd.gguf"
-    p_oom = _run(runner_bin, ["-m", tiny_ink2, "--train", str(corpus), "--train-steps", "1",
-                              "--lora-rank", "4", "--gpu", "off", "--train-out", out_oom],
-                 tmp_path, expect_ok=False, env=env_bwd_oom)
-    assert p_oom.returncode != 0
-    assert "out of memory" in p_oom.stderr.lower()
-    assert not out_oom.exists()
+    # Injected allocation failures in backward propagate cleanly with a stderr sentence and write no adapter.
+    bwd_sites = ("lora_proj", "f_lora_apply", "ckpt", "bscr", "layer", "msg_fwd", "msg_bwd",
+                 "scaled_clip", "depth_attn", "kv_conv", "attn_fwd", "attn_bwd")
+    for site in bwd_sites:
+        env_bwd_oom = dict(os.environ, RUNNER_TEST_INK2_ALLOC_FAIL=site)
+        out_oom = tmp_path / f"oom_bwd_{site}.gguf"
+        p_oom = _run(runner_bin, ["-m", tiny_ink2, "--train", str(corpus), "--train-steps", "1",
+                                  "--lora-rank", "4", "--gpu", "off", "--train-out", out_oom],
+                     tmp_path, expect_ok=False, env=env_bwd_oom)
+        assert p_oom.returncode != 0, f"OOM site {site} succeeded"
+        assert "error: inkling2_loop" in p_oom.stderr and "out of memory" in p_oom.stderr.lower(), (
+            f"OOM site {site} missing error sentence in stderr: {p_oom.stderr!r}")
+        assert not out_oom.exists()
 
     # Injected allocation failure in serving LoRA forward fails loudly rather than dropping deltas.
     good_a = tmp_path / "good_a.gguf"
@@ -189,4 +193,4 @@ def test_admission_limits_and_oom_propagation(runner_bin, tiny_ink2, tmp_path):
                                "--gpu", "off"],
                   tmp_path, expect_ok=False, env=env_fwd_oom)
     assert p_foom.returncode != 0
-    assert "out of memory" in p_foom.stderr.lower()
+    assert "error: inkling2_loop" in p_foom.stderr and "out of memory" in p_foom.stderr.lower()
