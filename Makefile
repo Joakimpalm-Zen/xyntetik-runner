@@ -2178,8 +2178,9 @@ test-ink2-pool-bench: $(TEST_INK2_POOL_BENCH_BIN)
 
 # R4.48.9: Inkling 2 Mini on CUDA, G1 (the weights on the device) and G2 (the forward against the CPU engine) on the
 # tiny file with each dense type (tests/inkling2_tiny.py). A device target, as the other test-cuda-* ones: not in
-# make test; exit 77 without a CUDA device. RUNNER_GPU_LOCK names the lock file held with flock for the run (the lab
-# box's protocol: one CUDA process at a time), and the cgroup's memory.current is logged first.
+# make test; exit 77 without the CUDA backend or a CUDA device. On a CUDA build RUNNER_GPU_LOCK names the lock file held
+# with flock for the run (the lab box's protocol: one CUDA process at a time), and the cgroup's memory.current is
+# logged first; another backend's build runs the binary without the lock (it exits 77; stock macOS has no flock).
 TEST_INKLING2_CUDA_SRC = tests/test_inkling2_cuda.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
                          $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
 INKLING2_TINY_CUDA = $(INKLING2_TINY_DENSE)
@@ -2188,7 +2189,11 @@ $(TEST_INKLING2_CUDA): $(TEST_INKLING2_CUDA_SRC) $(HDR)
 .PHONY: test-inkling2-cuda
 test-inkling2-cuda: $(TEST_INKLING2_CUDA) $(INKLING2_TINY_CUDA)
 	@awk '{printf "memory.current %.2f GiB\n", $$1 / 1073741824}' /sys/fs/cgroup/memory.current 2>/dev/null || true
+ifeq ($(GPU_BACKEND_DEF),-DRUNNER_GPU_CUDA)
 	flock $${RUNNER_GPU_LOCK:-/tmp/runner-gpu.lock} ./$(TEST_INKLING2_CUDA) $(INKLING2_TINY_CUDA)
+else
+	./$(TEST_INKLING2_CUDA) $(INKLING2_TINY_CUDA)
+endif
 
 TEST_MODEL_LOAD_FAILURE_SRC = tests/test_model_load_failure.c $(OBJDIR)/gguf.o \
                               $(OBJDIR)/compat.o $(QUANTS_OBJ) $(OBJDIR)/model.o $(INKLING2_OBJS) \

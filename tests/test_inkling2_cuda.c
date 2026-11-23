@@ -1,6 +1,7 @@
 // R4.48.9: Inkling 2 Mini on CUDA, G1 (the weights on the device) and G2 (the forward's pieces) on the tiny
 // inkling2_loop files (tests/inkling2_tiny.py: the dense projections F32, BF16 and Q8_0; the experts NVFP4 with their
-// per-expert .scale on both stacks). Needs a CUDA device; without one it says so and exits 77 (skipped), never a pass.
+// per-expert .scale on both stacks). Needs the CUDA backend and a CUDA device; without either it says so and exits 77
+// (skipped), never a pass. The backend is the build's (RUNNER_GPU_CUDA): a Metal build has a device but no CUDA route.
 //
 // TOLERANCES, fixed before the first run (the supervisor's G2 rule):
 //   - rows: the CUDA rows within 1e-4 of the reference route's rows, relative to the largest reference logit (the
@@ -91,6 +92,10 @@ static double rel_diff(const float *a, const float *ref, size_t n) {
 
 int main(int argc, char **argv) {
     if (argc < 4) { fprintf(stderr, "usage: %s TINY_F32.gguf TINY_BF16.gguf TINY_Q8_0.gguf\n", argv[0]); return 2; }
+#ifndef RUNNER_GPU_CUDA
+    printf("SKIP: this build's GPU backend is not CUDA (not a pass)\n");
+    return 77;
+#endif
     // the checker's own check (the second read's P1): a row of NaN must score as a failure, never 0
     {
         float nanrow[4], ref4[4] = { 1, -2, 3, -4 };
