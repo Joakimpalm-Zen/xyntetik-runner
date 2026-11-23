@@ -120,3 +120,34 @@ def test_score_keep_all_matches_solo_and_rows_dump(runner_bin, tiny):
                                 capture_output=True, text=True, errors="replace", timeout=600, env=env)
     assert r_gen_dump.returncode == 0, r_gen_dump.stderr[-2000:]
     assert r_gen.stdout == r_gen_dump.stdout
+
+
+def test_default_batch_256_in_fit_and_score_split(runner_bin, tiny):
+    """Default chunk is 256 (clamped to -c) in --info fit, and --score on >256 tokens matches at -b 256 and -b 1."""
+    import json
+    import re
+    _, good = tiny
+    r_384 = subprocess.run([str(runner_bin), "-m", str(good), "--info", "fit", "-c", "384", "--gpu", "off"],
+                           capture_output=True, text=True, errors="replace", timeout=300)
+    assert r_384.returncode == 0, r_384.stdout + r_384.stderr
+    assert re.search(r"context\s+384\b.*batch 256\b", r_384.stdout), r_384.stdout
+    r_128 = subprocess.run([str(runner_bin), "-m", str(good), "--info", "fit", "-c", "128", "--gpu", "off"],
+                           capture_output=True, text=True, errors="replace", timeout=300)
+    assert r_128.returncode == 0, r_128.stdout + r_128.stderr
+    assert re.search(r"context\s+128\b.*batch 128\b", r_128.stdout), r_128.stdout
+
+    prompt = "abcdefg " * 35  # 280 ASCII bytes -> 280 tokens in byte-level vocab, > 256 chunk boundary
+    r_256 = subprocess.run([str(runner_bin), "-m", str(good), "--gpu", "off", "-t", "2", "-c", "384",
+                            "-b", "256", "--score", "1", "-p", prompt],
+                           capture_output=True, text=True, errors="replace", timeout=600)
+    assert r_256.returncode == 0, r_256.stderr[-2000:]
+    r_1 = subprocess.run([str(runner_bin), "-m", str(good), "--gpu", "off", "-t", "2", "-c", "384",
+                          "-b", "1", "--score", "1", "-p", prompt],
+                         capture_output=True, text=True, errors="replace", timeout=600)
+    assert r_1.returncode == 0, r_1.stderr[-2000:]
+    j_256 = json.loads(r_256.stdout)
+    j_1 = json.loads(r_1.stdout)
+    assert len(j_256["logprobs"]) > 256, len(j_256["logprobs"])
+    assert j_256["logprobs"] == j_1["logprobs"]
+    assert j_256["top1"] == j_1["top1"]
+    assert j_256["top"] == j_1["top"]

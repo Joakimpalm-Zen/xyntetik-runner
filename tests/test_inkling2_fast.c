@@ -33,32 +33,36 @@ static int fails;
 #define CHECK(c, ...) do { if (!(c)) { printf("FAIL: " __VA_ARGS__); printf("\n"); fails++; } else { printf("ok: " __VA_ARGS__); printf("\n"); } } while (0)
 
 // the route and the control are read at load, so each load sets them first (an empty value is unset)
-static model_t *load(const char *path, const char *route, bool act8, int threads, int n_batch) {
+static model_t *load_ctx(const char *path, const char *route, bool act8, int threads, int n_ctx, int n_batch) {
     plat_setenv("RUNNER_INKLING2_ROUTE", route ? route : "");
     plat_setenv("RUNNER_INKLING2_ACT8", act8 ? "1" : "");
     model_params p;
     memset(&p, 0, sizeof p);
     p.gpu_mode = GPU_OFF;
     p.n_threads = threads;
-    p.n_ctx = 64;
+    p.n_ctx = n_ctx;
     p.n_batch = n_batch;
     model_t *m = calloc(1, sizeof *m);
     if (!m || !model_load(m, path, &p)) { free(m); return NULL; }
     return m;
 }
-// every row of the prompt, [N_TOK][n_vocab], in calls of at most -b tokens (a call keeps at most -b rows), as the
-// engine's prefill makes them
-static float *rows(model_t *m) {
-    float *r = malloc(sizeof(float) * (size_t)N_TOK * (size_t)m->n_vocab);
-    for (int pos = 0; pos < N_TOK;) {
-        const int n = N_TOK - pos < m->n_batch ? N_TOK - pos : m->n_batch;
-        if (!model_inkling2_forward(m, PROMPT + pos, n, pos, true, true)) { free(r); return NULL; }
+static model_t *load(const char *path, const char *route, bool act8, int threads, int n_batch) {
+    return load_ctx(path, route, act8, threads, 64, n_batch);
+}
+// every row of tok[0..n_tok-1], in calls of at most -b tokens (a call keeps at most -b rows), as the engine's
+// prefill makes them
+static float *rows_n(model_t *m, const int32_t *tok, int n_tok) {
+    float *r = malloc(sizeof(float) * (size_t)n_tok * (size_t)m->n_vocab);
+    for (int pos = 0; pos < n_tok;) {
+        const int n = n_tok - pos < m->n_batch ? n_tok - pos : m->n_batch;
+        if (!model_inkling2_forward(m, tok + pos, n, pos, true, true)) { free(r); return NULL; }
         for (int b = 0; b < n; b++)
             memcpy(r + (size_t)(pos + b) * (size_t)m->n_vocab, model_inkling2_row(m, b), sizeof(float) * (size_t)m->n_vocab);
         pos += n;
     }
     return r;
 }
+static float *rows(model_t *m) { return rows_n(m, PROMPT, N_TOK); }
 static void drop(model_t *m) { if (m) { model_free(m); free(m); } }
 // the largest difference relative to the largest reference logit
 static double rel_diff(const float *a, const float *ref, size_t n) {
@@ -159,6 +163,57 @@ int main(int argc, char **argv) {
         const unsigned long tc1 = vec_dot_exact_tile_cols();
         CHECK(out64 && tc1 > tc0, "(h) T=64 BF16 prefill takes exact tile path (%lu cols, want > 0)", tc1 - tc0);
         drop(p64t);
+    }
+    // (i) default chunk size 256 (clamped to n_ctx) and lazy r->rows allocation (only allocated on keep_all / dump)
+    enum { N_SPLIT = 280 };
+    int32_t split_tok[N_SPLIT];
+    for (int i = 0; i < N_SPLIT; i++) split_tok[i] = PROMPT[i % N_TOK];
+    {
+        model_t *m384 = load_ctx(argv[2], NULL, false, 1, 384, 0);
+        model_t *m128 = load_ctx(argv[2], NULL, false, 1, 128, 0);
+        model_t *m64c = load_ctx(argv[2], NULL, false, 1, 64, 0);
+        CHECK(m384 && m384->n_batch == 256, "(i) default n_batch at n_ctx=384 is %d, want 256", m384 ? m384->n_batch : -1);
+        CHECK(m128 && m128->n_batch == 128, "(i) default n_batch clamped at n_ctx=128 is %d, want 128", m128 ? m128->n_batch : -1);
+        CHECK(m64c && m64c->n_batch == 64, "(i) default n_batch clamped at n_ctx=64 is %d, want 64", m64c ? m64c->n_batch : -1);
+        if (m384) {
+            const int nv = m384->n_vocab;
+            inkling2_fit f0, f1;
+            float *last_lg = model_inkling2_forward(m384, split_tok, N_SPLIT, 0, true, false);
+            bool ok0 = model_inkling2_fit(m384, &f0);
+            CHECK(last_lg && ok0 && f0.logits == sizeof(float) * (uint64_t)nv,
+                  "(i) non-keep_all forward keeps fit.logits=%llu (want %llu, no eager rows)",
+                  (unsigned long long)f0.logits, (unsigned long long)(sizeof(float) * (uint64_t)nv));
+            CHECK(model_inkling2_row(m384, 0) == NULL, "(i) model_inkling2_row returns NULL when rows not allocated");
+            float *ka = model_inkling2_forward(m384, PROMPT, N_TOK, 0, true, true);
+            bool ok1 = model_inkling2_fit(m384, &f1);
+            CHECK(ka && ok1 && f1.logits == sizeof(float) * (uint64_t)nv * (uint64_t)(m384->n_batch + 1),
+                  "(i) keep_all forward lazily allocates rows: fit.logits=%llu (want %llu)",
+                  (unsigned long long)f1.logits, (unsigned long long)(sizeof(float) * (uint64_t)nv * (uint64_t)(m384->n_batch + 1)));
+        }
+        drop(m384); drop(m128); drop(m64c);
+    }
+    // (j) -b invariance across chunk split (N_TOK=280, n_ctx=384) on BOTH fast and reference routes, with control
+    for (int ri = 0; ri < 2; ri++) {
+        const char *route = ri == 0 ? NULL : "reference";
+        const char *rname = ri == 0 ? "fast" : "reference";
+        model_t *m256 = load_ctx(argv[2], route, false, ri == 0 ? 2 : 1, 384, 256);
+        model_t *m64s = load_ctx(argv[2], route, false, ri == 0 ? 2 : 1, 384, 64);
+        model_t *m8s  = load_ctx(argv[2], route, false, ri == 0 ? 2 : 1, 384, 8);
+        const size_t nbytes = m256 ? (size_t)N_SPLIT * (size_t)m256->n_vocab * sizeof(float) : 0;
+        float *r256 = m256 ? rows_n(m256, split_tok, N_SPLIT) : NULL;
+        float *r64s = m64s ? rows_n(m64s, split_tok, N_SPLIT) : NULL;
+        float *r8s  = m8s  ? rows_n(m8s, split_tok, N_SPLIT)  : NULL;
+        CHECK(r256 && r64s && !memcmp(r256, r64s, nbytes), "(j) %s split -b 256 == -b 64 byte-identical (N=%d)", rname, N_SPLIT);
+        CHECK(r256 && r8s  && !memcmp(r256, r8s, nbytes),  "(j) %s split -b 256 == -b 8 byte-identical (N=%d)",  rname, N_SPLIT);
+        // non-vacuous control: perturb continuation chunk p0 > 0, so -b 256 (split at 256) != -b 64 (split at 64)
+        ink2_set_test_chunk_bump(1e-2f);
+        float *c256 = m256 ? rows_n(m256, split_tok, N_SPLIT) : NULL;
+        float *c64s = m64s ? rows_n(m64s, split_tok, N_SPLIT) : NULL;
+        ink2_set_test_chunk_bump(0.0f);
+        CHECK(c256 && c64s && memcmp(c256, c64s, nbytes) != 0,
+              "(j) %s split control: chunk-boundary perturbation makes -b 256 != -b 64", rname);
+        free(r256); free(r64s); free(r8s); free(c256); free(c64s);
+        drop(m256); drop(m64s); drop(m8s);
     }
     drop(t1); drop(t4); drop(b8); drop(ref); drop(q8);
     printf(fails ? "FAIL %d\n" : "PASS\n", fails);

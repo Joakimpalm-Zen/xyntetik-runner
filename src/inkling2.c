@@ -1300,6 +1300,13 @@ static void ink2_head_range(void *c, int64_t v0, int64_t v1) {
 static _Atomic long ink2_head_rows_count = 0;
 long ink2_head_rows(void) { return atomic_load_explicit(&ink2_head_rows_count, memory_order_relaxed); }
 
+static _Atomic uint32_t ink2_test_chunk_bump_bits = 0;
+void ink2_set_test_chunk_bump(float delta) {
+    uint32_t bits;
+    memcpy(&bits, &delta, sizeof bits);
+    atomic_store_explicit(&ink2_test_chunk_bump_bits, bits, memory_order_relaxed);
+}
+
 // The head: lm_head (built UNPADDED by the reference: vocab_used rows) then logit_softcap, tanh(l / cap) * cap
 ink2_status ink2_head(const ink2_shape *s, const ink2_weights *w, int T, const float *x, float *logits) {
     const ink2_tensor *wo = w->get(w->ctx, "lm_head.weight");
@@ -1602,6 +1609,14 @@ ink2_status ink2_forward_chunk_lora(const ink2_shape *s, const ink2_weights *w, 
     }
     INK2_TRY(ink2_norm_rows(s, w, "model.embed_tokens.embed_norm.weight", T, h, hn));
     { float *tmp = h; h = hn; hn = tmp; }
+    {
+        uint32_t bump_bits = atomic_load_explicit(&ink2_test_chunk_bump_bits, memory_order_relaxed);
+        if (bump_bits && p0 > 0) {
+            float bump;
+            memcpy(&bump, &bump_bits, sizeof bump);
+            h[0] += bump;
+        }
+    }
     int nb = 0, n_prev = 0, pre_nb = 0;
     memcpy(pre2_h, h, sizeof(float) * TH);
     for (int a = 0; a < s->n_app; a++) {

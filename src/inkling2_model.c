@@ -125,6 +125,13 @@ static size_t env_bytes(const char *k, size_t dflt) {
     return (size_t)(x * (double)mul);
 }
 
+// R4.48.20: runtime and --info fit share the house CPU batch default (clamped to n_ctx) so they cannot disagree.
+static int ink2_batch_default(int n_batch, int n_ctx) {
+    if (n_batch <= 0) n_batch = model_batch_default(GPU_OFF, plat_ram_bytes());
+    if (n_batch > n_ctx) n_batch = n_ctx;
+    return n_batch;
+}
+
 bool model_inkling2_runtime(model_t *m, const model_params *p) {
     ink2_rt *r = rt_of(m);
     if (!r) return false;
@@ -136,8 +143,7 @@ bool model_inkling2_runtime(model_t *m, const model_params *p) {
         return false;
     }
     m->n_ctx = n_ctx;
-    m->n_batch = p->n_batch > 0 ? p->n_batch : 64;
-    if (m->n_batch > n_ctx) m->n_batch = n_ctx;
+    m->n_batch = ink2_batch_default(p->n_batch, n_ctx);
     m->spec_batch = m->n_batch;
     r->n_threads = p->n_threads > 0 ? p->n_threads : 1;
     if (ink2_cache_init_window(&r->c, &r->s, n_ctx, m->n_batch)) {
@@ -146,9 +152,11 @@ bool model_inkling2_runtime(model_t *m, const model_params *p) {
     }
     r->cache_ok = true;
     r->rows_cap = m->n_batch;
-    r->rows = malloc(sizeof(float) * (size_t)r->rows_cap * (size_t)m->n_vocab);
+    // r->rows [n_batch][n_vocab] is allocated lazily on the first keep_all or RUNNER_INKLING2_ROWS forward; normal
+    // prefill/decode asks only for the last row via m->logits (INK2_LOGITS_LAST).
+    r->rows = NULL;
     m->logits = malloc(sizeof(float) * (size_t)m->n_vocab);
-    if (!r->rows || !m->logits) { fprintf(stderr, "error: out of memory for the logits rows\n"); return false; }
+    if (!m->logits) { fprintf(stderr, "error: out of memory for the logits rows\n"); return false; }
     // the decoded-expert cache (the reference route only: the fast route reads the experts in place):
     // RUNNER_INKLING2_EXPERT_CACHE bytes (default 4 GiB; 0 decodes every expert on use)
     r->ec_budget = r->route == 'R' ? env_bytes("RUNNER_INKLING2_EXPERT_CACHE", (size_t)4 << 30) : 0;
@@ -271,6 +279,10 @@ float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos,
     const char *dump = rows_dump;
     const bool dump_on = dump && *dump;
     const bool need_all = keep_all || dump_on;
+    if (need_all && !r->rows) {
+        r->rows = malloc(sizeof(float) * (size_t)r->rows_cap * (size_t)m->n_vocab);
+        if (!r->rows) { fprintf(stderr, "error: out of memory for the logits rows\n"); return NULL; }
+    }
     int last_T = 0;
     // chunks of n_batch: the engine's rows do not depend on the split (measured bit for bit)
     for (int done = 0; done < n;) {
@@ -322,7 +334,7 @@ float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos,
 
 float *model_inkling2_row(model_t *m, int b) {
     ink2_rt *r = rt_of(m);
-    if (!r || b < 0 || b >= r->kept_n) return NULL;
+    if (!r || !r->rows || b < 0 || b >= r->kept_n) return NULL;
     return r->rows + (size_t)b * (size_t)m->n_vocab;
 }
 
@@ -335,7 +347,7 @@ bool model_inkling2_fit(model_t *m, inkling2_fit *f) {
     f->cache = r->cache_ok ? ink2_cache_bytes(&r->c, &r->s) : 0;
     f->expert_cache = expert_cache_held(&r->s, r->ec_budget);
     f->mapped = gguf_mapped_size(&m->gf);
-    f->logits = sizeof(float) * (uint64_t)m->n_vocab * (uint64_t)(r->rows_cap + 1);
+    f->logits = sizeof(float) * (uint64_t)m->n_vocab * (uint64_t)((r->rows ? r->rows_cap : 0) + 1);
     return true;
 }
 
@@ -374,8 +386,7 @@ int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, int
     }
     int train = (int)gguf_get_u32(g, "inkling2_loop.context_length", 4096);
     int n_ctx = n_ctx_want > 0 ? n_ctx_want : (train < 4096 ? train : 4096);
-    if (n_batch <= 0) n_batch = 64;
-    if (n_batch > n_ctx) n_batch = n_ctx;
+    n_batch = ink2_batch_default(n_batch, n_ctx);
     // the dense float32 tensors the load decodes: every tensor but the expert stacks and their factors, the head at
     // its unpadded rows
     const char route = route_of_env();

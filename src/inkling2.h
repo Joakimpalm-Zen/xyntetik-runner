@@ -155,6 +155,9 @@ ink2_status ink2_attention(const ink2_shape *s, const ink2_weights *w, ink2_cach
 ink2_status ink2_head(const ink2_shape *s, const ink2_weights *w, int T, const float *x, float *logits);
 // TEST-ONLY: cumulative rows evaluated by ink2_head (across all forwards in the process).
 long ink2_head_rows(void);
+// TEST-ONLY: perturb position p0's post-embed hidden state by delta when p0 > 0, so split invariance tests can
+// prove chunk boundaries are live.
+void ink2_set_test_chunk_bump(float delta);
 
 // The block-state read: Inkling2LoopBlockAttentionResidual (`model.layers.<b>.attention_input`, `.mlp_input`,
 // `model.final_input`): a depth-wise attention over the completed block states [T][n_blocks][hidden] and the partial

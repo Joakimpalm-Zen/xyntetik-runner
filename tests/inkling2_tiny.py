@@ -178,7 +178,7 @@ def _tensors(no_scale_layer=None, scale_len=E, dense_nvfp4=False, dense="f32"):
 def _kvs(drop=None, used=USED):
     a = "inkling2_loop."
     kv = [("general.architecture", STR, "inkling2_loop"), ("general.alignment", U32, 32),
-          (a + "block_count", U32, N_BLOCK), (a + "context_length", U32, 256), (a + "embedding_length", U32, H),
+          (a + "block_count", U32, N_BLOCK), (a + "context_length", U32, 512), (a + "embedding_length", U32, H),
           (a + "feed_forward_length", U32, FF), (a + "attention.head_count", ARR, (I32, [NH] * N_BLOCK)),
           (a + "attention.head_count_kv", ARR, (I32, [NKV] * N_BLOCK)),
           (a + "attention.layer_norm_rms_epsilon", F32, 1e-6), (a + "expert_count", U32, E),
