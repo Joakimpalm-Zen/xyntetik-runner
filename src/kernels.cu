@@ -5552,6 +5552,22 @@ extern "C" __global__ void k_moe_scatter_add(float *out, const float *src,
         w[blockIdx.y] * src[(ulong64)blockIdx.y * ss + i];
 }
 
+// R4.48.9 G2b step 1: Inkling 2 Mini's SoftcappedSwiGLU over gate_up's columns in place, 1:1 with ink2_swiglu in
+// src/inkling2.c: softcap(g, gc) * sigmoid(g) * softcap(u, uc), softcap(v, c) = tanh(v / c) * c (a true division),
+// sigmoid(g) = 1 / (1 + exp(-g)). Column c holds the gates at act + c*cs and the ups F further; the result replaces
+// the gates. grid.y = column. CUDA's own tanhf/expf (the PTX is built without fast math), not the CPU fast route's
+// vector polynomials, so the two agree to rounding, not bit for bit.
+extern "C" __global__ void k_ink2_swiglu(float *act, int F, int cs, float gc, float uc) {
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j >= F) return;
+    float *a = act + (ulong64)blockIdx.y * cs;
+    const float g = a[j], u = a[F + j];
+    const float sg = tanhf(g / gc) * gc;
+    const float sig = 1.0f / (1.0f + expf(-g));
+    const float su = tanhf(u / uc) * uc;
+    a[j] = sg * sig * su;
+}
+
 // Gated activation over per-column gate/up at arbitrary column strides,
 // with NO weight fold (the grouped path applies selw in the scatter, like
 // the CPU grouping). Same per-element arithmetic as k_silu_mul/k_gelu_mul.

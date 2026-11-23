@@ -630,9 +630,19 @@ static void ink2_swiglu_range(void *c, int64_t b0, int64_t b1) {
 // columns), the SwiGLU, its down rows, and each position's out += down * wt in position order. A position's output is
 // the sum over its chosen experts in ascending index, as the per-position loop adds it, and each column's dot is the
 // single-column kernel's, so the rows do not depend on which other positions share the call.
+static ink2_dev_experts_fn ink2_dev_experts;
+void ink2_set_dev_experts(ink2_dev_experts_fn fn) { ink2_dev_experts = fn; }
+static ink2_sel_obs_fn ink2_sel_obs;
+static void *ink2_sel_obs_ctx;
+void ink2_set_sel_observer(ink2_sel_obs_fn fn, void *ctx) { ink2_sel_obs = fn; ink2_sel_obs_ctx = ctx; }
 static ink2_status ink2_experts_fast_c(const ink2_shape *s, const ink2_moe_w *M, int T, const float *x,
                                        const unsigned char *chosen, const float *wt, float *out, ink2_cache *c) {
     const int H = s->hidden, E = s->n_expert, F = s->ff;
+    if (M->t13->dev && M->t2->dev && ink2_dev_experts) {   // R4.48.9 G2b step 1: the whole body on the device
+        if (ink2_dev_experts(s, M->t13, M->t2, T, x, chosen, wt, out))
+            for (size_t i = 0; i < (size_t)T * H; i++) out[i] = NAN;
+        return INK2_OK;
+    }
     for (size_t i = 0; i < (size_t)T * H; i++) out[i] = 0.0f;
     if (T == 1 && ink2_decode_fuse_enabled() && M->t13 && M->t2 && !M->t13->q_act8 && !M->t2->q_act8) {
         int n_sel = 0;
@@ -733,6 +743,15 @@ static ink2_status ink2_expert_layer_c(const ink2_shape *s, const ink2_weights *
             float sc[256], wt[256];
             unsigned char chosen[256];
             ink2_route_one(s, &M, x, NULL, sc, chosen, wt);
+            if (ink2_sel_obs) {   // TEST-ONLY observer: this position's margin, as the T > 1 loop computes it
+                float lo = INFINITY, hi = -INFINITY;
+                for (int e = 0; e < E; e++) {
+                    const float v = sc[e] + M.br[e];
+                    if (chosen[e]) { if (v < lo) lo = v; } else if (v > hi) hi = v;
+                }
+                const float mg1 = lo - hi;
+                ink2_sel_obs(ink2_sel_obs_ctx, block, 1, E, chosen, &mg1);
+            }
             return ink2_experts_fast_c(s, &M, 1, x, chosen, wt, out, c);
         }
         // R4.48.20.4: a position's scores on the stack (E <= 256, as above), the T positions' tables (wts [T][E]
@@ -749,11 +768,22 @@ static ink2_status ink2_expert_layer_c(const ink2_shape *s, const ink2_weights *
         unsigned char *ch = wts ? (unsigned char *)(wts + tw) : NULL;
         if (!sc || !chosen || !wts) st = INK2_BAD_INPUT;
         float *wt = sc ? sc + E : NULL;
+        float *mg = ink2_sel_obs ? malloc(sizeof(float) * (size_t)T) : NULL;   // TEST-ONLY observer's margins
         for (int t = 0; t < T && st == INK2_OK; t++) {
             ink2_route_one(s, &M, x + (size_t)t * H, NULL, sc, chosen, wt);
             memcpy(ch + (size_t)t * E, chosen, (size_t)E);
             memcpy(wts + (size_t)t * E, wt, sizeof(float) * (size_t)E);
+            if (mg) {   // the k-th chosen score + bias minus the best unchosen one (sc still holds this position's)
+                float lo = INFINITY, hi = -INFINITY;
+                for (int e = 0; e < E; e++) {
+                    const float v = sc[e] + M.br[e];
+                    if (chosen[e]) { if (v < lo) lo = v; } else if (v > hi) hi = v;
+                }
+                mg[t] = lo - hi;
+            }
         }
+        if (mg && st == INK2_OK) ink2_sel_obs(ink2_sel_obs_ctx, block, T, E, ch, mg);
+        free(mg);
         if (st == INK2_OK) st = ink2_experts_fast_c(s, &M, T, x, ch, wts, out, c);
         ink2_op_free(wts, owned);
         if (!small) { free(sc); free(chosen); }

@@ -36,6 +36,7 @@ typedef struct {
     bool no_factor;       // TEST-ONLY (RUNNER_INKLING2_CUDA_TEST_NO_FACTOR=1): the device leaves out the expert factor
     int lin_fail_at;      // TEST-ONLY (RUNNER_INKLING2_CUDA_TEST_LIN_FAIL=k): the k-th device product fails; -1 none
     int n_lin;            // device products run so far (for lin_fail_at)
+    long n_exp;           // G2b step 1: device expert-body calls run so far (one per application per forward)
 } ink2_rt;
 
 static ink2_rt *rt_of(model_t *m) { return (ink2_rt *)m->ink2; }
@@ -117,6 +118,24 @@ static int dev_lin_scaled(const ink2_tensor *W, int64_t row0, int n_out, int n_i
     }
     return 0;
 }
+// G2b step 1: one application's expert body on the device (gpu_ink2_experts), the host router's choice handed over
+static int dev_experts(const ink2_shape *s, const ink2_tensor *t13, const ink2_tensor *t2, int T, const float *x,
+                       const unsigned char *chosen, const float *wt, float *out) {
+    ink2_rt *r = t13->dev;
+    if (!r->gpu || t2->dev != r) r->gpu_err = true;
+    if (r->gpu_err) return -1;
+    r->n_exp++;
+    const bool nf = r->no_factor;   // TEST-ONLY: the control leaves the expert factors out here too
+    const bool ok = gpu_ink2_experts(r->gpu, t13->dev_i, t2->dev_i, t13->qtype, t2->qtype, t13->q_row_bytes,
+                                     t2->q_row_bytes, s->hidden, s->ff, s->n_expert, T, x, chosen, wt,
+                                     nf ? NULL : t13->q_scale, nf ? NULL : t2->q_scale, s->gate_cap, s->up_cap, out);
+    if (!ok) {
+        if (!r->gpu_err) fprintf(stderr, "error: inkling2_loop: the expert body of %s failed on the device\n", t13->name);
+        r->gpu_err = true;
+        return -1;
+    }
+    return 0;
+}
 // The weights the device computes up to it (their stored rows), or a sentence why not and the CPU route. True: on
 // CUDA. n_batch: the most columns a product takes (its scratch is allocated before the fit check).
 static bool cuda_bind(ink2_rt *r, bool cpu_moe, int n_batch) {
@@ -148,9 +167,11 @@ static bool cuda_bind(ink2_rt *r, bool cpu_moe, int n_batch) {
         return false;
     }
     const size_t T = n_batch > 0 ? (size_t)n_batch : 1;
+    // G2b step 1: the expert body on the device when its kernels are in the module and the stacks go up
+    const bool exp_dev = !cpu_moe && gpu_ink2_experts_ok(r->gpu);
     if (ink2g_each_view(r->g, dev_count, &c) || c.n == 0 ||
         !gpu_ink2_reserve(r->gpu, sizeof(float) * T * (size_t)c.max_in, sizeof(float) * T * (size_t)c.max_out) ||
-        !gpu_mem_info(&fr, &tot)) {
+        (exp_dev && !gpu_ink2_reserve_experts(r->gpu, (int)T, r->s.hidden, r->s.ff)) || !gpu_mem_info(&fr, &tot)) {
         fprintf(stderr, "note: inkling2_loop has no weights the device computes, or no room for its products' buffers, "
                         "on %s; running on the CPU\n", dev);
         gpu_ink2_free(r->gpu);
@@ -184,10 +205,13 @@ static bool cuda_bind(ink2_rt *r, bool cpu_moe, int n_batch) {
     const char *lf = getenv("RUNNER_INKLING2_CUDA_TEST_LIN_FAIL");
     r->lin_fail_at = lf && *lf ? atoi(lf) : -1;
     r->n_lin = 0;
+    r->n_exp = 0;
     ink2_set_dev_lin(dev_lin_scaled);
+    if (exp_dev) ink2_set_dev_experts(dev_experts);
     fprintf(stderr, "inkling2_loop: the weights on CUDA (%s): %d tensors, %.3f GB, their stored rows; their products on "
-                    "the device, the rest of the forward on the CPU (R4.48.9 G2a)%s%s\n", dev, r->n_dev,
-            gpu_ink2_bytes(r->gpu) / 1e9, cpu_moe ? "; the expert stacks on the host (--cpu-moe)" : "",
+                    "the device%s, the rest of the forward on the CPU (R4.48.9 G2b)%s%s\n", dev, r->n_dev,
+            gpu_ink2_bytes(r->gpu) / 1e9, exp_dev ? " and each layer's expert body whole (the router on the host)" : "",
+            cpu_moe ? "; the expert stacks on the host (--cpu-moe)" : "",
             r->no_factor ? "; TEST-ONLY: the expert factor left out" : "");
     return true;
 }
@@ -631,6 +655,11 @@ char model_inkling2_route(const model_t *m) {
 bool model_inkling2_cuda(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
     return r && r->gpu;
+}
+void model_inkling2_cuda_calls(const model_t *m, long *n_products, long *n_expert_bodies) {
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    if (n_products) *n_products = r ? r->n_lin : 0;
+    if (n_expert_bodies) *n_expert_bodies = r ? r->n_exp : 0;
 }
 bool model_inkling2_cuda_holds(const model_t *m, const char *name) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;

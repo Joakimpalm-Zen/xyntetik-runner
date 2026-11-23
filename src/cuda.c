@@ -12897,6 +12897,11 @@ struct gpu_ink2 {
     CUdevice dev; CUcontext ctx; ink2_dev_tensor *t; int n, cap; size_t bytes;
     CUmodule mod; CUfunction mv[KT_N];   // G2a: the batch-1 matvecs of the types Inkling's views take
     CUdeviceptr dx, dy; size_t dx_cap, dy_cap;   // the activations and the outputs, grown as needed
+    // G2b step 1, the expert body: the gather and the weighted scatter-add of the MoE glue, Inkling's SwiGLU; the
+    // chunk's x and out, the gathered columns, gate_up's and down's outputs, the experts' position lists and weights
+    CUfunction f_gather, f_scatter, f_swiglu;
+    CUdeviceptr ex, eo, exe, eact, edn, eidx, ew;
+    size_t ex_cap, eo_cap, exe_cap, eact_cap, edn_cap, eidx_cap, ew_cap;
     pthread_mutex_t mu;
 };
 
@@ -12919,6 +12924,9 @@ gpu_ink2 *gpu_ink2_bind(void) {
     };
     for (size_t k = 0; k < sizeof mv / sizeof *mv; k++)
         if (cu.ModuleGetFunction(&h->mv[mv[k].type], h->mod, mv[k].name) != 0) h->mv[mv[k].type] = NULL;
+    if (cu.ModuleGetFunction(&h->f_gather, h->mod, "k_moe_gather") != 0) h->f_gather = NULL;
+    if (cu.ModuleGetFunction(&h->f_scatter, h->mod, "k_moe_scatter_add") != 0) h->f_scatter = NULL;
+    if (cu.ModuleGetFunction(&h->f_swiglu, h->mod, "k_ink2_swiglu") != 0) h->f_swiglu = NULL;
     pthread_mutex_init(&h->mu, NULL);
     return h;
 }
@@ -12931,6 +12939,27 @@ static bool ink2_grow(CUdeviceptr *p, size_t *cap, size_t need) {
     *cap = need;
     return true;
 }
+// n columns of y = scale * W[rows at w_off] . x, one batch-1 launch per column in the shapes cuda.c's enc_mv gives
+// these kernels: one warp a row, 4 rows a 128-thread block; the lane-staged NVFP4 8 rows a 256-thread block; the
+// lane-level i-quant 8 rows a 128-thread block. Column c reads x + c * xs, writes y + c * n_out.
+static bool ink2_mv_cols_xs(gpu_ink2 *h, int type, CUdeviceptr w, uint64_t w_off, int n_in, int n_out, int n,
+                            CUdeviceptr x, int xs, CUdeviceptr y, float scale) {
+    unsigned rpb = 4, block = 128;
+    if (type == T_NVFP4) { rpb = 8; block = 256; }
+    else if (type == T_IQ3_XXS) rpb = 8;
+    bool ok = true;
+    for (int t = 0; ok && t < n; t++) {
+        CUdeviceptr xc = x + sizeof(float) * (size_t)t * (size_t)xs, yc = y + sizeof(float) * (size_t)t * (size_t)n_out;
+        mv_args a = { n_in, n_out, w_off, 0, 1, n_in, n_out };
+        void *p[] = { &w, &xc, &yc, &a, &x, &scale };
+        ok = cu.LaunchKernel(h->mv[type], ((unsigned)n_out + rpb - 1) / rpb, 1, 1, block, 1, 1, 0, NULL, p, NULL) == 0;
+    }
+    return ok;
+}
+static bool ink2_mv_cols(gpu_ink2 *h, int type, CUdeviceptr w, uint64_t w_off, int n_in, int n_out, int n,
+                         CUdeviceptr x, CUdeviceptr y, float scale) {
+    return ink2_mv_cols_xs(h, type, w, w_off, n_in, n_out, n, x, n_in, y, scale);
+}
 bool gpu_ink2_lin(gpu_ink2 *h, int i, int type, size_t row_bytes, int64_t row0, int n_out, int n_in, int T,
                   const float *x, float *y, float scale) {
     if (!h || i < 0 || i >= h->n || type < 0 || type >= KT_N || !h->mv[type] || T <= 0 || n_out <= 0 ||
@@ -12940,19 +12969,80 @@ bool gpu_ink2_lin(gpu_ink2 *h, int i, int type, size_t row_bytes, int64_t row0, 
     const size_t xb = sizeof(float) * (size_t)T * (size_t)n_in, yb = sizeof(float) * (size_t)T * (size_t)n_out;
     bool ok = cu.CtxSetCurrent(h->ctx) == 0 && ink2_grow(&h->dx, &h->dx_cap, xb) && ink2_grow(&h->dy, &h->dy_cap, yb) &&
               cu.MemcpyHtoD(h->dx, x, xb) == 0;
-    // the launch shapes cuda.c's enc_mv gives these kernels at batch 1: one warp a row, 4 rows a 128-thread block;
-    // the lane-staged NVFP4 8 rows a 256-thread block; the lane-level i-quant 8 rows a 128-thread block
-    unsigned rpb = 4, block = 128;
-    if (type == T_NVFP4) { rpb = 8; block = 256; }
-    else if (type == T_IQ3_XXS) rpb = 8;
-    CUdeviceptr w = h->t[i].rows;
-    for (int t = 0; ok && t < T; t++) {
-        CUdeviceptr xc = h->dx + sizeof(float) * (size_t)t * (size_t)n_in, yc = h->dy + sizeof(float) * (size_t)t * (size_t)n_out;
-        mv_args a = { n_in, n_out, (uint64_t)row0 * row_bytes, 0, 1, n_in, n_out };
-        void *p[] = { &w, &xc, &yc, &a, &h->dx, &scale };
-        ok = cu.LaunchKernel(h->mv[type], ((unsigned)n_out + rpb - 1) / rpb, 1, 1, block, 1, 1, 0, NULL, p, NULL) == 0;
-    }
+    ok = ok && ink2_mv_cols(h, type, h->t[i].rows, (uint64_t)row0 * row_bytes, n_in, n_out, T, h->dx, h->dy, scale);
     ok = ok && cu.MemcpyDtoH(y, h->dy, yb) == 0;   // the null stream: after every launch above
+    pthread_mutex_unlock(&h->mu);
+    return ok;
+}
+// G2b step 1 (gpu.h): the expert body of one application, the router's choice given. Per used expert in ascending
+// index, as ink2_experts_fast: its positions gathered (k_moe_gather), gate_up a column at a time, Inkling's SwiGLU,
+// down a column at a time, out[position] += weight * down (k_moe_scatter_add, one launch per expert on the null
+// stream, so a position's sum runs in ascending expert index and no two launches write at once).
+bool gpu_ink2_experts(gpu_ink2 *h, int i13, int i2, int type13, int type2, size_t rb13, size_t rb2, int H, int F,
+                      int E, int T, const float *x, const unsigned char *chosen, const float *wt, const float *s13,
+                      const float *s2, float gate_cap, float up_cap, float *out) {
+    if (!h || !h->f_gather || !h->f_scatter || !h->f_swiglu || i13 < 0 || i13 >= h->n || i2 < 0 || i2 >= h->n ||
+        type13 < 0 || type13 >= KT_N || type2 < 0 || type2 >= KT_N || !h->mv[type13] || !h->mv[type2] || T <= 0 ||
+        ((s13 && type13 != T_NVFP4) || (s2 && type2 != T_NVFP4)))
+        return false;
+    // the experts' position lists and weights, concatenated in ascending expert order: one upload for the call
+    int *idx = malloc(sizeof(int) * (size_t)T * (size_t)E), *off = malloc(sizeof(int) * ((size_t)E + 1));
+    float *wv = malloc(sizeof(float) * (size_t)T * (size_t)E);
+    int nall = 0;
+    for (int e = 0; idx && off && wv && e < E; e++) {
+        off[e] = nall;
+        for (int t = 0; t < T; t++)
+            if (chosen[(size_t)t * E + e]) { idx[nall] = t; wv[nall] = wt[(size_t)t * E + e]; nall++; }
+    }
+    if (!idx || !off || !wv) { free(idx); free(off); free(wv); return false; }
+    off[E] = nall;
+    // k_moe_scatter_add is a plain += with no atomics: it is right only if ONE launch's positions are all different
+    // (two of its columns on one position would race). Hence one launch PER EXPERT, in ascending expert index on the
+    // null stream, each list from one ascending scan of the positions. Checked, not assumed: every launch's list is
+    // strictly ascending (so unique), or the call refuses.
+    for (int e = 0; e < E; e++)
+        for (int j = off[e] + 1; j < off[e + 1]; j++)
+            if (idx[j] <= idx[j - 1]) { free(idx); free(off); free(wv); return false; }
+    pthread_mutex_lock(&h->mu);
+    const size_t fb = sizeof(float);
+    bool ok = cu.CtxSetCurrent(h->ctx) == 0 && ink2_grow(&h->ex, &h->ex_cap, fb * (size_t)T * H) &&
+              ink2_grow(&h->eo, &h->eo_cap, fb * (size_t)T * H) && ink2_grow(&h->exe, &h->exe_cap, fb * (size_t)T * H) &&
+              ink2_grow(&h->eact, &h->eact_cap, fb * (size_t)T * 2 * F) && ink2_grow(&h->edn, &h->edn_cap, fb * (size_t)T * H) &&
+              ink2_grow(&h->eidx, &h->eidx_cap, sizeof(int) * ((size_t)nall + 1)) &&
+              ink2_grow(&h->ew, &h->ew_cap, fb * ((size_t)nall + 1)) &&
+              cu.MemcpyHtoD(h->ex, x, fb * (size_t)T * H) == 0 && cu.MemsetD8(h->eo, 0, fb * (size_t)T * H) == 0 &&
+              (!nall || (cu.MemcpyHtoD(h->eidx, idx, sizeof(int) * (size_t)nall) == 0 &&
+                         cu.MemcpyHtoD(h->ew, wv, fb * (size_t)nall) == 0));
+    for (int e = 0; ok && e < E; e++) {
+        const int n = off[e + 1] - off[e];
+        if (!n) continue;
+        CUdeviceptr di = h->eidx + sizeof(int) * (size_t)off[e], dw = h->ew + fb * (size_t)off[e];
+        int nh = H, ss = H, ds = H, f2 = 2 * F, nf = F;
+        void *pg[] = { &h->exe, &h->ex, &di, &nh, &ss, &ds };
+        ok = cu.LaunchKernel(h->f_gather, ((unsigned)H + 255) / 256, (unsigned)n, 1, 256, 1, 1, 0, NULL, pg, NULL) == 0;
+        ok = ok && ink2_mv_cols(h, type13, h->t[i13].rows, (uint64_t)e * 2 * F * rb13, H, 2 * F, n, h->exe, h->eact,
+                                s13 ? s13[e] : 1.0f);
+        void *ps[] = { &h->eact, &nf, &f2, &gate_cap, &up_cap };
+        ok = ok && cu.LaunchKernel(h->f_swiglu, ((unsigned)F + 255) / 256, (unsigned)n, 1, 256, 1, 1, 0, NULL, ps, NULL) == 0;
+        // down reads each column's first F values of its 2F-wide row (its x stride is 2F)
+        ok = ok && ink2_mv_cols_xs(h, type2, h->t[i2].rows, (uint64_t)e * H * rb2, F, H, n, h->eact, 2 * F, h->edn,
+                                   s2 ? s2[e] : 1.0f);
+        void *pa[] = { &h->eo, &h->edn, &di, &dw, &nh, &ss, &ds };
+        ok = ok && cu.LaunchKernel(h->f_scatter, ((unsigned)H + 255) / 256, (unsigned)n, 1, 256, 1, 1, 0, NULL, pa, NULL) == 0;
+    }
+    ok = ok && cu.MemcpyDtoH(out, h->eo, fb * (size_t)T * H) == 0;   // the null stream: after every launch above
+    pthread_mutex_unlock(&h->mu);
+    free(idx); free(off); free(wv);
+    return ok;
+}
+bool gpu_ink2_experts_ok(const gpu_ink2 *h) { return h && h->f_gather && h->f_scatter && h->f_swiglu; }
+bool gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F) {
+    if (!h || T <= 0 || cu.CtxSetCurrent(h->ctx) != 0) return false;
+    const size_t fb = sizeof(float), th = fb * (size_t)T * (size_t)H;
+    pthread_mutex_lock(&h->mu);
+    const bool ok = ink2_grow(&h->ex, &h->ex_cap, th) && ink2_grow(&h->eo, &h->eo_cap, th) &&
+                    ink2_grow(&h->exe, &h->exe_cap, th) && ink2_grow(&h->eact, &h->eact_cap, fb * (size_t)T * 2 * F) &&
+                    ink2_grow(&h->edn, &h->edn_cap, th);
     pthread_mutex_unlock(&h->mu);
     return ok;
 }
@@ -13001,6 +13091,9 @@ void gpu_ink2_free(gpu_ink2 *h) {
         }
         if (h->dx) cu.MemFree(h->dx);
         if (h->dy) cu.MemFree(h->dy);
+        const CUdeviceptr eb[] = { h->ex, h->eo, h->exe, h->eact, h->edn, h->eidx, h->ew };
+        for (size_t k = 0; k < sizeof eb / sizeof *eb; k++)
+            if (eb[k]) cu.MemFree(eb[k]);
         if (h->mod) cu.ModuleUnload(h->mod);
     }
     pthread_mutex_destroy(&h->mu);

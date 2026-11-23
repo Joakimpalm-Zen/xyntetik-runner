@@ -30,11 +30,21 @@
 //         tiny file's 64-value rows cannot hold IQ3_XXS's 256-value blocks) through gpu.h's gpu_ink2_put and
 //         gpu_ink2_lin, from row 5 of a stored matrix, 3 columns, within 1e-4 of float64 sums over dequant_row's
 //         decode (relative to the largest), finite. (d) and (e) run on all three files.
+//  G2b step 1 (the expert body on the device, the router on the host):
+//     (j) a forward runs each application's expert body as ONE device call (model_inkling2_cuda_calls: n_app calls
+//         for a one-chunk forward), on F32, BF16 and Q8_0; the rows still pass (c), (d), (e);
+//     (k) gpu_ink2_experts on a synthetic NVFP4 layer (H 128, F 64, E 4, 6 positions, 2 experts each) against float64
+//         on the host (dequant_row's decode; Inkling's SwiGLU in double), within 1e-4 of each position's largest
+//         value, finite. x is one-hot, so each gate value is one decoded weight times the expert's factor: the rows
+//         cycle through all 16 E2M1 codes (the top code, zero) with the largest (448) and the smallest UE4M3 scale
+//         and an all-zero block, and the factors 1e-3, 1, 10, 0.05 put gates near 0, in range, beyond +-10;
+//     (l) a --cpu-moe load runs no device expert body (its stacks are on the host).
 //
 // usage: test_inkling2_cuda TINY_F32.gguf TINY_BF16.gguf TINY_Q8_0.gguf TINY_F16.gguf
 #include "model.h"
 #include "gpu.h"
 #include "inkling2_model.h"
+#include "inkling2.h"
 #include "compat.h"
 #include "quants.h"
 #include <math.h>
@@ -147,6 +157,16 @@ int main(int argc, char **argv) {
         const bool on_cuda = model_inkling2_cuda(g);
         const size_t n = (size_t)N_TOK * (size_t)g->n_vocab;
         float *a = rows(g), *b = rows(r);
+        // G2b (j): the one-chunk forward above ran each application's expert body as one device call
+        {
+            const void *sp = NULL;
+            long n_lin = 0, n_exp = 0;
+            model_inkling2_parts(g, &sp, NULL);
+            model_inkling2_cuda_calls(g, &n_lin, &n_exp);
+            const int n_app = sp ? ((const ink2_shape *)sp)->n_app : -1;
+            CHECK(on_cuda && a && n_exp == n_app, "(j) %s: %ld device expert-body calls for one forward of %d applications "
+                  "(%ld single products)", kind[f], n_exp, n_app, n_lin);
+        }
         const double rd = a && b ? rel_diff(a, b, n) : 1;
         const size_t nf = a ? n_nonfinite(a, n) : 0;
         CHECK(on_cuda && a && b && nf == 0 && rd <= 1e-4, "(c) %s: CUDA rows within %.2e of the reference rows, want <= 1e-4; %zu "
@@ -186,6 +206,11 @@ int main(int argc, char **argv) {
               "(g) %s: on CUDA (%d) with %s on the host (%d on the device); rows %s, within %.2e of the reference, want "
               "<= 1e-4; %zu not finite", what, model_inkling2_cuda(g), k ? "the expert stacks" : "the F16 projections",
               held, a ? "given" : "refused", rd, nf);
+        if (k == 1) {   // G2b (l): --cpu-moe runs no device expert body
+            long n_exp = -1;
+            model_inkling2_cuda_calls(g, NULL, &n_exp);
+            CHECK(a && n_exp == 0, "(l) --cpu-moe: %ld device expert-body calls, want 0", n_exp);
+        }
         free(a); free(b); drop(g); drop(r);
     }
     // G2 (f), on the BF16 file: a bind that succeeds first, so the process's device hook is set, then partial uploads
@@ -292,6 +317,92 @@ int main(int argc, char **argv) {
         }
 #undef RND
         gpu_ink2_free(h);
+    }
+    // G2b (k): gpu_ink2_experts against float64 on the host, SwiGLU's boundary inputs reached through one-hot x
+    {
+        enum { KH = 128, KF = 64, KE = 4, KT = 6 };
+        const size_t rb13 = (size_t)KH / 64 * 36, rb2 = (size_t)KF / 64 * 36;
+        const float s13[KE] = { 1e-3f, 1.0f, 10.0f, 0.05f }, s2[KE] = { 1.0f, 0.5f, 2.0f, 1.0f };
+        const float gcap = 4.0f, ucap = 8.0f;
+        unsigned char *w13 = calloc((size_t)KE * 2 * KF, rb13), *w2 = calloc((size_t)KE * KH, rb2);
+        uint32_t seed = 777u;
+#define RND() (seed = seed * 1664525u + 1013904223u, seed >> 8)
+        for (int r = 0; w13 && r < KE * 2 * KF; r++) {   // gate_up: rows cycle the codes and the scales' extremes
+            unsigned char *row = w13 + (size_t)r * rb13;
+            const unsigned char sc = r % 8 == 0 ? 0x7e : r % 8 == 1 ? 0x01 : 0x38;   // 448, the smallest, 1.0
+            for (size_t b = 0; b < rb13; b += 36) {
+                memset(row + b, sc, 4);
+                for (int j = 0; j < 32; j++)
+                    row[b + 4 + j] = r % 8 == 2 ? 0 : (unsigned char)(((r + 2 * j) & 15) | (((r + 2 * j + 1) & 15) << 4));
+            }
+        }
+        for (int r = 0; w2 && r < KE * KH; r++) {   // down: scale 1.0, codes from the generator
+            unsigned char *row = w2 + (size_t)r * rb2;
+            for (size_t b = 0; b < rb2; b += 36) {
+                memset(row + b, 0x38, 4);
+                for (int j = 0; j < 32; j++) row[b + 4 + j] = (unsigned char)RND();
+            }
+        }
+#undef RND
+        float x[KT * KH], wt[KT * KE], out[KT * KH];
+        unsigned char ch[KT * KE];
+        memset(x, 0, sizeof x); memset(wt, 0, sizeof wt); memset(ch, 0, sizeof ch);
+        for (int t = 0; t < KT; t++) {
+            x[t * KH + (7 * t + 1) % KH] = 1.0f;   // one-hot: each gate value is one decoded weight times the factor
+            for (int j = 0; j < 2; j++) {
+                const int e = (t + j) % KE;
+                ch[t * KE + e] = 1;
+                wt[t * KE + e] = 0.25f + 0.1f * (float)e;
+            }
+        }
+        // the reference, float64 over dequant_row's decode, experts in ascending index
+        double ref[KT * KH];
+        memset(ref, 0, sizeof ref);
+        float row[KH], gu[2 * KF];
+        double act[KF];
+        for (int t = 0; w13 && w2 && t < KT; t++)
+            for (int e = 0; e < KE; e++) {
+                if (!ch[t * KE + e]) continue;
+                for (int r = 0; r < 2 * KF; r++) {
+                    dequant_row(T_NVFP4, w13 + ((size_t)e * 2 * KF + r) * rb13, row, KH);
+                    double s = 0;
+                    for (int i = 0; i < KH; i++) s += (double)row[i] * x[t * KH + i];
+                    gu[r] = (float)(s * s13[e]);
+                }
+                for (int j = 0; j < KF; j++) {
+                    const double g = gu[j], u = gu[KF + j];
+                    act[j] = tanh(g / gcap) * gcap * (1.0 / (1.0 + exp(-g))) * tanh(u / ucap) * ucap;
+                }
+                for (int o = 0; o < KH; o++) {
+                    dequant_row(T_NVFP4, w2 + ((size_t)e * KH + o) * rb2, row, KF);
+                    double s = 0;
+                    for (int j = 0; j < KF; j++) s += (double)row[j] * act[j];
+                    ref[t * KH + o] += wt[t * KE + e] * s * s2[e];
+                }
+            }
+        gpu_ink2 *h = gpu_ink2_bind();
+        const int i13 = h && w13 ? gpu_ink2_put(h, w13, (size_t)KE * 2 * KF * rb13, s13, KE) : -1;
+        const int i2 = h && w2 ? gpu_ink2_put(h, w2, (size_t)KE * KH * rb2, s2, KE) : -1;
+        const bool ran = i13 >= 0 && i2 >= 0 && gpu_ink2_experts_ok(h) &&
+                         gpu_ink2_experts(h, i13, i2, T_NVFP4, T_NVFP4, rb13, rb2, KH, KF, KE, KT, x, ch, wt, s13, s2,
+                                          gcap, ucap, out);
+        double worst = 0;
+        size_t nf = 0;
+        for (int t = 0; ran && t < KT; t++) {
+            double top = 0, d = 0;
+            for (int o = 0; o < KH; o++) {
+                if (fabs(ref[t * KH + o]) > top) top = fabs(ref[t * KH + o]);
+                if (fabs(out[t * KH + o] - ref[t * KH + o]) > d) d = fabs(out[t * KH + o] - ref[t * KH + o]);
+            }
+            const double rel = top > 0 ? d / top : d;
+            if (rel > worst) worst = rel;
+        }
+        if (ran) nf = n_nonfinite(out, KT * KH);
+        CHECK(ran && nf == 0 && worst <= 1e-4, "(k) the device expert body %s (kernels in the module: %d), within %.2e of the "
+              "float64 sums at its worst position, want <= 1e-4; %zu not finite", ran ? "ran" : "did not run",
+              gpu_ink2_experts_ok(h), worst, nf);
+        gpu_ink2_free(h);
+        free(w13); free(w2);
     }
     printf(fails ? "FAIL %d\n" : "PASS\n", fails);
     return fails ? 1 : 0;

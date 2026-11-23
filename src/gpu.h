@@ -752,6 +752,17 @@ bool       gpu_ink2_reserve(gpu_ink2 *h, size_t x_bytes, size_t y_bytes);
 // row_bytes its row stride. scale other than 1 only for NVFP4 (the kernel's own factor). False: a device failure.
 bool       gpu_ink2_lin(gpu_ink2 *h, int i, int type, size_t row_bytes, int64_t row0, int n_out, int n_in, int T,
                         const float *x, float *y, float scale);
+// G2b step 1: one application's expert body on the device, the router's choice given (chosen [T][E] 0/1, wt [T][E]):
+// for each used expert in ascending index, its positions' x gathered, gate_up (tensor i13, rows e*2F.., type13,
+// rb13 a row) a column at a time with factor s13[e] (NULL: 1), Inkling's SwiGLU (gate and up capped by gate_cap and
+// up_cap, times the gate's sigmoid), down (i2) with s2[e], and out[t] += wt[t][e] * down in ascending expert index.
+// x and out [T][H]. Factors only on NVFP4. False: a device failure, or the kernels are not in the module
+// (gpu_ink2_experts_ok). gpu_ink2_reserve_experts allocates its buffers for T columns now (for the fit check).
+bool       gpu_ink2_experts(gpu_ink2 *h, int i13, int i2, int type13, int type2, size_t rb13, size_t rb2, int H, int F,
+                            int E, int T, const float *x, const unsigned char *chosen, const float *wt,
+                            const float *s13, const float *s2, float gate_cap, float up_cap, float *out);
+bool       gpu_ink2_experts_ok(const gpu_ink2 *h);
+bool       gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F);
 void       gpu_ink2_free(gpu_ink2 *h);
 
 #endif // RUNNER_GPU_H

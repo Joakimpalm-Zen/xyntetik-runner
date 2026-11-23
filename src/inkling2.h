@@ -92,6 +92,18 @@ typedef struct {
 typedef int (*ink2_dev_lin_fn)(const ink2_tensor *W, int64_t row0, int n_out, int n_in, int T, const float *x,
                                size_t x_stride, float *y, size_t y_stride, float scale);
 void ink2_set_dev_lin(ink2_dev_lin_fn fn);
+// R4.48.9 G2b step 1: the device expert body. On the fast route, when both of a layer's expert stacks (t13 gate_up
+// [E][2F][H], t2 down [E][H][F]) have dev set, ink2_experts_fast hands the whole body to fn: x [T][H], the router's
+// chosen [T][E] (0/1) and wt [T][E], out [T][H] (fn writes it whole). The host router stays the CPU route's code.
+// Nonzero from fn is a device failure: out is then NaN, as for a failed product. NULL (the default): the CPU body.
+typedef int (*ink2_dev_experts_fn)(const ink2_shape *s, const ink2_tensor *t13, const ink2_tensor *t2, int T,
+                                   const float *x, const unsigned char *chosen, const float *wt, float *out);
+void ink2_set_dev_experts(ink2_dev_experts_fn fn);
+// TEST-ONLY: the router's selections as the fast route made them, for the selection-agreement observable: per call,
+// the layer (block), T positions, chosen [T][E] and margin [T] (the k-th chosen score + bias minus the best unchosen
+// one: how near the selection was to flipping). NULL (the default): nothing is computed.
+typedef void (*ink2_sel_obs_fn)(void *ctx, int block, int T, int E, const unsigned char *chosen, const float *margin);
+void ink2_set_sel_observer(ink2_sel_obs_fn fn, void *ctx);
 typedef const ink2_tensor *(*ink2_lookup_fn)(void *ctx, const char *name);
 // OPTIONAL: one expert of an expert stack (`model.layers.<b>.mlp.experts.gate_up_proj` [E][2F][H] or `.down_proj`
 // [E][H][F]), as a 2-D tensor (ne[0] the stack's ne[0], ne[1] its ne[1]): the same float32 values as row e of the

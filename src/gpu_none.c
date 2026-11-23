@@ -486,3 +486,12 @@ bool gpu_ink2_lin(gpu_ink2 *h, int i, int type, size_t row_bytes, int64_t row0, 
     (void)scale;
     return false;
 }
+bool gpu_ink2_experts(gpu_ink2 *h, int i13, int i2, int type13, int type2, size_t rb13, size_t rb2, int H, int F,
+                      int E, int T, const float *x, const unsigned char *chosen, const float *wt, const float *s13,
+                      const float *s2, float gate_cap, float up_cap, float *out) {
+    (void)h; (void)i13; (void)i2; (void)type13; (void)type2; (void)rb13; (void)rb2; (void)H; (void)F; (void)E; (void)T;
+    (void)x; (void)chosen; (void)wt; (void)s13; (void)s2; (void)gate_cap; (void)up_cap; (void)out;
+    return false;
+}
+bool gpu_ink2_experts_ok(const gpu_ink2 *h) { (void)h; return false; }
+bool gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F) { (void)h; (void)T; (void)H; (void)F; return false; }
