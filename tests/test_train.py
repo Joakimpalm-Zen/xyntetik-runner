@@ -979,7 +979,11 @@ def test_batch_width_and_the_kv_ring_move_no_training_bytes(runner_bin, base, tm
         p = _train_on(runner_bin, base, model, out, extra=flags)
         assert p.returncode == 0, (flags, p.stderr.decode(errors="replace"))
         assert out.read_bytes() == ref.read_bytes(), flags
-    # -b 64: a ring has swa_window + n_batch rows and forms only when that is under the context. At a
-    # default width that reaches the context no ring forms, and --kv-ring on then says nothing (R3.77)
+    # At the default batch width no ring forms (n_batch >= n_ctx - swa_window), so --kv-ring on
+    # says so on stderr and keeps/trains the flat bytes; -b 64 forms the ring and training refuses it.
+    unformed = _train_on(runner_bin, base, model, tmp_path / "unformed.gguf", extra=("--kv-ring", "on"))
+    assert unformed.returncode == 0, unformed.stderr.decode(errors="replace")
+    assert b"kv ring:" in unformed.stderr and b"flat cache" in unformed.stderr, unformed.stderr
+    assert (tmp_path / "unformed.gguf").read_bytes() == ref.read_bytes()
     ring = _train_on(runner_bin, base, model, tmp_path / "ring.gguf", extra=("-b", "64", "--kv-ring", "on"))
     assert ring.returncode != 0 and b"RUNNER_KV_RING" in ring.stderr, ring.stderr

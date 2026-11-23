@@ -414,3 +414,87 @@ def test_auto_does_not_count_the_host_only_token_table_as_device_weight(
     assert got, err
     want = (os.path.getsize(m) - table) / 1e6
     assert abs(int(got.group(1)) - want) <= 1, (got.group(1), want, table)
+
+
+def _unformed_lines(text):
+    return [l for l in text.splitlines() if l.startswith("kv ring: ") and "flat cache" in l]
+
+
+def test_forced_ring_unformed_says_so_once_and_keeps_flat_cache(runner_bin, swa_model):
+    """R3.77: forced --kv-ring on / RUNNER_KV_RING=1 when swa_window + n_batch >= n_ctx
+    cannot shrink below the flat cache, so it keeps flat, says so once on stderr
+    (even without -v) and in -v's kv ring load line, and training/--info follow what formed."""
+    base_env = {k: v for k, v in os.environ.items() if k != "RUNNER_KV_RING"}
+
+    def run_small(extra, env_val=None):
+        e = dict(base_env)
+        if env_val is not None:
+            e["RUNNER_KV_RING"] = env_val
+        return subprocess.run(
+            [runner_bin, "-m", str(swa_model), "-c", "128", "-t", "2", "--gpu", "off", *extra],
+            cwd=ROOT, env=e, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+
+    for tag, extra, eval_env in (
+        ("flag", ["--kv-ring", "on"], None),
+        ("env", [], "1"),
+    ):
+        p = run_small(["-p", "hi", "-n", "1", *extra], env_val=eval_env)
+        err = p.stderr.decode(errors="replace")
+        assert p.returncode == 0, (tag, err)
+        notices = _unformed_lines(err)
+        assert len(notices) == 1, (tag, notices, err)
+        expected_src = "--kv-ring" if tag == "flag" else "RUNNER_KV_RING"
+        assert expected_src in notices[0], (tag, notices)
+
+    pv = run_small(["-v", "-p", "hi", "-n", "1", "--kv-ring", "on"])
+    errv = pv.stderr.decode(errors="replace")
+    assert pv.returncode == 0, errv
+    assert len(_unformed_lines(errv)) == 1, errv
+    assert re.search(r"^kv ring\s+off \(.*keeping flat cache\)", errv, re.M), errv
+
+    poff = run_small(["-v", "-p", "hi", "-n", "1", "--kv-ring", "off"])
+    assert poff.returncode == 0, poff.stderr.decode(errors="replace")
+    assert _mb(errv, "kv cache") == _mb(poff.stderr.decode(errors="replace"), "kv cache")
+
+    padapt = run_small(["--info", "adapter", "--kv-ring", "on"])
+    assert padapt.returncode == 0, padapt.stderr.decode(errors="replace")
+    assert len(_unformed_lines(padapt.stderr.decode(errors="replace"))) == 1
+    info = json.loads(padapt.stdout)
+    assert info["training"]["supported"] is True, info
+
+    pfit = run_small(["--info", "fit", "--kv-ring", "on"])
+    assert pfit.returncode == 0, pfit.stderr.decode(errors="replace")
+    fit_out = pfit.stdout.decode(errors="replace")
+    assert "--kv-ring" in fit_out and "flat" in fit_out and "auto" not in fit_out.splitlines()[-1], fit_out
+
+
+def test_forced_ring_unformed_dedupes_per_model_file(runner_bin, tmp_path):
+    """Per-file dedupe: --parallel 2 slots of one file print the unformed-ring notice
+    once without -v; two distinct SWA files swapped in one server process each print once."""
+    m1 = tmp_path / "swa_a.gguf"
+    m2 = tmp_path / "swa_b.gguf"
+    for m in (m1, m2):
+        subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py",
+                        str(m), "--swa", f"{SWA_WINDOW},2"], check=True, cwd=ROOT,
+                       stdout=subprocess.DEVNULL)
+    env = {k: v for k, v in os.environ.items() if k != "RUNNER_KV_RING"}
+
+    log_par = tmp_path / "par.log"
+    with RunnerServer(runner_bin, m1, ctx=128, parallel=2, env=env, log_path=log_par,
+                      extra_args=["-t", "2", "--gpu", "off", "--kv-ring", "on"]):
+        pass
+    assert len(_unformed_lines(log_par.read_text(errors="replace"))) == 1, log_par.read_text(errors="replace")
+
+    log_swap = tmp_path / "swap.log"
+    with RunnerServer(runner_bin, f"a={m1},b={m2}", ctx=128, parallel=1, env=env,
+                      log_path=log_swap, extra_args=["-t", "2", "--gpu", "off", "--kv-ring", "on"]) as srv:
+        for mid in ("a", "b", "a"):
+            req = urllib.request.Request(
+                srv.base_url + "/v1/completions",
+                data=json.dumps({"model": mid, "prompt": [1, 2, 3],
+                                 "max_tokens": 1, "temperature": 0}).encode(),
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=120) as r:
+                assert r.status == 200
+    swap_text = log_swap.read_text(errors="replace")
+    assert len(_unformed_lines(swap_text)) == 2, swap_text

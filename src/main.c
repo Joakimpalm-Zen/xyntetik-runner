@@ -1988,10 +1988,18 @@ static int run_fit_check(const char *path, int n_ctx_want,
                "charges the %d sliding-window layers %d rows each, as a load does when "
                "the weights and the flat cache do not fit (--kv-ring auto)\n",
                f.n_swa_layers, f.kv_ring_rows);
-    else if (f.swa)
-        printf("  note          KV is the flat cache; a load turns on the KV ring "
-               "(--kv-ring auto) when the weights and this cache do not fit, "
-               "giving sliding-window layers only their window\n");
+    else if (f.swa) {
+        const char *ring_src = NULL;
+        int fit_batch = f.n_batch > f.n_ctx ? f.n_ctx : f.n_batch;
+        if (f.kv_ring_rows == 0 && model_kv_ring_resolve(f.kv_ring_mode, &ring_src) == KV_RING_ON)
+            printf("  note          KV is the flat cache; %s requested the KV ring, but at ctx %d "
+                   "with batch %d it cannot form (needs window + batch < ctx)\n",
+                   ring_src, f.n_ctx, fit_batch);
+        else
+            printf("  note          KV is the flat cache; a load turns on the KV ring "
+                   "(--kv-ring auto) when the weights and this cache do not fit, "
+                   "giving sliding-window layers only their window\n");
+    }
 
     gguf_close(&g);
     return 0;
