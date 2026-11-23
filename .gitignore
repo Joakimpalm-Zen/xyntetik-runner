@@ -464,3 +464,5 @@ test-inkling2-provider-bin
 /test-inkling2-grad.exe
 /test-inkling2-train.gguf
 /test-inkling2-grad-tmp.lora.gguf
+/test-ink2-pool-bench-bin
+/test-ink2-pool-bench-bin.exe

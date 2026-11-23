@@ -385,6 +385,7 @@ TEST_ATTN_BW = $(TEST_BATCH:test-batch%=test-attn-bw%)
 TEST_THREAD_DEFAULT = $(TEST_BATCH:test-batch%=test-thread-default%)
 TEST_INKLING2_THREADS = $(TEST_BATCH:test-batch%=test-inkling2-threads%)
 TEST_INKLING2_FAST = $(TEST_BATCH:test-batch%=test-inkling2-fast%)
+TEST_INK2_POOL_BENCH_BIN = $(TEST_BATCH:test-batch%=test-ink2-pool-bench-bin%)
 TEST_NVFP4_DOT = $(TEST_BATCH:test-batch%=test-nvfp4-dot%)
 TEST_SLOW_NOTE = $(TEST_BATCH:test-batch%=test-slow-note%)
 
@@ -2127,6 +2128,17 @@ $(TEST_INKLING2_FAST): $(TEST_INKLING2_FAST_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_INKLING2_FAST_SRC) -o $@ $(LDFLAGS)
 $(TEST_NVFP4_DOT): tests/test_nvfp4_dot.c $(OBJDIR)/compat.o src/compat.h $(QUANTS_OBJ)
 	$(CC) $(CFLAGS) -I src tests/test_nvfp4_dot.c $(OBJDIR)/compat.o $(QUANTS_OBJ) -o $@ $(LDFLAGS)
+
+# R4.48.20: TEST-ONLY microbenchmark comparing ink2_par (src/inkling2.c) against
+# the house tpool (src/quants.c) on empty barriers and a 2304x2304 BF16 product
+# across 1, 4, 8, and 16 threads; timed before switching ink2_par onto tpool.
+TEST_INK2_POOL_BENCH_SRC = tests/test_ink2_pool_bench.c $(OBJDIR)/inkling2.o $(OBJDIR)/inkling2_ecache.o \
+                           $(OBJDIR)/compat.o $(QUANTS_OBJ)
+$(TEST_INK2_POOL_BENCH_BIN): $(TEST_INK2_POOL_BENCH_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_INK2_POOL_BENCH_SRC) -o $@ $(LDFLAGS)
+.PHONY: test-ink2-pool-bench
+test-ink2-pool-bench: $(TEST_INK2_POOL_BENCH_BIN)
+	./$(TEST_INK2_POOL_BENCH_BIN)
 
 TEST_MODEL_LOAD_FAILURE_SRC = tests/test_model_load_failure.c $(OBJDIR)/gguf.o \
                               $(OBJDIR)/compat.o $(QUANTS_OBJ) $(OBJDIR)/model.o $(INKLING2_OBJS) \
@@ -5015,7 +5027,7 @@ clean:
 	      $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_TOOLS) $(DIFFTOK) \
 	      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
 	      $(TEST_QUANTIZE) $(TEST_KVSNAP_REPLACE) $(TEST_PARTIAL_FDOPEN) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
-	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_INKLING2_THREADS) test-inkling2-threads.out $(TEST_INKLING2_FAST) test-inkling2-fast.out $(INKLING2_TINY_DENSE) $(TEST_NVFP4_DOT) test-nvfp4-dot.out $(TEST_INKLING2) $(TEST_INKLING2_PROVIDER) $(TEST_INKLING2_GGUF) $(INKLING2_READ) $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) \
+	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_INKLING2_THREADS) test-inkling2-threads.out $(TEST_INKLING2_FAST) test-inkling2-fast.out $(INKLING2_TINY_DENSE) $(TEST_INK2_POOL_BENCH_BIN) $(TEST_NVFP4_DOT) test-nvfp4-dot.out $(TEST_INKLING2) $(TEST_INKLING2_PROVIDER) $(TEST_INKLING2_GGUF) $(INKLING2_READ) $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) \
 	      $(TEST_FILE_ID) test-file-identity.tmp \
 	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_LONGROPE) $(TEST_PREFILL_BATCH) $(TEST_CUDA_LONGROPE) $(TEST_CUDA_BATCH_COLS) $(TEST_CUDA_BATCH_Q35) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
 	      $(TMPL_CONF_RENDER) \
