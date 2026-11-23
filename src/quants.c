@@ -2280,7 +2280,10 @@ static float dot_bf16_avx2(const uint16_t *w, const float *x, int n) {
     for (; i < n; i++) s += bf16_to_f32(w[i]) * x[i];
     return s;
 }
+#endif
 
+// canon_dot_q8_0 keeps the 8-lane AVX2 reduction tree even on AVX-512 builds.
+#if !defined(__AVX512F__) || defined(RUNNER_CANON_KERNELS)
 static float dot_q8_0_avx2(const block_q8_0 *b, const float *x, int n) {
     __m256 acc = _mm256_setzero_ps();
     for (int i = 0; i < n / QK; i++) {
