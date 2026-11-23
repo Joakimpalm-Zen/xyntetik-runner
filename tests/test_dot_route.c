@@ -72,7 +72,11 @@ static void ratio(int type, const char *name) {
     // keep fp16 block scales finite and small: every format here leads its
     // block with an fp16 scale, and a random one can be Inf/NaN
     size_t bs = ggml_row_size(type, ggml_block_size(type));
-    for (size_t b = 0; b < rs * rows; b += bs) { w[b] = 0x00; w[b + 1] = 0x3c; w[b + 2] = 0x00; w[b + 3] = 0x3c; }
+    if (type == T_NVFP4) {
+        for (size_t b = 0; b < rs * rows; b += bs) memset(w + b, 0x38, 4);   // finite unit UE4M3 scales (1.0)
+    } else {
+        for (size_t b = 0; b < rs * rows; b += bs) { w[b] = 0x00; w[b + 1] = 0x3c; w[b + 2] = 0x00; w[b + 3] = 0x3c; }
+    }
     for (int i = 0; i < n * VEC_DOT_MULTI_MAX; i++) { s = s * 1103515245u + 12345u; x[i] = ((s >> 9) & 1023) / 1024.0f - 0.5f; }
     float out[VEC_DOT_MULTI_MAX], sink = 0;
     for (int nc = 2; nc < VEC_DOT_MULTI_MAX; nc++) {
@@ -167,6 +171,7 @@ int main(int argc, char **argv) {
     ratio(T_Q4_K, "Q4_K");
     ratio(T_IQ3_S, "IQ3_S");
     ratio(T_IQ4_XS, "IQ4_XS");
+    ratio(T_NVFP4, "NVFP4");
 #if defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)
     decode_ratio_mxfp4();
 #endif

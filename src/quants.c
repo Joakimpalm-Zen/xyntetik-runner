@@ -3467,22 +3467,6 @@ bool vec_dot_simd(int type) {
 #endif
 }
 
-bool vec_dot_multi_simd(int type) {
-#if !defined(RUNNER_CANON_KERNELS) && (RUNNER_AVX2 || RUNNER_NEON)
-    switch (type) {
-        case T_Q8_0: case T_Q4_0: case T_MXFP4: case T_IQ4_NL: case T_IQ4_XS:
-        case T_Q2_0: case T_BF16: case T_Q4_K: case T_Q5_K: case T_Q6_K:
-        case T_IQ3_XXS: case T_IQ3_S:
-            return true;
-        default:
-            return false;
-    }
-#else
-    (void)type;
-    return false;
-#endif
-}
-
 void vec_dot_xsums(const float *x, int n, float *xs) {
 #if !defined(RUNNER_CANON_KERNELS) && RUNNER_AVX2
     for (int g = 0; g < n / 32; g++) {
@@ -4452,8 +4436,12 @@ static void dot_iq3_s_neon_multi(const block_iq3_s *b, const float *const *xs, i
 // one-row decode must never come here (1.1.1 sent it here and dense IQ3_S
 // decode halved while every output stayed byte-identical)
 static _Atomic unsigned long g_vdm_calls = 0;
+static _Atomic unsigned long g_vdm_fallbacks = 0;
 unsigned long vec_dot_multi_calls(void) {
     return atomic_load_explicit(&g_vdm_calls, memory_order_relaxed);
+}
+unsigned long vec_dot_multi_fallbacks(void) {
+    return atomic_load_explicit(&g_vdm_fallbacks, memory_order_relaxed);
 }
 
 // The AVX2 multi-column dots keep one accumulator per column in an array
@@ -4521,6 +4509,7 @@ void vec_dot_multi(int type, const void *row, const float *const *xs, int nc,
             break;
     }
 #endif
+    atomic_fetch_add_explicit(&g_vdm_fallbacks, (unsigned long)nc, memory_order_relaxed);
     for (int c = 0; c < nc; c++) out[c] = vec_dot(type, row, xs[c], n);
 }
 

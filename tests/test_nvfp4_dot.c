@@ -10,7 +10,7 @@
 //  3. vec_dot is within 1e-5 of the double-precision dot of the exact weights, relative to sum |w x|, at the lengths
 //     a real file has (64 to 6144) and on ragged lengths of whole blocks
 //  4. vec_dot_multi is byte-equal to vec_dot for one to eight columns
-//  5. this build's vec_dot_multi for NVFP4 is a multi-column SIMD kernel (vec_dot_multi_simd, fails before the kernel)
+//  5. vec_dot_multi for NVFP4 takes the per-column fallback for 0 columns across nc = 2..8 (observed counter, fails before the kernel)
 //  6. vec_dot_multi matches vec_dot bit for bit across block counts, non-contiguous column strides, output sentinels,
 //     and nc > VEC_DOT_MULTI_MAX
 //  7. vec_dot_multi matches vec_dot bit for bit and stays within 1e-5 of the double dot on every UE4M3 scale byte
@@ -215,7 +215,15 @@ int main(void) {
         }
     }
     CHECK(mism == 0, "4. vec_dot_multi byte-equal to vec_dot for 1 to 8 columns: %ld differ", mism);
-    CHECK(vec_dot_multi_simd(T_NVFP4), "5. vec_dot_multi for NVFP4 is a multi-column SIMD kernel on this build");
+    const unsigned long fb0 = vec_dot_multi_fallbacks();
+    for (int nc = 2; nc <= VEC_DOT_MULTI_MAX; nc++) {
+        float out[VEC_DOT_MULTI_MAX];
+        vec_dot_multi(T_NVFP4, row, (const float *const *)cols, nc, n, out);
+    }
+    const unsigned long fb_nvfp4 = vec_dot_multi_fallbacks() - fb0;
+    CHECK(fb_nvfp4 == 0,
+          "5. vec_dot_multi for NVFP4 takes the per-column fallback for 0 columns over nc=2..%d (got %lu)",
+          VEC_DOT_MULTI_MAX, fb_nvfp4);
     const long multi_diff = check_multi_widths_and_strides(lens, sizeof lens / sizeof *lens);
     CHECK(multi_diff == 0, "6. vec_dot_multi byte-equal across widths 64..6144, strides, guards and nc=9: %ld differ",
           multi_diff);
