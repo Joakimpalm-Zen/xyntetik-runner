@@ -34,6 +34,8 @@ typedef struct {
     int n_dev;
     bool gpu_err;         // a device product failed: this instance refuses every forward from then on
     bool no_factor;       // TEST-ONLY (RUNNER_INKLING2_CUDA_TEST_NO_FACTOR=1): the device leaves out the expert factor
+    int lin_fail_at;      // TEST-ONLY (RUNNER_INKLING2_CUDA_TEST_LIN_FAIL=k): the k-th device product fails; -1 none
+    int n_lin;            // device products run so far (for lin_fail_at)
 } ink2_rt;
 
 static ink2_rt *rt_of(model_t *m) { return (ink2_rt *)m->ink2; }
@@ -102,7 +104,8 @@ static int dev_lin_scaled(const ink2_tensor *W, int64_t row0, int n_out, int n_i
         yc = malloc(sizeof(float) * (size_t)T * (size_t)n_out);
         if (!yc) { if (xc != x) free(xc); r->gpu_err = true; return -1; }
     }
-    const bool ok = gpu_ink2_lin(r->gpu, W->dev_i, W->qtype, W->q_row_bytes, row0, n_out, n_in, T, xc, yc, scale);
+    const bool ok = r->n_lin++ != r->lin_fail_at &&
+                    gpu_ink2_lin(r->gpu, W->dev_i, W->qtype, W->q_row_bytes, row0, n_out, n_in, T, xc, yc, scale);
     if (ok && yc != y)
         for (int t = 0; t < T; t++) memcpy(y + (size_t)t * ys, yc + (size_t)t * n_out, sizeof(float) * (size_t)n_out);
     if (xc != x) free(xc);
@@ -117,12 +120,12 @@ static int dev_lin_scaled(const ink2_tensor *W, int64_t row0, int n_out, int n_i
 // The weights the device computes up to it (their stored rows), or a sentence why not and the CPU route. True: on
 // CUDA. n_batch: the most columns a product takes (its scratch is allocated before the fit check).
 static bool cuda_bind(ink2_rt *r, bool cpu_moe, int n_batch) {
-    // until the CUDA forward is built (R4.48.9 G2) the route is opt-in: a CUDA instance computes no rows, so a default
-    // GPU load keeps the CPU
+    // until the whole CUDA forward is built (R4.48.9 G2b) the route is opt-in: G2a runs only the products on the
+    // device, so a default GPU load keeps the CPU
     const char *on = getenv("RUNNER_INKLING2_CUDA");
     if (!on || strcmp(on, "1")) {
         fprintf(stderr, "note: inkling2_loop runs on the CPU (its CUDA route is not complete; RUNNER_INKLING2_CUDA=1 "
-                        "binds its weights only)\n");
+                        "runs its products on the device, the rest of the forward on the CPU)\n");
         return false;
     }
     if (r->route != 'F') {
@@ -178,6 +181,9 @@ static bool cuda_bind(ink2_rt *r, bool cpu_moe, int n_batch) {
     }
     const char *nf = getenv("RUNNER_INKLING2_CUDA_TEST_NO_FACTOR");
     r->no_factor = nf && !strcmp(nf, "1");
+    const char *lf = getenv("RUNNER_INKLING2_CUDA_TEST_LIN_FAIL");
+    r->lin_fail_at = lf && *lf ? atoi(lf) : -1;
+    r->n_lin = 0;
     ink2_set_dev_lin(dev_lin_scaled);
     fprintf(stderr, "inkling2_loop: the weights on CUDA (%s): %d tensors, %.3f GB, their stored rows; their products on "
                     "the device, the rest of the forward on the CPU (R4.48.9 G2a)%s%s\n", dev, r->n_dev,

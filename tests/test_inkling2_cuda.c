@@ -13,7 +13,7 @@
 //
 // The reference here is the CPU's reference route (RUNNER_INKLING2_ROUTE=reference: the serial float32 engine).
 //  G1 (a) the route: loaded with the GPU allowed, the instance runs on CUDA (model_inkling2_cuda true; GPU off: false);
-//     (b) every matrix (projections, head, embedding) and both expert stacks, read back from the device through the
+//     (b) every matrix on the device (projections, head) and both expert stacks, read back from the device through the
 //         test-only accessor model_inkling2_cuda_readback, equal the host decode (dequant_row; for the stacks the
 //         stored rows, the factor separate) bit for bit;
 //  G2 (c) rows near the reference and not equal (above); (d) invariance (above); (e) the control (above).
@@ -24,12 +24,19 @@
 //         stays on the host and the head goes up; on the F16 file (a type the device products do not take) the F16
 //         projections stay on the host and the rows are the (c) rows' kind; a --cpu-moe load keeps every expert
 //         stack on the host, and its rows too are within 1e-4 of the reference and finite.
+//     (h) a device product that fails (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_LIN_FAIL=k: the k-th product fails) refuses
+//         that forward and every later one on the instance, never a row (the second read's P2).
+//     (i) each device kernel the products take (F32, BF16, Q8_0, NVFP4 with and without its factor, IQ3_XXS: the
+//         tiny file's 64-value rows cannot hold IQ3_XXS's 256-value blocks) through gpu.h's gpu_ink2_put and
+//         gpu_ink2_lin, from row 5 of a stored matrix, 3 columns, within 1e-4 of float64 sums over dequant_row's
+//         decode (relative to the largest), finite. (d) and (e) run on all three files.
 //
 // usage: test_inkling2_cuda TINY_F32.gguf TINY_BF16.gguf TINY_Q8_0.gguf TINY_F16.gguf
 #include "model.h"
 #include "gpu.h"
 #include "inkling2_model.h"
 #include "compat.h"
+#include "quants.h"
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -146,15 +153,17 @@ int main(int argc, char **argv) {
               "values not finite, want 0", kind[f], rd, nf);
         CHECK(on_cuda && a && b && memcmp(a, b, sizeof(float) * n), "(c) %s: the CUDA rows are not the reference rows byte for byte",
               kind[f]);
-        if (f == 1) {   // (d) and (e) on the BF16 file (the exact file's dense type)
-            model_t *g8 = load(argv[2], true, false, 8), *g2 = load(argv[2], true, false, 64);
-            model_t *gq = load(argv[2], true, true, 64);
+        {   // (d) and (e) on each file
+            model_t *g8 = load(argv[1 + f], true, false, 8), *g2 = load(argv[1 + f], true, false, 64);
+            model_t *gq = load(argv[1 + f], true, true, 64);
             float *x8 = g8 ? rows(g8) : NULL, *x2 = g2 ? rows(g2) : NULL, *xq = gq ? rows(gq) : NULL;
-            CHECK(on_cuda && a && nf == 0 && x8 && !memcmp(a, x8, sizeof(float) * n), "(d) the CUDA rows are byte-identical at -b 64 and -b 8");
-            CHECK(on_cuda && a && nf == 0 && x2 && !memcmp(a, x2, sizeof(float) * n), "(d) the CUDA rows are byte-identical across two loads");
+            CHECK(on_cuda && a && nf == 0 && x8 && !memcmp(a, x8, sizeof(float) * n), "(d) %s: the CUDA rows are byte-identical at -b 64 "
+                  "and -b 8", kind[f]);
+            CHECK(on_cuda && a && nf == 0 && x2 && !memcmp(a, x2, sizeof(float) * n), "(d) %s: the CUDA rows are byte-identical across two "
+                  "loads", kind[f]);
             const double qe = xq && b && !n_nonfinite(xq, n) ? rel_diff(xq, b, n) : 0;   // NaN rows are no control
-            CHECK(on_cuda && qe >= 10 * rd && qe > 0 && qe < 1e30, "(e) control: the factor left out %.2e from the reference, CUDA %.2e, want >= 10x",
-                  qe, rd);
+            CHECK(on_cuda && qe >= 10 * rd && qe > 0 && qe < 1e30, "(e) %s: control: the factor left out %.2e from the reference, CUDA "
+                  "%.2e, want >= 10x", kind[f], qe, rd);
             free(x8); free(x2); free(xq); drop(g8); drop(g2); drop(gq);
         }
         free(a); free(b); drop(g); drop(r);
@@ -206,6 +215,83 @@ int main(int argc, char **argv) {
         free(want);
         drop(ok);
         drop(cpu);
+    }
+    // G2 (h), on the BF16 file: the third device product fails; that forward and the next refuse
+    {
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_LIN_FAIL", "2");
+        model_t *g = load(argv[2], true, false, 64);
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_LIN_FAIL", "");
+        const bool on = g && model_inkling2_cuda(g);
+        const float *first = on ? model_inkling2_forward(g, PROMPT, N_TOK, 0, true, true) : NULL;
+        const float *again = on ? model_inkling2_forward(g, PROMPT, 1, 0, true, true) : NULL;
+        CHECK(on && !first && !again, "(h) a failed device product: on CUDA (%d), that forward %s, the next %s", on,
+              first ? "gave rows" : "refused", again ? "gave rows" : "refused");
+        drop(g);
+    }
+    // G2 (i): each device kernel through gpu.h, against float64 sums over dequant_row's decode
+    {
+        CHECK(ggml_type_size(T_Q8_0) == 34 && ggml_block_size(T_Q8_0) == 32 && ggml_type_size(T_NVFP4) == 36 &&
+              ggml_block_size(T_NVFP4) == 64 && ggml_type_size(T_IQ3_XXS) == 98 && ggml_block_size(T_IQ3_XXS) == 256,
+              "(i) the block layouts written here: Q8_0 34 bytes a 32-value block, NVFP4 36 a 64, IQ3_XXS 98 a 256");
+        enum { NI = 512, NR = 40, R0 = 5, NO = 24, NT = 3 };   // 24 rows: several blocks of every launch shape
+        const struct { int type; const char *name; float scale; } ty[] = {
+            { T_F32, "F32", 1.0f }, { T_BF16, "BF16", 1.0f }, { T_Q8_0, "Q8_0", 1.0f }, { T_NVFP4, "NVFP4", 1.0f },
+            { T_NVFP4, "NVFP4 factor 0.75", 0.75f }, { T_IQ3_XXS, "IQ3_XXS", 1.0f },
+        };
+        uint32_t seed = 12345u;
+#define RND() (seed = seed * 1664525u + 1013904223u, seed >> 8)
+        float x[NT * NI];
+        for (int i = 0; i < NT * NI; i++) x[i] = (float)((int)(RND() % 2001u) - 1000) / 1000.0f;
+        gpu_ink2 *h = gpu_ink2_bind();
+        CHECK(h && !gpu_ink2_runs(h, T_F16), "(i) a handle binds, and its products take no F16 (the F16 file's premise)");
+        for (size_t k = 0; h && k < sizeof ty / sizeof *ty; k++) {
+            const int type = ty[k].type;
+            const size_t rb = (size_t)NI / (size_t)ggml_block_size(type) * ggml_type_size(type);
+            unsigned char *w = calloc(NR, rb);
+            for (int r = 0; w && r < NR; r++) {
+                unsigned char *row = w + (size_t)r * rb;
+                for (size_t b = 0; b < rb; b++) row[b] = (unsigned char)RND();
+                if (type == T_F32 || type == T_BF16)
+                    for (int i = 0; i < NI; i++) {
+                        const float v = (float)((int)(RND() % 2001u) - 1000) / 4000.0f;
+                        uint32_t u;
+                        memcpy(&u, &v, sizeof u);
+                        if (type == T_F32) memcpy(row + 4 * (size_t)i, &u, 4);
+                        else { const uint16_t hb = (uint16_t)(u >> 16); memcpy(row + 2 * (size_t)i, &hb, 2); }
+                    }
+                else if (type == T_Q8_0)
+                    for (size_t b = 0; b < rb; b += 34) { row[b] = 0x1f; row[b + 1] = 0x21; }   // d = f16 0x211f (0.01)
+                else if (type == T_NVFP4)
+                    for (size_t b = 0; b < rb; b += 36) memset(row + b, 0x30, 4);   // each sub-block's UE4M3 scale 0.5
+                else
+                    for (size_t b = 0; b < rb; b += 98) { row[b] = 0x1f; row[b + 1] = 0x21; }   // d = 0.01
+            }
+            double ref[NT * NO], top = 0;
+            float dq[NI], y[NT * NO];
+            for (int o = 0; w && o < NO; o++) {
+                dequant_row(type, w + (size_t)(R0 + o) * rb, dq, NI);
+                for (int t = 0; t < NT; t++) {
+                    double s = 0;
+                    for (int i = 0; i < NI; i++) s += (double)dq[i] * x[t * NI + i];
+                    ref[t * NO + o] = s * ty[k].scale;
+                    if (fabs(ref[t * NO + o]) > top) top = fabs(ref[t * NO + o]);
+                }
+            }
+            const int idx = w ? gpu_ink2_put(h, w, (size_t)NR * rb, NULL, 0) : -1;
+            const bool ran = idx >= 0 && gpu_ink2_runs(h, type) &&
+                             gpu_ink2_lin(h, idx, type, rb, R0, NO, NI, NT, x, y, ty[k].scale);
+            double d = 0;
+            for (int i = 0; ran && i < NT * NO; i++)
+                if (fabs(y[i] - ref[i]) > d) d = fabs(y[i] - ref[i]);
+            const size_t nf = ran ? n_nonfinite(y, NT * NO) : 0;
+            const double rel = top > 0 ? d / top : d;
+            CHECK(ran && nf == 0 && top > 0 && rel <= 1e-4, "(i) %s: the device product of rows %d..%d over %d columns %s, within "
+                  "%.2e of the float64 sums (largest %.3g), want <= 1e-4; %zu not finite", ty[k].name, R0, R0 + NO - 1, NT,
+                  ran ? "ran" : "failed", rel, top, nf);
+            free(w);
+        }
+#undef RND
+        gpu_ink2_free(h);
     }
     printf(fails ? "FAIL %d\n" : "PASS\n", fails);
     return fails ? 1 : 0;
