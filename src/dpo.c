@@ -45,6 +45,10 @@ bool dpo_loss(model_t *m, double beta,
               const int32_t *tw, int nw, const float *mw,
               const int32_t *tl, int nl, const float *ml,
               dpo_step *out) {
+    if (m && m->ink2) {
+        fprintf(stderr, "error: DPO training does not cover inkling2_loop yet\n");
+        return false;
+    }
     dpo_step s = {0};
     if (!ref_logps(m, tw, nw, mw, tl, nl, ml, &s.logp_ref_w, &s.logp_ref_l))
         return false;
@@ -62,6 +66,10 @@ bool dpo_accumulate(model_t *m, double beta,
                     const int32_t *tw, int nw, const float *mw,
                     const int32_t *tl, int nl, const float *ml,
                     dpo_step *out) {
+    if (m && m->ink2) {
+        fprintf(stderr, "error: DPO training does not cover inkling2_loop yet\n");
+        return false;
+    }
     dpo_step s = {0};
     // The reference first, while the gradient buffers are still untouched:
     // the bypass mutates slot scales, and doing it between the two backward

@@ -203,8 +203,24 @@ ink2_status ink2_forward(const ink2_shape *s, const ink2_weights *w, int T, cons
 // controls, which must fail its wiring gate).
 #define INK2_MISWIRE_RESTART  1   // later passes restart from the input of the last pre-loop layer, not its output
 #define INK2_MISWIRE_OWN_PASS 2   // later passes read their own pass's block states for the messages
+// Optional LoRA adapter callback on attention linear projections (slots 0=Q, 1=K, 2=V, 3=O).
+// When NULL or slot returns false, the unadapted base forward runs untouched.
+typedef struct {
+    void *ctx;
+    int (*slot)(void *ctx, int block, int slot, const float **a, const float **b,
+                int *r, float *scale, int *n_in, int *n_out);
+} ink2_lora;
+
 ink2_status ink2_forward_chunk(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int p0, int T,
                                const int *ids, float *logits, int flags, float *app_states);
+// Same forward with an optional LoRA adapter (`lora` may be NULL) and optional expert selection output.
+ink2_status ink2_forward_chunk_lora(const ink2_shape *s, const ink2_weights *w, const ink2_lora *lora, ink2_cache *c,
+                                    int p0, int T, const int *ids, float *logits, int flags, float *app_states,
+                                    int *app_sel);
+
+// Shared strict helpers from src/inkling2.c for src/inkling2_bwd.c.
+float ink2_inv_sqrt(int n);
+void  ink2_par(int64_t n, int64_t work, void (*fn)(void *ctx, int64_t i0, int64_t i1), void *ctx);
 // TEST-ONLY (the first-light comparison): the same forward, also returning every application's expert selection
 // app_sel [n_app][T][n_used] (each position's chosen experts in ascending index, from ink2_decoder_layer_sel: the
 // router run again on the same MLP input, so nothing else changes). app_sel NULL is ink2_forward_chunk exactly.

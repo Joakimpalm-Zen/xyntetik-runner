@@ -1534,6 +1534,7 @@ float *model_lora_param(model_t *m, int layer, int slot, int which,
                         int *count);
 float *model_lora_gradbuf(model_t *m, int layer, int slot, int which,
                           int *count);
+bool   model_lora_grad_alloc(model_t *m);
 
 // --- pairwise (DPO) support. Three small primitives, no new kernel: a DPO
 // step's gradient is beta*sigmoid(r_l - r_w) times the DIFFERENCE of two

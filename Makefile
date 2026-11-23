@@ -281,6 +281,7 @@ TEST_UTF8_CONSOLE = $(TEST_BATCH:test-batch%=test-utf8-console%)
 TEST_TC_TOL = $(TEST_BATCH:test-batch%=test-tc-tol%)
 TEST_I8_TOL = $(TEST_BATCH:test-batch%=test-i8-tol%)
 TEST_LORA_GRAD = $(TEST_BATCH:test-batch%=test-lora-grad%)
+TEST_INKLING2_GRAD = $(TEST_BATCH:test-batch%=test-inkling2-grad%)
 TEST_FULL_GRAD = $(TEST_BATCH:test-batch%=test-full-grad%)
 TEST_DPO_GRAD = $(TEST_BATCH:test-batch%=test-dpo-grad%)
 TEST_KD_GRAD = $(TEST_BATCH:test-batch%=test-kd-grad%)
@@ -435,11 +436,14 @@ $(QUANTS_OBJ): src/quants.c $(HDR)
 # claim is a serial, uncontracted float32 order (bit for bit against the publisher's reference), so these build with
 # fast-math off and contraction off, as the engine's own test targets do; the rest of the binary keeps -ffast-math.
 INKLING2_CFLAGS = $(filter-out -ffast-math,$(CFLAGS)) -fno-fast-math -ffp-contract=off
-INKLING2_SRC = src/inkling2.c src/inkling2_gguf.c src/inkling2_ecache.c src/inkling2_model.c
-INKLING2_OBJS = $(OBJDIR)/inkling2.o $(OBJDIR)/inkling2_gguf.o $(OBJDIR)/inkling2_ecache.o $(OBJDIR)/inkling2_model.o
+INKLING2_SRC = src/inkling2.c src/inkling2_bwd.c src/inkling2_gguf.c src/inkling2_ecache.c src/inkling2_model.c
+INKLING2_OBJS = $(OBJDIR)/inkling2.o $(OBJDIR)/inkling2_bwd.o $(OBJDIR)/inkling2_gguf.o $(OBJDIR)/inkling2_ecache.o $(OBJDIR)/inkling2_model.o
 $(OBJDIR)/inkling2.o: src/inkling2.c $(HDR)
 	mkdir -p $(dir $@)
 	$(CC) $(INKLING2_CFLAGS) -I src -c src/inkling2.c -o $@
+$(OBJDIR)/inkling2_bwd.o: src/inkling2_bwd.c $(HDR)
+	mkdir -p $(dir $@)
+	$(CC) $(INKLING2_CFLAGS) -I src -c src/inkling2_bwd.c -o $@
 $(OBJDIR)/inkling2_gguf.o: src/inkling2_gguf.c $(HDR)
 	mkdir -p $(dir $@)
 	$(CC) $(INKLING2_CFLAGS) -I src -c src/inkling2_gguf.c -o $@
@@ -769,7 +773,7 @@ $(TEST_SCHEMA_OOM): tests/test_schema_oom.c $(SCHEMA_OBJ) $(OBJDIR)/json.o $(OBJ
 # shared model weights: needs the real model + backend, so it links the same
 # sources the runner does minus the CLI/server front end
 TEST_SHARED_SRC = tests/test_shared_weights.c src/gguf.c src/compat.c \
-                  $(QUANTS_OBJ) src/model.c $(INKLING2_SRC) src/vramreg.c $(GPU_SRC)
+                  $(QUANTS_OBJ) src/model.c $(INKLING2_OBJS) src/vramreg.c $(GPU_SRC)
 $(TEST_SHARED): $(TEST_SHARED_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_SHARED_SRC) -o $@ $(LDFLAGS)
 
@@ -778,7 +782,7 @@ $(TEST_SHARED): $(TEST_SHARED_SRC) $(HDR)
 # the kernel's locked-memory limit. The fixture's per-layer token table sits
 # between hot ranges, several pages wide at either page size.
 TEST_MLOCK_SRC = tests/test_mlock.c src/gguf.c src/compat.c \
-                 $(QUANTS_OBJ) src/model.c $(INKLING2_SRC) src/vramreg.c $(GPU_SRC)
+                 $(QUANTS_OBJ) src/model.c $(INKLING2_OBJS) src/vramreg.c $(GPU_SRC)
 $(TEST_MLOCK): $(TEST_MLOCK_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_MLOCK_SRC) -o $@ $(LDFLAGS)
 # R3.41: plat_willneed brings a whole unaligned range in on Linux
@@ -811,7 +815,7 @@ fixture-scale-note:
 # loudly here. Kept out of `make test` because a sanitized model load is slow.
 test-shared-asan: $(TEST_SHARED_SRC) $(HDR) test.gguf fixture-scale-note
 	$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer \
-	    -std=gnu11 -Wall -I src $(filter-out $(QUANTS_OBJ),$(TEST_SHARED_SRC)) src/quants.c -o test-shared-asan-bin $(LDFLAGS)
+	    -std=gnu11 -Wall -I src $(filter-out $(QUANTS_OBJ) $(INKLING2_OBJS),$(TEST_SHARED_SRC)) src/quants.c $(INKLING2_SRC) -o test-shared-asan-bin $(LDFLAGS)
 	RUNNER_TEST_GPU_OFF=1 LSAN_OPTIONS=suppressions=tests/lsan.supp \
 	    ./test-shared-asan-bin $(ASAN_MODEL)
 
@@ -1356,6 +1360,16 @@ TEST_LORA_GRAD_SRC = tests/test_lora_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o 
                   $(GPU_OBJ)
 $(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-apertus-train.gguf test-lora-apertus.full.gguf test-apertus-wide.gguf test-lora-apertus-wide.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-prope.gguf test-lora-prope.full.gguf test-prope-neox.gguf test-lora-prope-neox.full.gguf test-ornith.gguf test-lora-ornith.full.gguf test-clef.gguf test-lora-clef.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf test-gemma3.gguf test-lora-gemma3.full.gguf test-gemma4.gguf test-lora-gemma4.full.gguf test-g4v.gguf test-lora-g4v.full.gguf test-es8.gguf test-lora-es8.full.gguf test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n.full.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_LORA_GRAD_SRC) -o $@ $(LDFLAGS)
+
+# R4.48.10: finite-difference gradient, recompute bit-identity and control gate for inkling2_loop
+test-inkling2-train.gguf: tests/test_inkling2_hardening.py
+	$(PYTHON) -c "import pathlib, sys; sys.path.insert(0, 'tests'); import test_inkling2_hardening as h; h._write(pathlib.Path('$@'), h._kvs(), h._tensors())"
+
+TEST_INKLING2_GRAD_SRC = tests/test_inkling2_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
+                       $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o \
+                       $(GPU_OBJ)
+$(TEST_INKLING2_GRAD): $(TEST_INKLING2_GRAD_SRC) $(HDR) test-inkling2-train.gguf
+	$(CC) $(CFLAGS) -I src $(TEST_INKLING2_GRAD_SRC) -o $@ $(LDFLAGS)
 
 # R8.25.2 gate A1: full-weight training's dense gradient against finite
 # differences, its determinism, and the Q8_0 read copy after a step
@@ -3911,7 +3925,7 @@ test-sample-nan: tests/test_sample_nan.c src/sample.c scripts/check-sample-nan.s
 	$(CC) $(SN_STRICT) -I src tests/test_sample_nan.c src/sample.c -o test-sample-nan-strict$(SN_EXT) $(LDFLAGS)
 	sh scripts/check-sample-nan.sh "$(SN_EXT)" $(SN_BASE) $(CC) $(CFLAGS) -- $(LDFLAGS)
 
-test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) $(TEST_MICRO_SCHED) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
+test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) $(TEST_MICRO_SCHED) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_INKLING2_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) $(TEST_ATEM_OOM) $(TEST_TEMPLATE_FAMILIES) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_MLOCK) test-es-mlock.gguf $(TEST_WILLNEED) $(TEST_SPAWN_EINTR) $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
@@ -4031,6 +4045,7 @@ test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SC
 	@# and with qwen3-style per-head QK norms in the layer: the norm adjoint
 	@# sits between the rope adjoint and the projection backward
 	./$(TEST_LORA_GRAD) test-qk.gguf test-lora-qk.full.gguf
+	./$(TEST_INKLING2_GRAD) test-inkling2-train.gguf
 	@# R8.19: the same gates in --train-gpu's device mode (every weight
 	@# product on the GPU, batch-invariant, not the CPU's bits): its own
 	@# central differences hold its gradient only if the taped forward and
@@ -4526,6 +4541,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_ignore_eos_request.py \
     tests/test_inkling2_hardening.py \
     tests/test_inkling2_protocol.py \
+    tests/test_inkling2_train.py \
     tests/test_iquants.py \
     tests/test_k2_horizon.py \
     tests/test_kld_compare.py \
@@ -4962,7 +4978,7 @@ fuzz:
 	fi
 
 clean:
-	rm -f test-moe-fixture.*.gguf test-q8.gguf test-bf16.gguf runner runner-debug runner-no-manifest.exe $(TEST_UTF8_CONSOLE) $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) $(TEST_MICRO_SCHED) \
+	rm -f test-moe-fixture.*.gguf test-q8.gguf test-bf16.gguf test-inkling2-train.gguf runner runner-debug runner-no-manifest.exe $(TEST_INKLING2_GRAD) $(TEST_UTF8_CONSOLE) $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) $(TEST_MICRO_SCHED) \
 		$(TEST_TEMPLATE_OOM) $(TEST_ATEM_OOM) $(TEST_TEMPLATE_FAMILIES) \
 	      $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_TOKENIZER) \
 	      $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) $(TEST_SHARED) $(TEST_MLOCK) $(TEST_WILLNEED) $(TEST_SPAWN_EINTR) \

@@ -5065,7 +5065,7 @@ static int run_adapt_info(cli_run *rt) {
     // the device applies the adapter on its own blocks where the
     // backend has the kernels; otherwise serving means --gpu off
     sb_fmt(&r, ",\"device_kernels\":%s},\"training\":{\"supported\":%s,\"reason\":",
-           !can_s || !gpu_there || (rt->m.qwen35 && !gpu_qwen35_ok()) ? "null"
+           !can_s || !gpu_there || rt->m.ink2 || (rt->m.qwen35 && !gpu_qwen35_ok()) ? "null"
 #ifdef __APPLE__
            : "\"metal\"",
 #else
@@ -5498,6 +5498,14 @@ static bool train_full_prepare(cli_opts *o, cli_run *rt) {
 }
 
 static bool train_prepare(cli_opts *o, cli_run *rt) {
+    if (rt->m.ink2 && o->train_teacher) {
+        fprintf(stderr, "error: teacher distillation (KD) does not cover inkling2_loop yet\n");
+        return false;
+    }
+    if (rt->m.ink2 && o->dpo_path) {
+        fprintf(stderr, "error: DPO training does not cover inkling2_loop yet\n");
+        return false;
+    }
     if (o->train_kv_f32 && (o->train_gpu || rt->m.gpu || !rt->m.kv_f32)) {
         fprintf(stderr, "error: --train-kv-f32 keeps an f32 KV cache on the CPU path only "
                 "(run with --gpu off, without --train-gpu, without --kv q8, k8v4 or fp4, on a model "
@@ -5559,6 +5567,10 @@ static bool train_prepare(cli_opts *o, cli_run *rt) {
 static bool train_dpo_steps(cli_opts *o, cli_run *rt, dpo_pair *pairs,
                             int n_pair, int wctx, double *first_loss,
                             double *last_loss) {
+    if (rt->m.ink2) {
+        fprintf(stderr, "error: DPO training does not cover inkling2_loop yet\n");
+        return false;
+    }
     // DPO (arXiv 2305.18290 eq. 7). pi_ref is this model with the adapter
     // bypassed, so it costs no second copy of the weights; src/dpo.c shows why no
     // new kernel is needed. tests/test_dpo_grad.c gates loss and gradient against

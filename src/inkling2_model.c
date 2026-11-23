@@ -123,6 +123,47 @@ static const char *rows_dump;
 static pthread_once_t rows_dump_once = PTHREAD_ONCE_INIT;
 static void rows_dump_read(void) { rows_dump = getenv("RUNNER_INKLING2_ROWS"); }
 
+static int ink2_lora_slot_cb(void *ctx, int block, int slot, const float **a, const float **b,
+                             int *r, float *scale, int *n_in, int *n_out) {
+    return model_lora_slot((const model_t *)ctx, block, slot, a, b, r, scale, n_in, n_out) ? 1 : 0;
+}
+
+int model_inkling2_n_block(const model_t *m) {
+    const ink2_rt *r = m && m->ink2 ? (const ink2_rt *)m->ink2 : NULL;
+    return r ? r->s.n_block : 0;
+}
+
+bool model_inkling2_slot_dims(const model_t *m, int layer, int slot, int *n_in, int *n_out, char *name, size_t cap) {
+    const ink2_rt *r = m && m->ink2 ? (const ink2_rt *)m->ink2 : NULL;
+    if (!r || layer < 0 || layer >= r->s.n_block) return false;
+    if (slot < LW_Q || slot > LW_O) return false;
+    int g = r->s.block_global[layer];
+    int H = r->s.hidden;
+    int Q = (g ? r->s.n_head : r->s.swa_n_head) * (g ? r->s.head_dim : r->s.swa_head_dim);
+    int KV = (g ? r->s.n_kv : r->s.swa_n_kv) * (g ? r->s.head_dim : r->s.swa_head_dim);
+    int ni = 0, no = 0;
+    const char *sname = NULL;
+    switch (slot) {
+        case LW_Q: ni = H; no = Q;  sname = "attn_q"; break;
+        case LW_K: ni = H; no = KV; sname = "attn_k"; break;
+        case LW_V: ni = H; no = KV; sname = "attn_v"; break;
+        case LW_O: ni = Q; no = H;  sname = "attn_output"; break;
+        default: return false;
+    }
+    if (n_in) *n_in = ni;
+    if (n_out) *n_out = no;
+    if (name && cap) snprintf(name, cap, "blk.%d.%s.weight", layer, sname);
+    return true;
+}
+
+bool model_inkling2_parts(model_t *m, const void **s_out, const void **w_out) {
+    ink2_rt *r = m ? rt_of(m) : NULL;
+    if (!r) return false;
+    if (s_out) *s_out = &r->s;
+    if (w_out) *w_out = &r->w;
+    return true;
+}
+
 float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos, bool want_logits, bool keep_all) {
     ink2_rt *r = rt_of(m);
     if (!r || !r->cache_ok || n <= 0 || pos < 0 || pos + n > m->n_ctx) {
@@ -136,11 +177,14 @@ float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos,
     // rows do not depend on the count (tests/test_inkling2_threads.c).
     const int nt = m->tp ? tpool_size(m->tp) : 1;
     if (nt != ink2_get_threads()) ink2_set_threads(nt);
+    ink2_lora lcb = { m, ink2_lora_slot_cb };
+    const ink2_lora *lora = m->lora ? &lcb : NULL;
     // chunks of n_batch: the engine's rows do not depend on the split (measured bit for bit)
     for (int done = 0; done < n;) {
         const int T = n - done < r->rows_cap ? n - done : r->rows_cap;
-        ink2_status st = ink2_forward_chunk(&r->s, &r->w, &r->c, pos + done, T, (const int *)(tokens + done), r->rows, 0,
-                                            NULL);   // int32_t is int on every target Runner builds for
+        ink2_status st = ink2_forward_chunk_lora(&r->s, &r->w, lora, &r->c, pos + done, T,
+                                                 (const int *)(tokens + done), r->rows, 0,
+                                                 NULL, NULL);   // int32_t is int on every target Runner builds for
         if (st != INK2_OK) {
             fprintf(stderr, "error: inkling2_loop: the forward at position %d refused (status %d%s)\n", pos + done, (int)st,
                     st == INK2_REWIND ? ": not where the sequence ends, and this model does not rewind" : "");
