@@ -15,6 +15,9 @@
 //         test-only accessor model_inkling2_cuda_readback, equal the host decode (dequant_row; for the stacks the
 //         stored rows, the factor separate) bit for bit;
 //  G2 (c) rows near the reference and not equal (above); (d) invariance (above); (e) the control (above).
+//     (f) a failed upload (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_PUT_FAIL=k: the k-th device tensor's put fails) after a
+//         successful bind in the same process: the instance falls back to the CPU and gives the fast CPU route's rows
+//         byte for byte, or refuses; never a row that is not finite (the second read's P0).
 //
 // usage: test_inkling2_cuda TINY_F32.gguf TINY_BF16.gguf TINY_Q8_0.gguf
 #include "model.h"
@@ -22,6 +25,7 @@
 #include "inkling2_model.h"
 #include "compat.h"
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,9 +35,8 @@ static const int32_t PROMPT[N_TOK] = { 1, 5, 9, 2, 7, 3, 8, 4, 6, 0, 11, 13, 17,
 static int fails;
 #define CHECK(c, ...) do { if (!(c)) { printf("FAIL: " __VA_ARGS__); printf("\n"); fails++; } else { printf("ok: " __VA_ARGS__); printf("\n"); } } while (0)
 
-static model_t *load(const char *path, bool gpu, bool no_factor, int n_batch) {
-    // the CPU side is the reference route (the serial float32 engine), not the CPU's default fast route
-    plat_setenv("RUNNER_INKLING2_ROUTE", gpu ? "" : "reference");
+static model_t *load_route(const char *path, bool gpu, bool no_factor, int n_batch, const char *route) {
+    plat_setenv("RUNNER_INKLING2_ROUTE", route);
     plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_FACTOR", no_factor ? "1" : "");
     plat_setenv("RUNNER_INKLING2_CUDA", gpu ? "1" : "");   // opt-in until the CUDA forward is complete
     model_params p;
@@ -45,6 +48,21 @@ static model_t *load(const char *path, bool gpu, bool no_factor, int n_batch) {
     model_t *m = calloc(1, sizeof *m);
     if (!m || !model_load(m, path, &p)) { free(m); return NULL; }
     return m;
+}
+static model_t *load(const char *path, bool gpu, bool no_factor, int n_batch) {
+    // the CPU side is the reference route (the serial float32 engine), not the CPU's default fast route
+    return load_route(path, gpu, no_factor, n_batch, gpu ? "" : "reference");
+}
+// NaN and infinity by their bits (all exponent bits set): this file builds with -ffast-math, under which isfinite()
+// may fold to true
+static size_t n_nonfinite(const float *a, size_t n) {
+    size_t k = 0;
+    for (size_t i = 0; i < n; i++) {
+        uint32_t u;
+        memcpy(&u, a + i, sizeof u);
+        k += (u & 0x7f800000u) == 0x7f800000u;
+    }
+    return k;
 }
 static float *rows(model_t *m) {
     float *r = malloc(sizeof(float) * (size_t)N_TOK * (size_t)m->n_vocab);
@@ -107,6 +125,34 @@ int main(int argc, char **argv) {
             free(x8); free(x2); free(xq); drop(g8); drop(g2); drop(gq);
         }
         free(a); free(b); drop(g); drop(r);
+    }
+    // G2 (f), on the BF16 file: a bind that succeeds first, so the process's device hook is set, then partial uploads
+    {
+        model_t *ok = load(argv[2], true, false, 64), *cpu = load_route(argv[2], false, false, 64, "");
+        int n_t = 0, n_bad = 0;
+        const bool bound = ok && model_inkling2_cuda(ok) && model_inkling2_cuda_readback(ok, &n_t, &n_bad, NULL, 0) && n_t > 1;
+        float *want = cpu ? rows(cpu) : NULL;
+        CHECK(bound && want, "(f) a first bind succeeds in this process (%d device tensors) and the fast CPU route gives rows", n_t);
+        const int at[4] = { 0, 1, n_t / 2, n_t - 1 };
+        for (int k = 0; bound && want && k < 4; k++) {
+            char v[32];
+            snprintf(v, sizeof v, "%d", at[k]);
+            plat_setenv("RUNNER_INKLING2_CUDA_TEST_PUT_FAIL", v);
+            model_t *pf = load(argv[2], true, false, 64);
+            plat_setenv("RUNNER_INKLING2_CUDA_TEST_PUT_FAIL", "");
+            const size_t n = pf ? (size_t)N_TOK * (size_t)pf->n_vocab : 0;
+            float *got = pf ? rows(pf) : NULL;
+            const size_t bad = got ? n_nonfinite(got, n) : 0;
+            const bool same = got && !memcmp(got, want, sizeof(float) * n);
+            CHECK(pf && !model_inkling2_cuda(pf) && (!got || (bad == 0 && same)),
+                  "(f) the put of tensor %d of %d fails: CPU fallback (%d), rows %s, %zu not finite, %s the fast CPU rows",
+                  at[k], n_t, pf ? !model_inkling2_cuda(pf) : -1, got ? "given" : "refused", bad, same ? "equal to" : "not");
+            free(got);
+            drop(pf);
+        }
+        free(want);
+        drop(ok);
+        drop(cpu);
     }
     printf(fails ? "FAIL %d\n" : "PASS\n", fails);
     return fails ? 1 : 0;

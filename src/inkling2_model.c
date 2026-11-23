@@ -41,7 +41,7 @@ static ink2_rt *rt_of(model_t *m) { return (ink2_rt *)m->ink2; }
 // R4.48.9: a view's rows (a stack's experts one after another) and its factors
 static int64_t view_rows(const ink2_tensor *t) { return t->ne[1] * t->ne[2] * t->ne[3]; }
 static int view_scales(const ink2_tensor *t) { return t->q_scale ? (int)t->ne[2] : 0; }
-typedef struct { ink2_rt *r; size_t need; int n; } dev_walk;
+typedef struct { ink2_rt *r; size_t need; int n; int fail_at; } dev_walk;
 static int dev_count(void *c_, const ink2_tensor *t) {
     dev_walk *c = c_;
     c->need += t->q_row_bytes * (size_t)view_rows(t) + sizeof(float) * (size_t)view_scales(t);
@@ -50,16 +50,27 @@ static int dev_count(void *c_, const ink2_tensor *t) {
 }
 static int dev_put(void *c_, const ink2_tensor *t) {
     dev_walk *c = c_;
-    if (gpu_ink2_put(c->r->gpu, t->q, t->q_row_bytes * (size_t)view_rows(t), t->q_scale, view_scales(t)) != c->r->n_dev ||
-        ink2g_set_dev(c->r->g, t, c->r, c->r->n_dev))
+    if (c->r->n_dev == c->fail_at) return -1;   // TEST-ONLY (RUNNER_INKLING2_CUDA_TEST_PUT_FAIL=k): the k-th put fails
+    if (gpu_ink2_put(c->r->gpu, t->q, t->q_row_bytes * (size_t)view_rows(t), t->q_scale, view_scales(t)) != c->r->n_dev)
         return -1;
-    c->r->dev_of[c->r->n_dev++] = t;
+    c->r->dev_of[c->r->n_dev++] = t;   // not marked on the device yet: dev_mark, once every put succeeded
     return 0;
+}
+// the views put marked as held on the device (ink2_tensor.dev), all or none: a view marked while its instance has no
+// device would send the engine's products to a device that is not there (the second read's P0)
+static void dev_unmark(ink2_rt *r) {
+    for (int i = 0; i < r->n_dev; i++) ink2g_set_dev(r->g, r->dev_of[i], NULL, 0);
+}
+static bool dev_mark(ink2_rt *r) {
+    for (int i = 0; i < r->n_dev; i++)
+        if (ink2g_set_dev(r->g, r->dev_of[i], r, i)) { dev_unmark(r); return false; }
+    return true;
 }
 // G2a: the engine's product of a device-held view, on the device (gpu_ink2_lin); x gathered and y scattered here
 static int dev_lin_scaled(const ink2_tensor *W, int64_t row0, int n_out, int n_in, int T, const float *x, size_t xs,
                           float *y, size_t ys, float scale) {
     ink2_rt *r = W->dev;
+    if (!r->gpu) r->gpu_err = true;   // never reached while views are marked all or none; refused if it were
     if (r->gpu_err) return -1;
     if (r->no_factor && W->q_scale) scale = 1.0f;
     float *xc = (float *)x, *yc = y;
@@ -104,7 +115,8 @@ static bool cuda_bind(ink2_rt *r) {
         fprintf(stderr, "note: the 8-bit control (RUNNER_INKLING2_ACT8) is the CPU's; running on the CPU\n");
         return false;
     }
-    dev_walk c = { r, 0, 0 };
+    const char *pf = getenv("RUNNER_INKLING2_CUDA_TEST_PUT_FAIL");
+    dev_walk c = { r, 0, 0, pf && *pf ? atoi(pf) : -1 };
     size_t fr = 0, tot = 0;
     char dev[160] = "";
     if (!gpu_available(dev, sizeof dev) || ink2g_each_view(r->g, dev_count, &c) || !gpu_mem_info(&fr, &tot)) {
@@ -120,8 +132,9 @@ static bool cuda_bind(ink2_rt *r) {
     r->dev_of = calloc((size_t)c.n, sizeof *r->dev_of);
     r->gpu = r->dev_of ? gpu_ink2_bind() : NULL;
     c.n = 0;
-    if (!r->gpu || ink2g_each_view(r->g, dev_put, &c)) {
+    if (!r->gpu || ink2g_each_view(r->g, dev_put, &c) || !dev_mark(r)) {
         fprintf(stderr, "note: inkling2_loop's weights could not be put on %s; running on the CPU\n", dev);
+        dev_unmark(r);
         gpu_ink2_free(r->gpu);
         r->gpu = NULL;
         free(r->dev_of);
@@ -374,7 +387,7 @@ float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos,
         return NULL;
     }
     if (keep_all && n > r->rows_cap) return NULL;
-    if (r->gpu && r->gpu_err) {   // a device product failed earlier: its cache holds NaN states, never CPU rows
+    if (r->gpu_err) {   // a device product failed earlier: its cache holds NaN states, never CPU rows
         fprintf(stderr, "error: inkling2_loop: this instance's device failed; it computes no more rows\n");
         return NULL;
     }
@@ -410,7 +423,7 @@ float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos,
         ink2_status st = ink2_forward_chunk_lora(&r->s, &r->w, lora, &r->c, pos + done, T,
                                                  (const int *)(tokens + done), chunk_out, chunk_flags,
                                                  NULL, NULL);   // int32_t is int on every target Runner builds for
-        if (st == INK2_OK && r->gpu && r->gpu_err) {
+        if (st == INK2_OK && r->gpu_err) {   // on the flag alone: it does not depend on r->gpu
             ink2_set_tpool(prev_tp);
             fprintf(stderr, "error: inkling2_loop: the forward at position %d failed on the device\n", pos + done);
             return NULL;
