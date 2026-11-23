@@ -58,7 +58,11 @@ static ink2_rt *rt_of(model_t *m) { return (ink2_rt *)m->ink2; }
 // R4.48.9: a view's rows (a stack's experts one after another) and its factors
 static int64_t view_rows(const ink2_tensor *t) { return t->ne[1] * t->ne[2] * t->ne[3]; }
 static int view_scales(const ink2_tensor *t) { return t->q_scale ? (int)t->ne[2] : 0; }
-typedef struct { ink2_rt *r; bool cpu_moe; size_t need; int n; int fail_at; int64_t max_in, max_out; bool attach; } dev_walk;
+typedef struct {
+    ink2_rt *r; bool cpu_moe; size_t need; int n; int fail_at;
+    int64_t max_in, max_out, max_out_body;   // max_out_body: the widest product but the head's (its vocabulary rows)
+    bool attach;
+} dev_walk;
 // what goes up is what the device computes (the second read's P1): a view the handle's products take (its type's
 // kernel; a factor only on NVFP4, the one kernel that applies it), not the token embedding (read row by row on the
 // host, never a product), and no expert stack under --cpu-moe. A view left on the host runs its products on the CPU.
@@ -80,6 +84,7 @@ static int dev_count(void *c_, const ink2_tensor *t) {
     if (view_scales(t)) c->need += dev_alloc_bytes(sizeof(float) * (size_t)view_scales(t));
     if (t->ne[0] > c->max_in) c->max_in = t->ne[0];
     if (t->ne[1] > c->max_out) c->max_out = t->ne[1];   // a product's rows: at most one matrix's (one expert's)
+    if (strcmp(t->name, "lm_head.weight") && t->ne[1] > c->max_out_body) c->max_out_body = t->ne[1];
     c->n++;
     return 0;
 }
@@ -333,10 +338,17 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
     for (int k = cpu_moe_req ? 1 : 0; k < 2; k++) {
         const bool cm = k == 1;
         const bool exp_dev = !cm && gpu_ink2_experts_ok(h) && !(ne && !strcmp(ne, "1"));
-        dev_walk c = { r, cm, 0, 0, -1, 0, 0, false };
+        dev_walk c = { r, cm, 0, 0, -1, 0, 0, 0, false };
         size_t tot = 0;
-        if (ink2g_each_view(r->g, dev_count, &c) || c.n == 0 ||
-            !gpu_ink2_reserve(h, sizeof(float) * T * (size_t)c.max_in, sizeof(float) * T * (size_t)c.max_out) ||
+        // the output buffer holds T rows of every product but the head, and at least one head row: a forward asks for
+        // its last row only (INK2_LOGITS_LAST); a keep-all forward's head runs its columns in groups (gpu_ink2_lin)
+        size_t y_rows = 0;
+        if (!ink2g_each_view(r->g, dev_count, &c) && c.n > 0) {
+            y_rows = T * (size_t)c.max_out_body;
+            if ((size_t)c.max_out > y_rows) y_rows = (size_t)c.max_out;
+        }
+        if (c.n == 0 || y_rows == 0 ||
+            !gpu_ink2_reserve(h, sizeof(float) * T * (size_t)c.max_in, sizeof(float) * y_rows) ||
             (exp_dev && !gpu_ink2_reserve_experts(h, (int)T, r->s.hidden, r->s.ff, r->s.n_expert)) ||
             (attn_dev && !gpu_ink2_reserve_attn(h, (int)T, q_max, nh_max, ext_max)) ||
             !gpu_mem_info(&fr, &tot)) {
@@ -355,7 +367,7 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
         // fits: up it goes (the views in the file's walk order; a failed put leaves the CPU, P0)
         r->dev_of = calloc((size_t)c.n, sizeof *r->dev_of);
         r->n_dev = 0;
-        dev_walk u = { r, cm, 0, c.n, pf && *pf ? atoi(pf) : -1, 0, 0, false };
+        dev_walk u = { r, cm, 0, c.n, pf && *pf ? atoi(pf) : -1, 0, 0, 0, false };
         if (!r->dev_of || ink2g_each_view(r->g, dev_put, &u) || r->n_dev != c.n) {
             snprintf(sh->why, sizeof sh->why, "inkling2_loop's weights could not be put on %s", dev);
             free(r->dev_of); r->dev_of = NULL; r->n_dev = 0;
@@ -458,7 +470,7 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
         const int n = sh->n_views;
         r->dev_of = calloc((size_t)n, sizeof *r->dev_of);
         r->n_dev = 0;
-        dev_walk a = { r, sh->placed == 'M', 0, n, -1, 0, 0, true };
+        dev_walk a = { r, sh->placed == 'M', 0, n, -1, 0, 0, 0, true };
         if (!r->dev_of || ink2g_each_view(r->g, dev_put, &a) || r->n_dev != n) {
             free(r->dev_of); r->dev_of = NULL; r->n_dev = 0;
             pthread_mutex_unlock(&g_share_mu);
@@ -989,6 +1001,10 @@ bool model_inkling2_cuda(const model_t *m) {
 size_t model_inkling2_cuda_fit_free(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
     return r && r->share ? r->share->fit_free : 0;
+}
+size_t model_inkling2_cuda_lin_out_bytes(const model_t *m) {
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    return r && r->gpu ? gpu_ink2_lin_out_bytes(r->gpu) : 0;
 }
 long model_inkling2_cuda_block_calls(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;

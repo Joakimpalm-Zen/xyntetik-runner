@@ -76,6 +76,7 @@ static int fails;
 
 static bool cpu_moe;   // the next loads' --cpu-moe
 static int n_seq;      // the next loads' slot count (model_params.n_seq: a server's --parallel)
+static int ctx_len;    // the next loads' -c (0: 64)
 static float *rows(model_t *m);
 // (p): forwards on two instances at once, each on its own thread, over one shared device copy
 typedef struct { model_t *m; float *out[4]; } par_job;
@@ -111,7 +112,7 @@ static model_t *load_route(const char *path, bool gpu, bool no_factor, int n_bat
     memset(&p, 0, sizeof p);
     p.gpu_mode = gpu ? GPU_AUTO : GPU_OFF;
     p.n_threads = 2;
-    p.n_ctx = 64;
+    p.n_ctx = ctx_len > 0 ? ctx_len : 64;
     p.n_batch = n_batch;
     p.cpu_moe = cpu_moe;
     p.n_seq = n_seq;
@@ -134,10 +135,10 @@ static size_t n_nonfinite(const float *a, size_t n) {
     }
     return k;
 }
-static float *rows_p(model_t *m, const int32_t *prompt) {
-    float *r = malloc(sizeof(float) * (size_t)N_TOK * (size_t)m->n_vocab);
-    for (int pos = 0; pos < N_TOK;) {
-        const int n = N_TOK - pos < m->n_batch ? N_TOK - pos : m->n_batch;
+static float *rows_n(model_t *m, const int32_t *prompt, int n_tok) {
+    float *r = malloc(sizeof(float) * (size_t)n_tok * (size_t)m->n_vocab);
+    for (int pos = 0; r && pos < n_tok;) {
+        const int n = n_tok - pos < m->n_batch ? n_tok - pos : m->n_batch;
         if (!model_inkling2_forward(m, prompt + pos, n, pos, true, true)) { free(r); return NULL; }
         for (int b = 0; b < n; b++)
             memcpy(r + (size_t)(pos + b) * (size_t)m->n_vocab, model_inkling2_row(m, b), sizeof(float) * (size_t)m->n_vocab);
@@ -145,6 +146,7 @@ static float *rows_p(model_t *m, const int32_t *prompt) {
     }
     return r;
 }
+static float *rows_p(model_t *m, const int32_t *prompt) { return rows_n(m, prompt, N_TOK); }
 static float *rows(model_t *m) { return rows_p(m, PROMPT); }
 static void drop(model_t *m) { if (m) { model_free(m); free(m); } }
 // a value that is not finite on either side scores as a failure (1e30), whatever the compiler makes of a NaN compare
@@ -345,6 +347,101 @@ int main(int argc, char **argv) {
                   d1 <= 1e-4, "(s) %s: at -b 1 (the history read at every step) the device block's rows equal -b 64's byte "
                   "for byte, %.2e from the reference, want <= 1e-4", kind[f], d1);
             free(x1); drop(g1);
+        }
+        {   // (v) the CPU route's decode fusion (RUNNER_INK2_DECODE_FUSE, T = 1: the fused projections, the fused expert
+            // body, the fused attention branch) never takes a device view's work: at -b 1 (every chunk T = 1), on the
+            // block path and on 2a's (test-only NO_BLOCK), with the fusion on and off: one device call per application
+            // and position, no host product over a device view, no host core, and the same rows byte for byte
+            const int n_app_v = sp ? ((const ink2_shape *)sp)->n_app : -1;
+            const long want = (long)n_app_v * N_TOK;
+            const char *fe = getenv("RUNNER_INK2_DECODE_FUSE");   // the run's own setting, restored after (v)
+            char fu_run[8] = "";
+            if (fe) snprintf(fu_run, sizeof fu_run, "%s", fe);
+            for (int path = 0; path < 2; path++) {
+                float *xv[2] = { NULL, NULL };
+                for (int fu = 0; fu < 2; fu++) {
+                    plat_setenv("RUNNER_INK2_DECODE_FUSE", fu ? "1" : "0");
+                    plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_BLOCK", path ? "1" : "");
+                    model_t *gv = load(argv[1 + f], true, false, 1);
+                    plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_BLOCK", "");
+                    const long hp0 = ink2_host_dev_products(), hc0v = ink2_attn_host_core_calls();
+                    xv[fu] = gv ? rows(gv) : NULL;
+                    const long hp = ink2_host_dev_products() - hp0, hcv = ink2_attn_host_core_calls() - hc0v;
+                    plat_setenv("RUNNER_INK2_DECODE_FUSE", fu_run);
+                    long nl = 0, ne = 0;
+                    size_t kvb = 0;
+                    if (gv) model_inkling2_cuda_calls(gv, &nl, &ne);
+                    const long nattn = gv ? (path ? model_inkling2_cuda_attn_calls(gv, &kvb) : model_inkling2_cuda_block_calls(gv)) : -1;
+                    CHECK(on_cuda && gv && model_inkling2_cuda(gv) && xv[fu] && nattn == want && ne == want && hp == 0 && hcv == 0,
+                          "(v) %s, %s, fusion %s, -b 1: %ld device %s calls and %ld expert-body calls (want %ld each), %ld host "
+                          "products over device views and %ld host cores (want 0)", kind[f], path ? "2a's path" : "the block path",
+                          fu ? "on" : "off", nattn, path ? "attention-core" : "attention-block", ne, want, hp, hcv);
+                    drop(gv);
+                }
+                const double dv = xv[1] && b ? rel_diff(xv[1], b, n) : 1;
+                CHECK(xv[0] && xv[1] && !memcmp(xv[0], xv[1], sizeof(float) * n) && dv <= 1e-4, "(v) %s, %s: the rows with the "
+                      "fusion on equal its rows with it off byte for byte, %.2e from the reference, want <= 1e-4", kind[f],
+                      path ? "2a's path" : "the block path", dv);
+                free(xv[0]); free(xv[1]);
+            }
+        }
+        {   // (w) the default chunk (256 since the CPU route's R4.48.20) on CUDA, at -c 384 over 280 tokens (a chunk
+            // boundary inside: 256 + 24): -b 0 resolves to 256; the rows at -b 256, 64 and 8 byte-identical and within
+            // 1e-4 of the reference engine's; the chunk boundaries live (a test-only bump at each chunk's first position
+            // past 0 moves -b 256's rows away from -b 64's); every sliding K/V ring window - 1 + 256 rows (a full one
+            // -c); the products' output buffer T = 256 rows of the widest product but the head and one head row, and a
+            // keep-all forward's head (260 rows, T = 256) leaves it at that size (its columns in groups)
+            enum { NL = 280, CL = 384 };
+            int32_t *lp = malloc(sizeof(int32_t) * NL);
+            for (int i = 0; lp && i < NL; i++) lp[i] = (int32_t)((i * 37 + 11) % 256);
+            const size_t nl = (size_t)NL * (size_t)g->n_vocab;
+            ctx_len = CL;
+            model_t *w0 = load(argv[1 + f], true, false, 0), *w64 = load(argv[1 + f], true, false, 64);
+            model_t *w8 = load(argv[1 + f], true, false, 8), *wr = load(argv[1 + f], false, false, 0);
+            ctx_len = 0;
+            const void *wsp = NULL;
+            if (w0) model_inkling2_parts(w0, &wsp, NULL);
+            const ink2_shape *ws = wsp;
+            const size_t y0 = model_inkling2_cuda_lin_out_bytes(w0);
+            float *l0 = w0 && lp ? rows_n(w0, lp, NL) : NULL, *l64 = w64 && lp ? rows_n(w64, lp, NL) : NULL;
+            float *l8 = w8 && lp ? rows_n(w8, lp, NL) : NULL, *lr = wr && lp ? rows_n(wr, lp, NL) : NULL;
+            const size_t y1 = model_inkling2_cuda_lin_out_bytes(w0);
+            const double dl = l0 && lr ? rel_diff(l0, lr, nl) : 1;
+            const size_t nfl = l0 ? n_nonfinite(l0, nl) : 0;
+            CHECK(w0 && w0->n_batch == 256 && model_inkling2_cuda(w0) && l0 && l64 && l8 && lr && nfl == 0 &&
+                  !memcmp(l0, l64, sizeof(float) * nl) && !memcmp(l0, l8, sizeof(float) * nl) && dl <= 1e-4,
+                  "(w) %s, %d tokens at -c %d: -b 0 is -b %d (want 256); the CUDA rows at -b 256, 64 and 8 byte-identical, "
+                  "%.2e from the reference, want <= 1e-4; %zu not finite", kind[f], NL, CL, w0 ? w0->n_batch : -1, dl, nfl);
+            // the control: the bump at each chunk's first position past 0 (256 at -b 256; 64, 128, ... at -b 64)
+            ink2_set_test_chunk_bump(1e-2f);
+            ctx_len = CL;
+            model_t *c0 = load(argv[1 + f], true, false, 0), *c64 = load(argv[1 + f], true, false, 64);
+            ctx_len = 0;
+            float *k0 = c0 && lp ? rows_n(c0, lp, NL) : NULL, *k64 = c64 && lp ? rows_n(c64, lp, NL) : NULL;
+            ink2_set_test_chunk_bump(0.0f);
+            CHECK(k0 && k64 && memcmp(k0, k64, sizeof(float) * nl), "(w) %s: control: a bump at each chunk's start moves "
+                  "-b 256's rows away from -b 64's (the boundaries are live)", kind[f]);
+            // the sliding rings: window - 1 + 256 rows; a full layer's -c; plus each layer's two histories (conv_k - 1)
+            size_t want_kv = 0, kvb = 0;
+            for (int ap = 0; ws && ap < ws->n_app; ap++) {
+                const int gl = ink2_app_global(ws, ap);
+                const size_t C = (size_t)(gl ? ws->n_kv * ws->head_dim : ws->swa_n_kv * ws->swa_head_dim);
+                const size_t rws = gl || ws->window - 1 + 256 >= CL ? (size_t)CL : (size_t)(ws->window - 1 + 256);
+                want_kv += 2 * sizeof(float) * C * (rws + (size_t)(ws->conv_k - 1));
+            }
+            if (w0) model_inkling2_cuda_attn_calls(w0, &kvb);
+            CHECK(ws && kvb == want_kv && want_kv > 0, "(w) %s: the device K/V rings and histories at -b 256: %zu bytes, want "
+                  "%zu (each sliding ring window %d - 1 + 256 rows)", kind[f], kvb, want_kv, ws ? ws->window : -1);
+            // the output buffer: 256 rows of the tiny file's widest product but the head (one expert's gate_up, 2 x ff
+            // = 128) beside one head row (260): 256 x 128 floats; the keep-all head over 256 positions did not grow it
+            const size_t want_y = ws ? sizeof(float) * (256 * (size_t)(2 * ws->ff) > (size_t)ws->vocab_used
+                                                            ? 256 * (size_t)(2 * ws->ff) : (size_t)ws->vocab_used) : 0;
+            CHECK(ws && y0 == want_y && y1 == y0, "(w) %s: the products' output buffer at -b 256 %zu bytes (want %zu: T rows "
+                  "of the widest product but the head, at least one head row; T x the head's %d rows would be %zu), %zu "
+                  "after a keep-all forward (want unchanged)", kind[f], y0, want_y, ws ? ws->vocab_used : -1,
+                  ws ? sizeof(float) * 256 * (size_t)ws->vocab_used : 0, y1);
+            free(l0); free(l64); free(l8); free(lr); free(k0); free(k64); free(lp);
+            drop(w0); drop(w64); drop(w8); drop(wr); drop(c0); drop(c64);
         }
         free(a); free(b); drop(g); drop(r);
     }

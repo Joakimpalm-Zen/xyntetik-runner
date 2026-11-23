@@ -638,6 +638,8 @@ static long ink2_host_glue_n;   // TEST-ONLY: host q/k/v/bank work for an attent
 long ink2_attn_host_glue_calls(void) { return __atomic_load_n(&ink2_host_glue_n, __ATOMIC_RELAXED); }
 static long ink2_host_core_n;   // TEST-ONLY: ink2_attn_core runs (ink2_attn_host_core_calls)
 long ink2_attn_host_core_calls(void) { return __atomic_load_n(&ink2_host_core_n, __ATOMIC_RELAXED); }
+static long ink2_host_dev_lin_n;   // TEST-ONLY: host product ranges over a device-held view (ink2_host_dev_products)
+long ink2_host_dev_products(void) { return __atomic_load_n(&ink2_host_dev_lin_n, __ATOMIC_RELAXED); }
 static ink2_sel_obs_fn ink2_sel_obs;
 static void *ink2_sel_obs_ctx;
 void ink2_set_sel_observer(ink2_sel_obs_fn fn, void *ctx) { ink2_sel_obs = fn; ink2_sel_obs_ctx = ctx; }
@@ -856,6 +858,7 @@ static void ink2_matvec(const float *W, int n_out, int n_in, const float *x, flo
 // dot, as llama.cpp's graph applies it.
 static void ink2_lin_range(void *c, int64_t o0, int64_t o1) {
     const ink2_lin_ctx *L = c;
+    if (L->W->dev) __atomic_add_fetch(&ink2_host_dev_lin_n, 1, __ATOMIC_RELAXED);   // a device view on the host
     const unsigned char *base = (const unsigned char *)L->W->q;
     const int type = L->W->qtype, n_in = L->n_in;
     if (L->T >= VEC_DOT_EXACT_TILE_MIN && vec_dot_exact_tile_ok(type, n_in)) {
@@ -889,6 +892,7 @@ static void ink2_lin(const ink2_tensor *W, int64_t row0, int n_out, int n_in, in
         return;
     }
     if (!W->q) {
+        if (W->dev) __atomic_add_fetch(&ink2_host_dev_lin_n, 1, __ATOMIC_RELAXED);   // a device view on the host
         for (int t = 0; t < T; t++) ink2_matvec(W->data + (size_t)row0 * n_in, n_out, n_in, x + (size_t)t * x_stride, y + (size_t)t * y_stride);
         return;
     }
@@ -926,11 +930,14 @@ static void ink2_lin_parts_range(void *c, int64_t i0, int64_t i1) {
     }
 }
 // Dispatch np independent fast linear projections in one ink2_par barrier (bits match calling ink2_lin per part).
+// A part whose weight a device instance holds (R4.48.9: its ops' lin) is never fused: each part then goes through
+// ink2_lin, which hands it to the device, so the fusion never computes a device view's product on the host.
 static void ink2_lin_parts(const ink2_lin_ctx *parts, int np, int64_t work) {
     if (np <= 0) return;
     int can_fuse = (np > 1) && (np <= INK2_LIN_PARTS_MAX) && ink2_decode_fuse_enabled();
     for (int s = 0; s < np && can_fuse; s++) {
-        if (!parts[s].W->q || parts[s].W->q_act8) can_fuse = 0;
+        const ink2_dev_ops *lo = ink2_ops_of(parts[s].W->dev);
+        if (!parts[s].W->q || parts[s].W->q_act8 || (lo && lo->lin)) can_fuse = 0;
     }
     if (!can_fuse) {
         for (int s = 0; s < np; s++) {

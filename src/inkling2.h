@@ -133,6 +133,9 @@ typedef struct ink2_dev_ops { ink2_dev_lin_fn lin; ink2_dev_experts_fn experts; 
 typedef struct { const ink2_dev_ops *ops; } ink2_dev_hdr;   // the first member of every binder's instance
 // TEST-ONLY: how many times the host attention core ran in this process (G2b step 2a's check that it did not)
 long ink2_attn_host_core_calls(void);
+// TEST-ONLY: how many host product ranges ran over a view a device instance holds (0 on the CUDA route: every such
+// product goes to the device, fused decode or not)
+long ink2_host_dev_products(void);
 // TEST-ONLY: the router's selections as the fast route made them, for the selection-agreement observable: per call,
 // the layer (block), T positions, chosen [T][E] and margin [T] (the k-th chosen score + bias minus the best unchosen
 // one: how near the selection was to flipping). NULL (the default): nothing is computed.

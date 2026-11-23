@@ -6155,6 +6155,7 @@ size_t gpu_ink2_bytes(const gpu_ink2 *h) { (void)h; return 0; }
 int gpu_ink2_count(const gpu_ink2 *h) { (void)h; return 0; }
 bool gpu_ink2_runs(const gpu_ink2 *h, int type) { (void)h; (void)type; return false; }
 bool gpu_ink2_reserve(gpu_ink2 *h, size_t x_bytes, size_t y_bytes) { (void)h; (void)x_bytes; (void)y_bytes; return false; }
+size_t gpu_ink2_lin_out_bytes(gpu_ink2 *h) { (void)h; return 0; }
 void gpu_ink2_free(gpu_ink2 *h) { (void)h; }
 bool gpu_ink2_lin(gpu_ink2 *h, int i, int type, size_t row_bytes, int64_t row0, int n_out, int n_in, int T,
                   const float *x, float *y, float scale) {

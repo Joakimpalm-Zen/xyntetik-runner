@@ -64,6 +64,9 @@ size_t model_inkling2_cuda_fit_free(const model_t *m);
 // R4.48.9, TEST-ONLY (G2b step 2b): the device attention-block calls this instance ran since its load, -1 when its
 // blocks run 2a's path
 long   model_inkling2_cuda_block_calls(const model_t *m);
+// R4.48.9, TEST-ONLY: the device products' output buffer's bytes now (the fit's reservation unless a product grew it),
+// 0 off the device
+size_t model_inkling2_cuda_lin_out_bytes(const model_t *m);
 // LoRA adapter geometry and backward (R4.48.10): attention-only adapters on blk.N.attn_{q,k,v,output}.
 int    model_inkling2_n_block(const model_t *m);
 bool   model_inkling2_slot_dims(const model_t *m, int layer, int slot, int *n_in, int *n_out, char *name, size_t cap);

@@ -744,9 +744,12 @@ size_t     gpu_ink2_bytes(const gpu_ink2 *h);   // the device bytes held
 int        gpu_ink2_count(const gpu_ink2 *h);   // the tensors put
 // whether the handle's products (gpu_ink2_lin) take tensors of this ggml type: its module has the type's kernel
 bool       gpu_ink2_runs(const gpu_ink2 *h, int type);
-// the products' activation and output buffers allocated now at these sizes (the largest product's), so a fit check
-// made after it counts them; gpu_ink2_lin still grows them for a larger product. False: no device memory.
+// the products' activation and output buffers allocated now at these sizes, so a fit check made after it counts them;
+// gpu_ink2_lin then runs a wider product's columns in groups these buffers hold (at least one column, the one case
+// that grows them). False: no device memory.
 bool       gpu_ink2_reserve(gpu_ink2 *h, size_t x_bytes, size_t y_bytes);
+// TEST-ONLY: the products' output buffer's bytes now (gpu_ink2_reserve's, unless a product grew it)
+size_t     gpu_ink2_lin_out_bytes(gpu_ink2 *h);
 // G2a: y[t][o] = scale * dot(row row0 + o of tensor i, x[t]) for t < T, o < n_out, on the device: the activations up,
 // one batch-1 matvec launch per column (each column's sums in that kernel's fixed order whatever T is), the rows back.
 // x is T rows n_in apart, y T rows n_out apart (contiguous; the caller gathers). type: the tensor's ggml type,

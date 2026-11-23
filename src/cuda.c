@@ -12986,11 +12986,21 @@ bool gpu_ink2_lin(gpu_ink2 *h, int i, int type, size_t row_bytes, int64_t row0, 
         (scale != 1.0f && type != T_NVFP4))
         return false;
     pthread_mutex_lock(&h->mu);
-    const size_t xb = sizeof(float) * (size_t)T * (size_t)n_in, yb = sizeof(float) * (size_t)T * (size_t)n_out;
-    bool ok = cu.CtxSetCurrent(h->ctx) == 0 && ink2_grow(&h->dx, &h->dx_cap, xb) && ink2_grow(&h->dy, &h->dy_cap, yb) &&
-              cu.MemcpyHtoD(h->dx, x, xb) == 0;
-    ok = ok && ink2_mv_cols(h, type, h->t[i].rows, (uint64_t)row0 * row_bytes, n_in, n_out, T, h->dx, h->dy, scale);
-    ok = ok && cu.MemcpyDtoH(y, h->dy, yb) == 0;   // the null stream: after every launch above
+    // the columns in groups the reserved buffers hold (gpu_ink2_reserve; at least one column): a product wider than
+    // the reservation's T rows (the head's vocabulary at T > 1, a keep-all forward) runs a group at a time instead of
+    // growing the buffers to T of its rows. Each column is its own batch-1 product, so the grouping changes no bit.
+    const size_t cx = sizeof(float) * (size_t)n_in, cy = sizeof(float) * (size_t)n_out;
+    int G = T;
+    if (h->dx_cap >= cx && h->dx_cap / cx < (size_t)G) G = (int)(h->dx_cap / cx);
+    if (h->dy_cap >= cy && h->dy_cap / cy < (size_t)G) G = (int)(h->dy_cap / cy);
+    bool ok = cu.CtxSetCurrent(h->ctx) == 0 && ink2_grow(&h->dx, &h->dx_cap, cx * (size_t)G) &&
+              ink2_grow(&h->dy, &h->dy_cap, cy * (size_t)G);
+    for (int t0 = 0; ok && t0 < T; t0 += G) {
+        const int g = T - t0 < G ? T - t0 : G;
+        ok = cu.MemcpyHtoD(h->dx, x + (size_t)t0 * n_in, cx * (size_t)g) == 0 &&
+             ink2_mv_cols(h, type, h->t[i].rows, (uint64_t)row0 * row_bytes, n_in, n_out, g, h->dx, h->dy, scale) &&
+             cu.MemcpyDtoH(y + (size_t)t0 * n_out, h->dy, cy * (size_t)g) == 0;   // the null stream: after its launches
+    }
     pthread_mutex_unlock(&h->mu);
     return ok;
 }
@@ -13305,6 +13315,13 @@ bool gpu_ink2_reserve(gpu_ink2 *h, size_t x_bytes, size_t y_bytes) {
     const bool ok = ink2_grow(&h->dx, &h->dx_cap, x_bytes) && ink2_grow(&h->dy, &h->dy_cap, y_bytes);
     pthread_mutex_unlock(&h->mu);
     return ok;
+}
+size_t gpu_ink2_lin_out_bytes(gpu_ink2 *h) {
+    if (!h) return 0;
+    pthread_mutex_lock(&h->mu);
+    const size_t b = h->dy_cap;
+    pthread_mutex_unlock(&h->mu);
+    return b;
 }
 void gpu_ink2_free(gpu_ink2 *h) {
     if (!h) return;
