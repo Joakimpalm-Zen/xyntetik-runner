@@ -39,8 +39,14 @@
 //         cycle through all 16 E2M1 codes (the top code, zero) with the largest (448) and the smallest UE4M3 scale
 //         and an all-zero block, and the factors 1e-3, 1, 10, 0.05 put gates near 0, in range, beyond +-10;
 //     (l) a --cpu-moe load runs no device expert body (its stacks are on the host).
+//  LoRA on the CUDA route (the supervisor's check C, before G2b step 2): the adapter's term is added on the host after
+//  each attention product returns (ink2_lora_apply after ink2_lin_rows), on either route. Bars fixed before the run:
+//     (q) the BF16 file with tests/inkling2_tiny.py --lora's adapter (all four attention slots of every layer): the
+//         CUDA rows within 1e-4 of the CPU fast route's rows with the same adapter, finite; the adapter moves the CUDA
+//         rows at least 10 times further than that distance; at scale 0 the CUDA rows equal the base CUDA rows byte
+//         for byte.
 //
-// usage: test_inkling2_cuda TINY_F32.gguf TINY_BF16.gguf TINY_Q8_0.gguf TINY_F16.gguf
+// usage: test_inkling2_cuda TINY_F32.gguf TINY_BF16.gguf TINY_Q8_0.gguf TINY_F16.gguf TINY_LORA.gguf
 #include "model.h"
 #include "gpu.h"
 #include "inkling2_model.h"
@@ -114,7 +120,10 @@ static double rel_diff(const float *a, const float *ref, size_t n) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 5) { fprintf(stderr, "usage: %s TINY_F32.gguf TINY_BF16.gguf TINY_Q8_0.gguf TINY_F16.gguf\n", argv[0]); return 2; }
+    if (argc < 6) {
+        fprintf(stderr, "usage: %s TINY_F32.gguf TINY_BF16.gguf TINY_Q8_0.gguf TINY_F16.gguf TINY_LORA.gguf\n", argv[0]);
+        return 2;
+    }
 #ifndef RUNNER_GPU_CUDA
     printf("SKIP: this build's GPU backend is not CUDA (not a pass)\n");
     return 77;
@@ -317,6 +326,26 @@ int main(int argc, char **argv) {
         }
 #undef RND
         gpu_ink2_free(h);
+    }
+    // (q): LoRA on the CUDA route, against the CPU fast route with the same adapter
+    {
+        model_t *gb = load(argv[2], true, false, 64), *gl = load(argv[2], true, false, 64);
+        model_t *g0 = load(argv[2], true, false, 64), *cl = load_route(argv[2], false, false, 64, "");
+        const bool l1 = gl && model_lora_load(gl, argv[5], 1.0f), l0 = g0 && model_lora_load(g0, argv[5], 0.0f);
+        const bool lc = cl && model_lora_load(cl, argv[5], 1.0f);
+        const bool on = gb && gl && g0 && model_inkling2_cuda(gb) && model_inkling2_cuda(gl) && model_inkling2_cuda(g0);
+        const size_t n = gb ? (size_t)N_TOK * (size_t)gb->n_vocab : 0;
+        float *rb = on ? rows(gb) : NULL, *rl = on && l1 ? rows(gl) : NULL, *r0 = on && l0 ? rows(g0) : NULL;
+        float *rc = lc ? rows(cl) : NULL;
+        const double dq = rl && rc ? rel_diff(rl, rc, n) : 1, mv = rl && rb ? rel_diff(rl, rb, n) : 0;
+        const size_t nf = rl ? n_nonfinite(rl, n) : 0;
+        CHECK(on && l1 && lc && rl && rc && nf == 0 && dq <= 1e-4, "(q) the adapter on CUDA (loaded %d, CPU %d): rows within "
+              "%.2e of the CPU fast route's with the same adapter, want <= 1e-4; %zu not finite", l1, lc, dq, nf);
+        CHECK(rl && rb && mv >= 10 * dq && mv > 0 && mv < 1e30, "(q) the adapter moves the CUDA rows %.2e, want >= 10x %.2e", mv, dq);
+        CHECK(r0 && rb && !memcmp(r0, rb, sizeof(float) * n), "(q) the adapter at scale 0 (loaded %d): the CUDA rows equal the "
+              "base CUDA rows byte for byte", l0);
+        free(rb); free(rl); free(r0); free(rc);
+        drop(gb); drop(gl); drop(g0); drop(cl);
     }
     // G2b (k): gpu_ink2_experts against float64 on the host, SwiGLU's boundary inputs reached through one-hot x
     {

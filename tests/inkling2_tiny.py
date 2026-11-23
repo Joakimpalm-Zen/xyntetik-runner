@@ -225,11 +225,32 @@ def _write(path, kvs, tensors, cut=0):
     return path
 
 
+def _lora(rank=4, alpha=8.0):
+    """A LoRA adapter for the tiny model (src/model.c model_lora_load's format): every layer's attn_q, attn_k, attn_v
+    and attn_output, F32 lora_a [n_in, rank] and lora_b [rank, n_out] (ggml dims), small random values."""
+    kvs = [("general.architecture", STR, "inkling2_loop"), ("general.type", STR, "adapter"),
+           ("adapter.type", STR, "lora"), ("adapter.lora.alpha", F32, alpha)]
+    dims = {"attn_q": (H, NH * HD), "attn_k": (H, NKV * HD), "attn_v": (H, NKV * HD), "attn_output": (NH * HD, H)}
+    t, seed = [], 900
+    for b in range(N_BLOCK):
+        for name, (n_in, n_out) in dims.items():
+            seed += 1
+            t.append((f"blk.{b}.{name}.weight.lora_a", [n_in, rank], T_F32, _f32(n_in * rank, 0.3, seed)))
+            seed += 1
+            t.append((f"blk.{b}.{name}.weight.lora_b", [rank, n_out], T_F32, _f32(rank * n_out, 0.3, seed)))
+    return kvs, t
+
+
 if __name__ == "__main__":
     import argparse
     import pathlib
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
     ap.add_argument("--dense", choices=("f32", "bf16", "q8_0", "f16"), default="f32")
+    ap.add_argument("--lora", action="store_true", help="write the tiny model's LoRA adapter instead of the model")
     a = ap.parse_args()
-    _write(pathlib.Path(a.out), _kvs(), _tensors(dense=a.dense))
+    if a.lora:
+        kv, ts = _lora()
+        _write(pathlib.Path(a.out), kv, ts)
+    else:
+        _write(pathlib.Path(a.out), _kvs(), _tensors(dense=a.dense))
