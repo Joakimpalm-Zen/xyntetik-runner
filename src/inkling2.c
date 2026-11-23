@@ -8,10 +8,13 @@
 #include "inkling2.h"
 #include "pmath.h"
 #include "quants.h"
+#include "tpool.h"
 
+#include <limits.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -249,129 +252,167 @@ size_t ink2_cache_bytes(const ink2_cache *c, const ink2_shape *s) {
 float ink2_inv_sqrt(int n) { return (float)(1.0 / sqrt((double)n)); }
 
 // ---- threads over OUTPUTS. A parallel loop splits a range of independent outputs (rows of a matvec, experts' rows,
-// vocabulary rows, heads) into contiguous chunks; each output is computed by the same serial loop as with one thread,
-// so no reduction is split or reordered and the bits do not depend on the thread count. At 1 thread (the default)
-// the loop body is called once over the whole range, on the caller's thread: today's code path. A parallel loop
-// inside a parallel loop runs serially. The pool is persistent; its workers wait on a condition variable.
+// vocabulary rows, heads) via the house tpool's static partition (tp_slice); each output is computed by the same serial
+// loop as with one thread, so no reduction is split or reordered and the bits do not depend on the thread count. At 1
+// thread (the default) or below INK2_PAR_MIN work, the loop runs on the caller's thread with no dispatch overhead. A
+// nested ink2_par (including from inside a tpool worker, via ink2_tp_tramp's ink2_in_par) runs serially.
 typedef void (*ink2_range_fn)(void *ctx, int64_t i0, int64_t i1);
-static struct {
-    pthread_mutex_t mu; pthread_cond_t go, done;
-    pthread_t th[INK2_MAX_THREADS];
-    int n_workers, quit, pending;
-    uint64_t gen;
-    ink2_range_fn fn; void *ctx; int64_t n, chunk, next;
-} ink2_pool = { .mu = PTHREAD_MUTEX_INITIALIZER, .go = PTHREAD_COND_INITIALIZER, .done = PTHREAD_COND_INITIALIZER };
-// The count and the pool are process-wide; two served slots run their forwards on their own threads and may set
-// the count while the other runs. Every read and write of the count is under ink2_cfg_mu, and a parallel loop holds
-// it for the whole loop, so a loop runs with the count it read and a set waits for the loop to end. The rows do not
-// depend on the count, so a count that changes between two loops of one forward changes no bits.
-static int ink2_n_threads = 0;    // 0: not yet read from INK2_THREADS
-static long ink2_par_min = 16384; // the least work (multiply-adds) a chunk gets; INK2_PAR_MIN
-static long ink2_split_loops = 0; // parallel loops that split their range over the pool, since the process began
-static int ink2_last_pool = 1;    // the threads the last of them ran on (its workers + the caller)
 static __thread int ink2_in_par;
-static pthread_mutex_t ink2_cfg_mu = PTHREAD_MUTEX_INITIALIZER;
+static __thread tpool *ink2_tl_tp;
+static _Atomic long ink2_par_min = 16384; // the least work (multiply-adds) a chunk gets; INK2_PAR_MIN
+static _Atomic long ink2_split_loops = 0; // parallel loops that split their range over the pool, since the process began
+static _Atomic int ink2_last_pool = 1;    // the threads the last of them ran on (its workers + the caller)
+static _Atomic int ink2_last_threads = 0; // last thread count used or set (0 until first explicit set/bind)
+
+// Fallback pool for standalone C harnesses that have no model_t (e.g. test_inkling2_fixture, inkling2_read).
+// CLI and server loads bind m->tp on TLS via ink2_set_tpool and never touch this.
+static pthread_mutex_t ink2_sb_mu = PTHREAD_MUTEX_INITIALIZER;
+static tpool *ink2_sb_tp = NULL;
+static int ink2_sb_threads = 0;
+static int ink2_sb_atexit_armed = 0;
 static pthread_once_t ink2_env_once = PTHREAD_ONCE_INIT;
-static void ink2_env_init(void) {
-    const char *e = getenv("INK2_PAR_MIN");
-    if (e && *e) ink2_par_min = atol(e) < 1 ? 1 : atol(e);
-    e = getenv("INK2_THREADS");
-    pthread_mutex_lock(&ink2_cfg_mu);
-    if (!ink2_n_threads) {
-        int n = e && *e ? atoi(e) : 1;
-        ink2_n_threads = n < 1 ? 1 : n > INK2_MAX_THREADS ? INK2_MAX_THREADS : n;
-    }
-    pthread_mutex_unlock(&ink2_cfg_mu);
+
+static void ink2_sb_cleanup(void) {
+    pthread_mutex_lock(&ink2_sb_mu);
+    tpool *tp = ink2_sb_tp;
+    ink2_sb_tp = NULL;
+    pthread_mutex_unlock(&ink2_sb_mu);
+    tpool_destroy(tp);
 }
 
-static void ink2_run_chunks(ink2_range_fn fn, void *ctx, int64_t n, int64_t chunk) {
-    for (;;) {
-        int64_t i0 = __atomic_fetch_add(&ink2_pool.next, chunk, __ATOMIC_RELAXED);
-        if (i0 >= n) break;
-        fn(ctx, i0, i0 + chunk < n ? i0 + chunk : n);
+static void ink2_env_init(void) {
+    const char *e = getenv("INK2_PAR_MIN");
+    if (e && *e) {
+        long v = atol(e);
+        atomic_store_explicit(&ink2_par_min, v < 1 ? 1 : v, memory_order_relaxed);
     }
-}
-// A worker starts at the generation the pool had when it was created (passed in), so a worker created by a resize
-// waits for the next loop instead of taking up the previous one, whose fields are stale.
-static void *ink2_worker(void *arg) {
-    ink2_in_par = 1;
-    uint64_t seen = (uint64_t)(uintptr_t)arg;
-    pthread_mutex_lock(&ink2_pool.mu);
-    for (;;) {
-        while (!ink2_pool.quit && ink2_pool.gen == seen) pthread_cond_wait(&ink2_pool.go, &ink2_pool.mu);
-        if (ink2_pool.quit) break;
-        seen = ink2_pool.gen;
-        ink2_range_fn fn = ink2_pool.fn; void *ctx = ink2_pool.ctx; int64_t n = ink2_pool.n, chunk = ink2_pool.chunk;
-        pthread_mutex_unlock(&ink2_pool.mu);
-        ink2_run_chunks(fn, ctx, n, chunk);
-        pthread_mutex_lock(&ink2_pool.mu);
-        if (--ink2_pool.pending == 0) pthread_cond_signal(&ink2_pool.done);
+    e = getenv("INK2_THREADS");
+    pthread_mutex_lock(&ink2_sb_mu);
+    if (!ink2_sb_threads) {
+        int n = e && *e ? atoi(e) : 1;
+        ink2_sb_threads = n < 1 ? 1 : n > INK2_MAX_THREADS ? INK2_MAX_THREADS : n;
     }
-    pthread_mutex_unlock(&ink2_pool.mu);
-    return NULL;
+    pthread_mutex_unlock(&ink2_sb_mu);
 }
-static void ink2_pool_stop(void) {
-    pthread_mutex_lock(&ink2_pool.mu); ink2_pool.quit = 1; pthread_cond_broadcast(&ink2_pool.go); pthread_mutex_unlock(&ink2_pool.mu);
-    for (int i = 0; i < ink2_pool.n_workers; i++) pthread_join(ink2_pool.th[i], NULL);
-    ink2_pool.n_workers = 0; ink2_pool.quit = 0;
+
+static tpool *ink2_standalone_acquire(void) {
+    pthread_mutex_lock(&ink2_sb_mu);
+    int nt = ink2_sb_threads;
+    if (nt <= 1) {
+        pthread_mutex_unlock(&ink2_sb_mu);
+        return NULL;
+    }
+    tpool *stale = NULL;
+    if (!ink2_sb_tp || tpool_size(ink2_sb_tp) != nt) {
+        stale = ink2_sb_tp;
+        ink2_sb_tp = tpool_create(nt);
+        if (ink2_sb_tp && !ink2_sb_atexit_armed) {
+            atexit(ink2_sb_cleanup);
+            ink2_sb_atexit_armed = 1;
+        }
+    }
+    tpool *tp = ink2_sb_tp;
+    if (tp) tpool_retain(tp);
+    pthread_mutex_unlock(&ink2_sb_mu);
+    tpool_destroy(stale);
+    return tp;
 }
+
+tpool *ink2_set_tpool(tpool *tp) {
+    tpool *prev = ink2_tl_tp;
+    ink2_tl_tp = tp;
+    if (tp) atomic_store_explicit(&ink2_last_threads, tpool_size(tp), memory_order_relaxed);
+    return prev;
+}
+
 int ink2_set_threads(int n) {
     pthread_once(&ink2_env_once, ink2_env_init);
     if (n < 1) n = 1;
     if (n > INK2_MAX_THREADS) n = INK2_MAX_THREADS;
-    pthread_mutex_lock(&ink2_cfg_mu);
-    if (ink2_pool.n_workers && ink2_pool.n_workers != n - 1) ink2_pool_stop();
-    ink2_n_threads = n;
-    pthread_mutex_unlock(&ink2_cfg_mu);
+    pthread_mutex_lock(&ink2_sb_mu);
+    tpool *stale = NULL;
+    if (ink2_sb_tp && tpool_size(ink2_sb_tp) != n) {
+        stale = ink2_sb_tp;
+        ink2_sb_tp = NULL;
+    }
+    ink2_sb_threads = n;
+    atomic_store_explicit(&ink2_last_threads, n, memory_order_relaxed);
+    pthread_mutex_unlock(&ink2_sb_mu);
+    tpool_destroy(stale);
     return n;
 }
+
 int ink2_get_threads(void) {
     pthread_once(&ink2_env_once, ink2_env_init);
-    pthread_mutex_lock(&ink2_cfg_mu);
-    const int n = ink2_n_threads;
-    pthread_mutex_unlock(&ink2_cfg_mu);
-    return n;
+    if (ink2_tl_tp) return tpool_size(ink2_tl_tp);
+    int last = atomic_load_explicit(&ink2_last_threads, memory_order_relaxed);
+    if (last > 0) return last;
+    pthread_mutex_lock(&ink2_sb_mu);
+    int n = ink2_sb_threads;
+    pthread_mutex_unlock(&ink2_sb_mu);
+    return n > 0 ? n : 1;
 }
+
 void ink2_par_stats(long *split_loops, int *last_pool) {
-    pthread_mutex_lock(&ink2_cfg_mu);
-    if (split_loops) *split_loops = ink2_split_loops;
-    if (last_pool) *last_pool = ink2_last_pool;
-    pthread_mutex_unlock(&ink2_cfg_mu);
+    if (split_loops) *split_loops = atomic_load_explicit(&ink2_split_loops, memory_order_relaxed);
+    if (last_pool) *last_pool = atomic_load_explicit(&ink2_last_pool, memory_order_relaxed);
 }
-// fn over [0, n): each index costs about `work` multiply-adds (it sizes the chunks)
+
+typedef struct {
+    ink2_range_fn fn;
+    void *ctx;
+    int64_t n;
+    int64_t group;
+} ink2_tp_ctx;
+
+// tpool worker threads do not inherit the caller's TLS ink2_in_par / ink2_tl_tp; mark ink2_in_par here
+// so any nested ink2_par invoked inside a worker runs serially without re-entering the pool or fallback.
+static void ink2_tp_tramp(void *raw, int i0, int i1) {
+    const ink2_tp_ctx *tc = raw;
+    int64_t a = (int64_t)i0 * tc->group;
+    int64_t b = (int64_t)i1 * tc->group;
+    if (b > tc->n) b = tc->n;
+    if (a >= b) return;
+    int prev = ink2_in_par;
+    ink2_in_par = 1;
+    tc->fn(tc->ctx, a, b);
+    ink2_in_par = prev;
+}
+
+// fn over [0, n): each index costs about `work` multiply-adds (sets minimum parallel work)
 void ink2_par(int64_t n, int64_t work, ink2_range_fn fn, void *ctx) {
+    if (n <= 0) return;
     if (ink2_in_par) { fn(ctx, 0, n); return; }
     pthread_once(&ink2_env_once, ink2_env_init);
     if (work < 1) work = 1;
-    int64_t chunk = (ink2_par_min + work - 1) / work;
+    int64_t min_work = atomic_load_explicit(&ink2_par_min, memory_order_relaxed);
+    int64_t chunk = (min_work + work - 1) / work;
     if (chunk < 1) chunk = 1;
-    pthread_mutex_lock(&ink2_cfg_mu);
-    const int nt = ink2_n_threads;
-    if (nt == 1 || n <= chunk) { pthread_mutex_unlock(&ink2_cfg_mu); fn(ctx, 0, n); return; }
-    // at least one chunk a thread when the work allows, up to four a thread for balance
-    int64_t per = (n + 4 * (int64_t)nt - 1) / (4 * (int64_t)nt);
-    if (per > chunk) chunk = per;
-    if (ink2_pool.n_workers != nt - 1) {
-        if (ink2_pool.n_workers) ink2_pool_stop();
-        // the generation only moves under ink2_cfg_mu (held here), so this read is the one the workers must wait past
-        const uintptr_t gen = (uintptr_t)ink2_pool.gen;
-        for (int i = 0; i < nt - 1; i++)
-            if (pthread_create(&ink2_pool.th[i], NULL, ink2_worker, (void *)gen) == 0) ink2_pool.n_workers++;
+
+    tpool *tp = ink2_tl_tp;
+    bool drop_tp = false;
+    if (!tp) {
+        tp = ink2_standalone_acquire();
+        drop_tp = (tp != NULL);
     }
-    ink2_split_loops++;
-    ink2_last_pool = ink2_pool.n_workers + 1;
-    pthread_mutex_lock(&ink2_pool.mu);
-    ink2_pool.fn = fn; ink2_pool.ctx = ctx; ink2_pool.n = n; ink2_pool.chunk = chunk; ink2_pool.next = 0;
-    ink2_pool.pending = ink2_pool.n_workers; ink2_pool.gen++;
-    pthread_cond_broadcast(&ink2_pool.go);
-    pthread_mutex_unlock(&ink2_pool.mu);
-    ink2_in_par = 1;
-    ink2_run_chunks(fn, ctx, n, chunk);
-    ink2_in_par = 0;
-    pthread_mutex_lock(&ink2_pool.mu);
-    while (ink2_pool.pending) pthread_cond_wait(&ink2_pool.done, &ink2_pool.mu);
-    pthread_mutex_unlock(&ink2_pool.mu);
-    pthread_mutex_unlock(&ink2_cfg_mu);
+    const int nt = tp ? tpool_size(tp) : 1;
+    if (nt <= 1 || n <= chunk || n < 2) {
+        if (drop_tp) tpool_destroy(tp);
+        fn(ctx, 0, n);
+        return;
+    }
+
+    int64_t group = 1;
+    int64_t items = n;
+    if (items > INT_MAX) {
+        group = (n + (int64_t)INT_MAX - 1) / (int64_t)INT_MAX;
+        items = (n + group - 1) / group;
+    }
+    atomic_fetch_add_explicit(&ink2_split_loops, 1, memory_order_relaxed);
+    atomic_store_explicit(&ink2_last_pool, nt, memory_order_relaxed);
+    ink2_tp_ctx tc = { fn, ctx, n, group };
+    tpool_run(tp, ink2_tp_tramp, &tc, (int)items);
+    if (drop_tp) tpool_destroy(tp);
 }
 
 // x * rsqrt(mean(x^2) + eps), the reference's Inkling2LoopUnweightedRMSNorm: a serial sum of squares, the mean, the

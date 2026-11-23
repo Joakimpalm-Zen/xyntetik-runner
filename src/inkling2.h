@@ -57,9 +57,11 @@ float ink2_inv_sqrt(int n);
 
 // Threads over independent OUTPUTS (matvec rows, the experts' rows, the router's experts, vocabulary rows, attention
 // heads, message-gate rows): each output is computed by the same serial loop at any thread count, so the bits do not
-// depend on it. The count: ink2_set_threads(n), or INK2_THREADS at the first parallel loop; default 1 (the serial
-// code path). INK2_PAR_MIN: the least work (multiply-adds) a chunk gets, default 16384 (1 forces every loop parallel,
-// for the tests). Returns the count set (1..INK2_MAX_THREADS).
+// depend on it. Model loads bind their house `tpool` onto the calling thread via ink2_set_tpool (CLI's m->tp or the
+// server's shared_pool); standalone callers without a model_t fall back to ink2_set_threads / INK2_THREADS (default 1).
+// INK2_PAR_MIN: the least work (multiply-adds) a chunk gets, default 16384 (1 forces every loop parallel, for tests).
+struct tpool;
+struct tpool *ink2_set_tpool(struct tpool *tp);
 int ink2_set_threads(int n);
 int ink2_get_threads(void);
 // What the pool really did, for the tests: the parallel loops that split their range over more than one thread since

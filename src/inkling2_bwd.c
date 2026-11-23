@@ -1187,8 +1187,6 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
     }
 
     int ctrl = read_bwd_ctrl();
-    const int nt = model_inkling2_threads(m);
-    if (nt != ink2_get_threads()) ink2_set_threads(nt);
     size_t TH = (size_t)T * H;
 
     // Allocate checkpoint activations ckpt[n_app + 1] and gradient slabs d_ckpt[n_app + 1]
@@ -1215,6 +1213,7 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
         free(ckpt); free(d_ckpt);
         return false;
     }
+    struct tpool *prev_tp = ink2_set_tpool(m->tp);
 
     for (int t = 0; t < T; t++) ids[t] = (int)toks[t];
 
@@ -1731,5 +1730,6 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
     if (ok && loss_out) *loss_out = total_loss;
     for (int k = 0; k <= n_app; k++) { free(ckpt[k]); free(d_ckpt[k]); }
     free(ckpt); free(d_ckpt); free(meta); free(ids);
+    ink2_set_tpool(prev_tp);
     return ok;
 }

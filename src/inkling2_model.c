@@ -168,7 +168,11 @@ bool model_inkling2_runtime(model_t *m, const model_params *p) {
     } else {
         r->w = r->inner;
     }
-    // no thread count here: a server's slot is loaded with a one-thread pool, and the forward takes the count at use
+    m->tp = tpool_create(r->n_threads);
+    if (!m->tp) {
+        fprintf(stderr, "error: cannot create thread pool\n");
+        return false;
+    }
     fprintf(stderr, "inkling2_loop: -c %d -b %d; cache %.2f GB (sliding K/V for the window only), expert cache up to "
                     "%.2f GiB (the budget, RUNNER_INKLING2_EXPERT_CACHE)\n", n_ctx, m->n_batch,
             ink2_cache_bytes(&r->c, &r->s) / 1e9, expert_cache_held(&r->s, r->ec_budget) / 1073741824.0);
@@ -265,12 +269,10 @@ float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos,
         return NULL;
     }
     if (keep_all && n > r->rows_cap) return NULL;
-    // the engine's own pool takes the instance's thread count at use, the one place it is set: a server loads each
-    // slot with a one-thread pool and swaps in the shared pool afterwards, so a count read at bind would be one. Two
-    // slots both set it from the one shared pool; a parallel loop runs with the count it read (src/inkling2.c). The
-    // rows do not depend on the count (tests/test_inkling2_threads.c).
-    const int nt = model_inkling2_threads(m);
-    if (nt != ink2_get_threads()) ink2_set_threads(nt);
+    // Bind this instance's house pool (CLI's own tpool or the server's shared_pool) onto TLS for the forward.
+    // Two server slots run safely without a global thread-count lock: tpool_run serializes on shared_pool, and
+    // distinct pools run concurrently on their own threads with identical bit outputs.
+    tpool *prev_tp = ink2_set_tpool(m->tp);
     ink2_lora lcb = { m, ink2_lora_slot_cb };
     const ink2_lora *lora = m->lora ? &lcb : NULL;
     // RUNNER_INKLING2_ROWS=FILE (TEST-ONLY, the wired path's bit-for-bit check): every forward's rows, appended
@@ -281,7 +283,11 @@ float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos,
     const bool need_all = keep_all || dump_on;
     if (need_all && !r->rows) {
         r->rows = malloc(sizeof(float) * (size_t)r->rows_cap * (size_t)m->n_vocab);
-        if (!r->rows) { fprintf(stderr, "error: out of memory for the logits rows\n"); return NULL; }
+        if (!r->rows) {
+            ink2_set_tpool(prev_tp);
+            fprintf(stderr, "error: out of memory for the logits rows\n");
+            return NULL;
+        }
     }
     int last_T = 0;
     // chunks of n_batch: the engine's rows do not depend on the split (measured bit for bit)
@@ -296,6 +302,7 @@ float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos,
                                                  (const int *)(tokens + done), chunk_out, chunk_flags,
                                                  NULL, NULL);   // int32_t is int on every target Runner builds for
         if (st != INK2_OK) {
+            ink2_set_tpool(prev_tp);
             fprintf(stderr, "error: inkling2_loop: the forward at position %d refused (status %d%s)\n", pos + done, (int)st,
                     st == INK2_REWIND ? ": not where the sequence ends, and this model does not rewind" : "");
             return NULL;
@@ -326,6 +333,7 @@ float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos,
             r->kept_n = keep_all ? T : 0;
         }
     }
+    ink2_set_tpool(prev_tp);
     if (!want_logits) return NULL;
     if (need_all)
         memcpy(m->logits, r->rows + (size_t)(last_T - 1) * (size_t)m->n_vocab, sizeof(float) * (size_t)m->n_vocab);
