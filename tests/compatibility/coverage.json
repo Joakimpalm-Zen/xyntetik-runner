@@ -923,8 +923,9 @@
   },
   "inkling2": {
    "tool_protocol": {
-    "status": "NOT RUN",
-    "note": "native TP_INKLING2 protocol, closure, and reasoning transitions pass on fixtures (test_tools, tests/test_inkling2_protocol.py); no live weights gate has run"
+    "status": "PASS",
+    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-inkling2-mini-ud-q8_k_xl-lab-slice.json",
+    "note": "scripts/tool-protocol-check.py on the real weights (unsloth Inkling-2-Mini-UD-Q8_K_XL, 2026-11-23, the CPU route, the shipped generic preset): A, B and C pass buffered and streamed; UD-Q4_K_XL passes the same (tool-protocol-inkling2-mini-ud-q4_k_xl-lab-slice.json). Native TP_INKLING2 protocol, closure and reasoning transitions also pass on fixtures (test_tools, tests/test_inkling2_protocol.py)."
    },
    "client_loop": {
     "status": "NOT RUN"
@@ -1583,7 +1584,9 @@
    ],
    "artifacts": [],
    "tool_protocol": {
-    "status": "NOT RUN"
+    "status": "PASS",
+    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-inkling2-mini-ud-q8_k_xl-lab-slice.json",
+    "note": "the inkling2 template's live gate on this architecture's two admitted files (R4.48.6)"
    },
    "client_loop": {
     "status": "NOT RUN"
