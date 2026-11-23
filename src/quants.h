@@ -248,6 +248,9 @@ bool   vec_dot_xs_ok(int type);
 // R4.48.15: whether this build's vec_dot for `type` is a SIMD kernel (AVX2 + FMA, or NEON) rather than the scalar
 // loop, for the tests that hold a kernel's presence.
 bool   vec_dot_simd(int type);
+// R4.48.20: whether this build's vec_dot_multi for `type` takes a multi-column SIMD kernel (decoding each weight block
+// once across columns) rather than falling through to per-column vec_dot or dot_generic_multi.
+bool   vec_dot_multi_simd(int type);
 // R12.1b: whether this build runs `type`'s vec_dot in the canonical order
 // (RUNNER_CANON_KERNELS, the T3 build: one eight-lane tree on every ISA), and
 // whether it is such a build at all. A canonical build names the types it

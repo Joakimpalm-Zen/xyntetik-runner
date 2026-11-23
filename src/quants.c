@@ -3467,6 +3467,22 @@ bool vec_dot_simd(int type) {
 #endif
 }
 
+bool vec_dot_multi_simd(int type) {
+#if !defined(RUNNER_CANON_KERNELS) && (RUNNER_AVX2 || RUNNER_NEON)
+    switch (type) {
+        case T_Q8_0: case T_Q4_0: case T_MXFP4: case T_IQ4_NL: case T_IQ4_XS:
+        case T_Q2_0: case T_BF16: case T_Q4_K: case T_Q5_K: case T_Q6_K:
+        case T_IQ3_XXS: case T_IQ3_S:
+            return true;
+        default:
+            return false;
+    }
+#else
+    (void)type;
+    return false;
+#endif
+}
+
 void vec_dot_xsums(const float *x, int n, float *xs) {
 #if !defined(RUNNER_CANON_KERNELS) && RUNNER_AVX2
     for (int g = 0; g < n / 32; g++) {

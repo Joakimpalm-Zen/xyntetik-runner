@@ -10,6 +10,11 @@
 //  3. vec_dot is within 1e-5 of the double-precision dot of the exact weights, relative to sum |w x|, at the lengths
 //     a real file has (64 to 6144) and on ragged lengths of whole blocks
 //  4. vec_dot_multi is byte-equal to vec_dot for one to eight columns
+//  5. this build's vec_dot_multi for NVFP4 is a multi-column SIMD kernel (vec_dot_multi_simd, fails before the kernel)
+//  6. vec_dot_multi matches vec_dot bit for bit across block counts, non-contiguous column strides, output sentinels,
+//     and nc > VEC_DOT_MULTI_MAX
+//  7. vec_dot_multi matches vec_dot bit for bit and stays within 1e-5 of the double dot on every UE4M3 scale byte
+//     (0..255) x every E2M1 code (0..15) and alternating-sign sub-blocks
 #include "quants.h"
 #include "fp16.h"
 #include <math.h>
@@ -49,6 +54,101 @@ static void random_row(uint8_t *row, int n) {
         for (int s = 0; s < 4; s++) blk[s] = (uint8_t)(1 + next() % 0x7E);
         for (int j = 0; j < 32; j++) blk[4 + j] = (uint8_t)next();
     }
+}
+
+static double rel_err_double(const float *w, const float *x, int n, float got) {
+    double exact = 0.0, mag = 0.0;
+    for (int i = 0; i < n; i++) {
+        exact += (double)w[i] * x[i];
+        mag += fabs((double)w[i] * x[i]);
+    }
+    return mag > 0.0 ? fabs((double)got - exact) / mag : fabs((double)got - exact);
+}
+
+static long check_multi_widths_and_strides(const int *lens, size_t nlens) {
+    enum { NMAX = 6144, STRIDE = 6167, MAXC = VEC_DOT_MULTI_MAX + 2 };
+    uint8_t *wrow = malloc((size_t)NMAX / BLK * BLK_BYTES);
+    float *buf = malloc(sizeof(float) * (size_t)MAXC * STRIDE);
+    long diff = 0;
+    const uint32_t guard_bits = 0x7FC01234u;
+    float guard;
+    memcpy(&guard, &guard_bits, sizeof guard);
+    for (size_t li = 0; li < nlens; li++) {
+        const int len = lens[li];
+        random_row(wrow, len);
+        for (int c = 0; c < MAXC; c++) {
+            float *col = buf + (size_t)c * STRIDE;
+            for (int i = 0; i < len; i++) col[i] = ((float)(next() % 20001) - 10000.0f) / 2500.0f;
+        }
+        // asymmetric non-adjacent column pointers (as grouped expert positions in ink2_experts_fast)
+        const float *xs[MAXC];
+        for (int c = 0; c < MAXC; c++) {
+            const int src = (c * 3 + 1) % MAXC;
+            xs[c] = buf + (size_t)src * STRIDE;
+        }
+        for (int nc = 1; nc <= VEC_DOT_MULTI_MAX + 1; nc++) {
+            float raw[MAXC + 2];
+            for (int g = 0; g < MAXC + 2; g++) raw[g] = guard;
+            vec_dot_multi(T_NVFP4, wrow, xs, nc, len, raw + 1);
+            if (memcmp(&raw[0], &guard, 4) != 0) diff++;
+            for (int g = nc + 1; g < MAXC + 2; g++) if (memcmp(&raw[g], &guard, 4) != 0) diff++;
+            for (int c = 0; c < nc; c++) {
+                const float one = vec_dot(T_NVFP4, wrow, xs[c], len);
+                if (memcmp(&one, &raw[1 + c], 4) != 0) diff++;
+            }
+        }
+    }
+    free(wrow);
+    free(buf);
+    return diff;
+}
+
+static long check_multi_corners(const uint8_t *all_scales, double *worst_rel) {
+    enum { N_ALL = 256 * BLK, N_ALT = 256 };
+    float *wdec = malloc(sizeof(float) * N_ALL);
+    uint8_t *alt = malloc((size_t)(N_ALT / BLK) * BLK_BYTES);
+    float *cols[VEC_DOT_MULTI_MAX];
+    for (int c = 0; c < VEC_DOT_MULTI_MAX; c++) {
+        cols[c] = malloc(sizeof(float) * N_ALL);
+        for (int i = 0; i < N_ALL; i++) cols[c][i] = ((float)(next() % 20001) - 10000.0f) / 2500.0f;
+    }
+    long diff = 0;
+    *worst_rel = 0.0;
+    decode_here(all_scales, N_ALL, wdec);
+    for (int nc = 1; nc <= VEC_DOT_MULTI_MAX; nc++) {
+        float out[VEC_DOT_MULTI_MAX];
+        vec_dot_multi(T_NVFP4, all_scales, (const float *const *)cols, nc, N_ALL, out);
+        for (int c = 0; c < nc; c++) {
+            const float one = vec_dot(T_NVFP4, all_scales, cols[c], N_ALL);
+            if (memcmp(&one, &out[c], 4) != 0) diff++;
+            const double rel = rel_err_double(wdec, cols[c], N_ALL, out[c]);
+            if (rel > *worst_rel) *worst_rel = rel;
+        }
+    }
+    // alternating-sign even vs odd sub-blocks (+6.0 / -6.0 and code 8 -0), testing acc0/acc1 separation
+    for (int blk = 0; blk < N_ALT / BLK; blk++) {
+        uint8_t *p = alt + (size_t)blk * BLK_BYTES;
+        p[0] = 0x7E; p[1] = 0x7E; p[2] = 0x01; p[3] = 0x7F;
+        for (int j = 0; j < 8; j++) p[4 + j] = 0x77;          // sub 0: +6.0
+        for (int j = 8; j < 16; j++) p[4 + j] = 0xFF;         // sub 1: -6.0
+        for (int j = 16; j < 24; j++) p[4 + j] = 0x88;        // sub 2: code 8 (+0.0)
+        for (int j = 24; j < 32; j++) p[4 + j] = 0x19;        // sub 3 (0x7F -> 0.0): codes 9, 1
+    }
+    decode_here(alt, N_ALT, wdec);
+    for (int nc = 1; nc <= VEC_DOT_MULTI_MAX; nc++) {
+        float out[VEC_DOT_MULTI_MAX];
+        vec_dot_multi(T_NVFP4, alt, (const float *const *)cols, nc, N_ALT, out);
+        for (int c = 0; c < nc; c++) {
+            const float one = vec_dot(T_NVFP4, alt, cols[c], N_ALT);
+            if (memcmp(&one, &out[c], 4) != 0) diff++;
+            const double rel = rel_err_double(wdec, cols[c], N_ALT, out[c]);
+            if (rel > *worst_rel) *worst_rel = rel;
+        }
+    }
+    for (int c = 0; c < VEC_DOT_MULTI_MAX; c++) free(cols[c]);
+    free(alt);
+    free(wdec);
+    return diff;
 }
 
 int main(void) {
@@ -115,6 +215,15 @@ int main(void) {
         }
     }
     CHECK(mism == 0, "4. vec_dot_multi byte-equal to vec_dot for 1 to 8 columns: %ld differ", mism);
+    CHECK(vec_dot_multi_simd(T_NVFP4), "5. vec_dot_multi for NVFP4 is a multi-column SIMD kernel on this build");
+    const long multi_diff = check_multi_widths_and_strides(lens, sizeof lens / sizeof *lens);
+    CHECK(multi_diff == 0, "6. vec_dot_multi byte-equal across widths 64..6144, strides, guards and nc=9: %ld differ",
+          multi_diff);
+    double corner_rel = 0.0;
+    const long corner_diff = check_multi_corners(all, &corner_rel);
+    CHECK(corner_diff == 0 && corner_rel <= 1e-5,
+          "7. vec_dot_multi corner scales/codes byte-equal (%ld differ) and within %.2e <= 1e-5",
+          corner_diff, corner_rel);
     for (int c = 0; c < 8; c++) free(cols[c]);
     free(row); free(a); free(b); free(x); free(a2); free(b2); free(all);
     printf(fails ? "FAIL %d\n" : "PASS\n", fails);
