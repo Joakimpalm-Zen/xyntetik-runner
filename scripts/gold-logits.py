@@ -560,6 +560,59 @@ def score_side(rows_top, row, spell):
     return Top({}, by_id, None, spell(int(i0)), int(i0))
 
 
+def check_gold_ids(gold_ids, span, path):
+    """The rows files were computed on gold_ids: they must begin with the reference's own span
+    (the corpus's tokenization with the special prefix), or the sides would be scored on another
+    text. Stops the run with the first difference."""
+    if gold_ids[:len(span)] != list(span):
+        first = next((i for i in range(min(len(gold_ids), len(span))) if gold_ids[i] != span[i]),
+                     min(len(gold_ids), len(span)))
+        sys.exit(f"{path}: token ids differ from the reference's span at index {first} "
+                 f"(file {gold_ids[first:first + 4]}, reference {list(span)[first:first + 4]}, "
+                 f"file {len(gold_ids)} ids, span {len(span)})")
+
+
+def _rows_map(path, n_ids):
+    """A raw float32 [N][V] rows file as a read-only map, N = n_ids; V from the size."""
+    import os
+    import numpy as np
+    size = os.path.getsize(path)
+    if n_ids < 1 or size % (4 * n_ids):
+        sys.exit(f"{path}: {size} bytes is not {n_ids} rows of float32")
+    return np.memmap(path, dtype="<f4", mode="r", shape=(n_ids, size // (4 * n_ids)))
+
+
+def rows_logp(path, n_ids, rows):
+    """The gold from precomputed rows: the scored rows' log-softmax in float32, the same
+    operation reference_logp applies to the model's logits (torch.log_softmax(lg.float()))."""
+    import numpy as np
+    import torch
+    m = _rows_map(path, n_ids)
+    keep = sorted(set(rows))
+    if keep and keep[-1] >= m.shape[0]:
+        sys.exit(f"{path}: row {keep[-1]} is scored but the file holds {m.shape[0]}")
+    lg = torch.from_numpy(np.array(m[keep], dtype=np.float32))
+    logp = torch.log_softmax(lg.float(), dim=-1)
+    return logp, {r: i for i, r in enumerate(keep)}, f"precomputed rows ({path})"
+
+
+class rows_top:
+    """A side given as full float32 rows on the gold ids, read the way a runner score file is:
+    rows_top[row] is the row's top --top-n log-probabilities as [id, logprob] pairs."""
+
+    def __init__(self, path, n_ids, top_n):
+        self.m, self.top_n, self.cache = _rows_map(path, n_ids), top_n, {}
+
+    def __getitem__(self, row):
+        if row not in self.cache:
+            import numpy as np
+            import torch
+            lp = torch.log_softmax(torch.from_numpy(np.array(self.m[row], dtype=np.float32)), dim=-1)
+            top = torch.topk(lp, self.top_n)
+            self.cache[row] = [[int(i), float(v)] for v, i in zip(top.values, top.indices)]
+        return self.cache[row]
+
+
 def token_speller(tok):
     """How a server spells one token in its logprobs: the text the token adds
     inside a sentence.
@@ -773,6 +826,16 @@ def main():
     ap.add_argument("--model-name-b")
     ap.add_argument("--score-a", help="side a from a runner --score --score-top file")
     ap.add_argument("--score-b", help="side b from a runner --score --score-top file")
+    ap.add_argument("--gold-ids", help="the token ids (whitespace-separated) that --gold-rows and "
+                    "--rows-a/--rows-b were computed on; they must begin with the reference's own "
+                    "tokenization of --corpus (BOS rule included), or the run stops")
+    ap.add_argument("--gold-rows", help="the reference's full float32 logits rows on --gold-ids "
+                    "(raw little-endian [N][V]), computed by the publisher's implementation in "
+                    "another process (a reference too large to load here); the gold is taken from "
+                    "these rows exactly as from the in-process model's logits (rows_logp)")
+    ap.add_argument("--rows-a", help="side a as full float32 logits rows on --gold-ids ([N][V]); "
+                    "its top --top-n log-probabilities stand in for a score file (rows_top)")
+    ap.add_argument("--rows-b", help="side b as full float32 logits rows on --gold-ids ([N][V])")
     for side in ("a", "b"):
         ap.add_argument(f"--gguf-{side}", help=f"the GGUF file side {side} scored, hashed into "
                         "the record with --repo-" + side + " (the fidelity index reads it)")
@@ -824,8 +887,8 @@ def main():
                          "must see the same prefix or the two are compared "
                          "across a one-token offset.")
     args = ap.parse_args()
-    if bool(args.endpoint_a) == bool(args.score_a):
-        ap.error("side a needs exactly one of --endpoint-a/--model-name-a or --score-a")
+    if sum(map(bool, (args.endpoint_a, args.score_a, args.rows_a))) != 1:
+        ap.error("side a needs exactly one of --endpoint-a/--model-name-a, --score-a or --rows-a")
     if args.endpoint_a and not args.model_name_a:
         ap.error("--endpoint-a needs --model-name-a")
     if args.endpoint_b and args.score_b:
@@ -840,6 +903,13 @@ def main():
     if args.offload_dir and args.upcast_at_use:
         ap.error("--offload-dir loads each block in float32 at use already; "
                  "drop --upcast-at-use")
+    for side in ("a", "b"):
+        if getattr(args, f"rows_{side}") and (getattr(args, f"endpoint_{side}") or getattr(args, f"score_{side}")):
+            ap.error(f"--rows-{side} is side {side}: drop --endpoint-{side} and --score-{side}")
+        if getattr(args, f"rows_{side}") and not args.gold_ids:
+            ap.error(f"--rows-{side} needs --gold-ids, the ids its rows were computed on")
+    if args.gold_rows and not args.gold_ids:
+        ap.error("--gold-rows needs --gold-ids, the ids the reference's rows were computed on")
     route_note = route_comparison_guard(args)
 
     import time
@@ -874,39 +944,48 @@ def main():
     # the causal-LM auto class refuses those configs, so fall back to the
     # image-text class and drive it with text only. The config name is
     # printed so the report says which class produced the gold.
+    gold_ids = None
+    if args.gold_ids:
+        gold_ids = [int(x) for x in open(args.gold_ids).read().split()]
+    model = None
+    reference_class = None
+    upcast = None
+    if args.gold_rows:
+        reference_class = "precomputed rows"
     kw = dict(dtype="auto" if args.upcast_at_use else torch.float32,
               trust_remote_code=args.trust_remote_code)
     if args.offload_dir:
         kw.update(offload_kwargs(args.offload_dir, args.max_memory))
-    stage(f"loading {args.hf} " + ("at its stored dtype, float32 at use"
-                                   if args.upcast_at_use else
+    if not args.gold_rows:
+      stage(f"loading {args.hf} " + ("at its stored dtype, float32 at use"
+                                     if args.upcast_at_use else
                                    f"in float32, {args.max_memory:g} GiB held and the rest "
                                    f"streamed from disk" if args.offload_dir else "in float32"))
-    try:
-        model = AutoModelForCausalLM.from_pretrained(args.hf, **kw)
-    except (ValueError, KeyError, OSError):
-        from transformers import AutoModelForImageTextToText
-        model = AutoModelForImageTextToText.from_pretrained(args.hf, **kw)
-    print("reference class:", type(model).__name__, file=sys.stderr)
-    upcast = None
-    if args.upcast_at_use:
-        n_blocks, declared, n_units = upcast_at_use(model)
-        upcast = (f"float32 arithmetic on weights stored at {next(model.parameters()).dtype}, "
-                  f"cast at use per decoder block ({n_blocks} blocks, config num_hidden_layers "
-                  f"{declared}; {n_units} units hooked)")
-        stage(f"weights loaded; {upcast}")
-    else:
-        cast = float32_stragglers(model)
-        if cast:
-            upcast = (f"float32; {len(cast)} tensors the load left at their stored BF16/F16 "
-                      f"cast to float32 after it (exact)")
-        if args.offload_dir:
-            on = sorted(set(getattr(model, "hf_device_map", {}).values()))
-            stage(f"weights mapped ({', '.join(map(str, on))}); {offload_written(args.offload_dir)} "
-                  f"bytes written to the offload directory; {len(cast)} tensors cast to float32")
-        else:
-            stage(f"weights loaded; {len(cast)} tensors cast to float32")
-    model.eval()
+      try:
+          model = AutoModelForCausalLM.from_pretrained(args.hf, **kw)
+      except (ValueError, KeyError, OSError):
+          from transformers import AutoModelForImageTextToText
+          model = AutoModelForImageTextToText.from_pretrained(args.hf, **kw)
+      print("reference class:", type(model).__name__, file=sys.stderr)
+      upcast = None
+      if args.upcast_at_use:
+          n_blocks, declared, n_units = upcast_at_use(model)
+          upcast = (f"float32 arithmetic on weights stored at {next(model.parameters()).dtype}, "
+                    f"cast at use per decoder block ({n_blocks} blocks, config num_hidden_layers "
+                    f"{declared}; {n_units} units hooked)")
+          stage(f"weights loaded; {upcast}")
+      else:
+          cast = float32_stragglers(model)
+          if cast:
+              upcast = (f"float32; {len(cast)} tensors the load left at their stored BF16/F16 "
+                        f"cast to float32 after it (exact)")
+          if args.offload_dir:
+              on = sorted(set(getattr(model, "hf_device_map", {}).values()))
+              stage(f"weights mapped ({', '.join(map(str, on))}); {offload_written(args.offload_dir)} "
+                    f"bytes written to the offload directory; {len(cast)} tensors cast to float32")
+          else:
+              stage(f"weights loaded; {len(cast)} tensors cast to float32")
+      model.eval()
 
     text = open(args.corpus, encoding="utf-8").read()
     ids = tok(text, add_special_tokens=False)["input_ids"]
@@ -935,8 +1014,14 @@ def main():
     span = list(special) + list(body)
     scored = [len(special) + args.min_prefix + n * args.stride - 1
               for n in range(args.max_positions)]
-    stage(f"forward over {len(span)} tokens")
-    logp, logp_row, logits_path = reference_logp(model, span, scored)
+    if gold_ids is not None:
+        check_gold_ids(gold_ids, span, args.gold_ids)
+    if args.gold_rows:
+        stage(f"gold from {args.gold_rows} on {len(gold_ids)} ids")
+        logp, logp_row, logits_path = rows_logp(args.gold_rows, len(gold_ids), scored)
+    else:
+        stage(f"forward over {len(span)} tokens")
+        logp, logp_row, logits_path = reference_logp(model, span, scored)
     print("reference logits:", logits_path, file=sys.stderr)
     stage("forward done; scoring the sides")
 
@@ -953,9 +1038,14 @@ def main():
     for name, path in (("a", args.score_a), ("b", args.score_b)):
         if path:
             files[name] = load_score(path, span, args.top_n)
-    sides = [("a", args.endpoint_a or args.score_a, args.model_name_a or "score file")]
-    if args.endpoint_b or args.score_b:
-        sides.append(("b", args.endpoint_b or args.score_b, args.model_name_b or "score file"))
+    for name, path in (("a", args.rows_a), ("b", args.rows_b)):
+        if path:
+            files[name] = rows_top(path, len(gold_ids), args.top_n)
+    sides = [("a", args.endpoint_a or args.score_a or args.rows_a,
+              args.model_name_a or ("rows file" if args.rows_a else "score file"))]
+    if args.endpoint_b or args.score_b or args.rows_b:
+        sides.append(("b", args.endpoint_b or args.score_b or args.rows_b,
+                      args.model_name_b or ("rows file" if args.rows_b else "score file")))
     for n in range(args.max_positions):
         pos = args.min_prefix + n * args.stride
         prefix, why = position_prefix(tok, special, body, pos, args.endpoint_ids, sides, files)
@@ -991,7 +1081,7 @@ def main():
             for k in row if k in ("a", "b")), file=sys.stderr)
 
     summary = {"positions": len(rows), "hf": args.hf, "corpus": args.corpus,
-               "reference_class": type(model).__name__,
+               "reference_class": reference_class or type(model).__name__,
                "reference_logits": logits_path,
                "special_prefix_tokens": len(special),
                "endpoint_input": "token ids" if args.endpoint_ids else "prefix text",
@@ -1022,6 +1112,8 @@ def main():
         }
         endpoint = getattr(args, f"endpoint_{name}")
         summary["sides"][name]["engine"] = (endpoint_engine(endpoint) if endpoint else
+                                            {"name": None, "version": None, "from": "rows file"}
+                                            if getattr(args, f"rows_{name}") else
                                             {"name": "runner", "version": None, "from": "score file"})
         gguf, repo = getattr(args, f"gguf_{name}"), getattr(args, f"repo_{name}")
         if gguf:

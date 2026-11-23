@@ -5273,6 +5273,88 @@
           }
         }
       }
+    },
+    "inkling-2-mini-ud-q8_k_xl": {
+      "n_predict": 600,
+      "ctx": 1024,
+      "request": {
+        "enable_thinking": false,
+        "reasoning_effort": "none"
+      },
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/inkling-2-mini-ud-q8_k_xl.linux-x86_64-cuda.cpu.txt",
+          "sha256": "45c2a9751c8cce5332b4dd1664173349c8af384d86a56983e3144181a93d7c1e",
+          "bytes": 791,
+          "finish_reason": "stop",
+          "completion_tokens": 490,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 600,
+            "ctx": 1024,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false,
+              "reasoning_effort": "none"
+            }
+          },
+          "pinned": {
+            "date": "2026-11-23",
+            "runner_version": "1.21.0",
+            "commit": "00da854091535cdb5af239ed70eabc23a0addd70",
+            "build": {
+              "binary_sha256": "299cadbf31a4bbc7ad425b2a81e8c721668c493a38aa47fc6115c6a3bf9f33b6",
+              "compiler": "13.3.0",
+              "commit": "00da854091535cdb5af239ed70eabc23a0addd70",
+              "dirty": false
+            }
+          }
+        }
+      }
+    },
+    "inkling-2-mini-ud-q4_k_xl": {
+      "n_predict": 600,
+      "ctx": 1024,
+      "request": {
+        "enable_thinking": false,
+        "reasoning_effort": "none"
+      },
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/inkling-2-mini-ud-q4_k_xl.linux-x86_64-cuda.cpu.txt",
+          "sha256": "c713db472dde292f68e1a0cf1b143d7a5d34b1048571abe3fa1d9aa2b1393744",
+          "bytes": 799,
+          "finish_reason": "stop",
+          "completion_tokens": 491,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 600,
+            "ctx": 1024,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false,
+              "reasoning_effort": "none"
+            }
+          },
+          "pinned": {
+            "date": "2026-11-23",
+            "runner_version": "1.21.0",
+            "commit": "00da854091535cdb5af239ed70eabc23a0addd70",
+            "build": {
+              "binary_sha256": "299cadbf31a4bbc7ad425b2a81e8c721668c493a38aa47fc6115c6a3bf9f33b6",
+              "compiler": "13.3.0",
+              "commit": "00da854091535cdb5af239ed70eabc23a0addd70",
+              "dirty": false
+            }
+          }
+        }
+      }
     }
   }
 }

@@ -1,5 +1,6 @@
 // Llama-family transformer: weight wiring + batched forward pass.
 #include "model.h"
+#include "inkling2_model.h"
 #include "micro_sched.h"   // R3.72: a tiled turn's decode schedule
 
 #include <errno.h>
@@ -2445,7 +2446,8 @@ static bool model_load_inner(model_t *m, const char *path, const model_params *p
         // privately rather than shared under an identity nothing can confirm.
         // Same if the record itself cannot be allocated: sharing is an
         // optimization and must never be the reason a load fails.
-        if (id_ok && (w = calloc(1, sizeof(*w))) != NULL) {
+        // an inkling2_loop instance holds its engine's mutable caches: it is loaded per instance, never shared
+        if (id_ok && !m->ink2 && (w = calloc(1, sizeof(*w))) != NULL) {
             w->refs       = 1;
             w->proto      = *m;   // the per-instance fields are all still zero
             w->fsize      = size;
@@ -2462,6 +2464,7 @@ static bool model_load_inner(model_t *m, const char *path, const model_params *p
         }
     }
     pthread_mutex_unlock(&g_weights_mu);
+    if (m->ink2) return model_inkling2_runtime(m, p);
     return model_alloc_runtime(m, model_default_placement(m, p));
 }
 
@@ -5753,6 +5756,9 @@ static bool bind_arch_meta(model_t *m, gguf_file *g, const char *arch, bool late
     case ARCH_LLAMA: case ARCH_QWEN2: case ARCH_STABLELM: case ARCH_PHI3:
     case ARCH_MISTRAL3: case ARCH_UNKNOWN:
         return true;
+    // inkling2_loop binds through its own source (model_inkling2_bind) before any plan, so it never reaches here
+    case ARCH_INKLING2_LOOP:
+        return false;
     // refused at admission, never bound
     case ARCH_GEMMA: case ARCH_GEMMA2: case ARCH_COUNT:
         return false;
@@ -5879,6 +5885,15 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     }
     if (!gguf_open(&m->gf, path)) return false;
     gguf_file *g = &m->gf;
+    // inkling2_loop has its own engine and weight source: none of the llama-style plan or binding below applies
+    if (!strcmp(gguf_get_str(g, "general.architecture", ""), "inkling2_loop")) {
+        size_t n = strlen(path) + 1;
+        m->path = malloc(n);
+        if (!m->path) return false;
+        memcpy(m->path, path, n);
+        model_record_file_id(m, path);
+        return model_inkling2_bind(m, p);
+    }
     m->plan_only = false;   // a load's plan always speaks (bind_err, bind_note)
     // the plan first, its agent-profile check first of all (R6.68.50): a file
     // it refuses is refused before the load allocates its path or tensors
@@ -7049,6 +7064,7 @@ static void runtime_free(model_t *m) {
 }
 
 void model_free(model_t *m) {
+    if (m && m->ink2) model_inkling2_free(m);
     if (m) { free(m->micro_steps); m->micro_steps = NULL; }   // R3.72
     gpu_free(m); // nulls kcache/vcache if the GPU owned them
     gpu_train_free(m);
@@ -10608,12 +10624,15 @@ static size_t recurrent_state_bytes(const model_t *m) {
 }
 
 bool model_has_recurrent(const model_t *m) {
+    // inkling2_loop's short-convolution histories are a fold too; it declines every snapshot below, so a rewind
+    // re-prefills from position 0
+    if (m && m->ink2) return true;
     return m && (m->qwen35 || m->granite_hybrid || m->nemotron_h || m->lfm2) &&
            m->ssm_conv_state && m->ssm_state_mem;
 }
 
 void model_recurrent_reset(model_t *m) {
-    if (!model_has_recurrent(m)) return;
+    if (!model_has_recurrent(m) || m->ink2) return;   // inkling2: the next forward at 0 starts over
     memset(m->ssm_conv_state, 0, recurrent_conv_bytes(m));
     memset(m->ssm_state_mem, 0, recurrent_state_bytes(m));
     if (m->train_gpu) gpu_train_dn_reset(m);   // the states a step keeps there
@@ -10623,7 +10642,7 @@ void model_recurrent_reset(model_t *m) {
 }
 
 bool model_recurrent_snapshot(model_t *m, int pos) {
-    if (!model_has_recurrent(m) || !m->ssm_conv_snap || !m->ssm_state_snap)
+    if (!model_has_recurrent(m) || m->ink2 || !m->ssm_conv_snap || !m->ssm_state_snap)
         return false;
     size_t pb = recurrent_ple_bytes(m);
     if (pb && !m->ple4_hist_snap && !(m->ple4_hist_snap = malloc(pb))) return false;
@@ -10641,7 +10660,7 @@ bool model_recurrent_snapshot(model_t *m, int pos) {
 }
 
 bool model_recurrent_restore(model_t *m, int pos) {
-    if (!model_has_recurrent(m) || !m->ssm_conv_snap || !m->ssm_state_snap)
+    if (!model_has_recurrent(m) || m->ink2 || !m->ssm_conv_snap || !m->ssm_state_snap)
         return false;
     if (pos < 0 || m->ssm_snap_pos != pos) return false;   // fold not sliceable
     if (m->gpu) {
@@ -10684,7 +10703,7 @@ bool model_recurrent_restore_row(model_t *m, int r) {
 // blob (conv ring + SSD state), not sliceable — so a caller may only load it at
 // the exact position it was saved. 0 bytes when the model has no recurrent state.
 size_t model_recurrent_blob_bytes(const model_t *m) {
-    if (!model_has_recurrent(m)) return 0;
+    if (!model_has_recurrent(m) || m->ink2) return 0;
     return recurrent_conv_bytes(m) + recurrent_state_bytes(m) + recurrent_ple_bytes(m);
 }
 
@@ -10735,7 +10754,7 @@ bool model_recurrent_blob_load(model_t *m, const uint8_t *src,
 // buffers on both edges. Layers past gpu_layers already fold on the host and
 // their buffer rows are live; the backend copies only its own layers.
 bool model_recurrent_mark(model_t *m, int pos) {
-    if (!model_has_recurrent(m) || pos < 0) return false;
+    if (!model_has_recurrent(m) || m->ink2 || pos < 0) return false;
     if (!m->ssm_conv_mark || !m->ssm_state_mark) {
         free(m->ssm_conv_mark); free(m->ssm_state_mark);
         m->ssm_conv_mark  = malloc(recurrent_conv_bytes(m) ? recurrent_conv_bytes(m) : 1);
@@ -10759,7 +10778,7 @@ bool model_recurrent_mark(model_t *m, int pos) {
 }
 
 int model_recurrent_mark_pos(const model_t *m) {
-    if (!model_has_recurrent(m) || !m->ssm_conv_mark || !m->ssm_state_mark)
+    if (!model_has_recurrent(m) || m->ink2 || !m->ssm_conv_mark || !m->ssm_state_mark)
         return -1;
     return m->ssm_mark_pos;
 }
@@ -11000,6 +11019,10 @@ bool model_lora_slot(const model_t *m, int layer, int slot,
 // would print. Shared by the loader and by --adapt-info, so the two cannot
 // disagree.
 bool model_lora_serve_supported(const model_t *m, char *why, size_t cap) {
+    if (m->ink2) {
+        snprintf(why, cap, "--lora does not cover inkling2_loop yet: its engine (src/inkling2.c) has no adapter hooks");
+        return false;
+    }
     // qwen35 (and clef on its backbone) carries hooks on the DeltaNet
     // projections as well as on its attention and FFN; the Mamba-2 hybrids
     // do not yet
@@ -12049,6 +12072,11 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
 }
 
 bool model_lora_train_supported(model_t *m, char *why, size_t cap) {
+    if (m->ink2) {
+        snprintf(why, cap, "the LoRA backward does not admit inkling2_loop yet: its engine (src/inkling2.c) is a forward "
+                 "only");
+        return false;
+    }
     return lora_bw_supported(m, why, cap);
 }
 
@@ -17170,6 +17198,7 @@ static float *forward_batch_run(model_t *m, const int32_t *tokens, int n, int po
 // when this forward is flagged to emit every row's head
 float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                            bool want_logits) {
+    if (m->ink2) return model_inkling2_forward(m, tokens, n, pos, want_logits, false);
     int path = n > 0 && m->spec_want_all >= n ? RP_KEEP : n == 1 ? RP_SOLO : RP_BATCH;
     float *lg = forward_batch_run(m, tokens, n, pos, want_logits);
     model_kv_ring_note(m, pos, n);
@@ -17205,6 +17234,7 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
 // is usable only while every recurrent layer remains on the host: the public
 // round snapshot/restore seam checkpoints the host fold, not CUDA's live fold.
 bool model_spec_verify_ok(const model_t *m) {
+    if (m->ink2) return false;   // no speculative decoding on inkling2_loop (its keep path serves --score only)
     if (!m->gpu) return true;
     // Full offload: only a backend whose hidden states and per-row logits
     // are host-readable (unified memory) can serve the verify walk.
@@ -17219,6 +17249,7 @@ void model_kv_host_wrote(model_t *m, int lo) {
 }
 
 bool model_forward_batch_keep(model_t *m, const int32_t *tokens, int n, int pos) {
+    if (m->ink2) return n <= m->n_batch && model_inkling2_forward(m, tokens, n, pos, true, true) != NULL;
     if (!model_spec_verify_ok(m)) return false;
     if (!m->all_logits)
         m->all_logits = malloc(sizeof(float) * (size_t)m->spec_batch * m->n_vocab);
@@ -17255,6 +17286,7 @@ void model_forward_refold(model_t *m, const int32_t *tokens, int n, int pos) {
 // lm_head is the single most expensive matvec in the model). Valid until
 // the next forward.
 float *model_spec_row_logits(model_t *m, int b) {
+    if (m->ink2) return model_inkling2_row(m, b);
     // Fully offloaded target on a unified-memory backend: the forward already
     // emitted this row's head into the backend's logits buffer (spec_want_all)
     // — apply the CPU-side head transforms and hand it back. Each row is read

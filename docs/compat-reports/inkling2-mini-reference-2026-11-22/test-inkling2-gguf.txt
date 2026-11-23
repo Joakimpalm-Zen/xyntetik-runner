@@ -1,0 +1,10 @@
+ok   the shape from the GGUF's metadata equals the reference's, field for field (48 applications)
+identity: 645 tensors (0 differ, 0 elements), 6144 experts (0 differ, 0 elements), 0 missing or misshapen
+ok   every tensor and every expert bit-equal
+control (NVFP4 experts without the factor): 645 tensors (0 differ, 0 elements), 6144 experts (5120 differ, 18977061259 elements), 0 missing or misshapen; first: model.layers.0.mlp.experts.gate_up_proj e0 element 0: safetensors 0.00937241223, gguf 208
+ok   the control fails, as it must
+control (static convolution not reversed): 645 tensors (8 differ, 32734 elements), 0 experts (0 differ, 0 elements), 0 missing or misshapen; first: model.layers.5.self_attn.k_proj.sconv.static_weight element 0: safetensors 1.5703125, gguf 0.0437011719
+ok   the control fails, as it must
+control (NVFP4 nibbles swapped): 645 tensors (0 differ, 0 elements), 6144 experts (5120 differ, 19059679018 elements), 0 missing or misshapen; first: model.layers.0.mlp.experts.gate_up_proj e0 element 0: safetensors 0.00937241223, gguf 0.0140586188
+ok   the control fails, as it must
+PASS

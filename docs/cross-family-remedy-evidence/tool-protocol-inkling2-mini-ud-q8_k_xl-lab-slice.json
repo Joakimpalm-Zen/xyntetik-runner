@@ -1,0 +1,497 @@
+{
+ "gate": "tool-protocol-check",
+ "label": "the Linux CUDA host, CPU route, inkling2_loop q8_k_xl, shipped defaults",
+ "started": "2026-11-23T07:09:04+0100",
+ "host": "the Linux CUDA host (linux-x86_64-cuda), CPU route",
+ "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",
+ "base_url": "http://127.0.0.1:8191",
+ "model": "Inkling-2-Mini-UD-Q8_K_XL.gguf_file",
+ "model_file": "unsloth/Inkling-2-Mini-GGUF@45fd0876 Mainline_Support/Inkling-2-Mini-UD-Q8_K_XL.gguf_file",
+ "model_sha256": "2da51788d43a17e1f033bec420fa83ba9cb87ac1f0130dc9135a4d2ed2678b68",
+ "runner": "./runner",
+ "runner_sha256": "80a1cfe1b65efedb571d8ffe525a0b4df95c2a71454bd292640c8d4eed978e55",
+ "capabilities_route": true,
+ "sampling_served": {
+  "preset": "generic",
+  "temperature": 1.0,
+  "top_p": 1.0,
+  "top_k": 0,
+  "min_p": 0.0,
+  "repeat_penalty": 1.0
+ },
+ "context": 4096,
+ "overrides": {},
+ "tool_choice": "auto (absent)",
+ "max_tokens": 400,
+ "cases": {
+  "A": {
+   "title": "single call",
+   "prompt": "List the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 485.507,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user wants to list files in the current directory. I have a bash tool available. I should run a command to list files. The simplest is `ls -la` or `ls`. Let me use bash.",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 103,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 77,
+      "total_tokens": 180
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 103,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 235.241504,
+      "generation_tok_s": 0.327,
+      "major_page_faults": 110,
+      "page_fault_counter": "major",
+      "json_mode": false,
+      "schema": true,
+      "speculative": false,
+      "sampling": {
+       "preset": "generic",
+       "temperature": 1.0,
+       "top_p": 1.0,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "file",
+        "min_p": "file",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "inkling2",
+       "family": "inkling2",
+       "tools": true,
+       "constrained": true,
+       "parse_only": false
+      },
+      "timing": {
+       "queue_seconds": 1.5e-05,
+       "tokenize_seconds": 3.8e-05,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 250.264718,
+       "prefill_tokens": 103,
+       "prefill_tok_s": 0.412,
+       "first_visible_seconds": 250.265864
+      },
+      "prompt_reuse": "none",
+      "closure": {
+       "closed": true,
+       "model_bytes": 332,
+       "closer_bytes": 30,
+       "fields": {
+        "synthesized": [],
+        "completed": []
+       }
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 496.912,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user asks to list the files in the current directory. We need answer based on actual filesystem. Need use bash tool. We can run `ls -la` or `find`. Need know current directory. Let's call bash.",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"pwd && ls -la\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "sampling": {
+       "preset": "generic",
+       "temperature": 1.0,
+       "top_p": 1.0,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "file",
+        "min_p": "file",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "inkling2",
+       "family": "inkling2",
+       "tools": true,
+       "constrained": true,
+       "parse_only": false
+      },
+      "timing": {
+       "queue_seconds": 3e-06,
+       "tokenize_seconds": 3.1e-05,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 247.192179,
+       "prefill_tokens": 103,
+       "prefill_tok_s": 0.417,
+       "first_visible_seconds": 247.193289
+      },
+      "prompt_reuse": "recurrent_reset",
+      "closure": {
+       "closed": true,
+       "model_bytes": 363,
+       "closer_bytes": 30,
+       "fields": {
+        "synthesized": [],
+        "completed": []
+       }
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  },
+  "B": {
+   "title": "prose and parallel calls",
+   "prompt": "Check whether boss.json, boss.toml and boss.yaml exist anywhere in this project. Use the glob tool for each pattern.",
+   "tools": [
+    "glob",
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 944.771,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user wants me to check whether boss.json, boss.toml and boss.yaml exist anywhere in this project, using the glob tool for each pattern.\n\nLet me use the glob tool for each pattern. I can make these calls in parallel since they're independent.",
+     "calls": [
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.json\"}",
+       "id": "call_0"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.toml\"}",
+       "id": "call_1"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.yaml\"}",
+       "id": "call_2"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 197,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 152,
+      "total_tokens": 349
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 197,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 477.329623,
+      "generation_tok_s": 0.318,
+      "major_page_faults": 5,
+      "page_fault_counter": "major",
+      "json_mode": false,
+      "schema": true,
+      "speculative": false,
+      "sampling": {
+       "preset": "generic",
+       "temperature": 1.0,
+       "top_p": 1.0,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "file",
+        "min_p": "file",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "inkling2",
+       "family": "inkling2",
+       "tools": true,
+       "constrained": true,
+       "parse_only": false
+      },
+      "timing": {
+       "queue_seconds": 1.2e-05,
+       "tokenize_seconds": 4.5e-05,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 467.440336,
+       "prefill_tokens": 197,
+       "prefill_tok_s": 0.421,
+       "first_visible_seconds": 467.441607
+      },
+      "prompt_reuse": "recurrent_reset",
+      "closure": {
+       "closed": true,
+       "model_bytes": 636,
+       "closer_bytes": 30,
+       "fields": {
+        "synthesized": [],
+        "completed": []
+       }
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 1294.631,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user wants me to check whether boss.json, boss.toml and boss.yaml exist anywhere in this project. Use the glob tool for each pattern.\n\nLet me first figure out the project directory. Let me run a few glob calls. The glob tool takes a pattern. I should probably glob for \"**/boss.json\", \"**/boss.toml\", \"**/boss.yaml\".\n\nLet me also maybe check the current directory. But the user specifically says use the glob tool for each pattern. So I'll use glob three times. These are independent, so I can make them in the same block.",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"pwd && ls -la\"}",
+       "id": "call_0"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.json\"}",
+       "id": "call_1"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.toml\"}",
+       "id": "call_2"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.yaml\"}",
+       "id": "call_3"
+      }
+     ],
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "sampling": {
+       "preset": "generic",
+       "temperature": 1.0,
+       "top_p": 1.0,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "file",
+        "min_p": "file",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "inkling2",
+       "family": "inkling2",
+       "tools": true,
+       "constrained": true,
+       "parse_only": false
+      },
+      "timing": {
+       "queue_seconds": 4e-06,
+       "tokenize_seconds": 4.3e-05,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 471.197604,
+       "prefill_tokens": 197,
+       "prefill_tok_s": 0.418,
+       "first_visible_seconds": 471.198688
+      },
+      "prompt_reuse": "recurrent_reset",
+      "closure": {
+       "closed": true,
+       "model_bytes": 1031,
+       "closer_bytes": 30,
+       "fields": {
+        "synthesized": [],
+        "completed": []
+       }
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  },
+  "C": {
+   "title": "prose then call",
+   "prompt": "Briefly say what you are about to do, then list the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 1031.266,
+     "finish_reason": "tool_calls",
+     "content": "I’ll inspect the current directory and list its files.",
+     "reasoning": "The user asks: \"Briefly say what you are about to do, then list the files in the current directory.\" Need answer briefly say what about to do then list files in current directory. Need use tools? We have bash. We need do action. Need first say briefly what about to do. But system says tool usage? We should probably in final? The user specifically asks list files current directory. Need use bash to list files. We can provide brief statement in assistant message before tool? The prompt demands \"Briefly say what you are about to do, then list the files\". We can say \"I'll list the files in the current directory.\" Then call bash to run ls. Need ensure final includes list. Since tool is available and needed, call bash. Use functions.bash. We can output brief statement as text before tool? In this environment, assistant can have text and tool calls in same message. Let's do brief statement then bash.",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 114,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 246,
+      "total_tokens": 360
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 114,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 759.438121,
+      "generation_tok_s": 0.324,
+      "major_page_faults": 0,
+      "page_fault_counter": "major",
+      "json_mode": false,
+      "schema": true,
+      "speculative": false,
+      "sampling": {
+       "preset": "generic",
+       "temperature": 1.0,
+       "top_p": 1.0,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "file",
+        "min_p": "file",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "inkling2",
+       "family": "inkling2",
+       "tools": true,
+       "constrained": true,
+       "parse_only": false
+      },
+      "timing": {
+       "queue_seconds": 4e-06,
+       "tokenize_seconds": 3.6e-05,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 271.827304,
+       "prefill_tokens": 114,
+       "prefill_tok_s": 0.419,
+       "first_visible_seconds": 271.828261
+      },
+      "prompt_reuse": "recurrent_reset",
+      "closure": {
+       "closed": true,
+       "model_bytes": 1169,
+       "closer_bytes": 30,
+       "fields": {
+        "synthesized": [],
+        "completed": []
+       }
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 863.687,
+     "finish_reason": "tool_calls",
+     "content": "I’ll list the files in the current directory now.",
+     "reasoning": "The user asks: \"Briefly say what you are about to do, then list the files in the current directory.\" Need answer briefly. Need list files in current directory. We have bash tool. Need use it. First brief say what about to do. Then call bash to list files. Need be careful current directory likely in sandbox. Use `ls -la` or `find`? User asked list files in current directory. Could use `ls -1`. Need maybe include that I'm about to list files. We can say \"I’ll list the files in the current directory now.\" Then call bash. After output, provide final answer. Need ensure brief. Let's call bash.",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "sampling": {
+       "preset": "generic",
+       "temperature": 1.0,
+       "top_p": 1.0,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "file",
+        "min_p": "file",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "inkling2",
+       "family": "inkling2",
+       "tools": true,
+       "constrained": true,
+       "parse_only": false
+      },
+      "timing": {
+       "queue_seconds": 8e-06,
+       "tokenize_seconds": 3.8e-05,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 272.092948,
+       "prefill_tokens": 114,
+       "prefill_tok_s": 0.419,
+       "first_visible_seconds": 272.094055
+      },
+      "prompt_reuse": "recurrent_reset",
+      "closure": {
+       "closed": true,
+       "model_bytes": 855,
+       "closer_bytes": 30,
+       "fields": {
+        "synthesized": [],
+        "completed": []
+       }
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  }
+ },
+ "verdict": "PASS",
+ "finished": "2026-11-23T08:34:40+0100"
+}

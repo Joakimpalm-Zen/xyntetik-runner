@@ -867,7 +867,7 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
     // the slot's own KV first: it is already in place and costs nothing (below
     // any scored rows, R3.60)
     r.keep = engine_rewind_prompt(e, toks, n);
-    if (e->m->tied_v) return r;
+    if (e->m->tied_v || e->m->ink2) return r;   // inkling2_loop: no shared prefix tier (its cache is the engine's own)
     if (!e->hist || n < 2) return r;
 
     pthread_mutex_lock(&PFX.mu);
@@ -950,7 +950,7 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
     // does not hold. A ring holds the prompt's end only while the slot is at
     // it: past it, decode has recycled rows the snapshot would claim.
     bool ring = model_kv_ring_active(e->m);
-    if (e->m->tied_v) return;
+    if (e->m->tied_v || e->m->ink2) return;
     // R3.60: rows a scoring feed wrote are the decode route's, and a later
     // request that forked them would read other bits than a cold prompt: the
     // shared tier takes only the rows below them

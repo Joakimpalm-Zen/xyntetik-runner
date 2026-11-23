@@ -395,6 +395,18 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
+<summary><b>Inkling 2</b>, 1 model: CPU ✅ · CUDA n/a · Metal n/a · Train n/a</summary>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td colspan="5"><b>Inkling 2 Mini (Thinking Machines Lab)</b>, text path only</td></tr>
+<tr><td><a href="#inkling-2-mini-ud-q4_k_xl"><code>Mainline_Support/Inkling-2-Mini-UD-Q4_K_XL.gguf_file</code></a></td><td nowrap>✅ 1.21.0<sup>b</sup><br>2026-11-23</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: the LoRA backward does not admit inkling2_loop yet: its engine (src/inkling2.c) is a forward only</td></tr>
+<tr><td><a href="#inkling-2-mini-ud-q8_k_xl"><code>Mainline_Support/Inkling-2-Mini-UD-Q8_K_XL.gguf_file</code></a></td><td nowrap>✅ 1.21.0<sup>b</sup><br>2026-11-23</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: the LoRA backward does not admit inkling2_loop yet: its engine (src/inkling2.c) is a forward only</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
 <summary><b>K2-Horizon</b>, 2 models: CPU ✅ · CUDA 🟨 2 of 4 · Metal 🟨 2 of 4 · Train 🟨 2 of 4</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
@@ -1464,6 +1476,54 @@ Text path, a third party's Q8_0: against the publisher's BF16 weights computed i
 - **Metal:** ☐ not run
 - **LoRA training:** supported (runner 1.10.0, 2026-11-01).
 - **LoRA adapter serving:** supported (runner 1.10.0, 2026-11-01).
+
+### Inkling 2
+
+#### Text path only: Inkling 2 Mini (Thinking Machines Lab)
+
+<a id="inkling-2-mini-ud-q4_k_xl"></a>
+##### `Mainline_Support/Inkling-2-Mini-UD-Q4_K_XL.gguf_file`
+
+Text path only. Inkling 2 Mini with the publisher's NVFP4 experts and Q8_0 elsewhere, on Runner's float32 CPU engine: against the publisher's float32 implementation 0.0042 mean KL on chat and 0.0055 on raw text (full rows, 2000 positions), first light 64 of 64; on this quantized file its own loss dominates and llama.cpp reads about the same.
+
+- **File:** `Mainline_Support/Inkling-2-Mini-UD-Q4_K_XL.gguf_file` (sha256 `e64276656f072e9b2197a61723667cbdb71da66a716ffd966e572c21088f3cd3`, 17,629,760,736 bytes, from [unsloth/Inkling-2-Mini-GGUF](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF) at revision `45fd08764f2b`).
+- **Upstream checkpoint:** thinkingmachines/Inkling-2-Mini at revision `b85c3cfa615f`.
+- **Quantization:** the publisher's NVFP4 experts (layers 0 to 19), Q8_0 elsewhere (unsloth's Mainline_Support layout).
+- **Licence:** `apache-2.0`, as the thinkingmachines/Inkling-2-Mini model card states it.
+- **Features claimed:** text, tools. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Against the same float32 reference (the R4.48 read's full rows, KL over all 200058 ids, 2000 positions): chat 0.0042 mean KL / 98.45% top-1 / 99.94% margin-qualified, raw 0.0055 / 96.80% / 99.87%, first light 64/64; llama.cpp 56eea9e4 on the same file 0.0042 / 98.40% and 0.0073 / 96.85%, first light 63/64. The 40 NVFP4 expert tensors are the publisher's (as in the exact file); the Q8_0 tensors decode through Runner's dequantizer, bit-equal to ggml's on 643074 sampled blocks. Its rows are the reference order on dequantized weights. Record: docs/compat-reports/inkling2-mini-reference-2026-11-22/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** CPU only: Inkling 2 Mini runs on its own serial float32 engine (src/inkling2.c), which has no GPU path; a GPU request runs on the CPU. About 0.34 s a token to prefill and 1.1 s a token to decode on 16 threads of the measuring host. No speculative decoding, shared prefix cache or LoRA on this architecture; a rewind re-prefills from the start. The vision tower is not loaded.
+- **Still missing:** A GPU path; the reasoning channel on the real weights beyond the tool gate's turns (R4.48.13's transitions pass on fixtures; the live measurements are R4.48.12's); task quality.
+- **Evidence:** [docs/compat-reports/inkling2-mini-reference-2026-11-22/README.md](compat-reports/inkling2-mini-reference-2026-11-22/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json), [docs/cross-family-remedy-evidence/tool-protocol-inkling2-mini-ud-q4_k_xl-lab-slice.json](cross-family-remedy-evidence/tool-protocol-inkling2-mini-ud-q4_k_xl-lab-slice.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.21.0 on 2026-11-23.
+- **CPU:** ✅ v1.21.0 2026-11-23 on linux-x86_64-cuda (borrowed hardware) at commit `20f2eb87c7d7`, output sha256 `c713db472dde292f`, [pin](../tests/compatibility/tier-smoke/inkling-2-mini-ud-q4_k_xl.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** [n/a](../MANUAL.md#support-matrix): inkling2_loop runs on its own serial float32 CPU engine, which has no CUDA path; CUDA runs it on the CPU.
+- **Metal:** [n/a](../MANUAL.md#support-matrix): inkling2_loop runs on its own serial float32 CPU engine, which has no Metal path; Metal runs it on the CPU.
+- **LoRA training:** no: the LoRA backward does not admit inkling2_loop yet: its engine (src/inkling2.c) is a forward only (runner 1.21.0, 2026-11-23).
+- **LoRA adapter serving:** no: --lora does not cover inkling2_loop yet: its engine (src/inkling2.c) has no adapter hooks (runner 1.21.0, 2026-11-23).
+
+<a id="inkling-2-mini-ud-q8_k_xl"></a>
+##### `Mainline_Support/Inkling-2-Mini-UD-Q8_K_XL.gguf_file`
+
+Text path only. The publisher's Inkling 2 Mini checkpoint bit for bit in llama.cpp's inkling2_loop layout, on Runner's float32 CPU engine: against the publisher's float32 implementation 1.3e-06 mean KL and 100% top-1 on chat, 0.0013 and 99.4% on raw text (gold-logits, 1991 positions each), where llama.cpp on the same file reads 0.0037 and 0.0078.
+
+- **File:** `Mainline_Support/Inkling-2-Mini-UD-Q8_K_XL.gguf_file` (sha256 `2da51788d43a17e1f033bec420fa83ba9cb87ac1f0130dc9135a4d2ed2678b68`, 22,867,452,896 bytes, from [unsloth/Inkling-2-Mini-GGUF](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF) at revision `45fd08764f2b`).
+- **Upstream checkpoint:** thinkingmachines/Inkling-2-Mini at revision `b85c3cfa615f`.
+- **Quantization:** the publisher's NVFP4 experts (layers 0 to 19) and MXFP8 as BF16 (20 to 23), BF16 elsewhere: the checkpoint bit for bit (unsloth's Mainline_Support layout).
+- **Licence:** `apache-2.0`, as the thinkingmachines/Inkling-2-Mini model card states it.
+- **Features claimed:** text, tools. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** The publisher's implementation in float32 (transformers pull request 51050 at 6173a2f6, the merged model code, eager attention, through the R4.48 dequantizing store, computed alone on the CPU), gold-logits.py over 1991 positions of each corpus, token-id keyed: raw (gold-corpus-2k) 0.0013 mean KL / 99.40% top-1 / 100% margin-qualified, chat (the R4.48 read's 2000 chat ids) 1.3e-06 / 100% / 100%; llama.cpp 56eea9e4 on the same file 0.0078 / 96.89% / 99.67% and 0.0037 / 98.64% / 99.94%. The file is the publisher's checkpoint bit for bit (R4.48.5 gate (a), 744 tensors), and Runner's forward on it equals the step-1 forward on the publisher's safetensors bit for bit. Tokenizer equal to the publisher's on the whole of gold-corpus-2k (8543 ids); template conformance as R4.48.13 records it. Record: docs/compat-reports/inkling2-mini-reference-2026-11-22/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** CPU only: Inkling 2 Mini runs on its own serial float32 engine (src/inkling2.c), which has no GPU path; a GPU request runs on the CPU. About 0.34 s a token to prefill and 1.1 s a token to decode on 16 threads of the measuring host. No speculative decoding, shared prefix cache or LoRA on this architecture; a rewind re-prefills from the start. The vision tower is not loaded.
+- **Still missing:** A GPU path; the reasoning channel on the real weights beyond the tool gate's turns (R4.48.13's transitions pass on fixtures; the live measurements are R4.48.12's); task quality.
+- **Evidence:** [docs/compat-reports/inkling2-mini-reference-2026-11-22/README.md](compat-reports/inkling2-mini-reference-2026-11-22/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json), [docs/cross-family-remedy-evidence/tool-protocol-inkling2-mini-ud-q8_k_xl-lab-slice.json](cross-family-remedy-evidence/tool-protocol-inkling2-mini-ud-q8_k_xl-lab-slice.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.21.0 on 2026-11-23.
+- **CPU:** ✅ v1.21.0 2026-11-23 on linux-x86_64-cuda (borrowed hardware) at commit `20f2eb87c7d7`, output sha256 `45c2a9751c8cce53`, [pin](../tests/compatibility/tier-smoke/inkling-2-mini-ud-q8_k_xl.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** [n/a](../MANUAL.md#support-matrix): inkling2_loop runs on its own serial float32 CPU engine, which has no CUDA path; CUDA runs it on the CPU.
+- **Metal:** [n/a](../MANUAL.md#support-matrix): inkling2_loop runs on its own serial float32 CPU engine, which has no Metal path; Metal runs it on the CPU.
+- **LoRA training:** no: the LoRA backward does not admit inkling2_loop yet: its engine (src/inkling2.c) is a forward only (runner 1.21.0, 2026-11-23).
+- **LoRA adapter serving:** no: --lora does not cover inkling2_loop yet: its engine (src/inkling2.c) has no adapter hooks (runner 1.21.0, 2026-11-23).
 
 ### K2-Horizon
 
@@ -3131,5 +3191,7 @@ The record from when tiers applied (retired 2026-11-07), oldest first. Last vali
 | 2026-11-13 | [Granite 4.0 H Micro (IBM), `granite-4.0-h-micro-Q8_0.gguf`](#granite-4.0-h-micro-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.7) and a float32 reference measurement against the publisher's checkpoint, so the Granite 4 h-series has a file with cells. Maintained on report. | none recorded |
 | 2026-11-13 | [Granite 4.0 H Micro (IBM), `granite-4.0-h-micro-Q4_K_M.gguf`](#granite-4.0-h-micro-q4_k_m-unsloth) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.7) and a float32 reference measurement against the publisher's checkpoint, so the Granite 4 h-series has a file with cells. Maintained on report. | none recorded |
 | 2026-11-19 | [gpt-oss-20b, `gpt-oss-20b-MXFP4.gguf`](#gpt-oss-20b-mxfp4) | Tier 2, maintained on report | Measured and not admitted: the chat-frame KLD interval is wholly above 0.05; the raw-text interval straddles it. Listed as a disclosed shortfall, with no gate cells. | none recorded |
+| 2026-11-23 | [Inkling 2 Mini (Thinking Machines Lab), `Mainline_Support/Inkling-2-Mini-UD-Q8_K_XL.gguf_file`](#inkling-2-mini-ud-q8_k_xl) | Tier 2, maintained on report | Admitted with R4.48.6 on the owner's decision of 2026-11-22 to validate the community's exact file instead of building a converter: the fidelity anchor, the loader's gates and the smoke on linux-x86_64-cuda (CPU cell). | none recorded |
+| 2026-11-23 | [Inkling 2 Mini (Thinking Machines Lab), `Mainline_Support/Inkling-2-Mini-UD-Q4_K_XL.gguf_file`](#inkling-2-mini-ud-q4_k_xl) | Tier 2, maintained on report | Admitted with R4.48.6 on the owner's decision of 2026-11-22 to validate the community's exact file instead of building a converter: the fidelity anchor, the loader's gates and the smoke on linux-x86_64-cuda (CPU cell). | none recorded |
 
 <!-- model-tiers:rows:end -->
