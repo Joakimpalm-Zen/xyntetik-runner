@@ -8,7 +8,8 @@ lab's CUDA host, which is borrowed hardware (docs/device-evidence.json, `linux-x
 **Limits first.**
 
 - CPU only. Inkling 2 Mini runs on its own engine (`src/inkling2.c`), a serial float32 order with no GPU path; the
-  architecture row says so and a GPU request runs on the CPU. CUDA and Metal are not run; their cells stay blank.
+  architecture row says so and a GPU request runs on the CPU. CUDA and Metal are not run; the roster declares
+  them as limits.
 - Speed, 16 threads on this host: about 0.34 s a token to prefill and 1.1 s a token to decode. RAM at an 8K context
   (`--info fit`): 32.2 GiB for the exact file, 27.3 GiB for Q4_K_XL (the mapped file, the dense tensors decoded to
   float32 once, the cache, a 4 GiB decoded-expert cache).
@@ -108,10 +109,53 @@ file: Runner's tokenizer gives the publisher's ids on the whole of gold-corpus-2
 `--info tools` answers `{"tool_family":"inkling2","native_tool_protocol":true,"template":"inkling2"}` with no
 fallback.
 
+**The tool protocol on the real weights.** `scripts/tool-protocol-check.py` against `runner --serve` on the CPU,
+the shipped generic preset, `-c 4096`, 400 tokens a turn, 2026-11-23: on both files cases A (one call), B (prose
+and parallel calls) and C (prose and a call) pass buffered and streamed, `finish_reason` `tool_calls`, arguments
+valid for the schema, no tool framing in `content`
+(`docs/cross-family-remedy-evidence/tool-protocol-inkling2-mini-ud-q8_k_xl-lab-slice.json` and `-q4_k_xl-`). Both
+rows list `tools` on this evidence. Those runs were served on one thread (the defect fixed in this change, below);
+the rows do not depend on the thread count, so the verdicts stand.
+
+**Thinking.** This model's template has no `enable_thinking`; its control is `reasoning_effort` (default 0.9, and
+`"none"` is 0), and at `"none"` the model still reasons before it answers. Measured on the exact file with the
+smoke's prompt at temperature 0: the default request and `reasoning_effort` `"none"` at 48 tokens, and `"none"` at
+160, each ended at the limit with no content (reasoning 204, 192 and 701 bytes). llama.cpp maps `enable_thinking`
+false to `reasoning_effort` `"none"` for this model (its pull request 32763, merged 2026-11-21, in the pinned
+56eea9e4); Runner does not yet (R4.48.16). The smoke therefore sends both fields and gives the turn 600 tokens.
+
+**Threads.** The rows do not depend on the thread count, measured with the pool's own record (`ink2_par_stats`:
+the loops that really split over more than one thread, and the threads the last one ran on), on the exact file:
+
+| path | count | loops split | last pool | rows sha256 |
+|---|---|---|---|---|
+| read harness, 256 chat ids, chunks of 64 | 16 | 360896 | 16 | `6863122f22cc8d43...` |
+| the same | 4 | 360896 | 4 | the same |
+| the same | 1 | 0 | 1 | the same |
+| `runner --serve`, one chat turn's 30 rows | 2 | 42414 | 2 | `c091fc871d19caf3...` |
+| the same, the default count | 13 | 42414 | 13 | the same |
+
+A served slot is loaded with a one-thread pool and the server swaps the shared pool in afterwards; the engine now
+takes the count at use, so a served forward runs on the server's threads (before this change, on one).
+`tests/test_inkling2_threads.c` holds it on the tiny file: a swapped pool runs at its size with one thread's bits,
+two slots at once (pools of 4 and 2) give the same bits, and under ThreadSanitizer the engine's pool is clean.
+
 ## Repeatable: the validation smoke
 
-(Pending: the tier-smoke pins and records for both files on `linux-x86_64-cuda`, CPU cell, and their `--info
-adapter` answers, written by `scripts/tier-smoke.py --record`.)
+`scripts/tier-smoke.py` on `linux-x86_64-cuda`, the CPU cell: the smoke's prompt (the eight planets, one per line,
+a sentence each), temperature 0, the rows' request `{"enable_thinking": false, "reasoning_effort": "none"}`,
+`n_predict` 600, `ctx` 1024 (`tests/compatibility/tier-smoke.json`). The pins, from a clean build of 00da8540:
+
+| row | bytes | finish | tokens | names Mercury | pin |
+|---|---|---|---|---|---|
+| `inkling-2-mini-ud-q8_k_xl` | 791 | stop | 490 | yes | `45c2a9751c8cce53...` |
+| `inkling-2-mini-ud-q4_k_xl` | 799 | stop | 491 | yes | `c713db472dde292f...` |
+
+The records, from a clean build of 20f2eb87 (the served thread count fixed, 13 threads): both replies equal their
+pins byte for byte and name Mercury (`inkling-2-mini-ud-q8_k_xl` in 620.63 s, `inkling-2-mini-ud-q4_k_xl` in
+623.27 s, 2026-11-23), written into `docs/model-tiers.json` by `--record`. `--info adapter` on both files: training and adapter serving are not supported, with the sentences
+"the LoRA backward does not admit inkling2_loop yet: its engine (src/inkling2.c) is a forward only" and "--lora
+does not cover inkling2_loop yet: its engine (src/inkling2.c) has no adapter hooks".
 
 ## Commands
 

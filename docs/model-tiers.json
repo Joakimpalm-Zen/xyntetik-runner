@@ -10213,7 +10213,31 @@
         "backend": "cpu"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.21.0",
+          "date": "2026-11-23",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "20f2eb87c7d7234e9be9a66562a73c4f9bb00095",
+          "caps": {
+            "version": "1.21.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "45c2a9751c8cce5332b4dd1664173349c8af384d86a56983e3144181a93d7c1e",
+          "ran": "runner -m Inkling-2-Mini-UD-Q8_K_XL.gguf_file --serve -c 1024 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=600 stream=false enable_thinking=false reasoning_effort=\"none\"",
+          "evidence": "tests/compatibility/tier-smoke/inkling-2-mini-ud-q8_k_xl.linux-x86_64-cuda.cpu.txt",
+          "build": {
+            "binary_sha256": "81880d33bb59794aa457afb52e9f4d97d4c60661c519c4525f7ae52e99e6c221",
+            "compiler": "13.3.0",
+            "commit": "20f2eb87c7d7234e9be9a66562a73c4f9bb00095",
+            "dirty": false
+          }
+        },
         "cuda": {
           "kind": "limit",
           "reason": "inkling2_loop runs on its own serial float32 CPU engine, which has no CUDA path; CUDA runs it on the CPU.",
@@ -10225,7 +10249,18 @@
           "matrix": "MANUAL.md#support-matrix"
         }
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "the LoRA backward does not admit inkling2_loop yet: its engine (src/inkling2.c) is a forward only"
+        },
+        "adapter_serving": {
+          "supported": false,
+          "reason": "--lora does not cover inkling2_loop yet: its engine (src/inkling2.c) has no adapter hooks"
+        },
+        "runner_version": "1.21.0",
+        "date": "2026-11-23"
+      },
       "transitions": [
         {
           "tier": "tier2",
@@ -10283,7 +10318,31 @@
         "backend": "cpu"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.21.0",
+          "date": "2026-11-23",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "20f2eb87c7d7234e9be9a66562a73c4f9bb00095",
+          "caps": {
+            "version": "1.21.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 26,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "c713db472dde292f68e1a0cf1b143d7a5d34b1048571abe3fa1d9aa2b1393744",
+          "ran": "runner -m Inkling-2-Mini-UD-Q4_K_XL.gguf_file --serve -c 1024 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=600 stream=false enable_thinking=false reasoning_effort=\"none\"",
+          "evidence": "tests/compatibility/tier-smoke/inkling-2-mini-ud-q4_k_xl.linux-x86_64-cuda.cpu.txt",
+          "build": {
+            "binary_sha256": "81880d33bb59794aa457afb52e9f4d97d4c60661c519c4525f7ae52e99e6c221",
+            "compiler": "13.3.0",
+            "commit": "20f2eb87c7d7234e9be9a66562a73c4f9bb00095",
+            "dirty": false
+          }
+        },
         "cuda": {
           "kind": "limit",
           "reason": "inkling2_loop runs on its own serial float32 CPU engine, which has no CUDA path; CUDA runs it on the CPU.",
@@ -10295,7 +10354,18 @@
           "matrix": "MANUAL.md#support-matrix"
         }
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "the LoRA backward does not admit inkling2_loop yet: its engine (src/inkling2.c) is a forward only"
+        },
+        "adapter_serving": {
+          "supported": false,
+          "reason": "--lora does not cover inkling2_loop yet: its engine (src/inkling2.c) has no adapter hooks"
+        },
+        "runner_version": "1.21.0",
+        "date": "2026-11-23"
+      },
       "transitions": [
         {
           "tier": "tier2",
