@@ -15,6 +15,80 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if !defined(RUNNER_CANON_KERNELS) && defined(__AVX2__) && defined(__FMA__)
+#define INK2_SIMD_AVX2 1
+#include <immintrin.h>
+#elif !defined(RUNNER_CANON_KERNELS) && defined(__aarch64__) && defined(__ARM_NEON)
+#define INK2_SIMD_NEON 1
+#include <arm_neon.h>
+#endif
+
+#if INK2_SIMD_AVX2
+static inline float ink2_hsum8(__m256 v) {
+    __m128 s = _mm_add_ps(_mm256_castps256_ps128(v), _mm256_extractf128_ps(v, 1));
+    s = _mm_add_ps(s, _mm_movehl_ps(s, s));
+    s = _mm_add_ss(s, _mm_shuffle_ps(s, s, 1));
+    return _mm_cvtss_f32(s);
+}
+static inline __m256 ink2_vexp8(__m256 x) {
+    const __m256 hi = _mm256_set1_ps(88.3762626647949f);
+    const __m256 lo = _mm256_set1_ps(-87.3365447504f);
+    const __m256 log2e = _mm256_set1_ps(1.44269504088896341f);
+    const __m256 ln2_hi = _mm256_set1_ps(0.693145751953125f);
+    const __m256 ln2_lo = _mm256_set1_ps(1.428606765330187045e-6f);
+    __m256 xc = _mm256_max_ps(lo, _mm256_min_ps(hi, x));
+    __m256 kf = _mm256_round_ps(_mm256_mul_ps(xc, log2e), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+    __m256 r = _mm256_fnmadd_ps(kf, ln2_hi, xc);
+    r = _mm256_fnmadd_ps(kf, ln2_lo, r);
+    __m256 p = _mm256_set1_ps(1.98412698e-4f);
+    p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(1.38888889e-3f));
+    p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(8.33333333e-3f));
+    p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(4.16666667e-2f));
+    p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(1.66666667e-1f));
+    p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(0.5f));
+    p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(1.0f));
+    p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(1.0f));
+    __m256i ki = _mm256_add_epi32(_mm256_cvtps_epi32(kf), _mm256_set1_epi32(127));
+    __m256 sc = _mm256_castsi256_ps(_mm256_slli_epi32(ki, 23));
+    __m256 res = _mm256_mul_ps(p, sc);
+    __m256 zmask = _mm256_cmp_ps(x, lo, _CMP_LE_OQ);
+    __m256 imask = _mm256_cmp_ps(x, hi, _CMP_GE_OQ);
+    __m256 nmask = _mm256_cmp_ps(x, x, _CMP_UNORD_Q);
+    res = _mm256_andnot_ps(zmask, res);
+    res = _mm256_blendv_ps(res, _mm256_set1_ps(INFINITY), imask);
+    return _mm256_blendv_ps(res, _mm256_add_ps(x, x), nmask);
+}
+#elif INK2_SIMD_NEON
+static inline float32x4_t ink2_vexp4(float32x4_t x) {
+    const float32x4_t hi = vdupq_n_f32(88.3762626647949f);
+    const float32x4_t lo = vdupq_n_f32(-87.3365447504f);
+    const float32x4_t log2e = vdupq_n_f32(1.44269504088896341f);
+    const float32x4_t ln2_hi = vdupq_n_f32(0.693145751953125f);
+    const float32x4_t ln2_lo = vdupq_n_f32(1.428606765330187045e-6f);
+    float32x4_t xc = vmaxq_f32(lo, vminq_f32(hi, x));
+    float32x4_t kf = vrndnq_f32(vmulq_f32(xc, log2e));
+    float32x4_t r = vfmsq_f32(xc, kf, ln2_hi);
+    r = vfmsq_f32(r, kf, ln2_lo);
+    float32x4_t p = vdupq_n_f32(1.98412698e-4f);
+    p = vfmaq_f32(vdupq_n_f32(1.38888889e-3f), p, r);
+    p = vfmaq_f32(vdupq_n_f32(8.33333333e-3f), p, r);
+    p = vfmaq_f32(vdupq_n_f32(4.16666667e-2f), p, r);
+    p = vfmaq_f32(vdupq_n_f32(1.66666667e-1f), p, r);
+    p = vfmaq_f32(vdupq_n_f32(0.5f), p, r);
+    p = vfmaq_f32(vdupq_n_f32(1.0f), p, r);
+    p = vfmaq_f32(vdupq_n_f32(1.0f), p, r);
+    int32x4_t ki = vaddq_s32(vcvtq_s32_f32(kf), vdupq_n_s32(127));
+    float32x4_t sc = vreinterpretq_f32_s32(vshlq_n_s32(ki, 23));
+    float32x4_t res = vmulq_f32(p, sc);
+    uint32x4_t zmask = vcleq_f32(x, lo);
+    uint32x4_t imask = vcgeq_f32(x, hi);
+    uint32x4_t nmask = vmvnq_u32(vceqq_f32(x, x));
+    res = vreinterpretq_f32_u32(vbicq_u32(vreinterpretq_u32_f32(res), zmask));
+    res = vbslq_f32(imask, vdupq_n_f32(INFINITY), res);
+    return vbslq_f32(nmask, vaddq_f32(x, x), res);
+}
+#endif
+
 int ink2_shape_derive(ink2_shape *s, char *why, size_t why_n) {
 #define INK2_REFUSE(...) do { if (why && why_n) snprintf(why, why_n, __VA_ARGS__); return -1; } while (0)
     if (s->n_block <= 0 || s->n_block > INK2_MAX_BLOCK) INK2_REFUSE("%d physical layers (1..%d)", s->n_block, INK2_MAX_BLOCK);
@@ -821,11 +895,168 @@ static void ink2_attn_core_range(void *cv, int64_t h0, int64_t h1) {
 #undef INK2_ADMIT
     free(own);
 }
-static void ink2_attn_core(const ink2_shape *s, const ink2_attn_layer *L, int T, const int *pos, const float *q,
+static inline float ink2_dot_f32(const float *a, const float *b, int n) {
+#if INK2_SIMD_AVX2
+    __m256 s0 = _mm256_setzero_ps(), s1 = _mm256_setzero_ps();
+    int e = 0;
+    for (; e + 16 <= n; e += 16) {
+        s0 = _mm256_fmadd_ps(_mm256_loadu_ps(a + e),     _mm256_loadu_ps(b + e),     s0);
+        s1 = _mm256_fmadd_ps(_mm256_loadu_ps(a + e + 8), _mm256_loadu_ps(b + e + 8), s1);
+    }
+    for (; e + 8 <= n; e += 8) s0 = _mm256_fmadd_ps(_mm256_loadu_ps(a + e), _mm256_loadu_ps(b + e), s0);
+    float s = ink2_hsum8(_mm256_add_ps(s0, s1));
+    for (; e < n; e++) s += a[e] * b[e];
+    return s;
+#elif INK2_SIMD_NEON
+    float32x4_t s0 = vdupq_n_f32(0), s1 = vdupq_n_f32(0);
+    int e = 0;
+    for (; e + 8 <= n; e += 8) {
+        s0 = vfmaq_f32(s0, vld1q_f32(a + e),     vld1q_f32(b + e));
+        s1 = vfmaq_f32(s1, vld1q_f32(a + e + 4), vld1q_f32(b + e + 4));
+    }
+    for (; e + 4 <= n; e += 4) s0 = vfmaq_f32(s0, vld1q_f32(a + e), vld1q_f32(b + e));
+    float s = vaddvq_f32(vaddq_f32(s0, s1));
+    for (; e < n; e++) s += a[e] * b[e];
+    return s;
+#else
+    float s = 0.0f;
+    for (int e = 0; e < n; e++) s += a[e] * b[e];
+    return s;
+#endif
+}
+
+// Fast-route attention core (Tier B): parallel over (head, query) outputs, contiguous admitted key range [j0, j1),
+// SIMD QK dot, SIMD exp softmax, and j-outer tiled SIMD V accumulation.
+static void ink2_attn_core_fast_range(void *cv, int64_t r0, int64_t r1) {
+    const ink2_core_ctx *c = cv;
+    const ink2_shape *s = c->s; const ink2_attn_layer *L = c->L;
+    const int T = c->T, nk = c->nk, kp0 = c->kp0; const int *pos = c->pos;
+    const float *q = c->q, *k = c->k, *v = c->v, *rl = c->rl, *sk = c->sk; float *att = c->att, *probs = c->probs;
+    const int nh = L->nh, hd = L->hd, C = L->C, Q = L->Q, ext = L->ext, n_kv_rep = nh / L->nkv;
+    float lg_stk[1024];
+    float *own = nk > 1024 ? malloc(sizeof(float) * (size_t)nk) : NULL;
+    if (nk > 1024 && !own) abort();
+    float *lg = nk > 1024 ? own : lg_stk;
+    const float scale = ink2_inv_sqrt(hd);
+    for (int64_t idx = r0; idx < r1; idx++) {
+        const int h = (int)(idx / T), i = (int)(idx % T), kh = h / n_kv_rep;
+        int j1 = pos[i] - kp0 + 1;
+        if (j1 > nk) j1 = nk;
+        int j0 = L->g ? 0 : pos[i] - kp0 - s->window + 1;
+        if (j0 < 0) j0 = 0;
+        if (j0 > j1) j0 = j1;
+        const float *qi = q + (size_t)i * Q + (size_t)h * hd;
+        const float *k_head = k + (size_t)kh * hd;
+        const float *rl_ih = rl + ((size_t)i * nh + h) * ext;
+        float mx = sk[(size_t)i * nh + h];
+        for (int j = j0; j < j1; j++) {
+            const float a = ink2_dot_f32(qi, k_head + (size_t)j * C, hd) * scale;
+            const int d = pos[i] - (kp0 + j);
+            const float lj = a + (d < ext ? rl_ih[d] : 0.0f);
+            lg[j] = lj;
+            if (lj > mx) mx = lj;
+        }
+        float sum = 0.0f;
+        int j = j0;
+#if INK2_SIMD_AVX2
+        const __m256 vmx = _mm256_set1_ps(mx);
+        __m256 vsum = _mm256_setzero_ps();
+        for (; j + 8 <= j1; j += 8) {
+            __m256 ex = ink2_vexp8(_mm256_sub_ps(_mm256_loadu_ps(lg + j), vmx));
+            _mm256_storeu_ps(lg + j, ex);
+            vsum = _mm256_add_ps(vsum, ex);
+        }
+        sum = ink2_hsum8(vsum);
+#elif INK2_SIMD_NEON
+        const float32x4_t vmx = vdupq_n_f32(mx);
+        float32x4_t vsum = vdupq_n_f32(0);
+        for (; j + 4 <= j1; j += 4) {
+            float32x4_t ex = ink2_vexp4(vsubq_f32(vld1q_f32(lg + j), vmx));
+            vst1q_f32(lg + j, ex);
+            vsum = vaddq_f32(vsum, ex);
+        }
+        sum = vaddvq_f32(vsum);
+#endif
+        for (; j < j1; j++) { const float ex = p_expf(lg[j] - mx); lg[j] = ex; sum += ex; }
+        sum += p_expf(sk[(size_t)i * nh + h] - mx);
+        const float inv_sum = 1.0f / sum;
+        j = j0;
+#if INK2_SIMD_AVX2
+        const __m256 vinv = _mm256_set1_ps(inv_sum);
+        for (; j + 8 <= j1; j += 8) _mm256_storeu_ps(lg + j, _mm256_mul_ps(_mm256_loadu_ps(lg + j), vinv));
+#elif INK2_SIMD_NEON
+        for (; j + 4 <= j1; j += 4) vst1q_f32(lg + j, vmulq_n_f32(vld1q_f32(lg + j), inv_sum));
+#endif
+        for (; j < j1; j++) lg[j] *= inv_sum;
+        if (probs) {
+            float *pr = probs + ((size_t)h * T + i) * nk;
+            for (int z = 0; z < j0; z++) pr[z] = 0.0f;
+            if (j1 > j0) memcpy(pr + j0, lg + j0, sizeof(float) * (size_t)(j1 - j0));
+            for (int z = j1; z < nk; z++) pr[z] = 0.0f;
+        }
+        float *ai = att + (size_t)i * Q + (size_t)h * hd;
+        const float *v_head = v + (size_t)kh * hd;
+        int e = 0;
+#if INK2_SIMD_AVX2
+        for (; e + 32 <= hd; e += 32) {
+            __m256 a0 = _mm256_setzero_ps(), a1 = _mm256_setzero_ps();
+            __m256 a2 = _mm256_setzero_ps(), a3 = _mm256_setzero_ps();
+            for (int kkey = j0; kkey < j1; kkey++) {
+                const __m256 pv = _mm256_set1_ps(lg[kkey]);
+                const float *vj = v_head + (size_t)kkey * C + e;
+                a0 = _mm256_fmadd_ps(pv, _mm256_loadu_ps(vj),      a0);
+                a1 = _mm256_fmadd_ps(pv, _mm256_loadu_ps(vj + 8),  a1);
+                a2 = _mm256_fmadd_ps(pv, _mm256_loadu_ps(vj + 16), a2);
+                a3 = _mm256_fmadd_ps(pv, _mm256_loadu_ps(vj + 24), a3);
+            }
+            _mm256_storeu_ps(ai + e,      a0);
+            _mm256_storeu_ps(ai + e + 8,  a1);
+            _mm256_storeu_ps(ai + e + 16, a2);
+            _mm256_storeu_ps(ai + e + 24, a3);
+        }
+        for (; e + 8 <= hd; e += 8) {
+            __m256 a0 = _mm256_setzero_ps();
+            for (int kkey = j0; kkey < j1; kkey++)
+                a0 = _mm256_fmadd_ps(_mm256_set1_ps(lg[kkey]), _mm256_loadu_ps(v_head + (size_t)kkey * C + e), a0);
+            _mm256_storeu_ps(ai + e, a0);
+        }
+#elif INK2_SIMD_NEON
+        for (; e + 16 <= hd; e += 16) {
+            float32x4_t a0 = vdupq_n_f32(0), a1 = vdupq_n_f32(0), a2 = vdupq_n_f32(0), a3 = vdupq_n_f32(0);
+            for (int kkey = j0; kkey < j1; kkey++) {
+                const float32x4_t pv = vdupq_n_f32(lg[kkey]);
+                const float *vj = v_head + (size_t)kkey * C + e;
+                a0 = vfmaq_f32(a0, pv, vld1q_f32(vj));
+                a1 = vfmaq_f32(a1, pv, vld1q_f32(vj + 4));
+                a2 = vfmaq_f32(a2, pv, vld1q_f32(vj + 8));
+                a3 = vfmaq_f32(a3, pv, vld1q_f32(vj + 12));
+            }
+            vst1q_f32(ai + e,      a0);
+            vst1q_f32(ai + e + 4,  a1);
+            vst1q_f32(ai + e + 8,  a2);
+            vst1q_f32(ai + e + 12, a3);
+        }
+        for (; e + 4 <= hd; e += 4) {
+            float32x4_t a0 = vdupq_n_f32(0);
+            for (int kkey = j0; kkey < j1; kkey++)
+                a0 = vfmaq_f32(a0, vdupq_n_f32(lg[kkey]), vld1q_f32(v_head + (size_t)kkey * C + e));
+            vst1q_f32(ai + e, a0);
+        }
+#endif
+        for (; e < hd; e++) {
+            float a = 0.0f;
+            for (int kkey = j0; kkey < j1; kkey++) a += lg[kkey] * v_head[(size_t)kkey * C + e];
+            ai[e] = a;
+        }
+    }
+    free(own);
+}
+static void ink2_attn_core(const ink2_shape *s, const ink2_attn_layer *L, int fast, int T, const int *pos, const float *q,
                            const float *k, const float *v, int nk, int kp0, const float *rl, const float *sk, float *lg,
                            float *att, float *probs) {
     ink2_core_ctx c = { s, L, T, pos, q, k, v, nk, kp0, rl, sk, lg, att, probs };
-    ink2_par(L->nh, (int64_t)T * nk * 2 * L->hd, ink2_attn_core_range, &c);
+    if (fast) ink2_par((int64_t)T * L->nh, (int64_t)nk * 2 * L->hd, ink2_attn_core_fast_range, &c);
+    else ink2_par(L->nh, (int64_t)T * nk * 2 * L->hd, ink2_attn_core_range, &c);
 }
 // o_proj (Inkling2LoopGatedOutputProjection): att times sigmoid(gate_proj(x)) (att is overwritten), then linear;
 // ga is [T][Q] (each position's products are independent, so taking every gate first changes no bits); the LoRA
@@ -923,7 +1154,8 @@ static ink2_status ink2_attention_lora(const ink2_shape *s, const ink2_weights *
     }
     ink2_lin_rows(L.tt[WS], L.nh, s->hidden, T, xq, p[SSK]);
     const size_t koff = (size_t)(kp0 - c->k0[app]) * L.C;
-    ink2_attn_core(s, &L, T, pos, p[SQ], c->k[app] + koff, c->v[app] + koff, nk, kp0, p[SRL], p[SSK], p[SLG], p[SATT],
+    const int fast = L.tt[WQ] && L.tt[WQ]->q != NULL;
+    ink2_attn_core(s, &L, fast, T, pos, p[SQ], c->k[app] + koff, c->v[app] + koff, nk, kp0, p[SRL], p[SSK], p[SLG], p[SATT],
                    probs);
     st = ink2_attn_out_lora(s, &L, lora, block, T, xq, p[SATT], p[SGA], out);
     free(buf);
@@ -985,7 +1217,7 @@ ink2_status ink2_attention_step(const ink2_shape *s, const ink2_weights *w, int 
             int d = pos[i] - pos[j];
             if (d >= 0 && d < ext) p[SRL][((size_t)i * nh + h) * ext + d] = in[3][((size_t)h * T + i) * T + j];
         }
-        ink2_attn_core(s, &L, T, pos, in[0], in[1], in[2], T, pos[0], p[SRL], in[4], p[SLG], out, out2);
+        ink2_attn_core(s, &L, 0, T, pos, in[0], in[1], in[2], T, pos[0], p[SRL], in[4], p[SLG], out, out2);
     } else if (!strcmp(step, "o_proj")) {
         memcpy(p[SATT], in[0], sizeof(float) * (size_t)T * L.Q); ink2_attn_out(s, &L, T, in[1], p[SATT], p[SGA], out);
     } else st = INK2_BAD_INPUT;
