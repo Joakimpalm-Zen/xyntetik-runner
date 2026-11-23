@@ -46,6 +46,8 @@ bool   model_inkling2_cuda(const model_t *m);
 // R4.48.9, TEST-ONLY (G1): read every device-resident matrix and expert stack back and compare it with the host
 // decode bit for bit; *n_tensors read, *n_differ differing, the first one's name in first. false: no device copy.
 bool   model_inkling2_cuda_readback(model_t *m, int *n_tensors, int *n_differ, char *first, size_t first_cap);
+// R4.48.9, TEST-ONLY: whether this instance holds the tensor named (its view's name) on the device.
+bool   model_inkling2_cuda_holds(const model_t *m, const char *name);
 // LoRA adapter geometry and backward (R4.48.10): attention-only adapters on blk.N.attn_{q,k,v,output}.
 int    model_inkling2_n_block(const model_t *m);
 bool   model_inkling2_slot_dims(const model_t *m, int layer, int slot, int *n_in, int *n_out, char *name, size_t cap);

@@ -20,8 +20,12 @@
 //     (f) a failed upload (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_PUT_FAIL=k: the k-th device tensor's put fails) after a
 //         successful bind in the same process: the instance falls back to the CPU and gives the fast CPU route's rows
 //         byte for byte, or refuses; never a row that is not finite (the second read's P0).
+//     (g) what goes up is what the device computes (the second read's P1): the token embedding (read on the host)
+//         stays on the host and the head goes up; on the F16 file (a type the device products do not take) the F16
+//         projections stay on the host and the rows are the (c) rows' kind; a --cpu-moe load keeps every expert
+//         stack on the host, and its rows too are within 1e-4 of the reference and finite.
 //
-// usage: test_inkling2_cuda TINY_F32.gguf TINY_BF16.gguf TINY_Q8_0.gguf
+// usage: test_inkling2_cuda TINY_F32.gguf TINY_BF16.gguf TINY_Q8_0.gguf TINY_F16.gguf
 #include "model.h"
 #include "gpu.h"
 #include "inkling2_model.h"
@@ -37,6 +41,7 @@ static const int32_t PROMPT[N_TOK] = { 1, 5, 9, 2, 7, 3, 8, 4, 6, 0, 11, 13, 17,
 static int fails;
 #define CHECK(c, ...) do { if (!(c)) { printf("FAIL: " __VA_ARGS__); printf("\n"); fails++; } else { printf("ok: " __VA_ARGS__); printf("\n"); } } while (0)
 
+static bool cpu_moe;   // the next loads' --cpu-moe
 static model_t *load_route(const char *path, bool gpu, bool no_factor, int n_batch, const char *route) {
     plat_setenv("RUNNER_INKLING2_ROUTE", route);
     plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_FACTOR", no_factor ? "1" : "");
@@ -47,6 +52,7 @@ static model_t *load_route(const char *path, bool gpu, bool no_factor, int n_bat
     p.n_threads = 2;
     p.n_ctx = 64;
     p.n_batch = n_batch;
+    p.cpu_moe = cpu_moe;
     model_t *m = calloc(1, sizeof *m);
     if (!m || !model_load(m, path, &p)) { free(m); return NULL; }
     return m;
@@ -91,7 +97,7 @@ static double rel_diff(const float *a, const float *ref, size_t n) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 4) { fprintf(stderr, "usage: %s TINY_F32.gguf TINY_BF16.gguf TINY_Q8_0.gguf\n", argv[0]); return 2; }
+    if (argc < 5) { fprintf(stderr, "usage: %s TINY_F32.gguf TINY_BF16.gguf TINY_Q8_0.gguf TINY_F16.gguf\n", argv[0]); return 2; }
 #ifndef RUNNER_GPU_CUDA
     printf("SKIP: this build's GPU backend is not CUDA (not a pass)\n");
     return 77;
@@ -126,6 +132,10 @@ int main(int argc, char **argv) {
         CHECK(model_inkling2_cuda_readback(g, &n_t, &n_bad, bad, sizeof bad) && n_t > 0 && n_bad == 0,
               "(b) %s: %d device tensors read back, %d differ from the host decode%s%s", kind[f], n_t, n_bad,
               *bad ? ", first " : "", bad);
+        // G2 (g): the embedding stays on the host, the head goes up
+        CHECK(!model_inkling2_cuda_holds(g, "model.embed_tokens.weight") && model_inkling2_cuda_holds(g, "lm_head.weight"),
+              "(g) %s: the token embedding stays on the host (%d on the device), the head goes up (%d)", kind[f],
+              model_inkling2_cuda_holds(g, "model.embed_tokens.weight"), model_inkling2_cuda_holds(g, "lm_head.weight"));
         // G2 (c): only rows a CUDA instance computed count (a CPU fallback's rows would pass (c) and (d) for nothing)
         const bool on_cuda = model_inkling2_cuda(g);
         const size_t n = (size_t)N_TOK * (size_t)g->n_vocab;
@@ -147,6 +157,26 @@ int main(int argc, char **argv) {
                   qe, rd);
             free(x8); free(x2); free(xq); drop(g8); drop(g2); drop(gq);
         }
+        free(a); free(b); drop(g); drop(r);
+    }
+    // G2 (g): the F16 file (its projections stay on the host), and --cpu-moe on the BF16 file (its stacks stay)
+    for (int k = 0; k < 2; k++) {
+        const char *path = k ? argv[2] : argv[4], *what = k ? "BF16 --cpu-moe" : "F16";
+        const char *stack = "model.layers.0.mlp.experts.gate_up_proj", *proj = "model.layers.0.self_attn.q_proj.linear.weight";
+        cpu_moe = k == 1;
+        model_t *g = load(path, true, false, 64);
+        cpu_moe = false;
+        model_t *r = load(path, false, false, 64);
+        if (!g || !r) { CHECK(0, "(g) %s: the file loads on the GPU and on the reference route", what); drop(g); drop(r); continue; }
+        const size_t n = (size_t)N_TOK * (size_t)g->n_vocab;
+        float *a = rows(g), *b = rows(r);
+        const double rd = a && b ? rel_diff(a, b, n) : 1;
+        const size_t nf = a ? n_nonfinite(a, n) : 0;
+        const bool held = k ? model_inkling2_cuda_holds(g, stack) : model_inkling2_cuda_holds(g, proj);
+        CHECK(model_inkling2_cuda(g) && !held && a && b && nf == 0 && rd <= 1e-4,
+              "(g) %s: on CUDA (%d) with %s on the host (%d on the device); rows %s, within %.2e of the reference, want "
+              "<= 1e-4; %zu not finite", what, model_inkling2_cuda(g), k ? "the expert stacks" : "the F16 projections",
+              held, a ? "given" : "refused", rd, nf);
         free(a); free(b); drop(g); drop(r);
     }
     // G2 (f), on the BF16 file: a bind that succeeds first, so the process's device hook is set, then partial uploads

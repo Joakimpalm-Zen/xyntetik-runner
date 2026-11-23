@@ -12984,6 +12984,14 @@ bool gpu_ink2_get(gpu_ink2 *h, int i, void *rows, size_t bytes, float *scale, in
     return true;
 }
 size_t gpu_ink2_bytes(const gpu_ink2 *h) { return h ? h->bytes : 0; }
+bool gpu_ink2_runs(const gpu_ink2 *h, int type) { return h && type >= 0 && type < KT_N && h->mv[type]; }
+bool gpu_ink2_reserve(gpu_ink2 *h, size_t x_bytes, size_t y_bytes) {
+    if (!h || cu.CtxSetCurrent(h->ctx) != 0) return false;
+    pthread_mutex_lock(&h->mu);
+    const bool ok = ink2_grow(&h->dx, &h->dx_cap, x_bytes) && ink2_grow(&h->dy, &h->dy_cap, y_bytes);
+    pthread_mutex_unlock(&h->mu);
+    return ok;
+}
 void gpu_ink2_free(gpu_ink2 *h) {
     if (!h) return;
     if (cu.CtxSetCurrent(h->ctx) == 0) {
