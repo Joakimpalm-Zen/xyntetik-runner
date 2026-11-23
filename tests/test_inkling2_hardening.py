@@ -1,6 +1,6 @@
 """R4.48.6: the inkling2_loop loader refuses a malformed file with a sentence, as the other loaders do.
 
-A tiny but complete inkling2_loop GGUF is written here (4 layers, a loop of 2 passes over layers 1 and 2, NVFP4 expert
+A tiny but complete inkling2_loop GGUF is written here (4 layers, a loop of 3 passes over layers 1 and 2, NVFP4 expert
 stacks with their per-expert .scale, every small tensor F32, a byte-level vocabulary so the tokenizer loads). It must
 load and answer; then each damaged copy must be refused, naming what is wrong:
   - the tensor data cut short (the GGUF reader refuses it before the loader sees a tensor);
@@ -19,7 +19,7 @@ T_F32, T_NVFP4 = 0, 40
 U32, I32, F32, BOOL, STR, ARR = 4, 5, 6, 7, 8, 9
 
 H, NH, NKV, HD, E, USED, FF, VOCAB, VUSED, K, WIN, DREL, EXT, RANK = 64, 2, 1, 32, 4, 2, 64, 264, 260, 4, 8, 4, 8, 4
-N_BLOCK, LOOP_START, LOOP_END, PASSES = 4, 1, 3, 2
+N_BLOCK, LOOP_START, LOOP_END, PASSES = 4, 1, 3, 3
 FULL = [False, True, False, True]   # layer types: sliding, full, sliding, full
 
 
@@ -214,7 +214,7 @@ def test_the_tiny_file_loads_and_answers(runner_bin, tiny):
     _, good = tiny
     r = _run(runner_bin, good, "-p", "hello", "-n", "3", "--temp", "0")
     assert r.returncode == 0, r.stderr[-2000:]
-    assert "inkling2_loop: 4 layers, 6 applications" in r.stderr
+    assert "inkling2_loop: 4 layers, 8 applications" in r.stderr
 
 
 @pytest.mark.parametrize("case,make,sentence", [

@@ -18,6 +18,8 @@
 #define INK2_MAX_BLOCK 64     // physical layers
 #define INK2_MAX_APP   256    // layer applications
 #define INK2_MAX_THREADS 64
+#define INK2_MAX_HEAD_DIM 128
+#define INK2_MAX_LORA_RANK 256
 
 // INK2_REWIND: a call at 0 < p0 != the cache's n_past (a rewind into, or a gap past, what the cache holds): refused,
 // see ink2_cache.
@@ -214,6 +216,7 @@ typedef struct {
 ink2_status ink2_forward_chunk(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int p0, int T,
                                const int *ids, float *logits, int flags, float *app_states);
 // Same forward with an optional LoRA adapter (`lora` may be NULL) and optional expert selection output.
+// `logits` may be NULL to skip the final norm and lm_head pass (when caller recomputes head downstream).
 ink2_status ink2_forward_chunk_lora(const ink2_shape *s, const ink2_weights *w, const ink2_lora *lora, ink2_cache *c,
                                     int p0, int T, const int *ids, float *logits, int flags, float *app_states,
                                     int *app_sel);

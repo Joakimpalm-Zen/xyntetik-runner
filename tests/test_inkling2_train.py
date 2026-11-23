@@ -3,6 +3,7 @@ resume replay, and scope refusals for Inkling 2 Mini (inkling2_loop).
 """
 import hashlib
 import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -35,9 +36,9 @@ def tiny_ink2(tmp_path_factory):
     return m
 
 
-def _run(exe, args, cwd, expect_ok=True):
+def _run(exe, args, cwd, expect_ok=True, env=None):
     p = subprocess.run([str(exe), *map(str, args)], cwd=cwd, capture_output=True,
-                       text=True, timeout=180)
+                       text=True, timeout=180, env=env)
     if expect_ok:
         assert p.returncode == 0, f"cmd={args} rc={p.returncode}\nSTDOUT:\n{p.stdout}\nSTDERR:\n{p.stderr}"
     return p
@@ -67,10 +68,12 @@ def test_train_loss_drops_determinism_resume_and_serve(runner_bin, tiny_ink2, tm
     _run(runner_bin, [*base_args, "-t", "2", "--train-out", tmp_path / "a1.gguf"], tmp_path)
     _run(runner_bin, [*base_args, "-t", "2", "--train-out", tmp_path / "a2.gguf"], tmp_path)
     _run(runner_bin, [*base_args, "-t", "1", "--train-out", tmp_path / "at1.gguf"], tmp_path)
+    _run(runner_bin, [*base_args, "-t", "4", "--train-out", tmp_path / "at4.gguf"], tmp_path)
 
     sha = lambda name: hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
     assert sha("a1.gguf") == sha("a2.gguf")
     assert sha("a1.gguf") == sha("at1.gguf")
+    assert sha("a1.gguf") == sha("at4.gguf")
 
     rec = json.loads((tmp_path / "a1.gguf.train.json").read_text())
     assert rec["loss_last"] < rec["loss_first"]
@@ -142,3 +145,48 @@ def test_out_of_scope_modes_refused_with_sentence(runner_bin, tiny_ink2, tmp_pat
                 tmp_path, expect_ok=False)
     assert p_kd.returncode != 0
     assert "distillation" in p_kd.stderr and "inkling2_loop" in p_kd.stderr
+
+
+def test_admission_limits_and_oom_propagation(runner_bin, tiny_ink2, tmp_path):
+    corpus = tmp_path / "data.txt"
+    corpus.write_text(TEXT * 2)
+
+    # LoRA rank > 256 refused cleanly at training init with a sentence.
+    p_rank = _run(runner_bin, ["-m", tiny_ink2, "--train", str(corpus), "--train-steps", "1",
+                               "--lora-rank", "257", "--gpu", "off", "--train-out", "r257.gguf"],
+                  tmp_path, expect_ok=False)
+    assert p_rank.returncode != 0
+    assert "256" in p_rank.stderr and "inkling2_loop" in p_rank.stderr
+    assert not (tmp_path / "r257.gguf").exists()
+
+    # head_dim > 128 refused at model bind/load with a sentence.
+    kvs = [(k, t, 256 if k in ("inkling2_loop.attention.key_length", "inkling2_loop.attention.value_length") else v)
+           for k, t, v in h._kvs()]
+    bad_hd = tmp_path / "bad_hd.gguf"
+    h._write(bad_hd, kvs, h._tensors())
+    p_hd = _run(runner_bin, ["-m", bad_hd, "-p", "hello", "-n", "1", "--gpu", "off"],
+                tmp_path, expect_ok=False)
+    assert p_hd.returncode != 0
+    assert "128" in p_hd.stderr and "head_dim" in p_hd.stderr
+
+    # Injected allocation failure in backward propagates cleanly and writes no adapter.
+    env_bwd_oom = dict(os.environ, RUNNER_TEST_INK2_ALLOC_FAIL="lora_proj")
+    out_oom = tmp_path / "oom_bwd.gguf"
+    p_oom = _run(runner_bin, ["-m", tiny_ink2, "--train", str(corpus), "--train-steps", "1",
+                              "--lora-rank", "4", "--gpu", "off", "--train-out", out_oom],
+                 tmp_path, expect_ok=False, env=env_bwd_oom)
+    assert p_oom.returncode != 0
+    assert "out of memory" in p_oom.stderr.lower()
+    assert not out_oom.exists()
+
+    # Injected allocation failure in serving LoRA forward fails loudly rather than dropping deltas.
+    good_a = tmp_path / "good_a.gguf"
+    _run(runner_bin, ["-m", tiny_ink2, "--train", str(corpus), "--train-steps", "1",
+                      "--lora-rank", "4", "--gpu", "off", "--train-out", good_a],
+         tmp_path)
+    env_fwd_oom = dict(os.environ, RUNNER_TEST_INK2_ALLOC_FAIL="lora_apply")
+    p_foom = _run(runner_bin, ["-m", tiny_ink2, "--lora", good_a, "--score", "-p", TEXT.strip(),
+                               "--gpu", "off"],
+                  tmp_path, expect_ok=False, env=env_fwd_oom)
+    assert p_foom.returncode != 0
+    assert "out of memory" in p_foom.stderr.lower()

@@ -1,7 +1,6 @@
 // Llama-family transformer: weight wiring + batched forward pass.
 #include "model.h"
 #include "inkling2_model.h"
-#include "inkling2_model.h"
 #include "micro_sched.h"   // R3.72: a tiled turn's decode schedule
 
 #include <errno.h>
@@ -11165,6 +11164,11 @@ static bool lora_parse_tensor(model_t *m, struct lora_w *tab, gguf_tensor *t,
                 (unsigned long long)n_in, (unsigned long long)n_out);
         return false;
     }
+    if (m->ink2 && r > 256) {
+        fprintf(stderr, "error: adapter tensor '%s' rank %llu exceeds "
+                "inkling2_loop limit 256\n", t->name, (unsigned long long)r);
+        return false;
+    }
     if (lw->r && lw->r != (int)r) {
         fprintf(stderr, "error: adapter '%s' rank %llu disagrees with "
                 "its pair (rank %d)\n", t->name,
@@ -14852,6 +14856,10 @@ bool model_lora_train_init(model_t *m, int rank, float alpha, uint64_t seed) {
     char why[128];
     if (rank < 1 || rank > LORA_R_MAX) {
         fprintf(stderr, "error: --lora-rank must be 1..%d\n", LORA_R_MAX);
+        return false;
+    }
+    if (m->ink2 && rank > 256) {
+        fprintf(stderr, "error: inkling2_loop supports --lora-rank 1..256 (got %d)\n", rank);
         return false;
     }
     if (!lora_bw_supported(m, why, sizeof why)) {

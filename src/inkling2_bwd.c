@@ -28,24 +28,35 @@
 
 enum {
     CTRL_DROP_PASS1   = 1 << 0,
-    CTRL_DROP_ROUTER  = 1 << 1,
-    CTRL_DROP_SINK    = 1 << 2,
-    CTRL_DROP_RELBIAS = 1 << 3,
-    CTRL_DROP_DYNCONV = 1 << 4,
-    CTRL_DRIFT_CKPT   = 1 << 5,
+    CTRL_DROP_PASS2   = 1 << 1,
+    CTRL_SCALE_102    = 1 << 2,
+    CTRL_THREAD_ORDER = 1 << 3,
+    CTRL_DROP_ROUTER  = 1 << 4,
+    CTRL_DROP_SINK    = 1 << 5,
+    CTRL_DROP_RELBIAS = 1 << 6,
+    CTRL_DROP_DYNCONV = 1 << 7,
+    CTRL_DRIFT_CKPT   = 1 << 8,
 };
 
 static int read_bwd_ctrl(void) {
     const char *e = getenv("RUNNER_TEST_INK2_BWD_CTRL");
     if (!e || !*e) return 0;
     int f = 0;
-    if (strstr(e, "drop_pass1"))   f |= CTRL_DROP_PASS1;
-    if (strstr(e, "drop_router"))  f |= CTRL_DROP_ROUTER;
-    if (strstr(e, "drop_sink"))    f |= CTRL_DROP_SINK;
-    if (strstr(e, "drop_relbias")) f |= CTRL_DROP_RELBIAS;
-    if (strstr(e, "drop_dynconv")) f |= CTRL_DROP_DYNCONV;
-    if (strstr(e, "drift_ckpt"))   f |= CTRL_DRIFT_CKPT;
+    if (strstr(e, "drop_pass1"))       f |= CTRL_DROP_PASS1;
+    if (strstr(e, "drop_pass2"))       f |= CTRL_DROP_PASS2;
+    if (strstr(e, "scale_102"))        f |= CTRL_SCALE_102;
+    if (strstr(e, "thread_order_dep")) f |= CTRL_THREAD_ORDER;
+    if (strstr(e, "drop_router"))      f |= CTRL_DROP_ROUTER;
+    if (strstr(e, "drop_sink"))        f |= CTRL_DROP_SINK;
+    if (strstr(e, "drop_relbias"))     f |= CTRL_DROP_RELBIAS;
+    if (strstr(e, "drop_dynconv"))     f |= CTRL_DROP_DYNCONV;
+    if (strstr(e, "drift_ckpt"))       f |= CTRL_DRIFT_CKPT;
     return f;
+}
+
+static bool bwd_alloc_fail(const char *tag) {
+    const char *e = getenv("RUNNER_TEST_INK2_ALLOC_FAIL");
+    return e && *e && (!strcmp(e, "all") || !strcmp(e, tag));
 }
 
 static inline float ink2b_sigmoid(float x) { return 1.0f / (1.0f + p_expf(-x)); }
@@ -71,12 +82,19 @@ static void f_rows(const float *W, int n_out, int n_in, int T, const float *x, f
     ink2_par(T, (int64_t)n_out * n_in, f_mv_range, &c);
 }
 
-static void f_lora_apply(const float *a, const float *b, int r, float scale, int n_out, int n_in,
-                         int T, const float *x, float *y) {
-    if (r <= 0 || !a || !b || scale == 0.0f) return;
+static ink2_status f_lora_apply(const float *a, const float *b, int r, float scale, int n_out, int n_in,
+                                int T, const float *x, float *y) {
+    if (r <= 0 || !a || !b || scale == 0.0f) return INK2_OK;
+    if (r > INK2_MAX_LORA_RANK) {
+        fprintf(stderr, "error: inkling2_loop f_lora_apply: rank %d exceeds limit %d\n", r, INK2_MAX_LORA_RANK);
+        return INK2_BAD_INPUT;
+    }
     float tmp_stack[256];
-    float *tmp = r <= 256 ? tmp_stack : malloc(sizeof(float) * (size_t)r);
-    if (!tmp) return;
+    float *tmp = bwd_alloc_fail("f_lora_apply") ? NULL : (r <= 256 ? tmp_stack : malloc(sizeof(float) * (size_t)r));
+    if (!tmp) {
+        fprintf(stderr, "error: inkling2_loop f_lora_apply: out of memory allocating rank buffer\n");
+        return INK2_BAD_INPUT;
+    }
     for (int t = 0; t < T; t++) {
         const float *xt = x + (size_t)t * n_in;
         float *yt = y + (size_t)t * n_out;
@@ -94,6 +112,7 @@ static void f_lora_apply(const float *a, const float *b, int r, float scale, int
         }
     }
     if (tmp != tmp_stack) free(tmp);
+    return INK2_OK;
 }
 
 static void f_unweighted_norm(const float *x, int n, float eps, float *y) {
@@ -199,19 +218,34 @@ typedef struct {
     float *gb, *ga;
     int T, r, n_in, n_out;
     float scale;
+    int order_nt;
 } lora_grad_ctx;
 
 static void b_lora_gb_range(void *cv, int64_t idx0, int64_t idx1) {
     const lora_grad_ctx *c = cv;
     int T = c->T, r = c->r, n_out = c->n_out;
     float s = c->scale;
+    int nt = c->order_nt;
     for (int64_t idx = idx0; idx < idx1; idx++) {
         int j = (int)(idx / r);
         int k = (int)(idx % r);
-        float acc = c->gb[idx];
-        for (int t = 0; t < T; t++)
-            acc = fmaf(c->dy[(size_t)t * n_out + j], s * c->tmp[(size_t)t * r + k], acc);
-        c->gb[idx] = acc;
+        if (nt > 1) {
+            int chunk = (T + nt - 1) / nt;
+            float acc = c->gb[idx];
+            for (int w = 0; w < nt; w++) {
+                int t0 = w * chunk, t1 = t0 + chunk < T ? t0 + chunk : T;
+                float part = 0.0f;
+                for (int t = t0; t < t1; t++)
+                    part = fmaf(c->dy[(size_t)t * n_out + j], s * c->tmp[(size_t)t * r + k], part);
+                acc += part;
+            }
+            c->gb[idx] = acc;
+        } else {
+            float acc = c->gb[idx];
+            for (int t = 0; t < T; t++)
+                acc = fmaf(c->dy[(size_t)t * n_out + j], s * c->tmp[(size_t)t * r + k], acc);
+            c->gb[idx] = acc;
+        }
     }
 }
 
@@ -229,19 +263,22 @@ static void b_lora_ga_range(void *cv, int64_t idx0, int64_t idx1) {
 }
 
 // Base W^T dy + LoRA ga/gb + A^T B^T dy -> dx (adds += to dx, ga, gb).
-static void b_lora_proj_add(const float *W, int n_out, int n_in, int T, const float *x, const float *dy,
-                            float *dx, model_t *m, int block, int slot, bool skip_lora_grad) {
+static ink2_status b_lora_proj_add(const float *W, int n_out, int n_in, int T, const float *x, const float *dy,
+                                   float *dx, model_t *m, int block, int slot, bool skip_lora_grad, int ctrl) {
     b_matvec_T_add(W, n_out, n_in, T, dy, dx);
     const float *a = NULL, *b = NULL;
     int r = 0, ln_in = 0, ln_out = 0;
     float scale = 0.0f;
-    if (!model_lora_slot(m, block, slot, &a, &b, &r, &scale, &ln_in, &ln_out)) return;
-    if (r <= 0 || scale == 0.0f || ln_in != n_in || ln_out != n_out) return;
+    if (!model_lora_slot(m, block, slot, &a, &b, &r, &scale, &ln_in, &ln_out)) return INK2_OK;
+    if (r <= 0 || scale == 0.0f || ln_in != n_in || ln_out != n_out) return INK2_OK;
     int cnt_a = 0, cnt_b = 0;
     float *ga = model_lora_gradbuf(m, block, slot, 0, &cnt_a);
     float *gb = model_lora_gradbuf(m, block, slot, 1, &cnt_b);
-    float *tmp = malloc(sizeof(float) * (size_t)T * r * 2);
-    if (!tmp) return;
+    float *tmp = bwd_alloc_fail("lora_proj") ? NULL : malloc(sizeof(float) * (size_t)T * (size_t)r * 2);
+    if (!tmp) {
+        fprintf(stderr, "error: inkling2_loop b_lora_proj_add: out of memory allocating intermediate buffer\n");
+        return INK2_BAD_INPUT;
+    }
     float *dtmp = tmp + (size_t)T * r;
     for (int t = 0; t < T; t++) {
         const float *xt = x + (size_t)t * n_in;
@@ -264,7 +301,8 @@ static void b_lora_proj_add(const float *W, int n_out, int n_in, int T, const fl
         for (int k = 0; k < r; k++) dtt[k] *= scale;
     }
     if (!skip_lora_grad && ga && gb && cnt_a == r * n_in && cnt_b == n_out * r) {
-        lora_grad_ctx gc = { dy, tmp, dtmp, x, gb, ga, T, r, n_in, n_out, scale };
+        int order_nt = (ctrl & CTRL_THREAD_ORDER) ? ink2_get_threads() : 1;
+        lora_grad_ctx gc = { dy, tmp, dtmp, x, gb, ga, T, r, n_in, n_out, scale, order_nt };
         ink2_par((int64_t)n_out * r, (int64_t)T, b_lora_gb_range, &gc);
         ink2_par((int64_t)r * n_in, (int64_t)T, b_lora_ga_range, &gc);
     }
@@ -280,6 +318,7 @@ static void b_lora_proj_add(const float *W, int n_out, int n_in, int T, const fl
         }
     }
     free(tmp);
+    return INK2_OK;
 }
 
 static void b_rms_norm_add(const float *x, int n, float eps, const float *wt, const float *dy, float *dx) {
@@ -318,12 +357,16 @@ static void b_l2_clip(const float *x, int n, float thr, const float *dy, float *
 }
 
 // Undo scaled_clip on pre_clip vector (which is post-linear before scale/clip/tau): writes d_pre [n * d].
-static void b_scaled_clip(const ink2_shape *s, int g, const float *pre_lin, const float *scale,
-                          int n, int d, float thr, int pos, const float *d_out, float *d_pre) {
+static ink2_status b_scaled_clip(const ink2_shape *s, int g, const float *pre_lin, const float *scale,
+                                 int n, int d, float thr, int pos, const float *d_out, float *d_pre) {
     float tau = g ? f_log_tau(s, pos) : 1.0f;
     float tmp_stack[256];
-    float *buf = (size_t)d * 2 <= 256 ? tmp_stack : malloc(sizeof(float) * (size_t)d * 2);
-    if (!buf) return;
+    float *buf = bwd_alloc_fail("scaled_clip") ? NULL
+                 : ((size_t)d * 2 <= 256 ? tmp_stack : malloc(sizeof(float) * (size_t)d * 2));
+    if (!buf) {
+        fprintf(stderr, "error: inkling2_loop b_scaled_clip: out of memory allocating clip buffer\n");
+        return INK2_BAD_INPUT;
+    }
     float *sh = buf, *dch = buf + d;
     for (int h = 0; h < n; h++) {
         const float *xh = pre_lin + (size_t)h * d;
@@ -338,16 +381,21 @@ static void b_scaled_clip(const ink2_shape *s, int g, const float *pre_lin, cons
         for (int i = 0; i < d; i++) dxh[i] *= sch[i];
     }
     if (buf != tmp_stack) free(buf);
+    return INK2_OK;
 }
 
 // Depth-wise attention backward for T tokens:
 //   states_list[j] points to [T][H] tensor (0 <= j < n_kv - 1) and partial [T][H] is slot n_kv - 1
 //   d_states_list[j] receives += VJP of d_out [nq][T][H] (when layout_q_first) OR [T][nq][H] (message_input).
-static void b_depth_attn_common(const float *q, int nq, int H, int T, int n_kv,
-                                const float *const *states, float *const *d_states,
-                                const float *d_out, bool layout_q_first) {
-    float *buf = malloc(sizeof(float) * ((size_t)n_kv * H * 2 + (size_t)n_kv * 2 + (size_t)n_kv * H));
-    if (!buf) return;
+static ink2_status b_depth_attn_common(const float *q, int nq, int H, int T, int n_kv,
+                                       const float *const *states, float *const *d_states,
+                                       const float *d_out, bool layout_q_first) {
+    float *buf = bwd_alloc_fail("depth_attn") ? NULL
+                 : malloc(sizeof(float) * ((size_t)n_kv * H * 2 + (size_t)n_kv * 2 + (size_t)n_kv * H));
+    if (!buf) {
+        fprintf(stderr, "error: inkling2_loop b_depth_attn_common: out of memory\n");
+        return INK2_BAD_INPUT;
+    }
     float *st = buf;
     float *normed = st + (size_t)n_kv * H;
     float *dnorm = normed + (size_t)n_kv * H;
@@ -395,6 +443,7 @@ static void b_depth_attn_common(const float *q, int nq, int H, int T, int n_kv,
                            d_states[j] + (size_t)t * H);
     }
     free(buf);
+    return INK2_OK;
 }
 
 static void b_short_conv_add(const float *cw, int C, int K, int T, const float *d_out, float *d_lin) {
@@ -411,17 +460,20 @@ static void b_short_conv_add(const float *cw, int C, int K, int T, const float *
     }
 }
 
-static void b_kv_conv_add(int g, const float *cw, const float *wd, int H, int nkv, int hd, int K, int T,
-                          const float *lin, const float *dyn, const float *d_out,
-                          float *d_lin, float *d_x, int ctrl) {
+static ink2_status b_kv_conv_add(int g, const float *cw, const float *wd, int H, int nkv, int hd, int K, int T,
+                                 const float *lin, const float *dyn, const float *d_out,
+                                 float *d_lin, float *d_x, int ctrl) {
     int C = nkv * hd, R = nkv * K;
     const float div = (float)sqrt((double)(g ? 2 * K + 1 : K + 1));
     if (!g) {
         b_short_conv_add(cw, C, K, T, d_out, d_lin);
-        return;
+        return INK2_OK;
     }
-    float *d_dyn = calloc((size_t)T * R, sizeof(float));
-    if (!d_dyn) return;
+    float *d_dyn = bwd_alloc_fail("kv_conv") ? NULL : calloc((size_t)T * R, sizeof(float));
+    if (!d_dyn) {
+        fprintf(stderr, "error: inkling2_loop b_kv_conv_add: out of memory\n");
+        return INK2_BAD_INPUT;
+    }
     for (int t = 0; t < T; t++) {
         for (int ch = 0; ch < C; ch++) {
             float dy = d_out[(size_t)t * C + ch] / div;
@@ -437,6 +489,7 @@ static void b_kv_conv_add(int g, const float *cw, const float *wd, int H, int nk
     if (!(ctrl & CTRL_DROP_DYNCONV))
         b_matvec_T_add(wd, R, H, T, d_dyn, d_x);
     free(d_dyn);
+    return INK2_OK;
 }
 
 // ---- Sparse MoE backward (per block, recomputes router & per-expert acts per token)
@@ -609,216 +662,251 @@ static ink2_status bind_attn_w(const ink2_shape *s, const ink2_weights *w, int b
     return INK2_OK;
 }
 
-static void apply_lora_from_model(model_t *m, int block, int slot, int n_out, int n_in, int T,
-                                  const float *x, float *y) {
+static ink2_status apply_lora_from_model(model_t *m, int block, int slot, int n_out, int n_in, int T,
+                                         const float *x, float *y) {
     const float *a = NULL, *b = NULL;
     int r = 0, ln_in = 0, ln_out = 0;
     float scale = 0.0f;
-    if (!model_lora_slot(m, block, slot, &a, &b, &r, &scale, &ln_in, &ln_out)) return;
-    if (ln_in != n_in || ln_out != n_out) return;
-    f_lora_apply(a, b, r, scale, n_out, n_in, T, x, y);
+    if (!model_lora_slot(m, block, slot, &a, &b, &r, &scale, &ln_in, &ln_out)) return INK2_OK;
+    if (ln_in != n_in || ln_out != n_out) {
+        fprintf(stderr, "error: inkling2_loop: LoRA slot %d.%d dims [%d,%d] != [%d,%d]\n",
+                block, slot, ln_in, ln_out, n_in, n_out);
+        return INK2_BAD_INPUT;
+    }
+    return f_lora_apply(a, b, r, scale, n_out, n_in, T, x, y);
 }
 
-static ink2_status b_attention_recomp_and_bwd(const ink2_shape *s, const ink2_weights *w, model_t *m,
-                                              int app, int T, const float *xq, const float *xk, const float *xv,
-                                              const float *d_out, float *d_xq, float *d_xk, float *d_xv,
-                                              float *out_recomp, int ctrl) {
-    int block = s->app_block[app], pass = s->app_pass[app];
-    bool loop = block >= s->loop_start && block < s->loop_end;
-    bool skip_lora_grad = (ctrl & CTRL_DROP_PASS1) && loop && pass == 1;
+typedef struct {
     attn_bwd_w L;
-    ink2_status st = bind_attn_w(s, w, block, &L);
+    float *buf;
+    float *q_lin, *q_sc, *att_raw, *at_gate, *ga_tmp;
+    float *k_lin, *k_conv, *k_norm, *k_dyn;
+    float *v_lin, *v_conv, *v_norm, *v_dyn;
+    float *rs_lin, *rs_clip, *rl, *sk, *lg_row;
+} attn_fwd_cache;
+
+// Run single-application attention forward once (p0 = 0) and keep intermediates for backward.
+static ink2_status b_attn_fwd_save(const ink2_shape *s, const ink2_weights *w, model_t *m,
+                                   int app, int T, const float *xq, const float *xk, const float *xv,
+                                   attn_fwd_cache *af, float *att_out) {
+    memset(af, 0, sizeof *af);
+    int block = s->app_block[app];
+    ink2_status st = bind_attn_w(s, w, block, &af->L);
     if (st != INK2_OK) return st;
-    int H = s->hidden, nh = L.nh, nkv = L.nkv, hd = L.hd, K = L.K, ext = L.ext, dr = L.dr, C = L.C, Q = L.Q;
+    const attn_bwd_w *L = &af->L;
+    int H = s->hidden, nh = L->nh, nkv = L->nkv, hd = L->hd, K = L->K, ext = L->ext, dr = L->dr, C = L->C, Q = L->Q;
     int R = nkv * K;
 
-    // Allocate single-application forward & backward scratch
-    size_t n_fw = (size_t)T * (Q * 4 + C * 6 + R * 2 + nh * dr + nh * ext + nh) + (size_t)T + 1;
-    size_t n_bw = (size_t)T * (Q * 4 + C * 4 + nh * dr + nh * ext + nh);
-    float *buf = calloc(n_fw + n_bw, sizeof(float));
-    if (!buf) return INK2_BAD_INPUT;
+    size_t n_fw = (size_t)T * (Q * 5 + C * 6 + R * 2 + nh * dr * 2 + nh * ext + nh) + (size_t)T + 1;
+    af->buf = bwd_alloc_fail("attn_fwd") ? NULL : calloc(n_fw, sizeof(float));
+    if (!af->buf) {
+        fprintf(stderr, "error: inkling2_loop b_attn_fwd_save: out of memory\n");
+        return INK2_BAD_INPUT;
+    }
 
-    float *p = buf;
-    float *q_lin = p;      p += (size_t)T * Q;
-    float *q_sc  = p;      p += (size_t)T * Q;
-    float *att_raw = p;    p += (size_t)T * Q;
-    float *at_gate = p;    p += (size_t)T * Q;
-    float *k_lin = p;      p += (size_t)T * C;
-    float *k_conv = p;     p += (size_t)T * C;
-    float *k_norm = p;     p += (size_t)T * C;
-    float *v_lin = p;      p += (size_t)T * C;
-    float *v_conv = p;     p += (size_t)T * C;
-    float *v_norm = p;     p += (size_t)T * C;
-    float *k_dyn = p;      p += (size_t)T * R;
-    float *v_dyn = p;      p += (size_t)T * R;
-    float *rs_lin = p;     p += (size_t)T * nh * dr;
-    float *rl = p;         p += (size_t)T * nh * ext;
-    float *sk = p;         p += (size_t)T * nh;
-    float *lg_row = p;     p += (size_t)T + 1;
+    float *p = af->buf;
+    af->q_lin   = p; p += (size_t)T * Q;
+    af->q_sc    = p; p += (size_t)T * Q;
+    af->att_raw = p; p += (size_t)T * Q;
+    af->at_gate = p; p += (size_t)T * Q;
+    af->ga_tmp  = p; p += (size_t)T * Q;
+    af->k_lin   = p; p += (size_t)T * C;
+    af->k_conv  = p; p += (size_t)T * C;
+    af->k_norm  = p; p += (size_t)T * C;
+    af->v_lin   = p; p += (size_t)T * C;
+    af->v_conv  = p; p += (size_t)T * C;
+    af->v_norm  = p; p += (size_t)T * C;
+    af->k_dyn   = p; p += (size_t)T * R;
+    af->v_dyn   = p; p += (size_t)T * R;
+    af->rs_lin  = p; p += (size_t)T * nh * dr;
+    af->rs_clip = p; p += (size_t)T * nh * dr;
+    af->rl      = p; p += (size_t)T * nh * ext;
+    af->sk      = p; p += (size_t)T * nh;
+    af->lg_row  = p; p += (size_t)T + 1;
 
-    float *dq_sc   = p;    p += (size_t)T * Q;
-    float *d_at_g  = p;    p += (size_t)T * Q;
-    float *d_att   = p;    p += (size_t)T * Q;
-    float *d_ga    = p;    p += (size_t)T * Q;
-    float *dk_norm = p;    p += (size_t)T * C;
-    float *dk_conv = p;    p += (size_t)T * C;
-    float *dv_norm = p;    p += (size_t)T * C;
-    float *dv_conv = p;    p += (size_t)T * C;
-    float *d_rl    = p;    p += (size_t)T * nh * ext;
-    float *d_sk    = p;    p += (size_t)T * nh;
-    float *d_rs_clip = p;  p += (size_t)T * nh * dr;
+    f_rows(L->wt[W_Q], Q, H, T, xq, af->q_lin);
+    if ((st = apply_lora_from_model(m, block, LW_Q, Q, H, T, xq, af->q_lin)) != INK2_OK) goto fail;
+    memcpy(af->q_sc, af->q_lin, sizeof(float) * (size_t)T * Q);
+    for (int t = 0; t < T; t++)
+        f_scaled_clip(s, L->g, af->q_sc + (size_t)t * Q, L->wt[W_QS], nh, hd, s->qk_clip, t);
 
-    // 1. Forward recompute matching ink2_attention_lora order bit for bit at p0=0
-    f_rows(L.wt[W_Q], Q, H, T, xq, q_lin);
-    apply_lora_from_model(m, block, LW_Q, Q, H, T, xq, q_lin);
-    memcpy(q_sc, q_lin, sizeof(float) * (size_t)T * Q);
-    for (int t = 0; t < T; t++) f_scaled_clip(s, L.g, q_sc + (size_t)t * Q, L.wt[W_QS], nh, hd, s->qk_clip, t);
-
-    // K linear + conv + norm
-    f_rows(L.wt[W_K], C, H, T, xk, k_lin);
-    apply_lora_from_model(m, block, LW_K, C, H, T, xk, k_lin);
-    if (L.g) f_rows(L.wt[W_KD], R, H, T, xk, k_dyn);
+    f_rows(L->wt[W_K], C, H, T, xk, af->k_lin);
+    if ((st = apply_lora_from_model(m, block, LW_K, C, H, T, xk, af->k_lin)) != INK2_OK) goto fail;
+    if (L->g) f_rows(L->wt[W_KD], R, H, T, xk, af->k_dyn);
     {
-        const float div = (float)sqrt((double)(L.g ? 2 * K + 1 : K + 1));
+        const float div = (float)sqrt((double)(L->g ? 2 * K + 1 : K + 1));
         for (int t = 0; t < T; t++) for (int ch = 0; ch < C; ch++) {
             float a = 0.0f;
-            if (!L.g) {
-                for (int j = 0; j < K; j++) { int u = t - (K - 1) + j; if (u >= 0) a += L.wt[W_KC][(size_t)ch * K + j] * k_lin[(size_t)u * C + ch]; }
+            if (!L->g) {
+                for (int j = 0; j < K; j++) { int u = t - (K - 1) + j; if (u >= 0) a += L->wt[W_KC][(size_t)ch * K + j] * af->k_lin[(size_t)u * C + ch]; }
             } else {
                 for (int l = 0; l < K && t - l >= 0; l++) {
-                    float tap = L.wt[W_KC][(size_t)l * C + ch] + k_dyn[(size_t)t * R + (size_t)(ch / hd) * K + l];
-                    a += k_lin[(size_t)(t - l) * C + ch] * tap;
+                    float tap = L->wt[W_KC][(size_t)l * C + ch] + af->k_dyn[(size_t)t * R + (size_t)(ch / hd) * K + l];
+                    a += af->k_lin[(size_t)(t - l) * C + ch] * tap;
                 }
             }
-            k_conv[(size_t)t * C + ch] = (a + k_lin[(size_t)t * C + ch]) / div;
+            af->k_conv[(size_t)t * C + ch] = (a + af->k_lin[(size_t)t * C + ch]) / div;
         }
     }
-    memcpy(k_norm, k_conv, sizeof(float) * (size_t)T * C);
+    memcpy(af->k_norm, af->k_conv, sizeof(float) * (size_t)T * C);
     for (int t = 0; t < T; t++) for (int h = 0; h < nkv; h++)
-        f_l2_clip(k_norm + (size_t)t * C + (size_t)h * hd, hd, s->qk_clip);
+        f_l2_clip(af->k_norm + (size_t)t * C + (size_t)h * hd, hd, s->qk_clip);
 
-    // V linear + conv + norm
-    f_rows(L.wt[W_V], C, H, T, xv, v_lin);
-    apply_lora_from_model(m, block, LW_V, C, H, T, xv, v_lin);
-    if (L.g) f_rows(L.wt[W_VD], R, H, T, xv, v_dyn);
+    f_rows(L->wt[W_V], C, H, T, xv, af->v_lin);
+    if ((st = apply_lora_from_model(m, block, LW_V, C, H, T, xv, af->v_lin)) != INK2_OK) goto fail;
+    if (L->g) f_rows(L->wt[W_VD], R, H, T, xv, af->v_dyn);
     {
-        const float div = (float)sqrt((double)(L.g ? 2 * K + 1 : K + 1));
+        const float div = (float)sqrt((double)(L->g ? 2 * K + 1 : K + 1));
         for (int t = 0; t < T; t++) for (int ch = 0; ch < C; ch++) {
             float a = 0.0f;
-            if (!L.g) {
-                for (int j = 0; j < K; j++) { int u = t - (K - 1) + j; if (u >= 0) a += L.wt[W_VC][(size_t)ch * K + j] * v_lin[(size_t)u * C + ch]; }
+            if (!L->g) {
+                for (int j = 0; j < K; j++) { int u = t - (K - 1) + j; if (u >= 0) a += L->wt[W_VC][(size_t)ch * K + j] * af->v_lin[(size_t)u * C + ch]; }
             } else {
                 for (int l = 0; l < K && t - l >= 0; l++) {
-                    float tap = L.wt[W_VC][(size_t)l * C + ch] + v_dyn[(size_t)t * R + (size_t)(ch / hd) * K + l];
-                    a += v_lin[(size_t)(t - l) * C + ch] * tap;
+                    float tap = L->wt[W_VC][(size_t)l * C + ch] + af->v_dyn[(size_t)t * R + (size_t)(ch / hd) * K + l];
+                    a += af->v_lin[(size_t)(t - l) * C + ch] * tap;
                 }
             }
-            v_conv[(size_t)t * C + ch] = (a + v_lin[(size_t)t * C + ch]) / div;
+            af->v_conv[(size_t)t * C + ch] = (a + af->v_lin[(size_t)t * C + ch]) / div;
         }
     }
-    memcpy(v_norm, v_conv, sizeof(float) * (size_t)T * C);
+    memcpy(af->v_norm, af->v_conv, sizeof(float) * (size_t)T * C);
     for (int t = 0; t < T; t++) for (int h = 0; h < nkv; h++)
-        f_unweighted_norm(v_norm + (size_t)t * C + (size_t)h * hd, hd, s->eps,
-                          v_norm + (size_t)t * C + (size_t)h * hd);
+        f_unweighted_norm(af->v_norm + (size_t)t * C + (size_t)h * hd, hd, s->eps,
+                          af->v_norm + (size_t)t * C + (size_t)h * hd);
 
-    // Rel bias + sink
-    f_rows(L.wt[W_R], nh * dr, H, T, xq, rs_lin);
-    float *rs_clip = malloc(sizeof(float) * (size_t)T * nh * dr);
-    if (!rs_clip) { free(buf); return INK2_BAD_INPUT; }
-    memcpy(rs_clip, rs_lin, sizeof(float) * (size_t)T * nh * dr);
+    f_rows(L->wt[W_R], nh * dr, H, T, xq, af->rs_lin);
+    memcpy(af->rs_clip, af->rs_lin, sizeof(float) * (size_t)T * nh * dr);
     for (int t = 0; t < T; t++) {
-        float *rt = rs_clip + (size_t)t * nh * dr;
-        f_scaled_clip(s, L.g, rt, L.wt[W_RS], nh, dr, s->rel_clip, t);
+        float *rt = af->rs_clip + (size_t)t * nh * dr;
+        f_scaled_clip(s, L->g, rt, L->wt[W_RS], nh, dr, s->rel_clip, t);
         for (int h = 0; h < nh; h++)
             for (int e = 0; e < ext; e++) {
                 float a = 0.0f;
-                for (int r = 0; r < dr; r++) a += rt[(size_t)h * dr + r] * L.wt[W_RP][(size_t)r * ext + e];
-                rl[((size_t)t * nh + h) * ext + e] = a;
+                for (int r = 0; r < dr; r++) a += rt[(size_t)h * dr + r] * L->wt[W_RP][(size_t)r * ext + e];
+                af->rl[((size_t)t * nh + h) * ext + e] = a;
             }
     }
-    f_rows(L.wt[W_S], nh, H, T, xq, sk);
+    f_rows(L->wt[W_S], nh, H, T, xq, af->sk);
 
-    // Attention core forward
     const float qk_scale = ink2_inv_sqrt(hd);
     for (int h = 0; h < nh; h++) {
         int kh = h / (nh / nkv);
         for (int i = 0; i < T; i++) {
-            const float *qi = q_sc + (size_t)i * Q + (size_t)h * hd;
-            int w0 = L.g ? 0 : (i - s->window + 1 > 0 ? i - s->window + 1 : 0);
-            float mx = sk[(size_t)i * nh + h];
-            for (int j = 0; j < T; j++) lg_row[j] = 0.0f;
+            const float *qi = af->q_sc + (size_t)i * Q + (size_t)h * hd;
+            int w0 = L->g ? 0 : (i - s->window + 1 > 0 ? i - s->window + 1 : 0);
+            float mx = af->sk[(size_t)i * nh + h];
+            for (int j = 0; j < T; j++) af->lg_row[j] = 0.0f;
             for (int j = w0; j <= i; j++) {
-                const float *kj = k_norm + (size_t)j * C + (size_t)kh * hd;
+                const float *kj = af->k_norm + (size_t)j * C + (size_t)kh * hd;
                 float a = 0.0f;
                 for (int e = 0; e < hd; e++) a += qi[e] * kj[e];
                 int d = i - j;
-                lg_row[j] = a * qk_scale + (d < ext ? rl[((size_t)i * nh + h) * ext + d] : 0.0f);
-                if (lg_row[j] > mx) mx = lg_row[j];
+                af->lg_row[j] = a * qk_scale + (d < ext ? af->rl[((size_t)i * nh + h) * ext + d] : 0.0f);
+                if (af->lg_row[j] > mx) mx = af->lg_row[j];
             }
             float sum = 0.0f;
-            for (int j = w0; j <= i; j++) { lg_row[j] = p_expf(lg_row[j] - mx); sum += lg_row[j]; }
-            sum += p_expf(sk[(size_t)i * nh + h] - mx);
-            for (int j = w0; j <= i; j++) lg_row[j] /= sum;
-            float *ai = att_raw + (size_t)i * Q + (size_t)h * hd;
+            for (int j = w0; j <= i; j++) { af->lg_row[j] = p_expf(af->lg_row[j] - mx); sum += af->lg_row[j]; }
+            sum += p_expf(af->sk[(size_t)i * nh + h] - mx);
+            for (int j = w0; j <= i; j++) af->lg_row[j] /= sum;
+            float *ai = af->att_raw + (size_t)i * Q + (size_t)h * hd;
             for (int e = 0; e < hd; e++) {
                 float a = 0.0f;
-                for (int j = w0; j <= i; j++) a += lg_row[j] * v_norm[(size_t)j * C + (size_t)kh * hd + e];
+                for (int j = w0; j <= i; j++) a += af->lg_row[j] * af->v_norm[(size_t)j * C + (size_t)kh * hd + e];
                 ai[e] = a;
             }
         }
     }
 
-    // Gated o_proj forward
-    float *ga_tmp = malloc(sizeof(float) * (size_t)T * Q);
-    if (!ga_tmp) { free(rs_clip); free(buf); return INK2_BAD_INPUT; }
     for (int t = 0; t < T; t++) {
-        f_matvec(L.wt[W_G], Q, H, xq + (size_t)t * H, ga_tmp + (size_t)t * Q);
+        f_matvec(L->wt[W_G], Q, H, xq + (size_t)t * H, af->ga_tmp + (size_t)t * Q);
         for (int i = 0; i < Q; i++)
-            at_gate[(size_t)t * Q + i] = att_raw[(size_t)t * Q + i] * ink2b_sigmoid(ga_tmp[(size_t)t * Q + i]);
-        f_matvec(L.wt[W_O], H, Q, at_gate + (size_t)t * Q, out_recomp + (size_t)t * H);
+            af->at_gate[(size_t)t * Q + i] = af->att_raw[(size_t)t * Q + i] * ink2b_sigmoid(af->ga_tmp[(size_t)t * Q + i]);
+        f_matvec(L->wt[W_O], H, Q, af->at_gate + (size_t)t * Q, att_out + (size_t)t * H);
     }
-    apply_lora_from_model(m, block, LW_O, H, Q, T, at_gate, out_recomp);
+    st = apply_lora_from_model(m, block, LW_O, H, Q, T, af->at_gate, att_out);
+fail:
+    if (st != INK2_OK) { free(af->buf); af->buf = NULL; }
+    return st;
+}
 
-    // 2. Backward: o_proj + gate
-    b_lora_proj_add(L.wt[W_O], H, Q, T, at_gate, d_out, d_at_g, m, block, LW_O, skip_lora_grad);
+static ink2_status b_attn_bwd_from_saved(const ink2_shape *s, model_t *m,
+                                         int app, int T, const float *xq, const float *xk, const float *xv,
+                                         attn_fwd_cache *af, const float *d_out,
+                                         float *d_xq, float *d_xk, float *d_xv, int ctrl) {
+    int block = s->app_block[app], pass = s->app_pass[app];
+    bool loop = block >= s->loop_start && block < s->loop_end;
+    bool skip_lora_grad = ((ctrl & CTRL_DROP_PASS1) && loop && pass == 1)
+                          || ((ctrl & CTRL_DROP_PASS2) && loop && pass == 2);
+    const attn_bwd_w *L = &af->L;
+    int H = s->hidden, nh = L->nh, nkv = L->nkv, hd = L->hd, ext = L->ext, dr = L->dr, C = L->C, Q = L->Q;
+
+    size_t n_bw = (size_t)T * (Q * 4 + C * 4 + nh * dr + nh * ext + nh);
+    float *bw = bwd_alloc_fail("attn_bwd") ? NULL : calloc(n_bw, sizeof(float));
+    if (!bw) {
+        fprintf(stderr, "error: inkling2_loop b_attn_bwd_from_saved: out of memory\n");
+        return INK2_BAD_INPUT;
+    }
+
+    float *p = bw;
+    float *dq_sc     = p; p += (size_t)T * Q;
+    float *d_at_g    = p; p += (size_t)T * Q;
+    float *d_att     = p; p += (size_t)T * Q;
+    float *d_ga      = p; p += (size_t)T * Q;
+    float *dk_norm   = p; p += (size_t)T * C;
+    float *dk_conv   = p; p += (size_t)T * C;
+    float *dv_norm   = p; p += (size_t)T * C;
+    float *dv_conv   = p; p += (size_t)T * C;
+    float *d_rl      = p; p += (size_t)T * nh * ext;
+    float *d_sk      = p; p += (size_t)T * nh;
+    float *d_rs_clip = p; p += (size_t)T * nh * dr;
+
+    ink2_status st = b_lora_proj_add(L->wt[W_O], H, Q, T, af->at_gate, d_out, d_at_g, m, block, LW_O, skip_lora_grad, ctrl);
+    if (st != INK2_OK) { free(bw); return st; }
+
     for (int t = 0; t < T; t++) {
         for (int i = 0; i < Q; i++) {
-            float sg = ink2b_sigmoid(ga_tmp[(size_t)t * Q + i]);
+            float sg = ink2b_sigmoid(af->ga_tmp[(size_t)t * Q + i]);
             float dg = d_at_g[(size_t)t * Q + i];
-            d_att[(size_t)t * Q + i] = dg * sg;
-            d_ga[(size_t)t * Q + i]  = dg * att_raw[(size_t)t * Q + i] * sg * (1.0f - sg);
+            d_att[(size_t)t * Q + i] = dg * sg * ((ctrl & CTRL_SCALE_102) ? 1.02f : 1.0f);
+            d_ga[(size_t)t * Q + i]  = dg * af->att_raw[(size_t)t * Q + i] * sg * (1.0f - sg);
         }
     }
-    b_matvec_T_add(L.wt[W_G], Q, H, T, d_ga, d_xq);
+    b_matvec_T_add(L->wt[W_G], Q, H, T, d_ga, d_xq);
 
-    // 3. Attention core backward (head-by-head streaming, ascending sums)
+    const float qk_scale = ink2_inv_sqrt(hd);
     float *dp_row = calloc((size_t)T, sizeof(float));
-    if (!dp_row) { free(ga_tmp); free(rs_clip); free(buf); return INK2_BAD_INPUT; }
+    if (!dp_row) {
+        fprintf(stderr, "error: inkling2_loop b_attn_bwd_from_saved: out of memory allocating dp_row\n");
+        free(bw);
+        return INK2_BAD_INPUT;
+    }
+    float *lg_row = af->lg_row;
     for (int h = 0; h < nh; h++) {
         int kh = h / (nh / nkv);
         for (int i = 0; i < T; i++) {
-            const float *qi = q_sc + (size_t)i * Q + (size_t)h * hd;
+            const float *qi = af->q_sc + (size_t)i * Q + (size_t)h * hd;
             const float *dai = d_att + (size_t)i * Q + (size_t)h * hd;
-            int w0 = L.g ? 0 : (i - s->window + 1 > 0 ? i - s->window + 1 : 0);
-            float mx = sk[(size_t)i * nh + h];
+            int w0 = L->g ? 0 : (i - s->window + 1 > 0 ? i - s->window + 1 : 0);
+            float mx = af->sk[(size_t)i * nh + h];
             for (int j = w0; j <= i; j++) {
-                const float *kj = k_norm + (size_t)j * C + (size_t)kh * hd;
+                const float *kj = af->k_norm + (size_t)j * C + (size_t)kh * hd;
                 float a = 0.0f;
                 for (int e = 0; e < hd; e++) a += qi[e] * kj[e];
                 int d = i - j;
-                lg_row[j] = a * qk_scale + (d < ext ? rl[((size_t)i * nh + h) * ext + d] : 0.0f);
+                lg_row[j] = a * qk_scale + (d < ext ? af->rl[((size_t)i * nh + h) * ext + d] : 0.0f);
                 if (lg_row[j] > mx) mx = lg_row[j];
             }
             float sum = 0.0f;
             for (int j = w0; j <= i; j++) { lg_row[j] = p_expf(lg_row[j] - mx); sum += lg_row[j]; }
-            float esink = p_expf(sk[(size_t)i * nh + h] - mx);
+            float esink = p_expf(af->sk[(size_t)i * nh + h] - mx);
             sum += esink;
             for (int j = w0; j <= i; j++) lg_row[j] /= sum;
             float p_sink = esink / sum;
 
             float D = 0.0f;
             for (int j = w0; j <= i; j++) {
-                const float *vj = v_norm + (size_t)j * C + (size_t)kh * hd;
+                const float *vj = af->v_norm + (size_t)j * C + (size_t)kh * hd;
                 float dpj = 0.0f;
                 for (int e = 0; e < hd; e++) dpj += dai[e] * vj[e];
                 dp_row[j] = dpj;
@@ -838,7 +926,7 @@ static ink2_status b_attention_recomp_and_bwd(const ink2_shape *s, const ink2_we
                     d_rl[((size_t)i * nh + h) * ext + d] += ds;
 
                 float ds_qk = ds * qk_scale;
-                const float *kj = k_norm + (size_t)j * C + (size_t)kh * hd;
+                const float *kj = af->k_norm + (size_t)j * C + (size_t)kh * hd;
                 float *dkj = dk_norm + (size_t)j * C + (size_t)kh * hd;
                 for (int e = 0; e < hd; e++) {
                     dqi[e] = fmaf(ds_qk, kj[e], dqi[e]);
@@ -849,57 +937,64 @@ static ink2_status b_attention_recomp_and_bwd(const ink2_shape *s, const ink2_we
     }
     free(dp_row);
 
-    // 4. sink_proj + relative_position_bias backward -> d_xq
-    if (!(ctrl & CTRL_DROP_SINK)) b_matvec_T_add(L.wt[W_S], nh, H, T, d_sk, d_xq);
+    if (!(ctrl & CTRL_DROP_SINK)) b_matvec_T_add(L->wt[W_S], nh, H, T, d_sk, d_xq);
     if (!(ctrl & CTRL_DROP_RELBIAS)) {
         float *d_rs_lin = calloc((size_t)T * nh * dr, sizeof(float));
-        if (!d_rs_lin) { free(ga_tmp); free(rs_clip); free(buf); return INK2_BAD_INPUT; }
+        if (!d_rs_lin) {
+            fprintf(stderr, "error: inkling2_loop b_attn_bwd_from_saved: out of memory\n");
+            free(bw);
+            return INK2_BAD_INPUT;
+        }
         for (int t = 0; t < T; t++) {
             for (int h = 0; h < nh; h++)
                 for (int r = 0; r < dr; r++) {
                     float acc = 0.0f;
                     for (int e = 0; e < ext; e++)
-                        acc = fmaf(L.wt[W_RP][(size_t)r * ext + e],
+                        acc = fmaf(L->wt[W_RP][(size_t)r * ext + e],
                                    d_rl[((size_t)t * nh + h) * ext + e], acc);
                     d_rs_clip[((size_t)t * nh + h) * dr + r] = acc;
                 }
-            b_scaled_clip(s, L.g, rs_lin + (size_t)t * nh * dr, L.wt[W_RS], nh, dr, s->rel_clip, t,
-                          d_rs_clip + (size_t)t * nh * dr, d_rs_lin + (size_t)t * nh * dr);
+            st = b_scaled_clip(s, L->g, af->rs_lin + (size_t)t * nh * dr, L->wt[W_RS], nh, dr, s->rel_clip, t,
+                               d_rs_clip + (size_t)t * nh * dr, d_rs_lin + (size_t)t * nh * dr);
+            if (st != INK2_OK) { free(d_rs_lin); free(bw); return st; }
         }
-        b_matvec_T_add(L.wt[W_R], nh * dr, H, T, d_rs_lin, d_xq);
+        b_matvec_T_add(L->wt[W_R], nh * dr, H, T, d_rs_lin, d_xq);
         free(d_rs_lin);
     }
 
-    // 5. Q, K, V backward (recycling buffers)
-    float *dq_lin = att_raw;
-    for (int t = 0; t < T; t++)
-        b_scaled_clip(s, L.g, q_lin + (size_t)t * Q, L.wt[W_QS], nh, hd, s->qk_clip, t,
-                      dq_sc + (size_t)t * Q, dq_lin + (size_t)t * Q);
-    b_lora_proj_add(L.wt[W_Q], Q, H, T, xq, dq_lin, d_xq, m, block, LW_Q, skip_lora_grad);
+    float *dq_lin = af->att_raw;
+    for (int t = 0; t < T; t++) {
+        st = b_scaled_clip(s, L->g, af->q_lin + (size_t)t * Q, L->wt[W_QS], nh, hd, s->qk_clip, t,
+                           dq_sc + (size_t)t * Q, dq_lin + (size_t)t * Q);
+        if (st != INK2_OK) { free(bw); return st; }
+    }
+    st = b_lora_proj_add(L->wt[W_Q], Q, H, T, xq, dq_lin, d_xq, m, block, LW_Q, skip_lora_grad, ctrl);
+    if (st != INK2_OK) { free(bw); return st; }
 
     for (int t = 0; t < T; t++) for (int h = 0; h < nkv; h++)
-        b_l2_clip(k_conv + (size_t)t * C + (size_t)h * hd, hd, s->qk_clip,
+        b_l2_clip(af->k_conv + (size_t)t * C + (size_t)h * hd, hd, s->qk_clip,
                   dk_norm + (size_t)t * C + (size_t)h * hd,
                   dk_conv + (size_t)t * C + (size_t)h * hd);
-    float *dk_lin = k_norm;
+    float *dk_lin = af->k_norm;
     memset(dk_lin, 0, sizeof(float) * (size_t)T * C);
-    b_kv_conv_add(L.g, L.wt[W_KC], L.wt[W_KD], H, nkv, hd, K, T, k_lin, k_dyn, dk_conv, dk_lin, d_xk, ctrl);
-    b_lora_proj_add(L.wt[W_K], C, H, T, xk, dk_lin, d_xk, m, block, LW_K, skip_lora_grad);
+    st = b_kv_conv_add(L->g, L->wt[W_KC], L->wt[W_KD], H, nkv, hd, L->K, T, af->k_lin, af->k_dyn, dk_conv, dk_lin, d_xk, ctrl);
+    if (st != INK2_OK) { free(bw); return st; }
+    st = b_lora_proj_add(L->wt[W_K], C, H, T, xk, dk_lin, d_xk, m, block, LW_K, skip_lora_grad, ctrl);
+    if (st != INK2_OK) { free(bw); return st; }
 
     memset(dv_conv, 0, sizeof(float) * (size_t)T * C);
     for (int t = 0; t < T; t++) for (int h = 0; h < nkv; h++)
-        b_rms_norm_add(v_conv + (size_t)t * C + (size_t)h * hd, hd, s->eps, NULL,
+        b_rms_norm_add(af->v_conv + (size_t)t * C + (size_t)h * hd, hd, s->eps, NULL,
                        dv_norm + (size_t)t * C + (size_t)h * hd,
                        dv_conv + (size_t)t * C + (size_t)h * hd);
-    float *dv_lin = v_norm;
+    float *dv_lin = af->v_norm;
     memset(dv_lin, 0, sizeof(float) * (size_t)T * C);
-    b_kv_conv_add(L.g, L.wt[W_VC], L.wt[W_VD], H, nkv, hd, K, T, v_lin, v_dyn, dv_conv, dv_lin, d_xv, ctrl);
-    b_lora_proj_add(L.wt[W_V], C, H, T, xv, dv_lin, d_xv, m, block, LW_V, skip_lora_grad);
+    st = b_kv_conv_add(L->g, L->wt[W_VC], L->wt[W_VD], H, nkv, hd, L->K, T, af->v_lin, af->v_dyn, dv_conv, dv_lin, d_xv, ctrl);
+    if (st != INK2_OK) { free(bw); return st; }
+    st = b_lora_proj_add(L->wt[W_V], C, H, T, xv, dv_lin, d_xv, m, block, LW_V, skip_lora_grad, ctrl);
 
-    free(ga_tmp);
-    free(rs_clip);
-    free(buf);
-    return INK2_OK;
+    free(bw);
+    return st;
 }
 
 // ---- Message step forward & backward
@@ -1017,6 +1112,8 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
     }
 
     int ctrl = read_bwd_ctrl();
+    const int nt = model_inkling2_threads(m);
+    if (nt != ink2_get_threads()) ink2_set_threads(nt);
     size_t TH = (size_t)T * H;
 
     // Allocate checkpoint activations ckpt[n_app + 1] and gradient slabs d_ckpt[n_app + 1]
@@ -1026,7 +1123,7 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
     int *ids = malloc(sizeof(int) * (size_t)T);
     ink2_cache fw_c;
     bool c_ok = (ink2_cache_init(&fw_c, s, T) == 0);
-    bool ok = ckpt && d_ckpt && meta && ids && c_ok;
+    bool ok = !bwd_alloc_fail("ckpt") && ckpt && d_ckpt && meta && ids && c_ok;
     if (ok) {
         for (int k = 0; k <= n_app; k++) {
             ckpt[k] = calloc(TH, sizeof(float));
@@ -1035,6 +1132,7 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
         }
     }
     if (!ok) {
+        fprintf(stderr, "error: inkling2_loop backward: out of memory allocating checkpoints\n");
         if (c_ok) ink2_cache_free(&fw_c);
         free(ids); free(meta);
         for (int k = 0; ckpt && k <= n_app; k++) free(ckpt[k]);
@@ -1045,10 +1143,15 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
 
     for (int t = 0; t < T; t++) ids[t] = (int)toks[t];
 
-    // 1. Forward pass: record app_states (= h_out for each a) AND exact ckpt DAG
+    // 1. Forward pass (logits = NULL skips unused [T][V] head pass): record app_states and app_sel
     float *app_out_buf = malloc(sizeof(float) * (size_t)n_app * TH);
     float *row_logits = malloc(sizeof(float) * (size_t)V);
-    if (!app_out_buf || !row_logits) ok = false;
+    int n_sel = n_app * T * s->n_used;
+    int *sel_buf = n_sel > 0 ? malloc(sizeof(int) * (size_t)n_sel) : NULL;
+    if (!app_out_buf || !row_logits || (n_sel > 0 && !sel_buf)) {
+        fprintf(stderr, "error: inkling2_loop backward: out of memory allocating forward buffers\n");
+        ok = false;
+    }
 
     const ink2_tensor *emb = w->get(w->ctx, "model.embed_tokens.weight");
     const ink2_tensor *emb_nw = w->get(w->ctx, "model.embed_tokens.embed_norm.weight");
@@ -1060,18 +1163,10 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
             f_rms_norm(erow, H, s->eps, emb_nw->data, ckpt[0] + (size_t)t * H);
         }
         ink2_lora lcb = { m, ink2_lora_cb };
-        // Run ink2_forward_chunk_lora with app_states saved (re-deriving logits row-by-row for head below)
-        // Allocate minimal dummy logits only for the chunk API, or run through a 1-chunk helper:
-        // Wait: ink2_forward_chunk_lora computes logits[T * V] cleanly for full verification at small cost on training window.
-        float *all_logits = malloc(sizeof(float) * (size_t)T * V);
-        if (!all_logits) {
-            ok = false;
-        } else {
-            ink2_status fst = ink2_forward_chunk_lora(s, w, &lcb, &fw_c, 0, T, ids, all_logits, 0, app_out_buf, NULL);
-            free(all_logits);
-            if (fst != INK2_OK) ok = false;
-        }
+        ink2_status fst = ink2_forward_chunk_lora(s, w, &lcb, &fw_c, 0, T, ids, NULL, 0, app_out_buf, sel_buf);
+        if (fst != INK2_OK || (sel_buf && !model_inkling2_save_sel(m, sel_buf, n_sel))) ok = false;
     }
+    free(sel_buf);
 
     // Build exact DAG checkpoint schedule and populate ckpt[1..n_app] from app_out_buf
     int final_cur[INK2_MAX_APP + 2];
@@ -1124,10 +1219,10 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
         const ink2_tensor *nw = w->get(w->ctx, "model.norm.weight");
         const ink2_tensor *wo = w->get(w->ctx, "lm_head.weight");
         int nkv = final_nb + 1;
-        float *packed = malloc(sizeof(float) * (size_t)T * (size_t)nkv * H);
         float *fin = malloc(sizeof(float) * TH * 4);
         float *raw = malloc(sizeof(float) * (size_t)V * 3);
-        if (!fq || !nw || !wo || !packed || !fin || !raw) {
+        if (!fq || !nw || !wo || !fin || !raw) {
+            fprintf(stderr, "error: inkling2_loop backward: out of memory allocating head buffers\n");
             ok = false;
         } else {
             float *hn = fin + TH, *d_hn = hn + TH, *d_fin = d_hn + TH;
@@ -1189,10 +1284,11 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
             if (ok) {
                 for (int t = 0; t < T; t++)
                     b_rms_norm_add(fin + (size_t)t * H, H, s->eps, nw->data, d_hn + (size_t)t * H, d_fin + (size_t)t * H);
-                b_depth_attn_common(fq->data, 1, H, T, nkv, fstates, fdstates, d_fin, true);
+                if (b_depth_attn_common(fq->data, 1, H, T, nkv, fstates, fdstates, d_fin, true) != INK2_OK)
+                    ok = false;
             }
         }
-        free(packed); free(fin); free(raw);
+        free(fin); free(raw);
     }
     free(row_logits);
 
@@ -1331,147 +1427,15 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
                 f_rms_norm(src + (size_t)t * H, H, s->eps, in_norm[r]->data, qkv + (size_t)r * TH + (size_t)t * H);
         }
 
-        // Recompute self_attn + post_attn_conv + residual (executed inside b_attention_recomp_and_bwd? Wait:
-        // we need `att` before `b_attention_recomp_and_bwd` so we know `res`, `mi`, `mo`, `recomp` for Condition 4!).
-        // Forward recompute of attention core via a minimal ink2_cache of size T just for `a` or calling a direct helper:
-        // Actually we can call ink2_attention directly? No, ink2_attention takes n_app-allocated cache. Instead
-        // notice b_attention_recomp_and_bwd computes att_out (out_recomp), AND we ALSO can compute post-attention
-        // BEFORE attention backward if we run the forward half of self_attn cleanly in a small helper, OR compute
-        // attention backward after post-MLP+MoE backward computes `d_att`!!
-        // YES!! Look at the dependency order:
-        //   (1) Run self_attn forward ONLY (produces `att`) -> `post_attn_conv` -> `res` -> `mlp_input` ->
-        //       `mlp_msg_gate` -> `post_attn_ln` -> `ink2_expert_layer` -> `post_mlp_conv` -> `recomp`!
-        //   (2) Verify `memcmp(recomp, ckpt[M->h_out_id], TH * 4) == 0` (Condition 4 BIT-EXACT RECOMPUTE)!
-        //   (3) Backward MoE & post_mlp_conv -> `d_mi_ln` -> `d_res`, `d_bs2`, `d_att`!
-        //   (4) Call `b_attention_recomp_and_bwd` with `d_att` -> fills `d_qkv`!
-        //   (5) Backward norms, message_gates, attention_input -> accumulates into `dx`, `d_ckpt`!
-        const ink2_tensor *pac = NULL, *mq_mlp = NULL, *paln = NULL, *pmc = NULL;
+        // 1a. Run single-application self_attn forward once and retain intermediates for Step 2 backward.
+        attn_fwd_cache af;
+        memset(&af, 0, sizeof af);
         if (ok) {
-            // 1a. Compute `att` using forward ink2_attention on 1-slot local helper (or cache with 1 app? No,
-            // ink2_cache_init allocates n_app slots; calling ink2_decoder_layer vs standalone attention forward:
-            // let's compute `att` cleanly using a local cache initialized once outside? No! Calling
-            // `ink2_attention` on a small helper `f_self_attn_fwd` takes 20 lines and ZERO `n_app` cache!)
-            // Wait: even simpler! In step 1 forward sweep above (`ink2_forward_chunk_lora`), `att` isn't cached,
-            // so `f_self_attn_fwd` or keeping a tiny forward-only function in this file? Let's call
-            // `b_attention_recomp_and_bwd`? Wait: forward part of `b_attention_recomp_and_bwd` is 55 lines!
-            // If we put a `f_self_attn_only` or just pass a single shared cache across the backward? NO:
-            // sharing a single forward cache `re_c` inside `model_inkling2_lora_backward`? Think! `ink2_cache`
-            // holds all 48 apps at T, which for T=128 real is only ~48*2*128*1024*4 = 50 MiB, OR even cleaner:
-            // run `re_attn_fwd` directly with zero cache! Let's write clean shared helper `attn_fwd_pass`!
-            ink2_status ast = INK2_OK;
-            // Recompute att into `att`:
-            attn_bwd_w La;
-            ast = bind_attn_w(s, w, b, &La);
-            if (ast != INK2_OK) ok = false;
-            else {
-                int nh = La.nh, nkv = La.nkv, hd = La.hd, ext = La.ext, dr = La.dr, C = La.C, Q = La.Q, R = nkv * K;
-                float *ab = malloc(sizeof(float) * ((size_t)T * (Q * 2 + C * 6 + R * 2 + nh * dr + nh * ext + nh + Q) + T));
-                if (!ab) ok = false;
-                else {
-                    float *ap = ab;
-                    float *ql = ap; ap += (size_t)T * Q;
-                    float *kl = ap; ap += (size_t)T * C;
-                    float *kc = ap; ap += (size_t)T * C;
-                    float *kn = ap; ap += (size_t)T * C;
-                    float *vl = ap; ap += (size_t)T * C;
-                    float *vc = ap; ap += (size_t)T * C;
-                    float *vn = ap; ap += (size_t)T * C;
-                    float *kd = ap; ap += (size_t)T * R;
-                    float *vd = ap; ap += (size_t)T * R;
-                    float *rs = ap; ap += (size_t)T * nh * dr;
-                    float *rl = ap; ap += (size_t)T * nh * ext;
-                    float *sk = ap; ap += (size_t)T * nh;
-                    float *ar = ap; ap += (size_t)T * Q;
-                    float *ga = ap; ap += (size_t)T * Q;
-                    float *lg = ap;
-                    const float *xq = qkv, *xk = qkv + TH, *xv = qkv + 2 * TH;
-                    f_rows(La.wt[W_Q], Q, H, T, xq, ql);
-                    apply_lora_from_model(m, b, LW_Q, Q, H, T, xq, ql);
-                    for (int t = 0; t < T; t++) f_scaled_clip(s, La.g, ql + (size_t)t * Q, La.wt[W_QS], nh, hd, s->qk_clip, t);
-
-                    f_rows(La.wt[W_K], C, H, T, xk, kl);
-                    apply_lora_from_model(m, b, LW_K, C, H, T, xk, kl);
-                    if (La.g) f_rows(La.wt[W_KD], R, H, T, xk, kd);
-                    const float div = (float)sqrt((double)(La.g ? 2 * K + 1 : K + 1));
-                    for (int t = 0; t < T; t++) for (int ch = 0; ch < C; ch++) {
-                        float aa = 0.0f;
-                        if (!La.g) {
-                            for (int j = 0; j < K; j++) { int u = t - (K - 1) + j; if (u >= 0) aa += La.wt[W_KC][(size_t)ch * K + j] * kl[(size_t)u * C + ch]; }
-                        } else {
-                            for (int l = 0; l < K && t - l >= 0; l++) aa += kl[(size_t)(t - l) * C + ch] * (La.wt[W_KC][(size_t)l * C + ch] + kd[(size_t)t * R + (size_t)(ch / hd) * K + l]);
-                        }
-                        kc[(size_t)t * C + ch] = (aa + kl[(size_t)t * C + ch]) / div;
-                    }
-                    memcpy(kn, kc, sizeof(float) * (size_t)T * C);
-                    for (int t = 0; t < T; t++) for (int h = 0; h < nkv; h++) f_l2_clip(kn + (size_t)t * C + (size_t)h * hd, hd, s->qk_clip);
-
-                    f_rows(La.wt[W_V], C, H, T, xv, vl);
-                    apply_lora_from_model(m, b, LW_V, C, H, T, xv, vl);
-                    if (La.g) f_rows(La.wt[W_VD], R, H, T, xv, vd);
-                    for (int t = 0; t < T; t++) for (int ch = 0; ch < C; ch++) {
-                        float aa = 0.0f;
-                        if (!La.g) {
-                            for (int j = 0; j < K; j++) { int u = t - (K - 1) + j; if (u >= 0) aa += La.wt[W_VC][(size_t)ch * K + j] * vl[(size_t)u * C + ch]; }
-                        } else {
-                            for (int l = 0; l < K && t - l >= 0; l++) aa += vl[(size_t)(t - l) * C + ch] * (La.wt[W_VC][(size_t)l * C + ch] + vd[(size_t)t * R + (size_t)(ch / hd) * K + l]);
-                        }
-                        vc[(size_t)t * C + ch] = (aa + vl[(size_t)t * C + ch]) / div;
-                    }
-                    memcpy(vn, vc, sizeof(float) * (size_t)T * C);
-                    for (int t = 0; t < T; t++) for (int h = 0; h < nkv; h++)
-                        f_unweighted_norm(vn + (size_t)t * C + (size_t)h * hd, hd, s->eps, vn + (size_t)t * C + (size_t)h * hd);
-
-                    f_rows(La.wt[W_R], nh * dr, H, T, xq, rs);
-                    for (int t = 0; t < T; t++) {
-                        float *rt = rs + (size_t)t * nh * dr;
-                        f_scaled_clip(s, La.g, rt, La.wt[W_RS], nh, dr, s->rel_clip, t);
-                        for (int h = 0; h < nh; h++)
-                            for (int e = 0; e < ext; e++) {
-                                float aa = 0.0f;
-                                for (int r = 0; r < dr; r++) aa += rt[(size_t)h * dr + r] * La.wt[W_RP][(size_t)r * ext + e];
-                                rl[((size_t)t * nh + h) * ext + e] = aa;
-                            }
-                    }
-                    f_rows(La.wt[W_S], nh, H, T, xq, sk);
-                    const float qk_s = ink2_inv_sqrt(hd);
-                    for (int h = 0; h < nh; h++) {
-                        int kh = h / (nh / nkv);
-                        for (int i = 0; i < T; i++) {
-                            const float *qi = ql + (size_t)i * Q + (size_t)h * hd;
-                            int w0 = La.g ? 0 : (i - s->window + 1 > 0 ? i - s->window + 1 : 0);
-                            float mx = sk[(size_t)i * nh + h];
-                            for (int j = w0; j <= i; j++) {
-                                const float *kj = kn + (size_t)j * C + (size_t)kh * hd;
-                                float aa = 0.0f;
-                                for (int e = 0; e < hd; e++) aa += qi[e] * kj[e];
-                                int d = i - j;
-                                lg[j] = aa * qk_s + (d < ext ? rl[((size_t)i * nh + h) * ext + d] : 0.0f);
-                                if (lg[j] > mx) mx = lg[j];
-                            }
-                            float sum = 0.0f;
-                            for (int j = w0; j <= i; j++) { lg[j] = p_expf(lg[j] - mx); sum += lg[j]; }
-                            sum += p_expf(sk[(size_t)i * nh + h] - mx);
-                            for (int j = w0; j <= i; j++) lg[j] /= sum;
-                            float *ai = ar + (size_t)i * Q + (size_t)h * hd;
-                            for (int e = 0; e < hd; e++) {
-                                float aa = 0.0f;
-                                for (int j = w0; j <= i; j++) aa += lg[j] * vn[(size_t)j * C + (size_t)kh * hd + e];
-                                ai[e] = aa;
-                            }
-                        }
-                    }
-                    for (int t = 0; t < T; t++) {
-                        f_matvec(La.wt[W_G], Q, H, xq + (size_t)t * H, ga);
-                        float *at = ar + (size_t)t * Q;
-                        for (int i = 0; i < Q; i++) at[i] = at[i] * ink2b_sigmoid(ga[i]);
-                        f_matvec(La.wt[W_O], H, Q, at, att + (size_t)t * H);
-                    }
-                    apply_lora_from_model(m, b, LW_O, H, Q, T, ar, att);
-                    free(ab);
-                }
-            }
+            if (b_attn_fwd_save(s, w, m, a, T, qkv, qkv + TH, qkv + 2 * TH, &af, att) != INK2_OK)
+                ok = false;
         }
 
+        const ink2_tensor *pac = NULL, *mq_mlp = NULL, *paln = NULL, *pmc = NULL;
         // 1b. post_attn_conv, residual, mlp_input, mlp_message_gate, post_attn_ln, experts, post_mlp_conv
         if (ok) {
             snprintf(tname, sizeof tname, "model.layers.%d.post_attention_convolution.conv1d.weight", b);
@@ -1575,21 +1539,19 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
         }
         if (ok) {
             int nkv_m2 = nb2 + 1;
-            b_depth_attn_common(mq_mlp->data, 1, H, T, nkv_m2, m2states, m2dstates, d_mi_pre, true);
-            if (!bound) {
-                for (size_t i = 0; i < TH; i++) dx[i] += d_res[i];
-            }
-            b_short_conv_add(pac->data, H, K, T, d_res, d_att);
-            float *att_check = malloc(sizeof(float) * TH);
-            if (!att_check) ok = false;
-            else {
-                if (b_attention_recomp_and_bwd(s, w, m, a, T, qkv, qkv + TH, qkv + 2 * TH,
-                                               d_att, d_qkv, d_qkv + TH, d_qkv + 2 * TH,
-                                               att_check, ctrl) != INK2_OK)
+            if (b_depth_attn_common(mq_mlp->data, 1, H, T, nkv_m2, m2states, m2dstates, d_mi_pre, true) != INK2_OK)
+                ok = false;
+            if (ok) {
+                if (!bound) {
+                    for (size_t i = 0; i < TH; i++) dx[i] += d_res[i];
+                }
+                b_short_conv_add(pac->data, H, K, T, d_res, d_att);
+                if (b_attn_bwd_from_saved(s, m, a, T, qkv, qkv + TH, qkv + 2 * TH, &af,
+                                          d_att, d_qkv, d_qkv + TH, d_qkv + 2 * TH, ctrl) != INK2_OK)
                     ok = false;
-                free(att_check);
             }
         }
+        free(af.buf);
         if (ok) {
             float *d_rd = calloc(TH * 3, sizeof(float));
             if (!d_rd) ok = false;
@@ -1620,7 +1582,8 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
                 }
                 if (ok && b > 0) {
                     int nkv_a = M->nb + 1;
-                    b_depth_attn_common(aq->data, (int)n_rd, H, T, nkv_a, astates, adstates, d_rd, true);
+                    if (b_depth_attn_common(aq->data, (int)n_rd, H, T, nkv_a, astates, adstates, d_rd, true) != INK2_OK)
+                        ok = false;
                 } else if (ok) {
                     for (size_t i = 0; i < TH; i++) dx[i] += d_rd[i];
                 }
@@ -1632,7 +1595,8 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
                 for (int r = 0; r < 4; r++)
                     memcpy(d_msgs + ((size_t)t * 4 + r) * H, d_role_msg_t[r] + (size_t)t * H, sizeof(float) * (size_t)H);
             const float *ql = mq->data + (size_t)(b - s->loop_start) * 4 * H;
-            b_depth_attn_common(ql, 4, H, T, M->n_prev + 1, mstates, mdstates, d_msgs, false);
+            if (b_depth_attn_common(ql, 4, H, T, M->n_prev + 1, mstates, mdstates, d_msgs, false) != INK2_OK)
+                ok = false;
         }
 
         free(d_role_msg_t[0]);

@@ -21,6 +21,9 @@ typedef struct {
     int rows_cap;       // rows the buffer holds
     int kept_from;      // the first position the buffer's row 0 is, for model_inkling2_row
     int kept_n;         // rows kept by the last keep_all forward
+    int *last_sel;      // [n_app][T][n_used] expert selections from last backward
+    int last_sel_n;     // element count of last_sel
+    int n_threads;      // thread count configured at runtime init (when m->tp is NULL)
     size_t dense_bytes;
     size_t ec_budget;
 } ink2_rt;
@@ -93,6 +96,7 @@ bool model_inkling2_runtime(model_t *m, const model_params *p) {
     m->n_batch = p->n_batch > 0 ? p->n_batch : 64;
     if (m->n_batch > n_ctx) m->n_batch = n_ctx;
     m->spec_batch = m->n_batch;
+    r->n_threads = p->n_threads > 0 ? p->n_threads : 1;
     if (ink2_cache_init_window(&r->c, &r->s, n_ctx, m->n_batch)) {
         fprintf(stderr, "error: the inkling2_loop cache for -c %d does not fit in memory\n", n_ctx);
         return false;
@@ -164,6 +168,36 @@ bool model_inkling2_parts(model_t *m, const void **s_out, const void **w_out) {
     return true;
 }
 
+int model_inkling2_threads(const model_t *m) {
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    if (m && m->tp) return tpool_size(m->tp);
+    return r && r->n_threads > 0 ? r->n_threads : 1;
+}
+
+bool model_inkling2_save_sel(model_t *m, const int *sel, int n) {
+    ink2_rt *r = m ? rt_of(m) : NULL;
+    if (!r || !sel || n <= 0) return false;
+    if (r->last_sel_n < n) {
+        int *nb = realloc(r->last_sel, sizeof(int) * (size_t)n);
+        if (!nb) {
+            fprintf(stderr, "error: inkling2_loop: out of memory saving expert selections\n");
+            return false;
+        }
+        r->last_sel = nb;
+        r->last_sel_n = n;
+    }
+    memcpy(r->last_sel, sel, sizeof(int) * (size_t)n);
+    return true;
+}
+
+bool model_inkling2_last_sel(const model_t *m, const int **sel_out, int *n_out) {
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    if (!r || !r->last_sel || r->last_sel_n <= 0) return false;
+    if (sel_out) *sel_out = r->last_sel;
+    if (n_out) *n_out = r->last_sel_n;
+    return true;
+}
+
 float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos, bool want_logits, bool keep_all) {
     ink2_rt *r = rt_of(m);
     if (!r || !r->cache_ok || n <= 0 || pos < 0 || pos + n > m->n_ctx) {
@@ -175,7 +209,7 @@ float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos,
     // slot with a one-thread pool and swaps in the shared pool afterwards, so a count read at bind would be one. Two
     // slots both set it from the one shared pool; a parallel loop runs with the count it read (src/inkling2.c). The
     // rows do not depend on the count (tests/test_inkling2_threads.c).
-    const int nt = m->tp ? tpool_size(m->tp) : 1;
+    const int nt = model_inkling2_threads(m);
     if (nt != ink2_get_threads()) ink2_set_threads(nt);
     ink2_lora lcb = { m, ink2_lora_slot_cb };
     const ink2_lora *lora = m->lora ? &lcb : NULL;
@@ -248,6 +282,7 @@ void model_inkling2_free(model_t *m) {
     if (r->cache_ok) ink2_cache_free(&r->c);
     if (r->ec) ink2_ec_free(r->ec);
     if (r->g) ink2g_close(r->g);
+    free(r->last_sel);
     free(r->rows);
     free(r);
     m->ink2 = NULL;

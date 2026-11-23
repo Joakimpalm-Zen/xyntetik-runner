@@ -41,5 +41,8 @@ bool   model_inkling2_slot_dims(const model_t *m, int layer, int slot, int *n_in
 struct ink2_shape;
 struct ink2_weights;
 bool   model_inkling2_parts(model_t *m, const void **s_out, const void **w_out);
+int    model_inkling2_threads(const model_t *m);
+bool   model_inkling2_save_sel(model_t *m, const int *sel, int n);
+bool   model_inkling2_last_sel(const model_t *m, const int **sel_out, int *n_out);
 bool   model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const float *pos_w, double *loss_out);
 #endif

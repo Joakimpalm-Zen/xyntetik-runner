@@ -493,17 +493,29 @@ static ink2_status ink2_attn_bind(const ink2_shape *s, const ink2_weights *w, in
 static void ink2_rows(const float *W, int n_out, int n_in, int T, const float *x, float *y) {
     for (int t = 0; t < T; t++) ink2_matvec(W, n_out, n_in, x + (size_t)t * n_in, y + (size_t)t * n_out);
 }
-static void ink2_lora_apply(const ink2_lora *lora, int block, int slot, int n_out, int n_in, int T,
-                            const float *x, float *y) {
-    if (!lora || !lora->slot) return;
+static int ink2_alloc_fail(const char *tag) {
+    const char *e = getenv("RUNNER_TEST_INK2_ALLOC_FAIL");
+    return e && *e && (!strcmp(e, "all") || !strcmp(e, tag));
+}
+static ink2_status ink2_lora_apply(const ink2_lora *lora, int block, int slot, int n_out, int n_in, int T,
+                                   const float *x, float *y) {
+    if (!lora || !lora->slot) return INK2_OK;
     const float *a = NULL, *b = NULL;
     int r = 0, ln_in = 0, ln_out = 0;
     float scale = 0.0f;
-    if (!lora->slot(lora->ctx, block, slot, &a, &b, &r, &scale, &ln_in, &ln_out)) return;
-    if (r <= 0 || !a || !b || scale == 0.0f || ln_in != n_in || ln_out != n_out) return;
+    if (!lora->slot(lora->ctx, block, slot, &a, &b, &r, &scale, &ln_in, &ln_out)) return INK2_OK;
+    if (r <= 0 || !a || !b || scale == 0.0f) return INK2_OK;
+    if (ln_in != n_in || ln_out != n_out || r > INK2_MAX_LORA_RANK) {
+        fprintf(stderr, "error: inkling2_loop ink2_lora_apply: invalid adapter shape (rank %d, [%d,%d] vs [%d,%d])\n",
+                r, ln_in, ln_out, n_in, n_out);
+        return INK2_BAD_INPUT;
+    }
     float tmp_stack[256];
-    float *tmp = r <= 256 ? tmp_stack : malloc(sizeof(float) * (size_t)r);
-    if (!tmp) return;
+    float *tmp = ink2_alloc_fail("lora_apply") ? NULL : (r <= 256 ? tmp_stack : malloc(sizeof(float) * (size_t)r));
+    if (!tmp) {
+        fprintf(stderr, "error: inkling2_loop ink2_lora_apply: out of memory allocating rank buffer\n");
+        return INK2_BAD_INPUT;
+    }
     for (int t = 0; t < T; t++) {
         const float *xt = x + (size_t)t * n_in;
         float *yt = y + (size_t)t * n_out;
@@ -521,13 +533,16 @@ static void ink2_lora_apply(const ink2_lora *lora, int block, int slot, int n_ou
         }
     }
     if (tmp != tmp_stack) free(tmp);
+    return INK2_OK;
 }
 // q_proj (Inkling2LoopQueryProjection): linear, then per head the scale, the L2 clip at qk_clip, (full) tau(pos)
-static void ink2_attn_q_lora(const ink2_shape *s, const ink2_attn_layer *L, const ink2_lora *lora, int block, int T,
-                             const int *pos, const float *x, float *q) {
+static ink2_status ink2_attn_q_lora(const ink2_shape *s, const ink2_attn_layer *L, const ink2_lora *lora, int block, int T,
+                                    const int *pos, const float *x, float *q) {
     ink2_rows(L->wt[WQ], L->Q, s->hidden, T, x, q);
-    ink2_lora_apply(lora, block, 0, L->Q, s->hidden, T, x, q);
+    ink2_status st = ink2_lora_apply(lora, block, 0, L->Q, s->hidden, T, x, q);
+    if (st != INK2_OK) return st;
     for (int t = 0; t < T; t++) ink2_scaled_clip(s, L->g, q + (size_t)t * L->Q, L->wt[WQS], L->nh, L->hd, s->qk_clip, pos[t]);
+    return INK2_OK;
 }
 static void ink2_attn_q(const ink2_shape *s, const ink2_attn_layer *L, int T, const int *pos, const float *x, float *q) {
     ink2_attn_q_lora(s, L, NULL, 0, T, pos, x, q);
@@ -584,13 +599,15 @@ static void ink2_kv_norm(const ink2_shape *s, const ink2_attn_layer *L, int kv, 
     }
 }
 // linear, convolution (history hist, NULL for none), norm; the conv's input rows then go into the history
-static void ink2_attn_kv_lora(const ink2_shape *s, const ink2_attn_layer *L, const ink2_lora *lora, int block, int kv,
-                              int T, const float *x, float *lin, float *dyn, float *out, int p0, float *hist) {
+static ink2_status ink2_attn_kv_lora(const ink2_shape *s, const ink2_attn_layer *L, const ink2_lora *lora, int block, int kv,
+                                     int T, const float *x, float *lin, float *dyn, float *out, int p0, float *hist) {
     ink2_rows(L->wt[kv ? WV : WK], L->C, s->hidden, T, x, lin);
-    ink2_lora_apply(lora, block, kv ? 2 : 1, L->C, s->hidden, T, x, lin);
+    ink2_status st = ink2_lora_apply(lora, block, kv ? 2 : 1, L->C, s->hidden, T, x, lin);
+    if (st != INK2_OK) return st;
     ink2_kv_conv(s, L, kv, T, lin, x, dyn, out, p0, hist);
     ink2_kv_norm(s, L, kv, T, out);
     ink2_conv_hist_store(hist, L->K, L->C, p0, T, lin);
+    return INK2_OK;
 }
 static void ink2_attn_kv(const ink2_shape *s, const ink2_attn_layer *L, int kv, int T, const float *x, float *lin,
                          float *dyn, float *out, int p0, float *hist) {
@@ -683,15 +700,15 @@ static void ink2_attn_core(const ink2_shape *s, const ink2_attn_layer *L, int T,
     ink2_par(L->nh, (int64_t)T * nk * 2 * L->hd, ink2_attn_core_range, &c);
 }
 // o_proj (Inkling2LoopGatedOutputProjection): att times sigmoid(gate_proj(x)) (att is overwritten), then linear
-static void ink2_attn_out_lora(const ink2_shape *s, const ink2_attn_layer *L, const ink2_lora *lora, int block, int T,
-                               const float *x, float *att, float *ga, float *out) {
+static ink2_status ink2_attn_out_lora(const ink2_shape *s, const ink2_attn_layer *L, const ink2_lora *lora, int block, int T,
+                                      const float *x, float *att, float *ga, float *out) {
     for (int t = 0; t < T; t++) {
         ink2_matvec(L->wt[WG], L->Q, s->hidden, x + (size_t)t * s->hidden, ga);
         float *at = att + (size_t)t * L->Q;
         for (int i = 0; i < L->Q; i++) at[i] = at[i] * ink2_sigmoid(ga[i]);
         ink2_matvec(L->wt[WO], s->hidden, L->Q, at, out + (size_t)t * s->hidden);
     }
-    ink2_lora_apply(lora, block, 3, s->hidden, L->Q, T, att, out);
+    return ink2_lora_apply(lora, block, 3, s->hidden, L->Q, T, att, out);
 }
 static void ink2_attn_out(const ink2_shape *s, const ink2_attn_layer *L, int T, const float *x, float *att, float *ga,
                           float *out) {
@@ -747,9 +764,10 @@ static ink2_status ink2_attention_lora(const ink2_shape *s, const ink2_weights *
     float *p[11], *buf = ink2_attn_scratch(&L, T, nk, p);
     if (!buf) return INK2_BAD_INPUT;
     int block = s->app_block[app];
-    ink2_attn_q_lora(s, &L, lora, block, T, pos, xq, p[SQ]);
-    ink2_attn_kv_lora(s, &L, lora, block, 0, T, xk, p[SLIN], p[SDYN], p[SK], p0, ink2_conv_hist(s, c, app, 0));
-    ink2_attn_kv_lora(s, &L, lora, block, 1, T, xv, p[SLIN], p[SDYN], p[SV], p0, ink2_conv_hist(s, c, app, 1));
+    st = ink2_attn_q_lora(s, &L, lora, block, T, pos, xq, p[SQ]);
+    if (st == INK2_OK) st = ink2_attn_kv_lora(s, &L, lora, block, 0, T, xk, p[SLIN], p[SDYN], p[SK], p0, ink2_conv_hist(s, c, app, 0));
+    if (st == INK2_OK) st = ink2_attn_kv_lora(s, &L, lora, block, 1, T, xv, p[SLIN], p[SDYN], p[SV], p0, ink2_conv_hist(s, c, app, 1));
+    if (st != INK2_OK) { free(buf); return st; }
     for (int t = 0; t < T; t++) {
         memcpy(c->k[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SK] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
         memcpy(c->v[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SV] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
@@ -760,9 +778,9 @@ static ink2_status ink2_attention_lora(const ink2_shape *s, const ink2_weights *
     const size_t koff = (size_t)(kp0 - c->k0[app]) * L.C;
     ink2_attn_core(s, &L, T, pos, p[SQ], c->k[app] + koff, c->v[app] + koff, nk, kp0, p[SRL], p[SSK], p[SLG], p[SATT],
                    probs);
-    ink2_attn_out_lora(s, &L, lora, block, T, xq, p[SATT], p[SGA], out);
+    st = ink2_attn_out_lora(s, &L, lora, block, T, xq, p[SATT], p[SGA], out);
     free(buf);
-    return INK2_OK;
+    return st;
 }
 ink2_status ink2_attention(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int app, int T,
                            const int *pos, const float *xq, const float *xk, const float *xv,
@@ -1135,14 +1153,16 @@ ink2_status ink2_forward_chunk_lora(const ink2_shape *s, const ink2_weights *w, 
         { float *tmp = h; h = hn; hn = tmp; }
         if (app_states) memcpy(app_states + (size_t)a * TH, h, sizeof(float) * TH);
     }
-    // final_input over every block state and the last hidden state, the norm, the head
+    // final_input over every block state and the last hidden state, then optional norm + head
     {
         int nq = 0;
         ink2_pack_states(cur, nb, T, H, packed);
         INK2_TRY(ink2_block_read(s, w, "model.final_input", T, nb, packed, h, fin, &nq));
         if (nq != 1) { st = INK2_NO_TENSOR; goto done; }
-        INK2_TRY(ink2_norm_rows(s, w, "model.norm.weight", T, fin, hn));
-        INK2_TRY(ink2_head(s, w, T, hn, logits));
+        if (logits) {
+            INK2_TRY(ink2_norm_rows(s, w, "model.norm.weight", T, fin, hn));
+            INK2_TRY(ink2_head(s, w, T, hn, logits));
+        }
     }
 #undef INK2_TRY
 #undef INK2_SLAB
