@@ -630,10 +630,10 @@ static void ink2_swiglu_range(void *c, int64_t b0, int64_t b1) {
 // columns), the SwiGLU, its down rows, and each position's out += down * wt in position order. A position's output is
 // the sum over its chosen experts in ascending index, as the per-position loop adds it, and each column's dot is the
 // single-column kernel's, so the rows do not depend on which other positions share the call.
-static ink2_dev_experts_fn ink2_dev_experts;
-void ink2_set_dev_experts(ink2_dev_experts_fn fn) { ink2_dev_experts = fn; }
-static ink2_dev_attn_fn ink2_dev_attn;
-void ink2_set_dev_attn(ink2_dev_attn_fn fn) { ink2_dev_attn = fn; }
+// a device binder's instance's own functions (ink2_dev_hdr, its first member), or NULL
+static inline const ink2_dev_ops *ink2_ops_of(const void *dev) {
+    return dev ? ((const ink2_dev_hdr *)dev)->ops : NULL;
+}
 static long ink2_host_core_n;   // TEST-ONLY: ink2_attn_core runs (ink2_attn_host_core_calls)
 long ink2_attn_host_core_calls(void) { return __atomic_load_n(&ink2_host_core_n, __ATOMIC_RELAXED); }
 static ink2_sel_obs_fn ink2_sel_obs;
@@ -642,8 +642,9 @@ void ink2_set_sel_observer(ink2_sel_obs_fn fn, void *ctx) { ink2_sel_obs = fn; i
 static ink2_status ink2_experts_fast_c(const ink2_shape *s, const ink2_moe_w *M, int T, const float *x,
                                        const unsigned char *chosen, const float *wt, float *out, ink2_cache *c) {
     const int H = s->hidden, E = s->n_expert, F = s->ff;
-    if (M->t13->dev && M->t2->dev && ink2_dev_experts) {   // R4.48.9 G2b step 1: the whole body on the device
-        const int rc = ink2_dev_experts(s, M->t13, M->t2, T, x, chosen, wt, out);
+    const ink2_dev_ops *eo = M->t2->dev ? ink2_ops_of(M->t13->dev) : NULL;
+    if (eo && eo->experts) {   // R4.48.9 G2b step 1: the whole body on the device
+        const int rc = eo->experts(s, M->t13, M->t2, T, x, chosen, wt, out);
         if (rc < 0)
             for (size_t i = 0; i < (size_t)T * H; i++) out[i] = NAN;
         if (rc <= 0) return INK2_OK;
@@ -876,12 +877,11 @@ static void ink2_lin_range(void *c, int64_t o0, int64_t o1) {
         }
     }
 }
-static ink2_dev_lin_fn ink2_dev_lin;
-void ink2_set_dev_lin(ink2_dev_lin_fn fn) { ink2_dev_lin = fn; }
 static void ink2_lin(const ink2_tensor *W, int64_t row0, int n_out, int n_in, int T, const float *x, size_t x_stride,
                      float *y, size_t y_stride, float scale) {
-    if (W->dev && ink2_dev_lin) {
-        if (ink2_dev_lin(W, row0, n_out, n_in, T, x, x_stride, y, y_stride, scale))
+    const ink2_dev_ops *lo = ink2_ops_of(W->dev);
+    if (lo && lo->lin) {
+        if (lo->lin(W, row0, n_out, n_in, T, x, x_stride, y, y_stride, scale))
             for (int t = 0; t < T; t++)
                 for (int o = 0; o < n_out; o++) y[(size_t)t * y_stride + (size_t)o] = NAN;
         return;
@@ -1512,9 +1512,10 @@ kv_tail:   // the fused decode branch joins here with its projections, histories
     // R4.48.9 G2b step 2a: the core on the device when the instance's views are there (its ring takes this chunk's K
     // and V); dv 1: the host core and ring, as before
     int dv = 1;
-    if (ink2_dev_attn && c->dev && !probs) {
+    const ink2_dev_ops *ao = ink2_ops_of(c->dev);
+    if (ao && ao->attn && !probs) {
         const ink2_attn_dims d = { L.nh, L.nkv, L.hd, L.C, L.Q, s->window, L.g ? 1 : 0, L.ext, ink2_inv_sqrt(L.hd) };
-        dv = ink2_dev_attn(c->dev, app, &d, T, pos, p[SQ], p[SK], p[SV], p[SRL], p[SSK], p[SATT]);
+        dv = ao->attn(c->dev, app, &d, T, pos, p[SQ], p[SK], p[SV], p[SRL], p[SSK], p[SATT]);
         if (dv < 0)
             for (size_t i = 0; i < (size_t)T * L.Q; i++) p[SATT][i] = NAN;
     }

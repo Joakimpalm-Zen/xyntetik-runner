@@ -764,6 +764,7 @@ bool       gpu_ink2_experts(gpu_ink2 *h, int i13, int i2, int type13, int type2,
                             const float *s13, const float *s2, float gate_cap, float up_cap, float *out);
 bool       gpu_ink2_experts_ok(const gpu_ink2 *h);
 bool       gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F, int E);
+void       gpu_ink2_release_experts(gpu_ink2 *h);   // those buffers freed (a fit retried without the expert body)
 // G2b step 2a: an instance's K/V on the device, one ring per application (row j % rows[a] holds position j's C
 // values), owned by the instance (the weights' handle may be shared); and the attention core over it: the chunk's
 // K and V (T consecutive positions from pos[0], [T][C]) written into application app's ring, then for every query

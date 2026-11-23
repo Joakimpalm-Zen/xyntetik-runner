@@ -13122,6 +13122,14 @@ bool gpu_ink2_attn(gpu_ink2 *h, gpu_ink2_kv *kv, int app, int T, const int *pos,
     pthread_mutex_unlock(&h->mu);
     return ok;
 }
+void gpu_ink2_release_experts(gpu_ink2 *h) {
+    if (!h || cu.CtxSetCurrent(h->ctx) != 0) return;
+    pthread_mutex_lock(&h->mu);
+    CUdeviceptr *b[] = { &h->ex, &h->eo, &h->exe, &h->eact, &h->edn, &h->eidx, &h->ew };
+    size_t *c[] = { &h->ex_cap, &h->eo_cap, &h->exe_cap, &h->eact_cap, &h->edn_cap, &h->eidx_cap, &h->ew_cap };
+    for (size_t k = 0; k < sizeof b / sizeof *b; k++) { if (*b[k]) cu.MemFree(*b[k]); *b[k] = 0; *c[k] = 0; }
+    pthread_mutex_unlock(&h->mu);
+}
 bool gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F, int E) {
     if (!h || T <= 0 || H <= 0 || F <= 0 || E <= 0 || cu.CtxSetCurrent(h->ctx) != 0) return false;
     const size_t fb = sizeof(float), th = fb * (size_t)T * (size_t)H, te = (size_t)T * (size_t)E + 1;

@@ -159,6 +159,71 @@ static double rel_diff(const float *a, const float *ref, size_t n) {
     return top > 0 ? d / top : d;
 }
 
+// G2b 2a (n): the device core over a K/V ring through the given chunks (consecutive positions from 0), each chunk's
+// output against float64 on the host over the same keys (4 heads on 2 K/V heads, ext 16, the sinks varied). The
+// largest difference relative to the largest value; *nf the values not finite, *cmp the values compared; 1 if the
+// device did not run.
+static double core_case(int hd, int global, int window, int R, const int *chunks, int n_chunks, size_t *nf, long *cmp) {
+    enum { NH = 4, NKV = 2, EXT = 16 };
+    const int C = NKV * hd, Q = NH * hd;
+    int NP = 0, Tmax = 0;
+    for (int c = 0; c < n_chunks; c++) { NP += chunks[c]; if (chunks[c] > Tmax) Tmax = chunks[c]; }
+    const float scale = 1.0f / sqrtf((float)hd);
+    uint32_t seed = 4242u + (uint32_t)hd;
+#define RND() ((float)((int)((seed = seed * 1664525u + 1013904223u) >> 9) % 2001 - 1000) / 1000.0f)
+    float *q = malloc(sizeof(float) * (size_t)NP * Q), *k = malloc(sizeof(float) * (size_t)NP * C);
+    float *v = malloc(sizeof(float) * (size_t)NP * C), *rl = malloc(sizeof(float) * (size_t)NP * NH * EXT);
+    float *sk = malloc(sizeof(float) * (size_t)NP * NH), *att = malloc(sizeof(float) * (size_t)Tmax * Q);
+    double *lg = malloc(sizeof(double) * (size_t)NP), *o = malloc(sizeof(double) * (size_t)hd);
+    int *pos = malloc(sizeof(int) * (size_t)NP);
+    for (int i = 0; i < NP * Q; i++) q[i] = RND();
+    for (int i = 0; i < NP * C; i++) { k[i] = RND(); v[i] = RND(); }
+    for (int i = 0; i < NP * NH * EXT; i++) rl[i] = 2.0f * RND();
+    for (int i = 0; i < NP * NH; i++) sk[i] = i % 7 == 0 ? -20.0f : i % 11 == 0 ? 5.0f : RND();
+    for (int i = 0; i < NP; i++) pos[i] = i;
+#undef RND
+    gpu_ink2 *h = gpu_ink2_bind();
+    const int rows[1] = { R }, cw[1] = { C };
+    gpu_ink2_kv *kv = h ? gpu_ink2_kv_new(h, 1, rows, cw) : NULL;
+    double worst = 0, top = 0;
+    bool ran = kv != NULL;
+    for (int c = 0, p0 = 0; ran && c < n_chunks; p0 += chunks[c], c++) {
+        const int T = chunks[c];
+        ran = gpu_ink2_attn(h, kv, 0, T, pos + p0, q + (size_t)p0 * Q, k + (size_t)p0 * C, v + (size_t)p0 * C,
+                            rl + (size_t)p0 * NH * EXT, sk + (size_t)p0 * NH, att, NH, NKV, hd, window, global, EXT, scale);
+        if (!ran) break;
+        *nf += n_nonfinite(att, (size_t)T * Q);
+        for (int t = p0; t < p0 + T; t++)
+            for (int hh = 0; hh < NH; hh++) {
+                const int kh = hh / (NH / NKV), lo = global ? 0 : (t - window + 1 > 0 ? t - window + 1 : 0);
+                double mx = sk[t * NH + hh];
+                for (int j = lo; j <= t; j++) {
+                    double sdot = 0;
+                    for (int e = 0; e < hd; e++) sdot += (double)q[(size_t)t * Q + hh * hd + e] * k[(size_t)j * C + kh * hd + e];
+                    lg[j] = sdot * scale + (t - j < EXT ? rl[((size_t)t * NH + hh) * EXT + (t - j)] : 0.0);
+                    if (lg[j] > mx) mx = lg[j];
+                }
+                double sum = exp(sk[t * NH + hh] - mx);
+                for (int d = 0; d < hd; d++) o[d] = 0;
+                for (int j = lo; j <= t; j++) {
+                    const double e = exp(lg[j] - mx);
+                    sum += e;
+                    for (int d = 0; d < hd; d++) o[d] += e * v[(size_t)j * C + kh * hd + d];
+                }
+                for (int d = 0; d < hd; d++) {
+                    const double rr = o[d] / sum, g = att[(size_t)(t - p0) * Q + hh * hd + d];
+                    if (fabs(rr) > top) top = fabs(rr);
+                    if (fabs(g - rr) > worst) worst = fabs(g - rr);
+                    (*cmp)++;
+                }
+            }
+    }
+    gpu_ink2_kv_free(kv);
+    gpu_ink2_free(h);
+    free(q); free(k); free(v); free(rl); free(sk); free(att); free(lg); free(o); free(pos);
+    return ran && top > 0 ? worst / top : 1;
+}
+
 int main(int argc, char **argv) {
     if (argc < 6) {
         fprintf(stderr, "usage: %s TINY_F32.gguf TINY_BF16.gguf TINY_Q8_0.gguf TINY_F16.gguf TINY_LORA.gguf\n", argv[0]);
@@ -526,72 +591,29 @@ int main(int argc, char **argv) {
         gpu_ink2_free(h);
         free(w13); free(w2);
     }
-    // G2b 2a (n): gpu_ink2_attn against float64 on the host. A full layer over 1040 positions in one call (every key
-    // count 1..1040: around each 32-key chunk), and a sliding one (window 40, ring 103 rows) through a 64-position
-    // prefill and 140 one-position steps (the ring wraps); GQA (4 heads on 2 K/V heads), head_dim 128, the bias
-    // within distance 16, sinks from -20 to +5
+    // G2b 2a (n): gpu_ink2_attn against float64 on the host, by core_case below. Bar fixed before the run: 1e-4 of the
+    // largest value, finite. A full layer over 1040 positions in one call (every key count 1..1040: around each
+    // 32-key chunk); a sliding layer (window 40, ring 103) through chunks of 64, 8 and 64 that straddle the ring's
+    // wraps at 103 and 206, then single steps; head_dim 32, 64 and 256 beside 128 (the range the kernel takes); GQA
+    // (4 heads on 2 K/V heads), the bias within distance 16, sinks from -20 to +5
     {
-        enum { NH = 4, NKV = 2, HD = 128, CC = NKV * HD, QQ = NH * HD, EXT = 16, NP = 1040 };
-        const float scale = 1.0f / sqrtf((float)HD);
-        uint32_t seed = 4242u;
-#define RND() ((float)((int)((seed = seed * 1664525u + 1013904223u) >> 9) % 2001 - 1000) / 1000.0f)
-        float *q = malloc(sizeof(float) * NP * QQ), *k = malloc(sizeof(float) * NP * CC), *v = malloc(sizeof(float) * NP * CC);
-        float *rl = malloc(sizeof(float) * NP * NH * EXT), *sk = malloc(sizeof(float) * NP * NH), *att = malloc(sizeof(float) * NP * QQ);
-        int *pos = malloc(sizeof(int) * NP);
-        for (int i = 0; i < NP * QQ; i++) q[i] = RND();
-        for (int i = 0; i < NP * CC; i++) { k[i] = RND(); v[i] = RND(); }
-        for (int i = 0; i < NP * NH * EXT; i++) rl[i] = 2.0f * RND();
-        for (int i = 0; i < NP * NH; i++) sk[i] = i % 7 == 0 ? -20.0f : i % 11 == 0 ? 5.0f : RND();
-        for (int i = 0; i < NP; i++) pos[i] = i;
-#undef RND
-        // the reference for query position t (its row t of q, rl, sk) over keys lo..t (K/V rows by position)
-        double worst = 0, top = 0;
-        size_t nf = 0;
-        long cmp = 0;
-#define REF_CHECK(T0, TN, GLOBAL, WIN)                                                                              \
-        for (int tq = (T0); tq < (T0) + (TN); tq++)                                                                    \
-            for (int hq = 0; hq < NH; hq++) {                                                                          \
-                const int kh = hq / (NH / NKV), lo = (GLOBAL) ? 0 : (tq - (WIN) + 1 > 0 ? tq - (WIN) + 1 : 0);          \
-                double mx = sk[tq * NH + hq], lg[NP];                                                                 \
-                for (int j = lo; j <= tq; j++) {                                                                     \
-                    double s = 0;                                                                                   \
-                    for (int e = 0; e < HD; e++) s += (double)q[tq * QQ + hq * HD + e] * k[j * CC + kh * HD + e];     \
-                    lg[j] = s * scale + (tq - j < EXT ? rl[(tq * NH + hq) * EXT + (tq - j)] : 0.0);                    \
-                    if (lg[j] > mx) mx = lg[j];                                                                     \
-                }                                                                                                   \
-                double sum = exp(sk[tq * NH + hq] - mx), o[HD] = { 0 };                                               \
-                for (int j = lo; j <= tq; j++) { const double e = exp(lg[j] - mx); sum += e;                       \
-                    for (int d = 0; d < HD; d++) o[d] += e * v[j * CC + kh * HD + d]; }                             \
-                for (int d = 0; d < HD; d++) {                                                                      \
-                    const double r = o[d] / sum, g = att[(tq - (T0)) * QQ + hq * HD + d];                             \
-                    if (fabs(r) > top) top = fabs(r);                                                               \
-                    if (fabs(g - r) > worst) worst = fabs(g - r);                                                   \
-                    cmp++;                                                                                          \
-                }                                                                                                   \
-            }
-        gpu_ink2 *h = gpu_ink2_bind();
-        const int rows_g[1] = { 1100 }, cw[1] = { CC }, rows_s[1] = { 40 - 1 + 64 };
-        gpu_ink2_kv *kvg = h ? gpu_ink2_kv_new(h, 1, rows_g, cw) : NULL, *kvs = h ? gpu_ink2_kv_new(h, 1, rows_s, cw) : NULL;
-        bool ran = kvg && gpu_ink2_attn(h, kvg, 0, NP, pos, q, k, v, rl, sk, att, NH, NKV, HD, 40, 1, EXT, scale);
-        if (ran) { nf += n_nonfinite(att, NP * QQ); REF_CHECK(0, NP, 1, 40) }
-        const double wg = top > 0 ? worst / top : 1;
-        CHECK(ran && nf == 0 && wg <= 1e-4, "(n) the device core, a full layer, 1040 queries in one call: within %.2e of the "
-              "float64 sums (largest %.3g), want <= 1e-4; %zu not finite", wg, top, nf);
-        worst = 0; top = 0; nf = 0; cmp = 0;
-        ran = kvs && gpu_ink2_attn(h, kvs, 0, 64, pos, q, k, v, rl, sk, att, NH, NKV, HD, 40, 0, EXT, scale);
-        if (ran) { nf += n_nonfinite(att, 64 * QQ); REF_CHECK(0, 64, 0, 40) }
-        for (int t = 64; ran && t < 204; t++) {
-            ran = gpu_ink2_attn(h, kvs, 0, 1, pos + t, q + (size_t)t * QQ, k + (size_t)t * CC, v + (size_t)t * CC,
-                                rl + (size_t)t * NH * EXT, sk + (size_t)t * NH, att, NH, NKV, HD, 40, 0, EXT, scale);
-            if (ran) { nf += n_nonfinite(att, QQ); REF_CHECK(t, 1, 0, 40) }
+        static const int c_full[] = { 1040 }, c_slide[] = { 64, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 64, 1, 1, 1, 1, 1, 1, 1, 1 };
+        static const int c_small[] = { 70, 8, 8 }, c_mid[] = { 32, 8, 8, 8, 8, 32 }, c_wide[] = { 64, 1, 1 };
+        static const struct { const char *what; int hd, global, window, R; const int *ch; int nch; } cs[] = {
+            { "a full layer, 1040 queries in one call (head_dim 128)", 128, 1, 40, 1100, c_full, 1 },
+            { "a sliding layer (window 40, ring 103), chunks of 64, 8 and 64 across both of the ring's wraps, then single "
+              "steps (head_dim 128)", 128, 0, 40, 103, c_slide, (int)(sizeof c_slide / sizeof *c_slide) },
+            { "a full layer, head_dim 32", 32, 1, 40, 200, c_small, 3 },
+            { "a sliding layer (window 16, ring 47), head_dim 64", 64, 0, 16, 47, c_mid, 6 },
+            { "a full layer, head_dim 256", 256, 1, 40, 100, c_wide, 3 },
+        };
+        for (size_t k = 0; k < sizeof cs / sizeof *cs; k++) {
+            size_t nf = 0;
+            long cmp = 0;
+            const double w = core_case(cs[k].hd, cs[k].global, cs[k].window, cs[k].R, cs[k].ch, cs[k].nch, &nf, &cmp);
+            CHECK(w <= 1e-4 && nf == 0 && cmp > 0, "(n) the device core, %s: within %.2e of the float64 sums, want <= 1e-4; "
+                  "%zu not finite (%ld values)", cs[k].what, w, nf, cmp);
         }
-#undef REF_CHECK
-        const double ws = top > 0 ? worst / top : 1;
-        CHECK(ran && nf == 0 && ws <= 1e-4, "(n) the device core, a sliding layer (window 40, ring 103), a 64-position "
-              "prefill and 140 single steps past the ring's wrap: within %.2e of the float64 sums, want <= 1e-4; %zu not "
-              "finite (%ld values)", ws, nf, cmp);
-        gpu_ink2_kv_free(kvg); gpu_ink2_kv_free(kvs); gpu_ink2_free(h);
-        free(q); free(k); free(v); free(rl); free(sk); free(att); free(pos);
     }
     // G2b 2a (o): a failed device core refuses that forward and the next; and the REWIND path through the device
     // ring: a sequence A, then B from position 0, then HALF (A's first 12 tokens, then others) from 0 gives a fresh
@@ -681,6 +703,19 @@ int main(int argc, char **argv) {
             CHECK(st && bad == 0, "(p) two instances forwarding at once on one device copy, 4 forwards each: %d of 8 differ "
                   "from the sequential rows", bad);
         }
+        {   // a bind in other instances while one forwards (the second read of 2a: the device hooks must be the
+            // instances' own, never a process-wide pointer a bind writes while another instance's forward reads it;
+            // functionally the old race was benign, so ThreadSanitizer over this case is its red)
+            par_job jc = { a, { 0 } };
+            pthread_t tc;
+            const bool st = a && !pthread_create(&tc, NULL, par_run, &jc);
+            for (int k = 0; st && k < 3; k++) drop(load(argv[2], true, false, 64));
+            if (st) pthread_join(tc, NULL);
+            int bad = 0;
+            for (int k = 0; k < 4; k++) { bad += !jc.out[k] || memcmp(jc.out[k], ra, sizeof(float) * n); free(jc.out[k]); }
+            CHECK(st && bad == 0, "(p) three binds while another instance forwards 4 times: %d of 4 differ from its sequential "
+                  "rows", bad);
+        }
         drop(a);
         float *rb2 = b ? rows(b) : NULL;
         CHECK(rb && rb2 && !memcmp(rb, rb2, sizeof(float) * n), "(p) the first instance freed: the second's rows unchanged");
@@ -714,7 +749,8 @@ int main(int argc, char **argv) {
         const double d1 = r1 && rr ? rel_diff(r1, rr, n) : 1;
         CHECK(p1 == 'M' && p2 == 'M' && h1 && h1 == h2 && !model_inkling2_cuda_holds(c1, "model.layers.0.mlp.experts.gate_up_proj") &&
               d1 <= 1e-4, "(p) free between the two needs: placements %c %c (want M M), %s copy, the stacks on the host, rows "
-              "within %.2e of the reference", p1 ? p1 : '-', p2 ? p2 : '-', h1 && h1 == h2 ? "one shared" : "not one", d1);
+              "within %.2e of the reference; the deciding fit read %zu bytes free (the cap %s)", p1 ? p1 : '-',
+              p2 ? p2 : '-', h1 && h1 == h2 ? "one shared" : "not one", d1, model_inkling2_cuda_fit_free(c1), v);
         free(r1); free(rr);
         drop(c1); drop(c2); drop(ref);
         // a cap below the --cpu-moe need: the CPU for every instance

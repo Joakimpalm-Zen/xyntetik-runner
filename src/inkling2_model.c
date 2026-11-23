@@ -12,6 +12,7 @@
 #include <string.h>
 
 typedef struct {
+    ink2_dev_hdr hdr;   // FIRST: the device functions the engine calls through this instance (its views' and cache's dev)
     ink2g *g;
     ink2_shape s;
     ink2_weights inner, w;
@@ -186,6 +187,7 @@ typedef struct ink2_share {
     size_t need;
     bool exp_dev;
     bool attn_dev;   // step 2a: each instance's attention core (and its K/V rings) on the device
+    size_t fit_free; // the free memory the deciding fit read (after its context, module and buffers; test-only cap)
     int refs;
     char why[200];   // 'C': the sentence each instance says
     struct ink2_share *next;
@@ -257,7 +259,12 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
         }
         if (capv && *capv) { const size_t cv = (size_t)strtoull(capv, NULL, 10); if (cv < fr) fr = cv; }
         if (!cm) need_w = c.need;
-        if (c.need + inst + RES > fr) continue;   // this placement does not fit: the next, or the CPU
+        sh->fit_free = fr;
+        if (c.need + inst + RES > fr) {   // this placement does not fit: the next, or the CPU
+            // the whole-device attempt's expert-body buffers go before the retry, so it reads the memory it has
+            if (exp_dev) gpu_ink2_release_experts(h);
+            continue;
+        }
         // fits: up it goes (the views in the file's walk order; a failed put leaves the CPU, P0)
         r->dev_of = calloc((size_t)c.n, sizeof *r->dev_of);
         r->n_dev = 0;
@@ -360,6 +367,10 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
             return -1;
         }
     }
+    // the instance's own device functions, read-only, in place before any of its views is marked: a forward reads
+    // them through its own views and cache only, so no other instance's bind writes what it reads
+    static const ink2_dev_ops ops = { dev_lin_scaled, dev_experts, dev_attn };
+    r->hdr.ops = &ops;
     if (!dev_mark(r)) {
         pthread_mutex_unlock(&g_share_mu);
         fprintf(stderr, "error: inkling2_loop: this instance's views could not be marked for the device; the load is "
@@ -388,7 +399,6 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
         r->n_attn = 0;
         r->attn_on = true;
         r->c.dev = r;   // the engine hands this cache's core to dev_attn with this instance
-        ink2_set_dev_attn(dev_attn);
     }
     const char *nf = getenv("RUNNER_INKLING2_CUDA_TEST_NO_FACTOR");
     r->no_factor = nf && !strcmp(nf, "1");
@@ -398,9 +408,7 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
     r->n_exp = 0;
     const char *xf = getenv("RUNNER_INKLING2_CUDA_TEST_EXP_FAIL");
     r->exp_fail_at = xf && *xf ? atol(xf) : -1;
-    ink2_set_dev_lin(dev_lin_scaled);
     r->exp_on = sh->exp_dev;
-    if (sh->exp_dev) ink2_set_dev_experts(dev_experts);
     fprintf(stderr, "inkling2_loop: the weights on CUDA (%s): %d tensors, %.3f GB, their stored rows%s; their products "
                     "on the device%s, the rest of the forward on the CPU (R4.48.9 G2b)%s%s\n", dev, r->n_dev,
             gpu_ink2_bytes(r->gpu) / 1e9, made ? "" : ", shared with this file's other instances",
@@ -409,6 +417,17 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
     return 1;
 }
 
+// the host's cache bytes, one figure for the runtime's line and the fit (the second read of 2a): ink2_cache_bytes,
+// less the K/V rings an instance holds on the device (G2b step 2a; the host keeps the convolution histories)
+static size_t host_cache_bytes(const ink2_rt *r) {
+    size_t b = r->cache_ok ? ink2_cache_bytes(&r->c, &r->s) : 0;
+    if (r->kv)
+        for (int a = 0; a < r->s.n_app && b; a++) {
+            const size_t kvb = 2 * sizeof(float) * (size_t)r->c.rows[a] * (size_t)app_c(&r->s, a);
+            b = b > kvb ? b - kvb : 0;
+        }
+    return b;
+}
 // R4.48.17: the most the decoded-expert cache can hold: every expert of every layer decoded to float32 (gate_up
 // [2F][H] and down [H][F] each). The cache maps its budget lazily, so it holds at most this, whatever the budget.
 static uint64_t experts_decoded_bytes(const ink2_shape *s) {
@@ -552,7 +571,7 @@ bool model_inkling2_runtime(model_t *m, const model_params *p) {
     if (p->gpu_mode != GPU_OFF && cuda_bind(r, m, p) < 0) return false;   // < 0: this slot refuses (never mixed)
     fprintf(stderr, "inkling2_loop: -c %d -b %d; cache %.2f GB (sliding K/V for the window only), expert cache up to "
                     "%.2f GiB (the budget, RUNNER_INKLING2_EXPERT_CACHE)\n", n_ctx, m->n_batch,
-            ink2_cache_bytes(&r->c, &r->s) / 1e9, expert_cache_held(&r->s, r->ec_budget) / 1073741824.0);
+            host_cache_bytes(r) / 1e9, expert_cache_held(&r->s, r->ec_budget) / 1073741824.0);
     return true;
 }
 
@@ -738,12 +757,7 @@ bool model_inkling2_fit(model_t *m, inkling2_fit *f) {
     if (!r) return false;
     f->dense_f32 = r->dense_bytes;
     f->small_f32 = r->small_bytes;
-    f->cache = r->cache_ok ? ink2_cache_bytes(&r->c, &r->s) : 0;
-    if (r->kv)   // G2b step 2a: the K/V rings are on the device; the host holds the convolution histories only
-        for (int a = 0; a < r->s.n_app && f->cache; a++) {
-            const size_t kvb = 2 * sizeof(float) * (size_t)r->c.rows[a] * (size_t)app_c(&r->s, a);
-            f->cache = f->cache > kvb ? f->cache - kvb : 0;
-        }
+    f->cache = host_cache_bytes(r);
     f->expert_cache = expert_cache_held(&r->s, r->ec_budget);
     f->mapped = gguf_mapped_size(&m->gf);
     f->logits = sizeof(float) * (uint64_t)m->n_vocab * (uint64_t)((r->rows ? r->rows_cap : 0) + 1);
@@ -855,6 +869,10 @@ char model_inkling2_route(const model_t *m) {
 bool model_inkling2_cuda(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
     return r && r->gpu;
+}
+size_t model_inkling2_cuda_fit_free(const model_t *m) {
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    return r && r->share ? r->share->fit_free : 0;
 }
 long model_inkling2_cuda_attn_calls(const model_t *m, size_t *kv_bytes) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;

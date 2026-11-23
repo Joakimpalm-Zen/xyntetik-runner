@@ -499,6 +499,7 @@ bool gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F, int E) {
     (void)h; (void)T; (void)H; (void)F; (void)E;
     return false;
 }
+void gpu_ink2_release_experts(gpu_ink2 *h) { (void)h; }
 gpu_ink2_kv *gpu_ink2_kv_new(gpu_ink2 *h, int n_app, const int *rows, const int *C) {
     (void)h; (void)n_app; (void)rows; (void)C;
     return NULL;

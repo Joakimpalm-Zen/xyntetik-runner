@@ -86,30 +86,33 @@ typedef struct {
     int qtype; const void *q; size_t q_row_bytes; const float *q_scale; int q_act8;
     void *dev; int dev_i;   // R4.48.9: the view's device copy (the binder's handle, its index), or NULL
 } ink2_tensor;
-// R4.48.9: the device product. A view with dev set runs its linear operation through fn (the binder's: the same
-// arguments as the engine's ink2_lin, x and y with their strides); nonzero from fn is a device failure, and the
-// output is then NaN so no row passes for the device's. NULL (the default): every view on the CPU.
+// R4.48.9: the device functions are the INSTANCE's, never process-wide: ink2_tensor.dev and ink2_cache.dev point at
+// the binder's instance, which begins with an ink2_dev_hdr whose ops (read-only, set before any view is marked) the
+// engine calls. A bind in one instance therefore writes nothing another instance's forward reads (the second read of
+// G2b 2a: process-wide hook pointers were written by each bind while other instances' forwards read them).
+// The device product: a view with dev set runs its linear operation through ops->lin (the same arguments as the
+// engine's ink2_lin, x and y with their strides); nonzero is a device failure, and the output is then NaN so no row
+// passes for the device's. A view without dev: the CPU.
 typedef int (*ink2_dev_lin_fn)(const ink2_tensor *W, int64_t row0, int n_out, int n_in, int T, const float *x,
                                size_t x_stride, float *y, size_t y_stride, float scale);
-void ink2_set_dev_lin(ink2_dev_lin_fn fn);
 // R4.48.9 G2b step 1: the device expert body. On the fast route, when both of a layer's expert stacks (t13 gate_up
-// [E][2F][H], t2 down [E][H][F]) have dev set, ink2_experts_fast hands the whole body to fn: x [T][H], the router's
-// chosen [T][E] (0/1) and wt [T][E], out [T][H] (fn writes it whole). The host router stays the CPU route's code.
-// fn returns 0 (done), 1 (this instance keeps the CPU body: the hook is the process's, the choice the instance's) or
-// below 0 (a device failure: out is then NaN, as for a failed product). NULL (the default): the CPU body.
+// [E][2F][H], t2 down [E][H][F]) have dev set, ink2_experts_fast hands the whole body to ops->experts: x [T][H], the
+// router's chosen [T][E] (0/1) and wt [T][E], out [T][H] (it writes it whole). The host router stays the CPU route's
+// code. It returns 0 (done), 1 (this instance keeps the CPU body) or below 0 (a device failure: out is then NaN, as
+// for a failed product). NULL ops->experts: the CPU body.
 typedef int (*ink2_dev_experts_fn)(const ink2_shape *s, const ink2_tensor *t13, const ink2_tensor *t2, int T,
                                    const float *x, const unsigned char *chosen, const float *wt, float *out);
-void ink2_set_dev_experts(ink2_dev_experts_fn fn);
 // R4.48.9 G2b step 2a: the device attention core. For a cache whose dev is set (its binder's instance), the engine
 // computes Q [T][Q], the new K and V [T][C], the relative bias bank [T][nh][ext] and the sinks [T][nh] on the host as
-// before and hands the core to fn with that instance: its device ring takes the K and V, and fn writes att [T][Q].
-// fn returns 0 (done; the host K/V ring is not written), 1 (this instance keeps the host core and its host ring) or
-// below 0 (a device failure: att is then NaN). NULL (the default), or a cache without dev: the host core.
+// before and hands the core to ops->attn with that instance: its device ring takes the K and V, and it writes att
+// [T][Q]; 0 (done; the host K/V ring is not written), 1 (this instance keeps the host core and its host ring) or
+// below 0 (a device failure: att is then NaN). NULL, or a cache without dev: the host core.
 typedef struct { int nh, nkv, hd, C, Q, window, global, ext; float scale; } ink2_attn_dims;
 typedef int (*ink2_dev_attn_fn)(void *dev, int app, const ink2_attn_dims *d, int T, const int *pos,
                                 const float *q, const float *k, const float *v, const float *rl, const float *sk,
                                 float *att);
-void ink2_set_dev_attn(ink2_dev_attn_fn fn);
+typedef struct ink2_dev_ops { ink2_dev_lin_fn lin; ink2_dev_experts_fn experts; ink2_dev_attn_fn attn; } ink2_dev_ops;
+typedef struct { const ink2_dev_ops *ops; } ink2_dev_hdr;   // the first member of every binder's instance
 // TEST-ONLY: how many times the host attention core ran in this process (G2b step 2a's check that it did not)
 long ink2_attn_host_core_calls(void);
 // TEST-ONLY: the router's selections as the fast route made them, for the selection-agreement observable: per call,
