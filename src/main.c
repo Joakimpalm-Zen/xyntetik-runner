@@ -5230,10 +5230,13 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
         // serve mode: the registry model's own pool is one thread by design
         // (slots create their pools), so the honest number here is the count
         // the slots divide, not the placeholder pool (the lab read "1 threads"
-        // as a CPU fallback at one thread, 2026-09-23)
+        // as a CPU fallback at one thread, 2026-09-23). inkling2_loop keeps
+        // m->tp NULL on CLI and takes model_inkling2_threads at forward use.
         fprintf(stderr, "loaded %s | %s | %d layers | ctx %d | %d threads%s | %.2fs\n",
                 load_path, rt->m.arch, rt->m.n_layer, rt->m.n_ctx,
-                o->serve ? o->n_threads : tpool_size(rt->m.tp),
+                o->serve ? o->n_threads
+                         : rt->m.ink2 ? model_inkling2_threads(&rt->m)
+                                      : tpool_size(rt->m.tp),
                 o->serve ? " (divided across slots)" : "",
                 now_s() - t1);
         {   // R12.1b: a canonical build says which types it cannot run canonically

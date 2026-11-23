@@ -39,6 +39,14 @@ def test_the_tiny_file_loads_and_answers(runner_bin, tiny):
     assert "inkling2_loop: 4 layers, 8 applications" in r.stderr
 
 
+def test_the_load_line_prints_the_requested_thread_count(runner_bin, tiny):
+    """R4.48.18: CLI load line prints the thread count the forward will use (model_inkling2_threads), not 0."""
+    _, good = tiny
+    r = _run(runner_bin, good, "-p", "hello", "-n", "1", "--temp", "0")
+    assert r.returncode == 0, r.stderr[-2000:]
+    assert "| 2 threads |" in r.stderr, r.stderr[-2000:]
+
+
 @pytest.mark.parametrize("case,make,sentence", [
     ("truncated", lambda d: _write(d / "cut.gguf", _kvs(), _tensors(), cut=4096), "a truncated or incomplete download"),
     ("scale shape", lambda d: _write(d / "scale.gguf", _kvs(), _tensors(scale_len=E - 1)), "must be F32 with 4 values"),
