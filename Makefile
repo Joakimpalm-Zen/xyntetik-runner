@@ -5248,6 +5248,16 @@ $(TEST_INKLING2_GGUF): tests/test_inkling2_gguf.c src/inkling2_gguf.h $(INKLING2
 INKLING2_READ = inkling2-read-bin
 $(INKLING2_READ): tests/inkling2_read.c src/inkling2_gguf.h $(INKLING2_GGUF_SRC) src/inkling2_ecache.c src/inkling2_ecache.h tests/inkling2_provider.h src/inkling2.h $(HDR)
 	$(CC) $(CFLAGS) -fno-fast-math -ffp-contract=off -I src -I tests tests/inkling2_read.c $(INKLING2_GGUF_SRC) src/inkling2_ecache.c -o $@ $(LDFLAGS)
+# R4.48.17: the read harness under ASan and UBSan in its prefill mode with a prefill wider than its chunk (8 against
+# 4) on the committed tiny inkling2_loop file: its logits buffer must hold the widest call. CI runs it in the
+# sanitized conformance job.
+test-inkling2-read-san: tests/inkling2_read.c $(INKLING2_GGUF_SRC) src/inkling2_ecache.c tests/fuzz/corpus/inkling_open/tiny-valid.gguf $(HDR)
+	$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer \
+	    -fno-fast-math -ffp-contract=off -std=gnu11 -Wall -I src -I tests tests/inkling2_read.c $(INKLING2_GGUF_SRC) \
+	    src/inkling2_ecache.c -o test-inkling2-read-san -lm -lpthread -ldl
+	printf '1 5 9 2 7 3 8 4 6 10 11 13\n' > test-inkling2-read-san.ids
+	INK2_READ_PREFILL=8 INK2_READ_CHUNK=4 ./test-inkling2-read-san gguf tests/fuzz/corpus/inkling_open/tiny-valid.gguf \
+	    test-inkling2-read-san.ids test-inkling2-read-san.out 12
 .PHONY: test-inkling2-gguf
 test-inkling2-gguf: $(TEST_INKLING2_GGUF)
 	@if [ -z "$(INKLING2_GGUF)" ]; then echo "test-inkling2-gguf: no files (set INKLING2_GGUF, INKLING2_CKPT, INKLING2_MAP, INKLING2_SHAPES)"; \

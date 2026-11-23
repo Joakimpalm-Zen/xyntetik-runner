@@ -644,6 +644,9 @@ jobs:
         # R2.18: an overflow at the largest maxLength, or a stray read in the
         # automaton's cache, only fails loudly with UBSan and ASan
         run: make test-schema-san
+      - name: the Inkling 2 Mini read harness under sanitizers
+        # R4.48.17: a prefill wider than the chunk overran the harness's logits buffer
+        run: make test-inkling2-read-san
       - name: CLI leak gate
         # The GPU smokes keep leak detection off because a loaded driver owns
         # process-lifetime allocations; the CPU path has no such noise and is

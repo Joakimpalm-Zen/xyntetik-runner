@@ -28,7 +28,7 @@ float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos,
 float *model_inkling2_row(model_t *m, int b);   // row b of the last keep_all forward
 void   model_inkling2_free(model_t *m);
 // What the engine holds, for --info fit and the load line (bytes): the dense float32 tensors, the K/V and convolution
-// cache at n_ctx, the expert cache's budget, the file's mapping.
+// cache at n_ctx, the most the expert cache can hold (its budget, capped at every expert decoded), the file's mapping.
 typedef struct { uint64_t dense_f32, cache, expert_cache, mapped, logits; } inkling2_fit;
 bool   model_inkling2_fit(model_t *m, inkling2_fit *f);
 // --info fit on an inkling2_loop header (no weights read): what a load at n_ctx and n_batch would hold, by the same

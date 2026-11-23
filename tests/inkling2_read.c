@@ -167,7 +167,7 @@ int main(int argc, char **argv) {
             windowed ? "sliding K/V for the window only" : "full size",
             ink2_cache_bytes(&c, &s) / 1048576.0);
     const size_t V = (size_t)s.vocab_used;
-    float *rows = malloc(sizeof(float) * V * (size_t)chunk);
+    float *rows = malloc(sizeof(float) * V * (size_t)widest);   // the widest call: a prefill wider than the chunk too
     char path[4096];
     snprintf(path, sizeof path, "%s.logits.f32", out);
     FILE *fo = fopen(path, "wb");
