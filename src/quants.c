@@ -984,6 +984,21 @@ static inline void dq_mxfp4_avx2(const block_mxfp4 *b, float *y) {
 // two halves and a blend on bit 3, as dq_mxfp4_avx2's AVX2 branch does. AVX2 only (no AVX-512 branch yet).
 static inline void dq_nvfp4_avx2(const block_nvfp4 *b, float *y) {
     const __m128i mF = _mm_set1_epi8(0xF);
+#if defined(__AVX512F__)
+    const __m512 tbl = _mm512_loadu_ps(kvalues_mxfp4);
+    for (int h = 0; h < 2; h++) {                       // sub-blocks 2h and 2h + 1
+        const __m128i q  = _mm_loadu_si128((const __m128i *)(b->qs + 16 * h));
+        const __m128i lo = _mm_and_si128(q, mF), hi = _mm_and_si128(_mm_srli_epi16(q, 4), mF);
+        const __m128i s0 = _mm_unpacklo_epi64(lo, hi);
+        const __m128i s1 = _mm_unpackhi_epi64(lo, hi);
+        _mm512_storeu_ps(y + 32 * h,
+                         _mm512_mul_ps(_mm512_permutexvar_ps(_mm512_cvtepu8_epi32(s0), tbl),
+                                       _mm512_set1_ps(g_ue4m3[b->d[2 * h]])));
+        _mm512_storeu_ps(y + 32 * h + 16,
+                         _mm512_mul_ps(_mm512_permutexvar_ps(_mm512_cvtepu8_epi32(s1), tbl),
+                                       _mm512_set1_ps(g_ue4m3[b->d[2 * h + 1]])));
+    }
+#else
     const __m256 t0 = _mm256_loadu_ps(kvalues_mxfp4), t1 = _mm256_loadu_ps(kvalues_mxfp4 + 8);
     for (int h = 0; h < 2; h++) {                       // sub-blocks 2h and 2h + 1
         const __m128i q  = _mm_loadu_si128((const __m128i *)(b->qs + 16 * h));
@@ -997,6 +1012,7 @@ static inline void dq_nvfp4_avx2(const block_nvfp4 *b, float *y) {
             _mm256_storeu_ps(y + 32 * h + 8 * k, _mm256_mul_ps(v, _mm256_set1_ps(g_ue4m3[b->d[2 * h + k / 2]])));
         }
     }
+#endif
 }
 
 static void dq_iq1_m_avx2(const block_iq1_m *b, float *y) {
@@ -2251,6 +2267,7 @@ static float dot_f16_avx2(const f16_t *w, const float *x, int n) {
     return s;
 }
 
+#if !defined(__AVX512F__)
 static float dot_bf16_avx2(const uint16_t *w, const float *x, int n) {
     __m256 acc = _mm256_setzero_ps();
     int i = 0;
@@ -2278,6 +2295,7 @@ static float dot_q8_0_avx2(const block_q8_0 *b, const float *x, int n) {
     }
     return hsum8(acc);
 }
+#endif
 
 static float dot_q4_0_avx2(const block_q4_0 *b, const float *x, int n) {
     const __m128i mF = _mm_set1_epi8(0xF), m8 = _mm_set1_epi8(8);
@@ -2502,6 +2520,7 @@ static float dot_mxfp4_avx2(const block_mxfp4 *b, const float *x, int n) {
 // NVFP4 (R4.48.15): the doubled-integer E2M1 table (pshufb), the 0.5 folded into each sub-block's scale. Sub-block
 // s's low nibbles pair with x[16s .. 16s + 7], its high nibbles with x[16s + 8 .. 16s + 15]. Two accumulators, the
 // even and the odd sub-blocks, summed at the end: a fixed order whatever the thread count.
+#if !defined(__AVX512F__)
 static float dot_nvfp4_avx2(const block_nvfp4 *b, const float *x, int n) {
     const __m128i tbl = _mm_loadu_si128((const __m128i *)kvalues_mxfp4_i8);
     const __m128i mF  = _mm_set1_epi8(0xF);
@@ -2523,6 +2542,7 @@ static float dot_nvfp4_avx2(const block_nvfp4 *b, const float *x, int n) {
     }
     return hsum8(_mm256_add_ps(acc0, acc1));
 }
+#endif
 
 static float dot_q2_0_avx2(const block_q2_0 *b, const float *x, int n) {
     __m256 acc = _mm256_setzero_ps();
@@ -3496,6 +3516,106 @@ float vec_dot_xs(int type, const void *row, const float *x, const float *xs, int
     return vec_dot(type, row, x, n);
 }
 
+#if RUNNER_AVX2 && defined(__AVX512F__)
+static inline float hsum16(__m512 v) {
+    return hsum8(_mm256_add_ps(_mm512_castps512_ps256(v), _mm512_extractf32x8_ps(v, 1)));
+}
+
+// Tier B AVX-512 single+multi twins (NVFP4, BF16, Q8_0): each pair shares one 16-lane kernel so vec_dot and
+// vec_dot_multi remain bit-identical across column counts.
+static inline __attribute__((always_inline)) void dot_nvfp4_avx512_multi(const block_nvfp4 *b, const float *const *xs,
+                                 int nc, int n, float *out) {
+    const __m128i mF = _mm_set1_epi8(0xF);
+    const __m512 tbl = _mm512_loadu_ps(kvalues_mxfp4);
+    __m512 acc0[VEC_DOT_MULTI_MAX], acc1[VEC_DOT_MULTI_MAX];
+    for (int c = 0; c < nc; c++) { acc0[c] = _mm512_setzero_ps(); acc1[c] = _mm512_setzero_ps(); }
+    for (int i = 0; i < n / QK_NVFP4; i++) {
+        const __m128i q0 = _mm_loadu_si128((const __m128i *)b[i].qs);
+        const __m128i q1 = _mm_loadu_si128((const __m128i *)(b[i].qs + 16));
+        const __m128i lo0 = _mm_and_si128(q0, mF), hi0 = _mm_and_si128(_mm_srli_epi16(q0, 4), mF);
+        const __m128i lo1 = _mm_and_si128(q1, mF), hi1 = _mm_and_si128(_mm_srli_epi16(q1, 4), mF);
+        const __m512 w0 = _mm512_mul_ps(_mm512_permutexvar_ps(_mm512_cvtepu8_epi32(_mm_unpacklo_epi64(lo0, hi0)), tbl),
+                                        _mm512_set1_ps(g_ue4m3[b[i].d[0]]));
+        const __m512 w1 = _mm512_mul_ps(_mm512_permutexvar_ps(_mm512_cvtepu8_epi32(_mm_unpackhi_epi64(lo0, hi0)), tbl),
+                                        _mm512_set1_ps(g_ue4m3[b[i].d[1]]));
+        const __m512 w2 = _mm512_mul_ps(_mm512_permutexvar_ps(_mm512_cvtepu8_epi32(_mm_unpacklo_epi64(lo1, hi1)), tbl),
+                                        _mm512_set1_ps(g_ue4m3[b[i].d[2]]));
+        const __m512 w3 = _mm512_mul_ps(_mm512_permutexvar_ps(_mm512_cvtepu8_epi32(_mm_unpackhi_epi64(lo1, hi1)), tbl),
+                                        _mm512_set1_ps(g_ue4m3[b[i].d[3]]));
+        const int xo = i * QK_NVFP4;
+        for (int c = 0; c < nc; c++) {
+            const float *xp = xs[c] + xo;
+            acc0[c] = _mm512_fmadd_ps(w0, _mm512_loadu_ps(xp),      acc0[c]);
+            acc1[c] = _mm512_fmadd_ps(w1, _mm512_loadu_ps(xp + 16), acc1[c]);
+            acc0[c] = _mm512_fmadd_ps(w2, _mm512_loadu_ps(xp + 32), acc0[c]);
+            acc1[c] = _mm512_fmadd_ps(w3, _mm512_loadu_ps(xp + 48), acc1[c]);
+        }
+    }
+    for (int c = 0; c < nc; c++) out[c] = hsum16(_mm512_add_ps(acc0[c], acc1[c]));
+}
+static float dot_nvfp4_avx512(const block_nvfp4 *b, const float *x, int n) {
+    float s = 0.0f;
+    dot_nvfp4_avx512_multi(b, &x, 1, n, &s);
+    return s;
+}
+
+static inline __attribute__((always_inline)) void dot_bf16_avx512_multi(const uint16_t *w, const float *const *xs,
+                                int nc, int n, float *out) {
+    __m512 a0[VEC_DOT_MULTI_MAX], a1[VEC_DOT_MULTI_MAX];
+    for (int c = 0; c < nc; c++) { a0[c] = _mm512_setzero_ps(); a1[c] = _mm512_setzero_ps(); }
+    int i = 0;
+    for (; i + 32 <= n; i += 32) {
+        const __m512 w0 = _mm512_castsi512_ps(_mm512_slli_epi32(
+            _mm512_cvtepu16_epi32(_mm256_loadu_si256((const __m256i *)(w + i))), 16));
+        const __m512 w1 = _mm512_castsi512_ps(_mm512_slli_epi32(
+            _mm512_cvtepu16_epi32(_mm256_loadu_si256((const __m256i *)(w + i + 16))), 16));
+        for (int c = 0; c < nc; c++) {
+            a0[c] = _mm512_fmadd_ps(w0, _mm512_loadu_ps(xs[c] + i),      a0[c]);
+            a1[c] = _mm512_fmadd_ps(w1, _mm512_loadu_ps(xs[c] + i + 16), a1[c]);
+        }
+    }
+    if (i + 16 <= n) {
+        const __m512 w0 = _mm512_castsi512_ps(_mm512_slli_epi32(
+            _mm512_cvtepu16_epi32(_mm256_loadu_si256((const __m256i *)(w + i))), 16));
+        for (int c = 0; c < nc; c++) a0[c] = _mm512_fmadd_ps(w0, _mm512_loadu_ps(xs[c] + i), a0[c]);
+        i += 16;
+    }
+    for (int c = 0; c < nc; c++) {
+        float s = hsum16(_mm512_add_ps(a0[c], a1[c]));
+        for (int k = i; k < n; k++) s += bf16_to_f32(w[k]) * xs[c][k];
+        out[c] = s;
+    }
+}
+static float dot_bf16_avx512(const uint16_t *w, const float *x, int n) {
+    float s = 0.0f;
+    dot_bf16_avx512_multi(w, &x, 1, n, &s);
+    return s;
+}
+
+static inline __attribute__((always_inline)) void dot_q8_0_avx512_multi(const block_q8_0 *b, const float *const *xs,
+                                int nc, int n, float *out) {
+    __m512 a0[VEC_DOT_MULTI_MAX], a1[VEC_DOT_MULTI_MAX];
+    for (int c = 0; c < nc; c++) { a0[c] = _mm512_setzero_ps(); a1[c] = _mm512_setzero_ps(); }
+    for (int i = 0; i < n / QK; i++) {
+        const __m512 vd = _mm512_set1_ps(f16_to_f32(b[i].d));
+        const __m512 w0 = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(_mm_loadu_si128((const __m128i *)b[i].qs))), vd);
+        const __m512 w1 = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(_mm_loadu_si128((const __m128i *)(b[i].qs + 16)))), vd);
+        const int off = i * QK;
+        for (int c = 0; c < nc; c++) {
+            const float *xp = xs[c] + off;
+            a0[c] = _mm512_fmadd_ps(w0, _mm512_loadu_ps(xp),      a0[c]);
+            a1[c] = _mm512_fmadd_ps(w1, _mm512_loadu_ps(xp + 16), a1[c]);
+        }
+    }
+    for (int c = 0; c < nc; c++) out[c] = hsum16(_mm512_add_ps(a0[c], a1[c]));
+}
+static float dot_q8_0_avx512(const block_q8_0 *b, const float *x, int n) {
+    float s = 0.0f;
+    dot_q8_0_avx512_multi(b, &x, 1, n, &s);
+    return s;
+}
+#endif
+
 float vec_dot(int type, const void *row, const float *x, int n) {
 #ifdef RUNNER_CANON_KERNELS
     if (type == T_F32)  return canon_dot_f32(row, x, n);
@@ -3524,7 +3644,11 @@ float vec_dot(int type, const void *row, const float *x, int n) {
         case T_BF16: {
             const uint16_t *w = row;
 #if RUNNER_AVX2
+#if defined(__AVX512F__)
+            return dot_bf16_avx512(w, x, n);
+#else
             return dot_bf16_avx2(w, x, n);
+#endif
 #elif RUNNER_NEON
             return dot_bf16_neon(w, x, n);
 #endif
@@ -3534,7 +3658,11 @@ float vec_dot(int type, const void *row, const float *x, int n) {
         }
         case T_Q8_0: {
 #if RUNNER_AVX2
+#if defined(__AVX512F__)
+            return dot_q8_0_avx512(row, x, n);
+#else
             return dot_q8_0_avx2(row, x, n);
+#endif
 #elif RUNNER_NEON
             return dot_q8_0_neon(row, x, n);
 #endif
@@ -3648,7 +3776,11 @@ float vec_dot(int type, const void *row, const float *x, int n) {
         }
         case T_NVFP4: {
 #if RUNNER_AVX2
+#if defined(__AVX512F__)
+            return dot_nvfp4_avx512(row, x, n);
+#else
             return dot_nvfp4_avx2(row, x, n);
+#endif
 #elif RUNNER_NEON
             return dot_nvfp4_neon(row, x, n);
 #endif
@@ -3804,6 +3936,7 @@ static inline __attribute__((always_inline)) void dot_iq3_xxs_avx2_multi(const b
 
 // Q8_0 / Q4_0 / MXFP4: each block widened once, every column the single
 // kernel's mul + three fmadd and its fmadd by the block scale
+#if !defined(__AVX512F__)
 static inline __attribute__((always_inline)) void dot_q8_0_avx2_multi(const block_q8_0 *b, const float *const *xs,
                                 int nc, int n, float *out) {
     __m256 acc[VEC_DOT_MULTI_MAX];
@@ -3824,6 +3957,7 @@ static inline __attribute__((always_inline)) void dot_q8_0_avx2_multi(const bloc
     }
     for (int c = 0; c < nc; c++) out[c] = hsum8(acc[c]);
 }
+#endif
 
 static inline __attribute__((always_inline)) void dot_q4_0_avx2_multi(const block_q4_0 *b, const float *const *xs,
                                 int nc, int n, float *out) {
@@ -3874,6 +4008,7 @@ static inline __attribute__((always_inline)) void dot_mxfp4_avx2_multi(const blo
 
 // NVFP4 (R4.48.20): each 32-element half decoded once (pshufb), even and odd sub-blocks run in separate column loops
 // to keep accumulators in registers within 16 YMMs, using dot_nvfp4_avx2's exact FMAs and two-accumulator order.
+#if !defined(__AVX512F__)
 static inline __attribute__((always_inline)) void dot_nvfp4_avx2_multi(const block_nvfp4 *b, const float *const *xs,
                                  int nc, int n, float *out) {
     const __m128i tbl = _mm_loadu_si128((const __m128i *)kvalues_mxfp4_i8);
@@ -3907,6 +4042,7 @@ static inline __attribute__((always_inline)) void dot_nvfp4_avx2_multi(const blo
     }
     for (int c = 0; c < nc; c++) out[c] = hsum8(_mm256_add_ps(acc0[c], acc1[c]));
 }
+#endif
 
 static inline __attribute__((always_inline)) void dot_iq3_s_avx2_multi(const block_iq3_s *b, const float *const *xs,
                                  int nc, int n, float *out) {
@@ -3965,6 +4101,7 @@ static inline __attribute__((always_inline)) void dot_iq4_xs_avx2_multi(const bl
     for (int c = 0; c < nc; c++) out[c] = s[c];
 }
 
+#if !defined(__AVX512F__)
 static inline __attribute__((always_inline)) void dot_bf16_avx2_multi(const uint16_t *w, const float *const *xs, int nc,
                                 int n, float *out) {
     __m256 acc[VEC_DOT_MULTI_MAX];
@@ -3982,6 +4119,7 @@ static inline __attribute__((always_inline)) void dot_bf16_avx2_multi(const uint
         out[c] = s;
     }
 }
+#endif
 
 static inline __attribute__((always_inline)) void dot_q4_K_avx2_multi(const block_q4_K *b, const float *const *xs, int nc,
                                 int n, float *out) {
@@ -4534,20 +4672,36 @@ void vec_dot_multi(int type, const void *row, const float *const *xs, int nc,
 #ifndef RUNNER_CANON_KERNELS
     switch (type) {
 #if RUNNER_AVX2
+#if defined(__AVX512F__)
+        case T_Q8_0:    if (nc == 8) { dot_q8_0_avx512_multi(row, xs, 8, n, out); return; }
+                        AVX2_MULTI(dot_q8_0_avx512_multi, row, xs, nc, n, out);  return;
+#else
         case T_Q8_0:    AVX2_MULTI(dot_q8_0_avx2_multi, row, xs, nc, n, out);    return;
+#endif
         case T_Q4_0:    AVX2_MULTI(dot_q4_0_avx2_multi, row, xs, nc, n, out);    return;
         case T_MXFP4:   AVX2_MULTI(dot_mxfp4_avx2_multi, row, xs, nc, n, out);   return;
         case T_NVFP4:
+#if defined(__AVX512F__)
+            if (nc == 1) { out[0] = dot_nvfp4_avx512(row, xs[0], n); return; }
+            if (nc == 8) { dot_nvfp4_avx512_multi(row, xs, 8, n, out); return; }
+            AVX2_MULTI(dot_nvfp4_avx512_multi, row, xs, nc, n, out);
+#else
             if (nc == 1) { out[0] = dot_nvfp4_avx2(row, xs[0], n); return; }
             if (nc == 8) { dot_nvfp4_avx2_multi(row, xs, 8, n, out); return; }
             AVX2_MULTI(dot_nvfp4_avx2_multi, row, xs, nc, n, out);
+#endif
             return;
         case T_IQ4_NL:  AVX2_MULTI(dot_iq4_nl_avx2_multi, row, xs, nc, n, out);  return;
         case T_IQ4_XS:  AVX2_MULTI(dot_iq4_xs_avx2_multi, row, xs, nc, n, out);  return;
         case T_Q2_0:    AVX2_MULTI(dot_q2_0_avx2_multi, row, xs, nc, n, out);    return;
         case T_IQ3_XXS: AVX2_MULTI(dot_iq3_xxs_avx2_multi, row, xs, nc, n, out); return;
         case T_IQ3_S:   AVX2_MULTI(dot_iq3_s_avx2_multi, row, xs, nc, n, out);   return;
+#if defined(__AVX512F__)
+        case T_BF16:    if (nc == 8) { dot_bf16_avx512_multi(row, xs, 8, n, out); return; }
+                        AVX2_MULTI(dot_bf16_avx512_multi, row, xs, nc, n, out);  return;
+#else
         case T_BF16:    AVX2_MULTI(dot_bf16_avx2_multi, row, xs, nc, n, out);    return;
+#endif
         case T_Q4_K:    AVX2_MULTI(dot_q4_K_avx2_multi, row, xs, nc, n, out);    return;
         case T_Q5_K:    AVX2_MULTI(dot_q5_K_avx2_multi, row, xs, nc, n, out);    return;
         case T_Q6_K:    AVX2_MULTI(dot_q6_K_avx2_multi, row, xs, nc, n, out);    return;
