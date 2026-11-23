@@ -11010,7 +11010,14 @@ static bool lora_slot_dims(const model_t *m, int l, int s, int64_t *n_in,
     if (!w) return false;
     if (n_in) *n_in = (int64_t)w->ne[0];
     if (n_out) *n_out = (int64_t)w->ne[1];
-    if (name && ncap) snprintf(name, ncap, "%s", w->name);
+    if (name && ncap) {
+        int wn = snprintf(name, ncap, "%s", w->name);
+        if (wn < 0 || (size_t)wn >= ncap) {
+            fprintf(stderr, "error: base tensor name '%s' exceeds %zu-byte "
+                    "destination\n", w->name, ncap);
+            return false;
+        }
+    }
     return true;
 }
 
@@ -11121,9 +11128,10 @@ static bool lora_parse_tensor(model_t *m, struct lora_w *tab, gguf_tensor *t,
     int l = -1, nl = lora_n_layer(m);
     char pname[64];
     char side = 0;
-    if (sscanf(t->name, "blk.%d.%40[a-z_].weight.lora_%c", &l, pname,
-               &side) != 3 || (side != 'a' && side != 'b') ||
-        l < 0 || l >= nl) {
+    int end = 0;
+    if (sscanf(t->name, "blk.%d.%63[a-z_].weight.lora_%c%n", &l, pname,
+               &side, &end) != 3 || end <= 0 || t->name[end] != '\0' ||
+        (side != 'a' && side != 'b') || l < 0 || l >= nl) {
         fprintf(stderr, "error: adapter tensor '%s' does not name a "
                 "hooked projection\n", t->name);
         return false;
@@ -11132,7 +11140,7 @@ static bool lora_parse_tensor(model_t *m, struct lora_w *tab, gguf_tensor *t,
     for (int k = 0; k < LW_SLOTS; k++)
         if (strcmp(pname, lora_slot_name[k]) == 0) { s = k; break; }
     int64_t s_nin = 0, s_nout = 0;
-    char s_name[96] = "";
+    char s_name[sizeof(((gguf_tensor *)0)->name)] = "";
     bool has_base = s >= 0 && lora_slot_dims(m, l, s, &s_nin, &s_nout, s_name, sizeof s_name);
     if (!has_base) {
         fprintf(stderr, "error: adapter tensor '%s' targets a "

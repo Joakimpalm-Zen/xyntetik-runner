@@ -156,7 +156,14 @@ bool model_inkling2_slot_dims(const model_t *m, int layer, int slot, int *n_in, 
     }
     if (n_in) *n_in = ni;
     if (n_out) *n_out = no;
-    if (name && cap) snprintf(name, cap, "blk.%d.%s.weight", layer, sname);
+    if (name && cap) {
+        int wn = snprintf(name, cap, "blk.%d.%s.weight", layer, sname);
+        if (wn < 0 || (size_t)wn >= cap) {
+            fprintf(stderr, "error: inkling2_loop tensor name 'blk.%d.%s.weight' "
+                    "exceeds %zu-byte destination\n", layer, sname, cap);
+            return false;
+        }
+    }
     return true;
 }
 

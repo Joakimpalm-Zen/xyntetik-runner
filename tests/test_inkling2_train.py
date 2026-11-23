@@ -194,3 +194,59 @@ def test_admission_limits_and_oom_propagation(runner_bin, tiny_ink2, tmp_path):
                   tmp_path, expect_ok=False, env=env_fwd_oom)
     assert p_foom.returncode != 0
     assert "error: inkling2_loop" in p_foom.stderr and "out of memory" in p_foom.stderr.lower()
+
+
+def test_adapter_long_tensor_name_handling(runner_bin, tiny_ink2, tmp_path):
+    """Adapter tensor names > 95 bytes never truncate silently: valid <= 127-byte names
+    parse cleanly and malformed/overlong names are refused with a sentence."""
+    import struct
+    kvs = [
+        ("general.architecture", h.STR, "inkling2_loop"),
+        ("general.type", h.STR, "adapter"),
+        ("adapter.type", h.STR, "lora"),
+        ("adapter.lora.alpha", h.F32, 8.0),
+    ]
+    q_dim = h.NH * h.HD
+    zeros_a = struct.pack(f"<{h.H * 4}f", *([0.0] * (h.H * 4)))
+    zeros_b = struct.pack(f"<{4 * q_dim}f", *([0.0] * (4 * q_dim)))
+
+    # 1. Valid >95-byte (100-byte) tensor names fit gguf_tensor.name[128] and parse cleanly.
+    prefix_100 = f"blk.{'0' * 75}.attn_q.weight.lora_"
+    assert 95 < len(prefix_100 + "a") < 128
+    valid_long = tmp_path / "valid_long_name.gguf"
+    h._write(valid_long, kvs, [
+        (prefix_100 + "a", [h.H, 4], h.T_F32, zeros_a),
+        (prefix_100 + "b", [4, q_dim], h.T_F32, zeros_b),
+    ])
+    _run(runner_bin, ["-m", tiny_ink2, "--lora", valid_long, "--score", "-p", "hi", "--gpu", "off"],
+         tmp_path)
+
+    # 2. >95-byte name with trailing suffix after lora_a must be refused cleanly, not silently accepted.
+    suffixed = tmp_path / "suffixed_long_name.gguf"
+    suf_a = "blk.0.attn_q.weight.lora_a_" + ("x" * 75)
+    suf_b = "blk.0.attn_q.weight.lora_b_" + ("x" * 75)
+    assert 95 < len(suf_a) < 128
+    h._write(suffixed, kvs, [
+        (suf_a, [h.H, 4], h.T_F32, zeros_a),
+        (suf_b, [4, q_dim], h.T_F32, zeros_b),
+    ])
+    p_suf = _run(runner_bin, ["-m", tiny_ink2, "--lora", suffixed, "--score", "-p", "hi", "--gpu", "off"],
+                 tmp_path, expect_ok=False)
+    assert p_suf.returncode != 0
+    assert "does not name a hooked projection" in p_suf.stderr
+
+    # 3. >95-byte unknown slot name (100 bytes) is refused with a sentence.
+    bad_slot = tmp_path / "bad_long_slot.gguf"
+    h._write(bad_slot, kvs, [(f"blk.0.{'q' * 80}.weight.lora_a", [h.H, 4], h.T_F32, zeros_a)])
+    p_bad = _run(runner_bin, ["-m", tiny_ink2, "--lora", bad_slot, "--score", "-p", "hi", "--gpu", "off"],
+                 tmp_path, expect_ok=False)
+    assert p_bad.returncode != 0
+    assert "does not name a hooked projection" in p_bad.stderr
+
+    # 4. >=128-byte tensor name exceeds gguf_tensor.name[128] and is refused by the GGUF reader.
+    too_long = tmp_path / "too_long_128.gguf"
+    h._write(too_long, kvs, [(f"blk.{'0' * 105}.attn_q.weight.lora_a", [h.H, 4], h.T_F32, zeros_a)])
+    p_128 = _run(runner_bin, ["-m", tiny_ink2, "--lora", too_long, "--score", "-p", "hi", "--gpu", "off"],
+                 tmp_path, expect_ok=False)
+    assert p_128.returncode != 0
+    assert "too long" in p_128.stderr
