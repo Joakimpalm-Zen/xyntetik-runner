@@ -2823,7 +2823,12 @@ shape. They are refused in raw one-shot and server modes rather than being silen
 ignored; server callers use the request-level `enable_thinking` field. With neither
 flag, Runner renders whatever that family's own reference template renders, which is not
 the same answer for every family. Families without a distinct thinking prompt accept the
-flag and ignore it rather than approximate one.
+flag and ignore it rather than approximate one. On `inkling2`, `--think off` and
+`--no-think` map to effort `none` (`Thinking effort level: 0`), while `--think on`
+and `auto` keep the publisher default `0.9`. Because the model still reasons first
+at effort `none` (probed on the real checkpoint on 2026-11-23: content `0 B`,
+reasoning `192 B` at `48` tokens and `701 B` at `160` tokens), this selects the
+least effort, not thinking off.
 
 <a id="cli-chat-template"></a>
 #### `--chat-template NAME`
@@ -5150,15 +5155,22 @@ Where each known key takes effect:
 
 | Key | Families | Surfaces |
 |---|---|---|
-| `enable_thinking` | Those with a thinking mode, including Apertus | All |
+| `enable_thinking` | Those with a thinking mode, including Apertus and Inkling 2 Mini | All (`inkling2` Chat Completions only) |
 | `preserve_thinking` | Qwen 3.6, Qwen 3.8 (`false` drops the thoughts before the last query), LFM2, LFM2-24B | Chat Completions |
-| `reasoning_effort` | Qwen 3.8, Spark, K2-Horizon, Muse, Granite 4.2 (only `low` has an effect) | Chat Completions, Responses |
+| `reasoning_effort` | Qwen 3.8, Spark, K2-Horizon, Muse, Granite 4.2 (only `low` has an effect), Inkling 2 Mini | Chat Completions, Responses (`inkling2` Chat Completions only) |
 | `reasoning_strength` | Muse | Chat Completions, Responses |
 
-Three families take `enable_thinking` as a request for their own native control,
+Four families take `enable_thinking` as a request for their own native control,
 where their templates have no variable of that name: Hermes 4 maps it to
-`thinking`, Nemotron to the state `/no_think` gives, and Muse to its reasoning
-turn. Muse takes `reasoning_effort` the same way, as `reasoning_strength`.
+`thinking`, Nemotron to the state `/no_think` gives, Muse to its reasoning
+turn, and Inkling 2 Mini maps `enable_thinking: false` (at the top level or
+inside `chat_template_kwargs`, when neither supplies a non-null
+`reasoning_effort`) to `reasoning_effort: "none"` (`Thinking effort level: 0`),
+while `true` and absent keep the publisher default `0.9` and an explicit
+`reasoning_effort` always wins. At effort `none` the Inkling 2 Mini model still
+reasons first (measured on 2026-11-23: content `0 B`; reasoning `192 B` at
+`48` tokens, `701 B` at `160`), so the mapping gives the least effort, not
+thinking off. Muse takes `reasoning_effort` the same way, as `reasoning_strength`.
 
 `add_generation_prompt` `false` is refused where the template reads it, because
 the chat surfaces always open the assistant's turn. The values a render supplies

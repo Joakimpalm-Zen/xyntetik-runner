@@ -842,11 +842,9 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
             }
         }
         if (s->tmpl == TMPL_INKLING2) {
-            jv *kw = jv_get(req, "chat_template_kwargs");
-            jv *effort = jv_get(kw, "reasoning_effort");
-            if (!effort) effort = jv_get(req, "reasoning_effort");
             cm[n_cm++] = (chat_msg){ .role = role, .content = "", .name = turn_name,
-                                    .source = msgs->items[i], .effort = effort };
+                                    .source = msgs->items[i],
+                                    .effort = req_inkling_effort(req) };
             continue;
         }
         if (s->tmpl == TMPL_MUSE && !strcmp(role, "assistant")) {

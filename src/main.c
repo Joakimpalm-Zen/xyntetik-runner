@@ -8819,6 +8819,8 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
                 .role = "system", .content = o->system_prompt,
             };
         msgs[n_msgs++] = (chat_msg){ .role = "user", .content = line };
+        if (tmpl == TMPL_INKLING2 && o->thinking == THINK_OFF)
+            msgs[0].effort = template_inkling_effort_none();
         // Measured, never estimated — the same rule the server holds itself
         // to. render_messages truncates the TAIL, so a fixed buffer that a
         // long --system overruns does not fail the turn, it deletes the

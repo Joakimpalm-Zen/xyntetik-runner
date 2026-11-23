@@ -13,6 +13,7 @@ Tests the full runtime stack with an Inkling control-token vocabulary
     via <|end_message|> while keeping normal answers untouched
 """
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -1216,6 +1217,159 @@ def test_t3_end_message_inside_json_string_argument_http(server):
     tc_blk = d_blk["choices"][0]["message"]["tool_calls"]
     assert len(tc_blk) == 1 and tc_blk[0]["function"]["name"] == "echo", tc_blk
     assert json.loads(tc_blk[0]["function"]["arguments"]) == {"text": "alpha "}, tc_blk
+
+
+def _render_cases(cases):
+    exe = ROOT / ("template-conformance-render.exe" if sys.platform == "win32" else "template-conformance-render")
+    if not exe.exists():
+        pytest.skip("make template-conformance-render first")
+    p = subprocess.run([str(exe)], input=json.dumps({"cases": cases}), capture_output=True, text=True, cwd=ROOT, timeout=60)
+    assert p.returncode == 0, p.stderr
+    return {r["id"]: r for r in json.loads(p.stdout)["results"]}
+
+
+def test_r4416_null_effort_in_kwargs_falls_through_to_top_level(server):
+    """Condition 1 (R4.48.16): JSON null for chat_template_kwargs.reasoning_effort must
+    fall through to top-level reasoning_effort instead of shadowing it."""
+    res = _render_cases([{
+        "id": "null_low",
+        "template": "inkling2",
+        "chat_template": "<|message_model|>Thinking effort level:",
+        "request": {
+            "model": "x",
+            "reasoning_effort": "low",
+            "chat_template_kwargs": {"reasoning_effort": None},
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    }])["null_low"]
+    assert res.get("error") is None, res
+    assert "Thinking effort level: 0.2<|end_message|>" in res["prompt"], res["prompt"]
+
+    def _ptok(body):
+        c, d = _post(server, "/v1/chat/completions", {"model": server.model_id, "max_tokens": 2, "temperature": 0,
+                                                      "messages": [{"role": "user", "content": "hi"}], **body})
+        assert c == 200, d
+        return d["usage"]["prompt_tokens"]
+
+    assert _ptok({"reasoning_effort": "none", "chat_template_kwargs": {"reasoning_effort": None}}) == _ptok(
+        {"reasoning_effort": "none"})
+    assert _ptok({"reasoning_effort": "none"}) + 2 == _ptok({})
+
+
+def test_r4416_enable_thinking_false_maps_to_effort_none(server, tmp_path):
+    """R4.48.16: enable_thinking=false with no reasoning_effort maps to effort 'none' (0)
+    on inkling2; explicit reasoning_effort always wins; null falls through."""
+    base_tmpl = "<|message_model|>Thinking effort level:"
+    reads_tmpl = "{% if enable_thinking %}{% endif %}<|message_model|>Thinking effort level:"
+
+    def _case(cid, tmpl_txt, extra):
+        return {"id": cid, "template": "inkling2", "chat_template": tmpl_txt,
+                "request": {"model": "x", "messages": [{"role": "user", "content": "hi"}], **extra}}
+
+    res = _render_cases([
+        _case("top_false", base_tmpl, {"enable_thinking": False}),
+        _case("kw_false_plain", base_tmpl, {"chat_template_kwargs": {"enable_thinking": False}}),
+        _case("kw_false_reads", reads_tmpl, {"chat_template_kwargs": {"enable_thinking": False}}),
+        _case("null_eff_false", base_tmpl, {"enable_thinking": False, "chat_template_kwargs": {"reasoning_effort": None}}),
+        _case("win_top_low", base_tmpl, {"enable_thinking": False, "reasoning_effort": "low"}),
+        _case("win_kw_low", base_tmpl, {"chat_template_kwargs": {"enable_thinking": False, "reasoning_effort": "low"}}),
+        _case("win_high", base_tmpl, {"enable_thinking": False, "reasoning_effort": "high"}),
+        _case("win_num", base_tmpl, {"enable_thinking": False, "reasoning_effort": 0.37}),
+        _case("win_none", base_tmpl, {"enable_thinking": False, "reasoning_effort": "none"}),
+        _case("win_bad", base_tmpl, {"enable_thinking": False, "reasoning_effort": "bogus"}),
+        _case("top_true", base_tmpl, {"enable_thinking": True}),
+        _case("kw_true", base_tmpl, {"chat_template_kwargs": {"enable_thinking": True}}),
+        _case("absent", base_tmpl, {}),
+        _case("kw_true_over_top_false", base_tmpl, {"enable_thinking": False, "chat_template_kwargs": {"enable_thinking": True}}),
+        _case("kw_false_over_top_true", base_tmpl, {"enable_thinking": True, "chat_template_kwargs": {"enable_thinking": False}}),
+    ])
+
+    for cid in ("top_false", "kw_false_plain", "kw_false_reads", "null_eff_false", "win_none", "kw_false_over_top_true"):
+        assert res[cid].get("error") is None, (cid, res[cid])
+        assert "Thinking effort level: 0<|end_message|>" in res[cid]["prompt"], (cid, res[cid]["prompt"])
+
+    for cid, want in (("win_top_low", "0.2"), ("win_kw_low", "0.2"), ("win_high", "0.9"), ("win_num", "0.37"),
+                      ("top_true", "0.9"), ("kw_true", "0.9"), ("absent", "0.9"), ("kw_true_over_top_false", "0.9")):
+        assert res[cid].get("error") is None, (cid, res[cid])
+        assert f"Thinking effort level: {want}<|end_message|>" in res[cid]["prompt"], (cid, res[cid]["prompt"])
+
+    assert res["win_bad"].get("error") and "reasoning_effort must be" in res["win_bad"]["error"], res["win_bad"]
+
+    # Live HTTP checks on /v1/chat/completions (plain + template that reads enable_thinking).
+    def _ptok(srv, extra):
+        c, d = _post(srv, "/v1/chat/completions", {"model": srv.model_id, "max_tokens": 2, "temperature": 0,
+                                                   "messages": [{"role": "user", "content": "hi"}], **extra})
+        return c, d
+
+    c_none, d_none = _ptok(server, {"reasoning_effort": "none"})
+    c_def, d_def = _ptok(server, {})
+    assert c_none == 200 and c_def == 200
+    n0 = d_none["usage"]["prompt_tokens"]
+    assert d_def["usage"]["prompt_tokens"] == n0 + 2
+
+    for extra in ({"enable_thinking": False}, {"chat_template_kwargs": {"enable_thinking": False}},
+                  {"enable_thinking": False, "reasoning_effort": "none"}):
+        c, d = _ptok(server, extra)
+        assert c == 200 and d["usage"]["prompt_tokens"] == n0, (extra, c, d)
+
+    # Embedded Jinja reading enable_thinking: on d4ec380f chat_template_kwargs.enable_thinking returned 400;
+    # now renderer_honours includes inkling2 so it accepts 200 and renders effort 0.
+    tpl = tmp_path / "ink_et.jinja"
+    tpl.write_text(reads_tmpl, encoding="utf-8")
+    m_et = tmp_path / "ink_et.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--control", INKLING_CONTROLS,
+                    "--eos-token", "<|content_model_end_sampling|>", "--chat-template-file", str(tpl), str(m_et)],
+                   check=True, stdout=subprocess.DEVNULL)
+    with _serve(m_et) as srv_et:
+        with urllib.request.urlopen(srv_et.base_url + "/v1/models", timeout=30) as r:
+            srv_et.model_id = json.load(r)["data"][0]["id"]
+        c, d = _ptok(srv_et, {"chat_template_kwargs": {"enable_thinking": False}})
+        assert c == 200 and d["usage"]["prompt_tokens"] == n0, (c, d)
+
+
+def test_r4416_cli_interactive_think_flags(inkling_model):
+    """Condition 3 (R4.48.16): CLI -i --think off and --no-think give effort 0 on inkling2,
+    while --think on, --think auto, and absent keep 0.9."""
+    import re
+    exe = find_runner(ROOT)
+    if not pathlib.Path(exe).exists():
+        pytest.skip("runner not built")
+    env = {**os.environ, "RUNNER_DEBUG_ACT": "1"}
+
+    def _ntok(flag_args):
+        p = subprocess.run([str(exe), "-m", str(inkling_model), "--chat-template", "inkling2",
+                            "-i", "-n", "1", "--temp", "0", "--no-tray", "-c", "512", "--gpu", "off",
+                            *flag_args],
+                           input="hi\n/exit\n", capture_output=True, text=True, env=env, timeout=60)
+        assert p.returncode == 0, p.stderr
+        m = re.search(r"ACT ==== forward n=(\d+)", p.stderr)
+        assert m, p.stderr[-1000:]
+        return int(m.group(1))
+
+    n_def = _ntok([])
+    assert _ntok(["--think", "on"]) == n_def
+    assert _ntok(["--think", "auto"]) == n_def
+    assert _ntok(["--think", "off"]) == n_def - 2
+    assert _ntok(["--no-think"]) == n_def - 2
+
+
+def test_r4416_other_families_enable_thinking_unchanged():
+    """Condition 2/gate: non-inkling2 families do not rewrite enable_thinking=false to none."""
+    res = _render_cases([
+        {"id": "qwen38_off", "template": "qwen38", "chat_template": "",
+         "request": {"model": "x", "enable_thinking": False, "messages": [{"role": "user", "content": "hi"}]}},
+        {"id": "granite42_off", "template": "granite42", "chat_template": "",
+         "request": {"model": "x", "enable_thinking": False, "messages": [{"role": "user", "content": "hi"}]}},
+        {"id": "muse_off", "template": "muse", "chat_template": "",
+         "request": {"model": "x", "enable_thinking": False, "messages": [{"role": "user", "content": "hi"}]}},
+    ])
+    for cid in res:
+        assert res[cid].get("error") is None, res[cid]
+        assert "Thinking effort level: 0" not in res[cid]["prompt"]
+    assert "<think>\n\n</think>\n\n" in res["qwen38_off"]["prompt"]
+    assert "thinking: false" in res["granite42_off"]["prompt"] or "none" not in res["granite42_off"]["prompt"]
+    assert "reasoning strength: none" not in res["muse_off"]["prompt"]
+
 
 
 

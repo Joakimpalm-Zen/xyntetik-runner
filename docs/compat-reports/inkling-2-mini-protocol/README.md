@@ -73,8 +73,17 @@ query. Structured family fixtures now carry real source messages, content
 arrays, reasoning, calls and effort values. An exact publisher-framing anchor
 checks their output; removing content, reasoning, calls or effort changes that
 anchor. It also pins case-sensitive outer argument sorting and preserves the
-nested argument order. The model's template deliberately ignores
+nested argument order. The model's raw Jinja template ignores
 `add_generation_prompt` and `enable_thinking`; it does not pre-open reasoning.
+At the request and interactive-CLI layer (R4.48.16), Runner maps
+`enable_thinking: false` (top level or `chat_template_kwargs`, when neither
+carries a non-null `reasoning_effort`) and CLI `--think off` / `--no-think` to
+`reasoning_effort: "none"` (`Thinking effort level: 0`), while `true`, `--think on`,
+`auto`, and absent keep `0.9` and an explicit `reasoning_effort` always wins
+(with `null` in `chat_template_kwargs` falling through to top level). Measured on
+2026-11-23 on the real checkpoint: at effort `none` the model still reasons first
+(content `0 B`; reasoning `192 B` at `48` tokens, `701 B` at `160`), so this
+mapping selects the least effort, not thinking off.
 
 The widened template matrix compares 37 text/history cases byte for byte and
 token for token, including an empty argument string (rendered as `{}`) and an
