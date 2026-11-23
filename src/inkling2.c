@@ -382,6 +382,19 @@ static void ink2_route_one(const ink2_shape *s, const ink2_moe_w *M, const float
 static inline float ink2_swiglu(const ink2_shape *s, float g, float u) {
     return ink2_softcap(g, s->gate_cap) * ink2_sigmoid(g) * ink2_softcap(u, s->up_cap);
 }
+typedef struct { const ink2_shape *s; float *act; int F; } ink2_swiglu_ctx;
+static void ink2_swiglu_range(void *c, int64_t k0, int64_t k1) {
+    const ink2_swiglu_ctx *sw = c;
+    const ink2_shape *s = sw->s;
+    const int F = sw->F;
+    int64_t k = k0;
+    int i = (int)(k / F), j = (int)(k % F);
+    float *a = sw->act + (size_t)i * 2 * F;
+    for (; k < k1; k++) {
+        a[j] = ink2_swiglu(s, a[j], a[F + j]);
+        if (++j == F) { j = 0; a += 2 * F; }
+    }
+}
 // The fast route's experts over T positions, grouped by expert: chosen [T][E] and wt [T][E] from the router; for each
 // expert in ascending index, its gate_up rows against the positions that chose it (one call, those positions as
 // columns), the SwiGLU, its down rows, and each position's out += down * wt in position order. A position's output is
@@ -402,10 +415,8 @@ static ink2_status ink2_experts_fast(const ink2_shape *s, const ink2_moe_w *M, i
         for (int i = 0; i < n; i++) memcpy(xe + (size_t)i * H, x + (size_t)who[i] * H, sizeof(float) * (size_t)H);
         const float f13 = M->t13->q_scale ? M->t13->q_scale[e] : 1.0f, f2 = M->t2->q_scale ? M->t2->q_scale[e] : 1.0f;
         ink2_lin(M->t13, (int64_t)e * 2 * F, 2 * F, H, n, xe, (size_t)H, act, (size_t)2 * F, f13);
-        for (int i = 0; i < n; i++) {
-            float *a = act + (size_t)i * 2 * F;
-            for (int j = 0; j < F; j++) a[j] = ink2_swiglu(s, a[j], a[F + j]);
-        }
+        ink2_swiglu_ctx sw = { s, act, F };
+        ink2_par((int64_t)n * F, 32, ink2_swiglu_range, &sw);
         ink2_lin(M->t2, (int64_t)e * H, H, F, n, act, (size_t)2 * F, dn, (size_t)H, f2);
         for (int i = 0; i < n; i++) {
             const float w = wt[(size_t)who[i] * E + e];
