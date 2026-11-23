@@ -27,6 +27,16 @@ typedef struct {
 
 static ink2_rt *rt_of(model_t *m) { return (ink2_rt *)m->ink2; }
 
+// R4.48.17: the most the decoded-expert cache can hold: every expert of every layer decoded to float32 (gate_up
+// [2F][H] and down [H][F] each). The cache maps its budget lazily, so it holds at most this, whatever the budget.
+static uint64_t experts_decoded_bytes(const ink2_shape *s) {
+    return 4ull * (uint64_t)s->n_block * (uint64_t)s->n_expert * (3ull * (uint64_t)s->ff * (uint64_t)s->hidden);
+}
+static uint64_t expert_cache_held(const ink2_shape *s, uint64_t budget) {
+    const uint64_t cap = experts_decoded_bytes(s);
+    return budget < cap ? budget : cap;
+}
+
 bool model_inkling2_bind(model_t *m, const model_params *p) {
     (void)p;
     char why[512] = { 0 };
@@ -113,8 +123,9 @@ bool model_inkling2_runtime(model_t *m, const model_params *p) {
         r->w = r->inner;
     }
     // no thread count here: a server's slot is loaded with a one-thread pool, and the forward takes the count at use
-    fprintf(stderr, "inkling2_loop: -c %d -b %d; cache %.2f GB (sliding K/V for the window only), expert "
-                    "cache %.2f GB\n", n_ctx, m->n_batch, ink2_cache_bytes(&r->c, &r->s) / 1e9, r->ec_budget / 1e9);
+    fprintf(stderr, "inkling2_loop: -c %d -b %d; cache %.2f GB (sliding K/V for the window only), expert cache up to "
+                    "%.2f GiB (the budget, RUNNER_INKLING2_EXPERT_CACHE)\n", n_ctx, m->n_batch,
+            ink2_cache_bytes(&r->c, &r->s) / 1e9, expert_cache_held(&r->s, r->ec_budget) / 1073741824.0);
     return true;
 }
 
@@ -192,7 +203,7 @@ bool model_inkling2_fit(model_t *m, inkling2_fit *f) {
     if (!r) return false;
     f->dense_f32 = r->dense_bytes;
     f->cache = r->cache_ok ? ink2_cache_bytes(&r->c, &r->s) : 0;
-    f->expert_cache = r->ec_budget;
+    f->expert_cache = expert_cache_held(&r->s, r->ec_budget);
     f->mapped = gguf_mapped_size(&m->gf);
     f->logits = sizeof(float) * (uint64_t)m->n_vocab * (uint64_t)(r->rows_cap + 1);
     return true;
@@ -241,7 +252,7 @@ int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, int
         uint64_t wmax = kv > (uint64_t)s.hidden ? kv : (uint64_t)s.hidden;
         cache += 2 * rows * kv * 4 + 4ull * (uint64_t)(s.conv_k - 1) * wmax * 4;
     }
-    size_t ec = env_bytes("RUNNER_INKLING2_EXPERT_CACHE", (size_t)4 << 30);
+    const uint64_t ec = expert_cache_held(&s, env_bytes("RUNNER_INKLING2_EXPERT_CACHE", (size_t)4 << 30));
     uint64_t logits = 4ull * (uint64_t)s.vocab_used * (uint64_t)(n_batch + 1);
     uint64_t mapped = gguf_mapped_size(g);
     if (!mapped) for (uint64_t i = 0; i < g->n_tensors; i++) mapped += g->tensors[i].nbytes;
@@ -255,7 +266,7 @@ int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, int
     printf("  dense f32     %.2f GiB (every non-expert tensor, decoded once)\n", dense / 1073741824.0);
     printf("  cache         %.2f GiB (K/V per application, the %d sliding ones for window %d + batch; convolutions)\n",
            cache / 1073741824.0, s.n_app - 8 > 0 ? s.n_app - 8 : 0, s.window);
-    printf("  expert cache  %.2f GiB (RUNNER_INKLING2_EXPERT_CACHE)\n", ec / 1073741824.0);
+    printf("  expert cache  up to %.2f GiB (the budget, RUNNER_INKLING2_EXPERT_CACHE)\n", ec / 1073741824.0);
     printf("  logits        %.2f GiB\n", logits / 1073741824.0);
     printf("  total         %.2f GiB of RAM (%.2f GB)\n", total / 1073741824.0, total / 1e9);
     if (avail)
