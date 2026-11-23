@@ -74,6 +74,10 @@ void f16_init(void) {
 // libm ldexpf call per 32 weights was most of the arm64 dot's time (an M1
 // core read MXFP4 rows 1.67x faster from the table).
 static float g_e8m0[256], g_e8m0_half[256];
+// NVFP4's UE4M3 sub-block scales as floats (ue4m3_to_fp32, below), and the same halved for the doubled-integer E2M1
+// table the SIMD dot shuffles (R4.48.15). The smallest nonzero scale is 2^-9, so the half is a normal float.
+static float g_ue4m3[256], g_ue4m3_half[256];
+static float ue4m3_to_fp32(uint8_t x);
 
 
 // ---------------------------------------------------------------- block defs
@@ -133,6 +137,8 @@ static void dot_tables_init(void) {
     for (int e = 0; e < 256; e++) {
         g_e8m0[e] = ldexpf(1.0f, e - 127);
         g_e8m0_half[e] = 0.5f * ldexpf(1.0f, e - 127);
+        g_ue4m3[e] = ue4m3_to_fp32((uint8_t)e);
+        g_ue4m3_half[e] = 0.5f * g_ue4m3[e];
     }
     for (int g = 0; g < 512; g++) {
         const uint8_t *m = (const uint8_t *)(iq3s_grid + g);
@@ -972,6 +978,27 @@ static inline void dq_mxfp4_avx2(const block_mxfp4 *b, float *y) {
 #endif
 }
 
+// NVFP4 (R4.48.15): kvalues_mxfp4[code] * UE4M3[scale] with the same two operands as dq_nvfp4, so the bits are its
+// bits (tests/test_nvfp4_dot.c checks every code at every scale byte). Sub-block s holds sixteen values: the low
+// nibbles of its eight bytes are values 0..7, the high nibbles 8..15. Each half of eight goes through the table's
+// two halves and a blend on bit 3, as dq_mxfp4_avx2's AVX2 branch does. AVX2 only (no AVX-512 branch yet).
+static inline void dq_nvfp4_avx2(const block_nvfp4 *b, float *y) {
+    const __m128i mF = _mm_set1_epi8(0xF);
+    const __m256 t0 = _mm256_loadu_ps(kvalues_mxfp4), t1 = _mm256_loadu_ps(kvalues_mxfp4 + 8);
+    for (int h = 0; h < 2; h++) {                       // sub-blocks 2h and 2h + 1
+        const __m128i q  = _mm_loadu_si128((const __m128i *)(b->qs + 16 * h));
+        const __m128i lo = _mm_and_si128(q, mF), hi = _mm_and_si128(_mm_srli_epi16(q, 4), mF);
+        // values 0..7 and 8..15 of sub-block 2h, then of 2h + 1
+        const __m128i part[4] = { lo, hi, _mm_srli_si128(lo, 8), _mm_srli_si128(hi, 8) };
+        for (int k = 0; k < 4; k++) {
+            const __m256i idx = _mm256_cvtepu8_epi32(part[k]);
+            const __m256 v = _mm256_blendv_ps(_mm256_permutevar8x32_ps(t0, idx), _mm256_permutevar8x32_ps(t1, idx),
+                                              _mm256_castsi256_ps(_mm256_slli_epi32(idx, 28)));
+            _mm256_storeu_ps(y + 32 * h + 8 * k, _mm256_mul_ps(v, _mm256_set1_ps(g_ue4m3[b->d[2 * h + k / 2]])));
+        }
+    }
+}
+
 static void dq_iq1_m_avx2(const block_iq1_m *b, float *y) {
     const uint16_t *sc = (const uint16_t *)b->scales;
     f16_t sd = (f16_t)((sc[0] >> 12) | ((sc[1] >> 8) & 0x00f0) |
@@ -1185,6 +1212,29 @@ static void dq_q2_0_neon(const block_q2_0 *b, float *y) {
         float32x4_t f[4];
         i8_to_f32x4(e[k], f);
         for (int j = 0; j < 4; j++) vst1q_f32(y + 16 * k + 4 * j, vmulq_n_f32(f[j], d));
+    }
+}
+
+// NVFP4 (R4.48.15): the doubled-integer E2M1 table (TBL) times the halved UE4M3 scale, the bits of dq_nvfp4's
+// kvalues_mxfp4[code] * UE4M3[scale] (the halving is exact: the smallest nonzero scale is 2^-9; code 8 is +0 in
+// both tables). The sixteen bytes of sub-blocks 2h and 2h + 1 give, per sub-block, the low nibbles of its eight
+// bytes as values 0..7 and the high nibbles as 8..15, so each sub-block is the low or the high halves of the two
+// lookups put together.
+static inline void nvfp4_subs_neon(const uint8_t *qs, int8x16_t *even, int8x16_t *odd) {
+    const int8x16_t tbl = vld1q_s8(kvalues_mxfp4_i8);
+    const uint8x16_t q = vld1q_u8(qs);
+    const int8x16_t lo = vqtbl1q_s8(tbl, vandq_u8(q, vdupq_n_u8(0xF)));
+    const int8x16_t hi = vqtbl1q_s8(tbl, vshrq_n_u8(q, 4));
+    *even = vcombine_s8(vget_low_s8(lo), vget_low_s8(hi));
+    *odd = vcombine_s8(vget_high_s8(lo), vget_high_s8(hi));
+}
+static void dq_nvfp4_neon(const block_nvfp4 *b, float *y) {
+    for (int h = 0; h < 2; h++) {
+        int8x16_t e, o;
+        nvfp4_subs_neon(b->qs + 16 * h, &e, &o);
+        float32x4_t f[4];
+        i8_to_f32x4(e, f);   st16f(y + 32 * h, f, g_ue4m3_half[b->d[2 * h]]);
+        i8_to_f32x4(o, f);   st16f(y + 32 * h + 16, f, g_ue4m3_half[b->d[2 * h + 1]]);
     }
 }
 
@@ -1538,6 +1588,7 @@ static void dequant_block(int type, const void *src, float *dst) {
         case T_IQ1_M: dq_iq1_m_avx2(src, dst); return;
         case T_Q2_0:  dq_q2_0_avx2(src, dst); return;
         case T_MXFP4: dq_mxfp4_avx2(src, dst); return;
+        case T_NVFP4: dq_nvfp4_avx2(src, dst); return;
     }
 #elif RUNNER_NEON
     switch (type) {
@@ -1550,6 +1601,7 @@ static void dequant_block(int type, const void *src, float *dst) {
         case T_IQ4_NL: dq_iq4_nl_neon(src, dst); return;
         case T_IQ4_XS: dq_iq4_xs_neon(src, dst); return;
         case T_MXFP4: dq_mxfp4_neon(src, dst); return;
+        case T_NVFP4: dq_nvfp4_neon(src, dst); return;
         case T_Q2_0:  dq_q2_0_neon(src, dst); return;
         case T_IQ2_XXS: dq_iq2_xxs_neon(src, dst); return;
         case T_IQ2_XS: dq_iq2_xs_neon(src, dst); return;
@@ -1619,6 +1671,11 @@ void dequant_row(int type, const void *src, float *dst, int n) {
     if (type == T_MXFP4) {   // the kernel per block, without a switch per 32 weights
         const block_mxfp4 *b = src;
         for (int i = 0; i < n / QK; i++) dq_mxfp4_avx2(b + i, dst + (size_t)i * QK);
+        return;
+    }
+    if (type == T_NVFP4) {
+        const block_nvfp4 *b = src;
+        for (int i = 0; i < n / QK_NVFP4; i++) dq_nvfp4_avx2(b + i, dst + (size_t)i * QK_NVFP4);
         return;
     }
 #endif
@@ -2442,6 +2499,31 @@ static float dot_mxfp4_avx2(const block_mxfp4 *b, const float *x, int n) {
     return hsum8(acc);
 }
 
+// NVFP4 (R4.48.15): the doubled-integer E2M1 table (pshufb), the 0.5 folded into each sub-block's scale. Sub-block
+// s's low nibbles pair with x[16s .. 16s + 7], its high nibbles with x[16s + 8 .. 16s + 15]. Two accumulators, the
+// even and the odd sub-blocks, summed at the end: a fixed order whatever the thread count.
+static float dot_nvfp4_avx2(const block_nvfp4 *b, const float *x, int n) {
+    const __m128i tbl = _mm_loadu_si128((const __m128i *)kvalues_mxfp4_i8);
+    const __m128i mF  = _mm_set1_epi8(0xF);
+    __m256 acc0 = _mm256_setzero_ps(), acc1 = _mm256_setzero_ps();
+    for (int i = 0; i < n / QK_NVFP4; i++) {
+        const float *xp = x + i * QK_NVFP4;
+        for (int h = 0; h < 2; h++) {
+            const __m128i q  = _mm_loadu_si128((const __m128i *)(b[i].qs + 16 * h));
+            const __m128i lo = _mm_shuffle_epi8(tbl, _mm_and_si128(q, mF));
+            const __m128i hi = _mm_shuffle_epi8(tbl, _mm_and_si128(_mm_srli_epi16(q, 4), mF));
+            const float *xs = xp + 32 * h;
+            __m256 te = _mm256_mul_ps(i8lo_ps(lo), _mm256_loadu_ps(xs));
+            te = _mm256_fmadd_ps(i8lo_ps(hi), _mm256_loadu_ps(xs + 8), te);
+            __m256 to = _mm256_mul_ps(i8hi_ps(lo), _mm256_loadu_ps(xs + 16));
+            to = _mm256_fmadd_ps(i8hi_ps(hi), _mm256_loadu_ps(xs + 24), to);
+            acc0 = _mm256_fmadd_ps(_mm256_set1_ps(g_ue4m3_half[b[i].d[2 * h]]), te, acc0);
+            acc1 = _mm256_fmadd_ps(_mm256_set1_ps(g_ue4m3_half[b[i].d[2 * h + 1]]), to, acc1);
+        }
+    }
+    return hsum8(_mm256_add_ps(acc0, acc1));
+}
+
 static float dot_q2_0_avx2(const block_q2_0 *b, const float *x, int n) {
     __m256 acc = _mm256_setzero_ps();
     for (int i = 0; i < n / QK2_0; i++) {
@@ -2675,6 +2757,22 @@ static float dot_q4_0_neon(const block_q4_0 *b, const float *x, int n) {
         acc = vfmaq_n_f32(acc, dot32(lo, hi, x + i * QK), f16_to_f32(b[i].d));
     }
     return vaddvq_f32(acc);
+}
+
+// NVFP4 (R4.48.15): each sub-block's sixteen values against its sixteen x, times its halved scale; two
+// accumulators, the even and the odd sub-blocks, summed at the end (the AVX2 kernel's order of operations).
+static float dot_nvfp4_neon(const block_nvfp4 *b, const float *x, int n) {
+    float32x4_t acc0 = vdupq_n_f32(0), acc1 = vdupq_n_f32(0);
+    for (int i = 0; i < n / QK_NVFP4; i++) {
+        const float *xp = x + i * QK_NVFP4;
+        for (int h = 0; h < 2; h++) {
+            int8x16_t e, o;
+            nvfp4_subs_neon(b[i].qs + 16 * h, &e, &o);
+            acc0 = vfmaq_n_f32(acc0, dot16(e, xp + 32 * h), g_ue4m3_half[b[i].d[2 * h]]);
+            acc1 = vfmaq_n_f32(acc1, dot16(o, xp + 32 * h + 16), g_ue4m3_half[b[i].d[2 * h + 1]]);
+        }
+    }
+    return vaddvq_f32(vaddq_f32(acc0, acc1));
 }
 
 static float dot_mxfp4_neon(const block_mxfp4 *b, const float *x, int n) {
@@ -3358,6 +3456,9 @@ bool vec_dot_simd(int type) {
     // the types whose vec_dot takes a dot_*_avx2 / dot_*_neon kernel (quants.c's vec_dot switch); NVFP4 is scalar
     switch (type) {
         case T_F32: case T_F16: case T_BF16: case T_Q8_0: return true;
+#if RUNNER_AVX2 || RUNNER_NEON
+        case T_NVFP4: return true;
+#endif
         default: return false;
     }
 #else
@@ -3546,8 +3647,12 @@ float vec_dot(int type, const void *row, const float *x, int n) {
             return s;
         }
         case T_NVFP4: {
-            // scalar only for now: the format arrived via the DGX Spark
-            // field report and correctness ships before speed
+#if RUNNER_AVX2
+            return dot_nvfp4_avx2(row, x, n);
+#elif RUNNER_NEON
+            return dot_nvfp4_neon(row, x, n);
+#endif
+            // the scalar loop, off AVX2 and NEON
             const block_nvfp4 *b = row;
             float s = 0;
             for (int i = 0; i < n / QK_NVFP4; i++) {
