@@ -118,6 +118,8 @@ typedef struct {
     int max_chunk;           // 0: any T up to n_ctx; else the widest call the sliding buffers take
     int test_drop_key;       // TEST-ONLY (the cap's control, which must change the rows): the windowed path also
                              // drops the first key the mask admits; 0 in use
+    float *work_fwd, *work_dl, *work_op;            // reusable forward/layer/op scratch; grown lazily, freed in ink2_cache_free
+    size_t work_fwd_cap, work_dl_cap, work_op_cap;
 } ink2_cache;
 int  ink2_cache_init(ink2_cache *c, const ink2_shape *s, int n_ctx);
 // The same with each SLIDING application's K and V held for the window only: window - 1 + max_chunk rows that slide

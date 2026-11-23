@@ -202,7 +202,31 @@ void ink2_cache_free(ink2_cache *c) {
         if (c->conv) free(c->conv[a]);
     }
     free(c->k); free(c->v); free(c->conv); free(c->conv_floats); free(c->n_past); free(c->rows); free(c->k0);
+    free(c->work_fwd); free(c->work_dl); free(c->work_op);
     memset(c, 0, sizeof *c);
+}
+
+static float *ink2_cache_scratch(float **buf, size_t *cap, size_t n_floats) {
+    if (n_floats == 0) n_floats = 1;
+    if (*cap < n_floats) {
+        float *p = realloc(*buf, n_floats * sizeof(float));
+        if (!p) return NULL;
+        *buf = p;
+        *cap = n_floats;
+    }
+    return *buf;
+}
+static float *ink2_op_alloc(ink2_cache *c, size_t n_floats, int *owned) {
+    if (c) { *owned = 0; return ink2_cache_scratch(&c->work_op, &c->work_op_cap, n_floats); }
+    *owned = 1;
+    return malloc(sizeof(float) * (n_floats ? n_floats : 1));
+}
+static void ink2_op_free(float *p, int owned) {
+    if (owned) free(p);
+}
+static int ink2_decode_fuse_enabled(void) {
+    const char *e = getenv("RUNNER_INK2_DECODE_FUSE");
+    return !(e && e[0] == '0' && e[1] == 0);
 }
 
 size_t ink2_cache_bytes(const ink2_cache *c, const ink2_shape *s) {
@@ -395,8 +419,20 @@ static void ink2_matvec(const float *W, int n_out, int n_in, const float *x, flo
 // x_stride and y_stride floats apart. On a tensor without a view (the reference route) it is ink2_matvec position by
 // position, the serial order of step 1; scale must be 1 there (the reference provider folds an expert's factor into
 // its decode). On a view (the fast route) see ink2_lin_range.
+enum { INK2_LIN_PARTS_MAX = 32 };
+typedef struct {
+    const ink2_tensor *W;
+    int64_t row0;
+    int n_out, n_in, T;
+    const float *x;
+    size_t xs;
+    float *y;
+    size_t ys;
+    float scale;
+} ink2_lin_ctx;
 static void ink2_lin(const ink2_tensor *W, int64_t row0, int n_out, int n_in, int T, const float *x, size_t x_stride,
                      float *y, size_t y_stride, float scale);
+static void ink2_lin_parts(const ink2_lin_ctx *parts, int np, int64_t work);
 static void ink2_lin_rows(const ink2_tensor *W, int n_out, int n_in, int T, const float *x, float *y) {
     ink2_lin(W, 0, n_out, n_in, T, x, (size_t)n_in, y, (size_t)n_out, 1.0f);
 }
@@ -530,13 +566,53 @@ static void ink2_swiglu_range(void *c, int64_t b0, int64_t b1) {
 // columns), the SwiGLU, its down rows, and each position's out += down * wt in position order. A position's output is
 // the sum over its chosen experts in ascending index, as the per-position loop adds it, and each column's dot is the
 // single-column kernel's, so the rows do not depend on which other positions share the call.
-static ink2_status ink2_experts_fast(const ink2_shape *s, const ink2_moe_w *M, int T, const float *x,
-                                     const unsigned char *chosen, const float *wt, float *out) {
+static ink2_status ink2_experts_fast_c(const ink2_shape *s, const ink2_moe_w *M, int T, const float *x,
+                                       const unsigned char *chosen, const float *wt, float *out, ink2_cache *c) {
     const int H = s->hidden, E = s->n_expert, F = s->ff;
     for (size_t i = 0; i < (size_t)T * H; i++) out[i] = 0.0f;
+    if (T == 1 && ink2_decode_fuse_enabled() && M->t13 && M->t2 && !M->t13->q_act8 && !M->t2->q_act8) {
+        int n_sel = 0;
+        for (int e = 0; e < E; e++) if (chosen[e]) n_sel++;
+        if (!n_sel) return INK2_OK;
+        const int cap = n_sel < INK2_LIN_PARTS_MAX ? n_sel : INK2_LIN_PARTS_MAX;
+        int owned = 0;
+        float *buf = ink2_op_alloc(c, (size_t)cap * (2 * (size_t)F + (size_t)H), &owned);
+        if (!buf) return INK2_BAD_INPUT;
+        float *act = buf, *dn = buf + (size_t)cap * 2 * F;
+        const int nb = (F + 7) / 8;
+        int ex[INK2_LIN_PARTS_MAX];
+        ink2_lin_ctx gp[INK2_LIN_PARTS_MAX], dp[INK2_LIN_PARTS_MAX];
+        int e = 0;
+        while (e < E) {
+            int np = 0;
+            for (; e < E && np < INK2_LIN_PARTS_MAX; e++) if (chosen[e]) ex[np++] = e;
+            if (!np) break;
+            for (int k = 0; k < np; k++) {
+                const int ek = ex[k];
+                const float f13 = M->t13->q_scale ? M->t13->q_scale[ek] : 1.0f;
+                const float f2 = M->t2->q_scale ? M->t2->q_scale[ek] : 1.0f;
+                gp[k] = (ink2_lin_ctx){ M->t13, (int64_t)ek * 2 * F, 2 * F, H, 1, x, (size_t)H,
+                                        act + (size_t)k * 2 * F, (size_t)2 * F, f13 };
+                dp[k] = (ink2_lin_ctx){ M->t2, (int64_t)ek * H, H, F, 1, act + (size_t)k * 2 * F, (size_t)2 * F,
+                                        dn + (size_t)k * H, (size_t)H, f2 };
+            }
+            ink2_lin_parts(gp, np, (int64_t)H);
+            ink2_swiglu_ctx sw = { s, act, F, nb };
+            ink2_par((int64_t)np * nb, 256, ink2_swiglu_range, &sw);
+            ink2_lin_parts(dp, np, (int64_t)F);
+            for (int k = 0; k < np; k++) {
+                const float w = wt[ex[k]];
+                const float *d = dn + (size_t)k * H;
+                for (int h = 0; h < H; h++) out[h] += d[h] * w;
+            }
+        }
+        ink2_op_free(buf, owned);
+        return INK2_OK;
+    }
     int *who = malloc(sizeof(int) * (size_t)T);
-    float *xe = malloc(sizeof(float) * (size_t)T * ((size_t)H + 2 * (size_t)F + (size_t)H));
-    if (!who || !xe) { free(who); free(xe); return INK2_BAD_INPUT; }
+    int owned = 0;
+    float *xe = ink2_op_alloc(c, (size_t)T * ((size_t)H + 2 * (size_t)F + (size_t)H), &owned);
+    if (!who || !xe) { free(who); ink2_op_free(xe, owned); return INK2_BAD_INPUT; }
     float *act = xe + (size_t)T * H, *dn = act + (size_t)T * 2 * F;
     for (int e = 0; e < E; e++) {
         int n = 0;
@@ -556,7 +632,7 @@ static ink2_status ink2_experts_fast(const ink2_shape *s, const ink2_moe_w *M, i
             for (int h = 0; h < H; h++) o[h] += d[h] * w;
         }
     }
-    free(who); free(xe);
+    free(who); ink2_op_free(xe, owned);
     return INK2_OK;
 }
 // the experts at one position, the chosen ones in ascending index, weighted by wt[e]: ot = sum wt[e] * expert_e(xt);
@@ -564,7 +640,7 @@ static ink2_status ink2_experts_fast(const ink2_shape *s, const ink2_moe_w *M, i
 static ink2_status ink2_experts_one(const ink2_shape *s, const ink2_moe_w *M, const float *xt, const unsigned char *chosen,
                                     const float *wt, float *act, float *down, float *ot) {
     int H = s->hidden, E = s->n_expert, F = s->ff;
-    if (M->t13) return ink2_experts_fast(s, M, 1, xt, chosen, wt, ot);
+    if (M->t13) return ink2_experts_fast_c(s, M, 1, xt, chosen, wt, ot, NULL);
     for (int h = 0; h < H; h++) ot[h] = 0.0f;
     for (int e = 0; e < E; e++) {
         if (!chosen[e]) continue;
@@ -579,35 +655,48 @@ static ink2_status ink2_experts_one(const ink2_shape *s, const ink2_moe_w *M, co
     }
     return INK2_OK;
 }
-ink2_status ink2_expert_layer(const ink2_shape *s, const ink2_weights *w, int block, int T,
-                              const float *x, float *out) {
+static ink2_status ink2_expert_layer_c(const ink2_shape *s, const ink2_weights *w, int block, int T,
+                                       const float *x, float *out, ink2_cache *c) {
     ink2_moe_w M;
     ink2_status st = ink2_moe_bind(s, w, block, &M);
     if (st != INK2_OK) return st;
     int H = s->hidden, E = s->n_expert, F = s->ff;
-    float *sc = malloc(sizeof(float) * (2 * (size_t)E + 2 * (size_t)F + (size_t)H));
-    unsigned char *chosen = malloc((size_t)E);
-    if (!sc || !chosen) { free(sc); free(chosen); return INK2_BAD_INPUT; }
-    float *wt = sc + E, *act = wt + E, *down = act + 2 * F;
     if (M.t13) {   // the fast route: every position's routing, then the experts grouped
+        if (T == 1 && E <= 256) {
+            float sc[256], wt[256];
+            unsigned char chosen[256];
+            ink2_route_one(s, &M, x, NULL, sc, chosen, wt);
+            return ink2_experts_fast_c(s, &M, 1, x, chosen, wt, out, c);
+        }
+        float *sc = malloc(sizeof(float) * 2 * (size_t)E);
+        unsigned char *chosen = malloc((size_t)E);
         unsigned char *ch = malloc((size_t)T * E);
         float *wts = malloc(sizeof(float) * (size_t)T * E);
-        if (!ch || !wts) st = INK2_BAD_INPUT;
+        if (!sc || !chosen || !ch || !wts) st = INK2_BAD_INPUT;
+        float *wt = sc ? sc + E : NULL;
         for (int t = 0; t < T && st == INK2_OK; t++) {
             ink2_route_one(s, &M, x + (size_t)t * H, NULL, sc, chosen, wt);
             memcpy(ch + (size_t)t * E, chosen, (size_t)E);
             memcpy(wts + (size_t)t * E, wt, sizeof(float) * (size_t)E);
         }
-        if (st == INK2_OK) st = ink2_experts_fast(s, &M, T, x, ch, wts, out);
+        if (st == INK2_OK) st = ink2_experts_fast_c(s, &M, T, x, ch, wts, out, c);
         free(ch); free(wts); free(sc); free(chosen);
         return st;
     }
+    float *sc = malloc(sizeof(float) * (2 * (size_t)E + 2 * (size_t)F + (size_t)H));
+    unsigned char *chosen = malloc((size_t)E);
+    if (!sc || !chosen) { free(sc); free(chosen); return INK2_BAD_INPUT; }
+    float *wt = sc + E, *act = wt + E, *down = act + 2 * F;
     for (int t = 0; t < T && st == INK2_OK; t++) {
         ink2_route_one(s, &M, x + (size_t)t * H, NULL, sc, chosen, wt);
         st = ink2_experts_one(s, &M, x + (size_t)t * H, chosen, wt, act, down, out + (size_t)t * H);
     }
     free(sc); free(chosen);
     return st;
+}
+ink2_status ink2_expert_layer(const ink2_shape *s, const ink2_weights *w, int block, int T,
+                              const float *x, float *out) {
+    return ink2_expert_layer_c(s, w, block, T, x, out, NULL);
 }
 
 ink2_status ink2_expert_selection(const ink2_shape *s, const ink2_weights *w, int block, int T, const float *x, int *sel) {
@@ -644,7 +733,6 @@ static void ink2_matvec(const float *W, int n_out, int n_in, const float *x, flo
 // not depend on how many positions the call holds, how they are grouped, or the thread count. The weight row is read
 // in its file format and decoded in registers; the activations stay float32; the scale (an expert's factor) after the
 // dot, as llama.cpp's graph applies it.
-typedef struct { const ink2_tensor *W; int64_t row0; int n_in, T; const float *x; size_t xs; float *y; size_t ys; float scale; } ink2_lin_ctx;
 static void ink2_lin_range(void *c, int64_t o0, int64_t o1) {
     const ink2_lin_ctx *L = c;
     const unsigned char *base = (const unsigned char *)L->W->q;
@@ -692,9 +780,43 @@ static void ink2_lin(const ink2_tensor *W, int64_t row0, int n_out, int n_in, in
         x = xq;
         x_stride = (size_t)n_in;
     }
-    ink2_lin_ctx c = { W, row0, n_in, T, x, x_stride, y, y_stride, scale };
+    ink2_lin_ctx c = { W, row0, n_out, n_in, T, x, x_stride, y, y_stride, scale };
     ink2_par(n_out, (int64_t)n_in * T, ink2_lin_range, &c);
     free(xq);
+}
+typedef struct {
+    int np;
+    const ink2_lin_ctx *p;
+    int64_t start[INK2_LIN_PARTS_MAX + 1];
+} ink2_lin_parts_ctx;
+static void ink2_lin_parts_range(void *c, int64_t i0, int64_t i1) {
+    const ink2_lin_parts_ctx *mc = c;
+    for (int s = 0; s < mc->np; s++) {
+        int64_t a = i0 > mc->start[s] ? i0 : mc->start[s];
+        int64_t b = i1 < mc->start[s + 1] ? i1 : mc->start[s + 1];
+        if (a < b) ink2_lin_range((void *)&mc->p[s], a - mc->start[s], b - mc->start[s]);
+    }
+}
+// Dispatch np independent fast linear projections in one ink2_par barrier (bits match calling ink2_lin per part).
+static void ink2_lin_parts(const ink2_lin_ctx *parts, int np, int64_t work) {
+    if (np <= 0) return;
+    int can_fuse = (np > 1) && (np <= INK2_LIN_PARTS_MAX) && ink2_decode_fuse_enabled();
+    for (int s = 0; s < np && can_fuse; s++) {
+        if (!parts[s].W->q || parts[s].W->q_act8) can_fuse = 0;
+    }
+    if (!can_fuse) {
+        for (int s = 0; s < np; s++) {
+            const ink2_lin_ctx *p = &parts[s];
+            ink2_lin(p->W, p->row0, p->n_out, p->n_in, p->T, p->x, p->xs, p->y, p->ys, p->scale);
+        }
+        return;
+    }
+    ink2_lin_parts_ctx mc;
+    mc.np = np;
+    mc.p = parts;
+    mc.start[0] = 0;
+    for (int s = 0; s < np; s++) mc.start[s + 1] = mc.start[s] + parts[s].n_out;
+    if (mc.start[np] > 0) ink2_par(mc.start[np], work, ink2_lin_parts_range, &mc);
 }
 // Inkling2LoopL2Clip on one head vector: norm = sqrt(sum y^2) (vector_norm), then y * min(thr / (norm + 1e-6), 1),
 // the quotient as torch computes a Python float over a tensor: f32(1 / (norm + 1e-6)) * f32(thr)
@@ -823,11 +945,11 @@ static void ink2_attn_q(const ink2_shape *s, const ink2_attn_layer *L, int T, co
 // prefill whatever the ring holds); the rest from lin. The same terms in the same order whether a position's input is
 // current or historical, so a sequence fed in chunks gives the bits of the whole.
 #define INK2_CONV_IN(u, ch) ((u) >= 0 ? lin[(size_t)(u) * C + (ch)] : hist[(size_t)((p0 + (u)) % (K - 1)) * C + (ch)])
-static void ink2_kv_conv(const ink2_shape *s, const ink2_attn_layer *L, int kv, int T, const float *lin, const float *x,
-                         float *dyn, float *out, int p0, const float *hist) {
+static void ink2_kv_conv_finish(const ink2_shape *s, const ink2_attn_layer *L, int kv, int T, const float *lin,
+                                float *dyn, float *out, int p0, const float *hist) {
+    (void)s;
     int g = L->g, C = L->C, K = L->K, R = L->nkv * K, hd = L->hd;
     const float *cw = L->wt[kv ? WVC : WKC];
-    if (g) ink2_lin_rows(L->tt[kv ? WVD : WKD], R, s->hidden, T, x, dyn);
     const float div = (float)sqrt((double)(g ? 2 * K + 1 : K + 1));   // math.sqrt, a float32 scalar to torch
     if (!hist) p0 = 0;
     for (int t = 0; t < T; t++) for (int ch = 0; ch < C; ch++) {
@@ -842,6 +964,11 @@ static void ink2_kv_conv(const ink2_shape *s, const ink2_attn_layer *L, int kv, 
         }
         out[(size_t)t * C + ch] = (a + lin[(size_t)t * C + ch]) / div;
     }
+}
+static void ink2_kv_conv(const ink2_shape *s, const ink2_attn_layer *L, int kv, int T, const float *lin, const float *x,
+                         float *dyn, float *out, int p0, const float *hist) {
+    if (L->g) ink2_lin_rows(L->tt[kv ? WVD : WKD], L->nkv * L->K, s->hidden, T, x, dyn);
+    ink2_kv_conv_finish(s, L, kv, T, lin, dyn, out, p0, hist);
 }
 // Inkling2LoopShortConvolution on hidden-width states (post_attention_convolution, post_mlp_convolution): the
 // sliding branch above with the layer's own taps w [C][K]: conv[t][c] = sum_j w[c][j] x[t - (K-1) + j][c], j
@@ -889,16 +1016,20 @@ static void ink2_bank_range(void *c, int64_t h0, int64_t h1) {
 }
 // relative_position_bias up to the bank: rs = linear [heads][d_rel], the scaled clip at rel_clip ((full) with tau),
 // rl[t][h][e] = sum_r rs[h][r] proj[r][e]: the bias of distance e, read by the core for 0 <= q - k < extent
-static void ink2_attn_rel(const ink2_shape *s, const ink2_attn_layer *L, int T, const int *pos, const float *x, float *rs,
-                          float *rl) {
+static void ink2_attn_rel_finish(const ink2_shape *s, const ink2_attn_layer *L, int T, const int *pos, float *rs,
+                                 float *rl) {
     int nh = L->nh, dr = L->dr, ext = L->ext;
-    ink2_lin_rows(L->tt[WR], nh * dr, s->hidden, T, x, rs);
     for (int t = 0; t < T; t++) {
         float *rt = rs + (size_t)t * nh * dr;
         ink2_scaled_clip(s, L->g, rt, L->wt[WRS], nh, dr, s->rel_clip, pos[t]);
         ink2_bank_ctx bc = { rt, L->wt[WRP], rl + (size_t)t * nh * ext, dr, ext };
         ink2_par(nh, (int64_t)ext * dr, ink2_bank_range, &bc);   // threads over heads
     }
+}
+static void ink2_attn_rel(const ink2_shape *s, const ink2_attn_layer *L, int T, const int *pos, const float *x, float *rs,
+                          float *rl) {
+    ink2_lin_rows(L->tt[WR], L->nh * L->dr, s->hidden, T, x, rs);
+    ink2_attn_rel_finish(s, L, T, pos, rs, rl);
 }
 // eager_attention_forward with the sink, head by head, query by query: logits = (Q . K) * head_dim^-0.5 + bias over
 // the keys the mask admits (k <= q, and on sliding layers q - k < window), the sink as one more logit with a zero
@@ -1124,29 +1255,35 @@ static void ink2_attn_core(const ink2_shape *s, const ink2_attn_layer *L, int fa
 // o_proj (Inkling2LoopGatedOutputProjection): att times sigmoid(gate_proj(x)) (att is overwritten), then linear;
 // ga is [T][Q] (each position's products are independent, so taking every gate first changes no bits); the LoRA
 // adapter of attn_output reads the gated att, as before
-static ink2_status ink2_attn_out_lora(const ink2_shape *s, const ink2_attn_layer *L, const ink2_lora *lora, int block, int T,
-                                      const float *x, float *att, float *ga, float *out) {
-    ink2_lin_rows(L->tt[WG], L->Q, s->hidden, T, x, ga);
+static ink2_status ink2_attn_out_finish(const ink2_shape *s, const ink2_attn_layer *L, const ink2_lora *lora, int block,
+                                        int T, float *att, const float *ga, float *out) {
     for (size_t i = 0; i < (size_t)T * L->Q; i++) att[i] = att[i] * ink2_sigmoid(ga[i]);
     ink2_lin_rows(L->tt[WO], s->hidden, L->Q, T, att, out);
     return ink2_lora_apply(lora, block, 3, s->hidden, L->Q, T, att, out);
+}
+static ink2_status ink2_attn_out_lora(const ink2_shape *s, const ink2_attn_layer *L, const ink2_lora *lora, int block, int T,
+                                      const float *x, float *att, float *ga, float *out) {
+    ink2_lin_rows(L->tt[WG], L->Q, s->hidden, T, x, ga);
+    return ink2_attn_out_finish(s, L, lora, block, T, att, ga, out);
 }
 static void ink2_attn_out(const ink2_shape *s, const ink2_attn_layer *L, int T, const float *x, float *att, float *ga,
                           float *out) {
     ink2_attn_out_lora(s, L, NULL, 0, T, x, att, ga, out);
 }
-// scratch for T positions: q [T][Q], k, v, lin [T][C], dyn [T][n_kv K], rs [T][heads d_rel], rl [T][heads][extent],
+// scratch for T positions: q [T][Q], k, v, lin_k/v [T][C], dyn_k/v [T][n_kv K], rs [T][heads d_rel], rl [T][heads][extent],
 // sinks [T][heads], att [T][Q], the logit row [nk + 1] (nk keys), the gate rows [T][Q]
-static float *ink2_attn_scratch(const ink2_attn_layer *L, int T, int nk, float **p) {
-    size_t n[11] = { (size_t)T * L->Q, (size_t)T * L->C, (size_t)T * L->C, (size_t)T * L->C, (size_t)T * L->nkv * L->K,
-                     (size_t)T * L->nh * L->dr, (size_t)T * L->nh * L->ext, (size_t)T * L->nh, (size_t)T * L->Q,
-                     (size_t)nk + 1, (size_t)T * L->Q }, tot = 0;
-    for (int i = 0; i < 11; i++) tot += n[i];
-    float *buf = malloc(sizeof(float) * tot);
-    if (buf) { size_t o = 0; for (int i = 0; i < 11; i++) { p[i] = buf + o; o += n[i]; } }
+enum { SQ, SK, SV, SLIN, SDYN, SLINV, SDYNV, SRS, SRL, SSK, SATT, SLG, SGA, NSCR };
+static float *ink2_attn_scratch_c(ink2_cache *c, const ink2_attn_layer *L, int T, int nk, float **p, int *owned) {
+    size_t n[NSCR] = { (size_t)T * L->Q, (size_t)T * L->C, (size_t)T * L->C,
+                       (size_t)T * L->C, (size_t)T * L->nkv * L->K,
+                       (size_t)T * L->C, (size_t)T * L->nkv * L->K,
+                       (size_t)T * L->nh * L->dr, (size_t)T * L->nh * L->ext, (size_t)T * L->nh, (size_t)T * L->Q,
+                       (size_t)nk + 1, (size_t)T * L->Q }, tot = 0;
+    for (int i = 0; i < NSCR; i++) tot += n[i];
+    float *buf = ink2_op_alloc(c, tot, owned);
+    if (buf) { size_t o = 0; for (int i = 0; i < NSCR; i++) { p[i] = buf + o; o += n[i]; } }
     return buf;
 }
-enum { SQ, SK, SV, SLIN, SDYN, SRS, SRL, SSK, SATT, SLG, SGA };
 
 // Inkling2LoopSlidingAttention (hybrid_sliding) / Inkling2LoopFullAttention (hybrid), in the reference's order:
 // Q = q_proj(xq); K = k_proj(xk), V = v_proj(xv) (each: linear, convolution, norm); K, V into the application's
@@ -1182,19 +1319,57 @@ static ink2_status ink2_attention_lora(const ink2_shape *s, const ink2_weights *
         c->k0[app] = kp0;
         if (p0 + T - kp0 > c->rows[app]) return INK2_BAD_INPUT;
     }
-    float *p[11], *buf = ink2_attn_scratch(&L, T, nk, p);
+    int buf_owned = 0;
+    float *p[NSCR], *buf = ink2_attn_scratch_c(c, &L, T, nk, p, &buf_owned);
     if (!buf) return INK2_BAD_INPUT;
     int block = s->app_block[app];
+    const int fast = L.tt[WQ] && L.tt[WQ]->q != NULL;
+    ink2_rel_probe *rp = ink2_active_rel_probe();
+    const int use_fused = fast && !lora && !rp && ink2_decode_fuse_enabled() && L.tt[WK]->q && L.tt[WV]->q &&
+                          L.tt[WR]->q && L.tt[WS]->q && L.tt[WG]->q && (!L.g || (L.tt[WKD]->q && L.tt[WVD]->q));
+    if (use_fused) {
+        const size_t H = (size_t)s->hidden;
+        ink2_lin_ctx ap[8];
+        int nap = 0;
+        ap[nap++] = (ink2_lin_ctx){ L.tt[WQ], 0, L.Q, s->hidden, T, xq, H, p[SQ], (size_t)L.Q, 1.0f };
+        ap[nap++] = (ink2_lin_ctx){ L.tt[WK], 0, L.C, s->hidden, T, xk, H, p[SLIN], (size_t)L.C, 1.0f };
+        if (L.g) ap[nap++] = (ink2_lin_ctx){ L.tt[WKD], 0, L.nkv * L.K, s->hidden, T, xk, H, p[SDYN], (size_t)(L.nkv * L.K), 1.0f };
+        ap[nap++] = (ink2_lin_ctx){ L.tt[WV], 0, L.C, s->hidden, T, xv, H, p[SLINV], (size_t)L.C, 1.0f };
+        if (L.g) ap[nap++] = (ink2_lin_ctx){ L.tt[WVD], 0, L.nkv * L.K, s->hidden, T, xv, H, p[SDYNV], (size_t)(L.nkv * L.K), 1.0f };
+        ap[nap++] = (ink2_lin_ctx){ L.tt[WR], 0, L.nh * L.dr, s->hidden, T, xq, H, p[SRS], (size_t)(L.nh * L.dr), 1.0f };
+        ap[nap++] = (ink2_lin_ctx){ L.tt[WS], 0, L.nh, s->hidden, T, xq, H, p[SSK], (size_t)L.nh, 1.0f };
+        ap[nap++] = (ink2_lin_ctx){ L.tt[WG], 0, L.Q, s->hidden, T, xq, H, p[SGA], (size_t)L.Q, 1.0f };
+        ink2_lin_parts(ap, nap, (int64_t)s->hidden * T);
+        for (int t = 0; t < T; t++) ink2_scaled_clip(s, L.g, p[SQ] + (size_t)t * L.Q, L.wt[WQS], L.nh, L.hd, s->qk_clip, pos[t]);
+        float *hk = ink2_conv_hist(s, c, app, 0), *hv = ink2_conv_hist(s, c, app, 1);
+        ink2_kv_conv_finish(s, &L, 0, T, p[SLIN], p[SDYN], p[SK], p0, hk);
+        ink2_kv_norm(s, &L, 0, T, p[SK]);
+        ink2_conv_hist_store(hk, L.K, L.C, p0, T, p[SLIN]);
+        ink2_kv_conv_finish(s, &L, 1, T, p[SLINV], p[SDYNV], p[SV], p0, hv);
+        ink2_kv_norm(s, &L, 1, T, p[SV]);
+        ink2_conv_hist_store(hv, L.K, L.C, p0, T, p[SLINV]);
+        for (int t = 0; t < T; t++) {
+            memcpy(c->k[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SK] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
+            memcpy(c->v[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SV] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
+        }
+        c->n_past[app] = p0 + T;
+        ink2_attn_rel_finish(s, &L, T, pos, p[SRS], p[SRL]);
+        const size_t koff = (size_t)(kp0 - c->k0[app]) * L.C;
+        ink2_attn_core(s, &L, fast, T, pos, p[SQ], c->k[app] + koff, c->v[app] + koff, nk, kp0, p[SRL], p[SSK], p[SLG],
+                       p[SATT], probs);
+        st = ink2_attn_out_finish(s, &L, NULL, block, T, p[SATT], p[SGA], out);
+        ink2_op_free(buf, buf_owned);
+        return st;
+    }
     st = ink2_attn_q_lora(s, &L, lora, block, T, pos, xq, p[SQ]);
     if (st == INK2_OK) st = ink2_attn_kv_lora(s, &L, lora, block, 0, T, xk, p[SLIN], p[SDYN], p[SK], p0, ink2_conv_hist(s, c, app, 0));
     if (st == INK2_OK) st = ink2_attn_kv_lora(s, &L, lora, block, 1, T, xv, p[SLIN], p[SDYN], p[SV], p0, ink2_conv_hist(s, c, app, 1));
-    if (st != INK2_OK) { free(buf); return st; }
+    if (st != INK2_OK) { ink2_op_free(buf, buf_owned); return st; }
     for (int t = 0; t < T; t++) {
         memcpy(c->k[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SK] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
         memcpy(c->v[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SV] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
     }
     c->n_past[app] = p0 + T;   // what the slot now holds consistently: rows and histories of 0..p0+T-1
-    ink2_rel_probe *rp = ink2_active_rel_probe();
     if (rp && app == rp->app) {
         size_t n_el = (size_t)T * (size_t)s->hidden;
         rp->T = T; rp->H = s->hidden;
@@ -1203,7 +1378,7 @@ static ink2_status ink2_attention_lora(const ink2_shape *s, const ink2_weights *
             float *xq_rel = malloc(sizeof(float) * n_el);
             if (!xq_rel) {
                 fprintf(stderr, "error: inkling2_loop ink2_attention_lora: out of memory allocating rel_probe buffer\n");
-                free(buf);
+                ink2_op_free(buf, buf_owned);
                 return INK2_BAD_INPUT;
             }
             for (size_t i = 0; i < n_el; i++) xq_rel[i] = xq[i] + rp->eps * rp->d[i];
@@ -1217,11 +1392,10 @@ static ink2_status ink2_attention_lora(const ink2_shape *s, const ink2_weights *
     }
     ink2_lin_rows(L.tt[WS], L.nh, s->hidden, T, xq, p[SSK]);
     const size_t koff = (size_t)(kp0 - c->k0[app]) * L.C;
-    const int fast = L.tt[WQ] && L.tt[WQ]->q != NULL;
     ink2_attn_core(s, &L, fast, T, pos, p[SQ], c->k[app] + koff, c->v[app] + koff, nk, kp0, p[SRL], p[SSK], p[SLG], p[SATT],
                    probs);
     st = ink2_attn_out_lora(s, &L, lora, block, T, xq, p[SATT], p[SGA], out);
-    free(buf);
+    ink2_op_free(buf, buf_owned);
     return st;
 }
 ink2_status ink2_attention(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int app, int T,
@@ -1252,7 +1426,8 @@ ink2_status ink2_attention_step(const ink2_shape *s, const ink2_weights *w, int 
     if (!step || T <= 0) return INK2_BAD_INPUT;
     ink2_status st = ink2_attn_bind(s, w, app, &L);
     if (st != INK2_OK) return st;
-    float *p[11], *buf = ink2_attn_scratch(&L, T, T, p);
+    int buf_owned = 0;
+    float *p[NSCR], *buf = ink2_attn_scratch_c(NULL, &L, T, T, p, &buf_owned);
     if (!buf) return INK2_BAD_INPUT;
     int nh = L.nh, ext = L.ext, kv = step[0] == 'v';
     if (!strcmp(step, "q_proj")) ink2_attn_q(s, &L, T, pos, in[0], out);
@@ -1284,7 +1459,7 @@ ink2_status ink2_attention_step(const ink2_shape *s, const ink2_weights *w, int 
     } else if (!strcmp(step, "o_proj")) {
         memcpy(p[SATT], in[0], sizeof(float) * (size_t)T * L.Q); ink2_attn_out(s, &L, T, in[1], p[SATT], p[SGA], out);
     } else st = INK2_BAD_INPUT;
-    free(buf);
+    ink2_op_free(buf, buf_owned);
     return st;
 }
 
@@ -1327,14 +1502,15 @@ ink2_status ink2_head(const ink2_shape *s, const ink2_weights *w, int T, const f
     return INK2_OK;
 }
 
-ink2_status ink2_block_read(const ink2_shape *s, const ink2_weights *w, const char *which, int T, int n_blocks,
-                            const float *block_states, const float *partial, float *out, int *n_out) {
+static ink2_status ink2_block_read_c(const ink2_shape *s, const ink2_weights *w, const char *which, int T, int n_blocks,
+                                     const float *block_states, const float *partial, float *out, int *n_out,
+                                     ink2_cache *c) {
     char name[160];
     snprintf(name, sizeof name, "%s.query", which);
     const ink2_tensor *q = w->get(w->ctx, name);
     if (!q || q->ne[0] != s->hidden) return INK2_NO_TENSOR;
-    int H = s->hidden, nq = q->n_dims == 1 ? 1 : (int)q->ne[1], nkv = n_blocks + 1;
-    float *st = malloc(sizeof(float) * (size_t)nkv * H * 2 + sizeof(float) * (size_t)nkv + sizeof(float) * (size_t)nq * H);
+    int H = s->hidden, nq = q->n_dims == 1 ? 1 : (int)q->ne[1], nkv = n_blocks + 1, owned = 0;
+    float *st = ink2_op_alloc(c, (size_t)nkv * H * 2 + (size_t)nkv + (size_t)nq * H, &owned);
     if (!st) return INK2_BAD_INPUT;
     float *normed = st + (size_t)nkv * H, *scores = normed + (size_t)nkv * H, *o = scores + nkv;
     for (int t = 0; t < T; t++) {
@@ -1343,19 +1519,23 @@ ink2_status ink2_block_read(const ink2_shape *s, const ink2_weights *w, const ch
         ink2_depth_attn(q->data, nq, st, nkv, H, normed, scores, o);
         for (int i = 0; i < nq; i++) memcpy(out + ((size_t)i * T + t) * H, o + (size_t)i * H, sizeof(float) * (size_t)H);
     }
-    free(st);
+    ink2_op_free(st, owned);
     if (n_out) *n_out = nq;
     return INK2_OK;
 }
+ink2_status ink2_block_read(const ink2_shape *s, const ink2_weights *w, const char *which, int T, int n_blocks,
+                            const float *block_states, const float *partial, float *out, int *n_out) {
+    return ink2_block_read_c(s, w, which, T, n_blocks, block_states, partial, out, n_out, NULL);
+}
 
-ink2_status ink2_message_input(const ink2_shape *s, const ink2_weights *w, int loop_layer, int T, int n_prev,
-                               const float *prev_block_states, const float *x, float *out) {
+static ink2_status ink2_message_input_c(const ink2_shape *s, const ink2_weights *w, int loop_layer, int T, int n_prev,
+                                        const float *prev_block_states, const float *x, float *out, ink2_cache *c) {
     const ink2_tensor *q = w->get(w->ctx, "model.message_input.query");   // [loop layers][4][H]
-    int H = s->hidden, nloop = s->loop_end - s->loop_start, nkv = n_prev + 1;
+    int H = s->hidden, nloop = s->loop_end - s->loop_start, nkv = n_prev + 1, owned = 0;
     if (!q || q->ne[0] != H || q->ne[1] != 4 || q->ne[2] != nloop || loop_layer < 0 || loop_layer >= nloop)
         return INK2_NO_TENSOR;
     const float *ql = q->data + (size_t)loop_layer * 4 * H;
-    float *st = malloc(sizeof(float) * ((size_t)nkv * H * 2 + (size_t)nkv));
+    float *st = ink2_op_alloc(c, (size_t)nkv * H * 2 + (size_t)nkv, &owned);
     if (!st) return INK2_BAD_INPUT;
     float *normed = st + (size_t)nkv * H, *scores = normed + (size_t)nkv * H;
     for (int t = 0; t < T; t++) {
@@ -1363,8 +1543,12 @@ ink2_status ink2_message_input(const ink2_shape *s, const ink2_weights *w, int l
         memcpy(st + (size_t)n_prev * H, x + (size_t)t * H, sizeof(float) * (size_t)H);
         ink2_depth_attn(ql, 4, st, nkv, H, normed, scores, out + (size_t)t * 4 * H);   // [T][4][H]
     }
-    free(st);
+    ink2_op_free(st, owned);
     return INK2_OK;
+}
+ink2_status ink2_message_input(const ink2_shape *s, const ink2_weights *w, int loop_layer, int T, int n_prev,
+                               const float *prev_block_states, const float *x, float *out) {
+    return ink2_message_input_c(s, w, loop_layer, T, n_prev, prev_block_states, x, out, NULL);
 }
 
 typedef struct { const float *wf, *wg, *d, *xt, *mt; float *ot; int r; } ink2_gate_ctx;
@@ -1378,63 +1562,161 @@ static void ink2_gate_range(void *c, int64_t h0, int64_t h1) {
         q->ot[h] = (1.0f - f) * q->xt[h] + g * q->mt[h];
     }
 }
-typedef struct { const float *x, *msg; float *gh, eps; int H; } ink2_msg_norm_ctx;
+typedef struct {
+    int n_roles, T, H;
+    size_t msg_stride;
+    const float *const *xs, *const *msgs;
+    float *gh, eps;
+} ink2_msg_norm_ctx;
 static void ink2_msg_norm_range(void *c, int64_t t0, int64_t t1) {
     const ink2_msg_norm_ctx *m = c;
     const int H = m->H;
-    for (int64_t t = t0; t < t1; t++) {
-        float *dst = m->gh + (size_t)t * 2 * H;
-        ink2_unweighted_norm(m->x + (size_t)t * H, H, m->eps, dst);
-        ink2_unweighted_norm(m->msg + (size_t)t * H, H, m->eps, dst + H);
+    for (int r_i = 0; r_i < m->n_roles; r_i++) {
+        for (int64_t t = t0; t < t1; t++) {
+            float *dst = m->gh + ((size_t)r_i * m->T + (size_t)t) * 2 * H;
+            ink2_unweighted_norm(m->xs[r_i] + (size_t)t * H, H, m->eps, dst);
+            ink2_unweighted_norm(m->msgs[r_i] + (size_t)t * m->msg_stride, H, m->eps, dst + H);
+        }
     }
 }
 typedef struct { const float *fa, *ga, *x, *msg; float *out; } ink2_msg_comb_ctx;
-static void ink2_msg_comb_range(void *c, int64_t i0, int64_t i1) {
-    const ink2_msg_comb_ctx *m = c;
-    for (int64_t i = i0; i < i1; i++)
-        m->out[i] = (1.0f - p_tanhf(m->fa[i])) * m->x[i] + p_tanhf(m->ga[i]) * m->msg[i];
+typedef struct {
+    int np;
+    ink2_msg_comb_ctx c[3];
+    int64_t start[4];
+} ink2_msg_comb_multi_ctx;
+static void ink2_msg_comb_multi_range(void *c, int64_t i0, int64_t i1) {
+    const ink2_msg_comb_multi_ctx *mc = c;
+    for (int r_i = 0; r_i < mc->np; r_i++) {
+        int64_t a = i0 > mc->start[r_i] ? i0 : mc->start[r_i];
+        int64_t b = i1 < mc->start[r_i + 1] ? i1 : mc->start[r_i + 1];
+        const ink2_msg_comb_ctx *m = &mc->c[r_i];
+        for (int64_t k = a - mc->start[r_i]; k < b - mc->start[r_i]; k++)
+            m->out[k] = (1.0f - p_tanhf(m->fa[k])) * m->x[k] + p_tanhf(m->ga[k]) * m->msg[k];
+    }
 }
-ink2_status ink2_message_step(const ink2_shape *s, const ink2_weights *w, int block, const char *role, int T,
-                              const float *x, const float *message, float *out) {
-    char n1[160], n2[160], n3[160];
-    snprintf(n1, sizeof n1, "model.layers.%d.%s_message_gate.down_proj.weight", block, role);
-    snprintf(n2, sizeof n2, "model.layers.%d.%s_message_gate.forget_gate_proj.weight", block, role);
-    snprintf(n3, sizeof n3, "model.layers.%d.%s_message_gate.message_gate_proj.weight", block, role);
-    const ink2_tensor *wd = w->get(w->ctx, n1), *wf = w->get(w->ctx, n2), *wg = w->get(w->ctx, n3);
-    int H = s->hidden, r = s->loop_gate_rank;
-    if (!wd || !wf || !wg || wd->ne[0] != 2 * H || wd->ne[1] != r || wf->ne[0] != r || wf->ne[1] != H ||
-        wg->ne[0] != r || wg->ne[1] != H) return INK2_NO_TENSOR;
-    const int fast = wd->q && wf->q && wg->q;
-    if (!fast && (!wd->data || !wf->data || !wg->data)) return INK2_NO_TENSOR;
-    if (fast) {
-        // fast route: batch all T positions through ink2_lin's multi-column path, then combine in parallel
-        const size_t t_gh = (size_t)T * 2 * H, t_d = (size_t)T * r, t_fg = (size_t)T * H;
-        float *gh = malloc(sizeof(float) * (t_gh + t_d + 2 * t_fg));
-        if (!gh) return INK2_BAD_INPUT;
-        float *d = gh + t_gh, *fa = d + t_d, *ga = fa + t_fg;
-        ink2_msg_norm_ctx nc = { x, message, gh, s->eps, H };
-        ink2_par(T, 4 * (int64_t)H, ink2_msg_norm_range, &nc);
-        ink2_lin_rows(wd, r, 2 * H, T, gh, d);
-        ink2_lin_rows(wf, H, r, T, d, fa);
-        ink2_lin_rows(wg, H, r, T, d, ga);
-        ink2_msg_comb_ctx cc = { fa, ga, x, message, out };
-        ink2_par((int64_t)T * H, 16, ink2_msg_comb_range, &cc);
-        free(gh);
+static ink2_status ink2_message_steps_c(const ink2_shape *s, const ink2_weights *w, int block, const char *const *roles,
+                                        int n_roles, int T, const float *const *xs, const float *const *msgs,
+                                        size_t msg_stride, float *const *outs, ink2_cache *c) {
+    const ink2_tensor *wd[3], *wf[3], *wg[3];
+    int H = s->hidden, r = s->loop_gate_rank, fast = 1, has_act8 = 0;
+    for (int r_i = 0; r_i < n_roles; r_i++) {
+        char n1[160], n2[160], n3[160];
+        snprintf(n1, sizeof n1, "model.layers.%d.%s_message_gate.down_proj.weight", block, roles[r_i]);
+        snprintf(n2, sizeof n2, "model.layers.%d.%s_message_gate.forget_gate_proj.weight", block, roles[r_i]);
+        snprintf(n3, sizeof n3, "model.layers.%d.%s_message_gate.message_gate_proj.weight", block, roles[r_i]);
+        wd[r_i] = w->get(w->ctx, n1); wf[r_i] = w->get(w->ctx, n2); wg[r_i] = w->get(w->ctx, n3);
+        if (!wd[r_i] || !wf[r_i] || !wg[r_i] || wd[r_i]->ne[0] != 2 * H || wd[r_i]->ne[1] != r ||
+            wf[r_i]->ne[0] != r || wf[r_i]->ne[1] != H || wg[r_i]->ne[0] != r || wg[r_i]->ne[1] != H)
+            return INK2_NO_TENSOR;
+        if (!wd[r_i]->q || !wf[r_i]->q || !wg[r_i]->q) {
+            fast = 0;
+            if (!wd[r_i]->data || !wf[r_i]->data || !wg[r_i]->data) return INK2_NO_TENSOR;
+        } else if (wd[r_i]->q_act8 || wf[r_i]->q_act8 || wg[r_i]->q_act8) {
+            has_act8 = 1;
+        }
+    }
+    const size_t TH = (size_t)T * H;
+    if (fast && !has_act8 && (n_roles == 1 || ink2_decode_fuse_enabled())) {
+        const int need_unpack = (T > 1 && msg_stride != (size_t)H);
+        const size_t t_gh = TH * 2, t_d = (size_t)T * r, t_fg = TH;
+        const size_t per_role = t_gh + t_d + 2 * t_fg + (need_unpack ? TH : 0);
+        int owned = 0;
+        float *buf = ink2_op_alloc(c, (size_t)n_roles * per_role, &owned);
+        if (!buf) return INK2_BAD_INPUT;
+        float *gh = buf;
+        float *d = gh + (size_t)n_roles * t_gh;
+        float *fa = d + (size_t)n_roles * t_d;
+        float *ga = fa + (size_t)n_roles * t_fg;
+        float *mu = need_unpack ? ga + (size_t)n_roles * t_fg : NULL;
+        ink2_msg_norm_ctx nc = { n_roles, T, H, msg_stride, xs, msgs, gh, s->eps };
+        if (T == 1) ink2_msg_norm_range(&nc, 0, 1);
+        else ink2_par(T, (int64_t)n_roles * 4 * H, ink2_msg_norm_range, &nc);
+        if (need_unpack) {
+            for (int r_i = 0; r_i < n_roles; r_i++)
+                for (int t = 0; t < T; t++)
+                    memcpy(mu + (size_t)r_i * TH + (size_t)t * H, msgs[r_i] + (size_t)t * msg_stride, sizeof(float) * H);
+        }
+        ink2_lin_ctx dp[3], fp[6];
+        for (int r_i = 0; r_i < n_roles; r_i++) {
+            float *d_r = d + (size_t)r_i * t_d;
+            dp[r_i] = (ink2_lin_ctx){ wd[r_i], 0, r, 2 * H, T, gh + (size_t)r_i * t_gh, (size_t)2 * H, d_r, (size_t)r, 1.0f };
+            fp[2 * r_i]     = (ink2_lin_ctx){ wf[r_i], 0, H, r, T, d_r, (size_t)r, fa + (size_t)r_i * t_fg, (size_t)H, 1.0f };
+            fp[2 * r_i + 1] = (ink2_lin_ctx){ wg[r_i], 0, H, r, T, d_r, (size_t)r, ga + (size_t)r_i * t_fg, (size_t)H, 1.0f };
+        }
+        ink2_lin_parts(dp, n_roles, (int64_t)2 * H * T);
+        ink2_lin_parts(fp, 2 * n_roles, (int64_t)r * T);
+        ink2_msg_comb_multi_ctx cc;
+        cc.np = n_roles;
+        cc.start[0] = 0;
+        for (int r_i = 0; r_i < n_roles; r_i++) {
+            const float *mr = need_unpack ? (mu + (size_t)r_i * TH) : msgs[r_i];
+            cc.c[r_i] = (ink2_msg_comb_ctx){ fa + (size_t)r_i * t_fg, ga + (size_t)r_i * t_fg, xs[r_i], mr, outs[r_i] };
+            cc.start[r_i + 1] = cc.start[r_i] + (int64_t)TH;
+        }
+        ink2_par(cc.start[n_roles], 16, ink2_msg_comb_multi_range, &cc);
+        ink2_op_free(buf, owned);
         return INK2_OK;
     }
-    float *gh = malloc(sizeof(float) * ((size_t)2 * H + (size_t)r));
+    if (n_roles > 1) {
+        const int need_unpack = (T > 1 && msg_stride != (size_t)H);
+        int owned = 0;
+        float *mu = need_unpack ? ink2_op_alloc(c, TH, &owned) : NULL;
+        if (need_unpack && !mu) return INK2_BAD_INPUT;
+        ink2_status st = INK2_OK;
+        for (int r_i = 0; r_i < n_roles && st == INK2_OK; r_i++) {
+            const float *mr = msgs[r_i];
+            if (need_unpack) {
+                for (int t = 0; t < T; t++) memcpy(mu + (size_t)t * H, msgs[r_i] + (size_t)t * msg_stride, sizeof(float) * H);
+                mr = mu;
+            }
+            st = ink2_message_steps_c(s, w, block, &roles[r_i], 1, T, &xs[r_i], &mr, (size_t)H, &outs[r_i], need_unpack ? NULL : c);
+        }
+        ink2_op_free(mu, owned);
+        return st;
+    }
+    if (fast) {
+        // fast single-role fallback when q_act8 is enabled
+        const size_t t_gh = TH * 2, t_d = (size_t)T * r, t_fg = TH;
+        const size_t need_unpack = (T > 1 && msg_stride != (size_t)H) ? TH : 0;
+        int owned = 0;
+        float *buf = ink2_op_alloc(c, t_gh + t_d + 2 * t_fg + need_unpack, &owned);
+        if (!buf) return INK2_BAD_INPUT;
+        float *gh = buf, *d = gh + t_gh, *fa = d + t_d, *ga = fa + t_fg;
+        float *mu = need_unpack ? ga + t_fg : NULL;
+        ink2_msg_norm_ctx nc = { 1, T, H, msg_stride, xs, msgs, gh, s->eps };
+        ink2_par(T, 4 * (int64_t)H, ink2_msg_norm_range, &nc);
+        const float *mr = msgs[0];
+        if (need_unpack) {
+            for (int t = 0; t < T; t++) memcpy(mu + (size_t)t * H, msgs[0] + (size_t)t * msg_stride, sizeof(float) * H);
+            mr = mu;
+        }
+        ink2_lin_rows(wd[0], r, 2 * H, T, gh, d);
+        ink2_lin_rows(wf[0], H, r, T, d, fa);
+        ink2_lin_rows(wg[0], H, r, T, d, ga);
+        ink2_msg_comb_multi_ctx cc = { 1, { { fa, ga, xs[0], mr, outs[0] } }, { 0, (int64_t)TH } };
+        ink2_par((int64_t)TH, 16, ink2_msg_comb_multi_range, &cc);
+        ink2_op_free(buf, owned);
+        return INK2_OK;
+    }
+    int owned = 0;
+    float *gh = ink2_op_alloc(c, (size_t)2 * H + (size_t)r, &owned);
     if (!gh) return INK2_BAD_INPUT;
     float *d = gh + 2 * H;
     for (int t = 0; t < T; t++) {
-        const float *xt = x + (size_t)t * H, *mt = message + (size_t)t * H;
+        const float *xt = xs[0] + (size_t)t * H, *mt = msgs[0] + (size_t)t * msg_stride;
         ink2_unweighted_norm(xt, H, s->eps, gh);          // cat([norm(x), norm(message)])
         ink2_unweighted_norm(mt, H, s->eps, gh + H);
-        ink2_lin_rows(wd, r, 2 * H, 1, gh, d);   // the down projection, threads over its r rows
-        ink2_gate_ctx gc = { wf->data, wg->data, d, xt, mt, out + (size_t)t * H, r };
+        ink2_lin_rows(wd[0], r, 2 * H, 1, gh, d);   // the down projection, threads over its r rows
+        ink2_gate_ctx gc = { wf[0]->data, wg[0]->data, d, xt, mt, outs[0] + (size_t)t * H, r };
         ink2_par(H, 2 * r, ink2_gate_range, &gc);   // threads over the hidden rows
     }
-    free(gh);
+    ink2_op_free(gh, owned);
     return INK2_OK;
+}
+ink2_status ink2_message_step(const ink2_shape *s, const ink2_weights *w, int block, const char *role, int T,
+                              const float *x, const float *message, float *out) {
+    return ink2_message_steps_c(s, w, block, &role, 1, T, &x, &message, (size_t)s->hidden, &out, NULL);
 }
 
 // ---- the layer and the forward
@@ -1486,11 +1768,12 @@ static ink2_status ink2_decoder_layer_lora(const ink2_shape *s, const ink2_weigh
     if (pos[0] > 0 && pos[0] != c->n_past[app]) return INK2_REWIND;
     size_t TH = (size_t)T * H;
     // scratch: the three attention inputs (read, then normed), one message, the attention output, the residual,
-    // the MLP input, the expert output, and the MLP's block states [T][n_blocks + 1][H]
-    float *buf = malloc(sizeof(float) * (TH * 13 + (size_t)T * (n_blocks + 1) * H));
+    // the MLP input, the expert output, up to 3 batched gate outputs, and the MLP's block states [T][n_blocks + 1][H]
+    float *buf = ink2_cache_scratch(&c->work_dl, &c->work_dl_cap, TH * 15 + (size_t)T * (n_blocks + 1) * H);
     if (!buf) return INK2_BAD_INPUT;
     float *rd = buf, *qkv = rd + 3 * TH, *msg = qkv + 3 * TH, *att = msg + TH, *res = att + TH, *mi = res + TH,
-          *mo = mi + TH, *gt = mo + TH, *bs2 = gt + TH;
+          *mo = mi + TH, *gt = mo + TH, *bs2 = gt + 3 * TH;
+    (void)msg;
     ink2_status st = INK2_OK;
     char name[160];
     const char *role[4] = { "q", "k", "v", "mlp" };
@@ -1500,24 +1783,35 @@ static ink2_status ink2_decoder_layer_lora(const ink2_shape *s, const ink2_weigh
     if (b > 0) {
         int nq = 0;
         snprintf(name, sizeof name, "model.layers.%d.attention_input", b);
-        INK2_TRY(ink2_block_read(s, w, name, T, n_blocks, block_states, x, rd, &nq));
+        INK2_TRY(ink2_block_read_c(s, w, name, T, n_blocks, block_states, x, rd, &nq, c));
         if (nq != n_rd) { st = INK2_NO_TENSOR; goto done; }
     } else for (int r = 0; r < n_rd; r++) memcpy(rd + (size_t)r * TH, x, sizeof(float) * TH);   // q = k = v = x
     // 2. Q, K, V inputs: (loop layers, later passes) the q/k/v message gates on the read for that role (sliding: the
     // one read for all three), then the role's input norm (sliding: input_layernorm shared; full: q/k/v_input_layernorm)
-    for (int r = 0; r < 3; r++) {
-        const float *src = rd + (size_t)(g ? r : 0) * TH;
-        if (messages) {
-            for (int t = 0; t < T; t++) memcpy(msg + (size_t)t * H, messages + ((size_t)t * 4 + r) * H, sizeof(float) * H);
-            INK2_TRY(ink2_message_step(s, w, b, role[r], T, src, msg, gt));
-            src = gt;
-        } else if (!g && r > 0) { memcpy(qkv + r * TH, qkv, sizeof(float) * TH); continue; }   // one norm of one read
-        if (g) snprintf(name, sizeof name, "model.layers.%d.%s_input_layernorm.weight", b, role[r]);
-        else snprintf(name, sizeof name, "model.layers.%d.input_layernorm.weight", b);
-        INK2_TRY(ink2_norm_rows(s, w, name, T, src, qkv + r * TH));
+    if (messages) {
+        const float *srcs3[3] = { rd, g ? rd + TH : rd, g ? rd + 2 * TH : rd };
+        const float *msgs3[3] = { messages, messages + H, messages + 2 * H };
+        float *outs3[3] = { gt, gt + TH, gt + 2 * TH };
+        INK2_TRY(ink2_message_steps_c(s, w, b, role, 3, T, srcs3, msgs3, (size_t)4 * H, outs3, c));
+        for (int r = 0; r < 3; r++) {
+            if (g) snprintf(name, sizeof name, "model.layers.%d.%s_input_layernorm.weight", b, role[r]);
+            else snprintf(name, sizeof name, "model.layers.%d.input_layernorm.weight", b);
+            INK2_TRY(ink2_norm_rows(s, w, name, T, outs3[r], qkv + (size_t)r * TH));
+        }
+    } else {
+        snprintf(name, sizeof name, "model.layers.%d.%s", b, g ? "q_input_layernorm.weight" : "input_layernorm.weight");
+        INK2_TRY(ink2_norm_rows(s, w, name, T, rd, qkv));
+        if (g) {
+            snprintf(name, sizeof name, "model.layers.%d.k_input_layernorm.weight", b);
+            INK2_TRY(ink2_norm_rows(s, w, name, T, rd + TH, qkv + TH));
+            snprintf(name, sizeof name, "model.layers.%d.v_input_layernorm.weight", b);
+            INK2_TRY(ink2_norm_rows(s, w, name, T, rd + 2 * TH, qkv + 2 * TH));
+        }
     }
     // 3. self_attn, then post_attention_convolution (conv_idx 2)
-    INK2_TRY(ink2_attention_lora(s, w, lora, c, app, T, pos, qkv, qkv + TH, qkv + 2 * TH, att, NULL));
+    INK2_TRY(ink2_attention_lora(s, w, lora, c, app, T, pos, qkv,
+                                 (g || messages) ? qkv + TH : qkv,
+                                 (g || messages) ? qkv + 2 * TH : qkv, att, NULL));
     INK2_TRY(ink2_post_conv(s, w, c, app, 2, T, pos[0], att, res));
     // 4. the residual: at a block boundary the attention output STARTS the new partial block (no add) and x joins
     // the block states the MLP input reads; otherwise x + attention
@@ -1537,23 +1831,24 @@ static ink2_status ink2_decoder_layer_lora(const ink2_shape *s, const ink2_weigh
     {
         int nq = 0;
         snprintf(name, sizeof name, "model.layers.%d.mlp_input", b);
-        INK2_TRY(ink2_block_read(s, w, name, T, nb2, bs2, res, mi, &nq));
+        INK2_TRY(ink2_block_read_c(s, w, name, T, nb2, bs2, res, mi, &nq, c));
         if (nq != 1) { st = INK2_NO_TENSOR; goto done; }
     }
     if (messages) {
-        for (int t = 0; t < T; t++) memcpy(msg + (size_t)t * H, messages + ((size_t)t * 4 + 3) * H, sizeof(float) * H);
-        INK2_TRY(ink2_message_step(s, w, b, "mlp", T, mi, msg, gt));
+        const char *mlp_r = "mlp";
+        const float *mlp_src = mi;
+        const float *mlp_msg = messages + 3 * H;
+        INK2_TRY(ink2_message_steps_c(s, w, b, &mlp_r, 1, T, &mlp_src, &mlp_msg, (size_t)4 * H, &gt, c));
         memcpy(mi, gt, sizeof(float) * TH);
     }
     snprintf(name, sizeof name, "model.layers.%d.post_attention_layernorm.weight", b);
     INK2_TRY(ink2_norm_rows(s, w, name, T, mi, gt));
-    INK2_TRY(ink2_expert_layer(s, w, b, T, gt, mo));
+    INK2_TRY(ink2_expert_layer_c(s, w, b, T, gt, mo, c));
     if (sel) INK2_TRY(ink2_expert_selection(s, w, b, T, gt, sel));
     INK2_TRY(ink2_post_conv(s, w, c, app, 3, T, pos[0], mo, gt));
     for (size_t i = 0; i < TH; i++) out[i] = res[i] + gt[i];
 #undef INK2_TRY
 done:
-    free(buf);
     return st;
 }
 ink2_status ink2_decoder_layer_sel(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int app, int T,
@@ -1592,10 +1887,16 @@ ink2_status ink2_forward_chunk_lora(const ink2_shape *s, const ink2_weights *w, 
     // plus the hidden state ping-pong, the pre-loop state, the pre-pre-loop state (control 1) and the previous pass's
     // final state. At most one append per application, plus the embedding.
     int n_slab = s->n_app + 6, maxb = s->n_app + 1;
-    float *pool = malloc(sizeof(float) * (TH * (size_t)n_slab + (size_t)T * maxb * H + (size_t)T * 4 * H + TH));
-    float **cur = malloc(sizeof(float *) * (size_t)maxb * 2), **prev = cur + maxb;
-    int *pos = malloc(sizeof(int) * (size_t)T);
-    if (!pool || !cur || !pos) { free(pool); free(cur); free(pos); return INK2_BAD_INPUT; }
+    float *pool = ink2_cache_scratch(&c->work_fwd, &c->work_fwd_cap,
+                                     TH * (size_t)n_slab + (size_t)T * maxb * H + (size_t)T * 4 * H + TH);
+    float *cur_stack[2 * (INK2_MAX_APP + 1)];
+    float **cur_heap = maxb <= INK2_MAX_APP + 1 ? NULL : malloc(sizeof(float *) * (size_t)maxb * 2);
+    float **cur = cur_heap ? cur_heap : cur_stack;
+    float **prev = cur + maxb;
+    int pos_stack[256];
+    int *pos_heap = T <= 256 ? NULL : malloc(sizeof(int) * (size_t)T);
+    int *pos = pos_heap ? pos_heap : pos_stack;
+    if (!pool || !cur || !pos) { free(cur_heap); free(pos_heap); return INK2_BAD_INPUT; }
     float *packed = pool + TH * (size_t)n_slab, *msgs = packed + (size_t)T * maxb * H, *fin = msgs + (size_t)T * 4 * H;
     int next = 0;
 #define INK2_SLAB() (pool + TH * (size_t)(next++))
@@ -1639,10 +1940,10 @@ ink2_status ink2_forward_chunk_lora(const ink2_shape *s, const ink2_weights *w, 
             if (flags & INK2_MISWIRE_OWN_PASS) {   // control: this pass's own states so far, not the previous pass's
                 int n_own = nb - pre_nb - 1 < 0 ? 0 : nb - pre_nb - 1;
                 ink2_pack_states(cur + pre_nb + 1, n_own, T, H, packed);
-                INK2_TRY(ink2_message_input(s, w, b - s->loop_start, T, n_own, packed, h, msgs));
+                INK2_TRY(ink2_message_input_c(s, w, b - s->loop_start, T, n_own, packed, h, msgs, c));
             } else {
                 ink2_pack_states(prev, n_prev, T, H, packed);
-                INK2_TRY(ink2_message_input(s, w, b - s->loop_start, T, n_prev, packed, last_h, msgs));
+                INK2_TRY(ink2_message_input_c(s, w, b - s->loop_start, T, n_prev, packed, last_h, msgs, c));
             }
             m = msgs;
         }
@@ -1661,7 +1962,7 @@ ink2_status ink2_forward_chunk_lora(const ink2_shape *s, const ink2_weights *w, 
     {
         int nq = 0;
         ink2_pack_states(cur, nb, T, H, packed);
-        INK2_TRY(ink2_block_read(s, w, "model.final_input", T, nb, packed, h, fin, &nq));
+        INK2_TRY(ink2_block_read_c(s, w, "model.final_input", T, nb, packed, h, fin, &nq, c));
         if (nq != 1) { st = INK2_NO_TENSOR; goto done; }
         if (logits) {
             const int last = (flags & INK2_LOGITS_LAST) != 0;
@@ -1674,7 +1975,7 @@ ink2_status ink2_forward_chunk_lora(const ink2_shape *s, const ink2_weights *w, 
 #undef INK2_TRY
 #undef INK2_SLAB
 done:
-    free(pool); free(cur); free(pos);
+    free(cur_heap); free(pos_heap);
     return st;
 }
 

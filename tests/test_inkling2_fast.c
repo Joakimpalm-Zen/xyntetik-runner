@@ -216,6 +216,76 @@ int main(int argc, char **argv) {
         drop(m256); drop(m64s); drop(m8s);
     }
     drop(t1); drop(t4); drop(b8); drop(ref); drop(q8);
+    // (k) decode fusion + batched experts: <= half the decode barriers per T=1 step on 4T while staying byte-identical
+    // across F32/BF16/Q8_0, 1T/4T, -b 256/64/8, and RUNNER_INK2_DECODE_FUSE=0
+    for (int f = 0; f < 3; f++) {
+        model_t *m_unfused = load_ctx(argv[1 + f], NULL, false, 4, 384, 64);
+        model_t *m_f4 = load_ctx(argv[1 + f], NULL, false, 4, 384, 64);
+        model_t *m_f1 = load_ctx(argv[1 + f], NULL, false, 1, 384, 64);
+        if (!m_unfused || !m_f4 || !m_f1) { CHECK(0, "(k) %s load", kind[f]); drop(m_unfused); drop(m_f4); drop(m_f1); continue; }
+        const size_t nv = (size_t)m_f4->n_vocab;
+        float *u_dec = malloc(sizeof(float) * 8 * nv), *f4_dec = malloc(sizeof(float) * 8 * nv), *f1_dec = malloc(sizeof(float) * 8 * nv);
+        plat_setenv("RUNNER_INK2_DECODE_FUSE", "0");
+        bool ok_u = model_inkling2_forward(m_unfused, PROMPT, 8, 0, true, false) != NULL;
+        long su0 = 0, su1 = 0, sf0 = 0, sf1 = 0;
+        int lu = 0, lf = 0;
+        for (int t = 0; t < 8 && ok_u; t++) {
+            if (t == 0) ink2_par_stats(&su0, &lu);
+            float *lg = model_inkling2_forward(m_unfused, &PROMPT[8 + t], 1, 8 + t, true, false);
+            if (t == 0) ink2_par_stats(&su1, &lu);
+            if (!lg) ok_u = false; else memcpy(u_dec + (size_t)t * nv, lg, sizeof(float) * nv);
+        }
+        plat_setenv("RUNNER_INK2_DECODE_FUSE", "");
+        bool ok_f4 = model_inkling2_forward(m_f4, PROMPT, 8, 0, true, false) != NULL;
+        for (int t = 0; t < 8 && ok_f4; t++) {
+            if (t == 0) ink2_par_stats(&sf0, &lf);
+            float *lg = model_inkling2_forward(m_f4, &PROMPT[8 + t], 1, 8 + t, true, false);
+            if (t == 0) ink2_par_stats(&sf1, &lf);
+            if (!lg) ok_f4 = false; else memcpy(f4_dec + (size_t)t * nv, lg, sizeof(float) * nv);
+        }
+        bool ok_f1 = model_inkling2_forward(m_f1, PROMPT, 8, 0, true, false) != NULL;
+        for (int t = 0; t < 8 && ok_f1; t++) {
+            float *lg = model_inkling2_forward(m_f1, &PROMPT[8 + t], 1, 8 + t, true, false);
+            if (!lg) ok_f1 = false; else memcpy(f1_dec + (size_t)t * nv, lg, sizeof(float) * nv);
+        }
+        const long du = su1 - su0, df = sf1 - sf0;
+        CHECK(ok_u && ok_f4 && ok_f1 && df > 0 && lf == 4 && df * 2 <= du,
+              "(k) %s decode splits %ld barriers (unfused %ld, want >0, last_pool=4, <=50%% of unfused)", kind[f], df, du);
+        CHECK(ok_u && ok_f4 && !memcmp(f4_dec, u_dec, sizeof(float) * 8 * nv),
+              "(k) %s decode fused (4T) == RUNNER_INK2_DECODE_FUSE=0 byte-identical", kind[f]);
+        CHECK(ok_f4 && ok_f1 && !memcmp(f4_dec, f1_dec, sizeof(float) * 8 * nv),
+              "(k) %s decode fused (4T) == fused (1T) byte-identical", kind[f]);
+        free(u_dec); free(f4_dec); free(f1_dec);
+        drop(m_unfused); drop(m_f4); drop(m_f1);
+    }
+    // Verify -b 256 / -b 64 / -b 8 prefill (272 tokens) + 8 fused decode steps stay byte-identical on BF16
+    {
+        const int bs[3] = { 256, 64, 8 };
+        float *bdec[3] = { NULL, NULL, NULL };
+        size_t nv = 0;
+        bool ok_b[3] = { true, true, true };
+        for (int bi = 0; bi < 3; bi++) {
+            model_t *mb = load_ctx(argv[2], NULL, false, 4, 384, bs[bi]);
+            if (!mb) { ok_b[bi] = false; continue; }
+            nv = (size_t)mb->n_vocab;
+            bdec[bi] = malloc(sizeof(float) * 8 * nv);
+            for (int p0 = 0; p0 < 272 && ok_b[bi]; p0 += bs[bi]) {
+                int nc = 272 - p0; if (nc > bs[bi]) nc = bs[bi];
+                float *ret = model_inkling2_forward(mb, &split_tok[p0], nc, p0, nc == 272 - p0, false);
+                if (nc == 272 - p0 && !ret) ok_b[bi] = false;
+            }
+            for (int t = 0; t < 8 && ok_b[bi]; t++) {
+                float *lg = model_inkling2_forward(mb, &split_tok[272 + t], 1, 272 + t, true, false);
+                if (!lg) ok_b[bi] = false; else memcpy(bdec[bi] + (size_t)t * nv, lg, sizeof(float) * nv);
+            }
+            drop(mb);
+        }
+        CHECK(ok_b[0] && ok_b[1] && !memcmp(bdec[0], bdec[1], sizeof(float) * 8 * nv),
+              "(k) BF16 272p+8d fused decode: -b 256 == -b 64 byte-identical");
+        CHECK(ok_b[0] && ok_b[2] && !memcmp(bdec[0], bdec[2], sizeof(float) * 8 * nv),
+              "(k) BF16 272p+8d fused decode: -b 256 == -b 8 byte-identical");
+        for (int bi = 0; bi < 3; bi++) free(bdec[bi]);
+    }
     printf(fails ? "FAIL %d\n" : "PASS\n", fails);
     return fails ? 1 : 0;
 }
