@@ -12904,9 +12904,12 @@ struct gpu_ink2 {
     size_t ex_cap, eo_cap, exe_cap, eact_cap, edn_cap, eidx_cap, ew_cap;
     // G2b step 2a, the attention core: the chunk's queries, bias bank, sinks, positions and output (the K/V go
     // straight into the instance's ring, gpu_ink2_kv)
-    CUfunction f_attn;
-    CUdeviceptr aq, arl, ask, apos, aatt;
-    size_t aq_cap, arl_cap, ask_cap, apos_cap, aatt_cap;
+    // (the decode fix) the core as two kernels, k_ink2_attn_logits then k_ink2_attn, over the stored logits alg; the
+    // former single kernel f_attn_ref is the TEST-ONLY reference (gpu_ink2_test_attn_ref)
+    CUfunction f_attn, f_attn_lg, f_attn_ref;
+    CUdeviceptr aq, arl, ask, apos, aatt, alg;
+    size_t aq_cap, arl_cap, ask_cap, apos_cap, aatt_cap, alg_cap;
+    int attn_ref;
     // G2b step 2b, the block's glue: its kernels and the chunk's inputs, K/V linear and dynamic rows, K, V, the
     // relative states, the gate rows and the output
     CUfunction f_sclip, f_kvconv, f_kvnorm, f_bank, f_gate;
@@ -12938,6 +12941,8 @@ gpu_ink2 *gpu_ink2_bind(void) {
     if (cu.ModuleGetFunction(&h->f_scatter, h->mod, "k_moe_scatter_add") != 0) h->f_scatter = NULL;
     if (cu.ModuleGetFunction(&h->f_swiglu, h->mod, "k_ink2_swiglu") != 0) h->f_swiglu = NULL;
     if (cu.ModuleGetFunction(&h->f_attn, h->mod, "k_ink2_attn") != 0) h->f_attn = NULL;
+    if (cu.ModuleGetFunction(&h->f_attn_lg, h->mod, "k_ink2_attn_logits") != 0) h->f_attn_lg = NULL;
+    if (cu.ModuleGetFunction(&h->f_attn_ref, h->mod, "k_ink2_attn_ref") != 0) h->f_attn_ref = NULL;
     static const struct { size_t off; const char *name; } gl[] = {
         { offsetof(gpu_ink2, f_sclip), "k_ink2_scaled_clip" }, { offsetof(gpu_ink2, f_kvconv), "k_ink2_kv_conv" },
         { offsetof(gpu_ink2, f_kvnorm), "k_ink2_kv_norm" }, { offsetof(gpu_ink2, f_bank), "k_ink2_bank" },
@@ -13111,16 +13116,30 @@ void gpu_ink2_kv_free(gpu_ink2_kv *kv) {
         }
     free(kv->rows); free(kv->C); free(kv->k); free(kv->v); free(kv->hk); free(kv->hv); free(kv);
 }
-bool gpu_ink2_attn_ok(const gpu_ink2 *h) { return h && h->f_attn; }
-bool gpu_ink2_reserve_attn(gpu_ink2 *h, int T, int Q, int nh, int ext) {
-    if (!h || T <= 0 || Q <= 0 || nh <= 0 || ext <= 0 || cu.CtxSetCurrent(h->ctx) != 0) return false;
+bool gpu_ink2_attn_ok(const gpu_ink2 *h) { return h && h->f_attn && h->f_attn_lg; }
+// the stored logits' buffer: a chunk's queries x nh x the most keys a query admits, at most this many bytes (the core
+// then runs its queries in groups the buffer holds; at least one query, the one case that grows it)
+#define INK2_LOGITS_CAP ((size_t)16 << 20)
+static size_t ink2_logits_bytes(int T, int nh, int nk_max) {
+    const size_t one = sizeof(float) * (size_t)nh * (size_t)nk_max, all = one * (size_t)T;
+    return all <= INK2_LOGITS_CAP ? all : one > INK2_LOGITS_CAP ? one : INK2_LOGITS_CAP / one * one;
+}
+bool gpu_ink2_reserve_attn(gpu_ink2 *h, int T, int Q, int nh, int ext, int nk_max) {
+    if (!h || T <= 0 || Q <= 0 || nh <= 0 || ext <= 0 || nk_max <= 0 || cu.CtxSetCurrent(h->ctx) != 0) return false;
     const size_t fb = sizeof(float);
     pthread_mutex_lock(&h->mu);
     const bool ok = ink2_grow(&h->aq, &h->aq_cap, fb * (size_t)T * Q) && ink2_grow(&h->aatt, &h->aatt_cap, fb * (size_t)T * Q) &&
                     ink2_grow(&h->arl, &h->arl_cap, fb * (size_t)T * nh * ext) && ink2_grow(&h->ask, &h->ask_cap, fb * (size_t)T * nh) &&
-                    ink2_grow(&h->apos, &h->apos_cap, sizeof(int) * (size_t)T);
+                    ink2_grow(&h->apos, &h->apos_cap, sizeof(int) * (size_t)T) &&
+                    ink2_grow(&h->alg, &h->alg_cap, ink2_logits_bytes(T, nh, nk_max));
     pthread_mutex_unlock(&h->mu);
     return ok;
+}
+void gpu_ink2_test_attn_ref(gpu_ink2 *h, int on) {
+    if (!h) return;
+    pthread_mutex_lock(&h->mu);
+    h->attn_ref = on && h->f_attn_ref;
+    pthread_mutex_unlock(&h->mu);
 }
 bool gpu_ink2_reserve_block(gpu_ink2 *h, int T, int H, int C, int R, int nhdr, int Q) {
     if (!h || T <= 0 || H <= 0 || C <= 0 || R <= 0 || nhdr <= 0 || Q <= 0 || cu.CtxSetCurrent(h->ctx) != 0) return false;
@@ -13144,13 +13163,36 @@ size_t gpu_ink2_block_bytes(gpu_ink2 *h) {
 }
 // the kernel's argument block (src/kernels.cu k_ink2_attn): the same fields in the same order
 typedef struct { int nh, nkv, hd, C, Q, R, window, global, ext; float scale; } ink2_attn_args_host;
-// the core over application app's ring, its queries, bank, sinks and positions in h->aq, arl, ask, apos (T of them),
-// into h->aatt (under h->mu, the context current)
-static bool ink2_core_launch(gpu_ink2 *h, gpu_ink2_kv *kv, int app, int T, int nh, int nkv, int hd, int window,
-                             int global, int ext, float scale) {
+// the core over application app's ring, its queries, bank, sinks and positions in h->aq, arl, ask, apos (T of them,
+// from p0), into h->aatt (under h->mu, the context current): per group of queries the logits kernel, then the core
+// (each query reads only its own keys and logits, so the grouping changes no bit); the reference kernel instead when
+// the test asks for it
+static bool ink2_core_launch(gpu_ink2 *h, gpu_ink2_kv *kv, int app, int T, int p0, int nh, int nkv, int hd,
+                             int window, int global, int ext, float scale) {
     ink2_attn_args_host a = { nh, nkv, hd, kv->C[app], nh * hd, kv->rows[app], window, global, ext, scale };
-    void *p[] = { &h->aq, &kv->k[app], &kv->v[app], &h->arl, &h->ask, &h->apos, &h->aatt, &a };
-    return cu.LaunchKernel(h->f_attn, (unsigned)T, (unsigned)nh, 1, 32, 1, 1, 0, NULL, p, NULL) == 0;
+    if (h->attn_ref) {
+        void *p[] = { &h->aq, &kv->k[app], &kv->v[app], &h->arl, &h->ask, &h->apos, &h->aatt, &a };
+        return cu.LaunchKernel(h->f_attn_ref, (unsigned)T, (unsigned)nh, 1, 32, 1, 1, 0, NULL, p, NULL) == 0;
+    }
+    int nks = global ? p0 + T : (window < p0 + T ? window : p0 + T);   // the most keys a query of the call admits
+    const size_t fb = sizeof(float), per_q = fb * (size_t)nh * (size_t)nks;
+    int G = T;
+    if (h->alg_cap >= per_q && h->alg_cap / per_q < (size_t)G) G = (int)(h->alg_cap / per_q);
+    if (!ink2_grow(&h->alg, &h->alg_cap, per_q * (size_t)G)) return false;
+    const unsigned nt = (unsigned)((hd + 31) / 32 * 32);
+    bool ok = true;
+    for (int g0 = 0; ok && g0 < T; g0 += G) {
+        const int g = T - g0 < G ? T - g0 : G;
+        CUdeviceptr q = h->aq + fb * (size_t)g0 * (size_t)a.Q, rl = h->arl + fb * (size_t)g0 * (size_t)nh * (size_t)ext;
+        CUdeviceptr sk = h->ask + fb * (size_t)g0 * (size_t)nh, ps = h->apos + sizeof(int) * (size_t)g0;
+        CUdeviceptr at = h->aatt + fb * (size_t)g0 * (size_t)a.Q;
+        void *pl[] = { &q, &kv->k[app], &rl, &ps, &h->alg, &nks, &a };
+        void *pc[] = { &kv->v[app], &sk, &ps, &h->alg, &at, &nks, &a };
+        ok = cu.LaunchKernel(h->f_attn_lg, ((unsigned)nks + 127) / 128, (unsigned)nh, (unsigned)g, 128, 1, 1, 0, NULL, pl,
+                             NULL) == 0 &&
+             cu.LaunchKernel(h->f_attn, (unsigned)g, (unsigned)nh, 1, nt, 1, 1, 0, NULL, pc, NULL) == 0;
+    }
+    return ok;
 }
 bool gpu_ink2_attn(gpu_ink2 *h, gpu_ink2_kv *kv, int app, int T, const int *pos, const float *q, const float *k,
                    const float *v, const float *rl, const float *sk, float *att, int nh, int nkv, int hd, int window,
@@ -13177,7 +13219,7 @@ bool gpu_ink2_attn(gpu_ink2 *h, gpu_ink2_kv *kv, int app, int T, const int *pos,
     if (ok && n1 < T)
         ok = cu.MemcpyHtoD(kv->k[app], k + (size_t)n1 * C, row * (size_t)(T - n1)) == 0 &&
              cu.MemcpyHtoD(kv->v[app], v + (size_t)n1 * C, row * (size_t)(T - n1)) == 0;
-    ok = ok && ink2_core_launch(h, kv, app, T, nh, nkv, hd, window, global, ext, scale);
+    ok = ok && ink2_core_launch(h, kv, app, T, pos[0], nh, nkv, hd, window, global, ext, scale);
     ok = ok && cu.MemcpyDtoH(att, h->aatt, fb * (size_t)T * Q) == 0;   // the null stream: after the launch
     pthread_mutex_unlock(&h->mu);
     return ok;
@@ -13274,7 +13316,7 @@ bool gpu_ink2_attn_block(gpu_ink2 *h, gpu_ink2_kv *kv, int app, const gpu_ink2_b
     if (ok && n1 < T)
         ok = cu.MemcpyDtoD(kv->k[app], h->bk + row * (size_t)n1, row * (size_t)(T - n1)) == 0 &&
              cu.MemcpyDtoD(kv->v[app], h->bv + row * (size_t)n1, row * (size_t)(T - n1)) == 0;
-    ok = ok && ink2_core_launch(h, kv, app, T, nh, nkv, hd, b->window, full, ext, b->scale);
+    ok = ok && ink2_core_launch(h, kv, app, T, p0, nh, nkv, hd, b->window, full, ext, b->scale);
     // o_proj: att times sigmoid(gate_proj(xq)), then the product
     ok = ok && ink2_block_mv(h, b, GI2_G, H, Q, T, dxq, h->bga);
     {
@@ -13353,7 +13395,7 @@ void gpu_ink2_free(gpu_ink2 *h) {
         if (h->dx) cu.MemFree(h->dx);
         if (h->dy) cu.MemFree(h->dy);
         const CUdeviceptr eb[] = { h->ex, h->eo, h->exe, h->eact, h->edn, h->eidx, h->ew,
-                                   h->aq, h->arl, h->ask, h->apos, h->aatt, h->bxq, h->bxk, h->bxv, h->blin,
+                                   h->aq, h->arl, h->ask, h->apos, h->aatt, h->alg, h->bxq, h->bxk, h->bxv, h->blin,
                                    h->bdyn, h->bk, h->bv, h->brs, h->bga, h->bout };
         for (size_t k = 0; k < sizeof eb / sizeof *eb; k++)
             if (eb[k]) cu.MemFree(eb[k]);

@@ -779,7 +779,11 @@ gpu_ink2_kv *gpu_ink2_kv_new(gpu_ink2 *h, int n_app, const int *rows, const int 
 size_t     gpu_ink2_kv_bytes(const gpu_ink2_kv *kv);
 void       gpu_ink2_kv_free(gpu_ink2_kv *kv);
 bool       gpu_ink2_attn_ok(const gpu_ink2 *h);
-bool       gpu_ink2_reserve_attn(gpu_ink2 *h, int T, int Q, int nh, int ext);
+// (nk_max: the most keys a query admits, -c: the stored logits' buffer, at most 16 MiB, is reserved with the rest)
+bool       gpu_ink2_reserve_attn(gpu_ink2 *h, int T, int Q, int nh, int ext, int nk_max);
+// TEST-ONLY: on (1), the core runs the former single kernel k_ink2_attn_ref, the reference the production pair must
+// equal byte for byte; off (0) the production pair
+void       gpu_ink2_test_attn_ref(gpu_ink2 *h, int on);
 // step 2b: gpu_ink2_attn_block's ten buffers allocated now for a chunk of T (H the hidden width, C a layer's K/V row
 // width, R its dynamic taps nkv x K, nhdr its relative states nh x dr, Q its query width: each the largest layer's),
 // so the fit made after it counts them. False: no device memory. TEST-ONLY gpu_ink2_block_bytes: their bytes now.

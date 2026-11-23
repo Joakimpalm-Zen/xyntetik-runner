@@ -5578,8 +5578,12 @@ extern "C" __global__ void k_ink2_swiglu(float *act, int F, int cs, float gc, fl
 // ascending; then one division by (sum + exp(sink - max)). A query reads only its own keys, so its result does not
 // depend on the chunk's other queries. CUDA's expf (no fast math): equal to the CPU's to rounding, not bit for bit.
 typedef struct { int nh, nkv, hd, C, Q, R, window, global, ext; float scale; } ink2_attn_args;
-extern "C" __global__ void k_ink2_attn(const float *q, const float *kr, const float *vr, const float *rl,
-                                       const float *sk, const int *pos, float *att, ink2_attn_args a) {
+// TEST-ONLY since the decode fix: this kernel is the REFERENCE the production pair below (k_ink2_attn_logits, then
+// k_ink2_attn) must equal byte for byte (tests/test_inkling2_cuda.c (n)); it ships in the same PTX module, unused by
+// the route. At T = 1 its grid is nh warps, each lane a key's whole dot product twice: 0.554 ms an application on the
+// slice (results of the decode diagnosis), which the pair replaces.
+extern "C" __global__ void k_ink2_attn_ref(const float *q, const float *kr, const float *vr, const float *rl,
+                                           const float *sk, const int *pos, float *att, ink2_attn_args a) {
     const int i = blockIdx.x, h = blockIdx.y, lane = threadIdx.x;
     const int kh = h / (a.nh / a.nkv), pi = pos[i];
     const int lo = a.global ? 0 : (pi - a.window + 1 > 0 ? pi - a.window + 1 : 0);
@@ -5634,6 +5638,74 @@ extern "C" __global__ void k_ink2_attn(const float *q, const float *kr, const fl
     const float total = sum + expf(sink - mx);
     float *ai = att + (ulong64)i * a.Q + (ulong64)h * a.hd;
     for (int k = 0, e = lane; e < a.hd; k++, e += 32) ai[e] = acc[k] / total;
+}
+
+// The production core, in two kernels that give k_ink2_attn_ref's bits (the decode fix: at T = 1 the reference runs
+// nh warps). First every admitted key's logit ONCE, one thread a (key, head, query): the reference's own expression
+// (its serial fmaf dot over e ascending, times the scale, plus the bias of distance d < ext), into lg[i][h][j - lo]
+// (nks columns a row: the most keys a query of the call admits). Grid ((nks + 127) / 128, nh, queries), block 128.
+extern "C" __global__ void k_ink2_attn_logits(const float *q, const float *kr, const float *rl, const int *pos,
+                                              float *lg, int nks, ink2_attn_args a) {
+    const int i = blockIdx.z, h = blockIdx.y, jr = blockIdx.x * blockDim.x + threadIdx.x;
+    const int kh = h / (a.nh / a.nkv), pi = pos[i];
+    const int lo = a.global ? 0 : (pi - a.window + 1 > 0 ? pi - a.window + 1 : 0);
+    const int j = lo + jr;
+    if (jr >= nks || j > pi) return;
+    const float *qi = q + (ulong64)i * a.Q + (ulong64)h * a.hd;
+    const float *kj = kr + (ulong64)(j % a.R) * a.C + (ulong64)kh * a.hd;
+    float s = 0.0f;
+    for (int e = 0; e < a.hd; e++) s = fmaf(qi[e], kj[e], s);
+    const int d = pi - j;
+    const float *bias = rl + ((ulong64)i * a.nh + h) * a.ext;
+    lg[((ulong64)i * a.nh + h) * nks + jr] = s * a.scale + (d < a.ext ? bias[d] : 0.0f);
+}
+// Then the core per (query i = blockIdx.x, head h = blockIdx.y) over the stored logits, hd threads (rounded up to a
+// warp; hd <= 256): the max over the keys and the sink (exact in any order); e = expf(logit - max) per key, in place;
+// warp 0 sums the keys in chunks of 32 by the reference's tree (__shfl_down from 16) and adds the chunks' sums in
+// ascending order; each thread one dimension's fmaf chain over the keys ascending (the reference's lane held the
+// dimensions lane + 32 k, each its own chain: spreading them changes no bit); one division by (sum + exp(sink - max)).
+extern "C" __global__ void k_ink2_attn(const float *vr, const float *sk, const int *pos, float *lg, float *att,
+                                       int nks, ink2_attn_args a) {
+    const int i = blockIdx.x, h = blockIdx.y, tid = threadIdx.x, nt = blockDim.x;
+    const int kh = h / (a.nh / a.nkv), pi = pos[i];
+    const int lo = a.global ? 0 : (pi - a.window + 1 > 0 ? pi - a.window + 1 : 0);
+    const int nk = pi - lo + 1;
+    float *li = lg + ((ulong64)i * a.nh + h) * nks;
+    const float sink = sk[(ulong64)i * a.nh + h];
+    __shared__ float red[8];
+    __shared__ float s_mx, s_sum;
+    float mx = sink;
+    for (int r = tid; r < nk; r += nt) mx = fmaxf(mx, li[r]);
+    for (int o = 16; o > 0; o >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, o));
+    if ((tid & 31) == 0) red[tid >> 5] = mx;
+    __syncthreads();
+    if (tid == 0) {
+        float m = red[0];
+        for (int w = 1; w < nt / 32; w++) m = fmaxf(m, red[w]);
+        s_mx = m;
+    }
+    __syncthreads();
+    mx = s_mx;
+    for (int r = tid; r < nk; r += nt) li[r] = expf(li[r] - mx);
+    __syncthreads();
+    if (tid < 32) {
+        float sum = 0.0f;
+        for (int r0 = 0; r0 < nk; r0 += 32) {
+            float cs = r0 + tid < nk ? li[r0 + tid] : 0.0f;
+            for (int o = 16; o > 0; o >>= 1) cs += __shfl_down_sync(0xffffffffu, cs, o);
+            sum += __shfl_sync(0xffffffffu, cs, 0);
+        }
+        if (tid == 0) s_sum = sum;
+    }
+    float acc = 0.0f;
+    if (tid < a.hd)
+        for (int r = 0; r < nk; r++) {
+            const float *vj = vr + (ulong64)((lo + r) % a.R) * a.C + (ulong64)kh * a.hd;
+            acc = fmaf(li[r], vj[tid], acc);
+        }
+    __syncthreads();
+    const float total = s_sum + expf(sink - mx);
+    if (tid < a.hd) att[(ulong64)i * a.Q + (ulong64)h * a.hd + tid] = acc / total;
 }
 
 // R4.48.9 G2b step 2b: the attention block's glue, each kernel 1:1 with src/inkling2.c's host code, its small sums

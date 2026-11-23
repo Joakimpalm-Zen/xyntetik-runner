@@ -165,7 +165,10 @@ static double rel_diff(const float *a, const float *ref, size_t n) {
 // output against float64 on the host over the same keys (4 heads on 2 K/V heads, ext 16, the sinks varied). The
 // largest difference relative to the largest value; *nf the values not finite, *cmp the values compared; 1 if the
 // device did not run.
-static double core_case(int hd, int global, int window, int R, const int *chunks, int n_chunks, size_t *nf, long *cmp) {
+// *ndiff: the output values whose bits differ from the TEST-ONLY reference kernel's (k_ink2_attn_ref, the core before
+// the decode fix) run on its own ring over the same chunks (want 0: the fix changes no bit).
+static double core_case(int hd, int global, int window, int R, const int *chunks, int n_chunks, size_t *nf, long *cmp,
+                        long *ndiff) {
     enum { NH = 4, NKV = 2, EXT = 16 };
     const int C = NKV * hd, Q = NH * hd;
     int NP = 0, Tmax = 0;
@@ -176,6 +179,7 @@ static double core_case(int hd, int global, int window, int R, const int *chunks
     float *q = malloc(sizeof(float) * (size_t)NP * Q), *k = malloc(sizeof(float) * (size_t)NP * C);
     float *v = malloc(sizeof(float) * (size_t)NP * C), *rl = malloc(sizeof(float) * (size_t)NP * NH * EXT);
     float *sk = malloc(sizeof(float) * (size_t)NP * NH), *att = malloc(sizeof(float) * (size_t)Tmax * Q);
+    float *att_ref = malloc(sizeof(float) * (size_t)Tmax * Q);
     double *lg = malloc(sizeof(double) * (size_t)NP), *o = malloc(sizeof(double) * (size_t)hd);
     int *pos = malloc(sizeof(int) * (size_t)NP);
     for (int i = 0; i < NP * Q; i++) q[i] = RND();
@@ -186,14 +190,27 @@ static double core_case(int hd, int global, int window, int R, const int *chunks
 #undef RND
     gpu_ink2 *h = gpu_ink2_bind();
     const int rows[1] = { R }, cw[1] = { C };
-    gpu_ink2_kv *kv = h ? gpu_ink2_kv_new(h, 1, rows, cw, 0) : NULL;
+    gpu_ink2_kv *kv = h ? gpu_ink2_kv_new(h, 1, rows, cw, 0) : NULL, *kvr = h ? gpu_ink2_kv_new(h, 1, rows, cw, 0) : NULL;
     double worst = 0, top = 0;
-    bool ran = kv != NULL;
+    // reserved as the fit does (the stored logits at most 16 MiB): 1040 queries x 4 heads x 1040 keys then run as two
+    // groups of queries, so the grouping is under the byte identity too
+    bool ran = kv != NULL && kvr != NULL && att_ref != NULL && gpu_ink2_reserve_attn(h, Tmax, Q, NH, EXT, NP);
     for (int c = 0, p0 = 0; ran && c < n_chunks; p0 += chunks[c], c++) {
         const int T = chunks[c];
         ran = gpu_ink2_attn(h, kv, 0, T, pos + p0, q + (size_t)p0 * Q, k + (size_t)p0 * C, v + (size_t)p0 * C,
                             rl + (size_t)p0 * NH * EXT, sk + (size_t)p0 * NH, att, NH, NKV, hd, window, global, EXT, scale);
+        gpu_ink2_test_attn_ref(h, 1);
+        ran = ran && gpu_ink2_attn(h, kvr, 0, T, pos + p0, q + (size_t)p0 * Q, k + (size_t)p0 * C, v + (size_t)p0 * C,
+                                   rl + (size_t)p0 * NH * EXT, sk + (size_t)p0 * NH, att_ref, NH, NKV, hd, window, global,
+                                   EXT, scale);
+        gpu_ink2_test_attn_ref(h, 0);
         if (!ran) break;
+        for (size_t x = 0; x < (size_t)T * Q; x++) {
+            uint32_t ua, ub;
+            memcpy(&ua, att + x, sizeof ua);
+            memcpy(&ub, att_ref + x, sizeof ub);
+            *ndiff += ua != ub;
+        }
         *nf += n_nonfinite(att, (size_t)T * Q);
         for (int t = p0; t < p0 + T; t++)
             for (int hh = 0; hh < NH; hh++) {
@@ -221,8 +238,9 @@ static double core_case(int hd, int global, int window, int R, const int *chunks
             }
     }
     gpu_ink2_kv_free(kv);
+    gpu_ink2_kv_free(kvr);
     gpu_ink2_free(h);
-    free(q); free(k); free(v); free(rl); free(sk); free(att); free(lg); free(o); free(pos);
+    free(q); free(k); free(v); free(rl); free(sk); free(att); free(att_ref); free(lg); free(o); free(pos);
     return ran && top > 0 ? worst / top : 1;
 }
 
@@ -718,8 +736,15 @@ int main(int argc, char **argv) {
     {
         static const int c_full[] = { 1040 }, c_slide[] = { 64, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 64, 1, 1, 1, 1, 1, 1, 1, 1 };
         static const int c_small[] = { 70, 8, 8 }, c_mid[] = { 32, 8, 8, 8, 8, 32 }, c_wide[] = { 64, 1, 1 };
+        static const int c_steps[40] = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                                         1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+        static const int c_long[41] = { 1000, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                                        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
         static const struct { const char *what; int hd, global, window, R; const int *ch; int nch; } cs[] = {
             { "a full layer, 1040 queries in one call (head_dim 128)", 128, 1, 40, 1100, c_full, 1 },
+            { "a full layer, 40 single steps from position 0 (1..40 keys, head_dim 128)", 128, 1, 40, 64, c_steps, 40 },
+            { "a full layer, 1000 positions then 40 single steps (1001..1040 keys, head_dim 128)", 128, 1, 40, 1100,
+              c_long, 41 },
             { "a sliding layer (window 40, ring 103), chunks of 64, 8 and 64 across both of the ring's wraps, then single "
               "steps (head_dim 128)", 128, 0, 40, 103, c_slide, (int)(sizeof c_slide / sizeof *c_slide) },
             { "a full layer, head_dim 32", 32, 1, 40, 200, c_small, 3 },
@@ -728,10 +753,12 @@ int main(int argc, char **argv) {
         };
         for (size_t k = 0; k < sizeof cs / sizeof *cs; k++) {
             size_t nf = 0;
-            long cmp = 0;
-            const double w = core_case(cs[k].hd, cs[k].global, cs[k].window, cs[k].R, cs[k].ch, cs[k].nch, &nf, &cmp);
+            long cmp = 0, nd = 0;
+            const double w = core_case(cs[k].hd, cs[k].global, cs[k].window, cs[k].R, cs[k].ch, cs[k].nch, &nf, &cmp, &nd);
             CHECK(w <= 1e-4 && nf == 0 && cmp > 0, "(n) the device core, %s: within %.2e of the float64 sums, want <= 1e-4; "
                   "%zu not finite (%ld values)", cs[k].what, w, nf, cmp);
+            CHECK(cmp > 0 && nd == 0, "(n) the device core, %s: %ld of %ld values differ in their bits from the reference "
+                  "kernel's (the core before the decode fix; want 0)", cs[k].what, nd, cmp);
         }
     }
     // G2b 2a (o): a failed device core refuses that forward and the next; and the REWIND path through the device
