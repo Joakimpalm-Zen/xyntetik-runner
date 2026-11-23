@@ -412,3 +412,32 @@ def test_replay_holds_the_ssm_switches_as_it_holds_the_runner_ones(runner_bin, f
     assert r.returncode == 2 and "MISMATCH environment" in r.stdout, r.stdout + r.stderr
     assert "train:" not in r.stderr, "refused only after training"
 
+
+def test_replay_preserves_nonzero_train_seed(runner_bin, fx, tmp_path):
+    """R17.10: -s N sets smp.rng and cli_resolve_inputs overwrites o->seed from smp.rng;
+    cli_prepare_replay_train must copy the record's seed into smp.rng too so non-zero
+    seed training records replay VERIFIED."""
+    work = tmp_path / "work"
+    work.mkdir()
+    shutil.copy(fx / "base.gguf", work / "base.gguf")
+    shutil.copy(fx / "corpus.txt", work / "corpus.txt")
+    out = work / "seeded.gguf"
+    p = _run(runner_bin, ["-m", work / "base.gguf", "--train", work / "corpus.txt",
+                          "--train-steps", "4", "--lr", "3e-3", "-s", "7",
+                          "--train-out", out, "-t", "2", "--gpu", "off"])
+    assert p.returncode == 0, p.stderr
+    want_sha = _sha(out)
+    rec_path = pathlib.Path(f"{out}.train.json")
+    assert json.loads(rec_path.read_text(encoding="utf-8"))["seed"] == 7
+
+    moved = tmp_path / "moved"
+    moved.mkdir()
+    shutil.copy(work / "base.gguf", moved / "base.gguf")
+    shutil.copy(work / "corpus.txt", moved / "corpus.txt")
+    shutil.copy(rec_path, moved / "seeded.gguf.train.json")
+    verdict = _run(runner_bin, ["attest", "replay", moved / "seeded.gguf.train.json",
+                                *_same_binary(moved / "seeded.gguf.train.json"), "-t", "1"])
+    assert verdict.returncode == 0, verdict.stdout + verdict.stderr
+    assert f"VERIFIED seeded.gguf sha256 {want_sha}" in verdict.stdout
+
+
