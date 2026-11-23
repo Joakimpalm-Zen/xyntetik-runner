@@ -69,7 +69,18 @@ void ink2_par_stats(long *split_loops, int *last_pool);
 
 // A tensor as the pieces see it: float32, row-major, ne[0] the fastest dimension (GGUF order). The fixture's reader
 // and, later, the GGUF reader both hand pieces this; names are the reference's module paths for now.
-typedef struct { const char *name; const float *data; int n_dims; int64_t ne[4]; } ink2_tensor;
+//
+// R4.48.15, the fast route's VIEW: q non-NULL means the tensor is also (or only) its rows as stored in the file, ggml
+// type qtype, q_row_bytes apart, ne[0] values a row, and the engine's linear operations run on them with the house
+// kernels (src/quants.h vec_dot / vec_dot_multi: float32 activations, the weights decoded in registers, a vectorized
+// sum; threads split rows, never a sum). data may then be NULL. q_scale: NULL, or one factor per ne[2] (an expert
+// stack's per-expert .scale), applied after the dot. q_act8: TEST-ONLY, the 8-bit control (each activation row
+// quantized to 8 bits before the dot, as llama.cpp's CPU product does). A builder zeroes the struct first, so a
+// provider that knows nothing of views serves none and the reference code runs.
+typedef struct {
+    const char *name; const float *data; int n_dims; int64_t ne[4];
+    int qtype; const void *q; size_t q_row_bytes; const float *q_scale; int q_act8;
+} ink2_tensor;
 typedef const ink2_tensor *(*ink2_lookup_fn)(void *ctx, const char *name);
 // OPTIONAL: one expert of an expert stack (`model.layers.<b>.mlp.experts.gate_up_proj` [E][2F][H] or `.down_proj`
 // [E][H][F]), as a 2-D tensor (ne[0] the stack's ne[0], ne[1] its ne[1]): the same float32 values as row e of the

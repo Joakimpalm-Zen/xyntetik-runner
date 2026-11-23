@@ -110,6 +110,7 @@ static int fits(const ink2_ecache *c, size_t mapped) {
            (!c->cfg.max_entries || c->st.entries + 1 <= c->cfg.max_entries);
 }
 static void set_t(ink2_tensor *t, char *keep, const char *name, const float *d, int64_t rows, int64_t cols) {
+    *t = (ink2_tensor){ 0 };
     snprintf(keep, 96, "%s", name); t->name = keep; t->data = d; t->n_dims = 2; t->ne[0] = cols; t->ne[1] = rows; t->ne[2] = t->ne[3] = 1;
 }
 

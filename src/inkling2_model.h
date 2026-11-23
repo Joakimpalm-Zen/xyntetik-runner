@@ -27,9 +27,12 @@ bool   model_inkling2_runtime(model_t *m, const model_params *p);
 float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos, bool want_logits, bool keep_all);
 float *model_inkling2_row(model_t *m, int b);   // row b of the last keep_all forward
 void   model_inkling2_free(model_t *m);
-// What the engine holds, for --info fit and the load line (bytes): the dense float32 tensors, the K/V and convolution
-// cache at n_ctx, the most the expert cache can hold (its budget, capped at every expert decoded), the file's mapping.
-typedef struct { uint64_t dense_f32, cache, expert_cache, mapped, logits; } inkling2_fit;
+// What the engine holds, for --info fit and the load line (bytes): the decoded float32 tensors, the K/V and
+// convolution cache at n_ctx, the most the expert cache can hold (the reference route: its budget, capped at every
+// expert decoded), the file's mapping.
+// dense_f32: float32 copies of the matrices (the projections, the head, the embedding), 0 on the fast route;
+// small_f32: the small tensors decoded on either route (norms, taps, queries, scales, the router)
+typedef struct { uint64_t dense_f32, small_f32, cache, expert_cache, mapped, logits; } inkling2_fit;
 bool   model_inkling2_fit(model_t *m, inkling2_fit *f);
 // R4.48.15: the route this instance runs: 'F' the fast route (the weights in their file formats, decoded at use,
 // float32 activations, the house kernels' vectorized sums) or 'R' the reference route (the serial float32 order of

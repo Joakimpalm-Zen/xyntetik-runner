@@ -78,6 +78,7 @@ static const ink2_tensor *w_get(void *ctx, const char *name) {
     wctx *c = ctx; const st_t *t = st_get(c->f, name);
     if (!t || t->dtype != ST_F32) return NULL;
     ink2_tensor *o = &c->tmp[c->k++ & 7];
+    *o = (ink2_tensor){ 0 };
     o->name = t->name; o->data = (const float *)t->data; o->n_dims = t->n_dims;
     for (int d = 0; d < 4; d++) o->ne[d] = d < t->n_dims ? t->shape[t->n_dims - 1 - d] : 1;
     return o;
@@ -87,6 +88,7 @@ static const ink2_tensor *w_get_expert(void *ctx, const char *name, int e) {
     wctx *c = ctx; const st_t *t = st_get(c->f, name);
     if (!t || t->dtype != ST_F32 || t->n_dims != 3 || e < 0 || e >= t->shape[0]) return NULL;
     ink2_tensor *o = &c->tmp[c->k++ & 7];
+    *o = (ink2_tensor){ 0 };
     o->name = t->name; o->data = (const float *)t->data + (size_t)e * (size_t)t->shape[1] * (size_t)t->shape[2];
     o->n_dims = 2; o->ne[0] = t->shape[2]; o->ne[1] = t->shape[1]; o->ne[2] = o->ne[3] = 1;
     return o;
