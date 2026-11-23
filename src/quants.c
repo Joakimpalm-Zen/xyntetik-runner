@@ -4683,11 +4683,11 @@ unsigned long vec_dot_exact_tile_cols(void) {
 //   both use two __m512 accumulators stepping 32 + optional 16 + hsum16 + scalar tail
 //   (4x3x2 = 28/32 ZMMs).
 // - AVX2+FMA (BF16 only): dot_bf16_avx2 uses one __m256 accumulator stepping 8 +
-//   hsum8 + scalar tail (4x3x1 = 16/16 YMMs). NVFP4 keeps vec_dot_multi because
-//   dot_nvfp4_avx2 multiplies g_ue4m3_half[d] after each 16-element partial dot.
-// - NEON (BF16 only): dot_bf16_neon uses four float32x4_t accumulators stepping 16 +
-//   vaddvq_f32 + scalar tail (2x3x4 = 29/32 V-regs). NVFP4 keeps vec_dot_multi because
-//   dot_nvfp4_neon multiplies g_ue4m3_half[d] after each 16-element dot16 partial sum.
+//   hsum8 + explicit fmaf tail (4x3x1 = 16/16 YMMs). NVFP4 keeps vec_dot_multi
+//   (unscaled tile on AVX2 tripped its <= 0.85x throughput kill switch at 1.06-1.09x).
+// - NEON (BF16 and unscaled NVFP4): dot_bf16_neon uses four float32x4_t accumulators
+//   stepping 16 + vaddvq_f32 + explicit fmaf tail (2x3x4 = 29/32 V-regs); NVFP4 uses
+//   unscaled E2M1 floats + g_ue4m3_half sub-block scales (2x4x2 = 31/32 V-regs, 0.68x).
 #if !defined(RUNNER_CANON_KERNELS) && RUNNER_AVX2 && defined(__AVX512F__)
 static inline __attribute__((always_inline)) void exact_tile_avx512_4x3(
         const float *w0, const float *w1, const float *w2, const float *w3,
@@ -4890,124 +4890,7 @@ static void exact_tile_block(const float *tbuf, int ng, const float *x, size_t x
     }
 }
 bool vec_dot_exact_tile_ok(int type, int n) {
-    return (type == T_BF16 && n > 0) || (type == T_NVFP4 && n > 0 && (n % QK_NVFP4) == 0);
-}
-static void dq_nvfp4_unscaled_row(const block_nvfp4 *b, int n, float *w, float *d) {
-    const __m128i tbl = _mm_loadu_si128((const __m128i *)kvalues_mxfp4_i8);
-    const __m128i mF  = _mm_set1_epi8(0xF);
-    for (int i = 0; i < n / QK_NVFP4; i++) {
-        for (int h = 0; h < 2; h++) {
-            const __m128i q  = _mm_loadu_si128((const __m128i *)(b[i].qs + 16 * h));
-            const __m128i lo = _mm_shuffle_epi8(tbl, _mm_and_si128(q, mF));
-            const __m128i hi = _mm_shuffle_epi8(tbl, _mm_and_si128(_mm_srli_epi16(q, 4), mF));
-            float *wo = w + i * QK_NVFP4 + 32 * h;
-            _mm256_storeu_ps(wo,      i8lo_ps(lo));
-            _mm256_storeu_ps(wo + 8,  i8lo_ps(hi));
-            _mm256_storeu_ps(wo + 16, i8hi_ps(lo));
-            _mm256_storeu_ps(wo + 24, i8hi_ps(hi));
-            d[i * 4 + 2 * h]     = g_ue4m3_half[b[i].d[2 * h]];
-            d[i * 4 + 2 * h + 1] = g_ue4m3_half[b[i].d[2 * h + 1]];
-        }
-    }
-}
-static inline __attribute__((always_inline)) void exact_tile_nvfp4_avx2_2x2(
-        const float *w0, const float *d0, const float *w1, const float *d1,
-        const float *x, size_t x_stride, int n, float scale,
-        float *yc0, float *yc1) {
-    __m256 a0[2][2], a1[2][2];
-    for (int rr = 0; rr < 2; rr++)
-        for (int cc = 0; cc < 2; cc++) {
-            a0[rr][cc] = _mm256_setzero_ps();
-            a1[rr][cc] = _mm256_setzero_ps();
-        }
-    const float *wp[2] = { w0, w1 }, *dp[2] = { d0, d1 };
-    const float *xp0 = x, *xp1 = x + x_stride;
-    for (int k = 0, s = 0; k < n; k += 32, s += 2) {
-        const __m256 xe0_lo = _mm256_loadu_ps(xp0 + k),     xe0_hi = _mm256_loadu_ps(xp0 + k + 8);
-        const __m256 xe1_lo = _mm256_loadu_ps(xp1 + k),     xe1_hi = _mm256_loadu_ps(xp1 + k + 8);
-        for (int rr = 0; rr < 2; rr++) {
-            const __m256 we0 = _mm256_loadu_ps(wp[rr] + k), we1 = _mm256_loadu_ps(wp[rr] + k + 8);
-            const __m256 ds = _mm256_set1_ps(dp[rr][s]);
-            __m256 t = _mm256_mul_ps(we0, xe0_lo); t = _mm256_fmadd_ps(we1, xe0_hi, t);
-            a0[rr][0] = _mm256_fmadd_ps(ds, t, a0[rr][0]);
-            t = _mm256_mul_ps(we0, xe1_lo);        t = _mm256_fmadd_ps(we1, xe1_hi, t);
-            a0[rr][1] = _mm256_fmadd_ps(ds, t, a0[rr][1]);
-        }
-        const __m256 xo0_lo = _mm256_loadu_ps(xp0 + k + 16), xo0_hi = _mm256_loadu_ps(xp0 + k + 24);
-        const __m256 xo1_lo = _mm256_loadu_ps(xp1 + k + 16), xo1_hi = _mm256_loadu_ps(xp1 + k + 24);
-        for (int rr = 0; rr < 2; rr++) {
-            const __m256 wo0 = _mm256_loadu_ps(wp[rr] + k + 16), wo1 = _mm256_loadu_ps(wp[rr] + k + 24);
-            const __m256 ds = _mm256_set1_ps(dp[rr][s + 1]);
-            __m256 t = _mm256_mul_ps(wo0, xo0_lo); t = _mm256_fmadd_ps(wo1, xo0_hi, t);
-            a1[rr][0] = _mm256_fmadd_ps(ds, t, a1[rr][0]);
-            t = _mm256_mul_ps(wo0, xo1_lo);        t = _mm256_fmadd_ps(wo1, xo1_hi, t);
-            a1[rr][1] = _mm256_fmadd_ps(ds, t, a1[rr][1]);
-        }
-    }
-    for (int rr = 0; rr < 2; rr++) {
-        yc0[rr] = hsum8(_mm256_add_ps(a0[rr][0], a1[rr][0])) * scale;
-        yc1[rr] = hsum8(_mm256_add_ps(a0[rr][1], a1[rr][1])) * scale;
-    }
-}
-static inline __attribute__((always_inline)) void exact_tile_nvfp4_avx2_1xK(
-        const float *w, const float *d, const float *x, size_t x_stride, int mc,
-        int n, float scale, float *y_r, size_t y_stride) {
-    __m256 a0[6], a1[6];
-    for (int c = 0; c < mc; c++) { a0[c] = _mm256_setzero_ps(); a1[c] = _mm256_setzero_ps(); }
-    for (int k = 0, s = 0; k < n; k += 32, s += 2) {
-        const __m256 we0 = _mm256_loadu_ps(w + k), we1 = _mm256_loadu_ps(w + k + 8);
-        const __m256 d0 = _mm256_set1_ps(d[s]);
-        for (int c = 0; c < mc; c++) {
-            const float *xp = x + (size_t)c * x_stride + k;
-            __m256 te = _mm256_mul_ps(we0, _mm256_loadu_ps(xp));
-            te = _mm256_fmadd_ps(we1, _mm256_loadu_ps(xp + 8), te);
-            a0[c] = _mm256_fmadd_ps(d0, te, a0[c]);
-        }
-        const __m256 wo0 = _mm256_loadu_ps(w + k + 16), wo1 = _mm256_loadu_ps(w + k + 24);
-        const __m256 d1 = _mm256_set1_ps(d[s + 1]);
-        for (int c = 0; c < mc; c++) {
-            const float *xp = x + (size_t)c * x_stride + k + 16;
-            __m256 to = _mm256_mul_ps(wo0, _mm256_loadu_ps(xp));
-            to = _mm256_fmadd_ps(wo1, _mm256_loadu_ps(xp + 8), to);
-            a1[c] = _mm256_fmadd_ps(d1, to, a1[c]);
-        }
-    }
-    for (int c = 0; c < mc; c++) y_r[(size_t)c * y_stride] = hsum8(_mm256_add_ps(a0[c], a1[c])) * scale;
-}
-static void exact_tile_nvfp4_avx2_1row(const float *w, const float *d, const float *x, size_t x_stride, int mc,
-                                       int n, float scale, float *y_r, size_t y_stride) {
-    switch (mc) {
-        case 1: exact_tile_nvfp4_avx2_1xK(w, d, x, x_stride, 1, n, scale, y_r, y_stride); break;
-        case 6: exact_tile_nvfp4_avx2_1xK(w, d, x, x_stride, 6, n, scale, y_r, y_stride); break;
-        default: exact_tile_nvfp4_avx2_1xK(w, d, x, x_stride, mc, n, scale, y_r, y_stride); break;
-    }
-}
-static void exact_tile_nvfp4_block(const float *wbuf, const float *dbuf, int ng, const float *x,
-                                   size_t x_stride, int nc, int n, float scale, float *y, size_t y_stride) {
-    const int nsub = n / QK_NVFP4_SUB;
-    int r = 0;
-    for (; r + 2 <= ng; r += 2) {
-        const float *w0 = wbuf + (size_t)r * n, *d0 = dbuf + (size_t)r * nsub;
-        int c = 0;
-        for (; c + 2 <= nc; c += 2) {
-            float *yc0 = y + (size_t)c * y_stride + r;
-            exact_tile_nvfp4_avx2_2x2(w0, d0, w0 + n, d0 + nsub, x + (size_t)c * x_stride, x_stride,
-                                      n, scale, yc0, yc0 + y_stride);
-        }
-        if (c < nc)
-            for (int rr = 0; rr < 2; rr++)
-                exact_tile_nvfp4_avx2_1row(w0 + (size_t)rr * n, d0 + (size_t)rr * nsub,
-                                           x + (size_t)c * x_stride, x_stride, nc - c, n, scale,
-                                           y + (size_t)c * y_stride + r + rr, y_stride);
-    }
-    for (; r < ng; r++) {
-        const float *wr = wbuf + (size_t)r * n, *dr = dbuf + (size_t)r * nsub;
-        for (int c = 0; c < nc; c += 6) {
-            const int mc = nc - c < 6 ? nc - c : 6;
-            exact_tile_nvfp4_avx2_1row(wr, dr, x + (size_t)c * x_stride, x_stride,
-                                       mc, n, scale, y + (size_t)c * y_stride + r, y_stride);
-        }
-    }
+    return type == T_BF16 && n > 0;
 }
 #elif !defined(RUNNER_CANON_KERNELS) && RUNNER_NEON
 static inline __attribute__((always_inline)) void exact_tile_neon_2x3(
@@ -5219,7 +5102,7 @@ void vec_dot_exact_tile(int type, const void *row_base, size_t row_bytes, int nr
     if (nb >= 1 && nr >= 1 && vec_dot_exact_tile_ok(type, n)) {
         const int r_grp = nr < VEC_DOT_EXACT_TILE_ROWS ? nr : VEC_DOT_EXACT_TILE_ROWS;
         const int tcols = n > 2048 ? 16 : 32;
-#if !defined(RUNNER_CANON_KERNELS) && ((RUNNER_AVX2 && !defined(__AVX512F__)) || RUNNER_NEON)
+#if !defined(RUNNER_CANON_KERNELS) && RUNNER_NEON
         if (type == T_NVFP4) {
             const int nsub = n / QK_NVFP4_SUB;
             float *tbuf = malloc(sizeof(float) * (size_t)r_grp * (size_t)(n + nsub));

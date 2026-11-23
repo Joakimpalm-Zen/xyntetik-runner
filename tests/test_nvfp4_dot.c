@@ -278,9 +278,15 @@ int main(void) {
             }
         free(xc); free(yt);
         const unsigned long tc_nvfp4 = vec_dot_exact_tile_cols() - tc0;
+#if !defined(RUNNER_CANON_KERNELS) && ((defined(__AVX2__) && defined(__FMA__) && defined(__F16C__) && defined(__AVX512F__)) || (defined(__aarch64__) && defined(__ARM_NEON)))
         CHECK(t_diff == 0 && vec_dot_exact_tile_ok(T_NVFP4, TN) && tc_nvfp4 > 0,
               "8. vec_dot_exact_tile for NVFP4 byte-equal to vec_dot*scale over 1..64 cols (%lu tile cols): %ld differ",
               tc_nvfp4, t_diff);
+#else
+        CHECK(t_diff == 0 && !vec_dot_exact_tile_ok(T_NVFP4, TN) && tc_nvfp4 == 0,
+              "8. vec_dot_exact_tile for NVFP4 declines AVX2/canon and falls back byte-equal (%lu tile cols): %ld differ",
+              tc_nvfp4, t_diff);
+#endif
     }
     for (int c = 0; c < 8; c++) free(cols[c]);
     free(row); free(a); free(b); free(x); free(a2); free(b2); free(all);
