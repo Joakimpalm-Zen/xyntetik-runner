@@ -1499,11 +1499,16 @@ int main(void) {
         test_vec_dot_xs(types[t], 4096);
         test_vec_dot_xs(types[t], 256);
     }
-    // BF16 rows of any length: 1003 leaves a tail after the 16-wide NEON
-    // and 8-wide AVX2 steps, which every column must sum in the single
-    // kernel's order
-    test_vec_dot(T_BF16, 1003);
-    test_vec_dot_multi(T_BF16, 1003);
+    // BF16 rows of any length: odd lengths exercise every scalar tail after
+    // the 16-wide NEON / AVX-512 and 8-wide AVX2 steps, which every multi
+    // and tile blocking must sum in the single kernel's explicit-fmaf order
+    {
+        static const int odd_bf[] = { 1, 7, 15, 17, 31, 33, 63, 1003 };
+        for (size_t oi = 0; oi < sizeof(odd_bf) / sizeof(*odd_bf); oi++) {
+            test_vec_dot(T_BF16, odd_bf[oi]);
+            test_vec_dot_multi(T_BF16, odd_bf[oi]);
+        }
+    }
     CHECK(vec_dot_xs_ok(T_Q4_K) == vec_dot_xs_ok(T_Q5_K) && !vec_dot_xs_ok(T_Q6_K),
           "vec_dot_xs covers exactly the min-term K-quants");
     test_dequant(T_Q8_0, 4096);

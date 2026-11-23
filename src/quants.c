@@ -1769,6 +1769,16 @@ static inline float f32_dot_tail(float s, const float *w, const float *x, int i,
 #endif
     return s;
 }
+// Same contraction-safe tail for BF16: single, multi-column, and exact-tile kernels must pick the same rounding
+// (explicit fmaf on FMA targets) so GCC's -ffp-contract=fast never splits unrolled tiles from single dots.
+static inline float bf16_dot_tail(float s, const uint16_t *w, const float *x, int i, int n) {
+#if defined(__FMA__) || defined(__ARM_FEATURE_FMA)
+    for (; i < n; i++) s = fmaf(bf16_to_f32(w[i]), x[i], s);
+#else
+    for (; i < n; i++) s += bf16_to_f32(w[i]) * x[i];
+#endif
+    return s;
+}
 
 // AVX2's register tile takes three columns where only the 16 ymm registers
 // exist and four where AVX-512VL adds sixteen more (a native build on such a
@@ -2297,8 +2307,7 @@ static float dot_bf16_avx2(const uint16_t *w, const float *x, int n) {
         acc = _mm256_fmadd_ps(_mm256_castsi256_ps(wi), _mm256_loadu_ps(x + i), acc);
     }
     float s = hsum8(acc);
-    for (; i < n; i++) s += bf16_to_f32(w[i]) * x[i];
-    return s;
+    return bf16_dot_tail(s, w, x, i, n);
 }
 #endif
 
@@ -2744,8 +2753,7 @@ static float dot_bf16_neon(const uint16_t *w, const float *x, int n) {
                  vshlq_n_u32(vmovl_u16(vget_high_u16(h1)), 16)), vld1q_f32(x + i + 12));
     }
     float s = vaddvq_f32(vaddq_f32(vaddq_f32(a0, a1), vaddq_f32(a2, a3)));
-    for (; i < n; i++) s += bf16_to_f32(w[i]) * x[i];
-    return s;
+    return bf16_dot_tail(s, w, x, i, n);
 }
 
 // same shape as dot_q5_K_neon, minus the fifth bit plane. xs, when given,
@@ -3605,8 +3613,7 @@ static inline __attribute__((always_inline)) void dot_bf16_avx512_multi(const ui
     }
     for (int c = 0; c < nc; c++) {
         float s = hsum16(_mm512_add_ps(a0[c], a1[c]));
-        for (int k = i; k < n; k++) s += bf16_to_f32(w[k]) * xs[c][k];
-        out[c] = s;
+        out[c] = bf16_dot_tail(s, w, xs[c], i, n);
     }
 }
 static float dot_bf16_avx512(const uint16_t *w, const float *x, int n) {
@@ -3675,9 +3682,7 @@ float vec_dot(int type, const void *row, const float *x, int n) {
 #elif RUNNER_NEON
             return dot_bf16_neon(w, x, n);
 #endif
-            float s = 0;
-            for (int i = 0; i < n; i++) s += bf16_to_f32(w[i]) * x[i];
-            return s;
+            return bf16_dot_tail(0.0f, w, x, 0, n);
         }
         case T_Q8_0: {
 #if RUNNER_AVX2
@@ -4138,8 +4143,7 @@ static inline __attribute__((always_inline)) void dot_bf16_avx2_multi(const uint
     }
     for (int c = 0; c < nc; c++) {
         float s = hsum8(acc[c]);
-        for (int k = i; k < n; k++) s += bf16_to_f32(w[k]) * xs[c][k];
-        out[c] = s;
+        out[c] = bf16_dot_tail(s, w, xs[c], i, n);
     }
 }
 #endif
@@ -4607,8 +4611,7 @@ static void dot_bf16_neon_multi(const uint16_t *w, const float *const *xs, int n
     }
     for (int c = 0; c < nc; c++) {
         float s = vaddvq_f32(vaddq_f32(vaddq_f32(a[c][0], a[c][1]), vaddq_f32(a[c][2], a[c][3])));
-        for (int k = i; k < n; k++) s += bf16_to_f32(w[k]) * xs[c][k];
-        out[c] = s;
+        out[c] = bf16_dot_tail(s, w, xs[c], i, n);
     }
 }
 
@@ -4734,8 +4737,7 @@ static inline __attribute__((always_inline)) void exact_tile_avx512_4x3(
     float *yptrs[3] = { yc0, yc1, yc2 };
     for (int rr = 0; rr < 4; rr++)
         for (int cc = 0; cc < 3; cc++) {
-            float s = hsum16(_mm512_add_ps(a0[rr][cc], a1[rr][cc]));
-            for (int k = i; k < n; k++) s += wptrs[rr][k] * xptrs[cc][k];
+            float s = f32_dot_tail(hsum16(_mm512_add_ps(a0[rr][cc], a1[rr][cc])), wptrs[rr], xptrs[cc], i, n);
             yptrs[cc][rr] = s * scale;
         }
 }
@@ -4761,9 +4763,7 @@ static inline __attribute__((always_inline)) void exact_tile_avx512_1xK(
         i += 16;
     }
     for (int c = 0; c < mc; c++) {
-        float s = hsum16(_mm512_add_ps(a0[c], a1[c]));
-        const float *xp = x + (size_t)c * x_stride;
-        for (int k = i; k < n; k++) s += w[k] * xp[k];
+        float s = f32_dot_tail(hsum16(_mm512_add_ps(a0[c], a1[c])), w, x + (size_t)c * x_stride, i, n);
         y_r[(size_t)c * y_stride] = s * scale;
     }
 }
@@ -4832,8 +4832,7 @@ static inline __attribute__((always_inline)) void exact_tile_avx2_4x3(
     float *yptrs[3] = { yc0, yc1, yc2 };
     for (int rr = 0; rr < 4; rr++)
         for (int cc = 0; cc < 3; cc++) {
-            float s = hsum8(acc[rr][cc]);
-            for (int k = i; k < n; k++) s += wptrs[rr][k] * xptrs[cc][k];
+            float s = f32_dot_tail(hsum8(acc[rr][cc]), wptrs[rr], xptrs[cc], i, n);
             yptrs[cc][rr] = s * scale;
         }
 }
@@ -4849,9 +4848,7 @@ static inline __attribute__((always_inline)) void exact_tile_avx2_1xK(
             acc[c] = _mm256_fmadd_ps(wv, _mm256_loadu_ps(x + (size_t)c * x_stride + i), acc[c]);
     }
     for (int c = 0; c < mc; c++) {
-        float s = hsum8(acc[c]);
-        const float *xp = x + (size_t)c * x_stride;
-        for (int k = i; k < n; k++) s += w[k] * xp[k];
+        float s = f32_dot_tail(hsum8(acc[c]), w, x + (size_t)c * x_stride, i, n);
         y_r[(size_t)c * y_stride] = s * scale;
     }
 }
@@ -5042,9 +5039,9 @@ static inline __attribute__((always_inline)) void exact_tile_neon_2x3(
     float *yptrs[3] = { yc0, yc1, yc2 };
     for (int rr = 0; rr < 2; rr++)
         for (int cc = 0; cc < 3; cc++) {
-            float s = vaddvq_f32(vaddq_f32(vaddq_f32(a[rr][cc][0], a[rr][cc][1]),
-                                           vaddq_f32(a[rr][cc][2], a[rr][cc][3])));
-            for (int k = i; k < n; k++) s += wptrs[rr][k] * xptrs[cc][k];
+            float s = f32_dot_tail(vaddvq_f32(vaddq_f32(vaddq_f32(a[rr][cc][0], a[rr][cc][1]),
+                                                         vaddq_f32(a[rr][cc][2], a[rr][cc][3]))),
+                                   wptrs[rr], xptrs[cc], i, n);
             yptrs[cc][rr] = s * scale;
         }
 }
@@ -5066,9 +5063,8 @@ static inline __attribute__((always_inline)) void exact_tile_neon_1xK(
         }
     }
     for (int c = 0; c < mc; c++) {
-        float s = vaddvq_f32(vaddq_f32(vaddq_f32(a[c][0], a[c][1]), vaddq_f32(a[c][2], a[c][3])));
-        const float *xp = x + (size_t)c * x_stride;
-        for (int k = i; k < n; k++) s += w[k] * xp[k];
+        float s = f32_dot_tail(vaddvq_f32(vaddq_f32(vaddq_f32(a[c][0], a[c][1]), vaddq_f32(a[c][2], a[c][3]))),
+                               w, x + (size_t)c * x_stride, i, n);
         y_r[(size_t)c * y_stride] = s * scale;
     }
 }
