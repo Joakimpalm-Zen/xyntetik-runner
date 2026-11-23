@@ -249,6 +249,7 @@ int main(void) {
         static const int t_ns[]  = { 64, 128, 576, 1536, 2880 };
         static const float t_scs[] = { 1.0f, 0.25f };
         long t_diff = 0;
+        const unsigned long tc0 = vec_dot_exact_tile_cols();
         for (size_t ri = 0; ri < sizeof(t_nrs) / sizeof(*t_nrs); ri++)
             for (size_t bi = 0; bi < sizeof(t_nbs) / sizeof(*t_nbs); bi++)
                 for (size_t ni = 0; ni < sizeof(t_ns) / sizeof(*t_ns); ni++) {
@@ -276,8 +277,10 @@ int main(void) {
                 t_diff += memcmp(&yt[(size_t)c * YS + r], &want, 4) != 0;
             }
         free(xc); free(yt);
-        CHECK(t_diff == 0, "8. vec_dot_exact_tile for NVFP4 byte-equal to vec_dot*scale over 1..64 cols: %ld differ",
-              t_diff);
+        const unsigned long tc_nvfp4 = vec_dot_exact_tile_cols() - tc0;
+        CHECK(t_diff == 0 && vec_dot_exact_tile_ok(T_NVFP4, TN) && tc_nvfp4 > 0,
+              "8. vec_dot_exact_tile for NVFP4 byte-equal to vec_dot*scale over 1..64 cols (%lu tile cols): %ld differ",
+              tc_nvfp4, t_diff);
     }
     for (int c = 0; c < 8; c++) free(cols[c]);
     free(row); free(a); free(b); free(x); free(a2); free(b2); free(all);

@@ -4893,7 +4893,124 @@ static void exact_tile_block(const float *tbuf, int ng, const float *x, size_t x
     }
 }
 bool vec_dot_exact_tile_ok(int type, int n) {
-    return type == T_BF16 && n > 0;
+    return (type == T_BF16 && n > 0) || (type == T_NVFP4 && n > 0 && (n % QK_NVFP4) == 0);
+}
+static void dq_nvfp4_unscaled_row(const block_nvfp4 *b, int n, float *w, float *d) {
+    const __m128i tbl = _mm_loadu_si128((const __m128i *)kvalues_mxfp4_i8);
+    const __m128i mF  = _mm_set1_epi8(0xF);
+    for (int i = 0; i < n / QK_NVFP4; i++) {
+        for (int h = 0; h < 2; h++) {
+            const __m128i q  = _mm_loadu_si128((const __m128i *)(b[i].qs + 16 * h));
+            const __m128i lo = _mm_shuffle_epi8(tbl, _mm_and_si128(q, mF));
+            const __m128i hi = _mm_shuffle_epi8(tbl, _mm_and_si128(_mm_srli_epi16(q, 4), mF));
+            float *wo = w + i * QK_NVFP4 + 32 * h;
+            _mm256_storeu_ps(wo,      i8lo_ps(lo));
+            _mm256_storeu_ps(wo + 8,  i8lo_ps(hi));
+            _mm256_storeu_ps(wo + 16, i8hi_ps(lo));
+            _mm256_storeu_ps(wo + 24, i8hi_ps(hi));
+            d[i * 4 + 2 * h]     = g_ue4m3_half[b[i].d[2 * h]];
+            d[i * 4 + 2 * h + 1] = g_ue4m3_half[b[i].d[2 * h + 1]];
+        }
+    }
+}
+static inline __attribute__((always_inline)) void exact_tile_nvfp4_avx2_2x2(
+        const float *w0, const float *d0, const float *w1, const float *d1,
+        const float *x, size_t x_stride, int n, float scale,
+        float *yc0, float *yc1) {
+    __m256 a0[2][2], a1[2][2];
+    for (int rr = 0; rr < 2; rr++)
+        for (int cc = 0; cc < 2; cc++) {
+            a0[rr][cc] = _mm256_setzero_ps();
+            a1[rr][cc] = _mm256_setzero_ps();
+        }
+    const float *wp[2] = { w0, w1 }, *dp[2] = { d0, d1 };
+    const float *xp0 = x, *xp1 = x + x_stride;
+    for (int k = 0, s = 0; k < n; k += 32, s += 2) {
+        const __m256 xe0_lo = _mm256_loadu_ps(xp0 + k),     xe0_hi = _mm256_loadu_ps(xp0 + k + 8);
+        const __m256 xe1_lo = _mm256_loadu_ps(xp1 + k),     xe1_hi = _mm256_loadu_ps(xp1 + k + 8);
+        for (int rr = 0; rr < 2; rr++) {
+            const __m256 we0 = _mm256_loadu_ps(wp[rr] + k), we1 = _mm256_loadu_ps(wp[rr] + k + 8);
+            const __m256 ds = _mm256_set1_ps(dp[rr][s]);
+            __m256 t = _mm256_mul_ps(we0, xe0_lo); t = _mm256_fmadd_ps(we1, xe0_hi, t);
+            a0[rr][0] = _mm256_fmadd_ps(ds, t, a0[rr][0]);
+            t = _mm256_mul_ps(we0, xe1_lo);        t = _mm256_fmadd_ps(we1, xe1_hi, t);
+            a0[rr][1] = _mm256_fmadd_ps(ds, t, a0[rr][1]);
+        }
+        const __m256 xo0_lo = _mm256_loadu_ps(xp0 + k + 16), xo0_hi = _mm256_loadu_ps(xp0 + k + 24);
+        const __m256 xo1_lo = _mm256_loadu_ps(xp1 + k + 16), xo1_hi = _mm256_loadu_ps(xp1 + k + 24);
+        for (int rr = 0; rr < 2; rr++) {
+            const __m256 wo0 = _mm256_loadu_ps(wp[rr] + k + 16), wo1 = _mm256_loadu_ps(wp[rr] + k + 24);
+            const __m256 ds = _mm256_set1_ps(dp[rr][s + 1]);
+            __m256 t = _mm256_mul_ps(wo0, xo0_lo); t = _mm256_fmadd_ps(wo1, xo0_hi, t);
+            a1[rr][0] = _mm256_fmadd_ps(ds, t, a1[rr][0]);
+            t = _mm256_mul_ps(wo0, xo1_lo);        t = _mm256_fmadd_ps(wo1, xo1_hi, t);
+            a1[rr][1] = _mm256_fmadd_ps(ds, t, a1[rr][1]);
+        }
+    }
+    for (int rr = 0; rr < 2; rr++) {
+        yc0[rr] = hsum8(_mm256_add_ps(a0[rr][0], a1[rr][0])) * scale;
+        yc1[rr] = hsum8(_mm256_add_ps(a0[rr][1], a1[rr][1])) * scale;
+    }
+}
+static inline __attribute__((always_inline)) void exact_tile_nvfp4_avx2_1xK(
+        const float *w, const float *d, const float *x, size_t x_stride, int mc,
+        int n, float scale, float *y_r, size_t y_stride) {
+    __m256 a0[6], a1[6];
+    for (int c = 0; c < mc; c++) { a0[c] = _mm256_setzero_ps(); a1[c] = _mm256_setzero_ps(); }
+    for (int k = 0, s = 0; k < n; k += 32, s += 2) {
+        const __m256 we0 = _mm256_loadu_ps(w + k), we1 = _mm256_loadu_ps(w + k + 8);
+        const __m256 d0 = _mm256_set1_ps(d[s]);
+        for (int c = 0; c < mc; c++) {
+            const float *xp = x + (size_t)c * x_stride + k;
+            __m256 te = _mm256_mul_ps(we0, _mm256_loadu_ps(xp));
+            te = _mm256_fmadd_ps(we1, _mm256_loadu_ps(xp + 8), te);
+            a0[c] = _mm256_fmadd_ps(d0, te, a0[c]);
+        }
+        const __m256 wo0 = _mm256_loadu_ps(w + k + 16), wo1 = _mm256_loadu_ps(w + k + 24);
+        const __m256 d1 = _mm256_set1_ps(d[s + 1]);
+        for (int c = 0; c < mc; c++) {
+            const float *xp = x + (size_t)c * x_stride + k + 16;
+            __m256 to = _mm256_mul_ps(wo0, _mm256_loadu_ps(xp));
+            to = _mm256_fmadd_ps(wo1, _mm256_loadu_ps(xp + 8), to);
+            a1[c] = _mm256_fmadd_ps(d1, to, a1[c]);
+        }
+    }
+    for (int c = 0; c < mc; c++) y_r[(size_t)c * y_stride] = hsum8(_mm256_add_ps(a0[c], a1[c])) * scale;
+}
+static void exact_tile_nvfp4_avx2_1row(const float *w, const float *d, const float *x, size_t x_stride, int mc,
+                                       int n, float scale, float *y_r, size_t y_stride) {
+    switch (mc) {
+        case 1: exact_tile_nvfp4_avx2_1xK(w, d, x, x_stride, 1, n, scale, y_r, y_stride); break;
+        case 6: exact_tile_nvfp4_avx2_1xK(w, d, x, x_stride, 6, n, scale, y_r, y_stride); break;
+        default: exact_tile_nvfp4_avx2_1xK(w, d, x, x_stride, mc, n, scale, y_r, y_stride); break;
+    }
+}
+static void exact_tile_nvfp4_block(const float *wbuf, const float *dbuf, int ng, const float *x,
+                                   size_t x_stride, int nc, int n, float scale, float *y, size_t y_stride) {
+    const int nsub = n / QK_NVFP4_SUB;
+    int r = 0;
+    for (; r + 2 <= ng; r += 2) {
+        const float *w0 = wbuf + (size_t)r * n, *d0 = dbuf + (size_t)r * nsub;
+        int c = 0;
+        for (; c + 2 <= nc; c += 2) {
+            float *yc0 = y + (size_t)c * y_stride + r;
+            exact_tile_nvfp4_avx2_2x2(w0, d0, w0 + n, d0 + nsub, x + (size_t)c * x_stride, x_stride,
+                                      n, scale, yc0, yc0 + y_stride);
+        }
+        if (c < nc)
+            for (int rr = 0; rr < 2; rr++)
+                exact_tile_nvfp4_avx2_1row(w0 + (size_t)rr * n, d0 + (size_t)rr * nsub,
+                                           x + (size_t)c * x_stride, x_stride, nc - c, n, scale,
+                                           y + (size_t)c * y_stride + r + rr, y_stride);
+    }
+    for (; r < ng; r++) {
+        const float *wr = wbuf + (size_t)r * n, *dr = dbuf + (size_t)r * nsub;
+        for (int c = 0; c < nc; c += 6) {
+            const int mc = nc - c < 6 ? nc - c : 6;
+            exact_tile_nvfp4_avx2_1row(wr, dr, x + (size_t)c * x_stride, x_stride,
+                                       mc, n, scale, y + (size_t)c * y_stride + r, y_stride);
+        }
+    }
 }
 #elif !defined(RUNNER_CANON_KERNELS) && RUNNER_NEON
 static inline __attribute__((always_inline)) void exact_tile_neon_2x3(
@@ -4983,7 +5100,110 @@ static void exact_tile_block(const float *tbuf, int ng, const float *x, size_t x
     }
 }
 bool vec_dot_exact_tile_ok(int type, int n) {
-    return type == T_BF16 && n > 0;
+    return (type == T_BF16 && n > 0) || (type == T_NVFP4 && n > 0 && (n % QK_NVFP4) == 0);
+}
+static void dq_nvfp4_unscaled_row(const block_nvfp4 *b, int n, float *w, float *d) {
+    for (int i = 0; i < n / QK_NVFP4; i++) {
+        for (int h = 0; h < 2; h++) {
+            int8x16_t e, o;
+            nvfp4_subs_neon(b[i].qs + 16 * h, &e, &o);
+            float32x4_t f[4];
+            i8_to_f32x4(e, f);
+            for (int q = 0; q < 4; q++) vst1q_f32(w + i * QK_NVFP4 + 32 * h + 4 * q, f[q]);
+            i8_to_f32x4(o, f);
+            for (int q = 0; q < 4; q++) vst1q_f32(w + i * QK_NVFP4 + 32 * h + 16 + 4 * q, f[q]);
+            d[i * 4 + 2 * h]     = g_ue4m3_half[b[i].d[2 * h]];
+            d[i * 4 + 2 * h + 1] = g_ue4m3_half[b[i].d[2 * h + 1]];
+        }
+    }
+}
+static inline __attribute__((always_inline)) void exact_tile_nvfp4_neon_2x4(
+        const float *w0, const float *d0, const float *w1, const float *d1,
+        const float *x, size_t x_stride, int n, float scale,
+        float *yc0, float *yc1, float *yc2, float *yc3) {
+    float32x4_t a0[2][4], a1[2][4];
+    for (int rr = 0; rr < 2; rr++)
+        for (int cc = 0; cc < 4; cc++) {
+            a0[rr][cc] = vdupq_n_f32(0);
+            a1[rr][cc] = vdupq_n_f32(0);
+        }
+    const float *xp[4] = { x, x + x_stride, x + 2 * x_stride, x + 3 * x_stride };
+    for (int k = 0, s = 0; k < n; k += 32, s += 2) {
+        const float de0 = d0[s], de1 = d1[s];
+        const float32x4_t w0e[4] = { vld1q_f32(w0 + k), vld1q_f32(w0 + k + 4), vld1q_f32(w0 + k + 8), vld1q_f32(w0 + k + 12) };
+        const float32x4_t w1e[4] = { vld1q_f32(w1 + k), vld1q_f32(w1 + k + 4), vld1q_f32(w1 + k + 8), vld1q_f32(w1 + k + 12) };
+        for (int cc = 0; cc < 4; cc++) {
+            const float32x4_t xv0 = vld1q_f32(xp[cc] + k), xv1 = vld1q_f32(xp[cc] + k + 4);
+            const float32x4_t xv2 = vld1q_f32(xp[cc] + k + 8), xv3 = vld1q_f32(xp[cc] + k + 12);
+            float32x4_t t0 = vmulq_f32(w0e[0], xv0), t1 = vmulq_f32(w0e[1], xv1);
+            t0 = vfmaq_f32(t0, w0e[2], xv2); t1 = vfmaq_f32(t1, w0e[3], xv3);
+            a0[0][cc] = vfmaq_n_f32(a0[0][cc], vaddq_f32(t0, t1), de0);
+            t0 = vmulq_f32(w1e[0], xv0); t1 = vmulq_f32(w1e[1], xv1);
+            t0 = vfmaq_f32(t0, w1e[2], xv2); t1 = vfmaq_f32(t1, w1e[3], xv3);
+            a0[1][cc] = vfmaq_n_f32(a0[1][cc], vaddq_f32(t0, t1), de1);
+        }
+        const float do0 = d0[s + 1], do1 = d1[s + 1];
+        const float32x4_t w0o[4] = { vld1q_f32(w0 + k + 16), vld1q_f32(w0 + k + 20), vld1q_f32(w0 + k + 24), vld1q_f32(w0 + k + 28) };
+        const float32x4_t w1o[4] = { vld1q_f32(w1 + k + 16), vld1q_f32(w1 + k + 20), vld1q_f32(w1 + k + 24), vld1q_f32(w1 + k + 28) };
+        for (int cc = 0; cc < 4; cc++) {
+            const float32x4_t xv0 = vld1q_f32(xp[cc] + k + 16), xv1 = vld1q_f32(xp[cc] + k + 20);
+            const float32x4_t xv2 = vld1q_f32(xp[cc] + k + 24), xv3 = vld1q_f32(xp[cc] + k + 28);
+            float32x4_t t0 = vmulq_f32(w0o[0], xv0), t1 = vmulq_f32(w0o[1], xv1);
+            t0 = vfmaq_f32(t0, w0o[2], xv2); t1 = vfmaq_f32(t1, w0o[3], xv3);
+            a1[0][cc] = vfmaq_n_f32(a1[0][cc], vaddq_f32(t0, t1), do0);
+            t0 = vmulq_f32(w1o[0], xv0); t1 = vmulq_f32(w1o[1], xv1);
+            t0 = vfmaq_f32(t0, w1o[2], xv2); t1 = vfmaq_f32(t1, w1o[3], xv3);
+            a1[1][cc] = vfmaq_n_f32(a1[1][cc], vaddq_f32(t0, t1), do1);
+        }
+    }
+    float *yp[4] = { yc0, yc1, yc2, yc3 };
+    for (int rr = 0; rr < 2; rr++)
+        for (int cc = 0; cc < 4; cc++)
+            yp[cc][rr] = vaddvq_f32(vaddq_f32(a0[rr][cc], a1[rr][cc])) * scale;
+}
+static inline __attribute__((always_inline)) void exact_tile_nvfp4_neon_1xK(
+        const float *w, const float *d, const float *x, size_t x_stride, int mc,
+        int n, float scale, float *y_r, size_t y_stride) {
+    float32x4_t a0[4], a1[4];
+    for (int c = 0; c < mc; c++) { a0[c] = vdupq_n_f32(0); a1[c] = vdupq_n_f32(0); }
+    for (int k = 0, s = 0; k < n; k += 32, s += 2) {
+        const float d0 = d[s], d1 = d[s + 1];
+        const float32x4_t we[4] = { vld1q_f32(w + k), vld1q_f32(w + k + 4), vld1q_f32(w + k + 8), vld1q_f32(w + k + 12) };
+        const float32x4_t wo[4] = { vld1q_f32(w + k + 16), vld1q_f32(w + k + 20), vld1q_f32(w + k + 24), vld1q_f32(w + k + 28) };
+        for (int c = 0; c < mc; c++) {
+            const float *xp = x + (size_t)c * x_stride + k;
+            a0[c] = vfmaq_n_f32(a0[c], dot16f(we, xp),      d0);
+            a1[c] = vfmaq_n_f32(a1[c], dot16f(wo, xp + 16), d1);
+        }
+    }
+    for (int c = 0; c < mc; c++) y_r[(size_t)c * y_stride] = vaddvq_f32(vaddq_f32(a0[c], a1[c])) * scale;
+}
+static void exact_tile_nvfp4_block(const float *wbuf, const float *dbuf, int ng, const float *x,
+                                   size_t x_stride, int nc, int n, float scale, float *y, size_t y_stride) {
+    const int nsub = n / QK_NVFP4_SUB;
+    int r = 0;
+    for (; r + 2 <= ng; r += 2) {
+        const float *w0 = wbuf + (size_t)r * n, *d0 = dbuf + (size_t)r * nsub;
+        int c = 0;
+        for (; c + 4 <= nc; c += 4) {
+            float *yc0 = y + (size_t)c * y_stride + r;
+            exact_tile_nvfp4_neon_2x4(w0, d0, w0 + n, d0 + nsub, x + (size_t)c * x_stride, x_stride,
+                                      n, scale, yc0, yc0 + y_stride, yc0 + 2 * y_stride, yc0 + 3 * y_stride);
+        }
+        if (c < nc)
+            for (int rr = 0; rr < 2; rr++)
+                exact_tile_nvfp4_neon_1xK(w0 + (size_t)rr * n, d0 + (size_t)rr * nsub,
+                                          x + (size_t)c * x_stride, x_stride, nc - c, n, scale,
+                                          y + (size_t)c * y_stride + r + rr, y_stride);
+    }
+    for (; r < ng; r++) {
+        const float *wr = wbuf + (size_t)r * n, *dr = dbuf + (size_t)r * nsub;
+        for (int c = 0; c < nc; c += 4) {
+            const int mc = nc - c < 4 ? nc - c : 4;
+            exact_tile_nvfp4_neon_1xK(wr, dr, x + (size_t)c * x_stride, x_stride,
+                                      mc, n, scale, y + (size_t)c * y_stride + r, y_stride);
+        }
+    }
 }
 #else
 static void exact_tile_block(const float *tbuf, int ng, const float *x, size_t x_stride,
@@ -5002,10 +5222,33 @@ void vec_dot_exact_tile(int type, const void *row_base, size_t row_bytes, int nr
     const unsigned char *base = row_base;
     if (nb >= 1 && nr >= 1 && vec_dot_exact_tile_ok(type, n)) {
         const int r_grp = nr < VEC_DOT_EXACT_TILE_ROWS ? nr : VEC_DOT_EXACT_TILE_ROWS;
+        const int tcols = n > 2048 ? 16 : 32;
+#if !defined(RUNNER_CANON_KERNELS) && ((RUNNER_AVX2 && !defined(__AVX512F__)) || RUNNER_NEON)
+        if (type == T_NVFP4) {
+            const int nsub = n / QK_NVFP4_SUB;
+            float *tbuf = malloc(sizeof(float) * (size_t)r_grp * (size_t)(n + nsub));
+            if (tbuf) {
+                float *dbuf = tbuf + (size_t)r_grp * n;
+                atomic_fetch_add_explicit(&g_vdet_cols, (unsigned long)nb, memory_order_relaxed);
+                for (int r0 = 0; r0 < nr; r0 += r_grp) {
+                    const int ng = nr - r0 < r_grp ? nr - r0 : r_grp;
+                    for (int rr = 0; rr < ng; rr++)
+                        dq_nvfp4_unscaled_row((const block_nvfp4 *)(base + (size_t)(r0 + rr) * row_bytes),
+                                              n, tbuf + (size_t)rr * n, dbuf + (size_t)rr * nsub);
+                    for (int c0 = 0; c0 < nb; c0 += tcols) {
+                        const int nc = nb - c0 < tcols ? nb - c0 : tcols;
+                        exact_tile_nvfp4_block(tbuf, dbuf, ng, x + (size_t)c0 * x_stride, x_stride,
+                                               nc, n, scale, y + (size_t)c0 * y_stride + r0, y_stride);
+                    }
+                }
+                free(tbuf);
+                return;
+            }
+        }
+#endif
         float *tbuf = malloc(sizeof(float) * (size_t)r_grp * (size_t)n);
         if (tbuf) {
             atomic_fetch_add_explicit(&g_vdet_cols, (unsigned long)nb, memory_order_relaxed);
-            const int tcols = n > 2048 ? 16 : 32;
             for (int r0 = 0; r0 < nr; r0 += r_grp) {
                 const int ng = nr - r0 < r_grp ? nr - r0 : r_grp;
                 for (int rr = 0; rr < ng; rr++)
