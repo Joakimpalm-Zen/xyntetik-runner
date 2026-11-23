@@ -7011,6 +7011,7 @@ static bool cli_prepare_replay_train(cli_opts *o, cli_replay *rp, int *rc) {
     o->n_eval = to.n_eval;
     o->kill_at = to.kill_at;
     o->seed = to.seed;
+    if (to.seed_given && (to.replay_train || o->unlearn_parent)) o->smp.rng = to.seed;
     o->lora_scale = to.lora_scale;
     o->train_lr = to.train_lr;
     o->dpo_beta = to.dpo_beta;
