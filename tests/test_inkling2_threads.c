@@ -7,13 +7,15 @@
 // (ink2_par_stats: loops split over more than one thread, and the threads the last one ran on). INK2_PAR_MIN=1
 // makes every loop of the tiny file split, so a count above one is seen in the stats.
 //
-//  1. one-thread pool, as a slot is loaded: the forward runs on one thread and splits nothing (the CONTROL that the
-//     observable is not constant)
+//  1. load with n_threads=1 (no pool swap): after a load m->tp is NULL on inkling2_loop, so the count comes from the
+//     load's n_threads (1) and splits nothing (the CONTROL that the observable is not constant)
 //  2. the pool swapped for four threads, as the server does: the forward runs on four, its loops split over four,
 //     and its rows equal case 1's bit for bit (fails before the fix: the count stayed one)
 //  3. two instances, pools of four and two, running forwards at once on their own threads: every row equals case
 //     1's bit for bit (the count flips between loops; a loop runs with the count it read)
-//  4. CONTROL that the comparison sees a difference: a different prompt's rows differ from case 1's
+//  4. load with n_threads=4 WITHOUT a pool swap (the CLI / --score path where m->tp is NULL): runs on four
+//     threads, splits loops over four, and matches case 1's rows bit for bit
+//  5. CONTROL that the comparison sees a difference: a different prompt's rows differ from case 1's
 //
 // usage: test_inkling2_threads TINY.gguf (tests/fuzz/corpus/inkling_open/tiny-valid.gguf)
 #include "model.h"
@@ -70,12 +72,12 @@ int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s TINY.gguf\n", argv[0]); return 2; }
     plat_setenv("INK2_PAR_MIN", "1");
     plat_setenv("RUNNER_INKLING2_EXPERT_CACHE", "64M");
-    model_t *a = malloc(sizeof *a), *b = malloc(sizeof *b);
+    model_t *a = malloc(sizeof *a), *b = malloc(sizeof *b), *c = malloc(sizeof *c);
     if (!load(a, argv[1], 1)) { printf("FAIL: the tiny file does not load\n"); return 1; }
     long s0, s1, s2;
     int last;
 
-    // 1. the slot as loaded: a one-thread pool
+    // 1. loaded with n_threads=1 (no pool swap: m->tp is NULL, count is the load's n_threads = 1)
     ink2_par_stats(&s0, NULL);
     float *one = rows(a, PROMPT);
     ink2_par_stats(&s1, NULL);
@@ -113,14 +115,26 @@ int main(int argc, char **argv) {
           ja.ran, jb.ran, ja.bad, jb.bad);
     CHECK(t1 > t0, "case 3: %ld loops split while the two ran", t1 - t0);
 
-    // 4. the comparison sees a difference
+    // 4. load with n_threads=4 WITHOUT a pool swap (CLI path: m->tp stays NULL, count comes from load's n_threads)
+    if (!load(c, argv[1], 4)) { printf("FAIL: the third instance does not load\n"); return 1; }
+    CHECK(c->tp == NULL, "case 4: CLI load left c->tp NULL as expected");
+    long s3 = 0; int last3 = 1;
+    float *cli4 = rows(c, PROMPT);
+    ink2_par_stats(&s3, &last3);
+    CHECK(cli4 != NULL, "case 4: the CLI 4-thread forward runs");
+    CHECK(ink2_get_threads() == 4, "case 4: CLI load with n_threads=4 runs at %d thread(s), want 4", ink2_get_threads());
+    CHECK(s3 > t1 && last3 == 4, "case 4: %ld loops split, the last over %d threads, want > 0 and 4", s3 - t1, last3);
+    CHECK(cli4 && !memcmp(one, cli4, sizeof(float) * (size_t)a->n_vocab),
+          "case 4: CLI 4 threads match case 1's rows bit for bit (%d logits)", a->n_vocab);
+
+    // 5. the comparison sees a difference
     float *other = rows(a, OTHER);
     CHECK(other && memcmp(one, other, sizeof(float) * (size_t)a->n_vocab),
-          "case 4 (control): a different prompt's rows differ from case 1's");
+          "case 5 (control): a different prompt's rows differ from case 1's");
 
-    free(one); free(four); free(other);
-    model_free(a); model_free(b);
-    free(a); free(b);
+    free(one); free(four); free(cli4); free(other);
+    model_free(a); model_free(b); model_free(c);
+    free(a); free(b); free(c);
     printf(fails ? "FAIL %d\n" : "PASS\n", fails);
     return fails ? 1 : 0;
 }
