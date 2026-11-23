@@ -488,6 +488,17 @@ else
 GPU_OBJ = $(OBJDIR)/cuda.o
 endif
 
+# R6.115: SSM_PRECISE in src/model.c uses float_control(precise, on) plus clang fp contract(off). Under -ffast-math
+# (which implies -ffp-contract=fast) clang ignores contraction pragmas unless -ffp-contract=fast-honor-pragmas is
+# given. Apply it ONLY to model.o on clang when -ffast-math is active (never global CFLAGS, where it leaks into
+# QUANTS_CFLAGS and breaks i8_quant_act), leaving GCC (which uses optimize attributes) and all other units untouched.
+CC_IS_CLANG := $(if $(findstring clang,$(shell $(CC) --version 2>/dev/null)),1,)
+MODEL_CFLAGS = $(CFLAGS) $(if $(and $(CC_IS_CLANG),$(filter -ffast-math,$(CFLAGS)),$(if $(filter -ffp-contract=off,$(CFLAGS)),,1)),-ffp-contract=fast-honor-pragmas -Wno-overriding-option)
+
+$(OBJDIR)/model.o: src/model.c $(HDR) Makefile
+	@mkdir -p $(dir $@)
+	$(CC) $(MODEL_CFLAGS) -I src -c $< -o $@
+
 $(OBJDIR)/%.o: src/%.c $(HDR)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I src -c $< -o $@
@@ -4661,6 +4672,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_spec_gpu.py \
     tests/test_spec_telemetry.py \
     tests/test_split_gguf.py \
+    tests/test_ssm_precise.py \
     tests/test_stop_latency.py \
     tests/test_stop_replay.py \
     tests/test_stop_specials.py \
