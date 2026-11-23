@@ -1684,14 +1684,14 @@ int main(int argc, char **argv) {
                 double frac = 0, tfrac = 0, pert = -1;
                 if (st == INK2_OK) {
                     // bounds [nq][T][H]
-                    float *stk = malloc(sizeof(float) * (size_t)nkv * H); double *bb = malloc(sizeof(double) * (size_t)nq * H);
+                    float *stk_rows = malloc(sizeof(float) * (size_t)nkv * H); double *bb = malloc(sizeof(double) * (size_t)nq * H);
                     for (int t = 0; t < Tn; t++) {
-                        memcpy(stk, (const float *)bs->data + (size_t)t * nb * H, sizeof(float) * (size_t)nb * H);
-                        memcpy(stk + (size_t)nb * H, (const float *)pa->data + (size_t)t * H, sizeof(float) * H);
-                        bound_depth((const float *)qt->data, nq, stk, nkv, H, bb);
+                        memcpy(stk_rows, (const float *)bs->data + (size_t)t * nb * H, sizeof(float) * (size_t)nb * H);
+                        memcpy(stk_rows + (size_t)nb * H, (const float *)pa->data + (size_t)t * H, sizeof(float) * H);
+                        bound_depth((const float *)qt->data, nq, stk_rows, nkv, H, bb);
                         for (int i = 0; i < nq; i++) memcpy(bnd + ((size_t)i * Tn + t) * H, bb + (size_t)i * H, sizeof(double) * H);
                     }
-                    free(stk); free(bb);
+                    free(stk_rows); free(bb);
                     // perturbation: the query's first element + 0.25
                     float *q0 = (float *)(void *)qt->data; float keep = q0[0]; q0[0] += 0.25f;
                     int pn = 0; ink2_block_read(&s, &w, mod, Tn, nb, (const float *)bs->data, (const float *)pa->data, pout, &pn);
@@ -1726,13 +1726,13 @@ int main(int argc, char **argv) {
                 double frac = 0, tfrac = 0, pert = -1;
                 if (st == INK2_OK) {
                     const float *ql = (const float *)qt->data + (size_t)ll * 4 * H;
-                    float *stk = malloc(sizeof(float) * (size_t)nkv * H);
+                    float *stk_rows = malloc(sizeof(float) * (size_t)nkv * H);
                     for (int t = 0; t < Tn; t++) {
-                        memcpy(stk, (const float *)pb->data + (size_t)t * nprev * H, sizeof(float) * (size_t)nprev * H);
-                        memcpy(stk + (size_t)nprev * H, (const float *)x->data + (size_t)t * H, sizeof(float) * H);
-                        bound_depth(ql, 4, stk, nkv, H, bnd + (size_t)t * 4 * H);   // [T][4][H], as the output
+                        memcpy(stk_rows, (const float *)pb->data + (size_t)t * nprev * H, sizeof(float) * (size_t)nprev * H);
+                        memcpy(stk_rows + (size_t)nprev * H, (const float *)x->data + (size_t)t * H, sizeof(float) * H);
+                        bound_depth(ql, 4, stk_rows, nkv, H, bnd + (size_t)t * 4 * H);   // [T][4][H], as the output
                     }
-                    free(stk);
+                    free(stk_rows);
                     float *q0 = (float *)(void *)ql; float keep = q0[0]; q0[0] += 0.25f;
                     ink2_message_input(&s, &w, ll, Tn, nprev, (const float *)pb->data, (const float *)x->data, pout);
                     q0[0] = keep;
@@ -1836,8 +1836,8 @@ int main(int argc, char **argv) {
         // order) against the same; the logits' argmax against e2e.logits. Modes 1 and 2 are the deliberate mis-wirings.
         {
             const st_t *idt = st_get(&In, "model.embed_tokens#call0#in0"), *el = st_get(&TR, "e2e.logits"), *tl = st_get(&D, "logits");
-            int V = s.vocab_used, *ids = malloc(sizeof(int) * (size_t)Tn);
-            for (int t = 0; t < Tn; t++) ids[t] = (int)((const int64_t *)(const void *)idt->data)[t];
+            int V = s.vocab_used, *tok_ids = malloc(sizeof(int) * (size_t)Tn);
+            for (int t = 0; t < Tn; t++) tok_ids[t] = (int)((const int64_t *)(const void *)idt->data)[t];
             float *L0 = malloc(sizeof(float) * (size_t)Tn * V), *S0 = malloc(sizeof(float) * (size_t)s.n_app * Tn * H);
             float *Lm = malloc(sizeof(float) * (size_t)Tn * V), *Sm = malloc(sizeof(float) * (size_t)s.n_app * Tn * H);
             const double *tlv = el ? (const double *)(const void *)el->data : NULL;
@@ -1845,7 +1845,7 @@ int main(int argc, char **argv) {
                 int flags = mode == 0 ? 0 : mode == 1 ? INK2_MISWIRE_RESTART : INK2_MISWIRE_OWN_PASS;
                 float *Lx = mode ? Lm : L0, *Sx = mode ? Sm : S0;
                 ink2_cache fc; if (ink2_cache_init(&fc, &s, Tn)) { printf("FAIL: cache\n"); return 1; }
-                ink2_status st = ink2_forward_chunk(&s, &w, &fc, 0, Tn, ids, Lx, flags, Sx);
+                ink2_status st = ink2_forward_chunk(&s, &w, &fc, 0, Tn, tok_ids, Lx, flags, Sx);
                 ink2_cache_free(&fc);
                 if (st != INK2_OK || !tlv || !tl) { GA[mode].st_bad++; continue; }
                 if (mode == 0) { digest(L0, sizeof(float) * (size_t)Tn * V); digest(S0, sizeof(float) * (size_t)s.n_app * Tn * H); }
@@ -1887,10 +1887,10 @@ int main(int argc, char **argv) {
             // the whole sequence's (mode 0 above) by memcmp
             int c0[64], nc = 0;
             for (int t = 0; t <= Tn; t++) c0[nc++] = t;
-            gate_b_run(&s, &w, Tn, ids, c0, nc, L0, S0, 0);
+            gate_b_run(&s, &w, Tn, tok_ids, c0, nc, L0, S0, 0);
             int c1[4] = { 0, 1, 7, Tn }, c2[4] = { 0, 5, Tn - 2, Tn };
-            gate_b_run(&s, &w, Tn, ids, c1, 4, L0, S0, 1);
-            gate_b_run(&s, &w, Tn, ids, c2, 4, L0, S0, 2);
+            gate_b_run(&s, &w, Tn, tok_ids, c1, 4, L0, S0, 1);
+            gate_b_run(&s, &w, Tn, tok_ids, c2, 4, L0, S0, 2);
             // 3d. a REWIND is refused: on a used cache, a chunk at 0 < p0 < n_past must return INK2_REWIND; a restart
             // at p0 = 0 on the used cache must give the fresh cache's bits (logits and states, memcmp), and so must a
             // restart in two chunks (0..4, then 5..T-1: the continuation after a restart is not a rewind)
@@ -1898,16 +1898,16 @@ int main(int argc, char **argv) {
                 ink2_cache rc; if (ink2_cache_init(&rc, &s, Tn)) { printf("FAIL: cache\n"); return 1; }
                 float *lg = malloc(sizeof(float) * (size_t)Tn * V), *ap = malloc(sizeof(float) * (size_t)s.n_app * Tn * H);
                 float *ap2 = malloc(sizeof(float) * (size_t)s.n_app * Tn * H);
-                ink2_status r0 = ink2_forward_chunk(&s, &w, &rc, 0, Tn, ids, lg, 0, ap);   // the cache now holds 0..T-1
+                ink2_status r0 = ink2_forward_chunk(&s, &w, &rc, 0, Tn, tok_ids, lg, 0, ap);   // the cache now holds 0..T-1
                 int pr = Tn / 2;
-                ink2_status r1 = ink2_forward_chunk(&s, &w, &rc, pr, Tn - pr, ids + pr, lg, 0, ap);
+                ink2_status r1 = ink2_forward_chunk(&s, &w, &rc, pr, Tn - pr, tok_ids + pr, lg, 0, ap);
                 rw_tries++; rw_refused += r0 == INK2_OK && r1 == INK2_REWIND;
-                ink2_status r2 = ink2_forward_chunk(&s, &w, &rc, 0, Tn, ids, lg, 0, ap);
+                ink2_status r2 = ink2_forward_chunk(&s, &w, &rc, 0, Tn, tok_ids, lg, 0, ap);
                 rw_restart_n++;
                 rw_restart_eq += r2 == INK2_OK && !memcmp(lg, L0, sizeof(float) * (size_t)Tn * V) && !memcmp(ap, S0, sizeof(float) * (size_t)s.n_app * Tn * H);
                 int c5 = Tn > 5 ? 5 : 1;
-                ink2_status r3 = ink2_forward_chunk(&s, &w, &rc, 0, c5, ids, lg, 0, ap2);
-                ink2_status r4 = r3 == INK2_OK ? ink2_forward_chunk(&s, &w, &rc, c5, Tn - c5, ids + c5, lg + (size_t)c5 * V, 0, ap) : r3;
+                ink2_status r3 = ink2_forward_chunk(&s, &w, &rc, 0, c5, tok_ids, lg, 0, ap2);
+                ink2_status r4 = r3 == INK2_OK ? ink2_forward_chunk(&s, &w, &rc, c5, Tn - c5, tok_ids + c5, lg + (size_t)c5 * V, 0, ap) : r3;
                 int eq = r4 == INK2_OK && !memcmp(lg, L0, sizeof(float) * (size_t)Tn * V);
                 for (int a = 0; a < s.n_app && eq; a++)
                     eq = !memcmp(ap2 + (size_t)a * c5 * H, S0 + (size_t)a * Tn * H, sizeof(float) * (size_t)c5 * H) &&
@@ -1915,7 +1915,7 @@ int main(int argc, char **argv) {
                 rw_restart_n++; rw_restart_eq += eq;
                 free(lg); free(ap); free(ap2); ink2_cache_free(&rc);
             }
-            free(ids); free(L0); free(S0); free(Lm); free(Sm);
+            free(tok_ids); free(L0); free(S0); free(Lm); free(Sm);
         }
         // 4. SINGLE-STEP LINES over every recorded module call of the sequence, by THE COVERAGE TABLE: each module
         // (layer index as B) maps to the op its single-step line runs, or to the piece line that already checks it, or
@@ -1969,20 +1969,20 @@ int main(int argc, char **argv) {
             };
             const int NT = (int)(sizeof TAB / sizeof TAB[0]);
             // the calls: every dump tensor's "<module>#call<k>", the applicationNN aliases and the bare logits excluded
-            int ncall = 0; char (*calls)[160] = malloc(sizeof *calls * (size_t)D.nt);
+            int ncall = 0; char (*op_calls)[160] = malloc(sizeof *op_calls * (size_t)D.nt);
             for (int i = 0; i < D.nt; i++) {
                 const char *nm = D.t[i].name, *c = strstr(nm, "#call");
                 if (!strncmp(nm, "application", 11) || !c) continue;
                 char ck[160]; int len = (int)(c - nm) + 5; while (nm[len] >= '0' && nm[len] <= '9') len++;
                 snprintf(ck, sizeof ck, "%.*s", len, nm);
-                int dup = 0; for (int j = 0; j < ncall && !dup; j++) dup = !strcmp(calls[j], ck);
-                if (!dup) snprintf(calls[ncall++], sizeof calls[0], "%s", ck);
+                int dup = 0; for (int j = 0; j < ncall && !dup; j++) dup = !strcmp(op_calls[j], ck);
+                if (!dup) snprintf(op_calls[ncall++], sizeof op_calls[0], "%s", ck);
             }
             // run every op row's calls
             int *row_of = malloc(sizeof(int) * (size_t)ncall);
             for (int ci = 0; ci < ncall; ci++) {
                 char mod[160], pat[160]; int k = -1, b = -1;
-                const char *c = strstr(calls[ci], "#call"); snprintf(mod, sizeof mod, "%.*s", (int)(c - calls[ci]), calls[ci]); k = atoi(c + 5);
+                const char *c = strstr(op_calls[ci], "#call"); snprintf(mod, sizeof mod, "%.*s", (int)(c - op_calls[ci]), op_calls[ci]); k = atoi(c + 5);
                 if (sscanf(mod, "model.layers.%d", &b) == 1) { const char *rest = strchr(mod + 13, '.'); snprintf(pat, sizeof pat, "model.layers.B%s", rest ? rest : ""); }
                 else snprintf(pat, sizeof pat, "%s", mod);
                 row_of[ci] = -1;
@@ -2015,7 +2015,7 @@ int main(int argc, char **argv) {
 #define PACK(list, cnt) do { for (int t = 0; t < Tn; t++) for (int j = 0; j < (cnt); j++) memcpy(pack + ((size_t)t * (cnt) + j) * H, (list)[j] + (size_t)t * H, sizeof(float) * H); } while (0)
                 for (int a = 0; a < s.n_app; a++) {
                     int b = s.app_block[a], p = s.app_pass[a], k = 0; for (int j = 0; j < a; j++) k += s.app_block[j] == b;
-                    int bnd = b % s.attn_res_block == 0;
+                    int is_bound = b % s.attn_res_block == 0;
                     if (b == s.loop_start) {
                         if (p == 0) { pre_h = h_in; pre_nb = nb; for (int j = 0; j < nb; j++) pre_bsl[j] = bsl[j]; }
                         else { n_prev = nb - pre_nb - 1; for (int j = 0; j < n_prev; j++) prev_bsl[j] = bsl[pre_nb + 1 + j]; prev_last = last_out;
@@ -2038,29 +2038,29 @@ int main(int argc, char **argv) {
                     snprintf(kk, sizeof kk, "model.layers.%d.post_attention_convolution#call%d", b, k); const float *pac = tf32(&D, kk, TH);
                     snprintf(kk, sizeof kk, "model.layers.%d.post_mlp_convolution#call%d", b, k); const float *pmc = tf32(&D, kk, TH);
                     snprintf(kk, sizeof kk, "model.layers.%d#call%d", b, k); const float *lout = tf32(&D, kk, TH);
-                    int nb2 = bnd ? nb + 1 : nb;
+                    int nb2 = is_bound ? nb + 1 : nb;
                     snprintf(kk, sizeof kk, "model.layers.%d.mlp_input#call%d#in0", b, k); const float *mis = tf32(&In, kk, TH * (size_t)nb2);
                     snprintf(kk, sizeof kk, "model.layers.%d.mlp_input#call%d#in1", b, k); const float *mip = tf32(&In, kk, TH);
                     if (!x || !pac || !pmc || !lout) { bstat_add(&SL[L_RES], INK2_BAD_INPUT, 0, 0, -1); }
                     else {
-                        float *res = rb, *out = rb + TH, *po = rb + 2 * TH; double *rd_ = rt, *bd = rt + TH;
-                        for (size_t i = 0; i < TH; i++) res[i] = bnd ? pac[i] : x[i] + pac[i];
-                        for (size_t i = 0; i < TH; i++) out[i] = res[i] + pmc[i];
-                        res_bits_n++; res_bits_eq += !memcmp(out, lout, sizeof(float) * TH);
+                        float *res = rb, *sum_out = rb + TH, *po = rb + 2 * TH; double *rd_ = rt, *bd = rt + TH;
+                        for (size_t i = 0; i < TH; i++) res[i] = is_bound ? pac[i] : x[i] + pac[i];
+                        for (size_t i = 0; i < TH; i++) sum_out[i] = res[i] + pmc[i];
+                        res_bits_n++; res_bits_eq += !memcmp(sum_out, lout, sizeof(float) * TH);
                         WIRE("MLP read partial", mip, res, TH);
-                        if (bnd) { bsl[nb] = x; PACK(bsl, nb + 1); } else PACK(bsl, nb);
+                        if (is_bound) { bsl[nb] = x; PACK(bsl, nb + 1); } else PACK(bsl, nb);
                         WIRE("MLP read states", mis, pack, TH * (size_t)nb2);
                         for (size_t i = 0; i < TH; i++) {
-                            double r = bnd ? (double)pac[i] : (double)x[i] + pac[i], o = r + pmc[i];
-                            rd_[i] = o; bd[i] = (bnd ? 0 : U * fabs(r)) + U * fabs(o);
+                            double r = is_bound ? (double)pac[i] : (double)x[i] + pac[i], o = r + pmc[i];
+                            rd_[i] = o; bd[i] = (is_bound ? 0 : U * fabs(r)) + U * fabs(o);
                         }
-                        double fr = frac_used(out, rd_, bd, TH), tfr = frac_used(lout, rd_, bd, TH);
-                        memcpy(po, out, sizeof(float) * TH); po[0] = res[0] + (pmc[0] + 0.25f);
+                        double fr = frac_used(sum_out, rd_, bd, TH), tfr = frac_used(lout, rd_, bd, TH);
+                        memcpy(po, sum_out, sizeof(float) * TH); po[0] = res[0] + (pmc[0] + 0.25f);
                         double pf = frac_used(po, rd_, bd, TH);
                         bstat_add(&SL[L_RES], INK2_OK, fr, tfr, pf);
                         cov_markf("residual", "model.layers.%d#call%d", b, k);
                     }
-                    if (bnd) bsl[nb++] = x;
+                    if (is_bound) bsl[nb++] = x;
                     last_out = lout; h_in = lout;
                 }
                 {
@@ -2075,23 +2075,23 @@ int main(int argc, char **argv) {
             // 4z. the coverage of this sequence's calls
             for (int ci = 0; ci < ncall; ci++) {
                 int r = row_of[ci]; cov_calls++;
-                if (r < 0) { cov_unnamed++; if (!cov_first_unnamed[0]) snprintf(cov_first_unnamed, sizeof cov_first_unnamed, "%s", calls[ci]); continue; }
+                if (r < 0) { cov_unnamed++; if (!cov_first_unnamed[0]) snprintf(cov_first_unnamed, sizeof cov_first_unnamed, "%s", op_calls[ci]); continue; }
                 if (TAB[r].line && !strcmp(TAB[r].line, "COMPOSITE")) {
                     // model.layers.<b>: its own last step in the residual line, its children each in theirs (checked
                     // below), its composition in gates A and B
-                    const char *ln = cov_find(calls[ci]);
-                    if (!ln) { cov_uncovered++; if (!cov_first_unc[0]) snprintf(cov_first_unc, sizeof cov_first_unc, "%s", calls[ci]); }
+                    const char *ln = cov_find(op_calls[ci]);
+                    if (!ln) { cov_uncovered++; if (!cov_first_unc[0]) snprintf(cov_first_unc, sizeof cov_first_unc, "%s", op_calls[ci]); }
                     else cov_composite++;
                     continue;
                 }
-                const char *ln = cov_find(calls[ci]);
-                if (!ln) { cov_uncovered++; if (!cov_first_unc[0]) snprintf(cov_first_unc, sizeof cov_first_unc, "%s", calls[ci]); continue; }
+                const char *ln = cov_find(op_calls[ci]);
+                if (!ln) { cov_uncovered++; if (!cov_first_unc[0]) snprintf(cov_first_unc, sizeof cov_first_unc, "%s", op_calls[ci]); continue; }
                 cov_single++;
                 int li = -1; for (int j = 0; j < cov_nlines; j++) if (!strcmp(cov_lines[j], ln)) li = j;
                 if (li < 0 && cov_nlines < 64) { li = cov_nlines; cov_lines[cov_nlines++] = ln; }
                 if (li >= 0) cov_per_line[li]++;
             }
-            free(calls); free(row_of);
+            free(op_calls); free(row_of);
         }
         g_dig = &g_digest;
         free(bnd); free(pout);

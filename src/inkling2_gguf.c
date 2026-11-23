@@ -22,7 +22,7 @@ typedef struct {
     gguf_tensor *w, *scale;   // the stack and, for NVFP4, its per-expert factor
     char kind;                // 'N', 'B', 'F'
     int64_t rows, cols;
-} stack_t;
+} ink2_stack_t;
 
 struct ink2g {
     gguf_file own;    // the file when ink2g_open opened it
@@ -31,7 +31,7 @@ struct ink2g {
     ink2_shape s;
     slot_t **slots;   // each slot its own allocation: a served ink2_tensor never moves
     int n_slots, cap_slots;
-    stack_t gu[INK2_MAX_BLOCK], dn[INK2_MAX_BLOCK];
+    ink2_stack_t gu[INK2_MAX_BLOCK], dn[INK2_MAX_BLOCK];
     float *ring[2];   // get_expert's results: the pieces hold at most two
     size_t ring_floats;
     int ring_next;
@@ -311,7 +311,7 @@ static int check_stacks(ink2g *g, char *why, size_t wn) {
     const ink2_shape *s = &g->s;
     for (int b = 0; b < s->n_block; b++) {
         for (int which = 0; which < 2; which++) {
-            stack_t *st = which ? &g->dn[b] : &g->gu[b];
+            ink2_stack_t *st = which ? &g->dn[b] : &g->gu[b];
             char n[96], sn[96];
             snprintf(n, sizeof n, "blk.%d.ffn_%s_exps.weight", b, which ? "down" : "gate_up");
             snprintf(sn, sizeof sn, "blk.%d.ffn_%s_exps.scale", b, which ? "down" : "gate_up");
@@ -538,7 +538,7 @@ const ink2_tensor *ink2g_get(void *ctx, const char *name) {
     return &sl->t;
 }
 
-static const stack_t *stack_of(const ink2g *g, const char *name) {
+static const ink2_stack_t *stack_of(const ink2g *g, const char *name) {
     int b, n = 0;
     if (sscanf(name, "model.layers.%d.mlp.experts.%n", &b, &n) != 1 || !n || b < 0 || b >= g->s.n_block) return NULL;
     if (!strcmp(name + n, "gate_up_proj")) return &g->gu[b];
@@ -548,7 +548,7 @@ static const stack_t *stack_of(const ink2g *g, const char *name) {
 
 int ink2g_fill_expert(void *ctx, const char *stack, int e, float *dst, int64_t *rows, int64_t *cols) {
     ink2g *g = ctx;
-    const stack_t *st = stack_of(g, stack);
+    const ink2_stack_t *st = stack_of(g, stack);
     if (!st || e < 0 || e >= g->s.n_expert) return -1;
     *rows = st->rows;
     *cols = st->cols;

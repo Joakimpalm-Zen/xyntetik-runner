@@ -1,5 +1,7 @@
 // R4.48: the decoded-expert cache; see inkling2_ecache.h.
+#if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE
+#endif
 #include "inkling2_ecache.h"
 
 #include <stdio.h>
