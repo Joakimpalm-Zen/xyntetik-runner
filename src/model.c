@@ -9197,17 +9197,17 @@ void model_embd_transform(const model_t *m, float *row) {
 // Keep the compiler split explicit: GCC gets its function option and Clang
 // gets the documented compound-statement precise mode.
 //
-// Contraction off on both (R3.78): clang's precise mode already forbids
-// fusing a*b+c into one rounding, but GCC's no-fast-math alone left GNU C's
-// default -ffp-contract=fast, so on an FMA host the serial and the chunked
-// cores below fused their updates differently and their state differed in the
-// last bits on GCC builds only (the lab's Linux, CI's Windows: R3.76). The
-// attribute is the mechanism; gate 17 of tests/test_prefill_batch_identity.c
-// (the recurrent state after a prompt with a one-row last chunk, against one
-// pass) is what keeps the two cores bit-identical.
+// Contraction off on both (R3.78, R6.115): on clang, float_control(precise, on)
+// alone leaves contraction on (even under -ffp-contract=off in T3=1 builds),
+// and under -ffast-math (-ffp-contract=fast) clang ignores pragmas unless
+// built with -ffp-contract=fast-honor-pragmas (Makefile's MODEL_CFLAGS for
+// model.o on clang). Pair float_control(precise, on) with clang fp contract(off)
+// so both default clang builds and strict T3=1 clang builds keep contraction
+// off. GCC keeps optimize("no-fast-math", "fp-contract=off"). Gate 17 of
+// tests/test_prefill_batch_identity.c and tests/test_ssm_precise.py guard it.
 #if defined(__clang__)
 #define SSM_PRECISE_ATTR
-#define SSM_PRECISE_SCOPE _Pragma("float_control(precise, on)")
+#define SSM_PRECISE_SCOPE _Pragma("float_control(precise, on)") _Pragma("clang fp contract(off)")
 #elif defined(__GNUC__)
 #define SSM_PRECISE_ATTR __attribute__((optimize("no-fast-math", "fp-contract=off")))
 #define SSM_PRECISE_SCOPE
