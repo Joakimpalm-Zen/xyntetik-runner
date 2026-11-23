@@ -232,6 +232,53 @@ int main(void) {
     CHECK(corner_diff == 0 && corner_rel <= 1e-5,
           "7. vec_dot_multi corner scales/codes byte-equal (%ld differ) and within %.2e <= 1e-5",
           corner_diff, corner_rel);
+    // 8. Tier C exact wide-batch tile for NVFP4: 0 bits differ against vec_dot * scale
+    // across row counts (1..17), columns (1..64), widths (64..2880), strides, scales,
+    // and corner scales/codes.
+    {
+        enum { TR = 17, TC = 64, TN = 2880, XS = 2893, YS = 23 };
+        size_t rsz = (size_t)(TN / BLK) * BLK_BYTES;
+        uint8_t *wt = malloc(rsz * TR);
+        float *xt = malloc(sizeof(float) * TC * XS);
+        float *yt = malloc(sizeof(float) * TC * YS);
+        for (int r = 0; r < TR; r++) random_row(wt + (size_t)r * rsz, TN);
+        for (int c = 0; c < TC; c++)
+            for (int i = 0; i < TN; i++) xt[(size_t)c * XS + i] = ((float)(next() % 20001) - 10000.0f) / 2500.0f;
+        static const int t_nrs[] = { 1, 3, 4, 15, 16, 17 };
+        static const int t_nbs[] = { 1, 8, 9, 16, 33, 64 };
+        static const int t_ns[]  = { 64, 128, 576, 1536, 2880 };
+        static const float t_scs[] = { 1.0f, 0.25f };
+        long t_diff = 0;
+        for (size_t ri = 0; ri < sizeof(t_nrs) / sizeof(*t_nrs); ri++)
+            for (size_t bi = 0; bi < sizeof(t_nbs) / sizeof(*t_nbs); bi++)
+                for (size_t ni = 0; ni < sizeof(t_ns) / sizeof(*t_ns); ni++) {
+                    int nr = t_nrs[ri], nb = t_nbs[bi], n_len = t_ns[ni];
+                    float sc = t_scs[(ri + bi + ni) % 2];
+                    for (size_t i = 0; i < (size_t)TC * YS; i++) yt[i] = -777.0f;
+                    vec_dot_exact_tile(T_NVFP4, wt, rsz, nr, xt, XS, nb, n_len, sc, yt, YS);
+                    for (int c = 0; c < nb; c++)
+                        for (int r = 0; r < nr; r++) {
+                            float want = vec_dot(T_NVFP4, wt + (size_t)r * rsz,
+                                                 xt + (size_t)c * XS, n_len) * sc;
+                            t_diff += memcmp(&yt[(size_t)c * YS + r], &want, 4) != 0;
+                        }
+                }
+        // all 256 UE4M3 scales x 16 codes in rows (split across 4 rows x 4096)
+        size_t crsz = (size_t)(4096 / BLK) * BLK_BYTES;
+        free(xt); free(wt);
+        float *xc = malloc(sizeof(float) * 64 * 4096);
+        for (size_t i = 0; i < (size_t)64 * 4096; i++) xc[i] = ((float)(next() % 20001) - 10000.0f) / 2500.0f;
+        for (size_t i = 0; i < (size_t)TC * YS; i++) yt[i] = -777.0f;
+        vec_dot_exact_tile(T_NVFP4, all, crsz, 4, xc, 4096, 64, 4096, 0.5f, yt, YS);
+        for (int c = 0; c < 64; c++)
+            for (int r = 0; r < 4; r++) {
+                float want = vec_dot(T_NVFP4, all + (size_t)r * crsz, xc + (size_t)c * 4096, 4096) * 0.5f;
+                t_diff += memcmp(&yt[(size_t)c * YS + r], &want, 4) != 0;
+            }
+        free(xc); free(yt);
+        CHECK(t_diff == 0, "8. vec_dot_exact_tile for NVFP4 byte-equal to vec_dot*scale over 1..64 cols: %ld differ",
+              t_diff);
+    }
     for (int c = 0; c < 8; c++) free(cols[c]);
     free(row); free(a); free(b); free(x); free(a2); free(b2); free(all);
     printf(fails ? "FAIL %d\n" : "PASS\n", fails);

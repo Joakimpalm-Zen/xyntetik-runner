@@ -108,6 +108,62 @@ static void ratio(int type, const char *name) {
     free(w); free(x);
 }
 
+// Tier C wide-batch tile ratio canary against VEC_DOT_MULTI_MAX=8 chunked multi:
+// guards regressions at <= 1.50x (no hard < 1.0 assertion) and reports measured ratio.
+static void tile_ratio(int type, const char *name) {
+    const int n = 2880, rows = 64, max_nb = 64;
+    size_t rs = ggml_row_size(type, n);
+    unsigned char *w = malloc(rs * rows);
+    float *x = malloc(sizeof(float) * (size_t)n * max_nb);
+    float *y = malloc(sizeof(float) * (size_t)rows * max_nb);
+    unsigned s = 67890;
+    for (size_t i = 0; i < rs * rows; i++) { s = s * 1103515245u + 12345u; w[i] = (unsigned char)(s >> 16); }
+    if (type == T_NVFP4) {
+        size_t bs = ggml_row_size(type, ggml_block_size(type));
+        for (size_t b = 0; b < rs * rows; b += bs) memset(w + b, 0x38, 4);
+    } else if (type == T_BF16) {
+        uint16_t *h = (uint16_t *)w;
+        for (size_t i = 0; i < (size_t)n * rows; i++) h[i] = (uint16_t)((h[i] & 0x807fu) | 0x3f00u);
+    }
+    for (int i = 0; i < n * max_nb; i++) { s = s * 1103515245u + 12345u; x[i] = ((s >> 9) & 1023) / 1024.0f - 0.5f; }
+    static const int nbs[] = { 16, 32, 64 };
+    float sink = 0;
+    for (size_t bi = 0; bi < sizeof(nbs) / sizeof(*nbs); bi++) {
+        const int nb = nbs[bi];
+        double best_t = 1e9, best_m = 1e9;
+        for (int attempt = 0, rounds = 5; attempt < 2; attempt++, rounds = 25) {
+            best_t = 1e9; best_m = 1e9;
+            for (int rep = 0; rep < rounds; rep++) {
+                double t0 = route_now();
+                vec_dot_exact_tile(type, w, rs, rows, x, n, nb, n, 1.0f, y, rows);
+                sink += y[0];
+                double t1 = route_now();
+                for (int r = 0; r < rows; r++) {
+                    const void *row = w + rs * r;
+                    for (int c0 = 0; c0 < nb; c0 += VEC_DOT_MULTI_MAX) {
+                        const int nc = nb - c0 < VEC_DOT_MULTI_MAX ? nb - c0 : VEC_DOT_MULTI_MAX;
+                        const float *xs[VEC_DOT_MULTI_MAX];
+                        float out[VEC_DOT_MULTI_MAX];
+                        for (int k = 0; k < nc; k++) xs[k] = x + (size_t)(c0 + k) * n;
+                        vec_dot_multi(type, row, xs, nc, n, out);
+                        sink += out[0];
+                    }
+                }
+                double t2 = route_now();
+                if (t1 - t0 < best_t) best_t = t1 - t0;
+                if (t2 - t1 < best_m) best_m = t2 - t1;
+            }
+            if (best_t <= 1.5 * best_m) break;
+        }
+        char msg[160];
+        snprintf(msg, sizeof msg, "%s exact tile, %d cols: tile %.3f ms, multi-8 loop %.3f ms (ratio %.2f, limit 1.50)",
+                 name, nb, best_t * 1e3, best_m * 1e3, best_t / best_m);
+        ck(best_t <= 1.5 * best_m, msg);
+    }
+    if (sink == 12345.678f) puts("");
+    free(y); free(x); free(w);
+}
+
 #if defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)
 static void random_mxfp4(unsigned char *w, size_t bytes, unsigned s) {
     for (size_t i = 0; i < bytes; i++) { s = s * 1103515245u + 12345u; w[i] = (unsigned char)(s >> 16); }
@@ -172,6 +228,8 @@ int main(int argc, char **argv) {
     ratio(T_IQ3_S, "IQ3_S");
     ratio(T_IQ4_XS, "IQ4_XS");
     ratio(T_NVFP4, "NVFP4");
+    tile_ratio(T_BF16, "BF16");
+    tile_ratio(T_NVFP4, "NVFP4");
 #if defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)
     decode_ratio_mxfp4();
 #endif

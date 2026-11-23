@@ -1680,7 +1680,27 @@ void dequant_row(int type, const void *src, float *dst, int n) {
     }
     if (type == T_BF16) {
         const uint16_t *h = src;
-        for (int i = 0; i < n; i++) dst[i] = bf16_to_f32(h[i]);
+        int i = 0;
+#if defined(__AVX2__) && defined(__FMA__) && defined(__F16C__) && defined(__AVX512F__)
+        for (; i + 16 <= n; i += 16) {
+            const __m512i wi = _mm512_slli_epi32(
+                _mm512_cvtepu16_epi32(_mm256_loadu_si256((const __m256i *)(h + i))), 16);
+            _mm512_storeu_ps(dst + i, _mm512_castsi512_ps(wi));
+        }
+#elif defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)
+        for (; i + 8 <= n; i += 8) {
+            const __m256i wi = _mm256_slli_epi32(
+                _mm256_cvtepu16_epi32(_mm_loadu_si128((const __m128i *)(h + i))), 16);
+            _mm256_storeu_ps(dst + i, _mm256_castsi256_ps(wi));
+        }
+#elif RUNNER_NEON
+        for (; i + 8 <= n; i += 8) {
+            uint16x8_t v = vld1q_u16(h + i);
+            vst1q_f32(dst + i,     vreinterpretq_f32_u32(vshlq_n_u32(vmovl_u16(vget_low_u16(v)), 16)));
+            vst1q_f32(dst + i + 4, vreinterpretq_f32_u32(vshlq_n_u32(vmovl_u16(vget_high_u16(v)), 16)));
+        }
+#endif
+        for (; i < n; i++) dst[i] = bf16_to_f32(h[i]);
         return;
     }
 #if defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)
@@ -4641,11 +4661,380 @@ static void dot_iq3_s_neon_multi(const block_iq3_s *b, const float *const *xs, i
 // decode halved while every output stayed byte-identical)
 static _Atomic unsigned long g_vdm_calls = 0;
 static _Atomic unsigned long g_vdm_fallbacks = 0;
+static _Atomic unsigned long g_vdet_cols = 0;
 unsigned long vec_dot_multi_calls(void) {
     return atomic_load_explicit(&g_vdm_calls, memory_order_relaxed);
 }
 unsigned long vec_dot_multi_fallbacks(void) {
     return atomic_load_explicit(&g_vdm_fallbacks, memory_order_relaxed);
+}
+unsigned long vec_dot_exact_tile_cols(void) {
+    return atomic_load_explicit(&g_vdet_cols, memory_order_relaxed);
+}
+
+// Tier C exact wide-batch tile buffer holds fully dequantized float32 weights from
+// dequant_row(). Every enabled (ISA, type) executes op-for-op identical arithmetic to
+// that ISA's single-column vec_dot (followed by * scale):
+// - AVX-512 (NVFP4, BF16): dequant_row(NVFP4) stores the exact w0..w3 scaled values
+//   dot_nvfp4_avx512 computes, and dequant_row(BF16) stores exact bf16_to_f32 floats;
+//   both use two __m512 accumulators stepping 32 + optional 16 + hsum16 + scalar tail
+//   (4x3x2 = 28/32 ZMMs).
+// - AVX2+FMA (BF16 only): dot_bf16_avx2 uses one __m256 accumulator stepping 8 +
+//   hsum8 + scalar tail (4x3x1 = 16/16 YMMs). NVFP4 keeps vec_dot_multi because
+//   dot_nvfp4_avx2 multiplies g_ue4m3_half[d] after each 16-element partial dot.
+// - NEON (BF16 only): dot_bf16_neon uses four float32x4_t accumulators stepping 16 +
+//   vaddvq_f32 + scalar tail (2x3x4 = 29/32 V-regs). NVFP4 keeps vec_dot_multi because
+//   dot_nvfp4_neon multiplies g_ue4m3_half[d] after each 16-element dot16 partial sum.
+#if !defined(RUNNER_CANON_KERNELS) && RUNNER_AVX2 && defined(__AVX512F__)
+static inline __attribute__((always_inline)) void exact_tile_avx512_4x3(
+        const float *w0, const float *w1, const float *w2, const float *w3,
+        const float *x, size_t x_stride, int n, float scale,
+        float *yc0, float *yc1, float *yc2) {
+    __m512 a0[4][3], a1[4][3];
+    for (int rr = 0; rr < 4; rr++)
+        for (int cc = 0; cc < 3; cc++) {
+            a0[rr][cc] = _mm512_setzero_ps();
+            a1[rr][cc] = _mm512_setzero_ps();
+        }
+    const float *wptrs[4] = { w0, w1, w2, w3 };
+    const float *xptrs[3] = { x, x + x_stride, x + 2 * x_stride };
+    int i = 0;
+    for (; i + 32 <= n; i += 32) {
+        const __m512 xv0 = _mm512_loadu_ps(xptrs[0] + i);
+        const __m512 xv1 = _mm512_loadu_ps(xptrs[1] + i);
+        const __m512 xv2 = _mm512_loadu_ps(xptrs[2] + i);
+        for (int rr = 0; rr < 4; rr++) {
+            const __m512 wv = _mm512_loadu_ps(wptrs[rr] + i);
+            a0[rr][0] = _mm512_fmadd_ps(wv, xv0, a0[rr][0]);
+            a0[rr][1] = _mm512_fmadd_ps(wv, xv1, a0[rr][1]);
+            a0[rr][2] = _mm512_fmadd_ps(wv, xv2, a0[rr][2]);
+        }
+        const __m512 yv0 = _mm512_loadu_ps(xptrs[0] + i + 16);
+        const __m512 yv1 = _mm512_loadu_ps(xptrs[1] + i + 16);
+        const __m512 yv2 = _mm512_loadu_ps(xptrs[2] + i + 16);
+        for (int rr = 0; rr < 4; rr++) {
+            const __m512 wv = _mm512_loadu_ps(wptrs[rr] + i + 16);
+            a1[rr][0] = _mm512_fmadd_ps(wv, yv0, a1[rr][0]);
+            a1[rr][1] = _mm512_fmadd_ps(wv, yv1, a1[rr][1]);
+            a1[rr][2] = _mm512_fmadd_ps(wv, yv2, a1[rr][2]);
+        }
+    }
+    if (i + 16 <= n) {
+        const __m512 xv0 = _mm512_loadu_ps(xptrs[0] + i);
+        const __m512 xv1 = _mm512_loadu_ps(xptrs[1] + i);
+        const __m512 xv2 = _mm512_loadu_ps(xptrs[2] + i);
+        for (int rr = 0; rr < 4; rr++) {
+            const __m512 wv = _mm512_loadu_ps(wptrs[rr] + i);
+            a0[rr][0] = _mm512_fmadd_ps(wv, xv0, a0[rr][0]);
+            a0[rr][1] = _mm512_fmadd_ps(wv, xv1, a0[rr][1]);
+            a0[rr][2] = _mm512_fmadd_ps(wv, xv2, a0[rr][2]);
+        }
+        i += 16;
+    }
+    float *yptrs[3] = { yc0, yc1, yc2 };
+    for (int rr = 0; rr < 4; rr++)
+        for (int cc = 0; cc < 3; cc++) {
+            float s = hsum16(_mm512_add_ps(a0[rr][cc], a1[rr][cc]));
+            for (int k = i; k < n; k++) s += wptrs[rr][k] * xptrs[cc][k];
+            yptrs[cc][rr] = s * scale;
+        }
+}
+static inline __attribute__((always_inline)) void exact_tile_avx512_1xK(
+        const float *w, const float *x, size_t x_stride, int mc, int n,
+        float scale, float *y_r, size_t y_stride) {
+    __m512 a0[8], a1[8];
+    for (int c = 0; c < mc; c++) { a0[c] = _mm512_setzero_ps(); a1[c] = _mm512_setzero_ps(); }
+    int i = 0;
+    for (; i + 32 <= n; i += 32) {
+        const __m512 w0 = _mm512_loadu_ps(w + i);
+        const __m512 w1 = _mm512_loadu_ps(w + i + 16);
+        for (int c = 0; c < mc; c++) {
+            const float *xp = x + (size_t)c * x_stride + i;
+            a0[c] = _mm512_fmadd_ps(w0, _mm512_loadu_ps(xp),      a0[c]);
+            a1[c] = _mm512_fmadd_ps(w1, _mm512_loadu_ps(xp + 16), a1[c]);
+        }
+    }
+    if (i + 16 <= n) {
+        const __m512 w0 = _mm512_loadu_ps(w + i);
+        for (int c = 0; c < mc; c++)
+            a0[c] = _mm512_fmadd_ps(w0, _mm512_loadu_ps(x + (size_t)c * x_stride + i), a0[c]);
+        i += 16;
+    }
+    for (int c = 0; c < mc; c++) {
+        float s = hsum16(_mm512_add_ps(a0[c], a1[c]));
+        const float *xp = x + (size_t)c * x_stride;
+        for (int k = i; k < n; k++) s += w[k] * xp[k];
+        y_r[(size_t)c * y_stride] = s * scale;
+    }
+}
+static void exact_tile_avx512_1row(const float *w, const float *x, size_t x_stride, int mc, int n,
+                                   float scale, float *y_r, size_t y_stride) {
+    switch (mc) {
+        case 1: exact_tile_avx512_1xK(w, x, x_stride, 1, n, scale, y_r, y_stride); break;
+        case 2: exact_tile_avx512_1xK(w, x, x_stride, 2, n, scale, y_r, y_stride); break;
+        case 8: exact_tile_avx512_1xK(w, x, x_stride, 8, n, scale, y_r, y_stride); break;
+        default: exact_tile_avx512_1xK(w, x, x_stride, mc, n, scale, y_r, y_stride); break;
+    }
+}
+static void exact_tile_block(const float *tbuf, int ng, const float *x, size_t x_stride,
+                             int nc, int n, float scale, float *y, size_t y_stride) {
+    int r = 0;
+    for (; r + 4 <= ng; r += 4) {
+        const float *w0 = tbuf + (size_t)r * n;
+        int c = 0;
+        for (; c + 3 <= nc; c += 3) {
+            float *yc0 = y + (size_t)c * y_stride + r;
+            exact_tile_avx512_4x3(w0, w0 + n, w0 + 2 * (size_t)n, w0 + 3 * (size_t)n,
+                                  x + (size_t)c * x_stride, x_stride, n, scale,
+                                  yc0, yc0 + y_stride, yc0 + 2 * y_stride);
+        }
+        if (c < nc) {
+            const int rem = nc - c;
+            for (int rr = 0; rr < 4; rr++)
+                exact_tile_avx512_1row(w0 + (size_t)rr * n, x + (size_t)c * x_stride, x_stride,
+                                       rem, n, scale, y + (size_t)c * y_stride + r + rr, y_stride);
+        }
+    }
+    for (; r < ng; r++) {
+        const float *wr = tbuf + (size_t)r * n;
+        for (int c = 0; c < nc; c += 8) {
+            const int mc = nc - c < 8 ? nc - c : 8;
+            exact_tile_avx512_1row(wr, x + (size_t)c * x_stride, x_stride,
+                                   mc, n, scale, y + (size_t)c * y_stride + r, y_stride);
+        }
+    }
+}
+bool vec_dot_exact_tile_ok(int type, int n) {
+    return (type == T_BF16 && n > 0) || (type == T_NVFP4 && n > 0 && (n % QK_NVFP4) == 0);
+}
+#elif !defined(RUNNER_CANON_KERNELS) && RUNNER_AVX2
+static inline __attribute__((always_inline)) void exact_tile_avx2_4x3(
+        const float *w0, const float *w1, const float *w2, const float *w3,
+        const float *x, size_t x_stride, int n, float scale,
+        float *yc0, float *yc1, float *yc2) {
+    __m256 acc[4][3];
+    for (int rr = 0; rr < 4; rr++)
+        for (int cc = 0; cc < 3; cc++) acc[rr][cc] = _mm256_setzero_ps();
+    const float *wptrs[4] = { w0, w1, w2, w3 };
+    const float *xptrs[3] = { x, x + x_stride, x + 2 * x_stride };
+    int i = 0;
+    for (; i + 8 <= n; i += 8) {
+        const __m256 xv0 = _mm256_loadu_ps(xptrs[0] + i);
+        const __m256 xv1 = _mm256_loadu_ps(xptrs[1] + i);
+        const __m256 xv2 = _mm256_loadu_ps(xptrs[2] + i);
+        for (int rr = 0; rr < 4; rr++) {
+            const __m256 wv = _mm256_loadu_ps(wptrs[rr] + i);
+            acc[rr][0] = _mm256_fmadd_ps(wv, xv0, acc[rr][0]);
+            acc[rr][1] = _mm256_fmadd_ps(wv, xv1, acc[rr][1]);
+            acc[rr][2] = _mm256_fmadd_ps(wv, xv2, acc[rr][2]);
+        }
+    }
+    float *yptrs[3] = { yc0, yc1, yc2 };
+    for (int rr = 0; rr < 4; rr++)
+        for (int cc = 0; cc < 3; cc++) {
+            float s = hsum8(acc[rr][cc]);
+            for (int k = i; k < n; k++) s += wptrs[rr][k] * xptrs[cc][k];
+            yptrs[cc][rr] = s * scale;
+        }
+}
+static inline __attribute__((always_inline)) void exact_tile_avx2_1xK(
+        const float *w, const float *x, size_t x_stride, int mc, int n,
+        float scale, float *y_r, size_t y_stride) {
+    __m256 acc[6];
+    for (int c = 0; c < mc; c++) acc[c] = _mm256_setzero_ps();
+    int i = 0;
+    for (; i + 8 <= n; i += 8) {
+        const __m256 wv = _mm256_loadu_ps(w + i);
+        for (int c = 0; c < mc; c++)
+            acc[c] = _mm256_fmadd_ps(wv, _mm256_loadu_ps(x + (size_t)c * x_stride + i), acc[c]);
+    }
+    for (int c = 0; c < mc; c++) {
+        float s = hsum8(acc[c]);
+        const float *xp = x + (size_t)c * x_stride;
+        for (int k = i; k < n; k++) s += w[k] * xp[k];
+        y_r[(size_t)c * y_stride] = s * scale;
+    }
+}
+static void exact_tile_avx2_1row(const float *w, const float *x, size_t x_stride, int mc, int n,
+                                 float scale, float *y_r, size_t y_stride) {
+    switch (mc) {
+        case 1: exact_tile_avx2_1xK(w, x, x_stride, 1, n, scale, y_r, y_stride); break;
+        case 2: exact_tile_avx2_1xK(w, x, x_stride, 2, n, scale, y_r, y_stride); break;
+        case 6: exact_tile_avx2_1xK(w, x, x_stride, 6, n, scale, y_r, y_stride); break;
+        default: exact_tile_avx2_1xK(w, x, x_stride, mc, n, scale, y_r, y_stride); break;
+    }
+}
+static void exact_tile_block(const float *tbuf, int ng, const float *x, size_t x_stride,
+                             int nc, int n, float scale, float *y, size_t y_stride) {
+    int r = 0;
+    for (; r + 4 <= ng; r += 4) {
+        const float *w0 = tbuf + (size_t)r * n;
+        int c = 0;
+        for (; c + 3 <= nc; c += 3) {
+            float *yc0 = y + (size_t)c * y_stride + r;
+            exact_tile_avx2_4x3(w0, w0 + n, w0 + 2 * (size_t)n, w0 + 3 * (size_t)n,
+                                x + (size_t)c * x_stride, x_stride, n, scale,
+                                yc0, yc0 + y_stride, yc0 + 2 * y_stride);
+        }
+        if (c < nc) {
+            const int rem = nc - c;
+            for (int rr = 0; rr < 4; rr++)
+                exact_tile_avx2_1row(w0 + (size_t)rr * n, x + (size_t)c * x_stride, x_stride,
+                                     rem, n, scale, y + (size_t)c * y_stride + r + rr, y_stride);
+        }
+    }
+    for (; r < ng; r++) {
+        const float *wr = tbuf + (size_t)r * n;
+        for (int c = 0; c < nc; c += 6) {
+            const int mc = nc - c < 6 ? nc - c : 6;
+            exact_tile_avx2_1row(wr, x + (size_t)c * x_stride, x_stride,
+                                 mc, n, scale, y + (size_t)c * y_stride + r, y_stride);
+        }
+    }
+}
+bool vec_dot_exact_tile_ok(int type, int n) {
+    return type == T_BF16 && n > 0;
+}
+#elif !defined(RUNNER_CANON_KERNELS) && RUNNER_NEON
+static inline __attribute__((always_inline)) void exact_tile_neon_2x3(
+        const float *w0, const float *w1, const float *x, size_t x_stride,
+        int n, float scale, float *yc0, float *yc1, float *yc2) {
+    float32x4_t a[2][3][4];
+    for (int rr = 0; rr < 2; rr++)
+        for (int cc = 0; cc < 3; cc++)
+            for (int q = 0; q < 4; q++) a[rr][cc][q] = vdupq_n_f32(0);
+    const float *wptrs[2] = { w0, w1 };
+    const float *xptrs[3] = { x, x + x_stride, x + 2 * x_stride };
+    int i = 0;
+    for (; i + 16 <= n; i += 16) {
+        for (int q = 0; q < 4; q++) {
+            const int off = i + 4 * q;
+            const float32x4_t xv0 = vld1q_f32(xptrs[0] + off);
+            const float32x4_t xv1 = vld1q_f32(xptrs[1] + off);
+            const float32x4_t xv2 = vld1q_f32(xptrs[2] + off);
+            const float32x4_t wv0 = vld1q_f32(w0 + off);
+            const float32x4_t wv1 = vld1q_f32(w1 + off);
+            a[0][0][q] = vfmaq_f32(a[0][0][q], wv0, xv0);
+            a[0][1][q] = vfmaq_f32(a[0][1][q], wv0, xv1);
+            a[0][2][q] = vfmaq_f32(a[0][2][q], wv0, xv2);
+            a[1][0][q] = vfmaq_f32(a[1][0][q], wv1, xv0);
+            a[1][1][q] = vfmaq_f32(a[1][1][q], wv1, xv1);
+            a[1][2][q] = vfmaq_f32(a[1][2][q], wv1, xv2);
+        }
+    }
+    float *yptrs[3] = { yc0, yc1, yc2 };
+    for (int rr = 0; rr < 2; rr++)
+        for (int cc = 0; cc < 3; cc++) {
+            float s = vaddvq_f32(vaddq_f32(vaddq_f32(a[rr][cc][0], a[rr][cc][1]),
+                                           vaddq_f32(a[rr][cc][2], a[rr][cc][3])));
+            for (int k = i; k < n; k++) s += wptrs[rr][k] * xptrs[cc][k];
+            yptrs[cc][rr] = s * scale;
+        }
+}
+static inline __attribute__((always_inline)) void exact_tile_neon_1xK(
+        const float *w, const float *x, size_t x_stride, int mc, int n,
+        float scale, float *y_r, size_t y_stride) {
+    float32x4_t a[4][4];
+    for (int c = 0; c < mc; c++)
+        for (int q = 0; q < 4; q++) a[c][q] = vdupq_n_f32(0);
+    int i = 0;
+    for (; i + 16 <= n; i += 16) {
+        const float32x4_t wv[4] = {
+            vld1q_f32(w + i), vld1q_f32(w + i + 4), vld1q_f32(w + i + 8), vld1q_f32(w + i + 12)
+        };
+        for (int c = 0; c < mc; c++) {
+            const float *xp = x + (size_t)c * x_stride + i;
+            for (int q = 0; q < 4; q++)
+                a[c][q] = vfmaq_f32(a[c][q], wv[q], vld1q_f32(xp + 4 * q));
+        }
+    }
+    for (int c = 0; c < mc; c++) {
+        float s = vaddvq_f32(vaddq_f32(vaddq_f32(a[c][0], a[c][1]), vaddq_f32(a[c][2], a[c][3])));
+        const float *xp = x + (size_t)c * x_stride;
+        for (int k = i; k < n; k++) s += w[k] * xp[k];
+        y_r[(size_t)c * y_stride] = s * scale;
+    }
+}
+static void exact_tile_block(const float *tbuf, int ng, const float *x, size_t x_stride,
+                             int nc, int n, float scale, float *y, size_t y_stride) {
+    int r = 0;
+    for (; r + 2 <= ng; r += 2) {
+        const float *w0 = tbuf + (size_t)r * n;
+        int c = 0;
+        for (; c + 3 <= nc; c += 3) {
+            float *yc0 = y + (size_t)c * y_stride + r;
+            exact_tile_neon_2x3(w0, w0 + n, x + (size_t)c * x_stride, x_stride, n, scale,
+                                yc0, yc0 + y_stride, yc0 + 2 * y_stride);
+        }
+        if (c < nc) {
+            const int rem = nc - c;
+            for (int rr = 0; rr < 2; rr++)
+                exact_tile_neon_1xK(w0 + (size_t)rr * n, x + (size_t)c * x_stride, x_stride,
+                                    rem, n, scale, y + (size_t)c * y_stride + r + rr, y_stride);
+        }
+    }
+    for (; r < ng; r++) {
+        const float *wr = tbuf + (size_t)r * n;
+        for (int c = 0; c < nc; c += 4) {
+            const int mc = nc - c < 4 ? nc - c : 4;
+            exact_tile_neon_1xK(wr, x + (size_t)c * x_stride, x_stride,
+                                mc, n, scale, y + (size_t)c * y_stride + r, y_stride);
+        }
+    }
+}
+bool vec_dot_exact_tile_ok(int type, int n) {
+    return type == T_BF16 && n > 0;
+}
+#else
+static void exact_tile_block(const float *tbuf, int ng, const float *x, size_t x_stride,
+                             int nc, int n, float scale, float *y, size_t y_stride) {
+    (void)tbuf; (void)ng; (void)x; (void)x_stride; (void)nc; (void)n; (void)scale; (void)y; (void)y_stride;
+}
+bool vec_dot_exact_tile_ok(int type, int n) {
+    (void)type; (void)n;
+    return false;
+}
+#endif
+
+void vec_dot_exact_tile(int type, const void *row_base, size_t row_bytes, int nr,
+                        const float *x, size_t x_stride, int nb, int n,
+                        float scale, float *y, size_t y_stride) {
+    const unsigned char *base = row_base;
+    if (nb >= 1 && nr >= 1 && vec_dot_exact_tile_ok(type, n)) {
+        const int r_grp = nr < VEC_DOT_EXACT_TILE_ROWS ? nr : VEC_DOT_EXACT_TILE_ROWS;
+        float *tbuf = malloc(sizeof(float) * (size_t)r_grp * (size_t)n);
+        if (tbuf) {
+            atomic_fetch_add_explicit(&g_vdet_cols, (unsigned long)nb, memory_order_relaxed);
+            const int tcols = n > 2048 ? 16 : 32;
+            for (int r0 = 0; r0 < nr; r0 += r_grp) {
+                const int ng = nr - r0 < r_grp ? nr - r0 : r_grp;
+                for (int rr = 0; rr < ng; rr++)
+                    dequant_row(type, base + (size_t)(r0 + rr) * row_bytes,
+                                tbuf + (size_t)rr * n, n);
+                for (int c0 = 0; c0 < nb; c0 += tcols) {
+                    const int nc = nb - c0 < tcols ? nb - c0 : tcols;
+                    exact_tile_block(tbuf, ng, x + (size_t)c0 * x_stride, x_stride,
+                                     nc, n, scale, y + (size_t)c0 * y_stride + r0, y_stride);
+                }
+            }
+            free(tbuf);
+            return;
+        }
+    }
+    for (int r = 0; r < nr; r++) {
+        const void *row = base + (size_t)r * row_bytes;
+        for (int c0 = 0; c0 < nb; c0 += VEC_DOT_MULTI_MAX) {
+            int nc = nb - c0 < VEC_DOT_MULTI_MAX ? nb - c0 : VEC_DOT_MULTI_MAX;
+            float out[VEC_DOT_MULTI_MAX];
+            if (nc == 1) out[0] = vec_dot(type, row, x + (size_t)c0 * x_stride, n);
+            else {
+                const float *xs[VEC_DOT_MULTI_MAX];
+                for (int k = 0; k < nc; k++) xs[k] = x + (size_t)(c0 + k) * x_stride;
+                vec_dot_multi(type, row, xs, nc, n, out);
+            }
+            for (int k = 0; k < nc; k++) y[(size_t)(c0 + k) * y_stride + (size_t)r] = out[k] * scale;
+        }
+    }
 }
 
 // The AVX2 multi-column dots keep one accumulator per column in an array

@@ -281,4 +281,18 @@ unsigned long i8_dot_dispatches(void);
 unsigned long vec_dot_multi_calls(void);       // route gate: calls into vec_dot_multi
 unsigned long vec_dot_multi_fallbacks(void);   // route gate: columns taking the per-column vec_dot fallback
 
+// Tier C exact wide-batch tile (inkling2_loop): decodes rows once into per-thread scratch
+// and accumulates in each ISA's exact single-column vec_dot order (scale applied after).
+enum { VEC_DOT_EXACT_TILE_MIN = 8 };
+#if defined(__aarch64__) && defined(__ARM_NEON)
+enum { VEC_DOT_EXACT_TILE_ROWS = 8 };
+#else
+enum { VEC_DOT_EXACT_TILE_ROWS = 16 };
+#endif
+bool          vec_dot_exact_tile_ok(int type, int n);
+void          vec_dot_exact_tile(int type, const void *row_base, size_t row_bytes,
+                                 int nr, const float *x, size_t x_stride,
+                                 int nb, int n, float scale, float *y, size_t y_stride);
+unsigned long vec_dot_exact_tile_cols(void);   // route gate: columns computed on the exact tile path
+
 #endif // RUNNER_QUANTS_H

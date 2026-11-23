@@ -649,6 +649,12 @@ static void ink2_lin_range(void *c, int64_t o0, int64_t o1) {
     const ink2_lin_ctx *L = c;
     const unsigned char *base = (const unsigned char *)L->W->q;
     const int type = L->W->qtype, n_in = L->n_in;
+    if (L->T >= VEC_DOT_EXACT_TILE_MIN && vec_dot_exact_tile_ok(type, n_in)) {
+        vec_dot_exact_tile(type, base + (size_t)(L->row0 + o0) * L->W->q_row_bytes,
+                           L->W->q_row_bytes, (int)(o1 - o0), L->x, L->xs,
+                           L->T, n_in, L->scale, L->y + (size_t)o0, L->ys);
+        return;
+    }
     for (int64_t o = o0; o < o1; o++) {
         const void *row = base + (size_t)(L->row0 + o) * L->W->q_row_bytes;
         for (int t0 = 0; t0 < L->T; t0 += VEC_DOT_MULTI_MAX) {

@@ -19,6 +19,7 @@
 #include "gpu.h"
 #include "inkling2.h"
 #include "inkling2_model.h"
+#include "quants.h"
 #include "tpool.h"
 #include "compat.h"
 #include <math.h>
@@ -147,6 +148,17 @@ int main(int argc, char **argv) {
         const long h5 = ink2_head_rows();
         CHECK(no_lg == NULL && h5 - h4 == 0, "(g) prefill with want_logits=false runs the head %ld row(s), want 0", h5 - h4);
         free(krows); drop(p64); drop(p8); drop(p0); drop(rk);
+    }
+    // (h) Tier C prefill dispatch: a T=64 prefill takes the exact wide-batch tile (>0 columns)
+    {
+        model_t *p64t = load(argv[2], NULL, false, 1, 64);
+        int32_t prompt64[64];
+        for (int i = 0; i < 64; i++) prompt64[i] = PROMPT[i % N_TOK];
+        const unsigned long tc0 = vec_dot_exact_tile_cols();
+        float *out64 = p64t ? model_inkling2_forward(p64t, prompt64, 64, 0, true, false) : NULL;
+        const unsigned long tc1 = vec_dot_exact_tile_cols();
+        CHECK(out64 && tc1 > tc0, "(h) T=64 BF16 prefill takes exact tile path (%lu cols, want > 0)", tc1 - tc0);
+        drop(p64t);
     }
     drop(t1); drop(t4); drop(b8); drop(ref); drop(q8);
     printf(fails ? "FAIL %d\n" : "PASS\n", fails);
