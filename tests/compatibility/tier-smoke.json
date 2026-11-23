@@ -5273,6 +5273,22 @@
           }
         }
       }
+    },
+    "inkling-2-mini-ud-q8_k_xl": {
+      "n_predict": 600,
+      "ctx": 1024,
+      "request": {
+        "enable_thinking": false,
+        "reasoning_effort": "none"
+      }
+    },
+    "inkling-2-mini-ud-q4_k_xl": {
+      "n_predict": 600,
+      "ctx": 1024,
+      "request": {
+        "enable_thinking": false,
+        "reasoning_effort": "none"
+      }
     }
   }
 }

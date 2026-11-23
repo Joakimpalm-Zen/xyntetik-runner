@@ -112,9 +112,9 @@ bool model_inkling2_runtime(model_t *m, const model_params *p) {
     } else {
         r->w = r->inner;
     }
-    fprintf(stderr, "inkling2_loop: -c %d -b %d, %d threads; cache %.2f GB (sliding K/V for the window only), expert "
-                    "cache %.2f GB\n", n_ctx, m->n_batch, ink2_get_threads(), ink2_cache_bytes(&r->c, &r->s) / 1e9,
-            r->ec_budget / 1e9);
+    // no thread count here: a server's slot is loaded with a one-thread pool, and the forward takes the count at use
+    fprintf(stderr, "inkling2_loop: -c %d -b %d; cache %.2f GB (sliding K/V for the window only), expert "
+                    "cache %.2f GB\n", n_ctx, m->n_batch, ink2_cache_bytes(&r->c, &r->s) / 1e9, r->ec_budget / 1e9);
     return true;
 }
 
@@ -125,6 +125,11 @@ float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos,
         return NULL;
     }
     if (keep_all && n > r->rows_cap) return NULL;
+    // the engine's own pool takes the instance's thread count at use: a server loads each slot with a one-thread
+    // pool and swaps in the shared pool afterwards, so the count read at bind would be one. The rows do not depend
+    // on the thread count (measured bit for bit).
+    const int nt = m->tp ? tpool_size(m->tp) : 1;
+    if (nt != ink2_get_threads()) ink2_set_threads(nt);
     // chunks of n_batch: the engine's rows do not depend on the split (measured bit for bit)
     for (int done = 0; done < n;) {
         const int T = n - done < r->rows_cap ? n - done : r->rows_cap;
