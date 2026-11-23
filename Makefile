@@ -384,6 +384,8 @@ TEST_DN_RECURRENCE = $(TEST_BATCH:test-batch%=test-dn-recurrence%)
 TEST_ATTN_BW = $(TEST_BATCH:test-batch%=test-attn-bw%)
 TEST_THREAD_DEFAULT = $(TEST_BATCH:test-batch%=test-thread-default%)
 TEST_INKLING2_THREADS = $(TEST_BATCH:test-batch%=test-inkling2-threads%)
+TEST_INKLING2_FAST = $(TEST_BATCH:test-batch%=test-inkling2-fast%)
+TEST_NVFP4_DOT = $(TEST_BATCH:test-batch%=test-nvfp4-dot%)
 TEST_SLOW_NOTE = $(TEST_BATCH:test-batch%=test-slow-note%)
 
 # Every module header, so a change to any of them rebuilds. runner.h was one
@@ -2114,6 +2116,17 @@ TEST_INKLING2_THREADS_SRC = tests/test_inkling2_threads.c $(OBJDIR)/gguf.o $(OBJ
 INKLING2_TINY = tests/fuzz/corpus/inkling_open/tiny-valid.gguf
 $(TEST_INKLING2_THREADS): $(TEST_INKLING2_THREADS_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_INKLING2_THREADS_SRC) -o $@ $(LDFLAGS)
+# R4.48.15: Inkling 2 Mini's fast CPU route against its reference route, on the tiny file with each dense type the
+# real files carry (written by tests/inkling2_tiny.py); and the NVFP4 kernels it takes
+TEST_INKLING2_FAST_SRC = tests/test_inkling2_fast.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                         $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
+INKLING2_TINY_DENSE = test-inkling2-tiny-f32.gguf test-inkling2-tiny-bf16.gguf test-inkling2-tiny-q8_0.gguf
+test-inkling2-tiny-%.gguf: tests/inkling2_tiny.py
+	$(PYTHON) tests/inkling2_tiny.py $@ --dense $*
+$(TEST_INKLING2_FAST): $(TEST_INKLING2_FAST_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_INKLING2_FAST_SRC) -o $@ $(LDFLAGS)
+$(TEST_NVFP4_DOT): tests/test_nvfp4_dot.c $(OBJDIR)/compat.o src/compat.h $(QUANTS_OBJ)
+	$(CC) $(CFLAGS) -I src tests/test_nvfp4_dot.c $(OBJDIR)/compat.o $(QUANTS_OBJ) -o $@ $(LDFLAGS)
 
 TEST_MODEL_LOAD_FAILURE_SRC = tests/test_model_load_failure.c $(OBJDIR)/gguf.o \
                               $(OBJDIR)/compat.o $(QUANTS_OBJ) $(OBJDIR)/model.o $(INKLING2_OBJS) \
@@ -3944,7 +3957,7 @@ test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SC
       $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_TRAY_MAC_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) $(TEST_LINEAGE_OOM) $(TEST_DERIVE_OOM) test-lora.full.gguf \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_SHA256) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_PMATH_EXPF) $(TEST_PMATH_EXPF_DEFAULT) $(TEST_PMATH_SOFTMAX) $(TEST_FPCLASS) $(TEST_ACT) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
-      $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_INKLING2_THREADS) \
+      $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_INKLING2_THREADS) $(TEST_INKLING2_FAST) $(INKLING2_TINY_DENSE) $(TEST_NVFP4_DOT) \
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) $(TEST_RESTART) $(TEST_PFX_PERSIST) $(TEST_KVSNAP_REPLACE) $(TEST_PARTIAL_FDOPEN) \
       $(TEST_SCHED_TURN) $(TEST_STREAM_OUT) $(TEST_RESIDENCY) $(TEST_CAPACITY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
       $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_LONGROPE) $(TEST_PREFILL_BATCH) test-phi3-longrope.gguf $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) $(TEST_REQUEST_STOP) \
@@ -4322,6 +4335,8 @@ test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SC
 	./$(TEST_THREAD_DEFAULT)
 	./$(TEST_SLOW_NOTE)
 	./$(TEST_INKLING2_THREADS) $(INKLING2_TINY) > test-inkling2-threads.out 2>&1 || { cat test-inkling2-threads.out; exit 1; }
+	./$(TEST_NVFP4_DOT) > test-nvfp4-dot.out 2>&1 || { cat test-nvfp4-dot.out; exit 1; }
+	./$(TEST_INKLING2_FAST) $(INKLING2_TINY_DENSE) > test-inkling2-fast.out 2>&1 || { cat test-inkling2-fast.out; exit 1; }
 	./$(TEST_MODEL_LOAD_FAILURE)
 	@# a model load with each of its allocations failed in turn, alone and
 	@# beside an instance holding the shared weights, over one fixture per
@@ -4550,6 +4565,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_hybrid_admission.py \
     tests/test_idle_coexistence.py \
     tests/test_ignore_eos_request.py \
+    tests/test_inkling2_fast.py \
     tests/test_inkling2_hardening.py \
     tests/test_inkling2_protocol.py \
     tests/test_inkling2_train.py \
@@ -4998,7 +5014,7 @@ clean:
 	      $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_TOOLS) $(DIFFTOK) \
 	      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
 	      $(TEST_QUANTIZE) $(TEST_KVSNAP_REPLACE) $(TEST_PARTIAL_FDOPEN) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
-	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_INKLING2_THREADS) test-inkling2-threads.out $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) \
+	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_INKLING2_THREADS) test-inkling2-threads.out $(TEST_INKLING2_FAST) test-inkling2-fast.out $(INKLING2_TINY_DENSE) $(TEST_NVFP4_DOT) test-nvfp4-dot.out $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) \
 	      $(TEST_FILE_ID) test-file-identity.tmp \
 	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_LONGROPE) $(TEST_PREFILL_BATCH) $(TEST_CUDA_LONGROPE) $(TEST_CUDA_BATCH_COLS) $(TEST_CUDA_BATCH_Q35) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
 	      $(TMPL_CONF_RENDER) \

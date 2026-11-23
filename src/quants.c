@@ -3353,6 +3353,19 @@ bool vec_dot_xs_ok(int type) {
 #endif
 }
 
+bool vec_dot_simd(int type) {
+#if RUNNER_AVX2 || RUNNER_NEON
+    // the types whose vec_dot takes a dot_*_avx2 / dot_*_neon kernel (quants.c's vec_dot switch); NVFP4 is scalar
+    switch (type) {
+        case T_F32: case T_F16: case T_BF16: case T_Q8_0: return true;
+        default: return false;
+    }
+#else
+    (void)type;
+    return false;
+#endif
+}
+
 void vec_dot_xsums(const float *x, int n, float *xs) {
 #if !defined(RUNNER_CANON_KERNELS) && RUNNER_AVX2
     for (int g = 0; g < n / 32; g++) {

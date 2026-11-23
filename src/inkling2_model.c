@@ -361,3 +361,9 @@ int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, int
         printf("  verdict       unknown (available RAM unreadable)\n");
     return avail && total > avail ? 1 : 0;
 }
+
+// R4.48.15: only the reference route exists yet.
+char model_inkling2_route(const model_t *m) {
+    (void)m;
+    return 'R';
+}
