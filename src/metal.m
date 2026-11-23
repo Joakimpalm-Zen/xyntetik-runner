@@ -6174,3 +6174,21 @@ bool gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F, int E) {
     (void)h; (void)T; (void)H; (void)F; (void)E;
     return false;
 }
+gpu_ink2_kv *gpu_ink2_kv_new(gpu_ink2 *h, int n_app, const int *rows, const int *C) {
+    (void)h; (void)n_app; (void)rows; (void)C;
+    return NULL;
+}
+size_t gpu_ink2_kv_bytes(const gpu_ink2_kv *kv) { (void)kv; return 0; }
+void gpu_ink2_kv_free(gpu_ink2_kv *kv) { (void)kv; }
+bool gpu_ink2_attn_ok(const gpu_ink2 *h) { (void)h; return false; }
+bool gpu_ink2_reserve_attn(gpu_ink2 *h, int T, int Q, int nh, int ext) {
+    (void)h; (void)T; (void)Q; (void)nh; (void)ext;
+    return false;
+}
+bool gpu_ink2_attn(gpu_ink2 *h, gpu_ink2_kv *kv, int app, int T, const int *pos, const float *q, const float *k,
+                   const float *v, const float *rl, const float *sk, float *att, int nh, int nkv, int hd, int window,
+                   int global, int ext, float scale) {
+    (void)h; (void)kv; (void)app; (void)T; (void)pos; (void)q; (void)k; (void)v; (void)rl; (void)sk; (void)att;
+    (void)nh; (void)nkv; (void)hd; (void)window; (void)global; (void)ext; (void)scale;
+    return false;
+}

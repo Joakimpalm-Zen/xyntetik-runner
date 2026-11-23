@@ -5568,6 +5568,74 @@ extern "C" __global__ void k_ink2_swiglu(float *act, int F, int cs, float gc, fl
     a[j] = sg * sig * su;
 }
 
+// R4.48.9 G2b step 2a: Inkling 2 Mini's attention core over the application's device K/V ring, one warp per (query i
+// = blockIdx.x, head h = blockIdx.y), as ink2_attn_core computes it: logits (q . k) * scale + the relative bias of
+// distance d (< ext; 0 beyond), over the keys the mask admits (0 <= d, and d < window on a sliding layer), the sink as
+// one more logit with a zero value; softmax; att = sum_j p_j v_j. Head h reads K/V head h / (nh / nkv). Key position
+// j lives in ring row j % R. The ORDER, fixed: pass 1 the max (exact, starting from the sink); pass 2 the keys in
+// chunks of 32 ascending, a lane each: e = exp(logit - max), the chunk's sum by the warp's fixed tree, the chunks'
+// sums added in ascending order, and sum_j e_j v_j with the lanes over the head's dimensions (lane + 32 k), keys
+// ascending; then one division by (sum + exp(sink - max)). A query reads only its own keys, so its result does not
+// depend on the chunk's other queries. CUDA's expf (no fast math): equal to the CPU's to rounding, not bit for bit.
+typedef struct { int nh, nkv, hd, C, Q, R, window, global, ext; float scale; } ink2_attn_args;
+extern "C" __global__ void k_ink2_attn(const float *q, const float *kr, const float *vr, const float *rl,
+                                       const float *sk, const int *pos, float *att, ink2_attn_args a) {
+    const int i = blockIdx.x, h = blockIdx.y, lane = threadIdx.x;
+    const int kh = h / (a.nh / a.nkv), pi = pos[i];
+    const int lo = a.global ? 0 : (pi - a.window + 1 > 0 ? pi - a.window + 1 : 0);
+    __shared__ float qs[256];
+    __shared__ float es[32];
+    const float *qi = q + (ulong64)i * a.Q + (ulong64)h * a.hd;
+    for (int e = lane; e < a.hd; e += 32) qs[e] = qi[e];
+    __syncwarp();
+    const float *bias = rl + ((ulong64)i * a.nh + h) * a.ext;
+    const float sink = sk[(ulong64)i * a.nh + h];
+    // pass 1: the max over the admitted keys and the sink
+    float mx = sink;
+    for (int j0 = lo; j0 <= pi; j0 += 32) {
+        const int j = j0 + lane;
+        if (j <= pi) {
+            const float *kj = kr + (ulong64)(j % a.R) * a.C + (ulong64)kh * a.hd;
+            float s = 0.0f;
+            for (int e = 0; e < a.hd; e++) s = fmaf(qs[e], kj[e], s);
+            const int d = pi - j;
+            const float l = s * a.scale + (d < a.ext ? bias[d] : 0.0f);
+            mx = fmaxf(mx, l);
+        }
+    }
+    for (int o = 16; o > 0; o >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, o));
+    // pass 2: the exponentials, their sum and the weighted values
+    float acc[8];
+    for (int k = 0; k < 8; k++) acc[k] = 0.0f;
+    float sum = 0.0f;
+    for (int j0 = lo; j0 <= pi; j0 += 32) {
+        const int j = j0 + lane;
+        float ev = 0.0f;
+        if (j <= pi) {
+            const float *kj = kr + (ulong64)(j % a.R) * a.C + (ulong64)kh * a.hd;
+            float s = 0.0f;
+            for (int e = 0; e < a.hd; e++) s = fmaf(qs[e], kj[e], s);
+            const int d = pi - j;
+            ev = expf(s * a.scale + (d < a.ext ? bias[d] : 0.0f) - mx);
+        }
+        es[lane] = ev;
+        float cs = ev;
+        for (int o = 16; o > 0; o >>= 1) cs += __shfl_down_sync(0xffffffffu, cs, o);
+        sum += __shfl_sync(0xffffffffu, cs, 0);
+        __syncwarp();
+        const int nj = pi - j0 + 1 < 32 ? pi - j0 + 1 : 32;
+        for (int jj = 0; jj < nj; jj++) {
+            const float p = es[jj];
+            const float *vj = vr + (ulong64)((j0 + jj) % a.R) * a.C + (ulong64)kh * a.hd;
+            for (int k = 0, e = lane; e < a.hd; k++, e += 32) acc[k] = fmaf(p, vj[e], acc[k]);
+        }
+        __syncwarp();
+    }
+    const float total = sum + expf(sink - mx);
+    float *ai = att + (ulong64)i * a.Q + (ulong64)h * a.hd;
+    for (int k = 0, e = lane; e < a.hd; k++, e += 32) ai[e] = acc[k] / total;
+}
+
 // Gated activation over per-column gate/up at arbitrary column strides,
 // with NO weight fold (the grouped path applies selw in the scatter, like
 // the CPU grouping). Same per-element arithmetic as k_silu_mul/k_gelu_mul.

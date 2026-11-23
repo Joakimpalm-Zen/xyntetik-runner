@@ -43,6 +43,10 @@ typedef struct {
                           // host (--cpu-moe), 'C' the CPU; 0 when no bind was asked for
     size_t need;          // the weights' device bytes the fit counted for that placement
     struct ink2_share *share;   // the file's shared device copy this instance holds a reference to
+    gpu_ink2_kv *kv;      // G2b step 2a: this instance's K/V rings on the device (the host rings then freed), or NULL
+    bool attn_on;         // this instance runs the attention core on the device
+    long n_attn;          // device core calls run so far (one per application per forward)
+    long attn_fail_at;    // TEST-ONLY (RUNNER_INKLING2_CUDA_TEST_ATTN_FAIL=k): the k-th device core call fails; -1 none
 } ink2_rt;
 
 static ink2_rt *rt_of(model_t *m) { return (ink2_rt *)m->ink2; }
@@ -146,6 +150,28 @@ static int dev_experts(const ink2_shape *s, const ink2_tensor *t13, const ink2_t
     }
     return 0;
 }
+// G2b step 2a: one application's attention core on the device, over this instance's ring
+static int dev_attn(void *dev, int app, const ink2_attn_dims *d, int T, const int *pos, const float *q,
+                    const float *k, const float *v, const float *rl, const float *sk, float *att) {
+    ink2_rt *r = dev;
+    if (!r->attn_on) return 1;   // this instance keeps the host core (the hook is process-wide)
+    if (!r->gpu || !r->kv) r->gpu_err = true;
+    if (r->gpu_err) return -1;
+    const bool inj = r->n_attn++ == r->attn_fail_at;   // TEST-ONLY: an injected failure inside the core's call
+    const bool ok = !inj && gpu_ink2_attn(r->gpu, r->kv, app, T, pos, q, k, v, rl, sk, att, d->nh, d->nkv, d->hd,
+                                          d->window, d->global, d->ext, d->scale);
+    if (!ok) {
+        if (!r->gpu_err) fprintf(stderr, "error: inkling2_loop: the attention core of application %d failed on the device\n", app);
+        r->gpu_err = true;
+        return -1;
+    }
+    return 0;
+}
+// an application's K/V row width (its ring's rows are the host cache's: n_ctx on a full layer, window - 1 + the chunk
+// on a sliding one)
+static int app_c(const ink2_shape *s, int a) {
+    return ink2_app_global(s, a) ? s->n_kv * s->head_dim : s->swa_n_kv * s->swa_head_dim;
+}
 // G2b step 2's B1: ONE device copy of the weights per file and placement per process, shared by every instance that
 // asks for the same (the server loads each of its --parallel slots as its own instance). The key is the file's
 // identity (path, size, index, modification time) and the placement's inputs (the --cpu-moe request, the device, -c,
@@ -159,18 +185,22 @@ typedef struct ink2_share {
     char placed;
     size_t need;
     bool exp_dev;
+    bool attn_dev;   // step 2a: each instance's attention core (and its K/V rings) on the device
     int refs;
     char why[200];   // 'C': the sentence each instance says
     struct ink2_share *next;
 } ink2_share;
 static pthread_mutex_t g_share_mu = PTHREAD_MUTEX_INITIALIZER;
 static ink2_share *g_shares;
-// the device bytes ONE instance holds beyond the shared weights (its K/V and its buffers, at -c and -b). None yet:
-// the products' and the expert body's buffers belong to the shared copy (used under its lock), and the K/V stays on
-// the host until step 2a puts it on the device, which fills this in.
-static size_t dev_instance_bytes(const ink2_rt *r, int n_ctx, int n_batch) {
-    (void)r; (void)n_ctx; (void)n_batch;
-    return 0;
+// the device bytes ONE instance holds beyond the shared weights: its K/V rings (step 2a: every application's ring at
+// the host cache's rows, K and V, at the allocation granularity), when the core runs on the device. The products',
+// the expert body's and the core's scratch belong to the shared copy (used under its lock).
+static size_t dev_instance_bytes(const ink2_rt *r, bool attn_dev) {
+    if (!attn_dev) return 0;
+    size_t b = 0;
+    for (int a = 0; a < r->s.n_app; a++)
+        b += 2 * dev_alloc_bytes(sizeof(float) * (size_t)r->c.rows[a] * (size_t)app_c(&r->s, a));
+    return b;
 }
 static void share_release(ink2_rt *r) {
     if (!r->share) return;
@@ -197,7 +227,16 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
     if (!h) { snprintf(sh->why, sizeof sh->why, "no CUDA device for inkling2_loop"); return; }
     r->gpu = h;   // dev_wanted asks the handle which types its products take
     const size_t T = n_batch > 0 ? (size_t)n_batch : 1, RES = 512ull << 20;
-    const size_t inst = (size_t)n_slots * dev_instance_bytes(r, n_ctx, n_batch);
+    // step 2a: the attention core on the device when the module has it (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_NO_ATTN=1
+    // keeps it on the host, a baseline); then every slot holds its own K/V rings, counted N times
+    const char *na = getenv("RUNNER_INKLING2_CUDA_TEST_NO_ATTN");
+    const bool attn_dev = gpu_ink2_attn_ok(h) && !(na && !strcmp(na, "1"));
+    const size_t inst = (size_t)n_slots * dev_instance_bytes(r, attn_dev);
+    const ink2_shape *sp = &r->s;
+    const int q_max = sp->n_head * sp->head_dim > sp->swa_n_head * sp->swa_head_dim ? sp->n_head * sp->head_dim
+                                                                                       : sp->swa_n_head * sp->swa_head_dim;
+    const int nh_max = sp->n_head > sp->swa_n_head ? sp->n_head : sp->swa_n_head;
+    const int ext_max = sp->rel_extent > sp->window ? sp->rel_extent : sp->window;
     const char *ne = getenv("RUNNER_INKLING2_CUDA_TEST_NO_EXP");
     const char *capv = getenv("RUNNER_INKLING2_CUDA_TEST_FREE");   // TEST-ONLY: the free figure the fit reads, capped
     const char *pf = getenv("RUNNER_INKLING2_CUDA_TEST_PUT_FAIL");
@@ -210,6 +249,7 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
         if (ink2g_each_view(r->g, dev_count, &c) || c.n == 0 ||
             !gpu_ink2_reserve(h, sizeof(float) * T * (size_t)c.max_in, sizeof(float) * T * (size_t)c.max_out) ||
             (exp_dev && !gpu_ink2_reserve_experts(h, (int)T, r->s.hidden, r->s.ff, r->s.n_expert)) ||
+            (attn_dev && !gpu_ink2_reserve_attn(h, (int)T, q_max, nh_max, ext_max)) ||
             !gpu_mem_info(&fr, &tot)) {
             snprintf(sh->why, sizeof sh->why, "inkling2_loop has no weights the device computes, or no room for its "
                      "products' buffers, on %s", dev);
@@ -227,7 +267,7 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
             free(r->dev_of); r->dev_of = NULL; r->n_dev = 0;
             break;
         }
-        sh->gpu = h; sh->placed = cm ? 'M' : 'W'; sh->need = c.need; sh->exp_dev = exp_dev;
+        sh->gpu = h; sh->placed = cm ? 'M' : 'W'; sh->need = c.need; sh->exp_dev = exp_dev; sh->attn_dev = attn_dev;
         if (cm && !cpu_moe_req)
             fprintf(stderr, "note: inkling2_loop's %.2f GB of weights do not fit the %.2f GB free on %s for %d slot%s; "
                             "its expert stacks stay on the host (as --cpu-moe)\n", need_w / 1e9, fr / 1e9, dev, n_slots,
@@ -278,11 +318,11 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
         return 0;
     }
     const char *pf = getenv("RUNNER_INKLING2_CUDA_TEST_PUT_FAIL"), *ne = getenv("RUNNER_INKLING2_CUDA_TEST_NO_EXP");
-    const char *capv = getenv("RUNNER_INKLING2_CUDA_TEST_FREE");
+    const char *capv = getenv("RUNNER_INKLING2_CUDA_TEST_FREE"), *nav = getenv("RUNNER_INKLING2_CUDA_TEST_NO_ATTN");
     char key[1200];
-    snprintf(key, sizeof key, "%s|%llu|%llu|%lld|moe %d|%s|c %d|b %d|slots %d|pf %s|ne %s|cap %s", m->path,
+    snprintf(key, sizeof key, "%s|%llu|%llu|%lld|moe %d|%s|c %d|b %d|slots %d|pf %s|ne %s|cap %s|na %s", m->path,
              (unsigned long long)fsize, (unsigned long long)fino, (long long)fmt, p->cpu_moe ? 1 : 0, dev, m->n_ctx,
-             m->n_batch, n_slots, pf ? pf : "", ne ? ne : "", capv ? capv : "");
+             m->n_batch, n_slots, pf ? pf : "", ne ? ne : "", capv ? capv : "", nav ? nav : "");
     pthread_mutex_lock(&g_share_mu);
     ink2_share *sh = NULL;
     for (ink2_share *q = g_shares; q; q = q->next)
@@ -327,6 +367,29 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
         return -1;
     }
     pthread_mutex_unlock(&g_share_mu);
+    // step 2a: this instance's K/V rings on the device (the fit counted them for every slot), the host rings freed:
+    // the device holds the only copy, so a device failure refuses (never a host core with a missing cache)
+    if (sh->attn_dev) {
+        int *rows = malloc(sizeof(int) * (size_t)r->s.n_app), *cw = malloc(sizeof(int) * (size_t)r->s.n_app);
+        for (int a = 0; rows && cw && a < r->s.n_app; a++) { rows[a] = r->c.rows[a]; cw[a] = app_c(&r->s, a); }
+        r->kv = rows && cw ? gpu_ink2_kv_new(r->gpu, r->s.n_app, rows, cw) : NULL;
+        free(rows); free(cw);
+        if (!r->kv) {
+            fprintf(stderr, "error: inkling2_loop: this instance's K/V rings could not be put on %s after the fit "
+                            "counted them; the load is refused (never a CPU instance beside CUDA ones)\n", dev);
+            return -1;
+        }
+        for (int a = 0; a < r->s.n_app; a++) {
+            free(r->c.k[a]); r->c.k[a] = NULL;
+            free(r->c.v[a]); r->c.v[a] = NULL;
+        }
+        const char *af = getenv("RUNNER_INKLING2_CUDA_TEST_ATTN_FAIL");
+        r->attn_fail_at = af && *af ? atol(af) : -1;
+        r->n_attn = 0;
+        r->attn_on = true;
+        r->c.dev = r;   // the engine hands this cache's core to dev_attn with this instance
+        ink2_set_dev_attn(dev_attn);
+    }
     const char *nf = getenv("RUNNER_INKLING2_CUDA_TEST_NO_FACTOR");
     r->no_factor = nf && !strcmp(nf, "1");
     const char *lf = getenv("RUNNER_INKLING2_CUDA_TEST_LIN_FAIL");
@@ -676,6 +739,11 @@ bool model_inkling2_fit(model_t *m, inkling2_fit *f) {
     f->dense_f32 = r->dense_bytes;
     f->small_f32 = r->small_bytes;
     f->cache = r->cache_ok ? ink2_cache_bytes(&r->c, &r->s) : 0;
+    if (r->kv)   // G2b step 2a: the K/V rings are on the device; the host holds the convolution histories only
+        for (int a = 0; a < r->s.n_app && f->cache; a++) {
+            const size_t kvb = 2 * sizeof(float) * (size_t)r->c.rows[a] * (size_t)app_c(&r->s, a);
+            f->cache = f->cache > kvb ? f->cache - kvb : 0;
+        }
     f->expert_cache = expert_cache_held(&r->s, r->ec_budget);
     f->mapped = gguf_mapped_size(&m->gf);
     f->logits = sizeof(float) * (uint64_t)m->n_vocab * (uint64_t)((r->rows ? r->rows_cap : 0) + 1);
@@ -687,6 +755,8 @@ void model_inkling2_free(model_t *m) {
     if (!r) return;
     if (r->cache_ok) ink2_cache_free(&r->c);
     if (r->ec) ink2_ec_free(r->ec);
+    gpu_ink2_kv_free(r->kv);   // this instance's rings, before the copy whose context they live in
+    r->kv = NULL;
     share_release(r);   // the file's shared device copy: freed with its last instance
     free(r->dev_of);
     if (r->g) ink2g_close(r->g);
@@ -785,6 +855,11 @@ char model_inkling2_route(const model_t *m) {
 bool model_inkling2_cuda(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
     return r && r->gpu;
+}
+long model_inkling2_cuda_attn_calls(const model_t *m, size_t *kv_bytes) {
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    if (kv_bytes) *kv_bytes = r ? gpu_ink2_kv_bytes(r->kv) : 0;
+    return r && r->attn_on ? r->n_attn : -1;
 }
 bool model_inkling2_cuda_placement(const model_t *m, char *placed, size_t *need, const void **handle) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;

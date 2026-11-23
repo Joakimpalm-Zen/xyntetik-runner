@@ -100,6 +100,18 @@ void ink2_set_dev_lin(ink2_dev_lin_fn fn);
 typedef int (*ink2_dev_experts_fn)(const ink2_shape *s, const ink2_tensor *t13, const ink2_tensor *t2, int T,
                                    const float *x, const unsigned char *chosen, const float *wt, float *out);
 void ink2_set_dev_experts(ink2_dev_experts_fn fn);
+// R4.48.9 G2b step 2a: the device attention core. For a cache whose dev is set (its binder's instance), the engine
+// computes Q [T][Q], the new K and V [T][C], the relative bias bank [T][nh][ext] and the sinks [T][nh] on the host as
+// before and hands the core to fn with that instance: its device ring takes the K and V, and fn writes att [T][Q].
+// fn returns 0 (done; the host K/V ring is not written), 1 (this instance keeps the host core and its host ring) or
+// below 0 (a device failure: att is then NaN). NULL (the default), or a cache without dev: the host core.
+typedef struct { int nh, nkv, hd, C, Q, window, global, ext; float scale; } ink2_attn_dims;
+typedef int (*ink2_dev_attn_fn)(void *dev, int app, const ink2_attn_dims *d, int T, const int *pos,
+                                const float *q, const float *k, const float *v, const float *rl, const float *sk,
+                                float *att);
+void ink2_set_dev_attn(ink2_dev_attn_fn fn);
+// TEST-ONLY: how many times the host attention core ran in this process (G2b step 2a's check that it did not)
+long ink2_attn_host_core_calls(void);
 // TEST-ONLY: the router's selections as the fast route made them, for the selection-agreement observable: per call,
 // the layer (block), T positions, chosen [T][E] and margin [T] (the k-th chosen score + bias minus the best unchosen
 // one: how near the selection was to flipping). NULL (the default): nothing is computed.
@@ -146,6 +158,8 @@ typedef struct {
     size_t work_fwd_cap, work_dl_cap, work_op_cap;
     float *work_route;       // the MoE layer's routing tables over T positions (R4.48.20.4); as work_op
     size_t work_route_cap;
+    void *dev;               // R4.48.9 G2b step 2a: the device binder's instance whose rings hold this cache's K/V
+                             // (ink2_set_dev_attn's fn gets it), or NULL: the host rings above
 } ink2_cache;
 int  ink2_cache_init(ink2_cache *c, const ink2_shape *s, int n_ctx);
 // The same with each SLIDING application's K and V held for the window only: window - 1 + max_chunk rows that slide

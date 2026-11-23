@@ -12902,6 +12902,11 @@ struct gpu_ink2 {
     CUfunction f_gather, f_scatter, f_swiglu;
     CUdeviceptr ex, eo, exe, eact, edn, eidx, ew;
     size_t ex_cap, eo_cap, exe_cap, eact_cap, edn_cap, eidx_cap, ew_cap;
+    // G2b step 2a, the attention core: the chunk's queries, bias bank, sinks, positions and output (the K/V go
+    // straight into the instance's ring, gpu_ink2_kv)
+    CUfunction f_attn;
+    CUdeviceptr aq, arl, ask, apos, aatt;
+    size_t aq_cap, arl_cap, ask_cap, apos_cap, aatt_cap;
     pthread_mutex_t mu;
 };
 
@@ -12927,6 +12932,7 @@ gpu_ink2 *gpu_ink2_bind(void) {
     if (cu.ModuleGetFunction(&h->f_gather, h->mod, "k_moe_gather") != 0) h->f_gather = NULL;
     if (cu.ModuleGetFunction(&h->f_scatter, h->mod, "k_moe_scatter_add") != 0) h->f_scatter = NULL;
     if (cu.ModuleGetFunction(&h->f_swiglu, h->mod, "k_ink2_swiglu") != 0) h->f_swiglu = NULL;
+    if (cu.ModuleGetFunction(&h->f_attn, h->mod, "k_ink2_attn") != 0) h->f_attn = NULL;
     pthread_mutex_init(&h->mu, NULL);
     return h;
 }
@@ -13042,6 +13048,80 @@ bool gpu_ink2_experts(gpu_ink2 *h, int i13, int i2, int type13, int type2, size_
     return ok;
 }
 bool gpu_ink2_experts_ok(const gpu_ink2 *h) { return h && h->f_gather && h->f_scatter && h->f_swiglu; }
+// G2b step 2a (gpu.h): an instance's K/V, one ring per application on the device (row j % rows[a] holds position j)
+struct gpu_ink2_kv { gpu_ink2 *h; int n_app; int *rows, *C; CUdeviceptr *k, *v; size_t bytes; };
+gpu_ink2_kv *gpu_ink2_kv_new(gpu_ink2 *h, int n_app, const int *rows, const int *C) {
+    if (!h || n_app <= 0 || !rows || !C || cu.CtxSetCurrent(h->ctx) != 0) return NULL;
+    gpu_ink2_kv *kv = calloc(1, sizeof *kv);
+    if (!kv) return NULL;
+    kv->h = h; kv->n_app = n_app;
+    kv->rows = malloc(sizeof(int) * (size_t)n_app); kv->C = malloc(sizeof(int) * (size_t)n_app);
+    kv->k = calloc((size_t)n_app, sizeof(CUdeviceptr)); kv->v = calloc((size_t)n_app, sizeof(CUdeviceptr));
+    bool ok = kv->rows && kv->C && kv->k && kv->v;
+    for (int a = 0; ok && a < n_app; a++) {
+        kv->rows[a] = rows[a]; kv->C[a] = C[a];
+        const size_t b = sizeof(float) * (size_t)rows[a] * (size_t)C[a];
+        ok = rows[a] > 0 && C[a] > 0 && cu.MemAlloc(&kv->k[a], b) == 0 && cu.MemAlloc(&kv->v[a], b) == 0;
+        if (ok) kv->bytes += 2 * b;
+    }
+    if (!ok) { gpu_ink2_kv_free(kv); return NULL; }
+    return kv;
+}
+size_t gpu_ink2_kv_bytes(const gpu_ink2_kv *kv) { return kv ? kv->bytes : 0; }
+void gpu_ink2_kv_free(gpu_ink2_kv *kv) {
+    if (!kv) return;
+    if (kv->h && cu.CtxSetCurrent(kv->h->ctx) == 0)
+        for (int a = 0; a < kv->n_app; a++) {
+            if (kv->k && kv->k[a]) cu.MemFree(kv->k[a]);
+            if (kv->v && kv->v[a]) cu.MemFree(kv->v[a]);
+        }
+    free(kv->rows); free(kv->C); free(kv->k); free(kv->v); free(kv);
+}
+bool gpu_ink2_attn_ok(const gpu_ink2 *h) { return h && h->f_attn; }
+bool gpu_ink2_reserve_attn(gpu_ink2 *h, int T, int Q, int nh, int ext) {
+    if (!h || T <= 0 || Q <= 0 || nh <= 0 || ext <= 0 || cu.CtxSetCurrent(h->ctx) != 0) return false;
+    const size_t fb = sizeof(float);
+    pthread_mutex_lock(&h->mu);
+    const bool ok = ink2_grow(&h->aq, &h->aq_cap, fb * (size_t)T * Q) && ink2_grow(&h->aatt, &h->aatt_cap, fb * (size_t)T * Q) &&
+                    ink2_grow(&h->arl, &h->arl_cap, fb * (size_t)T * nh * ext) && ink2_grow(&h->ask, &h->ask_cap, fb * (size_t)T * nh) &&
+                    ink2_grow(&h->apos, &h->apos_cap, sizeof(int) * (size_t)T);
+    pthread_mutex_unlock(&h->mu);
+    return ok;
+}
+// the kernel's argument block (src/kernels.cu k_ink2_attn): the same fields in the same order
+typedef struct { int nh, nkv, hd, C, Q, R, window, global, ext; float scale; } ink2_attn_args_host;
+bool gpu_ink2_attn(gpu_ink2 *h, gpu_ink2_kv *kv, int app, int T, const int *pos, const float *q, const float *k,
+                   const float *v, const float *rl, const float *sk, float *att, int nh, int nkv, int hd, int window,
+                   int global, int ext, float scale) {
+    if (!h || !kv || kv->h != h || !h->f_attn || app < 0 || app >= kv->n_app || T <= 0 || !pos || !q || !k || !v ||
+        !rl || !sk || !att || nh <= 0 || nkv <= 0 || nh % nkv || hd <= 0 || hd > 256 || ext <= 0 ||
+        kv->C[app] != nkv * hd)
+        return false;
+    const int R = kv->rows[app], C = kv->C[app], Q = nh * hd;
+    for (int t = 0; t < T; t++) if (pos[t] != pos[0] + t || pos[t] < 0) return false;   // consecutive, as the engine's
+    if (T > R) return false;
+    pthread_mutex_lock(&h->mu);
+    const size_t fb = sizeof(float);
+    bool ok = cu.CtxSetCurrent(h->ctx) == 0 && ink2_grow(&h->aq, &h->aq_cap, fb * (size_t)T * Q) &&
+              ink2_grow(&h->aatt, &h->aatt_cap, fb * (size_t)T * Q) && ink2_grow(&h->arl, &h->arl_cap, fb * (size_t)T * nh * ext) &&
+              ink2_grow(&h->ask, &h->ask_cap, fb * (size_t)T * nh) && ink2_grow(&h->apos, &h->apos_cap, sizeof(int) * (size_t)T) &&
+              cu.MemcpyHtoD(h->aq, q, fb * (size_t)T * Q) == 0 && cu.MemcpyHtoD(h->arl, rl, fb * (size_t)T * nh * ext) == 0 &&
+              cu.MemcpyHtoD(h->ask, sk, fb * (size_t)T * nh) == 0 && cu.MemcpyHtoD(h->apos, pos, sizeof(int) * (size_t)T) == 0;
+    // this chunk's K and V into the ring: consecutive positions, so at most two runs (the second from row 0)
+    const int s0 = pos[0] % R, n1 = T < R - s0 ? T : R - s0;
+    const size_t row = fb * (size_t)C;
+    ok = ok && cu.MemcpyHtoD(kv->k[app] + row * (size_t)s0, k, row * (size_t)n1) == 0 &&
+         cu.MemcpyHtoD(kv->v[app] + row * (size_t)s0, v, row * (size_t)n1) == 0;
+    if (ok && n1 < T)
+        ok = cu.MemcpyHtoD(kv->k[app], k + (size_t)n1 * C, row * (size_t)(T - n1)) == 0 &&
+             cu.MemcpyHtoD(kv->v[app], v + (size_t)n1 * C, row * (size_t)(T - n1)) == 0;
+    ink2_attn_args_host a = { nh, nkv, hd, C, Q, R, window, global, ext, scale };
+    void *p[] = { &h->aq, &kv->k[app], &kv->v[app], &h->arl, &h->ask, &h->apos, &h->aatt, &a };
+    ok = ok && cu.LaunchKernel(h->f_attn, (unsigned)T, (unsigned)nh, 1, 32, 1, 1, 0, NULL, p, NULL) == 0;
+    ok = ok && cu.MemcpyDtoH(att, h->aatt, fb * (size_t)T * Q) == 0;   // the null stream: after the launch
+    pthread_mutex_unlock(&h->mu);
+    return ok;
+}
 bool gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F, int E) {
     if (!h || T <= 0 || H <= 0 || F <= 0 || E <= 0 || cu.CtxSetCurrent(h->ctx) != 0) return false;
     const size_t fb = sizeof(float), th = fb * (size_t)T * (size_t)H, te = (size_t)T * (size_t)E + 1;
@@ -13100,7 +13180,8 @@ void gpu_ink2_free(gpu_ink2 *h) {
         }
         if (h->dx) cu.MemFree(h->dx);
         if (h->dy) cu.MemFree(h->dy);
-        const CUdeviceptr eb[] = { h->ex, h->eo, h->exe, h->eact, h->edn, h->eidx, h->ew };
+        const CUdeviceptr eb[] = { h->ex, h->eo, h->exe, h->eact, h->edn, h->eidx, h->ew,
+                                   h->aq, h->arl, h->ask, h->apos, h->aatt };
         for (size_t k = 0; k < sizeof eb / sizeof *eb; k++)
             if (eb[k]) cu.MemFree(eb[k]);
         if (h->mod) cu.ModuleUnload(h->mod);

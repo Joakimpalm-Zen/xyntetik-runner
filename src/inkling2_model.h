@@ -55,6 +55,9 @@ void   model_inkling2_cuda_calls(const model_t *m, long *n_products, long *n_exp
 // weights' device bytes its fit counted, and the device handle (instances of one file and placement share it).
 // True when the instance holds weights on the device.
 bool   model_inkling2_cuda_placement(const model_t *m, char *placed, size_t *need, const void **handle);
+// R4.48.9, TEST-ONLY (G2b step 2a): the device attention-core calls this instance ran since its load (one per
+// application per forward), -1 when its core runs on the host; *kv_bytes its K/V rings' device bytes.
+long   model_inkling2_cuda_attn_calls(const model_t *m, size_t *kv_bytes);
 // LoRA adapter geometry and backward (R4.48.10): attention-only adapters on blk.N.attn_{q,k,v,output}.
 int    model_inkling2_n_block(const model_t *m);
 bool   model_inkling2_slot_dims(const model_t *m, int layer, int slot, int *n_in, int *n_out, char *name, size_t cap);

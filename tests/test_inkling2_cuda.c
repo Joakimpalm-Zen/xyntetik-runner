@@ -75,6 +75,7 @@ static int fails;
 #define CHECK(c, ...) do { if (!(c)) { printf("FAIL: " __VA_ARGS__); printf("\n"); fails++; } else { printf("ok: " __VA_ARGS__); printf("\n"); } } while (0)
 
 static bool cpu_moe;   // the next loads' --cpu-moe
+static int n_seq;      // the next loads' slot count (model_params.n_seq: a server's --parallel)
 static float *rows(model_t *m);
 // (p): forwards on two instances at once, each on its own thread, over one shared device copy
 typedef struct { model_t *m; float *out[4]; } par_job;
@@ -113,6 +114,7 @@ static model_t *load_route(const char *path, bool gpu, bool no_factor, int n_bat
     p.n_ctx = 64;
     p.n_batch = n_batch;
     p.cpu_moe = cpu_moe;
+    p.n_seq = n_seq;
     model_t *m = calloc(1, sizeof *m);
     if (!m || !model_load(m, path, &p)) { free(m); return NULL; }
     return m;
@@ -132,17 +134,18 @@ static size_t n_nonfinite(const float *a, size_t n) {
     }
     return k;
 }
-static float *rows(model_t *m) {
+static float *rows_p(model_t *m, const int32_t *prompt) {
     float *r = malloc(sizeof(float) * (size_t)N_TOK * (size_t)m->n_vocab);
     for (int pos = 0; pos < N_TOK;) {
         const int n = N_TOK - pos < m->n_batch ? N_TOK - pos : m->n_batch;
-        if (!model_inkling2_forward(m, PROMPT + pos, n, pos, true, true)) { free(r); return NULL; }
+        if (!model_inkling2_forward(m, prompt + pos, n, pos, true, true)) { free(r); return NULL; }
         for (int b = 0; b < n; b++)
             memcpy(r + (size_t)(pos + b) * (size_t)m->n_vocab, model_inkling2_row(m, b), sizeof(float) * (size_t)m->n_vocab);
         pos += n;
     }
     return r;
 }
+static float *rows(model_t *m) { return rows_p(m, PROMPT); }
 static void drop(model_t *m) { if (m) { model_free(m); free(m); } }
 // a value that is not finite on either side scores as a failure (1e30), whatever the compiler makes of a NaN compare
 // (an IEEE compare with NaN is false, so a plain maximum would skip it; the second read's P1)
@@ -207,8 +210,18 @@ int main(int argc, char **argv) {
         memset(&obs, 0, sizeof obs);
         obs.want_used = sp ? ((const ink2_shape *)sp)->n_used : -1;
         ink2_set_sel_observer(obs_fn, NULL);
+        const long hc0 = ink2_attn_host_core_calls();
         float *a = rows(g);
+        const long hc1 = ink2_attn_host_core_calls();
         ink2_set_sel_observer(NULL, NULL);
+        {   // G2b 2a (m): each application's attention core on the device, the host core not run
+            const int n_app_m = sp ? ((const ink2_shape *)sp)->n_app : -1;
+            size_t kvb = 0;
+            const long na = model_inkling2_cuda_attn_calls(g, &kvb);
+            CHECK(on_cuda && a && na == n_app_m && hc1 - hc0 == 0 && kvb > 0, "(m) %s: %ld device attention-core calls for one "
+                  "forward of %d applications, the host core %ld times (want 0), the K/V rings %zu bytes on the device",
+                  kind[f], na, n_app_m, hc1 - hc0, kvb);
+        }
         float *b = rows(r);
         // G2b (j): the one-chunk forward above ran each application's expert body as one device call, and each
         // distinct expert of a call is two single products fewer than the per-product path (TEST-ONLY NO_EXP baseline)
@@ -513,6 +526,127 @@ int main(int argc, char **argv) {
         gpu_ink2_free(h);
         free(w13); free(w2);
     }
+    // G2b 2a (n): gpu_ink2_attn against float64 on the host. A full layer over 1040 positions in one call (every key
+    // count 1..1040: around each 32-key chunk), and a sliding one (window 40, ring 103 rows) through a 64-position
+    // prefill and 140 one-position steps (the ring wraps); GQA (4 heads on 2 K/V heads), head_dim 128, the bias
+    // within distance 16, sinks from -20 to +5
+    {
+        enum { NH = 4, NKV = 2, HD = 128, CC = NKV * HD, QQ = NH * HD, EXT = 16, NP = 1040 };
+        const float scale = 1.0f / sqrtf((float)HD);
+        uint32_t seed = 4242u;
+#define RND() ((float)((int)((seed = seed * 1664525u + 1013904223u) >> 9) % 2001 - 1000) / 1000.0f)
+        float *q = malloc(sizeof(float) * NP * QQ), *k = malloc(sizeof(float) * NP * CC), *v = malloc(sizeof(float) * NP * CC);
+        float *rl = malloc(sizeof(float) * NP * NH * EXT), *sk = malloc(sizeof(float) * NP * NH), *att = malloc(sizeof(float) * NP * QQ);
+        int *pos = malloc(sizeof(int) * NP);
+        for (int i = 0; i < NP * QQ; i++) q[i] = RND();
+        for (int i = 0; i < NP * CC; i++) { k[i] = RND(); v[i] = RND(); }
+        for (int i = 0; i < NP * NH * EXT; i++) rl[i] = 2.0f * RND();
+        for (int i = 0; i < NP * NH; i++) sk[i] = i % 7 == 0 ? -20.0f : i % 11 == 0 ? 5.0f : RND();
+        for (int i = 0; i < NP; i++) pos[i] = i;
+#undef RND
+        // the reference for query position t (its row t of q, rl, sk) over keys lo..t (K/V rows by position)
+        double worst = 0, top = 0;
+        size_t nf = 0;
+        long cmp = 0;
+#define REF_CHECK(T0, TN, GLOBAL, WIN)                                                                              \
+        for (int tq = (T0); tq < (T0) + (TN); tq++)                                                                    \
+            for (int hq = 0; hq < NH; hq++) {                                                                          \
+                const int kh = hq / (NH / NKV), lo = (GLOBAL) ? 0 : (tq - (WIN) + 1 > 0 ? tq - (WIN) + 1 : 0);          \
+                double mx = sk[tq * NH + hq], lg[NP];                                                                 \
+                for (int j = lo; j <= tq; j++) {                                                                     \
+                    double s = 0;                                                                                   \
+                    for (int e = 0; e < HD; e++) s += (double)q[tq * QQ + hq * HD + e] * k[j * CC + kh * HD + e];     \
+                    lg[j] = s * scale + (tq - j < EXT ? rl[(tq * NH + hq) * EXT + (tq - j)] : 0.0);                    \
+                    if (lg[j] > mx) mx = lg[j];                                                                     \
+                }                                                                                                   \
+                double sum = exp(sk[tq * NH + hq] - mx), o[HD] = { 0 };                                               \
+                for (int j = lo; j <= tq; j++) { const double e = exp(lg[j] - mx); sum += e;                       \
+                    for (int d = 0; d < HD; d++) o[d] += e * v[j * CC + kh * HD + d]; }                             \
+                for (int d = 0; d < HD; d++) {                                                                      \
+                    const double r = o[d] / sum, g = att[(tq - (T0)) * QQ + hq * HD + d];                             \
+                    if (fabs(r) > top) top = fabs(r);                                                               \
+                    if (fabs(g - r) > worst) worst = fabs(g - r);                                                   \
+                    cmp++;                                                                                          \
+                }                                                                                                   \
+            }
+        gpu_ink2 *h = gpu_ink2_bind();
+        const int rows_g[1] = { 1100 }, cw[1] = { CC }, rows_s[1] = { 40 - 1 + 64 };
+        gpu_ink2_kv *kvg = h ? gpu_ink2_kv_new(h, 1, rows_g, cw) : NULL, *kvs = h ? gpu_ink2_kv_new(h, 1, rows_s, cw) : NULL;
+        bool ran = kvg && gpu_ink2_attn(h, kvg, 0, NP, pos, q, k, v, rl, sk, att, NH, NKV, HD, 40, 1, EXT, scale);
+        if (ran) { nf += n_nonfinite(att, NP * QQ); REF_CHECK(0, NP, 1, 40) }
+        const double wg = top > 0 ? worst / top : 1;
+        CHECK(ran && nf == 0 && wg <= 1e-4, "(n) the device core, a full layer, 1040 queries in one call: within %.2e of the "
+              "float64 sums (largest %.3g), want <= 1e-4; %zu not finite", wg, top, nf);
+        worst = 0; top = 0; nf = 0; cmp = 0;
+        ran = kvs && gpu_ink2_attn(h, kvs, 0, 64, pos, q, k, v, rl, sk, att, NH, NKV, HD, 40, 0, EXT, scale);
+        if (ran) { nf += n_nonfinite(att, 64 * QQ); REF_CHECK(0, 64, 0, 40) }
+        for (int t = 64; ran && t < 204; t++) {
+            ran = gpu_ink2_attn(h, kvs, 0, 1, pos + t, q + (size_t)t * QQ, k + (size_t)t * CC, v + (size_t)t * CC,
+                                rl + (size_t)t * NH * EXT, sk + (size_t)t * NH, att, NH, NKV, HD, 40, 0, EXT, scale);
+            if (ran) { nf += n_nonfinite(att, QQ); REF_CHECK(t, 1, 0, 40) }
+        }
+#undef REF_CHECK
+        const double ws = top > 0 ? worst / top : 1;
+        CHECK(ran && nf == 0 && ws <= 1e-4, "(n) the device core, a sliding layer (window 40, ring 103), a 64-position "
+              "prefill and 140 single steps past the ring's wrap: within %.2e of the float64 sums, want <= 1e-4; %zu not "
+              "finite (%ld values)", ws, nf, cmp);
+        gpu_ink2_kv_free(kvg); gpu_ink2_kv_free(kvs); gpu_ink2_free(h);
+        free(q); free(k); free(v); free(rl); free(sk); free(att); free(pos);
+    }
+    // G2b 2a (o): a failed device core refuses that forward and the next; and the REWIND path through the device
+    // ring: a sequence A, then B from position 0, then HALF (A's first 12 tokens, then others) from 0 gives a fresh
+    // instance's HALF rows byte for byte (nothing of A or B leaks from the ring), within 1e-4 of the CPU fast route's
+    {
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_ATTN_FAIL", "2");
+        model_t *g = load(argv[2], true, false, 64);
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_ATTN_FAIL", "");
+        const bool on = g && model_inkling2_cuda_attn_calls(g, NULL) >= 0;
+        const float *f1 = on ? model_inkling2_forward(g, PROMPT, N_TOK, 0, true, true) : NULL;
+        const float *f2 = on ? model_inkling2_forward(g, PROMPT, 1, 0, true, true) : NULL;
+        CHECK(on && !f1 && !f2, "(o) a failed device attention core: that forward %s, the next %s",
+              f1 ? "gave rows" : "refused", f2 ? "gave rows" : "refused");
+        drop(g);
+        int32_t other[N_TOK], half[N_TOK];
+        for (int t = 0; t < N_TOK; t++) { other[t] = (int32_t)((PROMPT[t] * 7 + 3) % 200); half[t] = t < 12 ? PROMPT[t] : other[t]; }
+        model_t *gs = load(argv[2], true, false, 8), *gf = load(argv[2], true, false, 8);
+        model_t *cf = load_route(argv[2], false, false, 8, "");
+        float *ra = gs ? rows_p(gs, PROMPT) : NULL, *rb = gs ? rows_p(gs, other) : NULL, *rh = gs ? rows_p(gs, half) : NULL;
+        float *fh = gf ? rows_p(gf, half) : NULL, *ch = cf ? rows_p(cf, half) : NULL;
+        const size_t n = gs ? (size_t)N_TOK * (size_t)gs->n_vocab : 0;
+        const double dc = rh && ch ? rel_diff(rh, ch, n) : 1;
+        CHECK(gs && model_inkling2_cuda_attn_calls(gs, NULL) > 0 && ra && rb && rh && fh && !memcmp(rh, fh, sizeof(float) * n) &&
+              dc <= 1e-4, "(o) rewind through the device ring (-b 8: several chunks): A, B, then HALF from 0 equal a fresh "
+              "instance's HALF byte for byte, %.2e from the CPU fast route's, want <= 1e-4", dc);
+        free(ra); free(rb); free(rh); free(fh); free(ch);
+        drop(gs); drop(gf); drop(cf);
+    }
+    // G2b 2a (p) at N slots: each slot holds its own K/V rings, so the fit counts them N times. With the free figure
+    // capped at the whole need + 2 rings + the reserve: one slot takes every weight (W); three slots do not.
+    {
+        model_t *one = load(argv[2], true, false, 64);
+        char p1 = 0;
+        size_t n1 = 0, ring = 0;
+        model_inkling2_cuda_placement(one, &p1, &n1, NULL);
+        model_inkling2_cuda_attn_calls(one, &ring);
+        drop(one);
+        char v[32];
+        snprintf(v, sizeof v, "%zu", (size_t)(512ull << 20) + n1 + 2 * ring);
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_FREE", v);
+        n_seq = 1;
+        model_t *s1 = load(argv[2], true, false, 64);
+        n_seq = 3;
+        model_t *s3a = load(argv[2], true, false, 64), *s3b = load(argv[2], true, false, 64);
+        n_seq = 0;
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_FREE", "");
+        char q1 = 0, q3a = 0, q3b = 0;
+        model_inkling2_cuda_placement(s1, &q1, NULL, NULL);
+        model_inkling2_cuda_placement(s3a, &q3a, NULL, NULL);
+        model_inkling2_cuda_placement(s3b, &q3b, NULL, NULL);
+        CHECK(p1 == 'W' && ring > 0 && q1 == 'W' && q3a != 'W' && q3a == q3b && q3a != 0,
+              "(p) N slots in the fit (rings %zu bytes a slot, the whole need %zu): 1 slot %c (want W), 3 slots %c %c (want "
+              "not W, the same for both)", ring, n1, q1 ? q1 : '-', q3a ? q3a : '-', q3b ? q3b : '-');
+        drop(s1); drop(s3a); drop(s3b);
+    }
     // G2b step 2's B (p): one device copy of the weights per file and placement, shared and refcounted; the fit's
     // outcome (W whole, M expert stacks on the host, C the CPU) the same for every instance, never mixed. Bars fixed
     // before the run: the free memory back within 2 MiB once both are freed; the M rows within 1e-4 of the reference.
@@ -526,6 +660,8 @@ int main(int argc, char **argv) {
         const void *ha = NULL, *hb = NULL;
         model_inkling2_cuda_placement(a, &pa, &na, &ha);
         model_inkling2_cuda_placement(b, &pb, &nb, &hb);
+        size_t ring_b = 0;   // one slot's K/V rings (step 2a), which the fit adds to every placement's need
+        model_inkling2_cuda_attn_calls(a, &ring_b);
         const size_t n = b ? (size_t)N_TOK * (size_t)b->n_vocab : 0;
         float *ra = a ? rows(a) : NULL, *rb = b ? rows(b) : NULL;
         CHECK(pa == 'W' && pb == 'W' && ha && ha == hb, "(p) two loads of one file: placements %c %c, %s device copy",
@@ -565,7 +701,7 @@ int main(int argc, char **argv) {
         drop(mm);
         CHECK(pm == 'M' && nm > 0 && na > nm, "(p) the needs: whole %zu bytes, the stacks on the host %zu bytes", na, nm);
         char v[32];
-        snprintf(v, sizeof v, "%zu", RES + (na + nm) / 2);
+        snprintf(v, sizeof v, "%zu", RES + (na + nm) / 2 + ring_b);
         plat_setenv("RUNNER_INKLING2_CUDA_TEST_FREE", v);
         model_t *c1 = load(argv[2], true, false, 64), *c2 = load(argv[2], true, false, 64);
         plat_setenv("RUNNER_INKLING2_CUDA_TEST_FREE", "");

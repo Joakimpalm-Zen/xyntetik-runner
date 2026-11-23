@@ -632,6 +632,10 @@ static void ink2_swiglu_range(void *c, int64_t b0, int64_t b1) {
 // single-column kernel's, so the rows do not depend on which other positions share the call.
 static ink2_dev_experts_fn ink2_dev_experts;
 void ink2_set_dev_experts(ink2_dev_experts_fn fn) { ink2_dev_experts = fn; }
+static ink2_dev_attn_fn ink2_dev_attn;
+void ink2_set_dev_attn(ink2_dev_attn_fn fn) { ink2_dev_attn = fn; }
+static long ink2_host_core_n;   // TEST-ONLY: ink2_attn_core runs (ink2_attn_host_core_calls)
+long ink2_attn_host_core_calls(void) { return __atomic_load_n(&ink2_host_core_n, __ATOMIC_RELAXED); }
 static ink2_sel_obs_fn ink2_sel_obs;
 static void *ink2_sel_obs_ctx;
 void ink2_set_sel_observer(ink2_sel_obs_fn fn, void *ctx) { ink2_sel_obs = fn; ink2_sel_obs_ctx = ctx; }
@@ -1372,6 +1376,7 @@ static void ink2_attn_core_fast_range(void *cv, int64_t r0, int64_t r1) {
 static ink2_status ink2_attn_core(const ink2_shape *s, const ink2_attn_layer *L, int fast, int T, const int *pos, const float *q,
                            const float *k, const float *v, int nk, int kp0, const float *rl, const float *sk, float *lg,
                            int lg_rows, float *att, float *probs) {
+    __atomic_add_fetch(&ink2_host_core_n, 1, __ATOMIC_RELAXED);
     _Atomic int bad = 0;
     ink2_core_ctx c = { s, L, T, pos, q, k, v, nk, kp0, rl, sk, lg, att, probs, lg_rows, &bad };
     if (fast) ink2_par((int64_t)T * L->nh, (int64_t)nk * 2 * L->hd, ink2_attn_core_fast_range, &c);
@@ -1444,15 +1449,7 @@ static ink2_status ink2_attention_lora(const ink2_shape *s, const ink2_weights *
     int kp0 = (!c->max_chunk || L.g) ? 0 : (p0 - s->window + 1 > 0 ? p0 - s->window + 1 : 0);
     if (c->max_chunk && !L.g && c->test_drop_key && kp0 > 0) kp0++;   // the control: one admitted key lost
     int nk = p0 + T - kp0;
-    if (p0 == 0) c->k0[app] = 0;
-    if (p0 + T - c->k0[app] > c->rows[app]) {   // slide: keep kp0..p0-1 at the buffer's start
-        if (kp0 < c->k0[app]) return INK2_BAD_INPUT;
-        const size_t keep = (size_t)(p0 - kp0) * L.C, from = (size_t)(kp0 - c->k0[app]) * L.C;
-        memmove(c->k[app], c->k[app] + from, sizeof(float) * keep);
-        memmove(c->v[app], c->v[app] + from, sizeof(float) * keep);
-        c->k0[app] = kp0;
-        if (p0 + T - kp0 > c->rows[app]) return INK2_BAD_INPUT;
-    }
+    if (p0 + T - kp0 > c->rows[app]) return INK2_BAD_INPUT;   // the ring holds rows[app] (the device's too)
     int buf_owned = 0;
     int lg_rows = 0;
     float *p[NSCR], *buf = ink2_attn_scratch_c(c, &L, T, nk, p, &buf_owned, &lg_rows);
@@ -1483,28 +1480,13 @@ static ink2_status ink2_attention_lora(const ink2_shape *s, const ink2_weights *
         ink2_kv_conv_finish(s, &L, 1, T, p[SLINV], p[SDYNV], p[SV], p0, hv);
         ink2_kv_norm(s, &L, 1, T, p[SV]);
         ink2_conv_hist_store(hv, L.K, L.C, p0, T, p[SLINV]);
-        for (int t = 0; t < T; t++) {
-            memcpy(c->k[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SK] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
-            memcpy(c->v[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SV] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
-        }
-        c->n_past[app] = p0 + T;
         ink2_attn_rel_finish(s, &L, T, pos, p[SRS], p[SRL]);
-        const size_t koff = (size_t)(kp0 - c->k0[app]) * L.C;
-        st = ink2_attn_core(s, &L, fast, T, pos, p[SQ], c->k[app] + koff, c->v[app] + koff, nk, kp0, p[SRL], p[SSK],
-                            p[SLG], lg_rows, p[SATT], probs);
-        if (st == INK2_OK) st = ink2_attn_out_finish(s, &L, NULL, block, T, p[SATT], p[SGA], out);
-        ink2_op_free(buf, buf_owned);
-        return st;
+        goto kv_tail;   // the K/V ring and the core: the shared tail (the device's when this cache has one)
     }
     st = ink2_attn_q_lora(s, &L, lora, block, T, pos, xq, p[SQ]);
     if (st == INK2_OK) st = ink2_attn_kv_lora(s, &L, lora, block, 0, T, xk, p[SLIN], p[SDYN], p[SK], p0, ink2_conv_hist(s, c, app, 0));
     if (st == INK2_OK) st = ink2_attn_kv_lora(s, &L, lora, block, 1, T, xv, p[SLIN], p[SDYN], p[SV], p0, ink2_conv_hist(s, c, app, 1));
     if (st != INK2_OK) { ink2_op_free(buf, buf_owned); return st; }
-    for (int t = 0; t < T; t++) {
-        memcpy(c->k[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SK] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
-        memcpy(c->v[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SV] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
-    }
-    c->n_past[app] = p0 + T;   // what the slot now holds consistently: rows and histories of 0..p0+T-1
     if (rp && app == rp->app) {
         size_t n_el = (size_t)T * (size_t)s->hidden;
         rp->T = T; rp->H = s->hidden;
@@ -1526,10 +1508,39 @@ static ink2_status ink2_attention_lora(const ink2_shape *s, const ink2_weights *
         ink2_attn_rel(s, &L, T, pos, xq, p[SRS], p[SRL]);
     }
     ink2_lin_rows(L.tt[WS], L.nh, s->hidden, T, xq, p[SSK]);
-    const size_t koff = (size_t)(kp0 - c->k0[app]) * L.C;
-    st = ink2_attn_core(s, &L, fast, T, pos, p[SQ], c->k[app] + koff, c->v[app] + koff, nk, kp0, p[SRL], p[SSK], p[SLG],
-                        lg_rows, p[SATT], probs);
-    if (st == INK2_OK) st = ink2_attn_out_lora(s, &L, lora, block, T, xq, p[SATT], p[SGA], out);
+kv_tail:   // the fused decode branch joins here with its projections, histories and relative bias done
+    // R4.48.9 G2b step 2a: the core on the device when the instance's views are there (its ring takes this chunk's K
+    // and V); dv 1: the host core and ring, as before
+    int dv = 1;
+    if (ink2_dev_attn && c->dev && !probs) {
+        const ink2_attn_dims d = { L.nh, L.nkv, L.hd, L.C, L.Q, s->window, L.g ? 1 : 0, L.ext, ink2_inv_sqrt(L.hd) };
+        dv = ink2_dev_attn(c->dev, app, &d, T, pos, p[SQ], p[SK], p[SV], p[SRL], p[SSK], p[SATT]);
+        if (dv < 0)
+            for (size_t i = 0; i < (size_t)T * L.Q; i++) p[SATT][i] = NAN;
+    }
+    if (dv > 0) {
+        if (!c->k[app] || !c->v[app]) { ink2_op_free(buf, buf_owned); return INK2_BAD_INPUT; }   // a device instance keeps no host ring
+        if (p0 == 0) c->k0[app] = 0;
+        if (p0 + T - c->k0[app] > c->rows[app]) {   // slide: keep kp0..p0-1 at the buffer's start
+            if (kp0 < c->k0[app]) { ink2_op_free(buf, buf_owned); return INK2_BAD_INPUT; }
+            const size_t keep = (size_t)(p0 - kp0) * L.C, from = (size_t)(kp0 - c->k0[app]) * L.C;
+            memmove(c->k[app], c->k[app] + from, sizeof(float) * keep);
+            memmove(c->v[app], c->v[app] + from, sizeof(float) * keep);
+            c->k0[app] = kp0;
+        }
+        for (int t = 0; t < T; t++) {
+            memcpy(c->k[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SK] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
+            memcpy(c->v[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SV] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
+        }
+        const size_t koff = (size_t)(kp0 - c->k0[app]) * L.C;
+        // the host core (R4.48.25.1: its logit rows sized by the caller, a status instead of an abort)
+        st = ink2_attn_core(s, &L, fast, T, pos, p[SQ], c->k[app] + koff, c->v[app] + koff, nk, kp0, p[SRL], p[SSK],
+                            p[SLG], lg_rows, p[SATT], probs);
+    }
+    c->n_past[app] = p0 + T;   // what the slot now holds consistently: rows and histories of 0..p0+T-1
+    if (st == INK2_OK)
+        st = use_fused ? ink2_attn_out_finish(s, &L, NULL, block, T, p[SATT], p[SGA], out)   // the gate is computed
+                       : ink2_attn_out_lora(s, &L, lora, block, T, xq, p[SATT], p[SGA], out);
     ink2_op_free(buf, buf_owned);
     return st;
 }

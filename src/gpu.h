@@ -764,6 +764,21 @@ bool       gpu_ink2_experts(gpu_ink2 *h, int i13, int i2, int type13, int type2,
                             const float *s13, const float *s2, float gate_cap, float up_cap, float *out);
 bool       gpu_ink2_experts_ok(const gpu_ink2 *h);
 bool       gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F, int E);
+// G2b step 2a: an instance's K/V on the device, one ring per application (row j % rows[a] holds position j's C
+// values), owned by the instance (the weights' handle may be shared); and the attention core over it: the chunk's
+// K and V (T consecutive positions from pos[0], [T][C]) written into application app's ring, then for every query
+// and head, over the keys its mask admits (0 <= d = pos - key, d < window unless global), softmax with the sink
+// (sk [T][nh]) of (q . k) * scale + rl[t][h][d] (d < ext), att [T][nh hd] = sum p v. q [T][nh hd], rl [T][nh][ext].
+// Head h reads K/V head h / (nh / nkv). False: a device failure or arguments it does not take.
+typedef struct gpu_ink2_kv gpu_ink2_kv;
+gpu_ink2_kv *gpu_ink2_kv_new(gpu_ink2 *h, int n_app, const int *rows, const int *C);
+size_t     gpu_ink2_kv_bytes(const gpu_ink2_kv *kv);
+void       gpu_ink2_kv_free(gpu_ink2_kv *kv);
+bool       gpu_ink2_attn_ok(const gpu_ink2 *h);
+bool       gpu_ink2_reserve_attn(gpu_ink2 *h, int T, int Q, int nh, int ext);
+bool       gpu_ink2_attn(gpu_ink2 *h, gpu_ink2_kv *kv, int app, int T, const int *pos, const float *q, const float *k,
+                         const float *v, const float *rl, const float *sk, float *att, int nh, int nkv, int hd,
+                         int window, int global, int ext, float scale);
 void       gpu_ink2_free(gpu_ink2 *h);
 
 #endif // RUNNER_GPU_H
