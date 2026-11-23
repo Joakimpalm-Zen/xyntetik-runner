@@ -177,6 +177,7 @@ test-parse.exe
 test-thread-default
 test-thread-default.exe
 test-inkling2-threads
+test-inkling2-cuda-bin
 test-inkling2-threads.exe
 test-inkling2-threads.out
 test-inkling2-threads-tsan-bin

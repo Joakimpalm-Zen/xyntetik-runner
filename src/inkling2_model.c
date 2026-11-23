@@ -455,3 +455,16 @@ char model_inkling2_route(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
     return r ? r->route : 0;
 }
+
+// R4.48.9: no CUDA route yet; the stubs say so (the G1/G2 tests are red against them).
+bool model_inkling2_cuda(const model_t *m) {
+    (void)m;
+    return false;
+}
+bool model_inkling2_cuda_readback(model_t *m, int *n_tensors, int *n_differ, char *first, size_t first_cap) {
+    (void)m;
+    if (n_tensors) *n_tensors = 0;
+    if (n_differ) *n_differ = 0;
+    if (first && first_cap) first[0] = 0;
+    return false;
+}
