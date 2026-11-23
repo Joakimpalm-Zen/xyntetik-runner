@@ -7064,12 +7064,12 @@ static void runtime_free(model_t *m) {
 }
 
 void model_free(model_t *m) {
-    if (m && m->ink2) model_inkling2_free(m);
     if (m) { free(m->micro_steps); m->micro_steps = NULL; }   // R3.72
     gpu_free(m); // nulls kcache/vcache if the GPU owned them
     gpu_train_free(m);
     model_full_free(m);
     model_lora_free(m);
+    if (m && m->ink2) model_inkling2_free(m);
     free(m->moe_host);
     m->moe_host = NULL;
     free(m->moe_hot_slot);
@@ -10843,6 +10843,8 @@ static void lora_tab_free(struct lora_w *tab, int n_layer) {
     free(tab);
 }
 
+static int lora_n_layer(const model_t *m);
+
 void model_lora_free(model_t *m) {
     if (m->gpu) gpu_lora_unbind(m);
     if (m->lora_borrowed) {
@@ -10853,7 +10855,7 @@ void model_lora_free(model_t *m) {
         return;
     }
     if (!m->lora) return;
-    lora_tab_free(m->lora, m->n_layer);
+    lora_tab_free(m->lora, lora_n_layer(m));
     m->lora = NULL;
     m->lora_id = 0;
 }
@@ -10990,25 +10992,52 @@ static gguf_tensor *lora_slot_base(const model_t *m, int l, int s) {
     return NULL;
 }
 
+static int lora_n_layer(const model_t *m) {
+    return m->ink2 ? model_inkling2_n_block(m) : m->n_layer;
+}
+
+static bool lora_slot_dims(const model_t *m, int l, int s, int64_t *n_in,
+                           int64_t *n_out, char *name, size_t ncap) {
+    if (m->ink2) {
+        int ni = 0, no = 0;
+        if (!model_inkling2_slot_dims(m, l, s, &ni, &no, name, ncap))
+            return false;
+        if (n_in) *n_in = ni;
+        if (n_out) *n_out = no;
+        return true;
+    }
+    const gguf_tensor *w = lora_slot_base(m, l, s);
+    if (!w) return false;
+    if (n_in) *n_in = (int64_t)w->ne[0];
+    if (n_out) *n_out = (int64_t)w->ne[1];
+    if (name && ncap) {
+        int wn = snprintf(name, ncap, "%s", w->name);
+        if (wn < 0 || (size_t)wn >= ncap) {
+            fprintf(stderr, "error: base tensor name '%s' exceeds %zu-byte "
+                    "destination\n", w->name, ncap);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool model_lora_slot(const model_t *m, int layer, int slot,
                      const float **a, const float **b, int *r, float *scale,
                      int *n_in, int *n_out) {
-    if (!m->lora || layer < 0 || layer >= m->n_layer ||
+    int nl = lora_n_layer(m);
+    if (!m->lora || layer < 0 || layer >= nl ||
         slot < 0 || slot >= LW_SLOTS)
         return false;
     const struct lora_w *lw = &m->lora[(size_t)layer * LW_SLOTS + slot];
     if (!lw->r || !lw->a || !lw->b) return false;
-    // the base projection the adapter was validated against at load, which is
-    // where the site's dimensions live; a slot with no base cannot have an
-    // adapter, so this cannot be NULL here
-    const gguf_tensor *w = lora_slot_base(m, layer, slot);
-    if (!w) return false;
+    int64_t ni = 0, no = 0;
+    if (!lora_slot_dims(m, layer, slot, &ni, &no, NULL, 0)) return false;
     *a = lw->a;
     *b = lw->b;
     *r = lw->r;
     *scale = lw->scale;
-    *n_in = (int)w->ne[0];
-    *n_out = (int)w->ne[1];
+    *n_in = (int)ni;
+    *n_out = (int)no;
     return true;
 }
 
@@ -11019,10 +11048,7 @@ bool model_lora_slot(const model_t *m, int layer, int slot,
 // would print. Shared by the loader and by --adapt-info, so the two cannot
 // disagree.
 bool model_lora_serve_supported(const model_t *m, char *why, size_t cap) {
-    if (m->ink2) {
-        snprintf(why, cap, "--lora does not cover inkling2_loop yet: its engine (src/inkling2.c) has no adapter hooks");
-        return false;
-    }
+    if (m->ink2) return true;
     // qwen35 (and clef on its backbone) carries hooks on the DeltaNet
     // projections as well as on its attention and FFN; the Mamba-2 hybrids
     // do not yet
@@ -11099,12 +11125,13 @@ static bool lora_parse_header(const model_t *m, gguf_file *g, const char *path,
 // pair's rank. Its values fold into the identity.
 static bool lora_parse_tensor(model_t *m, struct lora_w *tab, gguf_tensor *t,
                               uint64_t *id) {
-    int l = -1;
+    int l = -1, nl = lora_n_layer(m);
     char pname[64];
     char side = 0;
-    if (sscanf(t->name, "blk.%d.%40[a-z_].weight.lora_%c", &l, pname,
-               &side) != 3 || (side != 'a' && side != 'b') ||
-        l < 0 || l >= m->n_layer) {
+    int end = 0;
+    if (sscanf(t->name, "blk.%d.%63[a-z_].weight.lora_%c%n", &l, pname,
+               &side, &end) != 3 || end <= 0 || t->name[end] != '\0' ||
+        (side != 'a' && side != 'b') || l < 0 || l >= nl) {
         fprintf(stderr, "error: adapter tensor '%s' does not name a "
                 "hooked projection\n", t->name);
         return false;
@@ -11112,14 +11139,16 @@ static bool lora_parse_tensor(model_t *m, struct lora_w *tab, gguf_tensor *t,
     int s = -1;
     for (int k = 0; k < LW_SLOTS; k++)
         if (strcmp(pname, lora_slot_name[k]) == 0) { s = k; break; }
-    gguf_tensor *base = s >= 0 ? lora_slot_base(m, l, s) : NULL;
-    if (s < 0 || !base) {
+    int64_t s_nin = 0, s_nout = 0;
+    char s_name[sizeof(((gguf_tensor *)0)->name)] = "";
+    bool has_base = s >= 0 && lora_slot_dims(m, l, s, &s_nin, &s_nout, s_name, sizeof s_name);
+    if (!has_base) {
         fprintf(stderr, "error: adapter tensor '%s' targets a "
                 "projection this model/path does not carry\n", t->name);
         return false;
     }
     struct lora_w *lw = &tab[(size_t)l * LW_SLOTS + s];
-    uint64_t n_in = base->ne[0], n_out = base->ne[1];
+    uint64_t n_in = (uint64_t)s_nin, n_out = (uint64_t)s_nout;
     // our own writer emits F32; llama.cpp's convert_lora_to_gguf emits
     // F16 by default, and community adapters ship that way (measured:
     // the first third-party adapter tried was F16 and refused here).
@@ -11139,8 +11168,13 @@ static bool lora_parse_tensor(model_t *m, struct lora_w *tab, gguf_tensor *t,
         fprintf(stderr, "error: adapter tensor '%s' is %u-D "
                 "[%llu,%llu]; base '%s' is [%llu,%llu]\n", t->name,
                 t->n_dims, (unsigned long long)t->ne[0],
-                (unsigned long long)t->ne[1], base->name,
+                (unsigned long long)t->ne[1], s_name,
                 (unsigned long long)n_in, (unsigned long long)n_out);
+        return false;
+    }
+    if (m->ink2 && r > 256) {
+        fprintf(stderr, "error: adapter tensor '%s' rank %llu exceeds "
+                "inkling2_loop limit 256\n", t->name, (unsigned long long)r);
         return false;
     }
     if (lw->r && lw->r != (int)r) {
@@ -11177,8 +11211,8 @@ static bool lora_parse_tensor(model_t *m, struct lora_w *tab, gguf_tensor *t,
 // pair count, or -1 having said why.
 static int lora_parse_pairs(const model_t *m, struct lora_w *tab, float alpha,
                             float user_scale) {
-    int n_pairs = 0;
-    for (int l = 0; l < m->n_layer; l++)
+    int n_pairs = 0, nl = lora_n_layer(m);
+    for (int l = 0; l < nl; l++)
         for (int s = 0; s < LW_SLOTS; s++) {
             struct lora_w *lw = &tab[(size_t)l * LW_SLOTS + s];
             if (!lw->r) continue;
@@ -11220,8 +11254,9 @@ static struct lora_w *lora_parse(model_t *m, const char *path, float user_scale,
     struct lora_w *ok = NULL;
     float alpha = 0.0f;
     if (!lora_parse_header(m, &g, path, &alpha)) goto done;
+    int nl = lora_n_layer(m);
     struct lora_w *tab =
-        calloc((size_t)m->n_layer * LW_SLOTS, sizeof(struct lora_w));
+        calloc((size_t)nl * LW_SLOTS, sizeof(struct lora_w));
     if (!tab) goto done;
     uint64_t id = 0xCBF29CE484222325ull;
     for (uint64_t c = 0; path[c]; c++)
@@ -11249,7 +11284,7 @@ static struct lora_w *lora_parse(model_t *m, const char *path, float user_scale,
     ok = tab;
     goto done;
 fail_tab:
-    lora_tab_free(tab, m->n_layer);
+    lora_tab_free(tab, lora_n_layer(m));
 done:
     gguf_close(&g);
     return ok;
@@ -11291,7 +11326,7 @@ lora_set *model_lora_set_load(model_t *m, const char *path, float scale) {
     int n_pairs = 0;
     ls->tab = lora_parse(m, path, scale, &ls->id, &ls->alpha, &n_pairs);
     if (!ls->tab) { free(ls); return NULL; }
-    ls->n_layer = m->n_layer;
+    ls->n_layer = lora_n_layer(m);
     fprintf(stderr, "adapter: %s — %d adapted projections, alpha %g, "
             "scale x%g\n", path, n_pairs, (double)ls->alpha, (double)scale);
     return ls;
@@ -11311,7 +11346,7 @@ bool model_lora_use(model_t *m, const lora_set *ls) {
     // loads its adapters, and here again)
     if (m->gpu) return false;
     if (m->lora && !m->lora_borrowed) return false;   // --lora owns the slot
-    if (ls && ls->n_layer != m->n_layer) return false;
+    if (ls && ls->n_layer != lora_n_layer(m)) return false;
     m->lora = ls ? ls->tab : NULL;
     m->lora_borrowed = ls != NULL;
     m->lora_id = ls ? ls->id : 0;
@@ -11984,6 +12019,13 @@ static void lffn_pool(model_t *m, int kind, int T, int nff, const float *g,
 }
 
 static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
+    if (m->ink2) {
+        if (m->gpu) {
+            if (why) snprintf(why, cap, "GPU-resident model (run --gpu off)");
+            return false;
+        }
+        return true;
+    }
     const char *r = NULL;
     if (m->gpu) r = "GPU-resident model (run --gpu off)";
     else if (m->n_removed > 0) r = "removed sublayers (--remove-sublayer artifact)";
@@ -12072,50 +12114,63 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
 }
 
 bool model_lora_train_supported(model_t *m, char *why, size_t cap) {
-    if (m->ink2) {
-        snprintf(why, cap, "the LoRA backward does not admit inkling2_loop yet: its engine (src/inkling2.c) is a forward "
-                 "only");
-        return false;
-    }
     return lora_bw_supported(m, why, cap);
 }
 
 void model_lora_grad_zero(model_t *m) {
     if (!m->lora) return;
-    for (int l = 0; l < m->n_layer; l++)
+    int nl = lora_n_layer(m);
+    for (int l = 0; l < nl; l++)
         for (int s = 0; s < LW_SLOTS; s++) {
             struct lora_w *lw = &m->lora[(size_t)l * LW_SLOTS + s];
-            gguf_tensor *base = lora_slot_base(m, l, s);
-            if (!lw->r || !base) continue;
+            int64_t n_in = 0, n_out = 0;
+            if (!lw->r || !lora_slot_dims(m, l, s, &n_in, &n_out, NULL, 0)) continue;
             if (lw->ga) memset(lw->ga, 0,
-                sizeof(float) * (size_t)lw->r * base->ne[0]);
+                sizeof(float) * (size_t)lw->r * (size_t)n_in);
             if (lw->gb) memset(lw->gb, 0,
-                sizeof(float) * (size_t)base->ne[1] * lw->r);
+                sizeof(float) * (size_t)n_out * (size_t)lw->r);
         }
 }
 
 float *model_lora_param(model_t *m, int layer, int slot, int which,
                         int *count) {
-    if (!m->lora || layer < 0 || layer >= m->n_layer || slot < 0 ||
+    int nl = lora_n_layer(m);
+    if (!m->lora || layer < 0 || layer >= nl || slot < 0 ||
         slot >= LW_SLOTS) return NULL;
     struct lora_w *lw = &m->lora[(size_t)layer * LW_SLOTS + slot];
-    gguf_tensor *base = lora_slot_base(m, layer, slot);
-    if (!lw->r || !base) return NULL;
-    if (count) *count = which ? (int)(base->ne[1] * lw->r)
-                              : (int)(lw->r * base->ne[0]);
+    int64_t n_in = 0, n_out = 0;
+    if (!lw->r || !lora_slot_dims(m, layer, slot, &n_in, &n_out, NULL, 0)) return NULL;
+    if (count) *count = which ? (int)(n_out * lw->r)
+                              : (int)(lw->r * n_in);
     return which ? lw->b : lw->a;
 }
 
 float *model_lora_gradbuf(model_t *m, int layer, int slot, int which,
                           int *count) {
-    if (!m->lora || layer < 0 || layer >= m->n_layer || slot < 0 ||
+    int nl = lora_n_layer(m);
+    if (!m->lora || layer < 0 || layer >= nl || slot < 0 ||
         slot >= LW_SLOTS) return NULL;
     struct lora_w *lw = &m->lora[(size_t)layer * LW_SLOTS + slot];
-    gguf_tensor *base = lora_slot_base(m, layer, slot);
-    if (!lw->r || !base) return NULL;
-    if (count) *count = which ? (int)(base->ne[1] * lw->r)
-                              : (int)(lw->r * base->ne[0]);
+    int64_t n_in = 0, n_out = 0;
+    if (!lw->r || !lora_slot_dims(m, layer, slot, &n_in, &n_out, NULL, 0)) return NULL;
+    if (count) *count = which ? (int)(n_out * lw->r)
+                              : (int)(lw->r * n_in);
     return which ? lw->gb : lw->ga;
+}
+
+bool model_lora_grad_alloc(model_t *m) {
+    if (!m || !m->lora) return false;
+    int nl = lora_n_layer(m);
+    for (int l = 0; l < nl; l++)
+        for (int s = 0; s < LW_SLOTS; s++) {
+            struct lora_w *lw = &m->lora[(size_t)l * LW_SLOTS + s];
+            int64_t n_in = 0, n_out = 0;
+            if (!lw->r || !lora_slot_dims(m, l, s, &n_in, &n_out, NULL, 0)) continue;
+            if (!lw->ga) lw->ga = calloc((size_t)lw->r * (size_t)n_in, sizeof(float));
+            if (!lw->gb) lw->gb = calloc((size_t)n_out * (size_t)lw->r, sizeof(float));
+            if (!lw->ga || !lw->gb) return false;
+        }
+    return true;
 }
 
 // The adapter's contribution is applied as fmaf(lw->scale, acc, yr[j]), so a
@@ -12134,7 +12189,8 @@ bool model_lora_bypass(model_t *m, bool on) {
                 "reference policy would silently equal the trained one\n");
         return false;
     }
-    for (int l = 0; l < m->n_layer; l++)
+    int nl = lora_n_layer(m);
+    for (int l = 0; l < nl; l++)
         for (int s = 0; s < LW_SLOTS; s++) {
             struct lora_w *lw = &m->lora[(size_t)l * LW_SLOTS + s];
             if (!lw->r) continue;
@@ -12156,7 +12212,8 @@ void model_grad_scale_ref(float *g, size_t n, float f) { grad_scale_buf(g, n, f)
 
 void model_lora_grad_scale(model_t *m, float f) {
     if (!m || !m->lora) return;
-    for (int l = 0; l < m->n_layer; l++)
+    int nl = lora_n_layer(m);
+    for (int l = 0; l < nl; l++)
         for (int s = 0; s < LW_SLOTS; s++)
             for (int w = 0; w < 2; w++) {
                 int cnt = 0;
@@ -14629,6 +14686,13 @@ static bool lora_backward(model_t *m, const int32_t *toks, int T,
                           const float *pos_w, const lora_teacher *tch,
                           double *loss_out) {
     if (!lora_backward_admit(m, T)) return false;
+    if (m->ink2) {
+        if (tch) {
+            fprintf(stderr, "error: teacher distillation (KD) does not cover inkling2_loop yet\n");
+            return false;
+        }
+        return model_inkling2_lora_backward(m, toks, T, pos_w, loss_out);
+    }
     memset(m->train_xielu_pieces, 0, sizeof m->train_xielu_pieces);
     // RUNNER_TRAIN_PROF=1: per-step phase wall times on stderr — the dev
     // knob the slice-3 optimization ran on (guessing at the profile cost a
@@ -14696,6 +14760,10 @@ bool model_lora_backward_w(model_t *m, const int32_t *toks, int T,
 bool model_lora_backward_kd(model_t *m, const int32_t *toks, int T,
                             const float *pos_w, const lora_teacher *tch,
                             double *loss_out) {
+    if (m && m->ink2) {
+        fprintf(stderr, "error: teacher distillation (KD) does not cover inkling2_loop yet\n");
+        return false;
+    }
     if (!tch || tch->k < 1 || tch->k > KD_K_MAX || !tch->ids || !tch->logp) {
         fprintf(stderr, "error: a teacher needs 1..%d entries per "
                 "transition\n", KD_K_MAX);
@@ -14728,8 +14796,8 @@ bool model_lora_backward_kd(model_t *m, const int32_t *toks, int T,
 // deterministic from the given seed), B zero — so the initial adapter is an
 // exact no-op and training starts from the base model's own behavior.
 int model_lora_rank(const model_t *m) {
-    int r = 0;
-    for (int l = 0; m->lora && l < m->n_layer; l++)
+    int r = 0, nl = lora_n_layer(m);
+    for (int l = 0; m->lora && l < nl; l++)
         for (int s = 0; s < LW_SLOTS; s++)
             if (m->lora[(size_t)l * LW_SLOTS + s].r > r)
                 r = m->lora[(size_t)l * LW_SLOTS + s].r;
@@ -14798,27 +14866,31 @@ bool model_lora_train_init(model_t *m, int rank, float alpha, uint64_t seed) {
         fprintf(stderr, "error: --lora-rank must be 1..%d\n", LORA_R_MAX);
         return false;
     }
+    if (m->ink2 && rank > 256) {
+        fprintf(stderr, "error: inkling2_loop supports --lora-rank 1..256 (got %d)\n", rank);
+        return false;
+    }
     if (!lora_bw_supported(m, why, sizeof why)) {
         fprintf(stderr, "error: training does not cover this model yet: "
                 "%s\n", why);
         return false;
     }
+    int nl = lora_n_layer(m);
     struct lora_w *tab =
-        calloc((size_t)m->n_layer * LW_SLOTS, sizeof(struct lora_w));
+        calloc((size_t)nl * LW_SLOTS, sizeof(struct lora_w));
     if (!tab) return false;
     uint64_t st = seed ? seed : 0x5EEDBA5Eull;
-    for (int l = 0; l < m->n_layer; l++)
+    for (int l = 0; l < nl; l++)
         for (int s = 0; s < LW_SLOTS; s++) {
-            gguf_tensor *base = lora_slot_base(m, l, s);
-            if (!base) continue;
+            int64_t n_in = 0, n_out = 0;
+            if (!lora_slot_dims(m, l, s, &n_in, &n_out, NULL, 0)) continue;
             struct lora_w *lw = &tab[(size_t)l * LW_SLOTS + s];
-            int64_t n_in = base->ne[0], n_out = base->ne[1];
             lw->r = rank;
             lw->scale = model_lora_alpha_scale(alpha, rank);
             lw->a = malloc(sizeof(float) * (size_t)rank * n_in);
             lw->b = calloc((size_t)n_out * rank, sizeof(float));
             if (!lw->a || !lw->b) {
-                lora_tab_free(tab, m->n_layer);
+                lora_tab_free(tab, nl);
                 return false;
             }
             // uniform in [-1,1)/sqrt(n_in): the standard small-A init,
@@ -14905,16 +14977,17 @@ bool model_lora_adam_step(model_t *m, float lr, float beta1, float beta2,
     // Otherwise an OOM halfway through the table silently updates only a
     // prefix of the adapter and the caller can publish it as a successful
     // checkpoint.
-    for (int l = 0; l < m->n_layer; l++)
+    int nl = lora_n_layer(m);
+    for (int l = 0; l < nl; l++)
         for (int s = 0; s < LW_SLOTS; s++) {
             struct lora_w *lw = &m->lora[(size_t)l * LW_SLOTS + s];
-            gguf_tensor *base = lora_slot_base(m, l, s);
-            if (!lw->r || !base || !lw->ga || !lw->gb) continue;
-            if (base->ne[0] > SIZE_MAX / (size_t)lw->r ||
-                base->ne[1] > SIZE_MAX / (size_t)lw->r)
+            int64_t n_in = 0, n_out = 0;
+            if (!lw->r || !lora_slot_dims(m, l, s, &n_in, &n_out, NULL, 0) || !lw->ga || !lw->gb) continue;
+            if ((uint64_t)n_in > SIZE_MAX / (size_t)lw->r ||
+                (uint64_t)n_out > SIZE_MAX / (size_t)lw->r)
                 return false;
-            size_t na = (size_t)lw->r * (size_t)base->ne[0];
-            size_t nb = (size_t)lw->r * (size_t)base->ne[1];
+            size_t na = (size_t)lw->r * (size_t)n_in;
+            size_t nb = (size_t)lw->r * (size_t)n_out;
             if (!adam_state(&lw->ma, na) || !adam_state(&lw->va, na) ||
                 !adam_state(&lw->mb, nb) || !adam_state(&lw->vb, nb))
                 return false;
@@ -14925,16 +14998,16 @@ bool model_lora_adam_step(model_t *m, float lr, float beta1, float beta2,
     double t0 = plat_now();
     float bc1 = 1.0f - powf(beta1, (float)step);
     float bc2 = 1.0f - powf(beta2, (float)step);
-    for (int l = 0; l < m->n_layer; l++)
+    for (int l = 0; l < nl; l++)
         for (int s = 0; s < LW_SLOTS; s++) {
             struct lora_w *lw = &m->lora[(size_t)l * LW_SLOTS + s];
-            gguf_tensor *base = lora_slot_base(m, l, s);
-            if (!lw->r || !base || !lw->ga || !lw->gb) continue;
+            int64_t n_in = 0, n_out = 0;
+            if (!lw->r || !lora_slot_dims(m, l, s, &n_in, &n_out, NULL, 0) || !lw->ga || !lw->gb) continue;
             adam_buf(lw->a, lw->ga, lw->ma, lw->va,
-                     (size_t)lw->r * (size_t)base->ne[0], lr, beta1, beta2, eps,
+                     (size_t)lw->r * (size_t)n_in, lr, beta1, beta2, eps,
                      wd, bc1, bc2);
             adam_buf(lw->b, lw->gb, lw->mb, lw->vb,
-                     (size_t)base->ne[1] * (size_t)lw->r, lr, beta1, beta2, eps,
+                     (size_t)n_out * (size_t)lw->r, lr, beta1, beta2, eps,
                      wd, bc1, bc2);
         }
     m->train_opt_dev = false;   // the device's moments are older now
@@ -15175,7 +15248,8 @@ bool model_full_on(const model_t *m) { return m->full != NULL; }
 bool model_has_training_state(const model_t *m) {
     if (m->full || m->tape || m->bw_dk_share || m->bw_dv_share || m->bw_ple || m->train_gpu) return true;
     if (!m->lora) return false;
-    for (size_t k = 0; k < (size_t)m->n_layer * LW_SLOTS; k++) {
+    int nl = lora_n_layer(m);
+    for (size_t k = 0; k < (size_t)nl * LW_SLOTS; k++) {
         const struct lora_w *w = &m->lora[k];
         if (w->ga || w->gb || w->ma || w->va || w->mb || w->vb) return true;
     }
@@ -15197,6 +15271,7 @@ void model_full_free(model_t *m) {
 }
 
 bool model_full_train_init(model_t *m, char *why, size_t cap) {
+    if (m->ink2) { snprintf(why, cap, "full-weight training does not cover inkling2_loop yet"); return false; }
     if (m->gpu) { snprintf(why, cap, "a GPU-resident model (run --gpu off)"); return false; }
     if (m->lora) { snprintf(why, cap, "an adapter is attached, and full-weight training replaces it"); return false; }
     if (m->gf.n_maps > 1 || !m->gf.map) { snprintf(why, cap, "a split or unmapped GGUF"); return false; }
@@ -15437,8 +15512,8 @@ bool model_full_write(model_t *m, const char *src_path, const char *out_path,
 // write NaN into the adapter).
 bool model_lora_grad_norms(model_t *m, double *max_out, double *mean_out) {
     double mx = 0.0, sum = 0.0;
-    int layers = 0;
-    for (int l = 0; m->lora && l < m->n_layer; l++) {
+    int layers = 0, nl = lora_n_layer(m);
+    for (int l = 0; m->lora && l < nl; l++) {
         double ss = 0.0;
         bool any = false;
         for (int s = 0; s < LW_SLOTS; s++)
@@ -15475,14 +15550,15 @@ bool model_lora_optim_sync(model_t *m) {
 bool model_lora_optim_write(model_t *m, FILE *f) {
     if (!m->lora) return false;
     if (!lora_opt_from_dev(m)) return false;   // R4: the device's moments, when newer
-    for (int l = 0; l < m->n_layer; l++)
+    int nl = lora_n_layer(m);
+    for (int l = 0; l < nl; l++)
         for (int s = 0; s < LW_SLOTS; s++) {
             struct lora_w *lw = &m->lora[(size_t)l * LW_SLOTS + s];
-            gguf_tensor *base = lora_slot_base(m, l, s);
-            if (!lw->r || !base) continue;
+            int64_t n_in = 0, n_out = 0;
+            if (!lw->r || !lora_slot_dims(m, l, s, &n_in, &n_out, NULL, 0)) continue;
             uint32_t h[4] = { (uint32_t)l, (uint32_t)s,
-                              (uint32_t)((size_t)lw->r * (size_t)base->ne[0]),
-                              (uint32_t)((size_t)lw->r * (size_t)base->ne[1]) };
+                              (uint32_t)((size_t)lw->r * (size_t)n_in),
+                              (uint32_t)((size_t)lw->r * (size_t)n_out) };
             if (fwrite(h, sizeof h, 1, f) != 1) return false;
             const float *bufs[4] = { lw->ma, lw->va, lw->mb, lw->vb };
             for (int k = 0; k < 4; k++) {
@@ -15501,13 +15577,14 @@ bool model_lora_optim_write(model_t *m, FILE *f) {
 
 bool model_lora_optim_read(model_t *m, FILE *f, char *why, size_t cap) {
     if (!m->lora) { snprintf(why, cap, "no adapter attached"); return false; }
-    for (int l = 0; l < m->n_layer; l++)
+    int nl = lora_n_layer(m);
+    for (int l = 0; l < nl; l++)
         for (int s = 0; s < LW_SLOTS; s++) {
             struct lora_w *lw = &m->lora[(size_t)l * LW_SLOTS + s];
-            gguf_tensor *base = lora_slot_base(m, l, s);
-            if (!lw->r || !base) continue;
-            size_t na = (size_t)lw->r * (size_t)base->ne[0];
-            size_t nb = (size_t)lw->r * (size_t)base->ne[1];
+            int64_t n_in = 0, n_out = 0;
+            if (!lw->r || !lora_slot_dims(m, l, s, &n_in, &n_out, NULL, 0)) continue;
+            size_t na = (size_t)lw->r * (size_t)n_in;
+            size_t nb = (size_t)lw->r * (size_t)n_out;
             uint32_t h[4];
             if (fread(h, sizeof h, 1, f) != 1) {
                 snprintf(why, cap, "it ends before layer %d's %s", l, lora_slot_name[s]);
@@ -15613,11 +15690,11 @@ static int install_lora_file(const char *tmp_path, const char *path) {
 // end cannot be told (the stream's own errors are the caller's to read).
 static bool lora_write_gguf(model_t *m, FILE *f) {
     // collect live pairs
-    int n_t = 0;
-    for (int l = 0; l < m->n_layer; l++)
+    int n_t = 0, nl = lora_n_layer(m);
+    for (int l = 0; l < nl; l++)
         for (int s = 0; s < LW_SLOTS; s++)
             if (m->lora[(size_t)l * LW_SLOTS + s].r &&
-                lora_slot_base(m, l, s)) n_t += 2;
+                lora_slot_dims(m, l, s, NULL, NULL, NULL, 0)) n_t += 2;
     put_u32(f, 0x46554747); put_u32(f, 3);
     put_u64(f, (uint64_t)n_t); put_u64(f, 4);
     put_str(f, "general.architecture"); put_u32(f, 8); put_str(f, m->arch);
@@ -15626,25 +15703,26 @@ static bool lora_write_gguf(model_t *m, FILE *f) {
     put_str(f, "adapter.lora.alpha"); put_u32(f, 6);
     fwrite(&m->lora_alpha, 4, 1, f);
     uint64_t off = 0;
-    for (int l = 0; l < m->n_layer; l++)
+    for (int l = 0; l < nl; l++)
         for (int s = 0; s < LW_SLOTS; s++) {
             struct lora_w *lw = &m->lora[(size_t)l * LW_SLOTS + s];
-            gguf_tensor *base = lora_slot_base(m, l, s);
-            if (!lw->r || !base) continue;
+            int64_t s_nin = 0, s_nout = 0;
+            if (!lw->r || !lora_slot_dims(m, l, s, &s_nin, &s_nout, NULL, 0)) continue;
+            uint64_t n_in = (uint64_t)s_nin, n_out = (uint64_t)s_nout;
             char nm[160];
             snprintf(nm, sizeof nm, "blk.%d.%s.weight.lora_a", l,
                      lora_slot_name[s]);
             put_str(f, nm); put_u32(f, 2);
-            put_u64(f, base->ne[0]); put_u64(f, (uint64_t)lw->r);
+            put_u64(f, n_in); put_u64(f, (uint64_t)lw->r);
             put_u32(f, 0 /*F32*/); put_u64(f, off);
-            off = (off + sizeof(float) * (uint64_t)lw->r * base->ne[0] + 31)
+            off = (off + sizeof(float) * (uint64_t)lw->r * n_in + 31)
                   & ~31ull;
             snprintf(nm, sizeof nm, "blk.%d.%s.weight.lora_b", l,
                      lora_slot_name[s]);
             put_str(f, nm); put_u32(f, 2);
-            put_u64(f, (uint64_t)lw->r); put_u64(f, base->ne[1]);
+            put_u64(f, (uint64_t)lw->r); put_u64(f, n_out);
             put_u32(f, 0); put_u64(f, off);
-            off = (off + sizeof(float) * (uint64_t)base->ne[1] * lw->r + 31)
+            off = (off + sizeof(float) * (uint64_t)n_out * lw->r + 31)
                   & ~31ull;
         }
     long hdr_end = ftell(f);
@@ -15653,13 +15731,13 @@ static bool lora_write_gguf(model_t *m, FILE *f) {
         long pad = (-hdr_end) & 31;
         fwrite(zeros, 1, (size_t)pad, f);
     }
-    for (int l = 0; l < m->n_layer; l++)
+    for (int l = 0; l < nl; l++)
         for (int s = 0; s < LW_SLOTS; s++) {
             struct lora_w *lw = &m->lora[(size_t)l * LW_SLOTS + s];
-            gguf_tensor *base = lora_slot_base(m, l, s);
-            if (!lw->r || !base) continue;
-            size_t na = sizeof(float) * (size_t)lw->r * base->ne[0];
-            size_t nb = sizeof(float) * (size_t)base->ne[1] * lw->r;
+            int64_t s_nin = 0, s_nout = 0;
+            if (!lw->r || !lora_slot_dims(m, l, s, &s_nin, &s_nout, NULL, 0)) continue;
+            size_t na = sizeof(float) * (size_t)lw->r * (size_t)s_nin;
+            size_t nb = sizeof(float) * (size_t)s_nout * (size_t)lw->r;
             fwrite(lw->a, 1, na, f);
             fwrite(zeros, 1, (size_t)((-(long)na) & 31), f);
             fwrite(lw->b, 1, nb, f);

@@ -104,6 +104,15 @@ static int read_shape(gguf_file *f, ink2_shape *s, char *why, size_t wn) {
         get_f32(f, KEY("final_logit_softcapping"), &s->final_cap, why, wn))
         return -1;
     if (s->n_block < 1 || s->n_block > INK2_MAX_BLOCK) return refuse(why, wn, "block_count %d is outside 1..%d", s->n_block, INK2_MAX_BLOCK);
+    if (s->n_expert < 1) return refuse(why, wn, "expert_count %d must be at least 1", s->n_expert);
+    if (s->n_used < 1 || s->n_used > s->n_expert)
+        return refuse(why, wn, "expert_used_count %d is outside 1..%d (expert_count)", s->n_used, s->n_expert);
+    if (s->head_dim < 1 || s->head_dim > INK2_MAX_HEAD_DIM)
+        return refuse(why, wn, "head_dim %d exceeds supported limit %d", s->head_dim, INK2_MAX_HEAD_DIM);
+    if (s->swa_head_dim < 1 || s->swa_head_dim > INK2_MAX_HEAD_DIM)
+        return refuse(why, wn, "swa_head_dim %d exceeds supported limit %d", s->swa_head_dim, INK2_MAX_HEAD_DIM);
+    if (s->d_rel < 1 || s->d_rel > INK2_MAX_HEAD_DIM)
+        return refuse(why, wn, "relative_length %d exceeds supported limit %d", s->d_rel, INK2_MAX_HEAD_DIM);
     gguf_kv *pat = gguf_get(f, KEY("attention.sliding_window_pattern"));
     if (!pat || pat->type != GGUF_T_ARR || pat->arr_type != GGUF_T_BOOL || (int)pat->arr_n != s->n_block || !pat->arr_raw)
         return refuse(why, wn, "attention.sliding_window_pattern is not a bool array of %d layers", s->n_block);

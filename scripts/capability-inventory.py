@@ -48,7 +48,7 @@ SOURCE_RULES = [
                    "quants_iq_grids", "tpool", "act", "dn_eps", "fp16", "fpclass", "fpenv",
                    "iq_decode", "kernel_args", "kq_stage", "metal_admission", "pmath",
                    "pm_order", "softmax", "upload_report", "gpu_tables", "train_args",
-                   "inkling2", "inkling2_gguf", "inkling2_ecache", "inkling2_model"}),
+                   "inkling2", "inkling2_bwd", "inkling2_gguf", "inkling2_ecache", "inkling2_model"}),
     ("runtime", {"server", "server_int", "http", "api", "api_anthropic", "api_responses",
                  "schema", "schema_int", "schema_tools", "jsre", "jsonmode", "sample", "template",
                  "template_inkling", "registry", "session", "respstore", "kvsnap", "decide", "clef",

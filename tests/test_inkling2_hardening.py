@@ -1,6 +1,6 @@
 """R4.48.6: the inkling2_loop loader refuses a malformed file with a sentence, as the other loaders do.
 
-A tiny but complete inkling2_loop GGUF is written here (4 layers, a loop of 2 passes over layers 1 and 2, NVFP4 expert
+A tiny but complete inkling2_loop GGUF is written here (4 layers, a loop of 3 passes over layers 1 and 2, NVFP4 expert
 stacks with their per-expert .scale, every small tensor F32, a byte-level vocabulary so the tokenizer loads). It must
 load and answer; then each damaged copy must be refused, naming what is wrong:
   - the tensor data cut short (the GGUF reader refuses it before the loader sees a tensor);
@@ -19,7 +19,7 @@ T_F32, T_NVFP4 = 0, 40
 U32, I32, F32, BOOL, STR, ARR = 4, 5, 6, 7, 8, 9
 
 H, NH, NKV, HD, E, USED, FF, VOCAB, VUSED, K, WIN, DREL, EXT, RANK = 64, 2, 1, 32, 4, 2, 64, 264, 260, 4, 8, 4, 8, 4
-N_BLOCK, LOOP_START, LOOP_END, PASSES = 4, 1, 3, 2
+N_BLOCK, LOOP_START, LOOP_END, PASSES = 4, 1, 3, 3
 FULL = [False, True, False, True]   # layer types: sliding, full, sliding, full
 
 
@@ -124,7 +124,7 @@ def _tensors(no_scale_layer=None, scale_len=E, dense_nvfp4=False):
             f(p + "attn_norm.weight", [H], value=1.0)
         f(p + "attn_gate.weight", [H, NH * HD])
         f(p + "attn_output.weight", [NH * HD, H])
-        f(p + "attn_sink_proj.weight", [H, NH])
+        f(p + "attn_sink_proj.weight", [H, NH], 0.22)
         f(p + "attn_rel_bias.weight", [DREL, EXT], 0.1)
         f(p + "attn_rel.weight", [H, NH * DREL])
         f(p + "attn_rel_clip.weight", [DREL, NH], value=1.0)
@@ -138,10 +138,10 @@ def _tensors(no_scale_layer=None, scale_len=E, dense_nvfp4=False):
         f(p + "ffn_res_query.weight", [H], 0.1)
         if LOOP_START <= b < LOOP_END:
             for r in ("q", "k", "v", "ffn"):
-                f(p + f"loop_{r}_ctrl_down.weight", [2 * H, RANK])
-                f(p + f"loop_{r}_ctrl_forget.weight", [RANK, H])
-                f(p + f"loop_{r}_ctrl_gain.weight", [RANK, H])
-            f(p + "loop_msg_query.weight", [H, 4], 0.1)
+                f(p + f"loop_{r}_ctrl_down.weight", [2 * H, RANK], 0.15)
+                f(p + f"loop_{r}_ctrl_forget.weight", [RANK, H], 0.15)
+                f(p + f"loop_{r}_ctrl_gain.weight", [RANK, H], 0.15)
+            f(p + "loop_msg_query.weight", [H, 4], 0.2)
         seed[0] += 1
         t.append((p + "ffn_gate_up_exps.weight", [H, 2 * FF, E], T_NVFP4, _nvfp4(H * 2 * FF * E, seed[0])))
         seed[0] += 1
@@ -154,14 +154,14 @@ def _tensors(no_scale_layer=None, scale_len=E, dense_nvfp4=False):
     return t
 
 
-def _kvs(drop=None):
+def _kvs(drop=None, used=USED):
     a = "inkling2_loop."
     kv = [("general.architecture", STR, "inkling2_loop"), ("general.alignment", U32, 32),
           (a + "block_count", U32, N_BLOCK), (a + "context_length", U32, 256), (a + "embedding_length", U32, H),
           (a + "feed_forward_length", U32, FF), (a + "attention.head_count", ARR, (I32, [NH] * N_BLOCK)),
           (a + "attention.head_count_kv", ARR, (I32, [NKV] * N_BLOCK)),
           (a + "attention.layer_norm_rms_epsilon", F32, 1e-6), (a + "expert_count", U32, E),
-          (a + "expert_used_count", U32, USED), (a + "attention.key_length", U32, HD),
+          (a + "expert_used_count", U32, used), (a + "attention.key_length", U32, HD),
           (a + "attention.value_length", U32, HD), (a + "loop.count", U32, PASSES), (a + "loop.start", U32, LOOP_START),
           (a + "loop.end", U32, LOOP_END), (a + "loop.gate_rank", U32, RANK), (a + "vocab_size", U32, VOCAB),
           (a + "vocab_size_unpadded", U32, VUSED), (a + "expert_feed_forward_length", U32, FF),
@@ -214,7 +214,7 @@ def test_the_tiny_file_loads_and_answers(runner_bin, tiny):
     _, good = tiny
     r = _run(runner_bin, good, "-p", "hello", "-n", "3", "--temp", "0")
     assert r.returncode == 0, r.stderr[-2000:]
-    assert "inkling2_loop: 4 layers, 6 applications" in r.stderr
+    assert "inkling2_loop: 4 layers, 8 applications" in r.stderr
 
 
 @pytest.mark.parametrize("case,make,sentence", [
@@ -225,6 +225,10 @@ def test_the_tiny_file_loads_and_answers(runner_bin, tiny):
      "is NVFP4 but the file has no blk.2.ffn_down_exps.scale"),
     ("nvfp4 dense", lambda d: _write(d / "dense.gguf", _kvs(), _tensors(dense_nvfp4=True)),
      "blk.0.attn_q.weight is type 40, which this loader does not decode"),
+    ("used > expert", lambda d: _write(d / "used_high.gguf", _kvs(used=E + 1), _tensors()),
+     f"expert_used_count {E + 1} is outside 1..{E}"),
+    ("used == 0", lambda d: _write(d / "used_zero.gguf", _kvs(used=0), _tensors()),
+     f"expert_used_count 0 is outside 1..{E}"),
 ])
 def test_a_malformed_file_is_refused_with_a_sentence(runner_bin, tiny, case, make, sentence):
     d, _ = tiny

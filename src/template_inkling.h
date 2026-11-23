@@ -3,9 +3,10 @@
 #include "fpclass.h"
 
 static const jv *inkling_kwarg(const jv *req) {
-    jv *kw = jv_get((jv *)req, "chat_template_kwargs");
-    jv *v = jv_get(kw, "reasoning_effort");
-    return v ? v : jv_get((jv *)req, "reasoning_effort");
+    jv *kw = req ? jv_get((jv *)req, "chat_template_kwargs") : NULL;
+    jv *v = kw && kw->type == J_OBJ ? jv_get(kw, "reasoning_effort") : NULL;
+    if (!v || v->type == J_NULL) v = req ? jv_get((jv *)req, "reasoning_effort") : NULL;
+    return v && v->type != J_NULL ? v : NULL;
 }
 
 static bool inkling_effort(const jv *v, double *number) {

@@ -34,4 +34,15 @@ bool   model_inkling2_fit(model_t *m, inkling2_fit *f);
 // --info fit on an inkling2_loop header (no weights read): what a load at n_ctx and n_batch would hold, by the same
 // parts, against the RAM available now. Prints the report; returns the exit code (0 fits, 1 does not).
 int    model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, int n_batch);
+// LoRA adapter geometry and backward (R4.48.10): attention-only adapters on blk.N.attn_{q,k,v,output}.
+int    model_inkling2_n_block(const model_t *m);
+bool   model_inkling2_slot_dims(const model_t *m, int layer, int slot, int *n_in, int *n_out, char *name, size_t cap);
+// Runtime weights & shape accessor for src/inkling2_bwd.c.
+struct ink2_shape;
+struct ink2_weights;
+bool   model_inkling2_parts(model_t *m, const void **s_out, const void **w_out);
+int    model_inkling2_threads(const model_t *m);
+bool   model_inkling2_save_sel(model_t *m, const int *sel, int n);
+bool   model_inkling2_last_sel(const model_t *m, const int **sel_out, int *n_out);
+bool   model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const float *pos_w, double *loss_out);
 #endif

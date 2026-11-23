@@ -749,7 +749,7 @@ static bool name_in(const char *name, const char *const *list) {
 static bool renderer_honours(int tmpl, int surface, const char *key) {
     static const char *const thinking[] = {
         "apertus", "apertus15", "chatml-think", "gemma4", "gemma4-mainline", "granite42", "harmony",
-        "hermes4", "k2-horizon", "mellum", "mimo", "minicpm5", "minicpmv", "muse",
+        "hermes4", "inkling2", "k2-horizon", "mellum", "mimo", "minicpm5", "minicpmv", "muse",
         "nemotron", "nemotron35", "ornith", "qwen35", "qwen35-nothink", "qwen36",
         "qwen38", "spark", "spark25", NULL };
     static const char *const preserve[] = { "lfm2", "lfm2-24b", "qwen36", "qwen38", NULL };
@@ -863,7 +863,7 @@ int req_template_effort(int tmpl, struct jv *req, const char **why) {
     *why = NULL;
     if (tmpl == TMPL_INKLING2) {
         double level;
-        if (!inkling_effort(inkling_kwarg(req), &level)) {
+        if (!inkling_effort(req_inkling_effort(req), &level)) {
             *why = "reasoning_effort must be none, minimal, low, medium, high, xhigh, max or a number in [0,0.99]";
             return -1;
         }
@@ -10369,4 +10369,18 @@ int tool_calls_parse_for(int tmpl, sbuf *content, sbuf *tc) {
          : is_gemma4(tmpl)     ? gemma4_tool_calls_parse(content, tc)
          : tmpl == TMPL_INKLING2 ? inkling2_tool_calls_parse(content, tc)
                                : tool_calls_parse(content, tc);
+}
+
+const struct jv *template_inkling_effort_none(void) {
+    static char none_str[] = "none";
+    static const jv none = { .type = J_STR, .str = none_str };
+    return &none;
+}
+
+const struct jv *req_inkling_effort(const struct jv *req) {
+    const jv *v = inkling_kwarg(req);
+    if (v) return v;
+    return req_thinking_mode((struct jv *)req) == THINK_OFF
+               ? template_inkling_effort_none()
+               : NULL;
 }

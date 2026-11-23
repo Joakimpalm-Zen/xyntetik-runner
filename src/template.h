@@ -703,6 +703,12 @@ bool template_tools_check(int tmpl, const struct jv *tools, char *err,
 // every other family and for an absent value; -1 with *why set for a value the family's template
 // refuses. One reading for the chat and Responses surfaces.
 int req_template_effort(int tmpl, struct jv *req, const char **why);
+// Effective effort for Inkling 2 Mini: explicit reasoning_effort
+// (chat_template_kwargs, falling through JSON null to top level) wins;
+// otherwise enable_thinking false maps to effort "none" (level 0), and
+// --think off in CLI interactive chat passes template_inkling_effort_none().
+const struct jv *template_inkling_effort_none(void);
+const struct jv *req_inkling_effort(const struct jv *req);
 // `bare_recipients` from the request (top level or chat_template_kwargs):
 // THINK_BARE_RECIPIENTS for true, THINK_NS_RECIPIENTS for false, 0 when
 // absent (the server default applies), -1 for a value that is not a boolean.

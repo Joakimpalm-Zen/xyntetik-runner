@@ -454,3 +454,7 @@ test-inkling2-fixture-bin
 test-inkling2-provider-bin
 /test-inkling2-gguf-bin
 /inkling2-read-bin
+/test-inkling2-grad
+/test-inkling2-grad.exe
+/test-inkling2-train.gguf
+/test-inkling2-grad-tmp.lora.gguf
