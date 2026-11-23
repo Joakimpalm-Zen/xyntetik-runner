@@ -780,7 +780,11 @@ static ink2_status ink2_attention_lora(const ink2_shape *s, const ink2_weights *
         if (rp->xq_in) memcpy(rp->xq_in, xq, sizeof(float) * n_el);
         if (rp->eps != 0.0f && rp->d) {
             float *xq_rel = malloc(sizeof(float) * n_el);
-            if (!xq_rel) { free(buf); return INK2_BAD_INPUT; }
+            if (!xq_rel) {
+                fprintf(stderr, "error: inkling2_loop ink2_attention_lora: out of memory allocating rel_probe buffer\n");
+                free(buf);
+                return INK2_BAD_INPUT;
+            }
             for (size_t i = 0; i < n_el; i++) xq_rel[i] = xq[i] + rp->eps * rp->d[i];
             ink2_attn_rel(s, &L, T, pos, xq_rel, p[SRS], p[SRL]);
             free(xq_rel);
