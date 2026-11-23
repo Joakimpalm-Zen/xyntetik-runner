@@ -33,11 +33,13 @@
 //  G2b step 1 (the expert body on the device, the router on the host):
 //     (j) a forward runs each application's expert body as ONE device call (model_inkling2_cuda_calls: n_app calls
 //         for a one-chunk forward), on F32, BF16 and Q8_0; the rows still pass (c), (d), (e);
-//     (k) gpu_ink2_experts on a synthetic NVFP4 layer (H 128, F 64, E 4, 6 positions, 2 experts each) against float64
-//         on the host (dequant_row's decode; Inkling's SwiGLU in double), within 1e-4 of each position's largest
-//         value, finite. x is one-hot, so each gate value is one decoded weight times the expert's factor: the rows
-//         cycle through all 16 E2M1 codes (the top code, zero) with the largest (448) and the smallest UE4M3 scale
-//         and an all-zero block, and the factors 1e-3, 1, 10, 0.05 put gates near 0, in range, beyond +-10;
+//     (k) gpu_ink2_experts on a synthetic NVFP4 layer at the real model's widths (H 2304, F 1152: more than one block
+//         in x for every kernel; E 5, one expert with no positions; 6 positions, 2 experts each) against float64 on the
+//         host (dequant_row's decode; Inkling's SwiGLU in double), within 1e-4 of each position's largest value
+//         (itself above 1e-6), finite. x is one-hot, so each gate value is one decoded weight times the expert's
+//         factor: random codes (all 16 E2M1 values), the largest (448) and the smallest UE4M3 scale and all-zero
+//         blocks, gate rows unlike their up rows, and the factors 1e-3, 1, 10, 0.05 put gates near 0, in range, beyond
+//         +-10. A launch's position list with a repeat (test-only RUNNER_INKLING2_CUDA_TEST_DUP_IDX) refuses;
 //     (l) a --cpu-moe load runs no device expert body (its stacks are on the host).
 //  LoRA on the CUDA route (the supervisor's check C, before G2b step 2): the adapter's term is added on the host after
 //  each attention product returns (ink2_lora_apply after ink2_lin_rows), on either route. Bars fixed before the run:
@@ -65,6 +67,25 @@ static int fails;
 #define CHECK(c, ...) do { if (!(c)) { printf("FAIL: " __VA_ARGS__); printf("\n"); fails++; } else { printf("ok: " __VA_ARGS__); printf("\n"); } } while (0)
 
 static bool cpu_moe;   // the next loads' --cpu-moe
+// the selection observer's C check: calls, positions, positions without exactly n_used experts, negative margins,
+// and the distinct experts summed over calls (each distinct expert of a call is two products on the per-product path)
+static struct { long calls, positions, bad_count, bad_margin, distinct; int want_used; } obs;
+static void obs_fn(void *ctx, int block, int T, int E, const unsigned char *chosen, const float *margin) {
+    (void)ctx; (void)block;
+    obs.calls++;
+    for (int e = 0; e < E; e++) {
+        int any = 0;
+        for (int t = 0; t < T; t++) any |= chosen[(size_t)t * E + e];
+        obs.distinct += any;
+    }
+    for (int t = 0; t < T; t++) {
+        int k = 0;
+        for (int e = 0; e < E; e++) k += chosen[(size_t)t * E + e] != 0;
+        obs.positions++;
+        obs.bad_count += k != obs.want_used;
+        obs.bad_margin += !(margin[t] >= 0.0f);
+    }
+}
 static model_t *load_route(const char *path, bool gpu, bool no_factor, int n_batch, const char *route) {
     plat_setenv("RUNNER_INKLING2_ROUTE", route);
     plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_FACTOR", no_factor ? "1" : "");
@@ -165,16 +186,35 @@ int main(int argc, char **argv) {
         // G2 (c): only rows a CUDA instance computed count (a CPU fallback's rows would pass (c) and (d) for nothing)
         const bool on_cuda = model_inkling2_cuda(g);
         const size_t n = (size_t)N_TOK * (size_t)g->n_vocab;
-        float *a = rows(g), *b = rows(r);
-        // G2b (j): the one-chunk forward above ran each application's expert body as one device call
+        const void *sp = NULL;
+        model_inkling2_parts(g, &sp, NULL);
+        memset(&obs, 0, sizeof obs);
+        obs.want_used = sp ? ((const ink2_shape *)sp)->n_used : -1;
+        ink2_set_sel_observer(obs_fn, NULL);
+        float *a = rows(g);
+        ink2_set_sel_observer(NULL, NULL);
+        float *b = rows(r);
+        // G2b (j): the one-chunk forward above ran each application's expert body as one device call, and each
+        // distinct expert of a call is two single products fewer than the per-product path (TEST-ONLY NO_EXP baseline)
         {
-            const void *sp = NULL;
-            long n_lin = 0, n_exp = 0;
-            model_inkling2_parts(g, &sp, NULL);
+            long n_lin = 0, n_exp = 0, b_lin = 0, b_exp = -1;
             model_inkling2_cuda_calls(g, &n_lin, &n_exp);
             const int n_app = sp ? ((const ink2_shape *)sp)->n_app : -1;
-            CHECK(on_cuda && a && n_exp == n_app, "(j) %s: %ld device expert-body calls for one forward of %d applications "
-                  "(%ld single products)", kind[f], n_exp, n_app, n_lin);
+            plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_EXP", "1");
+            model_t *gb = load(argv[1 + f], true, false, 64);
+            plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_EXP", "");
+            float *ab = gb ? rows(gb) : NULL;
+            if (gb) model_inkling2_cuda_calls(gb, &b_lin, &b_exp);
+            CHECK(on_cuda && a && n_exp == n_app && ab && b_exp == 0 && b_lin - n_lin == 2 * obs.distinct,
+                  "(j) %s: %ld device expert-body calls for one forward of %d applications; single products %ld, the "
+                  "per-product path's %ld (%ld body calls): %ld fewer, want 2 x %ld distinct experts", kind[f], n_exp, n_app,
+                  n_lin, b_lin, b_exp, b_lin - n_lin, obs.distinct);
+            // the observer's own check: one call per application, n_used experts at every position, margins >= 0
+            CHECK(obs.calls == n_app && obs.positions == (long)n_app * N_TOK && obs.bad_count == 0 && obs.bad_margin == 0,
+                  "(j) %s: the selection observer saw %ld calls, %ld positions, %ld without %d experts, %ld negative margins",
+                  kind[f], obs.calls, obs.positions, obs.bad_count, obs.want_used, obs.bad_margin);
+            free(ab);
+            drop(gb);
         }
         const double rd = a && b ? rel_diff(a, b, n) : 1;
         const size_t nf = a ? n_nonfinite(a, n) : 0;
@@ -260,6 +300,18 @@ int main(int argc, char **argv) {
         const float *again = on ? model_inkling2_forward(g, PROMPT, 1, 0, true, true) : NULL;
         CHECK(on && !first && !again, "(h) a failed device product: on CUDA (%d), that forward %s, the next %s", on,
               first ? "gave rows" : "refused", again ? "gave rows" : "refused");
+        drop(g);
+        // the same inside the expert body (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_EXP_FAIL=k: the k-th body call fails)
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_EXP_FAIL", "2");
+        g = load(argv[2], true, false, 64);
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_EXP_FAIL", "");
+        long ne = 0;
+        const bool on2 = g && model_inkling2_cuda(g);
+        const float *f2 = on2 ? model_inkling2_forward(g, PROMPT, N_TOK, 0, true, true) : NULL;
+        const float *a2 = on2 ? model_inkling2_forward(g, PROMPT, 1, 0, true, true) : NULL;
+        if (g) model_inkling2_cuda_calls(g, NULL, &ne);
+        CHECK(on2 && ne >= 3 && !f2 && !a2, "(h) a failed device expert body (call %ld reached): that forward %s, the next %s",
+              ne, f2 ? "gave rows" : "refused", a2 ? "gave rows" : "refused");
         drop(g);
     }
     // G2 (i): each device kernel through gpu.h, against float64 sums over dequant_row's decode
@@ -349,20 +401,23 @@ int main(int argc, char **argv) {
     }
     // G2b (k): gpu_ink2_experts against float64 on the host, SwiGLU's boundary inputs reached through one-hot x
     {
-        enum { KH = 128, KF = 64, KE = 4, KT = 6 };
+        // the real model's widths (H 2304, F 1152: every kernel runs more than one block in x), a fifth expert no
+        // position chooses (n = 0), and gate rows unlike their up rows (independent random codes; the scale class
+        // cycles by 7, which F does not divide), so a kernel that swaps or mixes up gate and up cannot pass
+        enum { KH = 2304, KF = 1152, KE = 5, KT = 6 };
         const size_t rb13 = (size_t)KH / 64 * 36, rb2 = (size_t)KF / 64 * 36;
-        const float s13[KE] = { 1e-3f, 1.0f, 10.0f, 0.05f }, s2[KE] = { 1.0f, 0.5f, 2.0f, 1.0f };
+        const float s13[KE] = { 1e-3f, 1.0f, 10.0f, 0.05f, 1.0f }, s2[KE] = { 1.0f, 0.5f, 2.0f, 1.0f, 1.0f };
         const float gcap = 4.0f, ucap = 8.0f;
         unsigned char *w13 = calloc((size_t)KE * 2 * KF, rb13), *w2 = calloc((size_t)KE * KH, rb2);
         uint32_t seed = 777u;
 #define RND() (seed = seed * 1664525u + 1013904223u, seed >> 8)
-        for (int r = 0; w13 && r < KE * 2 * KF; r++) {   // gate_up: rows cycle the codes and the scales' extremes
+        for (int r = 0; w13 && r < KE * 2 * KF; r++) {   // gate_up: all 16 codes at random, the scales' extremes
             unsigned char *row = w13 + (size_t)r * rb13;
-            const unsigned char sc = r % 8 == 0 ? 0x7e : r % 8 == 1 ? 0x01 : 0x38;   // 448, the smallest, 1.0
+            const int cls = r % 7;
+            const unsigned char sc = cls == 0 ? 0x7e : cls == 1 ? 0x01 : 0x38;   // 448, the smallest, 1.0
             for (size_t b = 0; b < rb13; b += 36) {
                 memset(row + b, sc, 4);
-                for (int j = 0; j < 32; j++)
-                    row[b + 4 + j] = r % 8 == 2 ? 0 : (unsigned char)(((r + 2 * j) & 15) | (((r + 2 * j + 1) & 15) << 4));
+                for (int j = 0; j < 32; j++) row[b + 4 + j] = cls == 2 ? 0 : (unsigned char)RND();   // class 2: zero block
             }
         }
         for (int r = 0; w2 && r < KE * KH; r++) {   // down: scale 1.0, codes from the generator
@@ -373,22 +428,22 @@ int main(int argc, char **argv) {
             }
         }
 #undef RND
-        float x[KT * KH], wt[KT * KE], out[KT * KH];
+        static float x[KT * KH], out[KT * KH];
+        float wt[KT * KE];
         unsigned char ch[KT * KE];
         memset(x, 0, sizeof x); memset(wt, 0, sizeof wt); memset(ch, 0, sizeof ch);
         for (int t = 0; t < KT; t++) {
             x[t * KH + (7 * t + 1) % KH] = 1.0f;   // one-hot: each gate value is one decoded weight times the factor
             for (int j = 0; j < 2; j++) {
-                const int e = (t + j) % KE;
+                const int e = (t + j) % 4;   // experts 0..3; expert 4 has no positions
                 ch[t * KE + e] = 1;
                 wt[t * KE + e] = 0.25f + 0.1f * (float)e;
             }
         }
         // the reference, float64 over dequant_row's decode, experts in ascending index
-        double ref[KT * KH];
+        static double ref[KT * KH], act[KF];
+        static float row[KH], gu[2 * KF];
         memset(ref, 0, sizeof ref);
-        float row[KH], gu[2 * KF];
-        double act[KF];
         for (int t = 0; w13 && w2 && t < KT; t++)
             for (int e = 0; e < KE; e++) {
                 if (!ch[t * KE + e]) continue;
@@ -415,7 +470,7 @@ int main(int argc, char **argv) {
         const bool ran = i13 >= 0 && i2 >= 0 && gpu_ink2_experts_ok(h) &&
                          gpu_ink2_experts(h, i13, i2, T_NVFP4, T_NVFP4, rb13, rb2, KH, KF, KE, KT, x, ch, wt, s13, s2,
                                           gcap, ucap, out);
-        double worst = 0;
+        double worst = 0, least_top = 1e30;
         size_t nf = 0;
         for (int t = 0; ran && t < KT; t++) {
             double top = 0, d = 0;
@@ -423,13 +478,22 @@ int main(int argc, char **argv) {
                 if (fabs(ref[t * KH + o]) > top) top = fabs(ref[t * KH + o]);
                 if (fabs(out[t * KH + o] - ref[t * KH + o]) > d) d = fabs(out[t * KH + o] - ref[t * KH + o]);
             }
-            const double rel = top > 0 ? d / top : d;
+            const double rel = top > 0 ? d / top : 1e30;
             if (rel > worst) worst = rel;
+            if (top < least_top) least_top = top;
         }
         if (ran) nf = n_nonfinite(out, KT * KH);
-        CHECK(ran && nf == 0 && worst <= 1e-4, "(k) the device expert body %s (kernels in the module: %d), within %.2e of the "
-              "float64 sums at its worst position, want <= 1e-4; %zu not finite", ran ? "ran" : "did not run",
-              gpu_ink2_experts_ok(h), worst, nf);
+        CHECK(ran && nf == 0 && worst <= 1e-4 && least_top > 1e-6, "(k) the device expert body %s (kernels in the module: %d), "
+              "within %.2e of the float64 sums at its worst position, want <= 1e-4; the smallest position's largest "
+              "reference value %.3g, want > 1e-6; %zu not finite", ran ? "ran" : "did not run", gpu_ink2_experts_ok(h), worst,
+              least_top, nf);
+        // the scatter's uniqueness guard (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_DUP_IDX=1 repeats a position in one list)
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_DUP_IDX", "1");
+        const bool dup_ran = i13 >= 0 && i2 >= 0 &&
+                             gpu_ink2_experts(h, i13, i2, T_NVFP4, T_NVFP4, rb13, rb2, KH, KF, KE, KT, x, ch, wt, s13, s2,
+                                              gcap, ucap, out);
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_DUP_IDX", "");
+        CHECK(i13 >= 0 && !dup_ran, "(k) a launch's position list with a repeat: the call %s", dup_ran ? "RAN" : "refused");
         gpu_ink2_free(h);
         free(w13); free(w2);
     }

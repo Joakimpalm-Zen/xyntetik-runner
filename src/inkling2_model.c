@@ -37,6 +37,8 @@ typedef struct {
     int lin_fail_at;      // TEST-ONLY (RUNNER_INKLING2_CUDA_TEST_LIN_FAIL=k): the k-th device product fails; -1 none
     int n_lin;            // device products run so far (for lin_fail_at)
     long n_exp;           // G2b step 1: device expert-body calls run so far (one per application per forward)
+    long exp_fail_at;     // TEST-ONLY (RUNNER_INKLING2_CUDA_TEST_EXP_FAIL=k): the k-th expert-body call fails; -1 none
+    bool exp_on;          // this instance runs the expert body on the device (the hook is process-wide)
 } ink2_rt;
 
 static ink2_rt *rt_of(model_t *m) { return (ink2_rt *)m->ink2; }
@@ -124,9 +126,10 @@ static int dev_experts(const ink2_shape *s, const ink2_tensor *t13, const ink2_t
     ink2_rt *r = t13->dev;
     if (!r->gpu || t2->dev != r) r->gpu_err = true;
     if (r->gpu_err) return -1;
-    r->n_exp++;
+    if (!r->exp_on) return 1;   // this instance keeps the per-product body
+    const bool inj = r->n_exp++ == r->exp_fail_at;   // TEST-ONLY: an injected failure inside the expert call
     const bool nf = r->no_factor;   // TEST-ONLY: the control leaves the expert factors out here too
-    const bool ok = gpu_ink2_experts(r->gpu, t13->dev_i, t2->dev_i, t13->qtype, t2->qtype, t13->q_row_bytes,
+    const bool ok = !inj && gpu_ink2_experts(r->gpu, t13->dev_i, t2->dev_i, t13->qtype, t2->qtype, t13->q_row_bytes,
                                      t2->q_row_bytes, s->hidden, s->ff, s->n_expert, T, x, chosen, wt,
                                      nf ? NULL : t13->q_scale, nf ? NULL : t2->q_scale, s->gate_cap, s->up_cap, out);
     if (!ok) {
@@ -168,10 +171,13 @@ static bool cuda_bind(ink2_rt *r, bool cpu_moe, int n_batch) {
     }
     const size_t T = n_batch > 0 ? (size_t)n_batch : 1;
     // G2b step 1: the expert body on the device when its kernels are in the module and the stacks go up
-    const bool exp_dev = !cpu_moe && gpu_ink2_experts_ok(r->gpu);
+    // (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_NO_EXP=1 leaves it to the per-product path, a baseline for check (j))
+    const char *ne = getenv("RUNNER_INKLING2_CUDA_TEST_NO_EXP");
+    const bool exp_dev = !cpu_moe && gpu_ink2_experts_ok(r->gpu) && !(ne && !strcmp(ne, "1"));
     if (ink2g_each_view(r->g, dev_count, &c) || c.n == 0 ||
         !gpu_ink2_reserve(r->gpu, sizeof(float) * T * (size_t)c.max_in, sizeof(float) * T * (size_t)c.max_out) ||
-        (exp_dev && !gpu_ink2_reserve_experts(r->gpu, (int)T, r->s.hidden, r->s.ff)) || !gpu_mem_info(&fr, &tot)) {
+        (exp_dev && !gpu_ink2_reserve_experts(r->gpu, (int)T, r->s.hidden, r->s.ff, r->s.n_expert)) ||
+        !gpu_mem_info(&fr, &tot)) {
         fprintf(stderr, "note: inkling2_loop has no weights the device computes, or no room for its products' buffers, "
                         "on %s; running on the CPU\n", dev);
         gpu_ink2_free(r->gpu);
@@ -206,7 +212,10 @@ static bool cuda_bind(ink2_rt *r, bool cpu_moe, int n_batch) {
     r->lin_fail_at = lf && *lf ? atoi(lf) : -1;
     r->n_lin = 0;
     r->n_exp = 0;
+    const char *xf = getenv("RUNNER_INKLING2_CUDA_TEST_EXP_FAIL");
+    r->exp_fail_at = xf && *xf ? atol(xf) : -1;
     ink2_set_dev_lin(dev_lin_scaled);
+    r->exp_on = exp_dev;
     if (exp_dev) ink2_set_dev_experts(dev_experts);
     fprintf(stderr, "inkling2_loop: the weights on CUDA (%s): %d tensors, %.3f GB, their stored rows; their products on "
                     "the device%s, the rest of the forward on the CPU (R4.48.9 G2b)%s%s\n", dev, r->n_dev,

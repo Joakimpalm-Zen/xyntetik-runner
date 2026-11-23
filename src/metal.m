@@ -6169,4 +6169,7 @@ bool gpu_ink2_experts(gpu_ink2 *h, int i13, int i2, int type13, int type2, size_
     return false;
 }
 bool gpu_ink2_experts_ok(const gpu_ink2 *h) { (void)h; return false; }
-bool gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F) { (void)h; (void)T; (void)H; (void)F; return false; }
+bool gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F, int E) {
+    (void)h; (void)T; (void)H; (void)F; (void)E;
+    return false;
+}

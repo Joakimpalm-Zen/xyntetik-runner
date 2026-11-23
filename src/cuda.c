@@ -12983,6 +12983,7 @@ bool gpu_ink2_experts(gpu_ink2 *h, int i13, int i2, int type13, int type2, size_
                       const float *s2, float gate_cap, float up_cap, float *out) {
     if (!h || !h->f_gather || !h->f_scatter || !h->f_swiglu || i13 < 0 || i13 >= h->n || i2 < 0 || i2 >= h->n ||
         type13 < 0 || type13 >= KT_N || type2 < 0 || type2 >= KT_N || !h->mv[type13] || !h->mv[type2] || T <= 0 ||
+        H <= 0 || F <= 0 || E <= 0 || !x || !chosen || !wt || !out ||
         ((s13 && type13 != T_NVFP4) || (s2 && type2 != T_NVFP4)))
         return false;
     // the experts' position lists and weights, concatenated in ascending expert order: one upload for the call
@@ -12996,6 +12997,11 @@ bool gpu_ink2_experts(gpu_ink2 *h, int i13, int i2, int type13, int type2, size_
     }
     if (!idx || !off || !wv) { free(idx); free(off); free(wv); return false; }
     off[E] = nall;
+    // TEST-ONLY (RUNNER_INKLING2_CUDA_TEST_DUP_IDX=1): the first list with two positions repeats its first, so the
+    // check below is seen to refuse
+    const char *dup = getenv("RUNNER_INKLING2_CUDA_TEST_DUP_IDX");
+    for (int e = 0; dup && !strcmp(dup, "1") && e < E; e++)
+        if (off[e + 1] - off[e] >= 2) { idx[off[e] + 1] = idx[off[e]]; break; }
     // k_moe_scatter_add is a plain += with no atomics: it is right only if ONE launch's positions are all different
     // (two of its columns on one position would race). Hence one launch PER EXPERT, in ascending expert index on the
     // null stream, each list from one ascending scan of the positions. Checked, not assumed: every launch's list is
@@ -13036,13 +13042,15 @@ bool gpu_ink2_experts(gpu_ink2 *h, int i13, int i2, int type13, int type2, size_
     return ok;
 }
 bool gpu_ink2_experts_ok(const gpu_ink2 *h) { return h && h->f_gather && h->f_scatter && h->f_swiglu; }
-bool gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F) {
-    if (!h || T <= 0 || cu.CtxSetCurrent(h->ctx) != 0) return false;
-    const size_t fb = sizeof(float), th = fb * (size_t)T * (size_t)H;
+bool gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F, int E) {
+    if (!h || T <= 0 || H <= 0 || F <= 0 || E <= 0 || cu.CtxSetCurrent(h->ctx) != 0) return false;
+    const size_t fb = sizeof(float), th = fb * (size_t)T * (size_t)H, te = (size_t)T * (size_t)E + 1;
     pthread_mutex_lock(&h->mu);
+    // the position lists and weights at their most (every position choosing every expert): T * E + 1 of each
     const bool ok = ink2_grow(&h->ex, &h->ex_cap, th) && ink2_grow(&h->eo, &h->eo_cap, th) &&
                     ink2_grow(&h->exe, &h->exe_cap, th) && ink2_grow(&h->eact, &h->eact_cap, fb * (size_t)T * 2 * F) &&
-                    ink2_grow(&h->edn, &h->edn_cap, th);
+                    ink2_grow(&h->edn, &h->edn_cap, th) && ink2_grow(&h->eidx, &h->eidx_cap, sizeof(int) * te) &&
+                    ink2_grow(&h->ew, &h->ew_cap, fb * te);
     pthread_mutex_unlock(&h->mu);
     return ok;
 }

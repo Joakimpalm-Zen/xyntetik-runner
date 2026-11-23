@@ -762,7 +762,7 @@ bool       gpu_ink2_experts(gpu_ink2 *h, int i13, int i2, int type13, int type2,
                             int E, int T, const float *x, const unsigned char *chosen, const float *wt,
                             const float *s13, const float *s2, float gate_cap, float up_cap, float *out);
 bool       gpu_ink2_experts_ok(const gpu_ink2 *h);
-bool       gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F);
+bool       gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F, int E);
 void       gpu_ink2_free(gpu_ink2 *h);
 
 #endif // RUNNER_GPU_H

@@ -639,9 +639,11 @@ static ink2_status ink2_experts_fast_c(const ink2_shape *s, const ink2_moe_w *M,
                                        const unsigned char *chosen, const float *wt, float *out, ink2_cache *c) {
     const int H = s->hidden, E = s->n_expert, F = s->ff;
     if (M->t13->dev && M->t2->dev && ink2_dev_experts) {   // R4.48.9 G2b step 1: the whole body on the device
-        if (ink2_dev_experts(s, M->t13, M->t2, T, x, chosen, wt, out))
+        const int rc = ink2_dev_experts(s, M->t13, M->t2, T, x, chosen, wt, out);
+        if (rc < 0)
             for (size_t i = 0; i < (size_t)T * H; i++) out[i] = NAN;
-        return INK2_OK;
+        if (rc <= 0) return INK2_OK;
+        // rc 1: this instance keeps the body below (its products still reach the device through ink2_lin)
     }
     for (size_t i = 0; i < (size_t)T * H; i++) out[i] = 0.0f;
     if (T == 1 && ink2_decode_fuse_enabled() && M->t13 && M->t2 && !M->t13->q_act8 && !M->t2->q_act8) {
