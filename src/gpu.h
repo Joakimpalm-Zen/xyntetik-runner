@@ -780,6 +780,11 @@ size_t     gpu_ink2_kv_bytes(const gpu_ink2_kv *kv);
 void       gpu_ink2_kv_free(gpu_ink2_kv *kv);
 bool       gpu_ink2_attn_ok(const gpu_ink2 *h);
 bool       gpu_ink2_reserve_attn(gpu_ink2 *h, int T, int Q, int nh, int ext);
+// step 2b: gpu_ink2_attn_block's ten buffers allocated now for a chunk of T (H the hidden width, C a layer's K/V row
+// width, R its dynamic taps nkv x K, nhdr its relative states nh x dr, Q its query width: each the largest layer's),
+// so the fit made after it counts them. False: no device memory. TEST-ONLY gpu_ink2_block_bytes: their bytes now.
+bool       gpu_ink2_reserve_block(gpu_ink2 *h, int T, int H, int C, int R, int nhdr, int Q);
+size_t     gpu_ink2_block_bytes(gpu_ink2 *h);
 bool       gpu_ink2_attn(gpu_ink2 *h, gpu_ink2_kv *kv, int app, int T, const int *pos, const float *q, const float *k,
                          const float *v, const float *rl, const float *sk, float *att, int nh, int nkv, int hd,
                          int window, int global, int ext, float scale);

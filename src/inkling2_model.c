@@ -252,11 +252,16 @@ static ink2_share *g_shares;
 // the device bytes ONE instance holds beyond the shared weights: its K/V rings (step 2a: every application's ring at
 // the host cache's rows, K and V, at the allocation granularity), when the core runs on the device. The products',
 // the expert body's and the core's scratch belong to the shared copy (used under its lock).
-static size_t dev_instance_bytes(const ink2_rt *r, bool attn_dev) {
+// one slot's own device bytes: per application its K and V rings and, on the block path (hist_rows = conv_k - 1),
+// its K and V convolution histories, each as the driver allocates it
+static size_t dev_instance_bytes(const ink2_rt *r, bool attn_dev, int hist_rows) {
     if (!attn_dev) return 0;
     size_t b = 0;
-    for (int a = 0; a < r->s.n_app; a++)
-        b += 2 * dev_alloc_bytes(sizeof(float) * (size_t)r->c.rows[a] * (size_t)app_c(&r->s, a));
+    for (int a = 0; a < r->s.n_app; a++) {
+        const size_t C = (size_t)app_c(&r->s, a);
+        b += 2 * dev_alloc_bytes(sizeof(float) * (size_t)r->c.rows[a] * C);
+        if (hist_rows > 0) b += 2 * dev_alloc_bytes(sizeof(float) * (size_t)hist_rows * C);
+    }
     return b;
 }
 static void share_release(ink2_rt *r) {
@@ -313,16 +318,16 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
     // keeps it on the host, a baseline); then every slot holds its own K/V rings, counted N times
     const char *na = getenv("RUNNER_INKLING2_CUDA_TEST_NO_ATTN");
     const bool attn_dev = gpu_ink2_attn_ok(h) && !(na && !strcmp(na, "1"));
-    const size_t inst = (size_t)n_slots * dev_instance_bytes(r, attn_dev);
     const ink2_shape *sp = &r->s;
     const int q_max = sp->n_head * sp->head_dim > sp->swa_n_head * sp->swa_head_dim ? sp->n_head * sp->head_dim
                                                                                        : sp->swa_n_head * sp->swa_head_dim;
     const int nh_max = sp->n_head > sp->swa_n_head ? sp->n_head : sp->swa_n_head;
     const int ext_max = sp->rel_extent > sp->window ? sp->rel_extent : sp->window;
     // step 2b: the whole attention block on the device when the module has its kernels (TEST-ONLY
-    // RUNNER_INKLING2_CUDA_TEST_NO_BLOCK=1 keeps 2a's path, a baseline); its small F32 tensors then go up too
+    // RUNNER_INKLING2_CUDA_TEST_NO_BLOCK=1 keeps 2a's path, a baseline); its small F32 tensors then go up too. A
+    // convolution of one tap keeps no history (the block's kernels want conv_k - 1 >= 1 rows): 2a's path
     const char *nb = getenv("RUNNER_INKLING2_CUDA_TEST_NO_BLOCK");
-    bool block_dev = attn_dev && gpu_ink2_block_ok(h) && !(nb && !strcmp(nb, "1"));
+    bool block_dev = attn_dev && sp->conv_k >= 2 && gpu_ink2_block_ok(h) && !(nb && !strcmp(nb, "1"));
     size_t small = 0;
     for (int b = 0; block_dev && b < sp->n_block; b++)
         for (int k = 0; k < GI2_NF; k++) {
@@ -331,6 +336,12 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
             small += dev_alloc_bytes(small_bytes(t));
         }
     if (!block_dev) small = 0;
+    // every slot's own rings (and on the block path its convolution histories), counted N times
+    const size_t inst = (size_t)n_slots * dev_instance_bytes(r, attn_dev, block_dev ? sp->conv_k - 1 : 0);
+    // the block's buffers at a chunk of T, by the largest layer's widths
+    const int c_max = sp->n_kv * sp->head_dim > sp->swa_n_kv * sp->swa_head_dim ? sp->n_kv * sp->head_dim
+                                                                                   : sp->swa_n_kv * sp->swa_head_dim;
+    const int nkv_max = sp->n_kv > sp->swa_n_kv ? sp->n_kv : sp->swa_n_kv;
     const char *ne = getenv("RUNNER_INKLING2_CUDA_TEST_NO_EXP");
     const char *capv = getenv("RUNNER_INKLING2_CUDA_TEST_FREE");   // TEST-ONLY: the free figure the fit reads, capped
     const char *pf = getenv("RUNNER_INKLING2_CUDA_TEST_PUT_FAIL");
@@ -351,6 +362,8 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
             !gpu_ink2_reserve(h, sizeof(float) * T * (size_t)c.max_in, sizeof(float) * y_rows) ||
             (exp_dev && !gpu_ink2_reserve_experts(h, (int)T, r->s.hidden, r->s.ff, r->s.n_expert)) ||
             (attn_dev && !gpu_ink2_reserve_attn(h, (int)T, q_max, nh_max, ext_max)) ||
+            (block_dev && !gpu_ink2_reserve_block(h, (int)T, sp->hidden, c_max, nkv_max * sp->conv_k,
+                                                  nh_max * sp->d_rel, q_max)) ||
             !gpu_mem_info(&fr, &tot)) {
             snprintf(sh->why, sizeof sh->why, "inkling2_loop has no weights the device computes, or no room for its "
                      "products' buffers, on %s", dev);
@@ -1005,6 +1018,15 @@ size_t model_inkling2_cuda_fit_free(const model_t *m) {
 size_t model_inkling2_cuda_lin_out_bytes(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
     return r && r->gpu ? gpu_ink2_lin_out_bytes(r->gpu) : 0;
+}
+size_t model_inkling2_cuda_slot_fit_bytes(const model_t *m) {
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    if (!r || !r->share || !r->gpu) return 0;
+    return dev_instance_bytes(r, r->share->attn_dev, r->share->block_dev ? r->s.conv_k - 1 : 0);
+}
+size_t model_inkling2_cuda_block_buf_bytes(const model_t *m) {
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    return r && r->gpu ? gpu_ink2_block_bytes(r->gpu) : 0;
 }
 long model_inkling2_cuda_block_calls(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;

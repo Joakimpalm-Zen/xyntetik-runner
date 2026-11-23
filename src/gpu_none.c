@@ -514,6 +514,11 @@ bool gpu_ink2_attn_block(gpu_ink2 *h, gpu_ink2_kv *kv, int app, const gpu_ink2_b
 size_t gpu_ink2_kv_bytes(const gpu_ink2_kv *kv) { (void)kv; return 0; }
 void gpu_ink2_kv_free(gpu_ink2_kv *kv) { (void)kv; }
 bool gpu_ink2_attn_ok(const gpu_ink2 *h) { (void)h; return false; }
+bool gpu_ink2_reserve_block(gpu_ink2 *h, int T, int H, int C, int R, int nhdr, int Q) {
+    (void)h; (void)T; (void)H; (void)C; (void)R; (void)nhdr; (void)Q;
+    return false;
+}
+size_t gpu_ink2_block_bytes(gpu_ink2 *h) { (void)h; return 0; }
 bool gpu_ink2_reserve_attn(gpu_ink2 *h, int T, int Q, int nh, int ext) {
     (void)h; (void)T; (void)Q; (void)nh; (void)ext;
     return false;

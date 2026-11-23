@@ -749,17 +749,82 @@ int main(int argc, char **argv) {
         drop(g);
         int32_t other[N_TOK], half[N_TOK];
         for (int t = 0; t < N_TOK; t++) { other[t] = (int32_t)((PROMPT[t] * 7 + 3) % 200); half[t] = t < 12 ? PROMPT[t] : other[t]; }
-        model_t *gs = load(argv[2], true, false, 8), *gf = load(argv[2], true, false, 8);
-        model_t *cf = load_route(argv[2], false, false, 8, "");
-        float *ra = gs ? rows_p(gs, PROMPT) : NULL, *rb = gs ? rows_p(gs, other) : NULL, *rh = gs ? rows_p(gs, half) : NULL;
-        float *fh = gf ? rows_p(gf, half) : NULL, *ch = cf ? rows_p(cf, half) : NULL;
-        const size_t n = gs ? (size_t)N_TOK * (size_t)gs->n_vocab : 0;
-        const double dc = rh && ch ? rel_diff(rh, ch, n) : 1;
-        CHECK(gs && model_inkling2_cuda_attn_calls(gs, NULL) > 0 && ra && rb && rh && fh && !memcmp(rh, fh, sizeof(float) * n) &&
-              dc <= 1e-4, "(o) rewind through the device ring (-b 8: several chunks): A, B, then HALF from 0 equal a fresh "
-              "instance's HALF byte for byte, %.2e from the CPU fast route's, want <= 1e-4", dc);
-        free(ra); free(rb); free(rh); free(fh); free(ch);
-        drop(gs); drop(gf); drop(cf);
+        // at -b 8 (several chunks) and at -b 1 (each chunk shorter than the convolution's history, conv_k - 1 = 3: the
+        // device history ring is read at every step and only partly rewritten by each)
+        for (int bi = 0; bi < 2; bi++) {
+            const int bt = bi ? 1 : 8;
+            model_t *gs = load(argv[2], true, false, bt), *gf = load(argv[2], true, false, bt);
+            model_t *cf = load_route(argv[2], false, false, bt, "");
+            float *ra = gs ? rows_p(gs, PROMPT) : NULL, *rb = gs ? rows_p(gs, other) : NULL, *rh = gs ? rows_p(gs, half) : NULL;
+            float *fh = gf ? rows_p(gf, half) : NULL, *ch = cf ? rows_p(cf, half) : NULL;
+            const size_t n = gs ? (size_t)N_TOK * (size_t)gs->n_vocab : 0;
+            const double dc = rh && ch ? rel_diff(rh, ch, n) : 1;
+            CHECK(gs && model_inkling2_cuda_attn_calls(gs, NULL) + model_inkling2_cuda_block_calls(gs) > 0 && ra && rb && rh &&
+                  fh && !memcmp(rh, fh, sizeof(float) * n) && dc <= 1e-4, "(o) rewind through the device ring (-b %d): A, B, "
+                  "then HALF from 0 equal a fresh instance's HALF byte for byte, %.2e from the CPU fast route's, want <= 1e-4",
+                  bt, dc);
+            free(ra); free(rb); free(rh); free(fh); free(ch);
+            drop(gs); drop(gf); drop(cf);
+        }
+    }
+    // (x) the second read of 2b's P2: the fit counts what a slot and the block allocate; the block refuses an adapter
+    // in the middle of a sequence it began and leaves the slot where it was
+    {
+        model_t *g = load(argv[2], true, false, 64);
+        const void *xsp = NULL;
+        if (g) model_inkling2_parts(g, &xsp, NULL);
+        const ink2_shape *xs = xsp;
+        // one slot by hand (the driver's rounding: 512 bytes under 1 MiB, 2 MiB pages from it): per application its
+        // K and V rings (rows: -c 64, a sliding ring's window - 1 + 64 = 71 capped there) and its two histories
+        // (conv_k - 1 = 3 rows); every row 32 floats on the tiny file
+        size_t want = 0;
+        for (int ap = 0; xs && ap < xs->n_app; ap++) {
+            const int gl = ink2_app_global(xs, ap);
+            const size_t C = (size_t)(gl ? xs->n_kv * xs->head_dim : xs->swa_n_kv * xs->swa_head_dim);
+            const size_t rws = gl || xs->window - 1 + 64 >= 64 ? 64 : (size_t)(xs->window - 1 + 64);
+            const size_t b[2] = { sizeof(float) * rws * C, sizeof(float) * (size_t)(xs->conv_k - 1) * C };
+            for (int k = 0; k < 2; k++) {
+                const size_t gr = b[k] >= ((size_t)1 << 20) ? (size_t)2 << 20 : 512;
+                want += 2 * ((b[k] + gr - 1) / gr * gr);
+            }
+        }
+        const size_t slot = model_inkling2_cuda_slot_fit_bytes(g);
+        CHECK(g && model_inkling2_cuda_block_calls(g) >= 0 && slot == want && want > 0, "(x) the fit counts one slot's K/V "
+              "rings and convolution histories: %zu bytes, want %zu", slot, want);
+        // the block's ten buffers reserved before the fit read the free memory: their bytes before any forward are
+        // T = 64 x (4 H + 3 C + nkv K + nh dr + Q) floats, and a forward does not grow them
+        const size_t bb0 = model_inkling2_cuda_block_buf_bytes(g);
+        float *r0 = g ? rows(g) : NULL;
+        const size_t bb1 = model_inkling2_cuda_block_buf_bytes(g);
+        const size_t want_b = xs ? sizeof(float) * 64 * (size_t)(4 * xs->hidden + 3 * xs->n_kv * xs->head_dim +
+                                                                 xs->n_kv * xs->conv_k + xs->n_head * xs->d_rel +
+                                                                 xs->n_head * xs->head_dim) : 0;
+        CHECK(g && r0 && bb0 == want_b && bb1 == bb0 && want_b > 0, "(x) the attention block's buffers before the first "
+              "forward %zu bytes (want %zu, reserved with the fit), %zu after it (want unchanged)", bb0, want_b, bb1);
+        // THE CONTRACT: an adapter active at a position past 0 of a sequence the device block began is refused (a
+        // sentence on stderr: "start it again from position 0"), because the host holds no convolution history for that
+        // sequence; the slot stays at that position, so without the adapter the sequence continues there, and with it a
+        // sequence begun again at 0 runs (2a's path, its terms on the host)
+        const size_t nv = g ? (size_t)g->n_vocab : 0;
+        const float *p1 = g ? model_inkling2_forward(g, PROMPT, 12, 0, true, true) : NULL;
+        const bool lo = p1 && model_lora_load(g, argv[5], 1.0f);
+        const float *p2 = lo ? model_inkling2_forward(g, PROMPT + 12, 12, 12, true, true) : NULL;
+        if (lo) model_lora_free(g);
+        const float *p3 = g ? model_inkling2_forward(g, PROMPT + 12, 12, 12, true, true) : NULL;
+        const bool same = p3 && r0 && !memcmp(model_inkling2_row(g, 11), r0 + 23 * nv, sizeof(float) * nv) &&
+                          !memcmp(model_inkling2_row(g, 0), r0 + 12 * nv, sizeof(float) * nv);
+        CHECK(p1 && lo && !p2 && same, "(x) an adapter at position 12 of a sequence the device block began: %s (want "
+              "refused); without it the sequence %s at 12, rows %s the one-call forward's", p2 ? "ran" : "refused",
+              p3 ? "continues" : "does not continue", same ? "equal to" : "not equal to");
+        const bool l2 = g && model_lora_load(g, argv[5], 1.0f);
+        model_t *gl = load(argv[2], true, false, 64);
+        const bool l3 = gl && model_lora_load(gl, argv[5], 1.0f);
+        float *ra = l2 ? rows(g) : NULL, *rf = l3 ? rows(gl) : NULL;
+        const size_t n = (size_t)N_TOK * nv;
+        CHECK(ra && rf && !n_nonfinite(ra, n) && !memcmp(ra, rf, sizeof(float) * n), "(x) the same instance with the adapter "
+              "from position 0: rows equal a fresh instance's with it byte for byte (not refused, not failed)");
+        free(r0); free(ra); free(rf);
+        drop(g); drop(gl);
     }
     // G2b 2a (p) at N slots: each slot holds its own K/V rings, so the fit counts them N times. With the free figure
     // capped at the whole need + 2 rings + the reserve: one slot takes every weight (W); three slots do not.

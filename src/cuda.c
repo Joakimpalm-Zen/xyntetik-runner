@@ -13122,6 +13122,26 @@ bool gpu_ink2_reserve_attn(gpu_ink2 *h, int T, int Q, int nh, int ext) {
     pthread_mutex_unlock(&h->mu);
     return ok;
 }
+bool gpu_ink2_reserve_block(gpu_ink2 *h, int T, int H, int C, int R, int nhdr, int Q) {
+    if (!h || T <= 0 || H <= 0 || C <= 0 || R <= 0 || nhdr <= 0 || Q <= 0 || cu.CtxSetCurrent(h->ctx) != 0) return false;
+    const size_t fb = sizeof(float), t = (size_t)T;
+    pthread_mutex_lock(&h->mu);   // gpu_ink2_attn_block's ten buffers at a chunk of T
+    const bool ok = ink2_grow(&h->bxq, &h->bxq_cap, fb * t * H) && ink2_grow(&h->bxk, &h->bxk_cap, fb * t * H) &&
+                    ink2_grow(&h->bxv, &h->bxv_cap, fb * t * H) && ink2_grow(&h->blin, &h->blin_cap, fb * t * C) &&
+                    ink2_grow(&h->bdyn, &h->bdyn_cap, fb * t * R) && ink2_grow(&h->bk, &h->bk_cap, fb * t * C) &&
+                    ink2_grow(&h->bv, &h->bv_cap, fb * t * C) && ink2_grow(&h->brs, &h->brs_cap, fb * t * nhdr) &&
+                    ink2_grow(&h->bga, &h->bga_cap, fb * t * Q) && ink2_grow(&h->bout, &h->bout_cap, fb * t * H);
+    pthread_mutex_unlock(&h->mu);
+    return ok;
+}
+size_t gpu_ink2_block_bytes(gpu_ink2 *h) {
+    if (!h) return 0;
+    pthread_mutex_lock(&h->mu);
+    const size_t b = h->bxq_cap + h->bxk_cap + h->bxv_cap + h->blin_cap + h->bdyn_cap + h->bk_cap + h->bv_cap +
+                     h->brs_cap + h->bga_cap + h->bout_cap;
+    pthread_mutex_unlock(&h->mu);
+    return b;
+}
 // the kernel's argument block (src/kernels.cu k_ink2_attn): the same fields in the same order
 typedef struct { int nh, nkv, hd, C, Q, R, window, global, ext; float scale; } ink2_attn_args_host;
 // the core over application app's ring, its queries, bank, sinks and positions in h->aq, arl, ask, apos (T of them),

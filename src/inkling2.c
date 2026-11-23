@@ -1469,8 +1469,9 @@ static ink2_status ink2_attention_lora(const ink2_shape *s, const ink2_weights *
                                { L.tt[WQS], L.tt[WKC], L.tt[WVC], L.tt[WRS], L.tt[WRP] } };
         const int rc = bo->block(c->dev, &bc);
         if (rc <= 0) {
+            // the slot holds the chunk only when the block ran: a refusal or a failure leaves n_past where it was
             if (rc < 0) for (size_t i = 0; i < (size_t)T * s->hidden; i++) out[i] = NAN;
-            c->n_past[app] = p0 + T;
+            else c->n_past[app] = p0 + T;
             return rc == -2 ? INK2_BAD_INPUT : INK2_OK;
         }
     }
