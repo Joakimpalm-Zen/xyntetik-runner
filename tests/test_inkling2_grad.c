@@ -455,10 +455,35 @@ static void run_rel_branch_probe(model_t *m, double plain_loss) {
 int main(int argc, char **argv) {
     plat_setenv("INK2_PAR_MIN", "1");
     const char *mpath = argc > 1 ? argv[1] : "test-inkling2-train.gguf";
+
+    // Stack-defect regression guard: a fast-route instance loaded without train=true must refuse
+    // backward with an error instead of SEGVing on NULL decoded matrices.
+    {
+        const char *saved_route = getenv("RUNNER_INKLING2_ROUTE");
+        char saved_buf[64] = {0};
+        if (saved_route && *saved_route) snprintf(saved_buf, sizeof saved_buf, "%s", saved_route);
+        plat_setenv("RUNNER_INKLING2_ROUTE", "");
+        model_params mp_fast = {0};
+        mp_fast.n_ctx = 64;
+        mp_fast.n_batch = 64;
+        mp_fast.n_threads = 2;
+        model_t m_fast = {0};
+        CHECK(model_load(&m_fast, mpath, &mp_fast), "fast-route control model_load failed");
+        CHECK(model_inkling2_route(&m_fast) == 'F', "control expected fast route ('F'), got '%c'",
+              model_inkling2_route(&m_fast));
+        CHECK(model_lora_train_init(&m_fast, 4, 8.0f, 7), "fast-route train_init failed unexpectedly");
+        double l_fast = 0.0;
+        CHECK(!model_lora_backward(&m_fast, g_toks, T_LEN, &l_fast),
+              "fast-route backward refused cleanly without SEGV");
+        model_free(&m_fast);
+        plat_setenv("RUNNER_INKLING2_ROUTE", saved_buf);
+    }
+
     model_params mp = {0};
     mp.n_ctx = 64;
     mp.n_batch = 64;
     mp.n_threads = 2;
+    mp.train = true;
     model_t m = {0};
     if (!model_load(&m, mpath, &mp)) {
         fprintf(stderr, "FAIL: cannot load %s\n", mpath);
@@ -482,9 +507,11 @@ int main(int argc, char **argv) {
     const char *tmp_a = "test-inkling2-grad-tmp.lora.gguf";
     CHECK(model_lora_save(&m, tmp_a), "model_lora_save failed");
     model_t m_srv = {0};
-    mp.lora_path = tmp_a;
-    mp.lora_scale = 1.0f;
-    CHECK(model_load(&m_srv, mpath, &mp), "model_load with --lora failed");
+    model_params mp_srv = mp;
+    mp_srv.train = false;
+    mp_srv.lora_path = tmp_a;
+    mp_srv.lora_scale = 1.0f;
+    CHECK(model_load(&m_srv, mpath, &mp_srv), "model_load with --lora failed");
     CHECK(!model_has_training_state(&m_srv), "serving an adapter allocated training state");
     model_free(&m_srv);
     remove(tmp_a);
@@ -526,7 +553,7 @@ int main(int argc, char **argv) {
     static const int ths[2] = { 1, 4 };
     for (int ti = 0; ti < 2; ti++) {
         model_params mp_t = {0};
-        mp_t.n_ctx = 64; mp_t.n_batch = 64; mp_t.n_threads = ths[ti];
+        mp_t.n_ctx = 64; mp_t.n_batch = 64; mp_t.n_threads = ths[ti]; mp_t.train = true;
         model_t mt = {0};
         CHECK(model_load(&mt, mpath, &mp_t), "model_load failed at -t %d", ths[ti]);
         CHECK(model_lora_train_init(&mt, 4, 8.0f, 7), "lora_train_init failed at -t %d", ths[ti]);
