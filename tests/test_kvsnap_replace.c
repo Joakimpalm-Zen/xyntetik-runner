@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #else
+#include <io.h>
 #include <windows.h>
 #endif
 
@@ -38,6 +39,79 @@ static DWORD WINAPI pl_worker(LPVOID arg) {
         plat_publish_unlock(lk);
     }
     return 0;
+}
+
+typedef struct {
+    HANDLE ready;
+    DWORD  hold_ms;
+    DWORD  open_err;
+} share_holder_ctx;
+
+// Hold the lock path with sharing disabled to simulate a scanner holding a
+// new lock file briefly while plat_publish_lock attempts to open it.
+static DWORD WINAPI share_holder(LPVOID arg) {
+    share_holder_ctx *ctx = arg;
+    HANDLE h = CreateFileW(L"test-kvsnap-share.out.publish.lock",
+                           GENERIC_READ, 0, NULL, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        ctx->open_err = GetLastError();
+        SetEvent(ctx->ready);
+        return 1;
+    }
+    SetEvent(ctx->ready);
+    Sleep(ctx->hold_ms);
+    CloseHandle(h);
+    return 0;
+}
+
+// Run plat_publish_lock(target, lk) with stderr captured into buf[0..cap) and
+// echoed afterward so CI keeps diagnostics visible.
+static plat_lock_status lock_capture_stderr(const char *target, void **lk,
+                                            char *buf, size_t cap,
+                                            long *elapsed_ms) {
+    if (cap) buf[0] = '\0';
+    fflush(stderr);
+    int err_fd = _fileno(stderr);
+    int saved = err_fd >= 0 ? _dup(err_fd) : -1;
+    FILE *capf = plat_fopen("test-kvsnap-stderr.tmp", "wb");
+    if (saved >= 0 && capf) _dup2(_fileno(capf), err_fd);
+    double t0 = plat_now();
+    plat_lock_status st = plat_publish_lock(target, lk);
+    if (elapsed_ms) *elapsed_ms = (long)((plat_now() - t0) * 1000.0);
+    fflush(stderr);
+    if (saved >= 0) {
+        if (capf) _dup2(saved, err_fd);
+        _close(saved);
+    }
+    if (capf) fclose(capf);
+    FILE *rf = plat_fopen("test-kvsnap-stderr.tmp", "rb");
+    if (rf) {
+        if (cap > 1) {
+            size_t n = fread(buf, 1, cap - 1, rf);
+            buf[n] = '\0';
+        }
+        fclose(rf);
+    }
+    remove("test-kvsnap-stderr.tmp");
+    if (cap && buf[0]) fprintf(stderr, "%s", buf);
+    return st;
+}
+
+static void check_lasting_denied(const char *target, const char *label) {
+    void *lk = NULL;
+    char errbuf[512];
+    long elapsed_ms = 0;
+    plat_lock_status st = lock_capture_stderr(target, &lk, errbuf, sizeof errbuf, &elapsed_ms);
+    char msg[160];
+    snprintf(msg, sizeof msg, "lasting access-denied (%.40s): fails with PLAT_LOCK_ERROR", label);
+    ck(st == PLAT_LOCK_ERROR && lk == NULL, msg);
+    snprintf(msg, sizeof msg, "lasting access-denied (%.40s): bounded wait %ld ms (want 3500..30000 ms)",
+             label, elapsed_ms);
+    ck(elapsed_ms >= 3500 && elapsed_ms < 30000, msg);
+    snprintf(msg, sizeof msg, "lasting access-denied (%.40s): prints step and Windows error 5", label);
+    ck(strstr(errbuf, "opening the lock file") != NULL &&
+       strstr(errbuf, "Windows error 5") != NULL, msg);
 }
 #endif
 
@@ -184,14 +258,11 @@ int main(void) {
     remove(kv_f); remove(man_f);
     remove("test-kvsnap-pair.kv.publish.lock");
 #ifdef _WIN32
-    // R6.118: main's Windows job failed once with one of two concurrent
-    // writers giving up on this lock. Eight takers, 150 rounds each: every
-    // take must succeed (a failure prints its step and system error from
-    // plat_publish_lock), and no two may hold it at once. The first reading
-    // of the cause was a delete-pending lock file refusing opens; the first
-    // version of this test showed that state does not arise on this system
-    // (an open and an attributes query of a deleted-while-held file were not
-    // refused), so the cause is still to be read from what this prints.
+    // R6.118 / R6.119: main's Windows job failed under contention because opens
+    // meeting an in-flight delete in plat_publish_unlock get ERROR_ACCESS_DENIED
+    // (or ERROR_SHARING_VIOLATION if a scanner holds a new lock file briefly
+    // without sharing). Eight takers, 150 rounds each: every take must succeed
+    // and no two may hold it at once.
     {
         HANDLE th[PL_THREADS];
         int started = 0;
@@ -208,6 +279,80 @@ int main(void) {
         ck(pl_overlap == 0, "contended lock: no two takers hold it at once");
         ck(pl_taken == PL_THREADS * PL_ITERS, "contended lock: 1200 takes in all");
         DeleteFileW(L"test-kvsnap-contend.out.publish.lock");
+    }
+    // R6.119 (1): transient ERROR_SHARING_VIOLATION (scanner holding lock file
+    // without sharing) waits and succeeds once released.
+    {
+        DeleteFileW(L"test-kvsnap-share.out.publish.lock");
+        share_holder_ctx sctx = { .ready = CreateEventW(NULL, TRUE, FALSE, NULL),
+                                  .hold_ms = 120, .open_err = 0 };
+        HANDLE sth = sctx.ready ? CreateThread(NULL, 0, share_holder, &sctx, 0, NULL) : NULL;
+        ck(sctx.ready != NULL && sth != NULL, "sharing violation: holder thread started");
+        if (sth) {
+            WaitForSingleObject(sctx.ready, INFINITE);
+            void *lk = NULL;
+            plat_lock_status st = plat_publish_lock("test-kvsnap-share.out", &lk);
+            WaitForSingleObject(sth, INFINITE);
+            CloseHandle(sth);
+            ck(sctx.open_err == 0 && st == PLAT_LOCK_OK && lk != NULL,
+               "sharing violation: waits through unshared handle and acquires lock");
+            plat_publish_unlock(lk);
+        }
+        if (sctx.ready) CloseHandle(sctx.ready);
+        DeleteFileW(L"test-kvsnap-share.out.publish.lock");
+    }
+    // R6.119 (2): lasting ERROR_ACCESS_DENIED (read-only lock file and a
+    // directory at the lock path) fails after the bounded wait with the named error.
+    {
+        SetFileAttributesW(L"test-kvsnap-ro.out.publish.lock", FILE_ATTRIBUTE_NORMAL);
+        DeleteFileW(L"test-kvsnap-ro.out.publish.lock");
+        HANDLE roh = CreateFileW(L"test-kvsnap-ro.out.publish.lock", GENERIC_WRITE, 0, NULL,
+                                 CREATE_ALWAYS, FILE_ATTRIBUTE_READONLY, NULL);
+        ck(roh != INVALID_HANDLE_VALUE, "lasting access-denied: read-only lock file created");
+        if (roh != INVALID_HANDLE_VALUE) {
+            CloseHandle(roh);
+            check_lasting_denied("test-kvsnap-ro.out", "read-only lock file");
+            SetFileAttributesW(L"test-kvsnap-ro.out.publish.lock", FILE_ATTRIBUTE_NORMAL);
+            DeleteFileW(L"test-kvsnap-ro.out.publish.lock");
+        }
+
+        RemoveDirectoryW(L"test-kvsnap-dir.out.publish.lock");
+        DeleteFileW(L"test-kvsnap-dir.out.publish.lock");
+        BOOL dir_ok = CreateDirectoryW(L"test-kvsnap-dir.out.publish.lock", NULL);
+        ck(dir_ok != 0, "lasting access-denied: directory at lock path created");
+        if (dir_ok) {
+            check_lasting_denied("test-kvsnap-dir.out", "directory at lock path");
+            RemoveDirectoryW(L"test-kvsnap-dir.out.publish.lock");
+        }
+    }
+    // R6.119 (5): reparse-point refusal names the reparse point without "Windows error 0".
+    {
+        DeleteFileW(L"test-kvsnap-sym.out.publish.lock");
+        DeleteFileW(L"test-kvsnap-sym-target.txt");
+        HANDLE tf = CreateFileW(L"test-kvsnap-sym-target.txt", GENERIC_WRITE, 0, NULL,
+                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (tf != INVALID_HANDLE_VALUE) CloseHandle(tf);
+        typedef BOOLEAN (WINAPI *sym_fn)(LPCWSTR, LPCWSTR, DWORD);
+        sym_fn mk_sym = (sym_fn)(void *)GetProcAddress(GetModuleHandleW(L"kernel32.dll"),
+                                                       "CreateSymbolicLinkW");
+        // SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE == 0x2
+        if (mk_sym && mk_sym(L"test-kvsnap-sym.out.publish.lock",
+                             L"test-kvsnap-sym-target.txt", 0x2)) {
+            void *lk = NULL;
+            char errbuf[512];
+            plat_lock_status st = lock_capture_stderr("test-kvsnap-sym.out", &lk,
+                                                      errbuf, sizeof errbuf, NULL);
+            ck(st == PLAT_LOCK_ERROR && lk == NULL,
+               "reparse-point refusal: returns PLAT_LOCK_ERROR");
+            ck(strstr(errbuf, "reparse point") != NULL &&
+               strstr(errbuf, "Windows error 0") == NULL,
+               "reparse-point refusal: prints real cause without Windows error 0");
+            DeleteFileW(L"test-kvsnap-sym.out.publish.lock");
+        } else {
+            printf("skip: reparse-point test (symlink creation refused, error %lu)\n",
+                   (unsigned long)GetLastError());
+        }
+        DeleteFileW(L"test-kvsnap-sym-target.txt");
     }
 #endif
     return g_fail ? 1 : 0;
