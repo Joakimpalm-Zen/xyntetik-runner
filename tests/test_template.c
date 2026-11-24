@@ -2051,6 +2051,47 @@ static void test_olmo2_shape(void) {
     printf("ok: olmo2 (OLMo 2 Instruct) template detected and rendered as the publisher's\n");
 }
 
+// Tulu 3's template (R4.50.11): allenai/Llama-3.1-Tulu-3-8B's (revision 66694379; 70B, 405B and
+// OLMo-2-0325-32B-Instruct ship the same bytes). OLMo 2 Instruct's turns with no bos_token written and the FILE'S
+// OWN eos after an assistant turn, so one runner name per vocabulary: tulu3 (<|end_of_text|>) and tulu3-olmo2
+// (<|endoftext|>). With no vocabulary at hand detection reads tulu3; the eos choice is tests/test_tulu3_template.py's.
+static void test_tulu3_shape(void) {
+    static const char pub[] =
+        "{% for message in messages %}{% if message['role'] == 'system' %}{{ '<|system|>\n' + message['content'] + "
+        "'\n' }}{% elif message['role'] == 'user' %}{{ '<|user|>\n' + message['content'] + '\n' }}{% elif "
+        "message['role'] == 'assistant' %}{% if not loop.last %}{{ '<|assistant|>\n'  + message['content'] + "
+        "eos_token + '\n' }}{% else %}{{ '<|assistant|>\n'  + message['content'] + eos_token }}{% endif %}{% endif "
+        "%}{% if loop.last and add_generation_prompt %}{{ '<|assistant|>\n' }}{% endif %}{% endfor %}";
+    const int t = template_detect(pub, NULL), to = template_from_name("tulu3-olmo2");
+    assert(t >= 0 && !strcmp(template_name(t), "tulu3") && template_from_name("tulu3") == t);
+    assert(to >= 0 && to != t && !strcmp(template_name(to), "tulu3-olmo2"));
+    char out[1024];
+    const chat_msg hist[] = { CHAT_MSG("system", "S"), CHAT_MSG("user", "Q"), CHAT_MSG("assistant", "A"),
+                              CHAT_MSG("user", "Q2") };
+    // no BOS written (the tokenizer's, where it adds one); a newline after system and user; the file's eos and a
+    // newline after an assistant turn that is not the last
+    render_messages(t, hist, 4, true, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out, "<|system|>\nS\n<|user|>\nQ\n<|assistant|>\nA<|end_of_text|>\n<|user|>\nQ2\n<|assistant|>\n"));
+    render_messages(to, hist, 4, true, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out, "<|system|>\nS\n<|user|>\nQ\n<|assistant|>\nA<|endoftext|>\n<|user|>\nQ2\n<|assistant|>\n"));
+    render_messages(t, hist, 2, false, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out, "<|system|>\nS\n<|user|>\nQ\n"));
+    // the last message an assistant turn: its eos and no newline; the generation prompt right after it
+    render_messages(t, hist, 3, false, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out, "<|system|>\nS\n<|user|>\nQ\n<|assistant|>\nA<|end_of_text|>"));
+    render_messages(to, hist, 3, true, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out, "<|system|>\nS\n<|user|>\nQ\n<|assistant|>\nA<|endoftext|><|assistant|>\n"));
+    // no messages: nothing (the generation prompt sits inside the publisher's loop)
+    render_messages(t, hist, 0, true, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out, ""));
+    // OLMo 2 Instruct's own (with {{ bos_token }}) is still olmo2
+    static const char olmo2[] =
+        "{{ bos_token }}{% for message in messages %}{% if message['role'] == 'user' %}{{ '<|user|>\n' + "
+        "message['content'] + '\n' }}{% endif %}{% endfor %}";
+    assert(!strcmp(template_name(template_detect(olmo2, NULL)), "olmo2"));
+    printf("ok: tulu3 / tulu3-olmo2 (Tulu 3's template) detected and rendered as the publisher's\n");
+}
+
 static void test_olmo3_shape(void) {
     char out[4096];
     const char *def = "You are OLMo, a helpful function-calling AI assistant built by Ai2. Your date cutoff is "
@@ -3891,6 +3932,7 @@ int main(void) {
     test_chatml_think_shape();
     test_olmo3_shape();
     test_olmo2_shape();
+    test_tulu3_shape();
     test_minicpm5_shape();
     test_mimo_shape();
     test_spark_shape();

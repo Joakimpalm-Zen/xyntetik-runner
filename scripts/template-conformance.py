@@ -205,6 +205,19 @@ FAMILIES = {
         "olmo2", ("hf", "allenai/OLMo-2-0425-1B-Instruct"),
         note="OLMo 2 Instruct; publisher revision 48d788eca847d4d7548f375ad03d3c9312f6139e",
         tokenizer=("OLMo-2-0425-1B-Instruct-tokenizer.gguf",)),
+    # Tulu 3's template (R4.50.11): OLMo 2's turns with no BOS written (the tokenizer's, when it adds one) and the
+    # FILE'S OWN eos after an assistant turn. Llama-3.1-Tulu-3 8B, 70B and 405B and OLMo-2-0325-32B-Instruct ship it
+    # byte for byte; one family per vocabulary, because the eos it spells is the file's: Tulu 3's <|end_of_text|>,
+    # OLMo 2's <|endoftext|>. Runner read it as zephyr until then (every turn ending with </s>).
+    "tulu3": Family(
+        "zephyr", ("hf", "allenai/Llama-3.1-Tulu-3-8B"),
+        note="Tulu 3; publisher revision 666943798adbde0b1aff34626007e26986a3c107 (70B cfc1d855, 405B eac9accd: "
+             "the same template)",
+        tokenizer=("Llama-3.1-Tulu-3-8B-tokenizer.gguf",)),
+    "tulu3-olmo2": Family(
+        "zephyr", ("hf", "allenai/OLMo-2-0325-32B-Instruct"),
+        note="OLMo 2 Instruct 32B, Tulu 3's template; publisher revision 6be039a1d9a088cf7f1b835cf1f570d0eac956f8",
+        tokenizer=("OLMo-2-0325-32B-Instruct-tokenizer.gguf",)),
     "olmo3": Family(
         "olmo3", ("hf", "allenai/Olmo-3-7B-Think"),
         note="OLMo 3 Think native fields; publisher revision d97e442d",
