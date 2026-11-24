@@ -12933,6 +12933,12 @@ struct gpu_ink2 {
     // core must refuse a short buffer, F3). n_devform: the seam's calls (block, expert body, message steps)
     int test_devform;
     long n_devform[3];
+    // D1d.3a: the expert body's BOUNDED kernels (kernels.cu's *_n twins: the live counts read on the device, no count
+    // back to the host), for the types Inkling's stacks use (BF16, NVFP4); test_bounded (TEST-ONLY,
+    // gpu_ink2_test_bounded) puts the host form on them; n_body_readback: the sized body's count readbacks so far
+    CUfunction mvseg_n[KT_N], mvsegb_nvfp4_n, f_gather_n, f_swiglu_n;
+    int test_bounded;
+    long n_body_readback;
     // G2b step 2a, the attention core: the chunk's queries, bias bank, sinks, positions and output (the K/V go
     // straight into the instance's ring, gpu_ink2_kv)
     // (the decode fix) the core as two kernels, k_ink2_attn_logits then k_ink2_attn, over the stored logits alg; the
@@ -12990,6 +12996,14 @@ gpu_ink2 *gpu_ink2_bind(void) {
                                            "k_ink2_conv_store", "k_ink2_add", "k_ink2_softcap" };
         CUfunction *f[6] = { &h->f_rms, &h->f_dattn, &h->f_sconv, &h->f_cstore, &h->f_add, &h->f_softcap };
         for (int k = 0; k < 6; k++) if (cu.ModuleGetFunction(f[k], h->mod, nm[k]) != 0) *f[k] = NULL;
+    }
+    {   // D1d.3a: the bounded twins (absent: the bounded body refuses)
+        const struct { CUfunction *f; const char *name; } bn[] = {
+            { &h->mvseg_n[T_BF16], "k_mvseg_bf16_n" }, { &h->mvseg_n[T_NVFP4], "k_mvseg_nvfp4_n" },
+            { &h->mvsegb_nvfp4_n, "k_mvsegb_nvfp4_n" }, { &h->f_gather_n, "k_ink2_gather_n" },
+            { &h->f_swiglu_n, "k_ink2_swiglu_n" } };
+        for (size_t k = 0; k < sizeof bn / sizeof *bn; k++)
+            if (cu.ModuleGetFunction(bn[k].f, h->mod, bn[k].name) != 0) *bn[k].f = NULL;
     }
     {
         const char *df = getenv("RUNNER_INKLING2_CUDA_TEST_DEVFORM");
@@ -13143,6 +13157,24 @@ static bool ink2_mvseg(gpu_ink2 *h, int type, CUdeviceptr w, int n_in, int n_out
     }
     return ok;
 }
+// D1d.3a: ink2_mvseg BOUNDED (k_mvseg_*_n): launched over nb columns from the first, the live ones [*jsd, *jed) read
+// on the device (jsd 0: from column 0); the same per-column launch shape and arithmetic
+static bool ink2_mvseg_n(gpu_ink2 *h, int type, CUdeviceptr w, int n_in, int n_out, int nb, CUdeviceptr x, int xcs,
+                         CUdeviceptr y, int ycs, CUdeviceptr d_ex, uint64_t w_es, CUdeviceptr esc, CUdeviceptr jsd,
+                         CUdeviceptr jed) {
+    if ((type != T_BF16 && type != T_NVFP4) || !h->mvseg_n[type]) return false;
+    const unsigned rpb = type == T_NVFP4 ? 8 : 4, block = type == T_NVFP4 ? 256 : 128;
+    mv_args a = { n_in, n_out, 0, 0, 1, n_in, n_out };
+    bool ok = true;
+    for (int j0 = 0; ok && j0 < nb; j0 += 65535) {
+        const unsigned g = (unsigned)(nb - j0 < 65535 ? nb - j0 : 65535);
+        void *pn[] = { &w, &x, &y, &a, &x, &d_ex, &w_es, &xcs, &ycs, &j0, &esc, &jsd, &jed };   // NVFP4: esc
+        void *pb[] = { &w, &x, &y, &a, &x, &d_ex, &w_es, &xcs, &ycs, &j0, &jsd, &jed };         // BF16: none
+        ok = cu.LaunchKernel(h->mvseg_n[type], ((unsigned)n_out + rpb - 1) / rpb, g, 1, block, 1, 1, 0, NULL,
+                             type == T_NVFP4 ? pn : pb, NULL) == 0;
+    }
+    return ok;
+}
 // P1b: a segmented product over ntile tiles (tile {first column, count <= 16, expert}) by k_mvsegb_nvfp4 (8 rows a
 // 256-thread block, esc the experts' factors or 0); x carries INK2_XPAD columns of padding past its last. Only NVFP4
 // stacks tile: a BF16 tile (P1a's k_mvsegb_bf16) measured 1.06x the per-column segmented launch and was removed.
@@ -13162,6 +13194,20 @@ static bool ink2_mvsegb(gpu_ink2 *h, int type, CUdeviceptr w, int n_in, int n_ou
     }
     return ok;
 }
+// D1d.3a: ink2_mvsegb BOUNDED (k_mvsegb_nvfp4_n): launched over ntb tiles (the tile bound), the live ones below *knd
+static bool ink2_mvsegb_n(gpu_ink2 *h, int type, CUdeviceptr w, int n_in, int n_out, int ntb, CUdeviceptr x, int xcs,
+                          CUdeviceptr y, int ycs, CUdeviceptr d_tiles, uint64_t w_es, CUdeviceptr esc, CUdeviceptr knd) {
+    if (type != T_NVFP4 || !h->mvsegb_nvfp4_n) return false;
+    const unsigned rpb = 8, block = 256;
+    mv_args a = { n_in, n_out, 0, 0, 1, n_in, n_out };
+    bool ok = true;
+    for (int k0 = 0; ok && k0 < ntb; k0 += 65535) {
+        const unsigned g = (unsigned)(ntb - k0 < 65535 ? ntb - k0 : 65535);
+        void *p[] = { &w, &x, &y, &a, &x, &d_tiles, &w_es, &xcs, &ycs, &k0, &esc, &knd };
+        ok = cu.LaunchKernel(h->mvsegb_nvfp4_n, ((unsigned)n_out + rpb - 1) / rpb, g, 1, block, 1, 1, 0, NULL, p, NULL) == 0;
+    }
+    return ok;
+}
 // D2, the fused expert body: the columns are the (expert, position) pairs expert-major (idx, off, wv as the caller
 // built them); five launches whatever the experts: gather, segmented gate_up, SwiGLU, segmented down, and the weighted
 // sum per position over its columns in ascending expert order (k_moe_scatter_pos). P1b: with an NVFP4 stack the
@@ -13171,7 +13217,7 @@ static bool ink2_mvsegb(gpu_ink2 *h, int type, CUdeviceptr w, int n_in, int n_ou
 static bool ink2_experts_launch(gpu_ink2 *h, int i13, int i2, int type13, int type2, size_t rb13, size_t rb2, int H,
                                 int F, int E, int T, int nall, int ntile, int nbig, CUdeviceptr d_idx, CUdeviceptr d_ex,
                                 CUdeviceptr d_po, CUdeviceptr d_pl, CUdeviceptr d_tl, CUdeviceptr esc13, CUdeviceptr esc2,
-                                float gate_cap, float up_cap, CUdeviceptr dx, CUdeviceptr dout);
+                                float gate_cap, float up_cap, CUdeviceptr dx, CUdeviceptr dout, CUdeviceptr dcnt);
 static bool ink2_experts_fused(gpu_ink2 *h, int i13, int i2, int type13, int type2, size_t rb13, size_t rb2, int H,
                                int F, int E, int T, const float *x, const int *idx, const int *off, const float *wv,
                                int nall, const float *s13, const float *s2, float gate_cap, float up_cap, float *out) {
@@ -13229,7 +13275,7 @@ static bool ink2_experts_fused(gpu_ink2 *h, int i13, int i2, int type13, int typ
     const CUdeviceptr d_po = h->eint + fi * 2 * (size_t)nall, d_pl = d_po + fi * ((size_t)T + 1);
     ok = ok && ink2_experts_launch(h, i13, i2, type13, type2, rb13, rb2, H, F, E, T, nall, ntile, tiled ? nbig : 0,
                                    h->eint, h->eint + fi * (size_t)nall, d_po, d_pl, d_pl + fi * (size_t)nall,
-                                   s13 ? h->esc : 0, s2 ? h->esc + fb * (size_t)E : 0, gate_cap, up_cap, dx, dout) &&
+                                   s13 ? h->esc : 0, s2 ? h->esc + fb * (size_t)E : 0, gate_cap, up_cap, dx, dout, 0) &&
          cu.MemcpyDtoH(out, dout, fb * TH) == 0;   // the null stream: after every launch above
     ink2_scratch_free(sc, 2);
     pthread_mutex_unlock(&h->mu);
@@ -13243,10 +13289,46 @@ static bool ink2_experts_fused(gpu_ink2 *h, int i13, int i2, int type13, int typ
 static bool ink2_experts_launch(gpu_ink2 *h, int i13, int i2, int type13, int type2, size_t rb13, size_t rb2, int H,
                                 int F, int E, int T, int nall, int ntile, int nbig, CUdeviceptr d_idx, CUdeviceptr d_ex,
                                 CUdeviceptr d_po, CUdeviceptr d_pl, CUdeviceptr d_tl, CUdeviceptr esc13, CUdeviceptr esc2,
-                                float gate_cap, float up_cap, CUdeviceptr dx, CUdeviceptr dout) {
+                                float gate_cap, float up_cap, CUdeviceptr dx, CUdeviceptr dout, CUdeviceptr dcnt) {
     (void)E;
     const size_t fb = sizeof(float), fi = sizeof(int);
     bool ok = true;
+    if (dcnt) {
+        // D1d.3a, BOUNDED (dcnt: the device header {nall, ntile, nbig} the router's tables kernel wrote): nall here is
+        // the column bound (NC), ntile the tile bound (0: no tiled launch), nbig nonzero when the tables are tiled.
+        // Every launch is sized by its bound and its kernel reads the live count on the device: no host decision.
+        CUdeviceptr dn = dcnt, dnt = dcnt + fi, dnb = dcnt + 2 * fi;   // (not const: launch arguments)
+        const bool t13 = nbig && ink2_segb_fn(h, type13), t2 = nbig && ink2_segb_fn(h, type2);
+        if (!h->f_gather_n || !h->f_swiglu_n || nall <= 0) return false;
+        int nh = H, ss = H, ds = H, f2 = 2 * F, nf = F;
+        for (int j0 = 0; ok && j0 < nall; j0 += 65535) {
+            const unsigned g = (unsigned)(nall - j0 < 65535 ? nall - j0 : 65535);
+            CUdeviceptr dst = h->exe + fb * (size_t)j0 * H, di = d_idx + fi * (size_t)j0;
+            void *pg[] = { &dst, &dx, &di, &nh, &ss, &ds, &j0, &dn };
+            ok = cu.LaunchKernel(h->f_gather_n, ((unsigned)H + 255) / 256, g, 1, 256, 1, 1, 0, NULL, pg, NULL) == 0;
+        }
+        ok = ok && (!t13 || !ntile || ink2_mvsegb_n(h, type13, h->t[i13].rows, H, 2 * F, ntile, h->exe, H, h->eact,
+                                                     2 * F, d_tl, (uint64_t)2 * F * rb13, esc13, dnt));
+        ok = ok && ink2_mvseg_n(h, type13, h->t[i13].rows, H, 2 * F, nall, h->exe, H, h->eact, 2 * F, d_ex,
+                                (uint64_t)2 * F * rb13, esc13, t13 ? dnb : 0, dn);
+        for (int j0 = 0; ok && j0 < nall; j0 += 65535) {
+            const unsigned g = (unsigned)(nall - j0 < 65535 ? nall - j0 : 65535);
+            CUdeviceptr act = h->eact + fb * (size_t)j0 * 2 * F;
+            void *ps[] = { &act, &nf, &f2, &gate_cap, &up_cap, &j0, &dn };
+            ok = cu.LaunchKernel(h->f_swiglu_n, ((unsigned)F + 255) / 256, g, 1, 256, 1, 1, 0, NULL, ps, NULL) == 0;
+        }
+        ok = ok && (!t2 || !ntile || ink2_mvsegb_n(h, type2, h->t[i2].rows, F, H, ntile, h->eact, 2 * F, h->edn, H,
+                                                    d_tl, (uint64_t)H * rb2, esc2, dnt));
+        ok = ok && ink2_mvseg_n(h, type2, h->t[i2].rows, F, H, nall, h->eact, 2 * F, h->edn, H, d_ex,
+                                (uint64_t)H * rb2, esc2, t2 ? dnb : 0, dn);
+        for (int p0 = 0; ok && p0 < T; p0 += 65535) {   // the weighted sum: per position, its lists on the device already
+            const unsigned g = (unsigned)(T - p0 < 65535 ? T - p0 : 65535);
+            CUdeviceptr o = dout + fb * (size_t)p0 * H, po = d_po + fi * (size_t)p0;
+            void *pa[] = { &o, &h->edn, &po, &d_pl, &h->ew, &nh, &ss, &ds };
+            ok = cu.LaunchKernel(h->f_scatter_pos, ((unsigned)H + 255) / 256, g, 1, 256, 1, 1, 0, NULL, pa, NULL) == 0;
+        }
+        return ok;
+    }
     const int jb13 = nbig && ink2_segb_fn(h, type13) ? nbig : 0, jb2 = nbig && ink2_segb_fn(h, type2) ? nbig : 0;
     int nh = H, ss = H, ds = H, f2 = 2 * F, nf = F;
     for (int j0 = 0; ok && j0 < nall; j0 += 65535) {   // the gather: column j = x[idx[j]]
@@ -13289,6 +13371,39 @@ void gpu_ink2_test_mv_ref(gpu_ink2 *h, int on) {
     pthread_mutex_lock(&h->mu);
     h->mv_ref = on;
     pthread_mutex_unlock(&h->mu);
+}
+// TEST-ONLY (gpu.h, D1d.3a): the device-routed expert body on its bounded launches (on) or its sized ones (off, the
+// default), and the sized body's count readbacks so far
+void gpu_ink2_test_bounded(gpu_ink2 *h, int on) {
+    if (!h) return;
+    pthread_mutex_lock(&h->mu);
+    h->test_bounded = on;
+    pthread_mutex_unlock(&h->mu);
+}
+// TEST-ONLY (D1d.3a): poison the expert body's scratch: the gathered x, the activations and the down products all
+// 0xFF bytes (NaN), the int tables all 1 (a stray tile reads {column 1, count 1, expert 1}), so a launch the body skips
+// or cuts short, or one that reads past its live count, shows in the rows instead of reusing an earlier call's values
+bool gpu_ink2_test_poison_body(gpu_ink2 *h) {
+    if (!h) return false;
+    pthread_mutex_lock(&h->mu);
+    bool ok = cu.CtxSetCurrent(h->ctx) == 0 && (!h->exe || cu.MemsetD8(h->exe, 0xFF, h->exe_cap) == 0) &&
+              (!h->eact || cu.MemsetD8(h->eact, 0xFF, h->eact_cap) == 0) && (!h->edn || cu.MemsetD8(h->edn, 0xFF, h->edn_cap) == 0);
+    if (ok && h->eint && h->eint_cap) {
+        const size_t n = h->eint_cap / sizeof(int);
+        int *ones = malloc(sizeof(int) * n);
+        for (size_t i = 0; ones && i < n; i++) ones[i] = 1;
+        ok = ones && cu.MemcpyHtoD(h->eint, ones, sizeof(int) * n) == 0;
+        free(ones);
+    }
+    pthread_mutex_unlock(&h->mu);
+    return ok;
+}
+long gpu_ink2_test_body_readbacks(gpu_ink2 *h) {
+    if (!h) return -1;
+    pthread_mutex_lock(&h->mu);
+    const long n = h->n_body_readback;
+    pthread_mutex_unlock(&h->mu);
+    return n;
 }
 // TEST-ONLY (gpu.h, D1d.2b): the device-form seam's level on this handle (0 off) and its calls so far
 int gpu_ink2_test_devform(gpu_ink2 *h, long calls[3]) {
@@ -13424,7 +13539,7 @@ bool gpu_ink2_route_ok(const gpu_ink2 *h) { return h && h->f_rscores && h->f_rto
 static bool ink2_route_experts_core(gpu_ink2 *h, int ir, float scale, int K, int i13, int i2, int type13, int type2,
                                     size_t rb13, size_t rb2, int H, int F, int E, int T, CUdeviceptr dx, CUdeviceptr dbr,
                                     CUdeviceptr d13, CUdeviceptr d2, float gate_cap, float up_cap, bool want_mg,
-                                    CUdeviceptr dout) {
+                                    CUdeviceptr dout, bool bounded) {
     const size_t fb = sizeof(float), fi = sizeof(int), NC = (size_t)T * K, te = (size_t)T * E;
     const size_t ni = 3 * NC + (size_t)T + 1 + 3 * (NC / 16 + (size_t)E);
     if (!dx || !dbr || !dout || h->rsc_cap < fb * te || h->rwt_cap < fb * te || h->rch_cap < te ||
@@ -13440,12 +13555,22 @@ static bool ink2_route_experts_core(gpu_ink2 *h, int ir, float scale, int K, int
     CUdeviceptr cnt = h->rsm, offp = h->rsm + fi * (size_t)E, toff = h->rsm + fi * 2 * (size_t)E, hdr = h->rsm + fi * 3 * (size_t)E;
     void *pb[] = { &h->rch, &h->rwt, &h->rpc, &h->eint, &h->ew, &cnt, &offp, &toff, &hdr, &h->rcol, &e_, &t_, &k_, &tl_, &mvb };
     ok = ok && cu.LaunchKernel(h->f_rtables, 1, 1, 1, 256, 1, 1, 0, NULL, pb, NULL) == 0;
+    const CUdeviceptr d_po = h->eint + fi * 2 * NC, d_pl = d_po + fi * ((size_t)T + 1);
+    if (bounded) {
+        // D1d.3a: no count back to the host. The bounds: NC columns, and the tile bound NC / 16 + E only when the
+        // tables can tile (tiled, and T >= INK2_MVB_MIN: below it no expert reaches a tile's minimum, a fact of the
+        // shape, not of the data)
+        const int tb = tiled && T >= INK2_MVB_MIN ? (int)(NC / 16 + (size_t)E) : 0;
+        return ok && ink2_experts_launch(h, i13, i2, type13, type2, rb13, rb2, H, F, E, T, (int)NC, tb, tiled,
+                                         h->eint, h->eint + fi * NC, d_po, d_pl, d_pl + fi * NC, d13, d2, gate_cap,
+                                         up_cap, dx, dout, hdr);
+    }
     int hd[3] = { 0, 0, 0 };
     ok = ok && cu.MemcpyDtoH(hd, hdr, sizeof hd) == 0;   // the counts that size the launches (the one sync before them)
-    const CUdeviceptr d_po = h->eint + fi * 2 * NC, d_pl = d_po + fi * ((size_t)T + 1);
+    h->n_body_readback++;
     return ok && hd[0] >= 0 && (size_t)hd[0] <= NC &&
            ink2_experts_launch(h, i13, i2, type13, type2, rb13, rb2, H, F, E, T, hd[0], hd[1], hd[2], h->eint,
-                               h->eint + fi * NC, d_po, d_pl, d_pl + fi * NC, d13, d2, gate_cap, up_cap, dx, dout);
+                               h->eint + fi * NC, d_po, d_pl, d_pl + fi * NC, d13, d2, gate_cap, up_cap, dx, dout, 0);
 }
 // D1b (gpu.h): the router on the device, then the expert body from its choices, one call
 bool gpu_ink2_route_experts(gpu_ink2 *h, int ir, const float *br, float scale, int K, int i13, int i2, int type13,
@@ -13479,7 +13604,7 @@ bool gpu_ink2_route_experts(gpu_ink2 *h, int ir, const float *br, float scale, i
     if (h->test_devform == 3) h->exe_cap = 0;   // TEST-ONLY: the core sees a short scratch
     ok = ok && ink2_route_experts_core(h, ir, scale, K, i13, i2, type13, type2, rb13, rb2, H, F, E, T, dx, h->rbr,
                                        s13 ? h->esc : 0, s2 ? h->esc + fb * (size_t)E : 0, gate_cap, up_cap,
-                                       margin_out != NULL, dout);
+                                       margin_out != NULL, dout, h->test_bounded != 0);
     h->exe_cap = keep;
     ok = ok && cu.MemcpyDtoH(out, dout, fb * TH) == 0 &&   // the null stream: after every launch above
          (!chosen_out || cu.MemcpyDtoH(chosen_out, h->rch, (size_t)T * E) == 0) &&

@@ -823,6 +823,14 @@ long       gpu_ink2_test_stats(gpu_ink2 *h, size_t caps[5]);
 // with it; =2 / 3 / 4 also show the block's / the body's / the message steps' core a short buffer, which it must
 // refuse. Returns the level (0 off, -1 no handle); calls[0..2] the seam's calls so far (block, body, message steps).
 int        gpu_ink2_test_devform(gpu_ink2 *h, long calls[3]);
+// TEST-ONLY (D1d.3a): put gpu_ink2_route_experts' body on its BOUNDED launches (on: every launch sized by its bound,
+// the live counts read on the device, no count back to the host) or the sized ones (off, the default); and the sized
+// body's count readbacks so far (-1 no handle)
+void       gpu_ink2_test_bounded(gpu_ink2 *h, int on);
+long       gpu_ink2_test_body_readbacks(gpu_ink2 *h);
+// TEST-ONLY (D1d.3a): poison the expert body's scratch (its float buffers NaN, its int tables 1) between two calls, so
+// the second cannot reuse the first's values
+bool       gpu_ink2_test_poison_body(gpu_ink2 *h);
 void       gpu_ink2_release_experts(gpu_ink2 *h);   // those buffers freed (a fit retried without the expert body)
 // G2b step 2a: an instance's K/V on the device, one ring per application (row j % rows[a] holds position j's C
 // values), owned by the instance (the weights' handle may be shared); and the attention core over it: the chunk's

@@ -352,6 +352,81 @@ done:
     free(w13); free(w2); free(x); free(o1); free(o2); free(wt); free(s13); free(s2); free(ch);
     return diff;
 }
+// D1d.3a (ai): the device-routed expert body (gpu_ink2_route_experts: the device router, its tables, the body) on its
+// SIZED launches (the counts read back to the host) and on its BOUNDED ones (gpu_ink2_test_bounded: each launch sized
+// by its bound, the live counts read on the device), same inputs, one handle: the rows, the choices and the margins
+// compared bit for bit; *rb_sized / *rb_bounded the body's count readbacks each call made (want 1 / 0); *ntiled the
+// experts with 16+ columns (the tiled launches live). Returns the differing values, -1 if a call failed.
+static long body_bounded_identity(int type, int H, int F, int E, int K, int T, long *nval, long *rb_sized, long *rb_bounded,
+                           int *ntiled) {
+    const size_t rb13 = type == T_NVFP4 ? (size_t)H / 64 * 36 : (size_t)H * 2, rb2 = type == T_NVFP4 ? (size_t)F / 64 * 36 : (size_t)F * 2;
+    unsigned char *w13 = malloc((size_t)E * 2 * F * rb13), *w2 = malloc((size_t)E * H * rb2);
+    float *wr = malloc(sizeof(float) * (size_t)E * H), *br = malloc(sizeof(float) * (size_t)E);
+    float *x = malloc(sizeof(float) * (size_t)T * H), *o1 = malloc(sizeof(float) * (size_t)T * H);
+    float *o2 = malloc(sizeof(float) * (size_t)T * H), *m1 = malloc(sizeof(float) * (size_t)T), *m2 = malloc(sizeof(float) * (size_t)T);
+    float *s13 = malloc(sizeof(float) * (size_t)E), *s2 = malloc(sizeof(float) * (size_t)E);
+    unsigned char *c1 = malloc((size_t)T * E), *c2 = malloc((size_t)T * E);
+    long diff = -1;
+    *nval = 0; *rb_sized = *rb_bounded = -1; *ntiled = 0;
+    if (!w13 || !w2 || !wr || !br || !x || !o1 || !o2 || !m1 || !m2 || !s13 || !s2 || !c1 || !c2) goto done;
+    uint32_t seed = 4441u + (uint32_t)type * 7u + (uint32_t)T * 13u + (uint32_t)E;
+#define RNDU() (seed = seed * 1664525u + 1013904223u, seed >> 8)
+#define RNDF() ((float)((int)(RNDU() % 2001u) - 1000) / 1000.0f)
+    if (type == T_NVFP4) {
+        for (size_t i = 0; i < (size_t)E * 2 * F * rb13; i++) w13[i] = (unsigned char)RNDU();
+        for (size_t i = 0; i < (size_t)E * H * rb2; i++) w2[i] = (unsigned char)RNDU();
+        for (size_t r = 0; r < (size_t)E * 2 * F; r++)   // scale bytes in a sane range (no NaN code 0x7F)
+            for (size_t b = 0; b < rb13; b += 36) for (int k = 0; k < 4; k++) w13[r * rb13 + b + k] = (unsigned char)(0x30 + RNDU() % 16);
+        for (size_t r = 0; r < (size_t)E * H; r++)
+            for (size_t b = 0; b < rb2; b += 36) for (int k = 0; k < 4; k++) w2[r * rb2 + b + k] = (unsigned char)(0x30 + RNDU() % 16);
+    } else {
+        for (size_t i = 0; i < (size_t)E * 2 * F * (size_t)H; i++) { const float f = 0.05f * RNDF(); uint32_t u; memcpy(&u, &f, 4); ((uint16_t *)w13)[i] = (uint16_t)(u >> 16); }
+        for (size_t i = 0; i < (size_t)E * H * (size_t)F; i++) { const float f = 0.05f * RNDF(); uint32_t u; memcpy(&u, &f, 4); ((uint16_t *)w2)[i] = (uint16_t)(u >> 16); }
+    }
+    for (size_t i = 0; i < (size_t)E * H; i++) wr[i] = 0.05f * RNDF();
+    for (int e = 0; e < E; e++) { br[e] = 0.01f * RNDF(); s13[e] = 0.5f + 0.25f * (float)(e % 5); s2[e] = 1.5f - 0.125f * (float)(e % 7); }
+    for (size_t i = 0; i < (size_t)T * H; i++) x[i] = RNDF();
+    for (int e = 0; e < 2 && e < E; e++) br[e] = 5.0f;   // two experts chosen everywhere (the bias picks): at T >= 16
+                                                         // they reach a tile's 16 columns
+#undef RNDU
+#undef RNDF
+    {
+        gpu_ink2 *h = gpu_ink2_bind();
+        const float *f13 = type == T_NVFP4 ? s13 : NULL, *f2 = type == T_NVFP4 ? s2 : NULL;
+        const int i13 = h ? gpu_ink2_put(h, w13, (size_t)E * 2 * F * rb13, f13, f13 ? E : 0) : -1;
+        const int i2 = h ? gpu_ink2_put(h, w2, (size_t)E * H * rb2, f2, f2 ? E : 0) : -1;
+        const int ir = h ? gpu_ink2_put(h, wr, sizeof(float) * (size_t)E * H, NULL, 0) : -1;
+        const long r0 = gpu_ink2_test_body_readbacks(h);
+        bool ran = i13 >= 0 && i2 >= 0 && ir >= 0 &&
+                   gpu_ink2_route_experts(h, ir, br, 2.5f, K, i13, i2, type, type, rb13, rb2, H, F, E, T, x, f13, f2,
+                                          4.0f, 8.0f, o1, c1, m1);
+        const long r1 = gpu_ink2_test_body_readbacks(h);
+        ran = ran && gpu_ink2_test_poison_body(h);   // the second call cannot reuse the first's scratch
+        gpu_ink2_test_bounded(h, 1);
+        ran = ran && gpu_ink2_route_experts(h, ir, br, 2.5f, K, i13, i2, type, type, rb13, rb2, H, F, E, T, x, f13, f2,
+                                            4.0f, 8.0f, o2, c2, m2);
+        gpu_ink2_test_bounded(h, 0);
+        const long r2 = gpu_ink2_test_body_readbacks(h);
+        *rb_sized = r1 - r0; *rb_bounded = r2 - r1;
+        if (ran) {
+            diff = 0;
+            for (size_t i = 0; i < (size_t)T * H; i++) { uint32_t a, b; memcpy(&a, o1 + i, 4); memcpy(&b, o2 + i, 4); diff += a != b; }
+            for (size_t i = 0; i < (size_t)T; i++) { uint32_t a, b; memcpy(&a, m1 + i, 4); memcpy(&b, m2 + i, 4); diff += a != b; }
+            for (size_t i = 0; i < (size_t)T * E; i++) diff += c1[i] != c2[i];
+            *nval = (long)T * H + T + (long)T * E;
+            for (int e = 0; e < E; e++) {
+                int n = 0;
+                for (int t = 0; t < T; t++) n += c1[(size_t)t * E + e] != 0;
+                *ntiled += n >= 16;
+            }
+        }
+        gpu_ink2_free(h);
+    }
+done:
+    free(w13); free(w2); free(wr); free(br); free(x); free(o1); free(o2); free(m1); free(m2); free(s13); free(s2);
+    free(c1); free(c2);
+    return diff;
+}
 
 // P1a/P1b (i2): a BF16 or NVFP4 product through gpu_ink2_lin at T columns, batched (k_mv_bf16_b / k_mv_nvfp4_b from 16
 // columns) against every column its own batch-1 launch (TEST-ONLY gpu_ink2_test_mv_ref), bit for bit; random weights
@@ -1614,6 +1689,28 @@ int main(int argc, char **argv) {
             const long d = exp_identity(xc[k].type, xc[k].H, xc[k].F, xc[k].E, xc[k].T, xc[k].used, xc[k].all, xc[k].none, &nv);
             CHECK(d == 0 && nv > 0, "(k) the fused expert body, %s: %ld of %ld values differ in their bits from the former "
                   "per-expert launches' (want 0)", xc[k].what, d, nv);
+        }
+    }
+    // D1d.3a (ai), ruling (i)'s red-first bar: the device-routed body's BOUNDED launches byte-identical to its SIZED
+    // ones at T = 1, 17 and 64 (rows, choices, margins), NVFP4 and BF16, at the real widths and at Inkling's 128
+    // experts; the bounded call reads no count back to the host (0 readbacks), the sized one reads one; at T 64 the
+    // NVFP4 case's tiled launches are live (experts with 16+ columns)
+    {
+        static const struct { int type, H, F, E, K, T; } rc[] = {
+            { T_NVFP4, 2304, 1152, 16, 8, 1 }, { T_NVFP4, 2304, 1152, 16, 8, 17 }, { T_NVFP4, 2304, 1152, 16, 8, 64 },
+            { T_BF16, 2304, 1152, 16, 8, 1 }, { T_BF16, 2304, 1152, 16, 8, 17 }, { T_BF16, 2304, 1152, 16, 8, 64 },
+            { T_NVFP4, 256, 128, 128, 8, 1 }, { T_NVFP4, 256, 128, 128, 8, 17 }, { T_NVFP4, 256, 128, 128, 8, 64 },
+        };
+        for (size_t k = 0; k < sizeof rc / sizeof *rc; k++) {
+            long nv = 0, rs = -1, rbd = -1;
+            int nt = 0;
+            const long d = body_bounded_identity(rc[k].type, rc[k].H, rc[k].F, rc[k].E, rc[k].K, rc[k].T, &nv, &rs, &rbd, &nt);
+            const bool tiles = rc[k].type == T_NVFP4 && rc[k].T == 64 && rc[k].E == 16;
+            CHECK(d == 0 && nv > 0 && rs == 1 && rbd == 0 && (!tiles || nt > 0),
+                  "(ai) the bounded expert body, %s H %d E %d K %d at T %d: %ld of %ld values differ from the sized "
+                  "launches' (want 0); count readbacks sized %ld / bounded %ld (want 1 / 0); experts tiled %d%s",
+                  rc[k].type == T_NVFP4 ? "NVFP4" : "BF16", rc[k].H, rc[k].E, rc[k].K, rc[k].T, d, nv, rs, rbd, nt,
+                  tiles ? " (want > 0)" : "");
         }
     }
     // G2b 2a (n): gpu_ink2_attn against float64 on the host, by core_case below. Bar fixed before the run: 1e-4 of the

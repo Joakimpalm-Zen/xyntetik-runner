@@ -6179,6 +6179,9 @@ void gpu_ink2_test_experts_ref(gpu_ink2 *h, int on) { (void)h; (void)on; }
 void gpu_ink2_test_mv_ref(gpu_ink2 *h, int on) { (void)h; (void)on; }
 long gpu_ink2_test_stats(gpu_ink2 *h, size_t caps[5]) { (void)h; (void)caps; return -1; }
 int gpu_ink2_test_devform(gpu_ink2 *h, long calls[3]) { (void)h; (void)calls; return -1; }
+void gpu_ink2_test_bounded(gpu_ink2 *h, int on) { (void)h; (void)on; }
+long gpu_ink2_test_body_readbacks(gpu_ink2 *h) { (void)h; return -1; }
+bool gpu_ink2_test_poison_body(gpu_ink2 *h) { (void)h; return false; }
 bool gpu_ink2_msg_steps(gpu_ink2 *h, int n_roles, int T, int H, int r, float eps, const gpu_ink2_msg_role *roles,
                         const float *const *xs, const float *const *ms, size_t ms_stride, float *const *outs) {
     (void)h; (void)n_roles; (void)T; (void)H; (void)r; (void)eps; (void)roles; (void)xs; (void)ms; (void)ms_stride; (void)outs;

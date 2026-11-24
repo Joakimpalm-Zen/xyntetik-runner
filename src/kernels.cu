@@ -5655,6 +5655,80 @@ extern "C" __global__ void k_mvseg_nvfp4(MVSEG_PARAMS, const float *esc) {
         if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
     }
 }
+// R4.48.9 D1d.3a, the expert body's BOUNDED launches (the resident step's: no count read back to the host). Each
+// kernel below is its sized twin above, VERBATIM after its first lines, which read the launch's live range from device
+// memory and exit past it: a launch is sized by the bound (NC = T x K columns, the tile bound), the router's tables
+// kernel writes the live counts (nall, ntile, nbig) to device memory, and a block past them returns before any
+// read or write (whole blocks, before any __syncthreads). jsd: the first column (the tiled columns' count nbig, or NULL
+// for 0), jed: one past the last (nall). The sized kernels are left untouched, so their PTX does not move.
+extern "C" __global__ void k_mvseg_bf16_n(MVSEG_PARAMS, const int *jsd, const int *jed) {
+    j0 += jsd ? jsd[0] : 0;
+    if (j0 + (int)blockIdx.y >= jed[0]) return;
+    MVSEG_HEAD;
+    MV_HEAD;
+    const unsigned short *rw =
+        (const unsigned short *)(wb + a.w_off) + (ulong64)row * a.n_in;
+    float s = 0;
+    for (int i = lane; i < a.n_in; i += 32) s += bf16f(rw[i]) * x[i];
+    MV_TAIL;
+}
+extern "C" __global__ void k_mvseg_nvfp4_n(MVSEG_PARAMS, const float *esc, const int *jsd, const int *jed) {
+    j0 += jsd ? jsd[0] : 0;
+    if (j0 + (int)blockIdx.y >= jed[0]) return;
+    MVSEG_HEAD;
+    const float scale = esc ? esc[ex[j0 + (int)blockIdx.y]] : 1.0f;
+    __shared__ float kv[16];
+    if (threadIdx.x < 16) kv[threadIdx.x] = kv_mxfp4[threadIdx.x];
+    LANE_DENSE_HEAD(64)
+    int nb = a.n_in / 64;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 36;
+    float s = 0;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 64)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (64 + 1);
+            const uchar *blk = rw + (ulong64)b * 36;
+            for (int sub = 0; sub < 4; sub++) {
+                float d = ue4m3f(blk[sub]);
+                const uchar *q = blk + 4 + sub * 8;
+                const float *xp = xs_ + sub * 16;
+                float t = 0;
+                for (int j = 0; j < 8; j++) {
+                    t += kv[q[j] & 0xF] * xp[j];
+                    t += kv[q[j] >> 4]  * xp[j + 8];
+                }
+                s += d * t;
+            }
+        }
+        __syncthreads();
+    }
+    if (live) {
+        s = warp_sum(s) * scale;
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
+}
+// k_moe_gather / k_ink2_swiglu bounded the same way: column j0 + blockIdx.y, live while below jed[0] (nall)
+extern "C" __global__ void k_ink2_gather_n(float *dst, const float *src, const int *idx, int n, int ss, int ds, int j0,
+                                           const int *jed) {
+    if (j0 + (int)blockIdx.y >= jed[0]) return;
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    dst[(ulong64)blockIdx.y * ds + i] = src[(ulong64)idx[blockIdx.y] * ss + i];
+}
+extern "C" __global__ void k_ink2_swiglu_n(float *act, int F, int cs, float gc, float uc, int j0, const int *jed) {
+    if (j0 + (int)blockIdx.y >= jed[0]) return;
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j >= F) return;
+    float *a = act + (ulong64)blockIdx.y * cs;
+    const float g = a[j], u = a[F + j];
+    const float sg = tanhf(g / gc) * gc;
+    const float sig = 1.0f / (1.0f + expf(-g));
+    const float su = tanhf(u / uc) * uc;
+    a[j] = sg * sig * su;
+}
 // P1b: the NVFP4 product BATCHED: each decoded weight applied to the tile's 16 columns. k_mv_nvfp4 (left untouched)
 // gives each lane whole 64-element blocks b = lane, lane + 32, ... (rounds of 32 blocks, x staged in shared memory a
 // round at a time, rows of 65 floats) and per block its four 16-element sub-blocks in order: t = sum over j of
@@ -5736,6 +5810,19 @@ extern "C" __global__ void k_mv_nvfp4_b(MV_PARAMS, float scale) {
 // the expert body's segmented twin: tile k = k0 + blockIdx.y of tiles[3 k..] = {first column, count, expert}
 extern "C" __global__ void k_mvsegb_nvfp4(const uchar *wb, const float *x, float *y, mv_args a, const float *bias,
                                           const int *tiles, ka_u64 w_es, int xcs, int ycs, int k0, const float *esc) {
+    const int *tl = tiles + 3 * (k0 + (int)blockIdx.y);
+    a.w_off += (ka_u64)tl[2] * w_es;
+    const float *xt = x + (ulong64)tl[0] * xcs;
+    float *yt = y + (ulong64)tl[0] * ycs;
+    const int cnt = tl[1];
+    const float scale = esc ? esc[tl[2]] : 1.0f;
+    NVFP4_B_BODY(xt, xcs, cnt, yt, ycs, scale)
+}
+// D1d.3a: the same, BOUNDED: launched over the tile bound, tile k0 + blockIdx.y live while below knd[0] (ntile)
+extern "C" __global__ void k_mvsegb_nvfp4_n(const uchar *wb, const float *x, float *y, mv_args a, const float *bias,
+                                            const int *tiles, ka_u64 w_es, int xcs, int ycs, int k0, const float *esc,
+                                            const int *knd) {
+    if (k0 + (int)blockIdx.y >= knd[0]) return;
     const int *tl = tiles + 3 * (k0 + (int)blockIdx.y);
     a.w_off += (ka_u64)tl[2] * w_es;
     const float *xt = x + (ulong64)tl[0] * xcs;
