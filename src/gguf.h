@@ -100,6 +100,10 @@ bool         gguf_open_header(gguf_file *g, const char *path);
 // single file, whose only part is itself). False for an index past the end, an unreadable header, or a
 // split file whose name does not follow <prefix>-NNNNN-of-NNNNN.gguf.
 bool         gguf_split_part_path(const char *path, uint32_t i, char *out, size_t cap, uint32_t *count);
+// R19.17.1: the name a split set goes by whichever part opens it, the first part's path (<prefix>-00001-of-N.gguf),
+// with the set's part count and its bytes (every part's; -1 if a part cannot be read). A single file is itself: 1
+// part, its own size. false: the path's header cannot be read.
+bool         gguf_set_name(const char *path, char *first, size_t cap, uint32_t *n_parts, long long *bytes);
 // Attach a second, independently opened GGUF to `g` as one more mapped part:
 // its tensors join g's directory (a name g already has is skipped, g's copy
 // wins) and its mapping is owned and unmapped by g from then on. `extra`'s

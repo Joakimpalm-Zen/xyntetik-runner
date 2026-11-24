@@ -1275,9 +1275,24 @@ Runner accepts GGUF v2/v3. Safetensors checkpoints must be converted to GGUF
 first. Standard llama.cpp multi-part sets (`<prefix>-00001-of-000NN.gguf`) load
 natively from any part: every part must be present in the same directory, and
 its `split.no`, `split.count`, and `split.tensors.count` metadata must agree.
-Missing or inconsistent parts are refused before model binding. Nonstandard
-filenames and remote/streamed parts are not resolved automatically; merge or
-rename those sets to the standard layout first.
+Missing or inconsistent parts are refused before model binding. A part that
+states a key the first part states too, and contradicts it, is from another set
+and is refused by name (for example another quant of the same model split the
+same way: `split GGUF part 2/3 is from another set: general.file_type 2 against 7
+in part 1`). A part in llama.cpp's standard sparse layout states only the three
+split keys, so nothing in it can tell another set's part: such a part is
+accepted, as llama.cpp accepts it (the format carries no set identity). A split
+set goes by the set's name whichever part opens it, the first part's file name
+(the name the other parts are derived from), wherever the model is named:
+`/v1/models`, the capabilities' `resident`, the discovery record the tray reads,
+`--score`'s `score_route.model` and `--info doctor`'s `model` (each with the
+whole set's bytes), `--bench-json`'s `model`, `--decide`'s `model`, and the
+load line, which names the first part and ends `| a split set of N parts`. Where
+one file is named beside that file's digest, it is the part the model was
+started from, the one hashed: `/v1/runner/provenance`'s `model` and the
+receipts. A single file keeps its own name, also with an `--mtp-file`
+companion attached. Nonstandard filenames and remote/streamed parts are not resolved
+automatically; merge or rename those sets to the standard layout first.
 
 Fetch the small test model with:
 
@@ -3458,7 +3473,7 @@ cannot be combined with `RUNNER_SCORE_CHUNKED`. `paths` reads `micro`.
 The run ends with one line on stderr, `score: route {...}`: the paths its forwards took
 (with counts and widest rows) and the counted kernels, the object `--bench-json` reports as
 `route`. The JSON's last field, `score_route`, carries the part a comparison needs: the
-model file (`file`, `bytes`), the `paths` (`solo`, `keep` or `micro`, each with `forwards` and
+model file (`file`, `bytes`; a split set's first part and the whole set's bytes), the `paths` (`solo`, `keep` or `micro`, each with `forwards` and
 `rows_max`), `backend` and `backend_detail`. A byte comparison of two score files leaves
 `score_route` out (`scripts/score_record.py`), since it differs whenever a route switch is
 on.
@@ -3966,7 +3981,7 @@ engine's listener and security model unchanged.
 | `POST /v1/systemone` | A Clef model's decisions, the Jev/SystemOne body: `model`, `state`, `questions` in; `answers`, `usage` and an `envelope` out ([Clef decisions](#clef-decisions-v1systemone)). Other models get `400`. |
 | `POST /v1/messages` | Anthropic Messages translation. |
 | `POST /v1/messages/count_tokens` | Token count for the matching Messages request. |
-| `GET /v1/models` | Registered models and current residency. Each entry carries `context_window`, the context the server runs at (the resident model's, else the configured `-c`), so a client plans its prompts from the server's figure rather than a default of its own; the field is absent only on a registry that has loaded nothing yet and was given no `-c`. |
+| `GET /v1/models` | Registered models and current residency. A single model's id is its file name (a split set's: the first part's, whichever part was given). Each entry carries `context_window`, the context the server runs at (the resident model's, else the configured `-c`), so a client plans its prompts from the server's figure rather than a default of its own; the field is absent only on a registry that has loaded nothing yet and was given no `-c`. |
 | `GET /v1/capabilities` | The build (`version`, the `--version` string, `math` (`portable` or `libc`), plus `build_flavor` on a T3 build), server process ID, active model, sampling preset, optional Xyntetik agent profile, and the EFFECTIVE execution mode: `slots` (the slot count actually running) and `draft` (`requested`/`active`, the `source` when active: `model`, `mtp` or `lookup`, plus a `reason` when a requested draft was refused). `active` reflects a configured draft in at least one resident slot, including multi-slot serving, and becomes false while the target is unloaded. `mtp.consumed` likewise reflects resident engines using the head; per-request telemetry separately reports whether that request speculated. |
 | `GET /v1/runner/prefix-cache` | Prefix-cache size, limits, and counters. Takes no request body and remains available while inference is active. |
 | `GET /v1/runner/provenance` | What the server can vouch for about itself, in the receipt's vocabulary: `build.binary_sha256` (the executable, hashed at start), `build.commit` and `build.dirty` (the git commit the binary was built from and whether its tracked files differed from it, stamped at build time; both `null` for a build outside git), the resident `model` (`sha256` of the file, hashed in the background when something first needs it: this route, an `expect_resident` digest, or, from the load on, a server with `--record`, `--sessions` or `--kv-snapshots`; a reload of the same unchanged file reuses its digest. `sha256_state` reads `hashing` until it is known, and `changed_since_load` with the digest withheld when the file on disk no longer has the size and timestamps it had at load), the load-time OMS `signature` verdict and `envelope` state, the `adapter` and its digest, the `profile` (device, threads, context, KV type, slots) and the effective `config`. `model` and `profile` are `null` while nothing is resident. Not an attestation: a process can only report on itself. Takes no request body. |

@@ -2656,6 +2656,9 @@ static void send_provenance(sock_t fd) {
     int res = resident_load();
     const char *id = SV.n_reg == 0 ? SV.model_name
                    : res >= 0      ? SV.reg[res].name : NULL;
+    // R19.17.1: the model block names one file beside that file's digest; for a split set, the part it was started
+    // from (the one hashed, as receipts name it), while /v1/models names the set
+    if (id && SV.file_name && (SV.n_reg == 0 || (SV.single && res == 0))) id = SV.file_name;
     const slot_t *s0 = SV.slots ? &SV.slots[0] : NULL;
     const model_t *m = (s0 && (SV.n_reg == 0 || res >= 0)) ? s0->m : NULL;
     sb_lit(&r, "{\"object\":\"runner.provenance\"," BUILD_JSON ",");
@@ -4027,9 +4030,17 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     if (threads_per_slot < 1) threads_per_slot = 1;
     int shared_pool_threads = n_threads;   // the slots' shared pool (see below), for the banner
 
+    // R19.17.1: a split set goes by the set's name (its first part's file) whichever part opened it, so /v1/models
+    // and the capabilities name one model; a single file keeps its own name
+    static char set_first[4096];
+    uint32_t set_parts = 1;
+    const bool is_set = SV.n_reg == 0 && !forced_name &&
+                        gguf_set_name(model_path, set_first, sizeof set_first, &set_parts, NULL) && set_parts > 1;
     SV.model_name = SV.n_reg > 0 ? SV.reg[0].name
                   : forced_name  ? forced_name
+                  : is_set       ? plat_path_base(set_first)
                                  : plat_path_base(model_path);
+    SV.file_name = is_set ? plat_path_base(model_path) : NULL;
     SV.n_predict_cap = 1024;
     SV.reasoning_budget = reasoning_budget;
     SV.reasoning_budget_message = reasoning_budget_message;
