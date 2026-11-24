@@ -4698,6 +4698,10 @@ static pthread_key_t g_tile_key;
 static pthread_once_t g_tile_once = PTHREAD_ONCE_INIT;
 static int g_tile_key_ok = 0;
 static _Atomic long g_tile_live = 0;   // threads holding a scratch (test-only: vec_dot_exact_tile_live)
+static _Atomic int g_tile_fail_next = 0;   // test-only: make the next growth malloc fail
+void vec_dot_exact_tile_fail_next_alloc(int n) {
+    atomic_store_explicit(&g_tile_fail_next, n, memory_order_relaxed);
+}
 static void tile_scratch_free(void *v) {
     tile_scratch *s = v;
     if (s) { free(s->p); free(s); atomic_fetch_sub_explicit(&g_tile_live, 1, memory_order_relaxed); }
@@ -4716,6 +4720,10 @@ static float *tile_scratch_get(size_t n) {
         atomic_fetch_add_explicit(&g_tile_live, 1, memory_order_relaxed);
     }
     if (s->cap < n) {
+        int f = atomic_load_explicit(&g_tile_fail_next, memory_order_relaxed);
+        if (f > 0 && atomic_compare_exchange_strong_explicit(&g_tile_fail_next, &f, f - 1,
+                                                             memory_order_relaxed, memory_order_relaxed))
+            return NULL;
         float *p = malloc(sizeof(float) * n);
         if (!p) return NULL;
         free(s->p);
@@ -5173,23 +5181,25 @@ void vec_dot_exact_tile(int type, const void *row_base, size_t row_bytes, int nr
                 }
                 return;
             }
-        }
+        } else
 #endif
-        float *tbuf = tile_scratch_get((size_t)r_grp * (size_t)n);
-        if (tbuf) {
-            atomic_fetch_add_explicit(&g_vdet_cols, (unsigned long)nb, memory_order_relaxed);
-            for (int r0 = 0; r0 < nr; r0 += r_grp) {
-                const int ng = nr - r0 < r_grp ? nr - r0 : r_grp;
-                for (int rr = 0; rr < ng; rr++)
-                    dequant_row(type, base + (size_t)(r0 + rr) * row_bytes,
-                                tbuf + (size_t)rr * n, n);
-                for (int c0 = 0; c0 < nb; c0 += tcols) {
-                    const int nc = nb - c0 < tcols ? nb - c0 : tcols;
-                    exact_tile_block(tbuf, ng, x + (size_t)c0 * x_stride, x_stride,
-                                     nc, n, scale, y + (size_t)c0 * y_stride + r0, y_stride);
+        {
+            float *tbuf = tile_scratch_get((size_t)r_grp * (size_t)n);
+            if (tbuf) {
+                atomic_fetch_add_explicit(&g_vdet_cols, (unsigned long)nb, memory_order_relaxed);
+                for (int r0 = 0; r0 < nr; r0 += r_grp) {
+                    const int ng = nr - r0 < r_grp ? nr - r0 : r_grp;
+                    for (int rr = 0; rr < ng; rr++)
+                        dequant_row(type, base + (size_t)(r0 + rr) * row_bytes,
+                                    tbuf + (size_t)rr * n, n);
+                    for (int c0 = 0; c0 < nb; c0 += tcols) {
+                        const int nc = nb - c0 < tcols ? nb - c0 : tcols;
+                        exact_tile_block(tbuf, ng, x + (size_t)c0 * x_stride, x_stride,
+                                         nc, n, scale, y + (size_t)c0 * y_stride + r0, y_stride);
+                    }
                 }
+                return;
             }
-            return;
         }
     }
     for (int r = 0; r < nr; r++) {

@@ -160,8 +160,9 @@ int main(int argc, char **argv) {
     // (R4.48.20.4; both failed here before). A build compiled for the SIMD set quants.c keys its kernels on (AVX2 with
     // FMA and F16C, or aarch64 NEON) and not T3 must report the tile, so the skip cannot hide a tile that went missing.
     {
-#if !defined(RUNNER_CANON_KERNELS) && ((defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)) || \
-                                       (defined(__aarch64__) && defined(__ARM_NEON)))
+#if !defined(RUNNER_CANON_KERNELS) && !defined(RUNNER_NO_SIMD) && \
+    ((defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)) || \
+     (defined(__aarch64__) && defined(__ARM_NEON)))
         const bool simd_build = true;
 #else
         const bool simd_build = false;
@@ -171,12 +172,14 @@ int main(int argc, char **argv) {
         if (!p64t) CHECK(0, "(h) the BF16 model did not load at -b 64");
         else if (!vec_dot_exact_tile_ok(T_BF16, hn)) {
             if (simd_build) CHECK(0, "(h) a SIMD build reports no BF16 exact tile at n=%d", hn);
+            else {
 #ifdef RUNNER_CANON_KERNELS
-            const char *why = "a T3 build's canonical kernels have none";
+                const char *why = "a T3 build's canonical kernels have none";
 #else
-            const char *why = "no AVX2/FMA/F16C or NEON kernels in this build";
+                const char *why = "no AVX2/FMA/F16C or NEON kernels in this build";
 #endif
-            printf("ok: (h) skipped: no BF16 exact tile at n=%d (%s), so the prefill takes vec_dot_multi\n", hn, why);
+                printf("ok: (h) skipped: no BF16 exact tile at n=%d (%s), so the prefill takes vec_dot_multi\n", hn, why);
+            }
         } else {
 #ifdef RUNNER_CANON_KERNELS
             CHECK(0, "(h) a T3 build reports an exact tile it should not have");
@@ -320,19 +323,23 @@ int main(int argc, char **argv) {
     for (int f = 0; f < 3; f++)
         for (int th = 1; th <= 4; th += 3) {
             static const int BS[4] = { 1, 8, 64, 256 };
-            long extra[4] = { -1, -1, -1, -1 };
+            long first[4] = { -1, -1, -1, -1 }, extra[4] = { -1, -1, -1, -1 };
             for (int bi = 0; bi < 4; bi++) {
                 model_t *m = load_ctx(argv[1 + f], NULL, false, th, 384, BS[bi]);
                 const int nt = BS[bi] == 1 ? N_TOK : N_SPLIT;
+                const long a_before = ink2_moe_allocs();
                 float *r0 = m ? rows_n(m, split_tok, nt) : NULL;
                 const long a0 = ink2_moe_allocs();
+                if (r0) first[bi] = a0 - a_before;
                 float *r1 = r0 ? rows_n(m, split_tok, nt) : NULL, *r2 = r1 ? rows_n(m, split_tok, nt) : NULL;
                 if (r2) extra[bi] = ink2_moe_allocs() - a0;
                 free(r0); free(r1); free(r2); drop(m);
             }
-            CHECK(extra[0] == 0 && extra[1] == 0 && extra[2] == 0 && extra[3] == 0,
-                  "(l) %s, %d thread(s): two prefills after the first allocate in the MoE layer %ld / %ld / %ld / %ld "
-                  "times at -b 1 / 8 / 64 / 256 (want 0 each)", kind[f], th, extra[0], extra[1], extra[2], extra[3]);
+            CHECK(first[0] > 0 && first[1] > 0 && first[2] > 0 && first[3] > 0 &&
+                  extra[0] == 0 && extra[1] == 0 && extra[2] == 0 && extra[3] == 0,
+                  "(l) %s, %d thread(s): first prefill allocates %ld / %ld / %ld / %ld (> 0), two after it "
+                  "%ld / %ld / %ld / %ld at -b 1 / 8 / 64 / 256 (want 0 each)", kind[f], th,
+                  first[0], first[1], first[2], first[3], extra[0], extra[1], extra[2], extra[3]);
         }
     printf(fails ? "FAIL %d\n" : "PASS\n", fails);
     return fails ? 1 : 0;

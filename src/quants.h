@@ -299,5 +299,6 @@ unsigned long vec_dot_exact_tile_cols(void);   // route gate: columns computed o
 // holding one now (a thread's goes when it exits)
 unsigned long vec_dot_exact_tile_allocs(void);
 long          vec_dot_exact_tile_live(void);
+void          vec_dot_exact_tile_fail_next_alloc(int n);
 
 #endif // RUNNER_QUANTS_H

@@ -243,6 +243,63 @@ static void tile_scratch(void) {
     snprintf(msg, sizeof msg, "the tile's scratch on one thread: 100 calls after its first allocate %lu times "
              "(want 0); a call needing more %lu (want 1), then 40 calls %lu (want 0)", a1 - a0, a2 - a1, a3 - a2);
     ck(a1 == a0 && a2 - a1 == 1 && a3 == a2, msg);
+    // R4.48.20.4: NVFP4 tile scratch and allocation-failure fallback. At this point the thread holds exact r_grp * n2
+    // floats from the BF16 call above. On NEON, T_NVFP4 needs r_grp * (n2 + n2/16) > r_grp * n2, so a failed growth
+    // must fall back to vec_dot_multi (preserving exact vec_dot_nvfp4 bits) rather than falling through to the
+    // generic dequant_row + exact_tile_block branch (which would reuse the held r_grp * n2 buffer with different bits).
+    if (vec_dot_exact_tile_ok(T_NVFP4, n2)) {
+        const int n3 = n2 + 64;
+        const size_t rsn2 = ggml_row_size(T_NVFP4, n2), rsn3 = ggml_row_size(T_NVFP4, n3);
+        const size_t bsn = ggml_row_size(T_NVFP4, ggml_block_size(T_NVFP4));
+        unsigned char *wn = malloc(rsn3 * rows);
+        float *xn = malloc(sizeof(float) * (size_t)n3 * nb);
+        float *ref = malloc(sizeof(float) * (size_t)rows * nb);
+        unsigned sn = 13579;
+        for (size_t i = 0; i < rsn3 * rows; i++) { sn = sn * 1103515245u + 12345u; wn[i] = (unsigned char)(sn >> 16); }
+        // Non-power-of-two UE4M3 scales (0x25..0x4d) so pre-scaling vs post-scaling differs in float32 rounding.
+        for (size_t b = 0; b < rsn3 * rows; b += bsn)
+            for (int k = 0; k < 4; k++) { sn = sn * 1103515245u + 12345u; wn[b + k] = (unsigned char)(0x25 + ((sn >> 16) % 41)); }
+        for (size_t i = 0; i < (size_t)n3 * nb; i++) { sn = sn * 1103515245u + 12345u; xn[i] = ((sn >> 9) & 1023) / 1024.0f - 0.5f; }
+        for (int c = 0; c < nb; c++)
+            for (int r = 0; r < rows; r++)
+                ref[(size_t)c * rows + r] = vec_dot(T_NVFP4, wn + (size_t)r * rsn2, xn + (size_t)c * n2, n2);
+        // Trigger growth failure: on NEON n2 needs r_grp*(n2+n2/16) > held r_grp*n2; on AVX-512 test at n3 > n2.
+        const int nf =
+#if !defined(RUNNER_CANON_KERNELS) && !defined(RUNNER_NO_SIMD) && defined(__aarch64__) && defined(__ARM_NEON)
+            n2;
+#else
+            n3;
+#endif
+        const size_t rsnf = nf == n2 ? rsn2 : rsn3;
+        if (nf == n3)
+            for (int c = 0; c < nb; c++)
+                for (int r = 0; r < rows; r++)
+                    ref[(size_t)c * rows + r] = vec_dot(T_NVFP4, wn + (size_t)r * rsn3, xn + (size_t)c * n3, n3);
+        const unsigned long c0 = vec_dot_exact_tile_cols(), m0 = vec_dot_multi_calls();
+        vec_dot_exact_tile_fail_next_alloc(1);
+        vec_dot_exact_tile(T_NVFP4, wn, rsnf, rows, xn, nf, nb, nf, 1.0f, y, rows);
+        vec_dot_exact_tile_fail_next_alloc(0);
+        const unsigned long c1 = vec_dot_exact_tile_cols(), m1 = vec_dot_multi_calls();
+        int bad_bits = 0;
+        for (size_t i = 0; i < (size_t)rows * nb; i++)
+            if (memcmp(&y[i], &ref[i], sizeof(float)) != 0) bad_bits++;
+        snprintf(msg, sizeof msg, "NVFP4 tile alloc failure falls back to vec_dot_multi: tile cols +%lu (want 0), "
+                 "multi calls +%lu (want > 0), mismatched floats %d (want 0)", c1 - c0, m1 - m0, bad_bits);
+        ck(c1 == c0 && m1 > m0 && bad_bits == 0, msg);
+        // Normal NVFP4 tile path at n3 > n2: grows once, then 20 repeats allocate 0 and take the tile.
+        const unsigned long na0 = vec_dot_exact_tile_allocs(), nc0 = vec_dot_exact_tile_cols();
+        vec_dot_exact_tile(T_NVFP4, wn, rsn3, rows, xn, n3, nb, n3, 1.0f, y, rows);
+        const unsigned long na1 = vec_dot_exact_tile_allocs(), nc1 = vec_dot_exact_tile_cols();
+        for (int k = 0; k < 20; k++) {
+            vec_dot_exact_tile(T_NVFP4, wn, rsn3, rows, xn, n3, nb, n3, 1.0f, y, rows);
+            vec_dot_exact_tile(T_NVFP4, wn, rsn2, rows, xn, n2, nb, n2, 1.0f, y, rows);
+        }
+        const unsigned long na2 = vec_dot_exact_tile_allocs();
+        snprintf(msg, sizeof msg, "NVFP4 tile scratch on one thread: first larger call allocates %lu (want 1, tile "
+                 "cols +%lu), 40 repeats after it %lu (want 0)", na1 - na0, nc1 - nc0, na2 - na1);
+        ck(na1 - na0 == 1 && nc1 > nc0 && na2 == na1, msg);
+        free(ref); free(xn); free(wn);
+    }
     tpool *tp = tpool_create(4);
     if (tp) {
         tile_job j = { type, w, rs, rows, x, n, nb, y };
