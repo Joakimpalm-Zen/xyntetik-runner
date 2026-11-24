@@ -818,6 +818,11 @@ void       gpu_ink2_test_mv_ref(gpu_ink2 *h, int on);
 // and caps[0..4] = byte capacities: the padded inputs (the products' x, the attention output, the expert body's
 // gathered x and its activations) and the attention's stored logits; -1 without a handle
 long       gpu_ink2_test_stats(gpu_ink2 *h, size_t caps[5]);
+// TEST-ONLY (D1d.2b): RUNNER_INKLING2_CUDA_TEST_DEVFORM=1 at bind makes the attention block's, the device-routed expert
+// body's and the message steps' host forms upload into private device scratch and call their device-pointer cores
+// with it; =2 / 3 / 4 also show the block's / the body's / the message steps' core a short buffer, which it must
+// refuse. Returns the level (0 off, -1 no handle); calls[0..2] the seam's calls so far (block, body, message steps).
+int        gpu_ink2_test_devform(gpu_ink2 *h, long calls[3]);
 void       gpu_ink2_release_experts(gpu_ink2 *h);   // those buffers freed (a fit retried without the expert body)
 // G2b step 2a: an instance's K/V on the device, one ring per application (row j % rows[a] holds position j's C
 // values), owned by the instance (the weights' handle may be shared); and the attention core over it: the chunk's

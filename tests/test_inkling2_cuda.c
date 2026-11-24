@@ -1372,6 +1372,60 @@ int main(int argc, char **argv) {
         free(a); free(a1); free(b);
         drop(gr); drop(gr1); drop(gn);
     }
+    // R4.48.9 D1d.2b (ah), the second read's F4 and F3: the device-pointer cores (the attention block, the expert
+    // body, the message steps) called on PRIVATE device scratch (RUNNER_INKLING2_CUDA_TEST_DEVFORM=1: the host forms
+    // upload there, not into the handle's buffers; a sliding layer's shared q / k / v input as one pointer): on each
+    // dense tiny file at -b 64 (the device router) and -b 1 (one position: the host router's body), the rows
+    // byte-identical to the normal path; the seam's calls on its handle equal the block / message-step calls the
+    // instance ran and the body's are > 0; none on the normal handle. F3: at levels 2 / 3 / 4 one core at a time sees
+    // a short buffer and must REFUSE it (the forward fails), never run or grow it.
+    {
+        static const int bs[2] = { 64, 1 };
+        static const char *const fname[5] = { "", "F32", "BF16", "Q8_0", "F16" };
+        for (int f = 1; f <= 4; f++)
+            for (int k = 0; k < 2; k++) {
+                model_t *g = load(argv[f], true, false, bs[k]);
+                const void *hv = NULL;
+                char pl = 0;
+                size_t need = 0;
+                long c0[3] = { -1, -1, -1 }, c1[3] = { -1, -1, -1 };
+                float *a = g ? rows(g) : NULL;
+                const int l0 = g && model_inkling2_cuda_placement(g, &pl, &need, &hv) ? gpu_ink2_test_devform((gpu_ink2 *)(uintptr_t)hv, c0) : -9;
+                drop(g);
+                plat_setenv("RUNNER_INKLING2_CUDA_TEST_DEVFORM", "1");
+                model_t *d = load(argv[f], true, false, bs[k]);
+                plat_setenv("RUNNER_INKLING2_CUDA_TEST_DEVFORM", "");
+                float *b = d ? rows(d) : NULL;
+                hv = NULL;
+                const int l1 = d && model_inkling2_cuda_placement(d, &pl, &need, &hv) ? gpu_ink2_test_devform((gpu_ink2 *)(uintptr_t)hv, c1) : -9;
+                const long nblk = d ? model_inkling2_cuda_block_calls(d) : -1, nmsg = d ? model_inkling2_cuda_msg_calls(d) : -1;
+                const size_t n = d ? (size_t)N_TOK * (size_t)d->n_vocab : 0;
+                const bool same = a && b && !memcmp(a, b, sizeof(float) * n);
+                // (the F16 file runs 2a's path, no block calls (-1), and no device message steps: its counts 0; the
+                // other three files run every kind)
+                const bool every = f != 4;
+                CHECK(same && l0 == 0 && c0[0] == 0 && c0[1] == 0 && c0[2] == 0 && l1 == 1 && c1[1] > 0 &&
+                      c1[0] == (nblk > 0 ? nblk : 0) && c1[2] == (nmsg > 0 ? nmsg : 0) && (!every || (nblk > 0 && nmsg > 0)),
+                      "(ah) the device-pointer cores on private scratch, %s at -b %d: rows byte-identical to the normal "
+                      "path (%s); seam level %d / %d (want 0 / 1); its calls block %ld (of %ld), body %ld, message steps "
+                      "%ld (of %ld); on the normal handle %ld / %ld / %ld (want 0)", fname[f], bs[k], same ? "yes" : "no",
+                      l0, l1, c1[0], nblk, c1[1], c1[2], nmsg, c0[0], c0[1], c0[2]);
+                free(a); free(b);
+                drop(d);
+            }
+        static const char *const lvn[3] = { "the block's aq", "the expert body's exe", "the message steps' mgh" };
+        for (int lv = 2; lv <= 4; lv++) {
+            char v[2] = { (char)('0' + lv), 0 };
+            plat_setenv("RUNNER_INKLING2_CUDA_TEST_DEVFORM", v);
+            model_t *d = load(argv[2], true, false, 64);
+            plat_setenv("RUNNER_INKLING2_CUDA_TEST_DEVFORM", "");
+            float *r = d ? rows(d) : NULL;
+            CHECK(d && !r, "(ah) F3: with %s short for its core (level %d), the forward is refused (%s)", lvn[lv - 2], lv,
+                  !d ? "the load FAILED" : r ? "it RAN" : "refused");
+            free(r);
+            drop(d);
+        }
+    }
     // R4.48.9 D1d.1 (af): the decode step's remaining ops on the device, each against the host function the forward
     // runs (inkling2.c's own, through its TEST-ONLY wrappers) on the same inputs, BIT FOR BIT (NaN by its bits), the
     // host with the CPU's FTZ / DAZ off (the device never flushes; D1a's tanh check): the RMS norm rows (weighted and
@@ -1413,30 +1467,53 @@ int main(int argc, char **argv) {
             free(x); free(wt); free(yd); free(yh);
         }
         // the depth attention
-        static const struct { int nq, n_kv, H, T; } dc[] = { { 1, 1, 2304, 1 }, { 3, 7, 2304, 1 }, { 4, 26, 2304, 3 },
-                                                              { 1, 13, 64, 5 }, { 4, 2, 64, 1 } };
+        // (D1d.2b, the second read's F6: lay 1 the [T][nq][H] output layout beside [nq][T][H]; qs 60 spreads a query's
+        // scores past 104, so some weights underflow to subnormals and to 0, each checked by the scores' spread)
+        static const struct { int nq, n_kv, H, T, lay; float qs; } dc[] = {
+            { 1, 1, 2304, 1, 0, 0.1f }, { 3, 7, 2304, 1, 0, 0.1f }, { 4, 26, 2304, 3, 0, 0.1f }, { 1, 13, 64, 5, 0, 0.1f },
+            { 4, 2, 64, 1, 0, 0.1f }, { 3, 7, 2304, 2, 1, 0.1f }, { 4, 26, 2304, 3, 0, 60.0f }, { 1, 13, 64, 5, 1, 60.0f } };
         for (size_t k = 0; k < sizeof dc / sizeof *dc; k++) {
-            const int nq = dc[k].nq, nkv = dc[k].n_kv, H = dc[k].H, T = dc[k].T;
+            const int nq = dc[k].nq, nkv = dc[k].n_kv, H = dc[k].H, T = dc[k].T, lay = dc[k].lay;
             float *q = malloc(sizeof(float) * (size_t)nq * H), *st = malloc(sizeof(float) * (size_t)T * nkv * H);
             float *od = malloc(sizeof(float) * (size_t)nq * T * H), *oh = malloc(sizeof(float) * (size_t)nq * T * H);
-            for (int i = 0; i < nq * H; i++) q[i] = 0.1f * RNDF();
+            for (int i = 0; i < nq * H; i++) q[i] = dc[k].qs * RNDF();
             for (int i = 0; i < T * nkv * H; i++) st[i] = RNDF();
             if (nkv > 1) memset(st, 0, sizeof(float) * (size_t)H);   // a zero state (its norm 0 / sqrt(eps))
             const float scale = ink2_inv_sqrt(H);
-            const bool ran = h && gpu_ink2_test_depth_attn(h, q, nq, st, nkv, H, T, scale, od, T * H, H);
+            // the widest spread of one query's scores at one position (float64, the states normed as the op does)
+            double spread = 0;
+            for (int t = 0; t < T; t++)
+                for (int i = 0; i < nq; i++) {
+                    double lo = 1e300, hi = -1e300;
+                    for (int j = 0; j < nkv; j++) {
+                        const float *sj = st + ((size_t)t * nkv + j) * H;
+                        double ss = 0, d = 0;
+                        for (int u = 0; u < H; u++) { ss += (double)sj[u] * sj[u]; d += (double)q[(size_t)i * H + u] * sj[u]; }
+                        const double s_ = scale * d / sqrt(ss / H + 1e-6);
+                        if (s_ < lo) lo = s_;
+                        if (s_ > hi) hi = s_;
+                    }
+                    if (hi - lo > spread) spread = hi - lo;
+                }
+            const int ois = lay ? H : T * H, ots = lay ? nq * H : H;
+            const bool ran = h && gpu_ink2_test_depth_attn(h, q, nq, st, nkv, H, T, scale, od, ois, ots);
             int hb = 0;
             FTZ_OFF();
             for (int t = 0; t < T; t++) {
                 float *tmp = malloc(sizeof(float) * (size_t)nq * H);
                 hb |= !tmp || ink2_test_depth_attn(q, nq, st + (size_t)t * nkv * H, nkv, H, tmp);
-                for (int i = 0; tmp && i < nq; i++) memcpy(oh + ((size_t)i * T + t) * H, tmp + (size_t)i * H, sizeof(float) * H);
+                for (int i = 0; tmp && i < nq; i++)
+                    memcpy(oh + (size_t)i * ois + (size_t)t * ots, tmp + (size_t)i * H, sizeof(float) * H);
                 free(tmp);
             }
             FTZ_BACK();
             long nd = 0;
             for (int i = 0; ran && !hb && i < nq * T * H; i++) nd += !same_f(od[i], oh[i]);
-            CHECK(ran && !hb && nd == 0, "(af) the depth attention (%d queries, %d states, H %d, %d positions): %ld of %d "
-                  "differ from the host's (want 0)", nq, nkv, H, T, nd, nq * T * H);
+            const bool spread_ok = dc[k].qs < 1.0f || spread > 104.0;
+            CHECK(ran && !hb && nd == 0 && spread_ok, "(af) the depth attention (%d queries, %d states, H %d, %d positions, "
+                  "layout %s, scores spread %.1f%s): %ld of %d differ from the host's (want 0)", nq, nkv, H, T,
+                  lay ? "[T][nq][H]" : "[nq][T][H]", spread, dc[k].qs < 1.0f ? "" : " (want > 104: weights underflow)", nd,
+                  nq * T * H);
             free(q); free(st); free(od); free(oh);
         }
         // the short convolution with its history: one sequence through chunks (a prefill, a chunk, decode steps
@@ -1468,6 +1545,23 @@ int main(int argc, char **argv) {
             }
             CHECK(ran && nd == 0, "(af) the short convolution with its history (C %d, K %d; chunks 5, 2, then decode steps "
                   "around the ring, then 3): %ld of %ld outputs and history values differ from the host's (want 0)", C, K, nd, nv);
+            // F6: a prefill without history (hist NULL: p0 taken as 0, no store), at a nonzero p0 and at K 4 and 1
+            for (int kk = 0; kk < 2; kk++) {
+                const int K1 = kk ? 1 : K, T = 6;
+                float *lin = malloc(sizeof(float) * (size_t)T * C), *od = malloc(sizeof(float) * (size_t)T * C);
+                float *oh = malloc(sizeof(float) * (size_t)T * C);
+                for (int i = 0; i < T * C; i++) lin[i] = RNDF();
+                const float div = (float)sqrt((double)(K1 + 1));
+                const bool r1 = h && gpu_ink2_test_short_conv(h, cw, C, K1, T, lin, od, 9, NULL, div);
+                FTZ_OFF();
+                ink2_test_short_conv(cw, C, K1, T, lin, oh, 9, NULL);
+                FTZ_BACK();
+                long n1 = 0;
+                for (int i = 0; r1 && i < T * C; i++) n1 += !same_f(od[i], oh[i]);
+                CHECK(r1 && n1 == 0, "(af) the short convolution without history (a prefill; C %d, K %d, T %d, p0 9 taken "
+                      "as 0): %ld of %d differ from the host's (want 0)", C, K1, T, n1, T * C);
+                free(lin); free(od); free(oh);
+            }
             free(cw); free(hd); free(hh);
         }
         // the residual add and the softcap
@@ -1476,6 +1570,8 @@ int main(int argc, char **argv) {
             static float a[N], b[N], sd[N], vd[N], vh[N];
             for (int i = 0; i < N; i++) { a[i] = RNDF(); b[i] = 1e-3f * RNDF(); vd[i] = vh[i] = 60.0f * RNDF(); }
             vd[0] = vh[0] = 0.0f; vd[1] = vh[1] = -0.0f; vd[2] = vh[2] = 1e30f; vd[3] = vh[3] = -1e30f; vd[4] = vh[4] = 1e-30f;
+            // F6: subnormal inputs (the device never flushes; the host checked with FTZ / DAZ off)
+            vd[5] = vh[5] = 1e-40f; vd[6] = vh[6] = -3e-42f; vd[7] = vh[7] = 1.4e-45f; a[8] = 2e-39f; b[8] = -1e-39f;
             const float cap = 30.0f;
             const bool ran = h && gpu_ink2_test_add_softcap(h, a, b, sd, vd, N, cap);
             long nd = 0;
@@ -1485,7 +1581,7 @@ int main(int argc, char **argv) {
                 nd += !same_f(sd[i], s_) + !same_f(vd[i], c_);
             }
             FTZ_BACK();
-            CHECK(ran && nd == 0, "(af) the residual add and the softcap (cap 30, %d values; 0, -0, +-1e30, 1e-30): %ld "
+            CHECK(ran && nd == 0, "(af) the residual add and the softcap (cap 30, %d values; 0, -0, +-1e30, 1e-30, subnormals): %ld "
                   "differ from the host's (want 0)", N, nd);
         }
 #undef FTZ_OFF
