@@ -118,10 +118,11 @@ static inline const arch_desc *arch_rows(size_t *n) {
                       "(sinks with a sliding window, NoPE full layers, "
                       "sigmoid routing with shared experts) is not checked yet" },
         { .name = "mistral3", .id = ARCH_MISTRAL3 },
-        // OLMo 2 / OLMo 3 (R4.50): the CPU forward first; Metal (R4.50.4) and CUDA (R4.50.5) follow
+        // OLMo 2 / OLMo 3 (R4.50): CPU (R4.50.1) and Metal (R4.50.4); CUDA (R4.50.5) follows
         { .name = "olmo2", .id = ARCH_OLMO2, .rope_neox = true,
-          .cpu_only = "olmo2 is validated on the CPU only; its GPU paths (the post-norm-only "
-                      "blocks and the full-width QK norm) are not checked yet",
+          .cpu_only_nonmetal = "olmo2 is validated on the CPU and the Apple GPU only; "
+                               "its CUDA path (the post-norm-only blocks and the "
+                               "full-width QK norm) is not checked yet",
           .pending = "its forward matches the publisher's equations on a generated file; the "
                      "publisher's float32 reference on a real file is pending (R4.50.6)" },
         // CUDA runs both forms (R4.4.5 c1 naive, c2 absorbed)

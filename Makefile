@@ -3798,6 +3798,54 @@ test-metal:
 	$(MAKE) --no-print-directory test-metal-qwen35moe PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-metal-mamba2 PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-metal-lfm2 PYTHON="$(PYTHON)"
+	$(MAKE) --no-print-directory test-metal-olmo2 PYTHON="$(PYTHON)"
+
+# olmo2 (OLMo 2 / OLMo 3) on Metal (R4.50.4): post-norm-only blocks (no pre-norms,
+# residual stream fed directly to Q/K/V and SwiGLU), full-width QK-norm over
+# q_dim / kv_dim via in-place k_rmsnorm, 3-in-4 sliding window with YaRN on full
+# layers only, F1 decode fusion (k_rope_store) byte-identity, quantized
+# RUNNER_METAL_FRONT=all megakernel refusal, partial offload, microbatch, and
+# speculative verify. Healthy f16-KV residue on the F32 fixtures: 7.16e-6
+# (OLMo 3), 8.35e-7 (OLMo 3 GQA), 1.78e-6 (OLMo 2 plain), held to 1e-5.
+test-metal-olmo2: runner $(TEST_GPU_ID) $(TEST_BATCH_ID) $(TEST_SPEC_ID)
+ifeq ($(BUILD_OS),Darwin)
+	@set -e; \
+	if ! ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
+	  echo "test-metal-olmo2: skipped (no Metal device reported by --caps)"; exit 0; fi; \
+	$(PYTHON) scripts/make-test-olmo2.py test-olmo2.gguf > /dev/null; \
+	$(PYTHON) scripts/make-test-olmo2.py test-olmo2-gqa.gguf --gqa > /dev/null; \
+	$(PYTHON) scripts/make-test-olmo2.py test-olmo2-plain.gguf --plain > /dev/null; \
+	for f in test-olmo2.gguf test-olmo2-gqa.gguf test-olmo2-plain.gguf; do \
+	  GPU_ID_LIMIT=1e-5 ./$(TEST_GPU_ID) $$f > test-metal-olmo2.out 2>&1 || { cat test-metal-olmo2.out; exit 1; }; \
+	  if grep -q 'skipped' test-metal-olmo2.out; then cat test-metal-olmo2.out; \
+	    echo "test-metal-olmo2: $$f did not run on the device"; exit 1; fi; \
+	  echo "$$f: $$(tail -1 test-metal-olmo2.out)"; \
+	  GPU_ID_LIMIT=1e-5 ./$(TEST_GPU_ID) $$f 0 1 > test-metal-olmo2.out 2>&1 || { cat test-metal-olmo2.out; exit 1; }; \
+	  if grep -q 'skipped' test-metal-olmo2.out; then cat test-metal-olmo2.out; \
+	    echo "test-metal-olmo2: $$f decode-only did not run on the device"; exit 1; fi; \
+	  ./$(TEST_SPEC_ID) $$f | tail -1 | grep -q 'ok (gpu' || { ./$(TEST_SPEC_ID) $$f; exit 1; }; \
+	done; \
+	GPU_ID_LIMIT=1e-5 ./$(TEST_GPU_ID) test-olmo2-gqa.gguf 2 > test-metal-olmo2.out 2>&1 || { cat test-metal-olmo2.out; exit 1; }; \
+	if grep -q 'skipped' test-metal-olmo2.out; then cat test-metal-olmo2.out; \
+	  echo "test-metal-olmo2: partial offload did not run on the device"; exit 1; fi; \
+	prompt="The quick brown fox jumps over the lazy dog"; \
+	RUNNER_METAL_FUSE=0 ./$(RUNNER_EXE) -m test-olmo2-gqa.gguf -p "$$prompt" -n 24 --temp 0 --no-tray > test-metal-olmo2-fuse0.out 2>/dev/null; \
+	./$(RUNNER_EXE) -m test-olmo2-gqa.gguf -p "$$prompt" -n 24 --temp 0 --no-tray > test-metal-olmo2-fuse1.out 2> test-metal-olmo2-fuse1.err; \
+	grep -q "decode fusion on" test-metal-olmo2-fuse1.err || { cat test-metal-olmo2-fuse1.err; echo "test-metal-olmo2: F1 decode fusion did not run"; exit 1; }; \
+	cmp -s test-metal-olmo2-fuse0.out test-metal-olmo2-fuse1.out || { echo "test-metal-olmo2: F1 decode fusion diverged"; exit 1; }; \
+	./$(RUNNER_EXE) -m test-olmo2-gqa.gguf --quantize test-olmo2-gqa-q8.gguf --quant q8_0 > /dev/null 2>&1; \
+	RUNNER_METAL_FRONT=all ./$(TEST_GPU_ID) test-olmo2-gqa-q8.gguf > test-metal-olmo2.out 2>&1 || { cat test-metal-olmo2.out; exit 1; }; \
+	if grep -q 'skipped' test-metal-olmo2.out; then cat test-metal-olmo2.out; \
+	  echo "test-metal-olmo2: quantized front-guard run did not stay on device"; exit 1; fi; \
+	if grep -q 'attention front on' test-metal-olmo2.out; then cat test-metal-olmo2.out; \
+	  echo "test-metal-olmo2: attention front megakernel must refuse olmo2"; exit 1; fi; \
+	./$(TEST_BATCH_ID) test-olmo2-plain.gguf > test-metal-olmo2.out 2>&1 || { cat test-metal-olmo2.out; exit 1; }; \
+	rm -f test-olmo2.gguf test-olmo2-gqa.gguf test-olmo2-plain.gguf test-olmo2-gqa-q8.gguf \
+	      test-metal-olmo2.out test-metal-olmo2-fuse0.out test-metal-olmo2-fuse1.out test-metal-olmo2-fuse1.err; \
+	echo "test-metal-olmo2: ok"
+else
+	@echo "test-metal-olmo2: skipped (not a Metal build)"
+endif
 
 # qwen35 on Metal (R4.10): the Gated DeltaNet mixer and the gated attention on
 # the device, to the CPU's logits within reduction-order rounding at prefill
@@ -5262,7 +5310,7 @@ test-anchors: runner test.gguf $(TEST_LORA_GRAD) $(DIFFTOK)
 .PHONY: test-anchors
 .PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-hybrids test-cuda-qwen4exp test-cuda-qwen35moe test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity test-cuda-longrope test-cuda-batch-columns test-cuda-batch-q35
 .PHONY: test-gates test-gates-core test-gates-batch test-python
-.PHONY: test-deepseek2 test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
+.PHONY: test-deepseek2 test-metal-kv-fp4 test-metal-olmo2 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 
 # The TypeScript client (R10.7): type-checked with the pinned compiler and run
 # against a live runner on the CI fixture. Needs Node 18+ and npm (the pinned
