@@ -86,7 +86,11 @@ int main(int argc, char **argv) {
     uint8_t *blob = blob_n ? malloc(blob_n) : NULL;
     if (blob_n && !blob) return 1;
 
-    int32_t prompt[PROMPT];
+    // seq[0, pos): the sequence both instances hold, which R names when it
+    // reloads its fold (qwen4exp's PLE hashes each token with its predecessors)
+    int32_t *seq = malloc(sizeof(int32_t) * (size_t)V.n_ctx);
+    if (!seq) return 1;
+    int32_t *prompt = seq;
     for (int i = 0; i < PROMPT; i++) prompt[i] = (int32_t)((5 + 7 * i) % nv);
     float *lv = model_forward_batch(&V, prompt, PROMPT, 0, true);
     float *lr = model_forward_batch(&R, prompt, PROMPT, 0, true);
@@ -153,7 +157,13 @@ int main(int argc, char **argv) {
                 }
                 model_forward_refold(&V, b, acc, pos);
             }
-            if (!model_recurrent_blob_load(&R, blob, NULL, 0)) {
+            // R4.48.22.1: a fold named without its tokens cannot continue a
+            // model whose next tokens hash their predecessors; refused whole
+            if (R.ple4_prev && model_recurrent_blob_load(&R, blob, NULL, 0)) {
+                fprintf(stderr, "FAIL: a qwen4exp fold was installed with no tokens named at %d\n", pos);
+                return 1;
+            }
+            if (!model_recurrent_blob_load(&R, blob, seq, pos)) {
                 fprintf(stderr, "FAIL: the reference cannot reload its fold at %d\n", pos);
                 return 1;
             }
@@ -164,6 +174,7 @@ int main(int argc, char **argv) {
                 }
         }
         cur = argmax(rows + (size_t)a * nv, nv);
+        memcpy(seq + pos, b, sizeof(int32_t) * (size_t)acc);
         pos += acc;
     }
     unsigned long tiles = gpu_exact_verify_tiles() - tiles0;
@@ -173,6 +184,7 @@ int main(int argc, char **argv) {
     const bool host_rows = V.qwen35 || mamba2;
     free(rows);
     free(blob);
+    free(seq);
     model_free(&V);
     model_free(&R);
     if (fails) {
