@@ -414,6 +414,10 @@ QUANTIZE_OBJ = $(OBJDIR)/quantize.o
 # compiler; test_quantize's ggml golden pins it. The object depends on this
 # Makefile so a change of these flags rebuilds it.
 QUANTIZE_CFLAGS = $(QUANTS_CFLAGS) -ffp-contract=off
+# R8.29: the learning-rate schedule (warmup + cosine) must agree bit for bit
+# between default and T3 builds; build it without fast-math or FMA contraction.
+TRAIN_LR_OBJ = $(OBJDIR)/train_lr.o
+TRAIN_LR_CFLAGS = $(filter-out -ffast-math,$(CFLAGS)) -fno-fast-math -ffp-contract=off
 
 # These used to carry FORCE (rebuild on every invocation) because the
 # requested CC/CFLAGS were not encoded anywhere, and reusing a native
@@ -457,6 +461,10 @@ $(OBJDIR)/inkling2_model.o: src/inkling2_model.c $(HDR)
 $(QUANTIZE_OBJ): src/quantize.c $(HDR) Makefile
 	mkdir -p $(dir $@)
 	$(CC) $(QUANTIZE_CFLAGS) -I src -c src/quantize.c -o $@
+
+$(TRAIN_LR_OBJ): src/train_lr.c $(HDR) Makefile
+	mkdir -p $(dir $@)
+	$(CC) $(TRAIN_LR_CFLAGS) -I src -c src/train_lr.c -o $@
 
 # ---------------------------------------------------------------- object layer
 # Every test binary used to recompile the engine from source (model.c alone
@@ -552,7 +560,7 @@ $(OBJDIR)/metal.o: src/metal.m $(HDR) src/kernels_metal.h src/kernels_tensor_met
 
 SRC = src/gguf.c src/compat.c $(QUANTS_OBJ) $(INKLING2_OBJS) src/instances.c src/tokenizer.c src/model.c src/sample.c src/dpo.c \
       src/vramreg.c src/npy.c \
-      src/template.c src/jsonmode.c $(SCHEMA_SRC) $(QUANTIZE_OBJ) src/engine.c src/decide.c src/clef.c src/json.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/http.c src/registry.c src/provenance.c src/lineage.c src/train_record.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c src/session.c src/scheduler.c src/completion.c src/api_responses.c src/api_anthropic.c src/server.c src/hfhub.c src/bundle.c \
+      src/template.c src/jsonmode.c $(SCHEMA_SRC) $(QUANTIZE_OBJ) $(TRAIN_LR_OBJ) src/engine.c src/decide.c src/clef.c src/json.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/http.c src/registry.c src/provenance.c src/lineage.c src/train_record.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c src/session.c src/scheduler.c src/completion.c src/api_responses.c src/api_anthropic.c src/server.c src/hfhub.c src/bundle.c \
       src/derive.c src/main.c $(GPU_SRC) $(TRAY_SRC)
 
 # Cross-compile a static riscv64 binary with zig (no toolchain install;
@@ -567,7 +575,7 @@ CROSS_CFLAGS = -O3 -fno-fast-math -ffp-contract=off -std=gnu11 -Wno-unused-param
                -DRUNNER_GPU_CUDA -DRUNNER_PORTABLE_MATH -DRUNNER_CANON_KERNELS \
                -include src/pmath.h -D_GNU_SOURCE
 CROSS_SRC = $(filter-out $(GPU_SRC) $(TRAY_SRC),$(filter %.c,$(SRC))) $(INKLING2_SRC) \
-            src/quants.c src/quantize.c src/cuda.c src/tray.c src/tray_stub.c
+            src/quants.c src/quantize.c src/train_lr.c src/cuda.c src/tray.c src/tray_stub.c
 cross-riscv64:
 	@rm -rf .build/cross-$(CROSS_TARGET) && mkdir -p .build/cross-$(CROSS_TARGET)
 	@for f in $(CROSS_SRC); do \
@@ -585,7 +593,7 @@ cross-riscv64:
 # quantization and crypto objects keep their existing compilation rules.
 RUNNER_OBJ = $(patsubst src/%.c,$(OBJDIR)/%.o,$(filter-out $(MLDSA_SRC),$(filter %.c,$(SRC)))) \
              $(patsubst src/%.m,$(OBJDIR)/%.o,$(filter %.m,$(SRC))) \
-             $(QUANTS_OBJ) $(QUANTIZE_OBJ) $(MLDSA_OBJ) $(INKLING2_OBJS)
+             $(QUANTS_OBJ) $(QUANTIZE_OBJ) $(TRAIN_LR_OBJ) $(MLDSA_OBJ) $(INKLING2_OBJS)
 # The Windows executable's resources: the UTF-8 application manifest. A build
 # without it is a runner that reads a non-ASCII -p prompt in the ANSI code
 # page (cp1252 on a Western European system, "?" for what that cannot
@@ -656,7 +664,7 @@ runner-turn-guard: $(SRC) $(HDR) src/kernels_ptx.h $(OBJDIR)/build-commit.stamp
 # An optimized object linked into this binary silently loses its sanitizer gate.
 SAN_FLAGS = -O0 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined \
             -fno-omit-frame-pointer -fno-fast-math -std=gnu11 -Wall $(GPU_BACKEND_DEF)
-SAN_SRC = $(filter-out $(QUANTS_OBJ) $(QUANTIZE_OBJ) $(INKLING2_OBJS),$(SRC)) src/quants.c src/quantize.c $(INKLING2_SRC)
+SAN_SRC = $(filter-out $(QUANTS_OBJ) $(QUANTIZE_OBJ) $(TRAIN_LR_OBJ) $(INKLING2_OBJS),$(SRC)) src/quants.c src/quantize.c src/train_lr.c $(INKLING2_SRC)
 debug: $(SAN_SRC) $(HDR) $(OBJDIR)/build-commit.stamp
 	$(CC) $(SAN_FLAGS) $(BUILD_STAMP) $(SAN_SRC) -o runner-debug $(LDFLAGS)
 
@@ -1431,7 +1439,7 @@ $(TEST_MVT): $(TEST_MVT_SRC) $(HDR) test.gguf test-q8.gguf test-bf16.gguf
 # blocks: the transposed product the CPU chain's bytes, the forward product
 # batch-invariant (skips without a CUDA device)
 TEST_TRAIN_GPU_SRC = tests/test_train_gpu.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
-                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
+                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ) $(TRAIN_LR_OBJ)
 $(TEST_TRAIN_GPU): $(TEST_TRAIN_GPU_SRC) $(HDR) tests/dn_ref.h tests/attn_ref.h
 	$(CC) $(CFLAGS) -I src $(TEST_TRAIN_GPU_SRC) -o $@ $(LDFLAGS)
 
@@ -5100,6 +5108,11 @@ test-makefile-sane:
 	test -n "$$zline" || { echo "FAIL: quantize.c is not a separate translation unit"; exit 1; }; \
 	echo "$$zline" | grep -q -- ' -fno-fast-math ' || { echo "FAIL: quantize.c lacks -fno-fast-math"; exit 1; }; \
 	case "$$zline" in *" -ffast-math "*) echo "FAIL: quantize.c still has -ffast-math"; exit 1;; esac; \
+	tline=$$($(MAKE) -Bn --no-print-directory runner | grep -- ' -c src/train_lr.c '); \
+	test -n "$$tline" || { echo "FAIL: train_lr.c is not a separate translation unit"; exit 1; }; \
+	echo "$$tline" | grep -q -- ' -fno-fast-math ' || { echo "FAIL: train_lr.c lacks -fno-fast-math"; exit 1; }; \
+	echo "$$tline" | grep -q -- ' -ffp-contract=off' || { echo "FAIL: train_lr.c lacks -ffp-contract=off"; exit 1; }; \
+	case "$$tline" in *" -ffast-math "*) echo "FAIL: train_lr.c still has -ffast-math"; exit 1;; esac; \
 	bline=$$($(MAKE) -Bn --no-print-directory CFLAGS=-O0 runner | grep -- ' src/model.c '); \
 	test -n "$$bline" || { echo "FAIL: release-style build has no model.c compile line"; exit 1; }; \
 	echo "$$bline" | grep -q -- ' $(GPU_BACKEND_DEF) ' || { \

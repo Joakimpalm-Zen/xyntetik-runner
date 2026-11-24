@@ -19,6 +19,8 @@
 //
 // Skips (not passes) without a CUDA device. Prints each type's throughput.
 #include "runner.h"
+#include "pmath.h"
+#include "train_lr.h"
 #include "dn_ref.h"
 #include "attn_ref.h"
 #include "gate_gpu.h"
@@ -2105,6 +2107,64 @@ static int r830_rope_checks(void) {
     return bad;
 }
 
+// R8.29: the trainer's warmup + cosine learning-rate schedule held to a strict
+// build's bits in every build. Under -ffast-math + libm cos, default and strict
+// builds differed on warmup step 2 (1 ulp) and cosine steps (1 to 3 ulp).
+#define R829_LR_DIGEST 0xfd87d10ba882c66eull   // a strict build's (pm_sincos_d, -fno-fast-math -ffp-contract=off)
+static int r829_lr_schedule_checks(void) {
+    struct { double base; int warm, sched, steps; double floor_r; } cases[] = {
+        { 3e-3, 3, 1, 12, 0.1 },
+        { 1e-4, 2, 0,  5, 0.1 },
+        { 5e-4, 0, 1,  7, 0.25 },
+        { 2e-3, 4, 1,  4, 0.05 },
+    };
+    uint64_t h = 0xcbf29ce484222325ull;
+    int bad = 0;
+    double at0 = train_lr_schedule_at(3e-3, 0, 0, 1, 12, 0.1);
+    double want0 = 3e-3;
+    if (memcmp(&at0, &want0, 8) != 0 && !bad++)
+        fprintf(stderr, "FAIL: cosine schedule step 0 is %.17g, not base %.17g\n", at0, want0);
+    for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        for (int s = 0; s < cases[c].steps; s++) {
+            double v = train_lr_schedule_at(cases[c].base, s, cases[c].warm,
+                                            cases[c].sched, cases[c].steps, cases[c].floor_r);
+            uint64_t u;
+            memcpy(&u, &v, 8);
+            for (int k = 0; k < 8; k++) { h ^= (u >> (8 * k)) & 0xffu; h *= 0x100000001b3ull; }
+#ifdef RUNNER_T3_BUILD
+            double w;
+            if (s < cases[c].warm) {
+                w = cases[c].base * (double)(s + 1) / (double)cases[c].warm;
+            } else if (cases[c].sched != 1) {
+                w = cases[c].base;
+            } else {
+                int span = cases[c].steps - cases[c].warm;
+                double p = (double)(s - cases[c].warm) / (double)(span > 1 ? span : 1);
+                double sn, cs;
+                pm_sincos_d(3.14159265358979323846 * p, &sn, &cs);
+                w = cases[c].base * (cases[c].floor_r + (1.0 - cases[c].floor_r) * 0.5 * (1.0 + cs));
+            }
+            if (memcmp(&v, &w, 8) != 0 && !bad++)
+                fprintf(stderr, "FAIL: lr schedule case %zu step %d differs from T3 pm_sincos_d: %.17g/%.17g\n",
+                        c, s, v, w);
+#endif
+        }
+    }
+    if (h != R829_LR_DIGEST && !bad++)
+        fprintf(stderr, "FAIL: the lr schedules' digest is %016llx, a T3 build's %016llx\n",
+                (unsigned long long)h, (unsigned long long)R829_LR_DIGEST);
+    if (!bad)
+        printf("lr schedule: warmup and cosine over 4 recipes are a T3 build's (digest %016llx%s)\n",
+               (unsigned long long)h,
+#ifdef RUNNER_T3_BUILD
+               ", and memcmp against pm_sincos_d"
+#else
+               ""
+#endif
+               );
+    return bad;
+}
+
 int main(void) {
     f16_init();
     model_t m;
@@ -2115,6 +2175,7 @@ int main(void) {
     if (b_resident_scope_checks()) return 1;
     if (r4_bias_corr_checks()) return 1;   // no device needed
     if (r830_rope_checks()) return 1;      // no device needed
+    if (r829_lr_schedule_checks()) return 1;   // no device needed
     if (!gpu_train_init(&m)) {
         if (gate_no_device("train-gpu")) return 1;
         printf("train-gpu: no CUDA device, skipping (not passing)\n");

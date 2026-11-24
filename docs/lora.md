@@ -308,7 +308,7 @@ adapter is therefore the one it was before, byte for byte (Qwen3-4B Q4_K_M,
 5 steps). With the head and the optimizer on the device too, a build whose
 host math is portable (`--caps` reports `"math": "portable"`: a Windows
 default build, a build made with `PORTABLE_MATH=1`) has a T3 build's
-adapter, byte for byte, for a constant learning rate: the same file after 5
+adapter, byte for byte: the same file after 5
 steps, after 20, with `--batch 2`, and across a `--train-resume` on an RTX
 5070 under Windows, and after 5 and 20 steps on a CUDA slice (sm_120) under
 Linux. A Linux
@@ -323,13 +323,12 @@ Phi-3.5 mini (head dimension 96, LongRoPE) a portable-math build still
 trains an adapter of its own, with its rope tables bit-equal to the strict
 build's and the cause not found. So the byte-for-byte claim for a build
 that is not strict is a claim about the measured model. The few scalars the host computes for
-the optimizer and a fresh adapter (the init scale, alpha over rank, AdamW's
-bias corrections) are computed as a strict build computes them in every
-build. The learning-rate schedule (`--lr-schedule cosine`, `--lr-warmup`) is
-computed on the host in double and is not held to that. A default build's
-fresh adapter can change once for it, the CPU trainer's too; on the Windows
-build it did: under `-ffast-math` the init scale 1 / sqrt(n) came from a
-fast reciprocal square root, one bit off at n 2560.
+the optimizer, a fresh adapter, and the learning-rate schedule (the init
+scale, alpha over rank, AdamW's bias corrections, and `--lr-schedule` /
+`--lr-warmup` via `src/train_lr.c` and `pm_sincos_d`) are computed as a
+strict build computes them in every build (R8.29). On the Windows build the
+init scale had differed before that: under `-ffast-math` the init scale
+1 / sqrt(n) came from a fast reciprocal square root, one bit off at n 2560.
 
 On an RTX 5070 with 8 CPU threads (Qwen3-4B Q4_K_M, the ToolUse record's
 data, rank 8 on every projection, ctx 128; the median of steps 2 to 20,
