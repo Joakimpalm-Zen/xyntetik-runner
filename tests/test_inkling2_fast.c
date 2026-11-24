@@ -153,7 +153,13 @@ int main(int argc, char **argv) {
         CHECK(no_lg == NULL && h5 - h4 == 0, "(g) prefill with want_logits=false runs the head %ld row(s), want 0", h5 - h4);
         free(krows); drop(p64); drop(p8); drop(p0); drop(rk);
     }
-    // (h) Tier C prefill dispatch: a T=64 prefill takes the exact wide-batch tile (>0 columns)
+    // (h) Tier C prefill dispatch: a T=64 prefill takes the exact wide-batch tile (>0 columns). A T3 build has none:
+    // its canonical kernels (RUNNER_CANON_KERNELS) leave vec_dot_exact_tile_ok false, so its prefill takes the
+    // multi-column dot and the check skips, saying why (R4.48.20.4; it failed there before).
+#ifdef RUNNER_CANON_KERNELS
+    printf("ok: (h) skipped: a T3 build's canonical kernels have no exact tile (its prefill takes vec_dot_multi)\n");
+    if (vec_dot_exact_tile_ok(T_BF16, 64)) CHECK(0, "(h) a T3 build reports an exact tile it should not have");
+#else
     {
         model_t *p64t = load(argv[2], NULL, false, 1, 64);
         int32_t prompt64[64];
@@ -164,6 +170,7 @@ int main(int argc, char **argv) {
         CHECK(out64 && tc1 > tc0, "(h) T=64 BF16 prefill takes exact tile path (%lu cols, want > 0)", tc1 - tc0);
         drop(p64t);
     }
+#endif
     // (i) default chunk size 256 (clamped to n_ctx) and lazy r->rows allocation (only allocated on keep_all / dump)
     enum { N_SPLIT = 280 };
     int32_t split_tok[N_SPLIT];
