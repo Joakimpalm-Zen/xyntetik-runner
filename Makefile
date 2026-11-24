@@ -388,6 +388,7 @@ TEST_INKLING2_FAST = $(TEST_BATCH:test-batch%=test-inkling2-fast%)
 TEST_INK2_POOL_BENCH_BIN = $(TEST_BATCH:test-batch%=test-ink2-pool-bench-bin%)
 TEST_NVFP4_DOT = $(TEST_BATCH:test-batch%=test-nvfp4-dot%)
 TEST_INKLING2_VMATH = $(TEST_BATCH:test-batch%=test-inkling2-vmath%)
+TEST_SEND_ERROR = $(TEST_BATCH:test-batch%=test-send-error%)
 TEST_SLOW_NOTE = $(TEST_BATCH:test-batch%=test-slow-note%)
 
 # Every module header, so a change to any of them rebuilds. runner.h was one
@@ -990,6 +991,11 @@ $(TEST_BIND): tests/test_bind.c src/server.c src/main.c
 
 $(TEST_HOST_HEADER): tests/test_host_header.c $(OBJDIR)/http.o $(OBJDIR)/json.o $(OBJDIR)/compat.o $(HDR)
 	$(CC) $(CFLAGS) -I src tests/test_host_header.c $(OBJDIR)/http.o $(OBJDIR)/json.o \
+		$(OBJDIR)/compat.o -o $@ $(LDFLAGS)
+
+# R4.48.25.1: every served error carries its whole message (src/http.c send_error_detail, over a socketpair)
+$(TEST_SEND_ERROR): tests/test_send_error.c $(OBJDIR)/http.o $(OBJDIR)/json.o $(OBJDIR)/compat.o $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_send_error.c $(OBJDIR)/http.o $(OBJDIR)/json.o \
 		$(OBJDIR)/compat.o -o $@ $(LDFLAGS)
 
 # forkable KV prefixes: needs the real model, the real tokenizer and the real
@@ -4076,7 +4082,7 @@ test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SC
       $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_TRAY_MAC_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) $(TEST_LINEAGE_OOM) $(TEST_DERIVE_OOM) test-lora.full.gguf \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_SHA256) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_PMATH_EXPF) $(TEST_PMATH_EXPF_DEFAULT) $(TEST_PMATH_SOFTMAX) $(TEST_FPCLASS) $(TEST_ACT) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
-      $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_INKLING2_THREADS) $(TEST_INKLING2_FAST) $(INKLING2_TINY_DENSE) $(TEST_NVFP4_DOT) $(TEST_INKLING2_VMATH) \
+      $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_INKLING2_THREADS) $(TEST_INKLING2_FAST) $(INKLING2_TINY_DENSE) $(TEST_NVFP4_DOT) $(TEST_INKLING2_VMATH) $(TEST_SEND_ERROR) \
       $(TEST_INKLING2) $(TEST_INKLING2_PROVIDER) $(TEST_INKLING2_GGUF) $(INKLING2_READ) \
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) $(TEST_RESTART) $(TEST_PFX_PERSIST) $(TEST_KVSNAP_REPLACE) $(TEST_PARTIAL_FDOPEN) \
       $(TEST_SCHED_TURN) $(TEST_STREAM_OUT) $(TEST_RESIDENCY) $(TEST_CAPACITY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
@@ -4233,6 +4239,7 @@ test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SC
 	./$(TEST_MVCANON) test-oddff-f16.gguf F16
 	./$(TEST_BIND)
 	./$(TEST_HOST_HEADER)
+	./$(TEST_SEND_ERROR)
 	./$(TEST_RESIDENCY)
 	./$(TEST_CAPACITY)
 	./$(TEST_RESTART)
@@ -4662,6 +4669,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_embeddings_pooling.py \
     tests/test_envelope_gate.py \
     tests/test_envelope_swap.py \
+    tests/test_error_messages_whole.py \
     tests/test_eseries.py \
     tests/test_eval_record.py \
     tests/test_evidence_pack.py \

@@ -518,9 +518,10 @@ static bool validate_chat_messages(const jv *msgs, int tmpl, char *err, size_t e
                     return false;
                 }
                 if (strcmp(type, "text")) {
+                    char te[ERR_ECHO_CAP];
                     snprintf(err, err_cap,
                              "messages[%d].content[%d] type %s is unsupported; "
-                             "only text is accepted", i, k, type);
+                             "only text is accepted", i, k, err_echo(te, type));
                     return false;
                 }
                 jv *text = jv_get(part, "text");

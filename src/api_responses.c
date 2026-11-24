@@ -413,10 +413,11 @@ static bool responses_validate_content_parts(jv *input, char *err,
         if (strcmp(item_type, "message") &&
             strcmp(item_type, "function_call") &&
             strcmp(item_type, "function_call_output")) {
+            char te[ERR_ECHO_CAP];
             snprintf(err, err_cap,
                      "input[%d].type %s is unsupported; Runner accepts message, "
                      "function_call, function_call_output and reasoning items",
-                     i, item_type);
+                     i, err_echo(te, item_type));
             return false;
         }
         jv *content = jv_get(item, "content");
@@ -516,9 +517,10 @@ static bool responses_validate_content_parts(jv *input, char *err,
             }
             if (strcmp(type, "input_text") && strcmp(type, "output_text") &&
                 strcmp(type, "text")) {
+                char te[ERR_ECHO_CAP];
                 snprintf(err, err_cap,
                          "input[%d].content[%d] type %s is unsupported; "
-                         "Runner accepts text input only", i, k, type);
+                         "Runner accepts text input only", i, k, err_echo(te, type));
                 return false;
             }
             jv *text = jv_get(part, "text");
@@ -655,7 +657,8 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
         send_error(fd, 400, "instructions must be a string");
         return;
     }
-    char ierr[192];
+    // the longest refusal here: input[%d].type's 109 bytes of text, an int's 11 and an echoed type (ERR_ECHO_CAP)
+    char ierr[256];
     if (!responses_validate_content_parts(input, ierr, sizeof(ierr))) {
         send_error(fd, 400, ierr);
         return;

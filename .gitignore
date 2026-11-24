@@ -191,6 +191,8 @@ test-nvfp4-dot.out
 test-inkling2-vmath
 test-inkling2-vmath.exe
 test-inkling2-vmath.out
+test-send-error
+test-send-error.exe
 test-metal-ownership
 test-metal-ownership.exe
 test-model-load-failure

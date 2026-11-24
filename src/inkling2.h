@@ -166,6 +166,9 @@ long ink2_head_rows(void);
 // TEST-ONLY (R4.48.20.4): the MoE layer's allocations since the process began, its routing tables, the expert body's
 // position lists and an instance's scratch growing; a forward after the first at the same width allocates none.
 long ink2_moe_allocs(void);
+// TEST-ONLY (R4.48.25.1): the decode fusion on or off within a process. RUNNER_INK2_DECODE_FUSE=0 turns it off, and is
+// read once, at the engine's first use.
+void ink2_set_decode_fuse(int on);
 // TEST-ONLY: perturb position p0's post-embed hidden state by delta when p0 > 0, so split invariance tests can
 // prove chunk boundaries are live.
 void ink2_set_test_chunk_bump(float delta);
