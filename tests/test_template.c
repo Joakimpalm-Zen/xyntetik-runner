@@ -2010,6 +2010,47 @@ static void test_chatml_think_shape(void) {
 //   - a system turn's functions suffix, a user turn's functions line, an assistant's function_calls block;
 //   - the LAST message, if an assistant turn, ends with the eos token, not <|im_end|>;
 //   - an environment turn as written; no message at all: the default system turn and no generation prompt.
+// R4.50.10: allenai/OLMo-2-0425-1B-Instruct's template (revision 48d788ec, byte-identical to its GGUF's): Tulu-style.
+// BOS once; a system or user turn ends with a newline only; an assistant turn with the eos, and a newline unless it
+// is the last message; the generation prompt is "<|assistant|>\n". Runner detected it as zephyr, whose turns all end
+// with a literal </s>. Names, not the enum, so this compiles (and fails) before the family exists.
+static void test_olmo2_shape(void) {
+    static const char pub[] =
+        "{{ bos_token }}{% for message in messages %}{% if message['role'] == 'system' %}{{ '<|system|>\n' + "
+        "message['content'] + '\n' }}{% elif message['role'] == 'user' %}{{ '<|user|>\n' + message['content'] + '\n' "
+        "}}{% elif message['role'] == 'assistant' %}{% if not loop.last %}{{ '<|assistant|>\n'  + message['content'] "
+        "+ eos_token + '\n' }}{% else %}{{ '<|assistant|>\n'  + message['content'] + eos_token }}{% endif %}{% endif "
+        "%}{% if loop.last and add_generation_prompt %}{{ '<|assistant|>\n' }}{% endif %}{% endfor %}";
+    static const char zephyr[] =   // HuggingFaceH4/zephyr-7b-beta's: every turn ends with eos_token
+        "{% for message in messages %}\n{% if message['role'] == 'user' %}\n{{ '<|user|>\n' + message['content'] + "
+        "eos_token }}\n{% elif message['role'] == 'system' %}\n{{ '<|system|>\n' + message['content'] + eos_token }}\n"
+        "{% elif message['role'] == 'assistant' %}\n{{ '<|assistant|>\n'  + message['content'] + eos_token }}\n"
+        "{% endif %}\n{% if loop.last and add_generation_prompt %}\n{{ '<|assistant|>' }}\n{% endif %}\n{% endfor %}";
+    const int t = template_detect(pub, NULL);
+    assert(!strcmp(template_name(t), "olmo2"));
+    assert(template_from_name("olmo2") == t);
+    assert(!strcmp(template_name(template_detect(zephyr, NULL)), "zephyr"));
+    char out[1024];
+    // system, user, assistant, user, then the generation prompt: BOS once, a newline after system and user, the
+    // eos and a newline after an assistant turn that is not the last
+    const chat_msg hist[] = { CHAT_MSG("system", "S"), CHAT_MSG("user", "Q"), CHAT_MSG("assistant", "A"),
+                              CHAT_MSG("user", "Q2") };
+    render_messages(t, hist, 4, true, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out, "<|endoftext|><|system|>\nS\n<|user|>\nQ\n<|assistant|>\nA<|endoftext|>\n<|user|>\nQ2\n"
+                        "<|assistant|>\n"));
+    render_messages(t, hist, 2, false, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out, "<|endoftext|><|system|>\nS\n<|user|>\nQ\n"));
+    // the last message an assistant turn: its eos and no newline; with the generation prompt, the prompt right after
+    render_messages(t, hist, 3, false, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out, "<|endoftext|><|system|>\nS\n<|user|>\nQ\n<|assistant|>\nA<|endoftext|>"));
+    render_messages(t, hist, 3, true, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out, "<|endoftext|><|system|>\nS\n<|user|>\nQ\n<|assistant|>\nA<|endoftext|><|assistant|>\n"));
+    // no messages: the BOS alone (the publisher's generation prompt sits inside the loop, so none follows)
+    render_messages(t, hist, 0, true, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out, "<|endoftext|>"));
+    printf("ok: olmo2 (OLMo 2 Instruct) template detected and rendered as the publisher's\n");
+}
+
 static void test_olmo3_shape(void) {
     char out[4096];
     const char *def = "You are OLMo, a helpful function-calling AI assistant built by Ai2. Your date cutoff is "
@@ -3849,6 +3890,7 @@ int main(void) {
     test_gemma4_tool_turns();
     test_chatml_think_shape();
     test_olmo3_shape();
+    test_olmo2_shape();
     test_minicpm5_shape();
     test_mimo_shape();
     test_spark_shape();
