@@ -1,0 +1,106 @@
+{
+  "checks": [
+    {
+      "check": "cuda_backend_present",
+      "detail": "caps.gpu.backend = 'cuda' (expected 'cuda'; absent means the CUDA driver never initialised)",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "check": "version_matches",
+      "detail": "caps.version = '1.21.0', expected '1.21.0'",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "check": "unified_memory_is_boolean",
+      "detail": "caps.gpu.unified_memory = False",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "check": "unified_memory_agrees_with_pool_sizes",
+      "detail": "unified_memory=False with vram_bytes=12820480000 and ram_bytes=67796652032 (vram/ram = 0.189, one pool expected >= 0.85)",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "check": "unified_flag_not_suspiciously_false",
+      "detail": "unified_memory=False with vram/ram = 0.189",
+      "ok": true,
+      "severity": "warn"
+    },
+    {
+      "check": "vram_reported",
+      "detail": "vram_bytes = 12820480000",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "check": "gpu_quants_present",
+      "detail": "gpu_quants has 24 entries",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "check": "gpu_quants_subset_of_quants",
+      "detail": "every gpu_quant is loadable",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "check": "generation_exit_zero",
+      "detail": "runner exited 0",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "check": "gpu_engaged_for_generation",
+      "detail": "load output carries the CUDA backend line",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "check": "tokens_generated",
+      "detail": "generated 24 tokens",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "check": "layers_offloaded",
+      "detail": "gpu-split G=28/28",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "check": "unified_notice_matches_caps",
+      "detail": "load output omits the unified-memory notice while caps said False",
+      "ok": true,
+      "severity": "fail"
+    }
+  ],
+  "generation_output": "gpu: OS video memory budget 11.72 GB for this process, 0.15 GB in use; offload budget 11.57 GB, headroom 0.54 GB\r\ngpu-split: budget=11.57GB fixed=0.56GB G=28/28 full=1 used=1.50GB\r\ngpu-split: prompt window 512 columns (batch 512, 9.91 GB spare, 77828 bytes a column with TC2's activations)\r\ngpu: compiling the GPU kernels for this card and driver; this happens once per card and driver, later loads take them from the driver's cache\r\ngpu: OS video memory budget after the weights 11.72 GB, 0.80 GB in use\r\ngpu: CUDA backend on NVIDIA GeForce RTX 5070 (0.6 GB weights in VRAM)\r\ngpu: VRAM 10.38 GB free of 12.82 GB after init (kv 0.47 GB + scratch 0.02 GB this instance)\r\nloaded Qwen3-0.6B-Q8_0.gguf | qwen3 | 28 layers | ctx 4096 | 8 threads | 6.31s\r\nsampling: qwen3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\r\nThe capital of France is Paris. The capital of France is also the capital of the Republic of France. The capital of France is also the capital\r\nprompt: 5 tok, 868.31 tok/s | gen: 24 tok, 452.03 tok/s\r\n\r\n",
+  "gpu": {
+    "backend": "cuda",
+    "compute_capability": "12.0",
+    "eseries": true,
+    "kv_f32": true,
+    "kv_fp4": true,
+    "kv_q8": true,
+    "min_compute_capability": "7.5",
+    "min_gpu": "NVIDIA Turing / compute capability 7.5 or newer",
+    "moe": true,
+    "name": "NVIDIA GeForce RTX 5070",
+    "ptx_target": "sm_75",
+    "unified_memory": false,
+    "vram_bytes": 12820480000,
+    "vram_free_bytes": 11571036160
+  },
+  "host": {
+    "arch": "x86_64",
+    "os": "windows",
+    "ram_bytes": 67796652032
+  },
+  "passed": true,
+  "runner_version": "1.21.0"
+}
