@@ -13753,6 +13753,26 @@ bool gpu_ink2_test_ptanh(gpu_ink2 *h, const float *x, float *y, int n) {
     pthread_mutex_unlock(&h->mu);
     return ok;
 }
+// TEST-ONLY (R4.48.9.2, gpu.h): the expert body's SwiGLU in place over cols columns of act ([cols][2F]: the gates,
+// then the ups), through k_ink2_swiglu (bounded 0) or the fused body's k_ink2_swiglu_n (1, every column live), the
+// launches gpu_ink2_experts makes
+bool gpu_ink2_test_swiglu(gpu_ink2 *h, float *act, int F, int cols, float gate_cap, float up_cap, int bounded) {
+    CUfunction f = !h ? NULL : bounded ? h->f_swiglu_n : h->f_swiglu;
+    if (!f || F <= 0 || cols <= 0 || cols > 65535 || !act) return false;
+    const size_t bytes = sizeof(float) * (size_t)cols * 2 * (size_t)F;
+    int cs = 2 * F, j0 = 0;
+    CUdeviceptr da = 0, djed = 0;
+    pthread_mutex_lock(&h->mu);
+    bool ok = cu.CtxSetCurrent(h->ctx) == 0 && cu.MemAlloc(&da, bytes) == 0 && cu.MemcpyHtoD(da, act, bytes) == 0 &&
+              (!bounded || (cu.MemAlloc(&djed, sizeof(int)) == 0 && cu.MemcpyHtoD(djed, &cols, sizeof(int)) == 0));
+    void *p[] = { &da, &F, &cs, &gate_cap, &up_cap, &j0, &djed };
+    ok = ok && cu.LaunchKernel(f, (unsigned)((F + 255) / 256), (unsigned)cols, 1, 256, 1, 1, 0, NULL, p, NULL) == 0 &&
+         cu.MemcpyDtoH(act, da, bytes) == 0;
+    if (da) cu.MemFree(da);
+    if (djed) cu.MemFree(djed);
+    pthread_mutex_unlock(&h->mu);
+    return ok;
+}
 // G2b step 1 (gpu.h): the expert body of one application, the router's choice given. Per used expert in ascending
 // index, as ink2_experts_fast: its positions gathered (k_moe_gather), gate_up a column at a time, Inkling's SwiGLU,
 // down a column at a time, out[position] += weight * down (k_moe_scatter_add, one launch per expert on the null

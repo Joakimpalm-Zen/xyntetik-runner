@@ -6189,6 +6189,9 @@ bool gpu_ink2_msg_steps(gpu_ink2 *h, int n_roles, int T, int H, int r, float eps
 }
 bool gpu_ink2_msg_ok(const gpu_ink2 *h) { (void)h; return false; }
 bool gpu_ink2_test_ptanh(gpu_ink2 *h, const float *x, float *y, int n) { (void)h; (void)x; (void)y; (void)n; return false; }
+bool gpu_ink2_test_swiglu(gpu_ink2 *h, float *act, int F, int cols, float gate_cap, float up_cap, int bounded) {
+    (void)h; (void)act; (void)F; (void)cols; (void)gate_cap; (void)up_cap; (void)bounded; return false;
+}
 bool gpu_ink2_route_experts(gpu_ink2 *h, int ir, const float *br, float scale, int K, int i13, int i2, int type13,
                             int type2, size_t rb13, size_t rb2, int H, int F, int E, int T, const float *x,
                             const float *s13, const float *s2, float gate_cap, float up_cap, float *out,

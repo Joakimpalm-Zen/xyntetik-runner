@@ -783,6 +783,10 @@ bool       gpu_ink2_msg_steps(gpu_ink2 *h, int n_roles, int T, int H, int r, flo
 bool       gpu_ink2_msg_ok(const gpu_ink2 *h);
 // TEST-ONLY: y[i] = the device's port of pmath.h's p_tanhf(x[i]), for i < n
 bool       gpu_ink2_test_ptanh(gpu_ink2 *h, const float *x, float *y, int n);
+// TEST-ONLY (R4.48.9.2): the expert body's SwiGLU in place over cols columns of act ([cols][2F]: the F gates, then
+// the F ups; the result replaces the gates), through k_ink2_swiglu (bounded 0) or k_ink2_swiglu_n (1), as
+// gpu_ink2_experts launches them. False: no device, or the kernel is not in the module.
+bool       gpu_ink2_test_swiglu(gpu_ink2 *h, float *act, int F, int cols, float gate_cap, float up_cap, int bounded);
 // D1b: the router on the device, then the expert body from its choices, in one call: for each of T positions of x
 // [T][H] (host memory), the router's logits over the F32 router rows of device tensor ir ([E][H]: a serial dot
 // ascending), the scores sigmoid(l) with pmath.h's p_expf ported, the top K by score + br[e] (br host [E]; strict >,

@@ -54,6 +54,12 @@
 //         CUDA rows within 1e-4 of the CPU fast route's rows with the same adapter, finite; the adapter moves the CUDA
 //         rows at least 10 times further than that distance; at scale 0 the CUDA rows equal the base CUDA rows byte
 //         for byte.
+//  R4.48.9.2, an operation-level gate (tests/test_inkling2_vmath.c's SwiGLU case, on the device):
+//     (sw) the expert body's own SwiGLU, k_ink2_swiglu and the fused body's k_ink2_swiglu_n, against pmath.h's double
+//         forms within 20 u (u = 2^-24), over g and u at every sign and 41 magnitudes from 1e-6 to 1e4 and 0, every
+//         pair, at Inkling's caps 4 / 25 and the tiny files' 1 / 2, F 64 and 67. The rule is the host gate's, and its
+//         anchor the CUDA C Programming Guide's maximum errors (tanhf and expf 2 ulp, at most 4 u); its live control,
+//         the kernel's statements with the cancelling float32 tanh, must exceed the bound.
 //
 // usage: test_inkling2_cuda TINY_F32.gguf TINY_BF16.gguf TINY_Q8_0.gguf TINY_F16.gguf TINY_LORA.gguf
 #include "model.h"
@@ -62,6 +68,8 @@
 #include "inkling2.h"
 #include "compat.h"
 #include "quants.h"
+#include "pmath.h"   // (sw): pm_exp_d, the SwiGLU's double reference
+#include <float.h>
 #include <math.h>
 #if defined(__x86_64__) || defined(__i386__)
 #include <xmmintrin.h>   // D1a's tanh check: the reference with the FTZ / DAZ modes off (_mm_getcsr / _mm_setcsr)
@@ -715,6 +723,83 @@ static long route_identity_k(int E, int K, int H, int T, bool near, int kind, lo
     return diff;
 }
 
+// (sw), R4.48.9.2: tests/test_inkling2_vmath.c's SwiGLU reference and control, for the device's kernels. pmath.h's
+// double forms: p_tanhf's body before its float rounding, and the exp in double. The softcap divides as the kernel
+// does, a correctly rounded float32 quotient, then takes the tanh of it in double.
+static const double SW_U = 5.9604644775390625e-08;   // 2^-24
+static double sw_ref_tanh(float x) {
+    double xd = (double)x;
+    if (xd > 20.0) return 1.0;
+    if (xd < -20.0) return -1.0;
+    if (xd < 1e-4 && xd > -1e-4) return xd * (1.0 - xd * xd * (1.0 / 3.0));
+    double e = pm_exp_d(2.0 * xd);
+    return (e - 1.0) / (e + 1.0);
+}
+static double sw_ref(float g, float u, float gc, float uc) {
+    const double sg = sw_ref_tanh((float)((double)g / gc)) * gc, su = sw_ref_tanh((float)((double)u / uc)) * uc;
+    return sg * (1.0 / (1.0 + pm_exp_d(-(double)g))) * su;
+}
+// THE CONTROL: R4.48.20's cancelling tanh, (1 - e^-2|x|) / (1 + e^-2|x|) in float32, one lane
+static float sw_tanh_cancel(float x) {
+    float ax = fabsf(x);
+    if (ax < 1e-3f) return x * (1.0f - x * x * (1.0f / 3.0f));
+    if (ax >= 10.0f) return copysignf(1.0f, x);
+    float e = p_expf(-2.0f * ax);
+    return copysignf((1.0f - e) / (1.0f + e), x);
+}
+// The worst relative error in u of the device's SwiGLU (bounded: k_ink2_swiglu_n; ctl: the control on the host,
+// through the kernel's own float32 statements) over every (g, u) pair of 0 and +-1e-6 .. 1e4 at 41 magnitudes; -1 if
+// the hook did not run. *wg / *wu: the worst pair.
+static double sw_worst(gpu_ink2 *h, float gc, float uc, int F, int bounded, int ctl, float *wg, float *wu) {
+    enum { NMAG = 41 };
+    float vals[1 + 2 * NMAG];
+    int nv = 0;
+    vals[nv++] = 0.0f;
+    for (int m = 0; m < NMAG; m++) {
+        const float a = (float)pow(10.0, -6.0 + 10.0 * m / (NMAG - 1));
+        vals[nv++] = a;
+        vals[nv++] = -a;
+    }
+    const int npairs = nv * nv, cols = (npairs + F - 1) / F;
+    float *act = calloc((size_t)cols * 2 * F, sizeof(float));
+    float *gi = calloc((size_t)cols * F, sizeof(float)), *ui = calloc((size_t)cols * F, sizeof(float));
+    if (!act || !gi || !ui) { free(act); free(gi); free(ui); return -1.0; }
+    for (int p = 0; p < cols * F; p++) {
+        const int q = p % npairs, c = p / F, j = p % F;   // the last column repeats the first pairs
+        gi[p] = vals[q / nv];
+        ui[p] = vals[q % nv];
+        act[(size_t)c * 2 * F + j] = gi[p];
+        act[(size_t)c * 2 * F + F + j] = ui[p];
+    }
+    bool ran = true;
+    if (ctl) {
+        for (int p = 0; p < cols * F; p++) {
+            const float g = gi[p], u = ui[p];
+            const float sg = sw_tanh_cancel(g / gc) * gc, sig = 1.0f / (1.0f + p_expf(-g));
+            const float su = sw_tanh_cancel(u / uc) * uc;
+            act[(size_t)(p / F) * 2 * F + p % F] = sg * sig * su;
+        }
+    } else {
+        ran = gpu_ink2_test_swiglu(h, act, F, cols, gc, uc, bounded);
+    }
+    const double floor_abs = (double)gc * uc * FLT_MIN;
+    double worst = ran ? 0.0 : -1.0;
+    for (int p = 0; ran && p < cols * F; p++) {
+        const double r = sw_ref(gi[p], ui[p], gc, uc);
+        const float y = act[(size_t)(p / F) * 2 * F + p % F];
+        double e;
+        uint32_t yb;
+        memcpy(&yb, &y, 4);
+        if ((yb & 0x7f800000u) == 0x7f800000u) e = INFINITY;   // not finite, by its bits (-ffast-math)
+        else if (r == 0.0) e = y == 0.0f ? 0.0 : INFINITY;
+        else if (fabs(y - r) <= floor_abs) e = 0.0;
+        else e = fabs(y - r) / fabs(r) / SW_U;
+        if (e > worst) { worst = e; *wg = gi[p]; *wu = ui[p]; }
+    }
+    free(act); free(gi); free(ui);
+    return worst;
+}
+
 int main(int argc, char **argv) {
     if (argc < 6) {
         fprintf(stderr, "usage: %s TINY_F32.gguf TINY_BF16.gguf TINY_Q8_0.gguf TINY_F16.gguf TINY_LORA.gguf\n", argv[0]);
@@ -1272,6 +1357,29 @@ int main(int argc, char **argv) {
 #endif
         CHECK(ran && nd == 0, "(y) the device's p_tanhf over %d values (its three branches, their edges, zeros, "
               "subnormals, infinities, NaN): %ld differ in their bits from pmath.h's (want 0)", NV, nd);
+        gpu_ink2_free(h);
+    }
+    // R4.48.9.2 (sw): the expert body's own SwiGLU on the device, k_ink2_swiglu and the fused body's k_ink2_swiglu_n,
+    // within 20 u of pmath.h's double forms (tests/test_inkling2_vmath.c's rule: two softcaps of a correctly rounded
+    // division, a tanh and a multiply, 6 u each; the sigmoid's exp, add and division, 6 u; two multiplies; with a
+    // transcendental at 4 u, the CUDA C Programming Guide's 2 ulp for tanhf and expf), at Inkling's caps and the tiny
+    // files', F 64 and 67 (the columns past F); then the control, the cancelling float32 tanh, past the bound
+    {
+        gpu_ink2 *h = gpu_ink2_bind();
+        const float caps[][2] = { { 4.0f, 25.0f }, { 1.0f, 2.0f } };   // Inkling 2 Mini's, the tiny files'
+        for (int bounded = 0; bounded < 2; bounded++)
+            for (int c = 0; c < 2; c++)
+                for (int F = 64; F <= 67; F += 3) {
+                    float wg = 0, wu = 0;
+                    const double w = sw_worst(h, caps[c][0], caps[c][1], F, bounded, 0, &wg, &wu);
+                    CHECK(w >= 0.0 && w <= 20.0, "(sw) the device's %s, caps %g/%g, F %d, 6889 (g, u) pairs: worst "
+                          "%.2f u (g %.3g u %.3g) <= 20 u of pmath.h's double forms",
+                          bounded ? "k_ink2_swiglu_n" : "k_ink2_swiglu", caps[c][0], caps[c][1], F, w, wg, wu);
+                }
+        float wg = 0, wu = 0;
+        const double w = sw_worst(h, 4.0f, 25.0f, 64, 0, 1, &wg, &wu);
+        CHECK(w > 20.0, "(sw) CONTROL: the kernel's statements with the cancelling float32 tanh fail the sweep (worst "
+              "%.2f u, g %.3g u %.3g)", w, wg, wu);
         gpu_ink2_free(h);
     }
     {
