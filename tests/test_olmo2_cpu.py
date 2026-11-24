@@ -69,7 +69,8 @@ BAD = {"pre-norm": "olmo2: blk.0 carries a pre-norm (attn_norm or ffn_norm)",
        "narrow-qk-norm": "olmo2: blk.0's QK norms are 16 and 16 wide where the q and k projections are 64 and 64",
        "no-post-norm": "missing tensor blk.0.post_ffw_norm.weight",
        "pattern-period": "olmo2: olmo2.attention.sliding_window_pattern is not one bool for each of the 4 layers",
-       "pattern-short": "olmo2: olmo2.attention.sliding_window_pattern is not one bool for each of the 4 layers"}
+       "pattern-short": "olmo2: olmo2.attention.sliding_window_pattern is not one bool for each of the 4 layers",
+       "experts": "olmo2: the file declares 4 experts, and olmo2 is dense"}
 FIXTURES = {"olmo2": [], "olmo2-plain": ["--plain"], "olmo2-gqa": ["--gqa"], "llama": ["--llama"],
             "olmo2-nopattern": ["--no-pattern-array"], "olmo2-badaf": ["--attn-factor", "1.5"],
             **{f"bad-{k}": ["--bad", k] for k in BAD}}
