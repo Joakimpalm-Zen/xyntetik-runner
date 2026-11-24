@@ -761,12 +761,16 @@ bool       gpu_ink2_lin(gpu_ink2 *h, int i, int type, size_t row_bytes, int64_t 
 // rb13 a row) a column at a time with factor s13[e] (NULL: 1), Inkling's SwiGLU (gate and up capped by gate_cap and
 // up_cap, times the gate's sigmoid), down (i2) with s2[e], and out[t] += wt[t][e] * down in ascending expert index.
 // x and out [T][H]. Factors only on NVFP4. False: a device failure, or the kernels are not in the module
-// (gpu_ink2_experts_ok). gpu_ink2_reserve_experts allocates its buffers for T columns now (for the fit check).
+// (gpu_ink2_experts_ok). Since the gap note's D2 the body runs FUSED: one gather, one segmented gate_up, one SwiGLU,
+// one segmented down over every (expert, position) column, and one per-position weighted sum in ascending expert
+// order, the same bits as the former per-expert launches (TEST-ONLY gpu_ink2_test_experts_ref(h, 1) runs those).
+// gpu_ink2_reserve_experts allocates its buffers for T positions x U used experts now (for the fit check).
 bool       gpu_ink2_experts(gpu_ink2 *h, int i13, int i2, int type13, int type2, size_t rb13, size_t rb2, int H, int F,
                             int E, int T, const float *x, const unsigned char *chosen, const float *wt,
                             const float *s13, const float *s2, float gate_cap, float up_cap, float *out);
 bool       gpu_ink2_experts_ok(const gpu_ink2 *h);
-bool       gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F, int E);
+bool       gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F, int E, int U);
+void       gpu_ink2_test_experts_ref(gpu_ink2 *h, int on);
 void       gpu_ink2_release_experts(gpu_ink2 *h);   // those buffers freed (a fit retried without the expert body)
 // G2b step 2a: an instance's K/V on the device, one ring per application (row j % rows[a] holds position j's C
 // values), owned by the instance (the weights' handle may be shared); and the attention core over it: the chunk's

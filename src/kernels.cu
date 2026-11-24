@@ -5568,6 +5568,106 @@ extern "C" __global__ void k_ink2_swiglu(float *act, int F, int cs, float gc, fl
     a[j] = sg * sig * su;
 }
 
+// R4.48.9 (the gap note's D2): the expert body in five launches an application instead of five an expert. Its products
+// run SEGMENTED: one launch over every gathered (expert, position) column of the call (expert-major), column j = j0 +
+// blockIdx.y with its expert ex[j]: the weights at a.w_off + ex[j] * w_es bytes, its x at x + j * xcs, its y at
+// y + j * ycs, and on NVFP4 the expert's factor esc[ex[j]] (or 1). Each kernel's row arithmetic is a VERBATIM COPY of
+// its batch-1 k_mv_* (left untouched, so their PTX does not move); tests/test_inkling2_cuda.c holds the whole body to
+// the former per-expert launches byte for byte.
+#define MVSEG_PARAMS const uchar *wb, const float *x, float *y, mv_args a, const float *bias, const int *ex, \
+                     ka_u64 w_es, int xcs, int ycs, int j0
+#define MVSEG_HEAD \
+    { const int j_ = j0 + (int)blockIdx.y; a.w_off += (ka_u64)ex[j_] * w_es; x += (ulong64)j_ * xcs; \
+      y += (ulong64)j_ * ycs; }
+extern "C" __global__ void k_mvseg_f32(MVSEG_PARAMS) {
+    MVSEG_HEAD;
+    MV_HEAD;
+    const float *rw = (const float *)(wb + a.w_off) + (ulong64)row * a.n_in;
+    float s = 0;
+    for (int i = lane; i < a.n_in; i += 32) s += rw[i] * x[i];
+    MV_TAIL;
+}
+extern "C" __global__ void k_mvseg_bf16(MVSEG_PARAMS) {
+    MVSEG_HEAD;
+    MV_HEAD;
+    const unsigned short *rw =
+        (const unsigned short *)(wb + a.w_off) + (ulong64)row * a.n_in;
+    float s = 0;
+    for (int i = lane; i < a.n_in; i += 32) s += bf16f(rw[i]) * x[i];
+    MV_TAIL;
+}
+extern "C" __global__ void k_mvseg_q8_0(MVSEG_PARAMS) {
+    MVSEG_HEAD;
+    MV_HEAD;
+    int nb = a.n_in / 32;
+    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 34;
+    float s = 0;
+    for (int b = lane; b < nb; b += 32) {
+        const uchar *blk = rw + (ulong64)b * 34;
+        float d = f16f(blk);
+        const signed char *q = (const signed char *)(blk + 2);
+        const float *xp = x + b * 32;
+        float t = 0;
+        for (int j = 0; j < 32; j++) t += (float)q[j] * xp[j];
+        s += d * t;
+    }
+    MV_TAIL;
+}
+extern "C" __global__ void k_mvseg_iq3_xxs(MVSEG_PARAMS) {
+    MVSEG_HEAD;
+    IQ_LANE_MV1(iq3xxs_lane_n, 98)
+}
+extern "C" __global__ void k_mvseg_nvfp4(MVSEG_PARAMS, const float *esc) {
+    MVSEG_HEAD;
+    const float scale = esc ? esc[ex[j0 + (int)blockIdx.y]] : 1.0f;
+    __shared__ float kv[16];
+    if (threadIdx.x < 16) kv[threadIdx.x] = kv_mxfp4[threadIdx.x];
+    LANE_DENSE_HEAD(64)
+    int nb = a.n_in / 64;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 36;
+    float s = 0;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 64)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (64 + 1);
+            const uchar *blk = rw + (ulong64)b * 36;
+            for (int sub = 0; sub < 4; sub++) {
+                float d = ue4m3f(blk[sub]);
+                const uchar *q = blk + 4 + sub * 8;
+                const float *xp = xs_ + sub * 16;
+                float t = 0;
+                for (int j = 0; j < 8; j++) {
+                    t += kv[q[j] & 0xF] * xp[j];
+                    t += kv[q[j] >> 4]  * xp[j + 8];
+                }
+                s += d * t;
+            }
+        }
+        __syncthreads();
+    }
+    if (live) {
+        s = warp_sum(s) * scale;
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
+}
+// The weighted sum per position, one thread a (position t = blockIdx.y, element i): out[t][i] = the sum over the
+// position's columns pl[po[t]..po[t+1]) in ascending expert order of w[j] * src[j][i], accumulated as the former
+// per-expert k_moe_scatter_add launches did (a zeroed accumulator, then += w * src, expert after expert), so the same
+// bits; no two threads write one element, so no ordering between launches is needed.
+extern "C" __global__ void k_moe_scatter_pos(float *out, const float *src, const int *po, const int *pl,
+                                             const float *w, int n, int os, int ss) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float *o = out + (ulong64)blockIdx.y * os + i;
+    for (int k = po[blockIdx.y]; k < po[blockIdx.y + 1]; k++) {
+        const int j = pl[k];
+        *o += w[j] * src[(ulong64)j * ss + i];
+    }
+}
+
 // R4.48.9 G2b step 2a: Inkling 2 Mini's attention core over the application's device K/V ring, one warp per (query i
 // = blockIdx.x, head h = blockIdx.y), as ink2_attn_core computes it: logits (q . k) * scale + the relative bias of
 // distance d (< ext; 0 beyond), over the keys the mask admits (0 <= d, and d < window on a sliding layer), the sink as

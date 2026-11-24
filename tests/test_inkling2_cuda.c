@@ -244,6 +244,74 @@ static double core_case(int hd, int global, int window, int R, const int *chunks
     return ran && top > 0 ? worst / top : 1;
 }
 
+// D2 (x2): the fused expert body against the former per-expert launches (TEST-ONLY gpu_ink2_test_experts_ref) on the
+// same inputs, bit for bit. Dense random x (the one-hot x of (k) makes most sums trivial); a stack of E experts of
+// `type` (NVFP4: random codes and scales, the factors given; BF16: random values, no factors); chosen: position t takes
+// `used` experts starting at (t * 5 + 1) % E stepping 3 (so experts repeat across positions), plus expert `all` at
+// every position (-1: none) and expert `none` never. *nval the values compared; returns the values whose bits differ,
+// -1 if a call did not run.
+static long exp_identity(int type, int H, int F, int E, int T, int used, int all, int none, long *nval) {
+    const size_t rb13 = type == T_NVFP4 ? (size_t)H / 64 * 36 : (size_t)H * 2, rb2 = type == T_NVFP4 ? (size_t)F / 64 * 36 : (size_t)F * 2;
+    unsigned char *w13 = malloc((size_t)E * 2 * F * rb13), *w2 = malloc((size_t)E * H * rb2);
+    float *x = malloc(sizeof(float) * (size_t)T * H), *o1 = malloc(sizeof(float) * (size_t)T * H);
+    float *o2 = malloc(sizeof(float) * (size_t)T * H), *wt = calloc((size_t)T * E, sizeof(float));
+    float *s13 = malloc(sizeof(float) * (size_t)E), *s2 = malloc(sizeof(float) * (size_t)E);
+    unsigned char *ch = calloc((size_t)T * E, 1);
+    long diff = -1;
+    *nval = 0;
+    if (!w13 || !w2 || !x || !o1 || !o2 || !wt || !s13 || !s2 || !ch) goto done;
+    uint32_t seed = 991u + (uint32_t)type * 7u + (uint32_t)T;
+#define RNDU() (seed = seed * 1664525u + 1013904223u, seed >> 8)
+#define RNDF() ((float)((int)(RNDU() % 2001u) - 1000) / 1000.0f)
+    if (type == T_NVFP4) {
+        for (size_t i = 0; i < (size_t)E * 2 * F * rb13; i++) w13[i] = (unsigned char)RNDU();
+        for (size_t i = 0; i < (size_t)E * H * rb2; i++) w2[i] = (unsigned char)RNDU();
+        for (size_t r = 0; r < (size_t)E * 2 * F; r++)   // scale bytes in a sane range (no NaN code 0x7F)
+            for (size_t b = 0; b < rb13; b += 36) for (int k = 0; k < 4; k++) w13[r * rb13 + b + k] = (unsigned char)(0x30 + RNDU() % 16);
+        for (size_t r = 0; r < (size_t)E * H; r++)
+            for (size_t b = 0; b < rb2; b += 36) for (int k = 0; k < 4; k++) w2[r * rb2 + b + k] = (unsigned char)(0x30 + RNDU() % 16);
+    } else {   // BF16: a float's top half
+        for (size_t i = 0; i < (size_t)E * 2 * F * (size_t)H; i++) { const float f = 0.05f * RNDF(); uint32_t u; memcpy(&u, &f, 4); ((uint16_t *)w13)[i] = (uint16_t)(u >> 16); }
+        for (size_t i = 0; i < (size_t)E * H * (size_t)F; i++) { const float f = 0.05f * RNDF(); uint32_t u; memcpy(&u, &f, 4); ((uint16_t *)w2)[i] = (uint16_t)(u >> 16); }
+    }
+    for (size_t i = 0; i < (size_t)T * H; i++) x[i] = RNDF();
+    for (int e = 0; e < E; e++) { s13[e] = 0.5f + 0.25f * (float)(e % 5); s2[e] = 1.5f - 0.125f * (float)(e % 7); }
+    for (int t = 0; t < T; t++) {
+        for (int k = 0; k < used; k++) {
+            const int e = ((t * 5 + 1) % E + 3 * k) % E;
+            if (e == none) continue;
+            ch[(size_t)t * E + e] = 1; wt[(size_t)t * E + e] = 0.1f + 0.05f * (float)k + 0.001f * (float)t;
+        }
+        if (all >= 0) { ch[(size_t)t * E + all] = 1; wt[(size_t)t * E + all] = 0.3f; }
+    }
+#undef RNDU
+#undef RNDF
+    {
+        gpu_ink2 *h = gpu_ink2_bind();
+        const float *f13 = type == T_NVFP4 ? s13 : NULL, *f2 = type == T_NVFP4 ? s2 : NULL;
+        const int i13 = h ? gpu_ink2_put(h, w13, (size_t)E * 2 * F * rb13, f13, f13 ? E : 0) : -1;
+        const int i2 = h ? gpu_ink2_put(h, w2, (size_t)E * H * rb2, f2, f2 ? E : 0) : -1;
+        bool ran = i13 >= 0 && i2 >= 0 &&
+                   gpu_ink2_experts(h, i13, i2, type, type, rb13, rb2, H, F, E, T, x, ch, wt, f13, f2, 4.0f, 8.0f, o1);
+        gpu_ink2_test_experts_ref(h, 1);
+        ran = ran && gpu_ink2_experts(h, i13, i2, type, type, rb13, rb2, H, F, E, T, x, ch, wt, f13, f2, 4.0f, 8.0f, o2);
+        gpu_ink2_test_experts_ref(h, 0);
+        if (ran) {
+            diff = 0;
+            for (size_t i = 0; i < (size_t)T * H; i++) {
+                uint32_t a, b;
+                memcpy(&a, o1 + i, 4); memcpy(&b, o2 + i, 4);
+                diff += a != b;
+            }
+            *nval = (long)T * H;
+        }
+        gpu_ink2_free(h);
+    }
+done:
+    free(w13); free(w2); free(x); free(o1); free(o2); free(wt); free(s13); free(s2); free(ch);
+    return diff;
+}
+
 int main(int argc, char **argv) {
     if (argc < 6) {
         fprintf(stderr, "usage: %s TINY_F32.gguf TINY_BF16.gguf TINY_Q8_0.gguf TINY_F16.gguf TINY_LORA.gguf\n", argv[0]);
@@ -727,6 +795,22 @@ int main(int argc, char **argv) {
         CHECK(i13 >= 0 && !dup_ran, "(k) a launch's position list with a repeat: the call %s", dup_ran ? "RAN" : "refused");
         gpu_ink2_free(h);
         free(w13); free(w2);
+    }
+    // D2 (k): the fused expert body equals the former per-expert launches bit for bit
+    {
+        static const struct { const char *what; int type, H, F, E, T, used, all, none; } xc[] = {
+            { "NVFP4 at the real widths, one position, 8 of 16 experts (a decode step)", T_NVFP4, 2304, 1152, 16, 1, 8, -1, -1 },
+            { "NVFP4, 37 positions, 4 experts each plus expert 1 at every position, expert 2 never", T_NVFP4, 256, 128, 16, 37, 4, 1, 2 },
+            { "NVFP4, 300 positions, 8 of 16 each (2400 columns)", T_NVFP4, 256, 128, 16, 300, 8, -1, -1 },
+            { "BF16 (no factors), 6 positions, 2 of 8 each", T_BF16, 256, 128, 8, 6, 2, -1, -1 },
+            { "BF16 at the real widths, one position, 8 of 16 experts", T_BF16, 2304, 1152, 16, 1, 8, -1, -1 },
+        };
+        for (size_t k = 0; k < sizeof xc / sizeof *xc; k++) {
+            long nv = 0;
+            const long d = exp_identity(xc[k].type, xc[k].H, xc[k].F, xc[k].E, xc[k].T, xc[k].used, xc[k].all, xc[k].none, &nv);
+            CHECK(d == 0 && nv > 0, "(k) the fused expert body, %s: %ld of %ld values differ in their bits from the former "
+                  "per-expert launches' (want 0)", xc[k].what, d, nv);
+        }
     }
     // G2b 2a (n): gpu_ink2_attn against float64 on the host, by core_case below. Bar fixed before the run: 1e-4 of the
     // largest value, finite. A full layer over 1040 positions in one call (every key count 1..1040: around each

@@ -360,7 +360,7 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
         }
         if (c.n == 0 || y_rows == 0 ||
             !gpu_ink2_reserve(h, sizeof(float) * T * (size_t)c.max_in, sizeof(float) * y_rows) ||
-            (exp_dev && !gpu_ink2_reserve_experts(h, (int)T, r->s.hidden, r->s.ff, r->s.n_expert)) ||
+            (exp_dev && !gpu_ink2_reserve_experts(h, (int)T, r->s.hidden, r->s.ff, r->s.n_expert, r->s.n_used)) ||
             (attn_dev && !gpu_ink2_reserve_attn(h, (int)T, q_max, nh_max, ext_max, n_ctx)) ||
             (block_dev && !gpu_ink2_reserve_block(h, (int)T, sp->hidden, c_max, nkv_max * sp->conv_k,
                                                   nh_max * sp->d_rel, q_max)) ||
