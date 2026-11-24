@@ -263,6 +263,8 @@ static _Atomic long ink2_par_min = 16384; // the least work (multiply-adds) a ch
 static _Atomic long ink2_split_loops = 0; // parallel loops that split their range over the pool, since the process began
 static _Atomic int ink2_last_pool = 1;    // the threads the last of them ran on (its workers + the caller)
 static _Atomic int ink2_last_threads = 0; // last thread count used or set (0 until first explicit set/bind)
+static _Atomic uintptr_t ink2_test_par_fn = 0;
+static _Atomic uintptr_t ink2_test_par_ctx = 0;
 
 // Fallback pool for standalone C harnesses that have no model_t (e.g. test_inkling2_fixture, inkling2_read).
 // CLI and server loads bind m->tp on TLS via ink2_set_tpool and never touch this.
@@ -358,6 +360,11 @@ void ink2_par_stats(long *split_loops, int *last_pool) {
     if (last_pool) *last_pool = atomic_load_explicit(&ink2_last_pool, memory_order_relaxed);
 }
 
+void ink2_set_test_par_hook(void (*fn)(void *), void *ctx) {
+    atomic_store_explicit(&ink2_test_par_ctx, (uintptr_t)ctx, memory_order_release);
+    atomic_store_explicit(&ink2_test_par_fn, (uintptr_t)fn, memory_order_release);
+}
+
 typedef struct {
     ink2_range_fn fn;
     void *ctx;
@@ -410,6 +417,12 @@ void ink2_par(int64_t n, int64_t work, ink2_range_fn fn, void *ctx) {
     }
     atomic_fetch_add_explicit(&ink2_split_loops, 1, memory_order_relaxed);
     atomic_store_explicit(&ink2_last_pool, nt, memory_order_relaxed);
+    uintptr_t hfn = atomic_load_explicit(&ink2_test_par_fn, memory_order_acquire);
+    if (hfn) {
+        void (*hook)(void *) = (void (*)(void *))hfn;
+        void *hctx = (void *)atomic_load_explicit(&ink2_test_par_ctx, memory_order_acquire);
+        hook(hctx);
+    }
     ink2_tp_ctx tc = { fn, ctx, n, group };
     tpool_run(tp, ink2_tp_tramp, &tc, (int)items);
     if (drop_tp) tpool_destroy(tp);

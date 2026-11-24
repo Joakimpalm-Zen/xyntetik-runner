@@ -23,11 +23,13 @@
 #include "inkling2.h"
 #include "tpool.h"
 #include "compat.h"
+#include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 enum { N_TOK = 8, ROUNDS = 25 };
 static const int32_t PROMPT[N_TOK] = { 1, 5, 9, 2, 7, 3, 8, 4 };
@@ -96,6 +98,44 @@ static void nested_outer(void *arg, int64_t i0, int64_t i1) {
     nested_inner_ctx ic = { nc, self };
     for (int64_t i = i0; i < i1; i++)
         ink2_par(4, 1, nested_inner, &ic);
+}
+
+typedef struct {
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    int active;
+    int max_active;
+    int arrived;
+} overlap_barrier_t;
+
+static __thread int overlap_seen;
+
+static void overlap_hook(void *arg) {
+    if (overlap_seen) return;
+    overlap_seen = 1;
+    overlap_barrier_t *ob = arg;
+    struct timespec ts;
+    timespec_get(&ts, TIME_UTC);
+    ts.tv_sec += 2;
+    pthread_mutex_lock(&ob->mu);
+    ob->arrived++;
+    ob->active++;
+    if (ob->active > ob->max_active) ob->max_active = ob->active;
+    pthread_cond_broadcast(&ob->cv);
+    while (ob->max_active < 2) {
+        if (pthread_cond_timedwait(&ob->cv, &ob->mu, &ts) == ETIMEDOUT) break;
+    }
+    ob->active--;
+    pthread_mutex_unlock(&ob->mu);
+}
+
+typedef struct { model_t *m; const float *want; int bad; } single_fwd_job;
+static void *run_one_overlap(void *arg) {
+    single_fwd_job *j = arg;
+    float *got = rows(j->m, PROMPT);
+    if (!got || memcmp(got, j->want, sizeof(float) * (size_t)j->m->n_vocab)) j->bad++;
+    free(got);
+    return NULL;
 }
 
 int main(int argc, char **argv) {
@@ -188,6 +228,21 @@ int main(int argc, char **argv) {
           atomic_load(&nc.inner_done) == 16,
           "case 6b: workers ran %d slices serially inside caller workers (nested dispatches %d, inner_done %ld)",
           atomic_load(&nc.worker_hits), atomic_load(&nc.nested_dispatches), atomic_load(&nc.inner_done));
+
+    // 7. R4.48.20.2 fifth bar: two instances (4 and 2 threads) overlap inside ink2_par at the exact same moment
+    //    (serialised by the old process-global ink2_cfg_mu on 92c204f8, concurrent on 24dd0d11).
+    overlap_barrier_t ob = { .mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER };
+    ink2_set_test_par_hook(overlap_hook, &ob);
+    single_fwd_job oa = { a, one, 0 }, ob_job = { b, one, 0 };
+    pthread_t ota, otb;
+    pthread_create(&ota, NULL, run_one_overlap, &oa);
+    pthread_create(&otb, NULL, run_one_overlap, &ob_job);
+    pthread_join(ota, NULL);
+    pthread_join(otb, NULL);
+    ink2_set_test_par_hook(NULL, NULL);
+    CHECK(ob.arrived == 2 && ob.max_active == 2 && !oa.bad && !ob_job.bad,
+          "case 7: concurrent 4T and 2T forwards overlapped inside ink2_par (arrived=%d, max_active=%d, bad=%d+%d)",
+          ob.arrived, ob.max_active, oa.bad, ob_job.bad);
 
     free(one); free(four); free(cli4); free(other);
     model_free(a); model_free(b); model_free(c);

@@ -68,6 +68,8 @@ int ink2_get_threads(void);
 // the process began, and the threads (workers + the caller) the last of them ran on. A count of 1 splits nothing.
 #define INK2_PAR_STATS 1
 void ink2_par_stats(long *split_loops, int *last_pool);
+// TEST-ONLY hook called on the caller thread each time ink2_par enters a parallel split; NULL disables.
+void ink2_set_test_par_hook(void (*fn)(void *ctx), void *ctx);
 
 // A tensor as the pieces see it: float32, row-major, ne[0] the fastest dimension (GGUF order). The fixture's reader
 // and, later, the GGUF reader both hand pieces this; names are the reference's module paths for now.
