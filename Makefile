@@ -3816,7 +3816,8 @@ test-metal:
 # quantized row turns that reassociation into whole steps: 3.19e-5 on fp4 and
 # 1.27e-4 on q8 at n_batch 32 on these toy files, with the CPU arm alone moving
 # and the device byte-identical at every width. Below 8 both arms take the
-# native dot (5e-8).
+# native dot (5e-8). The front-megakernel refusal has a control: the pre-norm
+# twin (--llama --gqa), quantized the same way, must engage the megakernel.
 test-metal-olmo2: runner $(TEST_GPU_ID) $(TEST_BATCH_ID) $(TEST_SPEC_ID)
 ifeq ($(BUILD_OS),Darwin)
 	@set -e; \
@@ -3855,6 +3856,11 @@ ifeq ($(BUILD_OS),Darwin)
 	./$(RUNNER_EXE) -m test-olmo2-gqa.gguf -p "$$prompt" -n 24 --temp 0 --no-tray > test-metal-olmo2-fuse1.out 2> test-metal-olmo2-fuse1.err; \
 	grep -q "decode fusion on" test-metal-olmo2-fuse1.err || { cat test-metal-olmo2-fuse1.err; echo "test-metal-olmo2: F1 decode fusion did not run"; exit 1; }; \
 	cmp -s test-metal-olmo2-fuse0.out test-metal-olmo2-fuse1.out || { echo "test-metal-olmo2: F1 decode fusion diverged"; exit 1; }; \
+	$(PYTHON) scripts/make-test-olmo2.py test-olmo2-llama-gqa.gguf --llama --gqa > /dev/null; \
+	./$(RUNNER_EXE) -m test-olmo2-llama-gqa.gguf --quantize test-olmo2-llama-gqa-q8.gguf --quant q8_0 > /dev/null 2>&1; \
+	RUNNER_METAL_FRONT=all ./$(TEST_GPU_ID) test-olmo2-llama-gqa-q8.gguf > test-metal-olmo2.out 2>&1 || { cat test-metal-olmo2.out; exit 1; }; \
+	grep -q 'attention front on' test-metal-olmo2.out || { cat test-metal-olmo2.out; \
+	  echo "test-metal-olmo2: CONTROL: the front megakernel must engage on the pre-norm twin, or the refusal check below is vacuous"; exit 1; }; \
 	./$(RUNNER_EXE) -m test-olmo2-gqa.gguf --quantize test-olmo2-gqa-q8.gguf --quant q8_0 > /dev/null 2>&1; \
 	RUNNER_METAL_FRONT=all ./$(TEST_GPU_ID) test-olmo2-gqa-q8.gguf > test-metal-olmo2.out 2>&1 || { cat test-metal-olmo2.out; exit 1; }; \
 	if grep -q 'skipped' test-metal-olmo2.out; then cat test-metal-olmo2.out; \
@@ -3863,7 +3869,7 @@ ifeq ($(BUILD_OS),Darwin)
 	  echo "test-metal-olmo2: attention front megakernel must refuse olmo2"; exit 1; fi; \
 	./$(TEST_BATCH_ID) test-olmo2-plain.gguf > test-metal-olmo2.out 2>&1 || { cat test-metal-olmo2.out; exit 1; }; \
 	rm -f test-olmo2.gguf test-olmo2-gqa.gguf test-olmo2-plain.gguf test-olmo2-gqa-q8.gguf \
-	      test-olmo2-h32.gguf test-olmo2-h32-gqa.gguf \
+	      test-olmo2-h32.gguf test-olmo2-h32-gqa.gguf test-olmo2-llama-gqa.gguf test-olmo2-llama-gqa-q8.gguf \
 	      test-metal-olmo2.out test-metal-olmo2-fuse0.out test-metal-olmo2-fuse1.out test-metal-olmo2-fuse1.err; \
 	echo "test-metal-olmo2: ok"
 else
