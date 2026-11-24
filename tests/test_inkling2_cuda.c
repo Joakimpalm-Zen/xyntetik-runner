@@ -1372,6 +1372,127 @@ int main(int argc, char **argv) {
         free(a); free(a1); free(b);
         drop(gr); drop(gr1); drop(gn);
     }
+    // R4.48.9 D1d.1 (af): the decode step's remaining ops on the device, each against the host function the forward
+    // runs (inkling2.c's own, through its TEST-ONLY wrappers) on the same inputs, BIT FOR BIT (NaN by its bits), the
+    // host with the CPU's FTZ / DAZ off (the device never flushes; D1a's tanh check): the RMS norm rows (weighted and
+    // not; a zero row, a row of huge values, subnormals), the depth attention (the block reads' 1 and 3 queries and
+    // the message input's 4, 1 to 26 states, a zero state), the short convolution with its history and store (a
+    // prefill without history, chunks continuing a sequence, decode steps around the ring), the residual add and the
+    // head's softcap (huge, small, zero, signed).
+    {
+        uint32_t seed = 4211u;
+#define RNDF() (seed = seed * 1664525u + 1013904223u, (float)((int)(seed >> 9) % 2001 - 1000) / 1000.0f)
+        gpu_ink2 *h = gpu_ink2_bind();
+#if defined(__x86_64__) || defined(__i386__)
+        const unsigned csr = _mm_getcsr();
+#define FTZ_OFF() _mm_setcsr(csr & ~0x8040u)
+#define FTZ_BACK() _mm_setcsr(csr)
+#else
+#define FTZ_OFF() ((void)0)
+#define FTZ_BACK() ((void)0)
+#endif
+        // the norm rows
+        for (int H = 64; H <= 2304; H += 2240) {
+            const int R = 6;
+            float *x = malloc(sizeof(float) * (size_t)R * H), *wt = malloc(sizeof(float) * (size_t)H);
+            float *yd = malloc(sizeof(float) * (size_t)R * H), *yh = malloc(sizeof(float) * (size_t)R * H);
+            for (int i = 0; i < R * H; i++) x[i] = RNDF();
+            for (int i = 0; i < H; i++) { x[i] = 0.0f; x[H + i] = 3.0e18f * RNDF(); x[2 * H + i] = 1e-39f * RNDF(); wt[i] = RNDF(); }
+            for (int wk = 0; wk < 2; wk++) {
+                const float *wp = wk ? wt : NULL;
+                const float eps = wk ? 1e-5f : 1e-6f;
+                const bool ran = h && gpu_ink2_test_rms_rows(h, x, wp, yd, R, H, eps);
+                FTZ_OFF();
+                for (int r = 0; r < R; r++) ink2_test_rms_norm(x + (size_t)r * H, H, eps, wp, yh + (size_t)r * H);
+                FTZ_BACK();
+                long nd = 0;
+                for (int i = 0; ran && i < R * H; i++) nd += !same_f(yd[i], yh[i]);
+                CHECK(ran && nd == 0, "(af) the RMS norm rows (%s, H %d, 6 rows: zero, huge, subnormal, random): %ld of %d "
+                      "differ from the host's (want 0)", wk ? "weighted" : "unweighted", H, nd, R * H);
+            }
+            free(x); free(wt); free(yd); free(yh);
+        }
+        // the depth attention
+        static const struct { int nq, n_kv, H, T; } dc[] = { { 1, 1, 2304, 1 }, { 3, 7, 2304, 1 }, { 4, 26, 2304, 3 },
+                                                              { 1, 13, 64, 5 }, { 4, 2, 64, 1 } };
+        for (size_t k = 0; k < sizeof dc / sizeof *dc; k++) {
+            const int nq = dc[k].nq, nkv = dc[k].n_kv, H = dc[k].H, T = dc[k].T;
+            float *q = malloc(sizeof(float) * (size_t)nq * H), *st = malloc(sizeof(float) * (size_t)T * nkv * H);
+            float *od = malloc(sizeof(float) * (size_t)nq * T * H), *oh = malloc(sizeof(float) * (size_t)nq * T * H);
+            for (int i = 0; i < nq * H; i++) q[i] = 0.1f * RNDF();
+            for (int i = 0; i < T * nkv * H; i++) st[i] = RNDF();
+            if (nkv > 1) memset(st, 0, sizeof(float) * (size_t)H);   // a zero state (its norm 0 / sqrt(eps))
+            const float scale = ink2_inv_sqrt(H);
+            const bool ran = h && gpu_ink2_test_depth_attn(h, q, nq, st, nkv, H, T, scale, od, T * H, H);
+            int hb = 0;
+            FTZ_OFF();
+            for (int t = 0; t < T; t++) {
+                float *tmp = malloc(sizeof(float) * (size_t)nq * H);
+                hb |= !tmp || ink2_test_depth_attn(q, nq, st + (size_t)t * nkv * H, nkv, H, tmp);
+                for (int i = 0; tmp && i < nq; i++) memcpy(oh + ((size_t)i * T + t) * H, tmp + (size_t)i * H, sizeof(float) * H);
+                free(tmp);
+            }
+            FTZ_BACK();
+            long nd = 0;
+            for (int i = 0; ran && !hb && i < nq * T * H; i++) nd += !same_f(od[i], oh[i]);
+            CHECK(ran && !hb && nd == 0, "(af) the depth attention (%d queries, %d states, H %d, %d positions): %ld of %d "
+                  "differ from the host's (want 0)", nq, nkv, H, T, nd, nq * T * H);
+            free(q); free(st); free(od); free(oh);
+        }
+        // the short convolution with its history: one sequence through chunks (a prefill, a chunk, decode steps
+        // around the ring), the device's history carried between calls as the host's is
+        {
+            const int C = 2304, K = 4;
+            float *cw = malloc(sizeof(float) * (size_t)C * K), *hd = calloc((size_t)(K - 1) * C, sizeof(float));
+            float *hh = calloc((size_t)(K - 1) * C, sizeof(float));
+            for (int i = 0; i < C * K; i++) cw[i] = RNDF();
+            static const int chunks[] = { 5, 2, 1, 1, 1, 1, 3 };
+            int p0 = 0;
+            long nd = 0, nv = 0;
+            bool ran = h != NULL;
+            for (size_t c = 0; ran && c < sizeof chunks / sizeof *chunks; c++) {
+                const int T = chunks[c];
+                float *lin = malloc(sizeof(float) * (size_t)T * C), *od = malloc(sizeof(float) * (size_t)T * C);
+                float *oh = malloc(sizeof(float) * (size_t)T * C);
+                for (int i = 0; i < T * C; i++) lin[i] = RNDF();
+                const float div = (float)sqrt((double)(K + 1));
+                ran = gpu_ink2_test_short_conv(h, cw, C, K, T, lin, od, p0, hd, div);
+                FTZ_OFF();
+                ink2_test_short_conv(cw, C, K, T, lin, oh, p0, hh);
+                FTZ_BACK();
+                for (int i = 0; ran && i < T * C; i++) nd += !same_f(od[i], oh[i]);
+                for (int i = 0; ran && i < (K - 1) * C; i++) nd += !same_f(hd[i], hh[i]);
+                nv += (long)T * C + (long)(K - 1) * C;
+                p0 += T;
+                free(lin); free(od); free(oh);
+            }
+            CHECK(ran && nd == 0, "(af) the short convolution with its history (C %d, K %d; chunks 5, 2, then decode steps "
+                  "around the ring, then 3): %ld of %ld outputs and history values differ from the host's (want 0)", C, K, nd, nv);
+            free(cw); free(hd); free(hh);
+        }
+        // the residual add and the softcap
+        {
+            enum { N = 4096 };
+            static float a[N], b[N], sd[N], vd[N], vh[N];
+            for (int i = 0; i < N; i++) { a[i] = RNDF(); b[i] = 1e-3f * RNDF(); vd[i] = vh[i] = 60.0f * RNDF(); }
+            vd[0] = vh[0] = 0.0f; vd[1] = vh[1] = -0.0f; vd[2] = vh[2] = 1e30f; vd[3] = vh[3] = -1e30f; vd[4] = vh[4] = 1e-30f;
+            const float cap = 30.0f;
+            const bool ran = h && gpu_ink2_test_add_softcap(h, a, b, sd, vd, N, cap);
+            long nd = 0;
+            FTZ_OFF();
+            for (int i = 0; ran && i < N; i++) {
+                const float s_ = a[i] + b[i], c_ = ink2_test_softcap(vh[i], cap);
+                nd += !same_f(sd[i], s_) + !same_f(vd[i], c_);
+            }
+            FTZ_BACK();
+            CHECK(ran && nd == 0, "(af) the residual add and the softcap (cap 30, %d values; 0, -0, +-1e30, 1e-30): %ld "
+                  "differ from the host's (want 0)", N, nd);
+        }
+#undef FTZ_OFF
+#undef FTZ_BACK
+#undef RNDF
+        gpu_ink2_free(h);
+    }
     // D2 (k): the fused expert body equals the former per-expert launches bit for bit
     {
         static const struct { const char *what; int type, H, F, E, T, used, all, none; } xc[] = {

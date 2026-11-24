@@ -6226,6 +6226,90 @@ extern "C" __global__ void k_ink2_route_tables(const uchar *chosen, const float 
             if (chosen[(ulong64)t * E + e]) pl[k++] = col[(ulong64)t * E + e];
     }
 }
+// ---- R4.48.9 D1d.1: the decode step's remaining host ops on the device, each the host function operation for
+// operation (serial sums in ascending order, explicit round-to-nearest, no contraction) ----
+// ink2_rms_norm / ink2_unweighted_norm over n_rows rows of H: one thread a row; y = x * (1 / sqrt(ss / H + eps)), then
+// (wt given) wt[i] * that, as the host's two loops
+extern "C" __global__ void k_ink2_rms_rows(const float *x, const float *wt, float *y, int n_rows, int H, float eps) {
+    const int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= n_rows) return;
+    const float *src = x + (ulong64)row * H;
+    float *dst = y + (ulong64)row * H;
+    float ss = 0.0f;
+    for (int i = 0; i < H; i++) ss = __fadd_rn(ss, __fmul_rn(src[i], src[i]));
+    const float r = __fdiv_rn(1.0f, __fsqrt_rn(__fadd_rn(__fdiv_rn(ss, (float)H), eps)));
+    for (int i = 0; i < H; i++) {
+        const float v = __fmul_rn(src[i], r);
+        dst[i] = wt ? __fmul_rn(wt[i], v) : v;
+    }
+}
+// ink2_depth_attn at T positions: normed [T][n_kv][H] (the states, already normed by k_ink2_rms_rows, eps 1e-6), the
+// nq queries q [nq][H]; one block a (query i = blockIdx.x, position t = blockIdx.y): thread j < n_kv its score (the
+// serial dot ascending h, times scale), thread 0 the max (ascending j, from -inf), the p_expf, the sum (ascending j)
+// and the divisions; then each thread h its output, the serial weighted sum ascending j. out[i * ois + t * ots + h].
+extern "C" __global__ void k_ink2_depth_attn(const float *q, const float *normed, float *out, int nq, int n_kv, int H,
+                                             float scale, int ois, int ots) {
+    extern __shared__ float sc[];   // n_kv scores
+    const int i = blockIdx.x, t = blockIdx.y;
+    if (i >= nq) return;
+    const float *qi = q + (ulong64)i * H, *nt = normed + (ulong64)t * n_kv * H;
+    for (int j = threadIdx.x; j < n_kv; j += blockDim.x) {
+        const float *nj = nt + (ulong64)j * H;
+        float d = 0.0f;
+        for (int h = 0; h < H; h++) d = __fadd_rn(d, __fmul_rn(qi[h], nj[h]));
+        sc[j] = __fmul_rn(d, scale);
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        float mx = -__int_as_float(0x7f800000);
+        for (int j = 0; j < n_kv; j++) if (sc[j] > mx) mx = sc[j];
+        float sum = 0.0f;
+        for (int j = 0; j < n_kv; j++) { sc[j] = ink2_p_expf(__fsub_rn(sc[j], mx)); sum = __fadd_rn(sum, sc[j]); }
+        for (int j = 0; j < n_kv; j++) sc[j] = __fdiv_rn(sc[j], sum);
+    }
+    __syncthreads();
+    float *oi = out + (ulong64)i * ois + (ulong64)t * ots;
+    for (int h = threadIdx.x; h < H; h += blockDim.x) {
+        float a = 0.0f;
+        for (int j = 0; j < n_kv; j++) a = __fadd_rn(a, __fmul_rn(sc[j], nt[(ulong64)j * H + h]));
+        oi[h] = a;
+    }
+}
+// ink2_short_conv with its history (ink2_conv_hist: row u % (K - 1) holds position u's input row, C wide): thread
+// (position t = blockIdx.y, channel ch): the serial sum over the taps ascending j, the input row's own value, / div
+// (the host's (float)sqrt((double)(K + 1)), passed). hist NULL: p0 taken as 0 and no history (a prefill).
+extern "C" __global__ void k_ink2_short_conv(const float *cw, const float *lin, float *out, const float *hist, int C,
+                                             int K, int T, int p0, float div) {
+    const int ch = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;
+    if (ch >= C || t >= T) return;
+    if (!hist) p0 = 0;
+    float a = 0.0f;
+    for (int j = 0; j < K; j++) {
+        const int u = t - (K - 1) + j;
+        if (p0 + u >= 0) {
+            const float in = u >= 0 ? lin[(ulong64)u * C + ch] : hist[(ulong64)((p0 + u) % (K - 1)) * C + ch];
+            a = __fadd_rn(a, __fmul_rn(cw[(ulong64)ch * K + j], in));
+        }
+    }
+    out[(ulong64)t * C + ch] = __fdiv_rn(__fadd_rn(a, lin[(ulong64)t * C + ch]), div);
+}
+// ink2_conv_hist_store after the call: the last K - 1 input rows of lin [T][C] into the history
+extern "C" __global__ void k_ink2_conv_store(float *hist, const float *lin, int C, int K, int T, int p0) {
+    const int ch = blockIdx.x * blockDim.x + threadIdx.x, k = blockIdx.y;   // k: the k-th of the rows stored
+    const int u0 = T - (K - 1) < 0 ? 0 : T - (K - 1), u = u0 + k;
+    if (ch >= C || u >= T) return;
+    hist[(ulong64)((p0 + u) % (K - 1)) * C + ch] = lin[(ulong64)u * C + ch];
+}
+// out = a + b over n values (the residual: the host's x[i] + res[i])
+extern "C" __global__ void k_ink2_add(const float *a, const float *b, float *out, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = __fadd_rn(a[i], b[i]);
+}
+// ink2_softcap over n values in place: p_tanhf(v / cap) * cap (the head's logit softcap)
+extern "C" __global__ void k_ink2_softcap(float *v, int n, float cap) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) v[i] = __fmul_rn(ink2_p_tanhf(__fdiv_rn(v[i], cap)), cap);
+}
 // the combination, ink2_msg_comb_multi_range: out = (1 - tanh(fa)) * x + tanh(ga) * msg, over n values
 extern "C" __global__ void k_ink2_msg_comb(const float *fa, const float *ga, const float *x, const float *msg,
                                            float *out, int n) {

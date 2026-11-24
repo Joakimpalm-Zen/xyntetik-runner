@@ -12925,6 +12925,7 @@ struct gpu_ink2 {
     CUfunction f_rscores, f_rtopk, f_rtables, f_pexpf;
     CUdeviceptr rsc, rwt, rch, rpc, rmg, rsm, rbr, rcol;
     size_t rsc_cap, rwt_cap, rch_cap, rpc_cap, rmg_cap, rsm_cap, rbr_cap, rcol_cap;
+    CUfunction f_rms, f_dattn, f_sconv, f_cstore, f_add, f_softcap;   // D1d.1: the step's remaining ops
     // G2b step 2a, the attention core: the chunk's queries, bias bank, sinks, positions and output (the K/V go
     // straight into the instance's ring, gpu_ink2_kv)
     // (the decode fix) the core as two kernels, k_ink2_attn_logits then k_ink2_attn, over the stored logits alg; the
@@ -12977,6 +12978,12 @@ gpu_ink2 *gpu_ink2_bind(void) {
     if (cu.ModuleGetFunction(&h->f_rscores, h->mod, "k_ink2_route_scores") != 0) h->f_rscores = NULL;
     if (cu.ModuleGetFunction(&h->f_rtopk, h->mod, "k_ink2_route_topk") != 0) h->f_rtopk = NULL;
     if (cu.ModuleGetFunction(&h->f_rtables, h->mod, "k_ink2_route_tables") != 0) h->f_rtables = NULL;
+    {   // D1d.1
+        static const char *const nm[6] = { "k_ink2_rms_rows", "k_ink2_depth_attn", "k_ink2_short_conv",
+                                           "k_ink2_conv_store", "k_ink2_add", "k_ink2_softcap" };
+        CUfunction *f[6] = { &h->f_rms, &h->f_dattn, &h->f_sconv, &h->f_cstore, &h->f_add, &h->f_softcap };
+        for (int k = 0; k < 6; k++) if (cu.ModuleGetFunction(f[k], h->mod, nm[k]) != 0) *f[k] = NULL;
+    }
     if (cu.ModuleGetFunction(&h->f_pexpf, h->mod, "k_ink2_test_pexpf") != 0) h->f_pexpf = NULL;
     if (cu.ModuleGetFunction(&h->f_gather, h->mod, "k_moe_gather") != 0) h->f_gather = NULL;
     if (cu.ModuleGetFunction(&h->f_scatter, h->mod, "k_moe_scatter_add") != 0) h->f_scatter = NULL;
@@ -13398,6 +13405,95 @@ bool gpu_ink2_test_pexpf(gpu_ink2 *h, const float *x, float *y, int n) {
          cu.MemcpyDtoH(y, dy, fb * (size_t)n) == 0;
     if (dx) cu.MemFree(dx);
     if (dy) cu.MemFree(dy);
+    pthread_mutex_unlock(&h->mu);
+    return ok;
+}
+// ---- D1d.1 TEST-ONLY entries (gpu.h): each of the step's ops on host arrays, the device's bits back ----
+// a device copy of n floats of src (src NULL: zeroed); 0 on failure
+static CUdeviceptr d1d_put(const float *src, size_t n) {
+    CUdeviceptr d = 0;
+    if (cu.MemAlloc(&d, sizeof(float) * (n ? n : 1)) != 0) return 0;
+    if ((src ? cu.MemcpyHtoD(d, src, sizeof(float) * n) : cu.MemsetD8(d, 0, sizeof(float) * n)) != 0) { cu.MemFree(d); return 0; }
+    return d;
+}
+bool gpu_ink2_test_rms_rows(gpu_ink2 *h, const float *x, const float *wt, float *y, int n_rows, int H, float eps) {
+    if (!h || !h->f_rms || n_rows <= 0 || H <= 0 || !x || !y) return false;
+    const size_t n = (size_t)n_rows * H;
+    pthread_mutex_lock(&h->mu);
+    bool ok = cu.CtxSetCurrent(h->ctx) == 0;
+    CUdeviceptr dx = ok ? d1d_put(x, n) : 0, dw = ok && wt ? d1d_put(wt, (size_t)H) : 0, dy = ok ? d1d_put(NULL, n) : 0;
+    ok = ok && dx && dy && (!wt || dw);
+    void *p[] = { &dx, &dw, &dy, &n_rows, &H, &eps };
+    ok = ok && cu.LaunchKernel(h->f_rms, (unsigned)((n_rows + 63) / 64), 1, 1, 64, 1, 1, 0, NULL, p, NULL) == 0 &&
+         cu.MemcpyDtoH(y, dy, sizeof(float) * n) == 0;
+    if (dx) cu.MemFree(dx);
+    if (dw) cu.MemFree(dw);
+    if (dy) cu.MemFree(dy);
+    pthread_mutex_unlock(&h->mu);
+    return ok;
+}
+// the depth attention as the host's block read / message input does it: the T positions' states [T][n_kv][H] normed
+// (unweighted, eps 1e-6), then the nq queries; out [nq][T][H] (ois T H, ots H) or [T][nq][H] (ois H, ots nq H)
+bool gpu_ink2_test_depth_attn(gpu_ink2 *h, const float *q, int nq, const float *states, int n_kv, int H, int T,
+                              float scale, float *out, int ois, int ots) {
+    if (!h || !h->f_rms || !h->f_dattn || nq <= 0 || n_kv <= 0 || H <= 0 || T <= 0 || !q || !states || !out) return false;
+    const size_t ns = (size_t)T * n_kv * H, no = (size_t)nq * T * H;
+    int rows = T * n_kv;
+    float eps = 1e-6f;
+    pthread_mutex_lock(&h->mu);
+    bool ok = cu.CtxSetCurrent(h->ctx) == 0;
+    CUdeviceptr dq = ok ? d1d_put(q, (size_t)nq * H) : 0, ds = ok ? d1d_put(states, ns) : 0, dn = ok ? d1d_put(NULL, ns) : 0,
+                dout = ok ? d1d_put(NULL, no) : 0, nul = 0;
+    ok = ok && dq && ds && dn && dout;
+    void *pr[] = { &ds, &nul, &dn, &rows, &H, &eps };
+    void *pa[] = { &dq, &dn, &dout, &nq, &n_kv, &H, &scale, &ois, &ots };
+    ok = ok && cu.LaunchKernel(h->f_rms, (unsigned)((rows + 63) / 64), 1, 1, 64, 1, 1, 0, NULL, pr, NULL) == 0 &&
+         cu.LaunchKernel(h->f_dattn, (unsigned)nq, (unsigned)T, 1, 256, 1, 1, (unsigned)(sizeof(float) * (size_t)n_kv),
+                         NULL, pa, NULL) == 0 &&
+         cu.MemcpyDtoH(out, dout, sizeof(float) * no) == 0;
+    CUdeviceptr fr[4] = { dq, ds, dn, dout };
+    for (int k = 0; k < 4; k++) if (fr[k]) cu.MemFree(fr[k]);
+    pthread_mutex_unlock(&h->mu);
+    return ok;
+}
+// the short convolution with its history, then the history store: hist [(K - 1)][C] in and out (NULL: no history)
+bool gpu_ink2_test_short_conv(gpu_ink2 *h, const float *cw, int C, int K, int T, const float *lin, float *out, int p0,
+                              float *hist, float div) {
+    if (!h || !h->f_sconv || !h->f_cstore || C <= 0 || K < 1 || T <= 0 || !cw || !lin || !out) return false;
+    const size_t nh = (size_t)(K > 1 ? K - 1 : 1) * C;
+    pthread_mutex_lock(&h->mu);
+    bool ok = cu.CtxSetCurrent(h->ctx) == 0;
+    CUdeviceptr dw = ok ? d1d_put(cw, (size_t)C * K) : 0, dl = ok ? d1d_put(lin, (size_t)T * C) : 0,
+                dout = ok ? d1d_put(NULL, (size_t)T * C) : 0, dh = ok && hist ? d1d_put(hist, nh) : 0;
+    ok = ok && dw && dl && dout && (!hist || dh);
+    void *ps[] = { &dw, &dl, &dout, &dh, &C, &K, &T, &p0, &div };
+    ok = ok && cu.LaunchKernel(h->f_sconv, (unsigned)((C + 127) / 128), (unsigned)T, 1, 128, 1, 1, 0, NULL, ps, NULL) == 0;
+    if (ok && hist && K > 1) {
+        const int ns = T < K - 1 ? T : K - 1;
+        void *pt[] = { &dh, &dl, &C, &K, &T, &p0 };
+        ok = cu.LaunchKernel(h->f_cstore, (unsigned)((C + 127) / 128), (unsigned)ns, 1, 128, 1, 1, 0, NULL, pt, NULL) == 0 &&
+             cu.MemcpyDtoH(hist, dh, sizeof(float) * nh) == 0;
+    }
+    ok = ok && cu.MemcpyDtoH(out, dout, sizeof(float) * (size_t)T * C) == 0;
+    CUdeviceptr fr[4] = { dw, dl, dout, dh };
+    for (int k = 0; k < 4; k++) if (fr[k]) cu.MemFree(fr[k]);
+    pthread_mutex_unlock(&h->mu);
+    return ok;
+}
+// the residual add (a + b into out) and the softcap in place, over n values
+bool gpu_ink2_test_add_softcap(gpu_ink2 *h, const float *a, const float *b, float *sum, float *v, int n, float cap) {
+    if (!h || !h->f_add || !h->f_softcap || n <= 0 || !a || !b || !sum || !v) return false;
+    pthread_mutex_lock(&h->mu);
+    bool ok = cu.CtxSetCurrent(h->ctx) == 0;
+    CUdeviceptr da = ok ? d1d_put(a, (size_t)n) : 0, db = ok ? d1d_put(b, (size_t)n) : 0, ds = ok ? d1d_put(NULL, (size_t)n) : 0,
+                dv = ok ? d1d_put(v, (size_t)n) : 0;
+    ok = ok && da && db && ds && dv;
+    void *pa[] = { &da, &db, &ds, &n }, *pc[] = { &dv, &n, &cap };
+    ok = ok && cu.LaunchKernel(h->f_add, (unsigned)((n + 255) / 256), 1, 1, 256, 1, 1, 0, NULL, pa, NULL) == 0 &&
+         cu.LaunchKernel(h->f_softcap, (unsigned)((n + 255) / 256), 1, 1, 256, 1, 1, 0, NULL, pc, NULL) == 0 &&
+         cu.MemcpyDtoH(sum, ds, sizeof(float) * (size_t)n) == 0 && cu.MemcpyDtoH(v, dv, sizeof(float) * (size_t)n) == 0;
+    CUdeviceptr fr[4] = { da, db, ds, dv };
+    for (int k = 0; k < 4; k++) if (fr[k]) cu.MemFree(fr[k]);
     pthread_mutex_unlock(&h->mu);
     return ok;
 }

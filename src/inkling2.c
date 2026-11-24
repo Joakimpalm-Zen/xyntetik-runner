@@ -1965,6 +1965,22 @@ static ink2_status ink2_norm_rows(const ink2_shape *s, const ink2_weights *w, co
     for (int i = 0; i < T; i++) ink2_rms_norm(x + (size_t)i * s->hidden, s->hidden, s->eps, t->data, y + (size_t)i * s->hidden);
     return INK2_OK;
 }
+// TEST-ONLY (D1d.1, inkling2.h): the step's ops as the forward runs them, the device ports' reference
+void ink2_test_rms_norm(const float *x, int n, float eps, const float *wt, float *y) {
+    if (wt) ink2_rms_norm(x, n, eps, wt, y); else ink2_unweighted_norm(x, n, eps, y);
+}
+int ink2_test_depth_attn(const float *q, int nq, const float *states, int n_kv, int H, float *out) {
+    float *nrm = malloc(sizeof(float) * (size_t)n_kv * H), *sc = malloc(sizeof(float) * (size_t)n_kv);
+    if (!nrm || !sc) { free(nrm); free(sc); return -1; }
+    ink2_depth_attn(q, nq, states, n_kv, H, nrm, sc, out);
+    free(nrm); free(sc);
+    return 0;
+}
+void ink2_test_short_conv(const float *cw, int C, int K, int T, const float *lin, float *out, int p0, float *hist) {
+    ink2_short_conv(cw, C, K, T, lin, out, p0, hist);
+    ink2_conv_hist_store(hist, K, C, p0, T, lin);
+}
+float ink2_test_softcap(float v, float cap) { return ink2_softcap(v, cap); }
 // post_attention_convolution / post_mlp_convolution (conv_idx 2 / 3) of block b at application app, with its history
 static ink2_status ink2_post_conv(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int app, int idx, int T,
                                   int p0, const float *x, float *y) {

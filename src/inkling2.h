@@ -163,6 +163,13 @@ long ink2_route_host_calls(void);
 long ink2_msg_host_calls(void);
 float ink2_test_p_tanhf(float x);
 float ink2_test_p_expf(float x);
+// TEST-ONLY (D1d.1): the decode step's remaining ops as the forward runs them (the device ports' reference): the RMS
+// norm of one row (wt NULL: unweighted); the depth attention of one position (states [n_kv][H] -> out [nq][H], 0 or
+// -1); the short convolution over T positions with its history and the history store (hist NULL: none); the softcap
+void ink2_test_rms_norm(const float *x, int n, float eps, const float *wt, float *y);
+int ink2_test_depth_attn(const float *q, int nq, const float *states, int n_kv, int H, float *out);
+void ink2_test_short_conv(const float *cw, int C, int K, int T, const float *lin, float *out, int p0, float *hist);
+float ink2_test_softcap(float v, float cap);
 typedef struct ink2_dev_ops { ink2_dev_lin_fn lin; ink2_dev_experts_fn experts; ink2_dev_attn_fn attn;
                               ink2_dev_block_fn block; ink2_dev_msg_fn msg; ink2_dev_moe_fn moe; } ink2_dev_ops;
 typedef struct { const ink2_dev_ops *ops; } ink2_dev_hdr;   // the first member of every binder's instance

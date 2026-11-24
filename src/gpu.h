@@ -799,6 +799,17 @@ bool       gpu_ink2_route_ok(const gpu_ink2 *h);
 bool       gpu_ink2_test_route(gpu_ink2 *h, int ir, const float *br, float scale, int K, int E, int H, int T,
                                const float *x, float *sc, unsigned char *chosen, float *wt);
 bool       gpu_ink2_test_pexpf(gpu_ink2 *h, const float *x, float *y, int n);
+// R4.48.9 D1d.1, TEST-ONLY: the decode step's remaining ops on the device, on host arrays (each the host function's
+// operations in order; tests/test_inkling2_cuda.c holds them to the host's bit for bit): the RMS norm rows (wt NULL:
+// unweighted), the depth attention of the block reads and the message input (the states normed with eps 1e-6 first;
+// out[i * ois + t * ots + h]), the short convolution with its history (hist [(K - 1)][C] in and out, NULL none) and its
+// store, the residual add and the softcap
+bool       gpu_ink2_test_rms_rows(gpu_ink2 *h, const float *x, const float *wt, float *y, int n_rows, int H, float eps);
+bool       gpu_ink2_test_depth_attn(gpu_ink2 *h, const float *q, int nq, const float *states, int n_kv, int H, int T,
+                                    float scale, float *out, int ois, int ots);
+bool       gpu_ink2_test_short_conv(gpu_ink2 *h, const float *cw, int C, int K, int T, const float *lin, float *out,
+                                    int p0, float *hist, float div);
+bool       gpu_ink2_test_add_softcap(gpu_ink2 *h, const float *a, const float *b, float *sum, float *v, int n, float cap);
 // TEST-ONLY (P1a): on (1), every product runs as one batch-1 launch per column (the reference); off (0), a BF16
 // or NVFP4 product of at least 16 columns runs batched (k_mv_bf16_b, k_mv_nvfp4_b; the expert body's NVFP4 tiles,
 // k_mvsegb_nvfp4; BF16 experts stay per column), the same bits

@@ -6201,6 +6201,21 @@ bool gpu_ink2_test_route(gpu_ink2 *h, int ir, const float *br, float scale, int 
     return false;
 }
 bool gpu_ink2_test_pexpf(gpu_ink2 *h, const float *x, float *y, int n) { (void)h; (void)x; (void)y; (void)n; return false; }
+bool gpu_ink2_test_rms_rows(gpu_ink2 *h, const float *x, const float *wt, float *y, int n_rows, int H, float eps) {
+    (void)h; (void)x; (void)wt; (void)y; (void)n_rows; (void)H; (void)eps; return false;
+}
+bool gpu_ink2_test_depth_attn(gpu_ink2 *h, const float *q, int nq, const float *states, int n_kv, int H, int T,
+                              float scale, float *out, int ois, int ots) {
+    (void)h; (void)q; (void)nq; (void)states; (void)n_kv; (void)H; (void)T; (void)scale; (void)out; (void)ois; (void)ots;
+    return false;
+}
+bool gpu_ink2_test_short_conv(gpu_ink2 *h, const float *cw, int C, int K, int T, const float *lin, float *out,
+                              int p0, float *hist, float div) {
+    (void)h; (void)cw; (void)C; (void)K; (void)T; (void)lin; (void)out; (void)p0; (void)hist; (void)div; return false;
+}
+bool gpu_ink2_test_add_softcap(gpu_ink2 *h, const float *a, const float *b, float *sum, float *v, int n, float cap) {
+    (void)h; (void)a; (void)b; (void)sum; (void)v; (void)n; (void)cap; return false;
+}
 void gpu_ink2_release_experts(gpu_ink2 *h) { (void)h; }
 gpu_ink2_kv *gpu_ink2_kv_new(gpu_ink2 *h, int n_app, const int *rows, const int *C, int hist_rows) {
     (void)h; (void)n_app; (void)rows; (void)C; (void)hist_rows;
