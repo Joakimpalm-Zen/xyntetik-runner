@@ -21,15 +21,19 @@ frequencies rather than taking one of them whole. Every norm weight is
 1 +- 0.5 (deterministic), so a norm read at the wrong place or width moves
 the logits.
 
-    make-test-olmo2.py OUT.gguf [--llama] [--plain] [--gqa] [--no-pattern-array]
-                       [--attn-factor F] [--bad KIND]
+    make-test-olmo2.py OUT.gguf [--llama] [--plain] [--gqa] [--head-dim 16|32]
+                       [--no-pattern-array] [--attn-factor F] [--bad KIND]
 
   --llama             the same sizes and weights as a plain llama file
                       (pre-norms in place of the post-norms, no QK norm, no
                       window, no YaRN): the reference script's calibration
                       on an admitted family
   --plain             OLMo 2's layout: no sliding window, no RoPE scaling
-  --gqa               2 KV heads (kv_dim 32 != q_dim 64 != head_dim 16)
+  --gqa               half the KV heads (2 of 4: kv_dim 32 != q_dim 64 !=
+                      head_dim 16; with --head-dim 32, 1 of 2)
+  --head-dim 32       2 heads of 32 in place of 4 of 16 (n_embd stays 64):
+                      a KV row then holds whole 32-value blocks, so the q8
+                      and k8v4 caches apply (at 16 they keep f16)
   --no-pattern-array  leave out attention.sliding_window_pattern (the
                       default 3-in-4 pattern then applies)
   --attn-factor F     write rope.scaling.attn_factor as F instead of the
@@ -75,6 +79,10 @@ while k < len(args):
         PLAIN = True
     elif a == "--gqa":
         GQA = True
+    elif a == "--head-dim" and k + 1 < len(args) and args[k + 1] in ("16", "32"):
+        k += 1
+        HEAD_DIM = int(args[k])
+        N_HEAD = N_KV = N_EMBD // HEAD_DIM
     elif a == "--no-pattern-array":
         NO_PATTERN = True
     elif a == "--attn-factor" and k + 1 < len(args):
@@ -93,7 +101,7 @@ while k < len(args):
 if OUT is None:
     sys.exit(__doc__)
 if GQA:
-    N_KV = 2
+    N_KV = N_HEAD // 2
 
 _state = 0x2F0A1B3C
 
