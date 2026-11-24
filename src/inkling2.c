@@ -205,10 +205,12 @@ void ink2_cache_free(ink2_cache *c) {
         if (c->conv) free(c->conv[a]);
     }
     free(c->k); free(c->v); free(c->conv); free(c->conv_floats); free(c->n_past); free(c->rows); free(c->k0);
-    free(c->work_fwd); free(c->work_dl); free(c->work_op);
+    free(c->work_fwd); free(c->work_dl); free(c->work_op); free(c->work_route);
     memset(c, 0, sizeof *c);
 }
 
+static _Atomic long ink2_moe_alloc_n = 0;   // TEST-ONLY count (ink2_moe_allocs)
+long ink2_moe_allocs(void) { return atomic_load(&ink2_moe_alloc_n); }
 static float *ink2_cache_scratch(float **buf, size_t *cap, size_t n_floats) {
     if (n_floats == 0) n_floats = 1;
     if (*cap < n_floats) {
@@ -216,16 +218,27 @@ static float *ink2_cache_scratch(float **buf, size_t *cap, size_t n_floats) {
         if (!p) return NULL;
         *buf = p;
         *cap = n_floats;
+        atomic_fetch_add(&ink2_moe_alloc_n, 1);
     }
     return *buf;
 }
 static float *ink2_op_alloc(ink2_cache *c, size_t n_floats, int *owned) {
     if (c) { *owned = 0; return ink2_cache_scratch(&c->work_op, &c->work_op_cap, n_floats); }
     *owned = 1;
+    atomic_fetch_add(&ink2_moe_alloc_n, 1);
     return malloc(sizeof(float) * (n_floats ? n_floats : 1));
 }
 static void ink2_op_free(float *p, int owned) {
     if (owned) free(p);
+}
+// The MoE layer's routing tables over T positions (R4.48.20.4): the instance's own scratch, beside work_op (which the
+// expert body takes while the tables are read), so a prefill allocates them once and not a layer a call; malloc'd
+// for a call without an instance (ink2_expert_layer). Freed with ink2_op_free.
+static float *ink2_route_alloc(ink2_cache *c, size_t n_floats, int *owned) {
+    if (c) { *owned = 0; return ink2_cache_scratch(&c->work_route, &c->work_route_cap, n_floats); }
+    *owned = 1;
+    atomic_fetch_add(&ink2_moe_alloc_n, 1);
+    return malloc(sizeof(float) * (n_floats ? n_floats : 1));
 }
 static int ink2_decode_fuse_enabled(void) {
     const char *e = getenv("RUNNER_INK2_DECODE_FUSE");
@@ -663,10 +676,13 @@ static ink2_status ink2_experts_fast_c(const ink2_shape *s, const ink2_moe_w *M,
         ink2_op_free(buf, owned);
         return INK2_OK;
     }
-    int *who = malloc(sizeof(int) * (size_t)T);
+    // the positions that chose an expert ride at the end of the call's scratch (R4.48.20.4: nothing allocated a call)
+    _Static_assert(sizeof(int) == sizeof(float), "the position list takes one float's room an entry");
     int owned = 0;
-    float *xe = ink2_op_alloc(c, (size_t)T * ((size_t)H + 2 * (size_t)F + (size_t)H), &owned);
-    if (!who || !xe) { free(who); ink2_op_free(xe, owned); return INK2_BAD_INPUT; }
+    const size_t nxe = (size_t)T * ((size_t)H + 2 * (size_t)F + (size_t)H);
+    float *xe = ink2_op_alloc(c, nxe + (size_t)T, &owned);
+    if (!xe) return INK2_BAD_INPUT;
+    int *who = (int *)(xe + nxe);
     float *act = xe + (size_t)T * H, *dn = act + (size_t)T * 2 * F;
     for (int e = 0; e < E; e++) {
         int n = 0;
@@ -686,7 +702,7 @@ static ink2_status ink2_experts_fast_c(const ink2_shape *s, const ink2_moe_w *M,
             for (int h = 0; h < H; h++) o[h] += d[h] * w;
         }
     }
-    free(who); ink2_op_free(xe, owned);
+    ink2_op_free(xe, owned);
     return INK2_OK;
 }
 // the experts at one position, the chosen ones in ascending index, weighted by wt[e]: ot = sum wt[e] * expert_e(xt);
@@ -722,11 +738,19 @@ static ink2_status ink2_expert_layer_c(const ink2_shape *s, const ink2_weights *
             ink2_route_one(s, &M, x, NULL, sc, chosen, wt);
             return ink2_experts_fast_c(s, &M, 1, x, chosen, wt, out, c);
         }
-        float *sc = malloc(sizeof(float) * 2 * (size_t)E);
-        unsigned char *chosen = malloc((size_t)E);
-        unsigned char *ch = malloc((size_t)T * E);
-        float *wts = malloc(sizeof(float) * (size_t)T * E);
-        if (!sc || !chosen || !ch || !wts) st = INK2_BAD_INPUT;
+        // R4.48.20.4: a position's scores on the stack (E <= 256, as above), the T positions' tables (wts [T][E]
+        // floats, then ch [T][E] bytes) in the instance's scratch, so a layer allocates nothing a call
+        float scb[512];
+        unsigned char chb[256];
+        const bool small = E <= 256;
+        float *sc = small ? scb : malloc(sizeof(float) * 2 * (size_t)E);
+        unsigned char *chosen = small ? chb : malloc((size_t)E);
+        if (!small) atomic_fetch_add(&ink2_moe_alloc_n, 2);
+        const size_t tw = (size_t)T * (size_t)E, tb = (tw + sizeof(float) - 1) / sizeof(float);
+        int owned = 0;
+        float *wts = ink2_route_alloc(c, tw + tb, &owned);
+        unsigned char *ch = wts ? (unsigned char *)(wts + tw) : NULL;
+        if (!sc || !chosen || !wts) st = INK2_BAD_INPUT;
         float *wt = sc ? sc + E : NULL;
         for (int t = 0; t < T && st == INK2_OK; t++) {
             ink2_route_one(s, &M, x + (size_t)t * H, NULL, sc, chosen, wt);
@@ -734,7 +758,8 @@ static ink2_status ink2_expert_layer_c(const ink2_shape *s, const ink2_weights *
             memcpy(wts + (size_t)t * E, wt, sizeof(float) * (size_t)E);
         }
         if (st == INK2_OK) st = ink2_experts_fast_c(s, &M, T, x, ch, wts, out, c);
-        free(ch); free(wts); free(sc); free(chosen);
+        ink2_op_free(wts, owned);
+        if (!small) { free(sc); free(chosen); }
         return st;
     }
     float *sc = malloc(sizeof(float) * (2 * (size_t)E + 2 * (size_t)F + (size_t)H));
@@ -758,13 +783,19 @@ ink2_status ink2_expert_selection(const ink2_shape *s, const ink2_weights *w, in
     ink2_status st = ink2_moe_bind(s, w, block, &M);
     if (st != INK2_OK) return st;
     int H = s->hidden, E = s->n_expert, K = s->n_used;
-    float *sc = malloc(sizeof(float) * 2 * (size_t)E); unsigned char *chosen = malloc((size_t)E);
-    if (!sc || !chosen) { free(sc); free(chosen); return INK2_BAD_INPUT; }
+    // a position's scores on the stack (E <= 256), as the layer's (R4.48.20.4)
+    float scb[512];
+    unsigned char chb[256];
+    const bool small = E <= 256;
+    float *sc = small ? scb : malloc(sizeof(float) * 2 * (size_t)E);
+    unsigned char *chosen = small ? chb : malloc((size_t)E);
+    if (!small) atomic_fetch_add(&ink2_moe_alloc_n, 2);
+    if (!sc || !chosen) { if (!small) { free(sc); free(chosen); } return INK2_BAD_INPUT; }
     for (int t = 0; t < T; t++) {
         ink2_route_one(s, &M, x + (size_t)t * H, NULL, sc, chosen, sc + E);
         for (int e = 0, k = 0; e < E; e++) if (chosen[e]) sel[(size_t)t * K + k++] = e;
     }
-    free(sc); free(chosen);
+    if (!small) { free(sc); free(chosen); }
     return INK2_OK;
 }
 

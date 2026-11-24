@@ -153,15 +153,44 @@ int main(int argc, char **argv) {
         CHECK(no_lg == NULL && h5 - h4 == 0, "(g) prefill with want_logits=false runs the head %ld row(s), want 0", h5 - h4);
         free(krows); drop(p64); drop(p8); drop(p0); drop(rk);
     }
-    // (h) Tier C prefill dispatch: a T=64 prefill takes the exact wide-batch tile (>0 columns)
+    // (h) Tier C prefill dispatch: a T=64 prefill takes the exact wide-batch tile (>0 columns) wherever the build has
+    // one for BF16 at the model's width. A build without one leaves vec_dot_exact_tile_ok false and its prefill takes
+    // the multi-column dot, so the check follows that capability and skips, saying why: a T3 build's canonical
+    // kernels (RUNNER_CANON_KERNELS), or a build with no SIMD kernels, such as a sanitized build with no -march
+    // (R4.48.20.4; both failed here before). A build compiled for the SIMD set quants.c keys its kernels on (AVX2 with
+    // FMA and F16C, or aarch64 NEON) and not T3 must report the tile, so the skip cannot hide a tile that went missing.
     {
+#if !defined(RUNNER_CANON_KERNELS) && !defined(RUNNER_NO_SIMD) && \
+    ((defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)) || \
+     (defined(__aarch64__) && defined(__ARM_NEON)))
+        const bool simd_build = true;
+#else
+        const bool simd_build = false;
+#endif
         model_t *p64t = load(argv[2], NULL, false, 1, 64);
-        int32_t prompt64[64];
-        for (int i = 0; i < 64; i++) prompt64[i] = PROMPT[i % N_TOK];
-        const unsigned long tc0 = vec_dot_exact_tile_cols();
-        float *out64 = p64t ? model_inkling2_forward(p64t, prompt64, 64, 0, true, false) : NULL;
-        const unsigned long tc1 = vec_dot_exact_tile_cols();
-        CHECK(out64 && tc1 > tc0, "(h) T=64 BF16 prefill takes exact tile path (%lu cols, want > 0)", tc1 - tc0);
+        const int hn = p64t ? p64t->n_embd : 0;
+        if (!p64t) CHECK(0, "(h) the BF16 model did not load at -b 64");
+        else if (!vec_dot_exact_tile_ok(T_BF16, hn)) {
+            if (simd_build) CHECK(0, "(h) a SIMD build reports no BF16 exact tile at n=%d", hn);
+            else {
+#ifdef RUNNER_CANON_KERNELS
+                const char *why = "a T3 build's canonical kernels have none";
+#else
+                const char *why = "no AVX2/FMA/F16C or NEON kernels in this build";
+#endif
+                printf("ok: (h) skipped: no BF16 exact tile at n=%d (%s), so the prefill takes vec_dot_multi\n", hn, why);
+            }
+        } else {
+#ifdef RUNNER_CANON_KERNELS
+            CHECK(0, "(h) a T3 build reports an exact tile it should not have");
+#endif
+            int32_t prompt64[64];
+            for (int i = 0; i < 64; i++) prompt64[i] = PROMPT[i % N_TOK];
+            const unsigned long tc0 = vec_dot_exact_tile_cols();
+            float *out64 = model_inkling2_forward(p64t, prompt64, 64, 0, true, false);
+            const unsigned long tc1 = vec_dot_exact_tile_cols();
+            CHECK(out64 && tc1 > tc0, "(h) T=64 BF16 prefill takes exact tile path (%lu cols, want > 0)", tc1 - tc0);
+        }
         drop(p64t);
     }
     // (i) default chunk size 256 (clamped to n_ctx) and lazy r->rows allocation (only allocated on keep_all / dump)
@@ -286,6 +315,32 @@ int main(int argc, char **argv) {
               "(k) BF16 272p+8d fused decode: -b 256 == -b 8 byte-identical");
         for (int bi = 0; bi < 3; bi++) free(bdec[bi]);
     }
+    // (l) R4.48.20.4: the MoE layer allocates nothing a call. It allocated its routing tables (T x E bytes and T x E
+    // floats: 320 KB a layer at 512 positions and 128 experts), its scores and the expert body's position lists on
+    // every call, past glibc's 128 KB mmap threshold and the size Windows' heap returns to the system on free. On each
+    // file at 1 and 4 threads and -b 1, 8, 64 and 256, a prefill after the first at the same width allocates nothing:
+    // the tables live in the instance's scratch.
+    for (int f = 0; f < 3; f++)
+        for (int th = 1; th <= 4; th += 3) {
+            static const int BS[4] = { 1, 8, 64, 256 };
+            long first[4] = { -1, -1, -1, -1 }, extra[4] = { -1, -1, -1, -1 };
+            for (int bi = 0; bi < 4; bi++) {
+                model_t *m = load_ctx(argv[1 + f], NULL, false, th, 384, BS[bi]);
+                const int nt = BS[bi] == 1 ? N_TOK : N_SPLIT;
+                const long a_before = ink2_moe_allocs();
+                float *r0 = m ? rows_n(m, split_tok, nt) : NULL;
+                const long a0 = ink2_moe_allocs();
+                if (r0) first[bi] = a0 - a_before;
+                float *r1 = r0 ? rows_n(m, split_tok, nt) : NULL, *r2 = r1 ? rows_n(m, split_tok, nt) : NULL;
+                if (r2) extra[bi] = ink2_moe_allocs() - a0;
+                free(r0); free(r1); free(r2); drop(m);
+            }
+            CHECK(first[0] > 0 && first[1] > 0 && first[2] > 0 && first[3] > 0 &&
+                  extra[0] == 0 && extra[1] == 0 && extra[2] == 0 && extra[3] == 0,
+                  "(l) %s, %d thread(s): first prefill allocates %ld / %ld / %ld / %ld (> 0), two after it "
+                  "%ld / %ld / %ld / %ld at -b 1 / 8 / 64 / 256 (want 0 each)", kind[f], th,
+                  first[0], first[1], first[2], first[3], extra[0], extra[1], extra[2], extra[3]);
+        }
     printf(fails ? "FAIL %d\n" : "PASS\n", fails);
     return fails ? 1 : 0;
 }

@@ -294,5 +294,11 @@ void          vec_dot_exact_tile(int type, const void *row_base, size_t row_byte
                                  int nr, const float *x, size_t x_stride,
                                  int nb, int n, float scale, float *y, size_t y_stride);
 unsigned long vec_dot_exact_tile_cols(void);   // route gate: columns computed on the exact tile path
+// test-only (tests/test_dot_route.c): the tile's scratch allocations since process start; a thread allocates its
+// scratch on its first call and when a call needs more, never on a repeat call (R4.48.20.4); and the threads
+// holding one now (a thread's goes when it exits)
+unsigned long vec_dot_exact_tile_allocs(void);
+long          vec_dot_exact_tile_live(void);
+void          vec_dot_exact_tile_fail_next_alloc(int n);
 
 #endif // RUNNER_QUANTS_H

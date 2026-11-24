@@ -4683,6 +4683,56 @@ unsigned long vec_dot_multi_fallbacks(void) {
 unsigned long vec_dot_exact_tile_cols(void) {
     return atomic_load_explicit(&g_vdet_cols, memory_order_relaxed);
 }
+static _Atomic unsigned long g_vdet_allocs = 0;
+unsigned long vec_dot_exact_tile_allocs(void) {
+    return atomic_load_explicit(&g_vdet_allocs, memory_order_relaxed);
+}
+// The tile's scratch, a thread's own and kept across calls (R4.48.20.4): the rows' decoded weights. A malloc and a
+// free of it on every call (16 x n floats, 184 KB at K 2880) handed a block that large back to the system each time
+// (Windows' heap decommits it on free; glibc maps one past its 128 KB mmap threshold), so every call faulted its
+// pages in again: 45 demand-zero pages, about 0.03 ms on a bare-metal Zen 4 and several times that in a VM, where the
+// CI canary read the tile at 1.96x the multi-8 loop. It grows when a call needs more and is freed when its thread
+// exits (the key's destructor: a pool worker's goes with the pool), so it is never a leak.
+typedef struct { float *p; size_t cap; } tile_scratch;
+static pthread_key_t g_tile_key;
+static pthread_once_t g_tile_once = PTHREAD_ONCE_INIT;
+static int g_tile_key_ok = 0;
+static _Atomic long g_tile_live = 0;   // threads holding a scratch (test-only: vec_dot_exact_tile_live)
+static _Atomic int g_tile_fail_next = 0;   // test-only: make the next growth malloc fail
+void vec_dot_exact_tile_fail_next_alloc(int n) {
+    atomic_store_explicit(&g_tile_fail_next, n, memory_order_relaxed);
+}
+static void tile_scratch_free(void *v) {
+    tile_scratch *s = v;
+    if (s) { free(s->p); free(s); atomic_fetch_sub_explicit(&g_tile_live, 1, memory_order_relaxed); }
+}
+long vec_dot_exact_tile_live(void) { return atomic_load_explicit(&g_tile_live, memory_order_relaxed); }
+static void tile_key_init(void) { g_tile_key_ok = pthread_key_create(&g_tile_key, tile_scratch_free) == 0; }
+// n floats of this thread's scratch, or NULL (the caller then takes the multi-column path)
+static float *tile_scratch_get(size_t n) {
+    pthread_once(&g_tile_once, tile_key_init);
+    if (!g_tile_key_ok) return NULL;
+    tile_scratch *s = pthread_getspecific(g_tile_key);
+    if (!s) {
+        s = calloc(1, sizeof *s);
+        if (!s) return NULL;
+        if (pthread_setspecific(g_tile_key, s) != 0) { free(s); return NULL; }
+        atomic_fetch_add_explicit(&g_tile_live, 1, memory_order_relaxed);
+    }
+    if (s->cap < n) {
+        int f = atomic_load_explicit(&g_tile_fail_next, memory_order_relaxed);
+        if (f > 0 && atomic_compare_exchange_strong_explicit(&g_tile_fail_next, &f, f - 1,
+                                                             memory_order_relaxed, memory_order_relaxed))
+            return NULL;
+        float *p = malloc(sizeof(float) * n);
+        if (!p) return NULL;
+        free(s->p);
+        s->p = p;
+        s->cap = n;
+        atomic_fetch_add_explicit(&g_vdet_allocs, 1, memory_order_relaxed);
+    }
+    return s->p;
+}
 
 // Tier C exact wide-batch tile buffer holds fully dequantized float32 weights from
 // dequant_row(). Every enabled (ISA, type) executes op-for-op identical arithmetic to
@@ -5114,7 +5164,7 @@ void vec_dot_exact_tile(int type, const void *row_base, size_t row_bytes, int nr
 #if !defined(RUNNER_CANON_KERNELS) && RUNNER_NEON
         if (type == T_NVFP4) {
             const int nsub = n / QK_NVFP4_SUB;
-            float *tbuf = malloc(sizeof(float) * (size_t)r_grp * (size_t)(n + nsub));
+            float *tbuf = tile_scratch_get((size_t)r_grp * (size_t)(n + nsub));
             if (tbuf) {
                 float *dbuf = tbuf + (size_t)r_grp * n;
                 atomic_fetch_add_explicit(&g_vdet_cols, (unsigned long)nb, memory_order_relaxed);
@@ -5129,27 +5179,27 @@ void vec_dot_exact_tile(int type, const void *row_base, size_t row_bytes, int nr
                                                nc, n, scale, y + (size_t)c0 * y_stride + r0, y_stride);
                     }
                 }
-                free(tbuf);
                 return;
             }
-        }
+        } else
 #endif
-        float *tbuf = malloc(sizeof(float) * (size_t)r_grp * (size_t)n);
-        if (tbuf) {
-            atomic_fetch_add_explicit(&g_vdet_cols, (unsigned long)nb, memory_order_relaxed);
-            for (int r0 = 0; r0 < nr; r0 += r_grp) {
-                const int ng = nr - r0 < r_grp ? nr - r0 : r_grp;
-                for (int rr = 0; rr < ng; rr++)
-                    dequant_row(type, base + (size_t)(r0 + rr) * row_bytes,
-                                tbuf + (size_t)rr * n, n);
-                for (int c0 = 0; c0 < nb; c0 += tcols) {
-                    const int nc = nb - c0 < tcols ? nb - c0 : tcols;
-                    exact_tile_block(tbuf, ng, x + (size_t)c0 * x_stride, x_stride,
-                                     nc, n, scale, y + (size_t)c0 * y_stride + r0, y_stride);
+        {
+            float *tbuf = tile_scratch_get((size_t)r_grp * (size_t)n);
+            if (tbuf) {
+                atomic_fetch_add_explicit(&g_vdet_cols, (unsigned long)nb, memory_order_relaxed);
+                for (int r0 = 0; r0 < nr; r0 += r_grp) {
+                    const int ng = nr - r0 < r_grp ? nr - r0 : r_grp;
+                    for (int rr = 0; rr < ng; rr++)
+                        dequant_row(type, base + (size_t)(r0 + rr) * row_bytes,
+                                    tbuf + (size_t)rr * n, n);
+                    for (int c0 = 0; c0 < nb; c0 += tcols) {
+                        const int nc = nb - c0 < tcols ? nb - c0 : tcols;
+                        exact_tile_block(tbuf, ng, x + (size_t)c0 * x_stride, x_stride,
+                                         nc, n, scale, y + (size_t)c0 * y_stride + r0, y_stride);
+                    }
                 }
+                return;
             }
-            free(tbuf);
-            return;
         }
     }
     for (int r = 0; r < nr; r++) {

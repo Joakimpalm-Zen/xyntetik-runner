@@ -31,10 +31,18 @@
 #include "quants.h"
 #include "fp16.h"
 #include "runner.h"
+#include "tpool.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <psapi.h>
+#else
+#include <sys/resource.h>
+#endif
 
 static int g_fail = 0;
 static void ck(int cond, const char *what) {
@@ -45,6 +53,18 @@ static void ck(int cond, const char *what) {
 static double route_now(void) {
     struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
     return t.tv_sec + t.tv_nsec * 1e-9;
+}
+
+// the process's page faults so far (Windows: every fault; POSIX: the minor ones, a demand-zero page's kind), or -1
+static long route_faults(void) {
+#ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS pc;
+    pc.cb = sizeof pc;
+    return GetProcessMemoryInfo(GetCurrentProcess(), &pc, sizeof pc) ? (long)pc.PageFaultCount : -1;
+#else
+    struct rusage ru;
+    return getrusage(RUSAGE_SELF, &ru) == 0 ? (long)ru.ru_minflt : -1;
+#endif
 }
 
 static void dispatch(const char *path) {
@@ -131,13 +151,16 @@ static void tile_ratio(int type, const char *name) {
     for (size_t bi = 0; bi < sizeof(nbs) / sizeof(*nbs); bi++) {
         const int nb = nbs[bi];
         double best_t = 1e9, best_m = 1e9;
+        long flt_t = 0, flt_m = 0, calls = 0;   // page faults in the tile's calls and in the multi-8 loops
         for (int attempt = 0, rounds = 5; attempt < 2; attempt++, rounds = 25) {
             best_t = 1e9; best_m = 1e9;
             for (int rep = 0; rep < rounds; rep++) {
+                const long f0 = route_faults();
                 double t0 = route_now();
                 vec_dot_exact_tile(type, w, rs, rows, x, n, nb, n, 1.0f, y, rows);
                 sink += y[0];
                 double t1 = route_now();
+                const long f1 = route_faults();
                 for (int r = 0; r < rows; r++) {
                     const void *row = w + rs * r;
                     for (int c0 = 0; c0 < nb; c0 += VEC_DOT_MULTI_MAX) {
@@ -150,18 +173,154 @@ static void tile_ratio(int type, const char *name) {
                     }
                 }
                 double t2 = route_now();
+                const long f2 = route_faults();
                 if (t1 - t0 < best_t) best_t = t1 - t0;
                 if (t2 - t1 < best_m) best_m = t2 - t1;
+                if (f0 >= 0 && f1 >= 0 && f2 >= 0) { flt_t += f1 - f0; flt_m += f2 - f1; calls++; }
             }
             if (best_t <= 1.5 * best_m) break;
         }
-        char msg[160];
-        snprintf(msg, sizeof msg, "%s exact tile, %d cols: tile %.3f ms, multi-8 loop %.3f ms (ratio %.2f, limit 1.50)",
-                 name, nb, best_t * 1e3, best_m * 1e3, best_t / best_m);
+        // R4.48.20.4: the page faults a call, so a slow tile on a host says whether its time went to faults (a
+        // per-call buffer's demand-zero pages) or to its arithmetic
+        char msg[256], flt[96] = "";
+        if (calls) snprintf(flt, sizeof flt, "; page faults a call: tile %.1f, multi-8 loop %.1f",
+                            (double)flt_t / calls, (double)flt_m / calls);
+        snprintf(msg, sizeof msg,
+                 "%s exact tile, %d cols: tile %.3f ms, multi-8 loop %.3f ms (ratio %.2f, limit 1.50)%s",
+                 name, nb, best_t * 1e3, best_m * 1e3, best_t / best_m, flt);
         ck(best_t <= 1.5 * best_m, msg);
     }
     if (sink == 12345.678f) puts("");
     free(y); free(x); free(w);
+}
+
+// R4.48.20.4: the tile's scratch is a thread's own, kept across calls. It was a malloc and a free of the rows'
+// decoded weights (16 x n floats, 184 KB at K 2880) on every call: a block that large a heap returns to the system
+// (Windows' heap decommits it on free, glibc maps one past its 128 KB mmap threshold), so each call faulted its pages
+// in again (45 demand-zero pages a call, about 0.03 ms on a bare-metal Zen 4, more in a VM). On one thread: after
+// the first call, repeats of it and of smaller calls allocate nothing and a call that needs more allocates once; on
+// the house's thread pool (persistent workers), the first run allocates at most once a worker and the runs after it
+// nothing.
+typedef struct { int type; const unsigned char *w; size_t rs; int rows; const float *x; int n, nb; float *y; } tile_job;
+static void tile_job_fn(void *ctx, int i0, int i1) {
+    const tile_job *j = ctx;
+    for (int i = i0; i < i1; i++)
+        vec_dot_exact_tile(j->type, j->w, j->rs, j->rows, j->x, (size_t)j->n, j->nb, j->n, 1.0f,
+                           j->y + (size_t)i * j->rows * j->nb, (size_t)j->rows);
+}
+static void tile_scratch(void) {
+    const int type = T_BF16, n = 2880, n2 = 4096, rows = 64, nb = 16, items = 8;
+    if (!vec_dot_exact_tile_ok(type, n)) {
+        fprintf(stderr, "ok: the tile's scratch: skipped (this build has no exact tile)\n");
+        return;
+    }
+    const size_t rs = ggml_row_size(type, n), rs2 = ggml_row_size(type, n2);
+    unsigned char *w = malloc(rs2 * rows);
+    float *x = malloc(sizeof(float) * (size_t)n2 * nb), *y = malloc(sizeof(float) * (size_t)rows * nb * items);
+    unsigned s = 24680;
+    uint16_t *h = (uint16_t *)w;
+    for (size_t i = 0; i < (size_t)n2 * rows; i++) {
+        s = s * 1103515245u + 12345u;
+        h[i] = (uint16_t)(0x3f00u | (s >> 25));
+    }
+    for (size_t i = 0; i < (size_t)n2 * nb; i++) {
+        s = s * 1103515245u + 12345u;
+        x[i] = ((s >> 9) & 1023) / 1024.0f - 0.5f;
+    }
+    vec_dot_exact_tile(type, w, rs, rows, x, n, nb, n, 1.0f, y, rows);   // this thread's first call
+    const unsigned long a0 = vec_dot_exact_tile_allocs();
+    for (int k = 0; k < 50; k++) vec_dot_exact_tile(type, w, rs, rows, x, n, nb, n, 1.0f, y, rows);
+    for (int k = 0; k < 50; k++) vec_dot_exact_tile(type, w, rs, 5, x, n, 9, n, 1.0f, y, rows);
+    const unsigned long a1 = vec_dot_exact_tile_allocs();
+    vec_dot_exact_tile(type, w, rs2, rows, x, n2, nb, n2, 1.0f, y, rows);   // more than the scratch holds
+    const unsigned long a2 = vec_dot_exact_tile_allocs();
+    for (int k = 0; k < 20; k++) {
+        vec_dot_exact_tile(type, w, rs2, rows, x, n2, nb, n2, 1.0f, y, rows);
+        vec_dot_exact_tile(type, w, rs, rows, x, n, nb, n, 1.0f, y, rows);
+    }
+    const unsigned long a3 = vec_dot_exact_tile_allocs();
+    char msg[256];
+    snprintf(msg, sizeof msg, "the tile's scratch on one thread: 100 calls after its first allocate %lu times "
+             "(want 0); a call needing more %lu (want 1), then 40 calls %lu (want 0)", a1 - a0, a2 - a1, a3 - a2);
+    ck(a1 == a0 && a2 - a1 == 1 && a3 == a2, msg);
+    // R4.48.20.4: NVFP4 tile scratch and allocation-failure fallback. At this point the thread holds exact r_grp * n2
+    // floats from the BF16 call above. On NEON, T_NVFP4 needs r_grp * (n2 + n2/16) > r_grp * n2, so a failed growth
+    // must fall back to vec_dot_multi (preserving exact vec_dot_nvfp4 bits) rather than falling through to the
+    // generic dequant_row + exact_tile_block branch (which would reuse the held r_grp * n2 buffer with different bits).
+    if (vec_dot_exact_tile_ok(T_NVFP4, n2)) {
+        const int n3 = n2 + 64;
+        const size_t rsn2 = ggml_row_size(T_NVFP4, n2), rsn3 = ggml_row_size(T_NVFP4, n3);
+        const size_t bsn = ggml_row_size(T_NVFP4, ggml_block_size(T_NVFP4));
+        unsigned char *wn = malloc(rsn3 * rows);
+        float *xn = malloc(sizeof(float) * (size_t)n3 * nb);
+        float *ref = malloc(sizeof(float) * (size_t)rows * nb);
+        unsigned sn = 13579;
+        for (size_t i = 0; i < rsn3 * rows; i++) { sn = sn * 1103515245u + 12345u; wn[i] = (unsigned char)(sn >> 16); }
+        // Non-power-of-two UE4M3 scales (0x25..0x4d) so pre-scaling vs post-scaling differs in float32 rounding.
+        for (size_t b = 0; b < rsn3 * rows; b += bsn)
+            for (int k = 0; k < 4; k++) { sn = sn * 1103515245u + 12345u; wn[b + k] = (unsigned char)(0x25 + ((sn >> 16) % 41)); }
+        for (size_t i = 0; i < (size_t)n3 * nb; i++) { sn = sn * 1103515245u + 12345u; xn[i] = ((sn >> 9) & 1023) / 1024.0f - 0.5f; }
+        for (int c = 0; c < nb; c++)
+            for (int r = 0; r < rows; r++)
+                ref[(size_t)c * rows + r] = vec_dot(T_NVFP4, wn + (size_t)r * rsn2, xn + (size_t)c * n2, n2);
+        // Trigger growth failure: on NEON n2 needs r_grp*(n2+n2/16) > held r_grp*n2; on AVX-512 test at n3 > n2.
+        const int nf =
+#if !defined(RUNNER_CANON_KERNELS) && !defined(RUNNER_NO_SIMD) && defined(__aarch64__) && defined(__ARM_NEON)
+            n2;
+#else
+            n3;
+#endif
+        const size_t rsnf = nf == n2 ? rsn2 : rsn3;
+        if (nf == n3)
+            for (int c = 0; c < nb; c++)
+                for (int r = 0; r < rows; r++)
+                    ref[(size_t)c * rows + r] = vec_dot(T_NVFP4, wn + (size_t)r * rsn3, xn + (size_t)c * n3, n3);
+        const unsigned long c0 = vec_dot_exact_tile_cols(), m0 = vec_dot_multi_calls();
+        vec_dot_exact_tile_fail_next_alloc(1);
+        vec_dot_exact_tile(T_NVFP4, wn, rsnf, rows, xn, nf, nb, nf, 1.0f, y, rows);
+        vec_dot_exact_tile_fail_next_alloc(0);
+        const unsigned long c1 = vec_dot_exact_tile_cols(), m1 = vec_dot_multi_calls();
+        int bad_bits = 0;
+        for (size_t i = 0; i < (size_t)rows * nb; i++)
+            if (memcmp(&y[i], &ref[i], sizeof(float)) != 0) bad_bits++;
+        snprintf(msg, sizeof msg, "NVFP4 tile alloc failure falls back to vec_dot_multi: tile cols +%lu (want 0), "
+                 "multi calls +%lu (want > 0), mismatched floats %d (want 0)", c1 - c0, m1 - m0, bad_bits);
+        ck(c1 == c0 && m1 > m0 && bad_bits == 0, msg);
+        // Normal NVFP4 tile path at n3 > n2: grows once, then 20 repeats allocate 0 and take the tile.
+        const unsigned long na0 = vec_dot_exact_tile_allocs(), nc0 = vec_dot_exact_tile_cols();
+        vec_dot_exact_tile(T_NVFP4, wn, rsn3, rows, xn, n3, nb, n3, 1.0f, y, rows);
+        const unsigned long na1 = vec_dot_exact_tile_allocs(), nc1 = vec_dot_exact_tile_cols();
+        for (int k = 0; k < 20; k++) {
+            vec_dot_exact_tile(T_NVFP4, wn, rsn3, rows, xn, n3, nb, n3, 1.0f, y, rows);
+            vec_dot_exact_tile(T_NVFP4, wn, rsn2, rows, xn, n2, nb, n2, 1.0f, y, rows);
+        }
+        const unsigned long na2 = vec_dot_exact_tile_allocs();
+        snprintf(msg, sizeof msg, "NVFP4 tile scratch on one thread: first larger call allocates %lu (want 1, tile "
+                 "cols +%lu), 40 repeats after it %lu (want 0)", na1 - na0, nc1 - nc0, na2 - na1);
+        ck(na1 - na0 == 1 && nc1 > nc0 && na2 == na1, msg);
+        free(ref); free(xn); free(wn);
+    }
+    tpool *tp = tpool_create(4);
+    if (tp) {
+        tile_job j = { type, w, rs, rows, x, n, nb, y };
+        const long l0 = vec_dot_exact_tile_live();   // this thread's scratch
+        const unsigned long p0 = vec_dot_exact_tile_allocs();
+        tpool_run(tp, tile_job_fn, &j, items);
+        const unsigned long p1 = vec_dot_exact_tile_allocs();
+        for (int k = 0; k < 20; k++) tpool_run(tp, tile_job_fn, &j, items);
+        const unsigned long p2 = vec_dot_exact_tile_allocs();
+        const long l1 = vec_dot_exact_tile_live();
+        snprintf(msg, sizeof msg, "the tile's scratch on the thread pool (%d workers): its first run allocates %lu "
+                 "times (want at most one a worker), 20 runs after it %lu (want 0)", tpool_size(tp), p1 - p0, p2 - p1);
+        ck(p1 - p0 <= (unsigned long)tpool_size(tp) && p2 == p1, msg);
+        tpool_destroy(tp);
+        // the workers' scratches go with their threads (the key's destructor), so none is left as a leak
+        const long l2 = vec_dot_exact_tile_live();
+        snprintf(msg, sizeof msg, "the tile's scratch is freed when its thread exits: %ld threads held one with the "
+                 "pool, %ld after it is destroyed (want this thread's %ld)", l1, l2, l0);
+        ck(l0 == 1 && l1 > l0 && l2 == l0, msg);
+    }
+    free(w); free(x); free(y);
 }
 
 #if defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)
@@ -228,6 +387,7 @@ int main(int argc, char **argv) {
     ratio(T_IQ3_S, "IQ3_S");
     ratio(T_IQ4_XS, "IQ4_XS");
     ratio(T_NVFP4, "NVFP4");
+    tile_scratch();
     tile_ratio(T_BF16, "BF16");
     tile_ratio(T_NVFP4, "NVFP4");
 #if defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)
