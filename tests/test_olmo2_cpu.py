@@ -51,8 +51,12 @@ ROOT = Path(__file__).resolve().parents[1]
 TEXT = ROOT / "tests" / "fixtures" / "mixed-corpus.txt"
 N_TOKENS = 160   # the window is 8, so every sliding layer masks
 
-# The reference script's float32 evaluation against its float64 self (measured 2026-11-24; recomputed and
-# checked below). The bound for a file is twice its figure.
+# The reference script's float32 evaluation against its float64 self (measured 2026-11-24 with macOS's numpy, on
+# Accelerate; recomputed and checked below). The bound for a file is twice its figure. The figure is a scale, not a
+# constant of nature: numpy's float32 matrix products sum in the order of the BLAS they link, so the same script
+# reads 3.433e-6, 3.018e-6 and 1.731e-6 for olmo2, olmo2-plain and llama on Linux x86 CI (OpenBLAS), -21% to +16%
+# from these (and the runner sat inside the bound there too). The recompute is held to a factor of 2 either way.
+F32_SPREAD = 2.0
 F32_SCRIPT = {"olmo2": 2.9583724900916764e-06, "olmo2-plain": 2.886082274500268e-06,
               "olmo2-gqa": 2.9400200860507653e-06, "llama": 2.190242642363671e-06}
 BAD = {"pre-norm": "olmo2: blk.0 carries a pre-norm (attn_norm or ffn_norm)",
@@ -106,7 +110,7 @@ def _f32_script_distance(model, tokens):
 def test_the_stated_float32_tolerance_is_the_scripts(runner_bin, files, tmp_path, name):
     tokens = _score(runner_bin, files[name], tmp=tmp_path)["tokens"]
     got = _f32_script_distance(files[name], tokens)
-    assert got == pytest.approx(F32_SCRIPT[name], rel=1e-6), (name, got)
+    assert F32_SCRIPT[name] / F32_SPREAD <= got <= F32_SCRIPT[name] * F32_SPREAD, (name, got, F32_SCRIPT[name])
 
 
 @pytest.mark.parametrize("name", ["olmo2", "olmo2-plain", "olmo2-gqa", "llama"])
