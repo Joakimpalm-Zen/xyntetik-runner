@@ -1394,6 +1394,7 @@ static id<MTLComputePipelineState> metal_front_pipe(gpu_t *g, model_t *m,
     layer_t *ly = &m->layers[l];
     if (m->kv_q8 || m->kv_fp4 || m->kv_split || model_kv_owner(m, l) != l || !model_layer_ropes(m, l) ||
         m->v_rmsnorm || (m->attn_out_gate && ly->wq_gate) || m->qwen35 ||
+        !g->attn_norm[l] || m->qk_norm_full ||
         !ly->wq || !ly->wk || !ly->wv ||
         (m->n_expert <= 0 && !metal_front_all()) || m->n_embd > 7936)
         return nil;
@@ -2850,20 +2851,22 @@ static bool metal_upload_constants(model_t *m, gpu_t *g, id<MTLDevice> dev) {
             !LC(dn_cw, ly->ssm_conv_w, (size_t)m->ssm.inner * m->ssm.conv_kernel, LC_REQUIRED))
             return gpu_init_fail(m, g, nil, "LFM2 short-convolution constant allocation");
         int l_hd = model_head_dim(m, l);
+        int l_q_dim = model_q_dim(m, l);
         int l_kv_dim = model_kv_dim(m, l);
         size_t exp_ff = (size_t)m->n_expert * (size_t)m->n_ff_exp;
         // a nemotron_h block is one sublayer: its SSM and attention blocks
-        // carry no FFN norm, its MLP blocks no mixer
+        // carry no FFN norm, its MLP blocks no mixer; an olmo2 block
+        // (post_norm_only) has no pre-norms at all, only pan/pfn after
         bool ok = LC(attn_norm, ly->attn_norm_w, m->n_embd,
-                     ly->skip_mixer ? LC_IF_PRESENT : LC_REQUIRED) &&
+                     (ly->skip_mixer || m->post_norm_only) ? LC_IF_PRESENT : LC_REQUIRED) &&
                   LC(ffn_norm, ly->ffn_norm_w, m->n_embd,
-                     ly->skip_ffn ? LC_IF_PRESENT : LC_REQUIRED) &&
+                     (ly->skip_ffn || m->post_norm_only) ? LC_IF_PRESENT : LC_REQUIRED) &&
                   LC(bq, ly->bq, q_dim, LC_IF_PRESENT) &&
                   LC(bk, ly->bk, l_kv_dim, LC_IF_PRESENT) &&
                   LC(bv, ly->bv, l_kv_dim, LC_IF_PRESENT) &&
                   LC(bo, ly->bo, m->n_embd, LC_IF_PRESENT) &&
-                  LC(qn, ly->qnorm_w, l_hd, LC_IF_PRESENT) &&
-                  LC(kn, ly->knorm_w, l_hd, LC_IF_PRESENT) &&
+                  LC(qn, ly->qnorm_w, m->qk_norm_full ? l_q_dim : l_hd, LC_IF_PRESENT) &&
+                  LC(kn, ly->knorm_w, m->qk_norm_full ? l_kv_dim : l_hd, LC_IF_PRESENT) &&
                   LC(sinks, ly->attn_sinks, m->n_head, LC_IF_PRESENT) &&
                   LC(pan, ly->post_attn_norm_w, m->n_embd, LC_IF_PRESENT) &&
                   LC(ppn, ly->ple_post_norm, m->n_embd, LC_IF_PRESENT) &&
@@ -4671,9 +4674,11 @@ static void metal_enc_attn_in(metal_fwd *F, int l, const metal_layer_plan *P) {
         enc_add_rmsnorm(g, F->e, g->x, g->xb, g->xb, g->attn_norm[l],
                         n_embd, m->rms_eps);
         F->fuse_pending_add = false;
-    } else if (!front)
+    } else if (!front && g->attn_norm[l])
         enc_rmsnorm_n(g, F->e, g->x, 0, g->xb, 0, g->attn_norm[l],
                       n_embd, m->rms_eps, n, n_embd, xdim);
+    id<MTLBuffer> attn_in = g->attn_norm[l] ? g->xb : g->x;
+    int attn_stride = g->attn_norm[l] ? xdim : n_embd;
     if (front) {
         metal_fuse_announce();
         metal_front_announce(fpipe, g);
@@ -4715,8 +4720,8 @@ static void metal_enc_attn_in(metal_fwd *F, int l, const metal_layer_plan *P) {
     if (m->qwen35) {
         // Q and the output gate share one projection, interleaved per head
         // (admission refuses a Q bias and an adapter here)
-        enc_mv_n(g, F->e, m, ly->wq, g->xb, 0, g->dn_qkv, 0,
-                 n_embd, 2 * q_dim_l, nil, n, xdim, 2 * q_dim_l);
+        enc_mv_n(g, F->e, m, ly->wq, attn_in, 0, g->dn_qkv, 0,
+                 n_embd, 2 * q_dim_l, nil, n, attn_stride, 2 * q_dim_l);
         [F->e setComputePipelineState:g->p_q35_split];
         [F->e setBuffer:g->dn_qkv offset:0 atIndex:0];
         [F->e setBuffer:g->q offset:0 atIndex:1];
@@ -4728,26 +4733,26 @@ static void metal_enc_attn_in(metal_fwd *F, int l, const metal_layer_plan *P) {
         [F->e dispatchThreads:MTLSizeMake(q_dim_l, n, 1)
           threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
     } else {
-    enc_mv_n(g, F->e, m, ly->wq, g->xb, 0, g->q,  0,
-             n_embd, q_dim_l,  g->bq[l], n, xdim, q_dim);
-    enc_lora(g, F->e, l, LW_Q, g->xb, g->q, n_embd, q_dim_l, n, xdim, q_dim);
+    enc_mv_n(g, F->e, m, ly->wq, attn_in, 0, g->q,  0,
+             n_embd, q_dim_l,  g->bq[l], n, attn_stride, q_dim);
+    enc_lora(g, F->e, l, LW_Q, attn_in, g->q, n_embd, q_dim_l, n, attn_stride, q_dim);
     }
     // the output gate projects the same normed input as Q; xb is
     // overwritten by the wo matvec below, so project it here
     // spark2_5's gate projects to one value per head, not per output
     if (m->attn_out_gate && ly->wq_gate)
-        enc_mv_n(g, F->e, m, ly->wq_gate, g->xb, 0, g->agate, 0,
-                 n_embd, m->attn_gate_heads ? m->n_head : q_dim_l, nil, n, xdim, q_dim);
+        enc_mv_n(g, F->e, m, ly->wq_gate, attn_in, 0, g->agate, 0,
+                 n_embd, m->attn_gate_heads ? m->n_head : q_dim_l, nil, n, attn_stride, q_dim);
     if (owns_kv) {
-        enc_mv_n(g, F->e, m, ly->wk, g->xb, 0, g->kt, 0,
-                 n_embd, kv_dim_l, g->bk[l], n, xdim, kv_dim);
-        enc_lora(g, F->e, l, LW_K, g->xb, g->kt, n_embd, kv_dim_l, n, xdim, kv_dim);
+        enc_mv_n(g, F->e, m, ly->wk, attn_in, 0, g->kt, 0,
+                 n_embd, kv_dim_l, g->bk[l], n, attn_stride, kv_dim);
+        enc_lora(g, F->e, l, LW_K, attn_in, g->kt, n_embd, kv_dim_l, n, attn_stride, kv_dim);
         // gemma-4 global layers publish no V projection: V is the raw K
         // projection, taken before K is normed/roped (as on the CPU path).
         if (ly->wv) {
-            enc_mv_n(g, F->e, m, ly->wv, g->xb, 0, g->vt, 0,
-                     n_embd, kv_dim_l, g->bv[l], n, xdim, kv_dim);
-            enc_lora(g, F->e, l, LW_V, g->xb, g->vt, n_embd, kv_dim_l, n, xdim, kv_dim);
+            enc_mv_n(g, F->e, m, ly->wv, attn_in, 0, g->vt, 0,
+                     n_embd, kv_dim_l, g->bv[l], n, attn_stride, kv_dim);
+            enc_lora(g, F->e, l, LW_V, attn_in, g->vt, n_embd, kv_dim_l, n, attn_stride, kv_dim);
         }
     }
     }
@@ -4756,14 +4761,26 @@ static void metal_enc_attn_in(metal_fwd *F, int l, const metal_layer_plan *P) {
     // each (head, column) pair was always an independent reduction, so
     // only the encoding changes. This was 65n of the 240n per-token
     // dispatches the census measured; the elementwise ops are the rest.
-    if (g->qn[l] && !front)
-        enc_qknorm_n(g, F->e, m, g->q, 0, g->qn[l], m->n_head, hd, n, q_dim);
+    // olmo2 (qk_norm_full) normalises across the whole projection width
+    // (q_dim_l / kv_dim_l) rather than per head, via in-place k_rmsnorm.
+    if (g->qn[l] && !front) {
+        if (m->qk_norm_full)
+            enc_rmsnorm_n(g, F->e, g->q, 0, g->q, 0, g->qn[l],
+                          q_dim_l, m->rms_eps, n, q_dim, q_dim);
+        else
+            enc_qknorm_n(g, F->e, m, g->q, 0, g->qn[l], m->n_head, hd, n, q_dim);
+    }
     if (owns_kv) {
         if (m->v_rmsnorm)
             enc_headnorm_n(g, F->e, m, ly->wv ? g->vt : g->kt, 0,
                            g->vt, 0, nil, n_kv, hd, n, kv_dim);
-        if (g->kn[l] && !front)
-            enc_qknorm_n(g, F->e, m, g->kt, 0, g->kn[l], n_kv, hd, n, kv_dim);
+        if (g->kn[l] && !front) {
+            if (m->qk_norm_full)
+                enc_rmsnorm_n(g, F->e, g->kt, 0, g->kt, 0, g->kn[l],
+                              kv_dim_l, m->rms_eps, n, kv_dim, kv_dim);
+            else
+                enc_qknorm_n(g, F->e, m, g->kt, 0, g->kn[l], n_kv, hd, n, kv_dim);
+        }
     }
 }
 
@@ -5109,13 +5126,15 @@ static bool metal_enc_ffn(metal_fwd *F, int l, const metal_layer_plan *P) {
             metal_fuse_announce();
             enc_add_rmsnorm(g, F->e, g->x, g->xb, g->xb, g->ffn_norm[l],
                             n_embd, m->rms_eps);
-        } else
+        } else if (g->ffn_norm[l])
         enc_rmsnorm_n(g, F->e, g->x, 0, g->xb, 0, g->ffn_norm[l],
                       n_embd, m->rms_eps, n, n_embd, xdim);
+        id<MTLBuffer> ffn_in = g->ffn_norm[l] ? g->xb : g->x;
+        int ffn_stride = g->ffn_norm[l] ? xdim : n_embd;
         if (!ly->w_gate && m->ffn_relu2) {
             // nemotron_h's gate-less MLP: down(relu(up(x))^2)
-            enc_mv_n(g, F->e, m, ly->w_up, g->xb, 0, g->hb, 0,
-                     n_embd, nff_l, nil, n, xdim, nff_l);
+            enc_mv_n(g, F->e, m, ly->w_up, ffn_in, 0, g->hb, 0,
+                     n_embd, nff_l, nil, n, ffn_stride, nff_l);
             int cnt = n * nff_l;
             [F->e setComputePipelineState:g->p_relu2];
             [F->e setBuffer:g->hb offset:0 atIndex:0];
@@ -5127,9 +5146,9 @@ static bool metal_enc_ffn(metal_fwd *F, int l, const metal_layer_plan *P) {
             // Apertus's gate-less MLP: down(xielu(up(x))), the up adapter on
             // the up output as the CPU's LORA_HOOK puts it, then xIELU in
             // place at this layer's effective parameters
-            enc_mv_n(g, F->e, m, ly->w_up, g->xb, 0, g->hb, 0,
-                     n_embd, nff_l, nil, n, xdim, nff_l);
-            enc_lora(g, F->e, l, LW_UP, g->xb, g->hb, n_embd, nff_l, n, xdim, nff_l);
+            enc_mv_n(g, F->e, m, ly->w_up, ffn_in, 0, g->hb, 0,
+                     n_embd, nff_l, nil, n, ffn_stride, nff_l);
+            enc_lora(g, F->e, l, LW_UP, ffn_in, g->hb, n_embd, nff_l, n, ffn_stride, nff_l);
             int cnt = n * nff_l;
             float p4[4] = { m->xielu_an[l], m->xielu_ap[l], m->xielu_b[l], m->xielu_eps[l] };
             [F->e setComputePipelineState:g->p_xielu];
@@ -5140,12 +5159,12 @@ static bool metal_enc_ffn(metal_fwd *F, int l, const metal_layer_plan *P) {
             [F->e dispatchThreads:MTLSizeMake(cnt, 1, 1)
               threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         } else {
-        enc_mv_n(g, F->e, m, ly->w_gate, g->xb, 0, g->hb,  0,
-                 n_embd, nff_l, nil, n, xdim, nff_l);
-        enc_lora(g, F->e, l, LW_GATE, g->xb, g->hb, n_embd, nff_l, n, xdim, nff_l);
-        enc_mv_n(g, F->e, m, ly->w_up,   g->xb, 0, g->hb2, 0,
-                 n_embd, nff_l, nil, n, xdim, nff_l);
-        enc_lora(g, F->e, l, LW_UP, g->xb, g->hb2, n_embd, nff_l, n, xdim, nff_l);
+        enc_mv_n(g, F->e, m, ly->w_gate, ffn_in, 0, g->hb,  0,
+                 n_embd, nff_l, nil, n, ffn_stride, nff_l);
+        enc_lora(g, F->e, l, LW_GATE, ffn_in, g->hb, n_embd, nff_l, n, ffn_stride, nff_l);
+        enc_mv_n(g, F->e, m, ly->w_up,   ffn_in, 0, g->hb2, 0,
+                 n_embd, nff_l, nil, n, ffn_stride, nff_l);
+        enc_lora(g, F->e, l, LW_UP, ffn_in, g->hb2, n_embd, nff_l, n, ffn_stride, nff_l);
         // hb/hb2 are contiguous across the batch, so the activation is one
         // dispatch over the whole batch rather than n
         enc_elem(g, F->e, metal_act_pipeline(g, m), g->hb, 0, g->hb2, 0, n * nff_l);
@@ -5482,13 +5501,14 @@ static bool metal_fwd_layer(metal_fwd *F, int l) {
     // around it: F2a needs this block's attention AND its FFN norm, F2b
     // needs this block's FFN and the next block's attention norm.
     bool f2a = n == 1 && metal_fuse_on() && g->p_add_rmsnorm &&
-               !g->pan[l] && m->resid_scale == 1.0f && !nanstage &&
+               !g->pan[l] && g->ffn_norm[l] && m->resid_scale == 1.0f && !nanstage &&
                !ly->moe_gemma && !ly->skip_mixer && !ly->skip_ffn;
     bool f2b = n == 1 && metal_fuse_on() && g->p_add_rmsnorm &&
                !g->pfn[l] && m->resid_scale == 1.0f && !ly->ple_gate &&
                (ly->out_scale == 1.0f || ly->out_scale == 0.0f) &&
                !nantrace && !nanstage && l + 1 < n_gpu_layers &&
                n_gpu_layers == m->n_layer &&
+               g->attn_norm[l + 1] &&
                !ly->skip_ffn && !m->layers[l + 1].skip_mixer &&
                !metal_front_capable(g, m, l + 1);
     bool sum_add = n == 1 && metal_fuse_on() && !f2b && ly->is_moe &&
@@ -5975,25 +5995,38 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         int kv_units = ku > vu ? ku : vu;
         bool owns_kv = model_kv_owner(m0, l) == l;
 
-        enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->attn_norm[l],
-                      n_embd, m0->rms_eps, n, n_embd, xdim);
-        used_tiles |= enc_mb_mv(g, e, ly->wq, g->xb, 0, g->q, 0,
-                  n_embd, q_dim_l, g->bq[l], n, xdim, q_dim);
+        if (g->attn_norm[l])
+            enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->attn_norm[l],
+                          n_embd, m0->rms_eps, n, n_embd, xdim);
+        id<MTLBuffer> attn_in = g->attn_norm[l] ? g->xb : g->x;
+        int attn_stride = g->attn_norm[l] ? xdim : n_embd;
+        used_tiles |= enc_mb_mv(g, e, ly->wq, attn_in, 0, g->q, 0,
+                  n_embd, q_dim_l, g->bq[l], n, attn_stride, q_dim);
         if (owns_kv) {
-            used_tiles |= enc_mb_mv(g, e, ly->wk, g->xb, 0, g->kt, 0,
-                      n_embd, kv_dim_l, g->bk[l], n, xdim, kv_dim);
+            used_tiles |= enc_mb_mv(g, e, ly->wk, attn_in, 0, g->kt, 0,
+                      n_embd, kv_dim_l, g->bk[l], n, attn_stride, kv_dim);
             if (ly->wv)
-                used_tiles |= enc_mb_mv(g, e, ly->wv, g->xb, 0, g->vt, 0,
-                          n_embd, kv_dim_l, g->bv[l], n, xdim, kv_dim);
+                used_tiles |= enc_mb_mv(g, e, ly->wv, attn_in, 0, g->vt, 0,
+                          n_embd, kv_dim_l, g->bv[l], n, attn_stride, kv_dim);
         }
-        if (g->qn[l])
-            enc_qknorm_n(g, e, m0, g->q, 0, g->qn[l], m0->n_head, hd, n, q_dim);
+        if (g->qn[l]) {
+            if (m0->qk_norm_full)
+                enc_rmsnorm_n(g, e, g->q, 0, g->q, 0, g->qn[l],
+                              q_dim_l, m0->rms_eps, n, q_dim, q_dim);
+            else
+                enc_qknorm_n(g, e, m0, g->q, 0, g->qn[l], m0->n_head, hd, n, q_dim);
+        }
         if (owns_kv) {
             if (m0->v_rmsnorm)
                 enc_headnorm_n(g, e, m0, ly->wv ? g->vt : g->kt, 0,
                                g->vt, 0, nil, n_kv, hd, n, kv_dim);
-            if (g->kn[l])
-                enc_qknorm_n(g, e, m0, g->kt, 0, g->kn[l], n_kv, hd, n, kv_dim);
+            if (g->kn[l]) {
+                if (m0->qk_norm_full)
+                    enc_rmsnorm_n(g, e, g->kt, 0, g->kt, 0, g->kn[l],
+                                  kv_dim_l, m0->rms_eps, n, kv_dim, kv_dim);
+                else
+                    enc_qknorm_n(g, e, m0, g->kt, 0, g->kn[l], n_kv, hd, n, kv_dim);
+            }
         }
         metal_prof_cut(g, prof, &cb, &e, mb_ms, MB_QKV);
 
@@ -6049,12 +6082,15 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         metal_prof_cut(g, prof, &cb, &e, mb_ms, MB_O);
 
         int nff_l = ly->n_ff;
-        enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->ffn_norm[l],
-                      n_embd, m0->rms_eps, n, n_embd, xdim);
-        used_tiles |= enc_mb_mv(g, e, ly->w_gate, g->xb, 0, g->hb, 0,
-                  n_embd, nff_l, nil, n, xdim, nff_l);
-        used_tiles |= enc_mb_mv(g, e, ly->w_up, g->xb, 0, g->hb2, 0,
-                  n_embd, nff_l, nil, n, xdim, nff_l);
+        if (g->ffn_norm[l])
+            enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->ffn_norm[l],
+                          n_embd, m0->rms_eps, n, n_embd, xdim);
+        id<MTLBuffer> ffn_in = g->ffn_norm[l] ? g->xb : g->x;
+        int ffn_stride = g->ffn_norm[l] ? xdim : n_embd;
+        used_tiles |= enc_mb_mv(g, e, ly->w_gate, ffn_in, 0, g->hb, 0,
+                  n_embd, nff_l, nil, n, ffn_stride, nff_l);
+        used_tiles |= enc_mb_mv(g, e, ly->w_up, ffn_in, 0, g->hb2, 0,
+                  n_embd, nff_l, nil, n, ffn_stride, nff_l);
         enc_elem(g, e, metal_act_pipeline(g, m0), g->hb, 0, g->hb2, 0, n * nff_l);
         metal_prof_cut(g, prof, &cb, &e, mb_ms, MB_UP);
         used_tiles |= enc_mb_mv(g, e, ly->w_down, g->hb, 0, g->xb, 0,

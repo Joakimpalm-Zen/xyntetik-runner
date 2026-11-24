@@ -192,8 +192,11 @@ def test_the_gpu_backends_leave_it_to_the_cpu_and_training_is_refused(runner_bin
     err = p.stderr.decode(errors="replace")
     assert p.returncode == 0, err
     caps = json.loads(subprocess.run([str(runner_bin), "--caps"], capture_output=True, timeout=30).stdout)
-    if (caps.get("gpu") or {}).get("backend"):   # a GPU this build can drive: it says why it does not here
-        assert "gpu: olmo2 is validated on the CPU only" in err, err
+    backend = (caps.get("gpu") or {}).get("backend")
+    if backend == "metal":
+        assert "Metal backend" in err, err
+    elif backend:   # another GPU backend (CUDA until R4.50.5): it says why it does not run here
+        assert "gpu: olmo2 is validated on the CPU and the Apple GPU only" in err, err
     # it loads before its admission: --caps lists it apart, and the load says so
     assert "olmo2" not in caps["architectures"], caps["architectures"]
     assert [a["name"] for a in caps["architectures_pending"]] == ["olmo2"], caps["architectures_pending"]
