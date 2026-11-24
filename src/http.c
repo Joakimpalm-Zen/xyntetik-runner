@@ -475,18 +475,29 @@ void send_error(sock_t fd, int code, const char *message) {
     send_error_detail(fd, code, message, NULL, NULL);
 }
 
+// The body is built whole (R4.48.25.1): it was escaped into fixed buffers (384 bytes for the message, 128 for the
+// param and the code), so a longer refusal lost its end without a word and the client read half a sentence as the
+// whole reason (tests/test_send_error.c). If the builder runs out of memory, a fixed body says so at the same code.
 void send_error_detail(sock_t fd, int code, const char *message,
                               const char *param, const char *error_code) {
-    char body[768], esc[384], ep[128], ec[128];
-    json_escape(message, strlen(message), esc, sizeof(esc));
-    if (param) json_escape(param, strlen(param), ep, sizeof(ep));
-    if (error_code) json_escape(error_code, strlen(error_code), ec, sizeof(ec));
-    int n = snprintf(body, sizeof(body),
-                     "{\"error\":{\"message\":\"%s\",\"type\":\"%s\","
-                     "\"param\":%s%s%s,\"code\":%s%s%s}}",
-                     esc, code >= 500 ? "server_error" : "invalid_request_error",
-                     param ? "\"" : "", param ? ep : "null", param ? "\"" : "",
-                     error_code ? "\"" : "", error_code ? ec : "null",
-                     error_code ? "\"" : "");
-    send_response(fd, code, "application/json", body, n);
+    sbuf b = {0};
+    sb_lit(&b, "{\"error\":{\"message\":\"");
+    sb_esc(&b, message, strlen(message));
+    sb_lit(&b, "\",\"type\":\"");
+    sb_lit(&b, code >= 500 ? "server_error" : "invalid_request_error");
+    sb_lit(&b, "\",\"param\":");
+    if (param) { sb_lit(&b, "\""); sb_esc(&b, param, strlen(param)); sb_lit(&b, "\""); }
+    else sb_lit(&b, "null");
+    sb_lit(&b, ",\"code\":");
+    if (error_code) { sb_lit(&b, "\""); sb_esc(&b, error_code, strlen(error_code)); sb_lit(&b, "\""); }
+    else sb_lit(&b, "null");
+    sb_lit(&b, "}}");
+    if (b.failed) {
+        static const char oom[] = "{\"error\":{\"message\":\"out of memory building the error response\","
+                                  "\"type\":\"server_error\",\"param\":null,\"code\":null}}";
+        send_response(fd, code, "application/json", oom, sizeof oom - 1);
+    } else {
+        send_response(fd, code, "application/json", b.s, b.n);
+    }
+    free(b.s);
 }
