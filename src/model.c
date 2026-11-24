@@ -8418,7 +8418,7 @@ void model_route_note(model_t *m, int rows, const char *path) {
     if (!route_enabled()) return;
     route_facts r;
     route_collect(m, &r);
-    char line[1280];
+    char line[1536];
     snprintf(line, sizeof line,
              "route: backend=%s device=\"%s\" split=%d/%d experts_on_host=%d/%d "
              "moe_hot=%d rows=%d path=%s%s%s kv=%s weights=\"%s\" cpu_act=%s%s%s fallback=\"%s\" "
@@ -8598,7 +8598,7 @@ void model_route_receipt_json(const model_t *m, char *out, int cap) {
 void model_route_json(const model_t *m, char *out, int cap) {
     route_facts r;
     route_collect(m, &r);
-    char dev[260], why[330], wts[200], tun[1100], cc[200], kern[1024], paths[400];
+    char dev[260], why[520], wts[200], tun[1100], cc[200], kern[1024], paths[400];
     route_escape(r.device, dev, sizeof dev);
     route_escape(m->route_fallback, why, sizeof why);
     route_escape(r.weights, wts, sizeof wts);
@@ -17175,7 +17175,13 @@ static void gpu_release_to_cpu(model_t *m, const char *why, const char *then, bo
 }
 
 static void gpu_runtime_failure(model_t *m) {
-    gpu_release_to_cpu(m, "forward failed at runtime",
+    const char *detail = gpu_last_error(m);
+    char why[sizeof m->route_fallback];
+    if (detail && detail[0])
+        snprintf(why, sizeof why, "forward failed at runtime: %.220s", detail);
+    else
+        snprintf(why, sizeof why, "forward failed at runtime");
+    gpu_release_to_cpu(m, why,
                        " — releasing the backend, continuing on CPU", true);
 }
 

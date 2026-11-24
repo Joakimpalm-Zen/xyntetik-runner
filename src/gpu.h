@@ -628,6 +628,10 @@ bool   gpu_kv_reserve(model_t *m, int rows, char *why, size_t cap);
 // R3.68: the KV rows the device maps now and its grow step, for the route
 // record; false where the cache is allocated whole.
 bool   gpu_kv_rows(const model_t *m, int *mapped, int *step);
+// R6.98: last runtime failure detail on the active backend (command buffer
+// NSError, scratch allocation, weight-wrap, or KV-map failure), or "" when
+// none. Read by gpu_runtime_failure() before gpu_disable() releases the handle.
+const char *gpu_last_error(const model_t *m);
 
 // Recurrent-state transfer (turn mark, model_recurrent_mark). A backend that
 // keeps the recurrent fold on the device (CUDA: q35_hist/q35_state for

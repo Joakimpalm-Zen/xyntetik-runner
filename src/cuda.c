@@ -5984,6 +5984,10 @@ bool gpu_kv_rows(const model_t *m, int *mapped, int *step) {
     (void)m; (void)mapped; (void)step;
     return false;
 }
+const char *gpu_last_error(const model_t *m) {
+    (void)m;
+    return "";
+}
 
 void gpu_disable(model_t *m) {
     gpu_t *g = m ? m->gpu : NULL;
