@@ -7637,6 +7637,7 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
         }
         if (vtmpl >= 0) {
             template_bind_think_tags(vtmpl, &rt->m.think_open, &rt->m.think_close);
+            template_bind_tokenizer(vtmpl, &rt->tok);
             template_bind_split_tags(vtmpl, &rt->tok, rt->m.think_open,
                                      &rt->m.split_open, &rt->m.split_close);
             engine_bind_think_tokens(&rt->e);
@@ -8293,6 +8294,7 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
     bool native = false;
     const char *fam = tool_family_for(dt, &native);
     template_bind_think_tags(dt, &rt->m.think_open, &rt->m.think_close);
+    template_bind_tokenizer(dt, &rt->tok);
     template_bind_split_tags(dt, &rt->tok, rt->m.think_open, &rt->m.split_open,
                              &rt->m.split_close);
     engine_bind_think_tokens(&rt->e);
@@ -8847,6 +8849,7 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
     if (tmpl < 0)
         tmpl = template_detect(gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL), &rt->tok);
     template_bind_think_tags(tmpl, &rt->m.think_open, &rt->m.think_close);
+    template_bind_tokenizer(tmpl, &rt->tok);
     template_bind_split_tags(tmpl, &rt->tok, rt->m.think_open, &rt->m.split_open,
                              &rt->m.split_close);
     engine_bind_think_tokens(&rt->e);

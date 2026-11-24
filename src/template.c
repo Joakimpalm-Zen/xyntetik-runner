@@ -207,6 +207,14 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
             return strstr(meta_tmpl, "<think>") ? TMPL_CHATML_THINK
                                                 : TMPL_CHATML;
         if (strstr(meta_tmpl, "<|start_header_id|>")) return TMPL_LLAMA3;
+        // OLMo 2 Instruct (R4.50.10): <|user|> turns that end with a newline where zephyr's end with the eos, and
+        // the BOS the template writes itself. The renderer writes OLMo 2's <|endoftext|> for the template's
+        // bos_token and eos_token, so with a vocabulary at hand the file's EOS must be that token: a derivative with
+        // other specials keeps its former reading. (AllenAI's Tulu 2 and Tulu 3 are not this string: Tulu 3 writes
+        // no bos_token, and Tulu 2's user turn ends with the content alone.)
+        if (strstr(meta_tmpl, "<|user|>\n' + message['content'] + '\n'") && strstr(meta_tmpl, "{{ bos_token }}") &&
+            (!tok || (tok->eos_id >= 0 && tok_find(tok, "<|endoftext|>") == tok->eos_id)))
+            return TMPL_OLMO2;
         if (strstr(meta_tmpl, "<|user|>"))
             return strstr(meta_tmpl, "<|end|>") ? TMPL_PHI3 : TMPL_ZEPHYR;
         // Phi-4-mini writes '<|' + role + '|>', so no literal role tag is
@@ -278,6 +286,7 @@ static const struct { int tmpl; const char *name; bool flag; } TEMPLATE_NAMES[] 
     { TMPL_TRINITY, "trinity", true },
     { TMPL_CHATML_THINK, "chatml-think", true },
     { TMPL_OLMO3, "olmo3", true },
+    { TMPL_OLMO2, "olmo2", true },
     { TMPL_MELLUM, "mellum", true },
     { TMPL_MINICPM5, "minicpm5", true },
     { TMPL_LFM2, "lfm2", true },
@@ -993,6 +1002,10 @@ bool template_think_tags(int tmpl, const char **open, const char **close) {
 // files, as their templates do); <think> and </think> are other ids there and
 // are bound only by a file that has no inner pair. The split and the spelling
 // go by name, and only a pair that is control tokens in the file is bound.
+void template_bind_tokenizer(int tmpl, tokenizer *tok) {
+    if (tok) tok->bos_in_template = tmpl == TMPL_OLMO2;
+}
+
 void template_bind_split_tags(int tmpl, tokenizer *tok, const char *think_open,
                               const char **open, const char **close) {
     if (think_open || *open || !tmpl_apertus(tmpl) || !tok) return;
@@ -4887,6 +4900,29 @@ size_t render_messages_state_rf(int tmpl, const chat_msg *msgs, int n_msgs,
             off = emit(out, cap, off,
                        "<|start_header_id|>assistant<|end_header_id|>\n\n", NULL, NULL);
         break;
+    case TMPL_OLMO2:
+        // allenai/OLMo-2-0425-1B-Instruct's template (revision 48d788ec, the same bytes as its GGUF's), branch for
+        // branch:
+        // - BOS (<|endoftext|>) once, written here. Runner's other families leave BOS to the tokenizer, and that
+        //   would give none here: this family's tokenizer.json has no post-processor (a plain encode adds no BOS)
+        //   and its GGUF no add_bos_token, so the template is the one source, as it is for the publisher;
+        // - system and user: the tag, the content and a newline;
+        // - assistant: the tag, the content and the eos, then a newline unless it is the last message;
+        // - any other role: nothing (the server refuses the tool protocol by name rather than let it vanish);
+        // - the generation prompt after the last message only, so none without messages.
+        off = emit(out, cap, off, "<|endoftext|>", NULL, NULL);
+        for (int i = 0; i < n_msgs; i++) {
+            const char *r = msgs[i].role;
+            if (!strcmp(r, "system"))
+                off = emit(out, cap, off, "<|system|>\n%s\n", msgs[i].content, NULL);
+            else if (!strcmp(r, "user"))
+                off = emit(out, cap, off, "<|user|>\n%s\n", msgs[i].content, NULL);
+            else if (!strcmp(r, "assistant"))
+                off = emit(out, cap, off, i + 1 < n_msgs ? "<|assistant|>\n%s<|endoftext|>\n"
+                                                          : "<|assistant|>\n%s<|endoftext|>", msgs[i].content, NULL);
+        }
+        if (add_assistant && n_msgs > 0) off = emit(out, cap, off, "<|assistant|>\n", NULL, NULL);
+        break;
     case TMPL_ZEPHYR:
         for (int i = 0; i < n_msgs; i++)
         {   // the role sits inside the control token: template-owned
@@ -6755,7 +6791,9 @@ const char *tool_envelope_protocol_name(const tool_envelope *e) {
 const char *tool_protocol_name(int tmpl, bool *native) {
     // OLMo 3 (R4.50.2): no tool protocol is offered on it. The template's own function fields pass through as the
     // caller writes them, and the OpenAI protocol is refused, so "generic" (the marker fallback) would be untrue.
-    if (tmpl == TMPL_OLMO3) { *native = false; return "none"; }
+    // OLMo 2 Instruct (R4.50.10): none either; its template renders a tool turn as nothing, and the protocol is
+    // refused on it by name.
+    if (tmpl == TMPL_OLMO3 || tmpl == TMPL_OLMO2) { *native = false; return "none"; }
     tool_envelope env = {0};
     bool skip_generic = false;
     // strict + atem_tool_calling: each family's NATIVE default

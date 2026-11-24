@@ -21,7 +21,7 @@ frequencies rather than taking one of them whole. Every norm weight is
 1 +- 0.5 (deterministic), so a norm read at the wrong place or width moves
 the logits.
 
-    make-test-olmo2.py OUT.gguf [--llama] [--plain] [--gqa] [--head-dim 16|32]
+    make-test-olmo2.py OUT.gguf [--llama] [--plain] [--gqa] [--head-dim 16|32] [--olmo-specials] [--instruct-template]
                        [--no-pattern-array] [--attn-factor F] [--bad KIND]
 
   --llama             the same sizes and weights as a plain llama file
@@ -31,6 +31,9 @@ the logits.
   --plain             OLMo 2's layout: no sliding window, no RoPE scaling
   --gqa               half the KV heads (2 of 4: kv_dim 32 != q_dim 64 !=
                       head_dim 16; with --head-dim 32, 1 of 2)
+  --olmo-specials     OLMo 2's <|endoftext|> as one control token, the file's BOS and EOS (add_bos_token
+                      stays true: the case a template that writes its own BOS must not double)
+  --instruct-template write OLMo 2 Instruct's chat template (revision 48d788ec) into the file
   --head-dim 32       2 heads of 32 in place of 4 of 16 (n_embd stays 64):
                       a KV row then holds whole 32-value blocks, so the q8
                       and k8v4 caches apply (at 16 they keep f16)
@@ -66,7 +69,8 @@ EPS = 1e-6
 BAD_KINDS = ("pre-norm", "no-qk-norm", "narrow-qk-norm", "no-post-norm", "pattern-period", "pattern-short",
              "experts")
 args = sys.argv[1:]
-LLAMA = PLAIN = GQA = NO_PATTERN = False
+LLAMA = PLAIN = GQA = NO_PATTERN = OLMO_SPECIALS = False
+INSTRUCT_TEMPLATE = False
 ATTN_FACTOR = 1.0 + 0.1 * math.log(YARN_FACTOR)
 BAD = None
 OUT = None
@@ -85,6 +89,10 @@ while k < len(args):
         N_HEAD = N_KV = N_EMBD // HEAD_DIM
     elif a == "--no-pattern-array":
         NO_PATTERN = True
+    elif a == "--olmo-specials":
+        OLMO_SPECIALS = True
+    elif a == "--instruct-template":
+        INSTRUCT_TEMPLATE = True
     elif a == "--attn-factor" and k + 1 < len(args):
         k += 1
         ATTN_FACTOR = float(args[k])
@@ -102,6 +110,15 @@ if OUT is None:
     sys.exit(__doc__)
 if GQA:
     N_KV = N_HEAD // 2
+
+# allenai/OLMo-2-0425-1B-Instruct's chat template at revision 48d788eca847d4d7548f375ad03d3c9312f6139e (its
+# tokenizer_config.json, the same bytes as its publisher GGUF's tokenizer.chat_template)
+OLMO2_INSTRUCT_TEMPLATE = (
+    "{{ bos_token }}{% for message in messages %}{% if message['role'] == 'system' %}{{ '<|system|>\n' + "
+    "message['content'] + '\n' }}{% elif message['role'] == 'user' %}{{ '<|user|>\n' + message['content'] + '\n' "
+    "}}{% elif message['role'] == 'assistant' %}{% if not loop.last %}{{ '<|assistant|>\n'  + message['content'] "
+    "+ eos_token + '\n' }}{% else %}{{ '<|assistant|>\n'  + message['content'] + eos_token }}{% endif %}{% endif "
+    "%}{% if loop.last and add_generation_prompt %}{{ '<|assistant|>\n' }}{% endif %}{% endfor %}")
 
 _state = 0x2F0A1B3C
 
@@ -123,6 +140,10 @@ def norm_w(n):
 
 VOCAB = ["<unk>", "<s>", "</s>"] + [f"<0x{i:02X}>" for i in range(256)]
 TTYPE = [2, 3, 3] + [6] * 256
+if OLMO_SPECIALS:   # OLMo 2's own BOS and EOS, one control token, as its vocabulary holds them
+    VOCAB.append("<|endoftext|>")
+    TTYPE.append(3)
+BOS_ID = EOS_ID = len(VOCAB) - 1 if OLMO_SPECIALS else None
 q_dim, kv_dim = N_HEAD * HEAD_DIM, N_KV * HEAD_DIM
 
 # Every draw happens in one order whatever the options, so --llama and the
@@ -191,7 +212,9 @@ kvs += [ks("tokenizer.ggml.model", "llama"),
         kas("tokenizer.ggml.tokens", VOCAB),
         kaf("tokenizer.ggml.scores", [0.0] * len(VOCAB)),
         kai("tokenizer.ggml.token_type", TTYPE),
-        ku("tokenizer.ggml.bos_token_id", 1),
-        ku("tokenizer.ggml.eos_token_id", 2),
+        ku("tokenizer.ggml.bos_token_id", BOS_ID if OLMO_SPECIALS else 1),
+        ku("tokenizer.ggml.eos_token_id", EOS_ID if OLMO_SPECIALS else 2),
         kb("tokenizer.ggml.add_bos_token", True)]
+if INSTRUCT_TEMPLATE:   # allenai/OLMo-2-0425-1B-Instruct's chat template (revision 48d788ec), byte for byte
+    kvs.append(ks("tokenizer.chat_template", OLMO2_INSTRUCT_TEMPLATE))
 write_gguf(OUT, tensors, kvs)

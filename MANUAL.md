@@ -2856,7 +2856,7 @@ Force `chatml`, `chatml-think`, `llama2`, `llama3`, `mistral`, `mistral-v1`,
 `mistral-nemo`, `mistral-sys`, `zephyr`, `phi3`, `phi4`, `gemma`, `gemma4`, `gemma4-mainline`, `apertus`,
 `ornith`, `qwen35`, `qwen35-nothink`, `qwen36`, `nemotron`, `nemotron35`, `hermes4`, `granite`, `granite4`, `granite42`,
 `qwen38`, `qwen3-coder`, `mellum`, `minicpm5`, `trinity`, `lfm2`, `lfm2-8b`, `lfm2-24b`, `mimo`, `spark`, `spark25`,
-`k2-horizon`, `flint`, `muse`, `harmony`, `olmo3`, or `raw`; default is auto-detection. The three Mistral framings are not interchangeable: `mistral`
+`k2-horizon`, `flint`, `muse`, `harmony`, `olmo3`, `olmo2`, or `raw`; default is auto-detection. The three Mistral framings are not interchangeable: `mistral`
 is the v0.3 / Mistral-Small-2409 form and the fallback for an unrecognised Mistral
 template, `mistral-v1` is v0.1/v0.2, `mistral-nemo` is Nemo-Instruct-2407. They differ
 by a space beside each `[INST]`/`[/INST]` marker and by which user turn carries the
@@ -2870,7 +2870,10 @@ E-series pre-seeds nothing. `olmo3` is OLMo 3's own template (allenai/Olmo-3-7B-
 it: a request declares functions as a string in `messages[].functions` (a system or user turn), replays a call as
 a string in `messages[].function_calls`, and returns its result as an `environment` turn. The template has no
 OpenAI tool protocol, so `tools`, `tool_calls` and `tool` turns (and the Responses and Messages surfaces' tool
-items) are refused on it with a 400 naming those fields, never dropped. Applies to interactive chat and to `--serve`, including
+items) are refused on it with a 400 naming those fields, never dropped. `olmo2` is OLMo 2 Instruct's template
+(allenai/OLMo-2-0425-1B-Instruct), byte-exact to it: the BOS once, a newline after a system or user turn, and the
+end-of-text token after an assistant turn. It has no tool protocol either, so the same fields are refused on it with a
+400. Applies to interactive chat and to `--serve`, including
 reloads after `/unload` or a `--ttl` expiry. An unrecognized name is an error, and the
 flag is refused with a swap set (`-m "name=path,name2=path2"`) because it names one
 template for a set of models that each detect their own - serve that model on its own

@@ -959,6 +959,25 @@
     "metal": "NOT RUN"
    },
    "note": "R4.50.2: template conformance 24 of 24 cases against allenai/Olmo-3-7B-Think's chat_template.jinja (d97e442d) and 24 of 24 against the Hub GGUF's tokenizer.chat_template (the same bytes), text and tokens; tokenizer 721 of 721 corpus strings and 99,474 of 99,474 vocabulary entries identical to transformers' (tests/compatibility/tokenizer-references/olmo-3-7b-think.tokenizer-json.json)"
+  },
+  "olmo2": {
+   "tool_protocol": {
+    "status": "UNSUPPORTED",
+    "note": "no tool protocol is offered on olmo2 (R4.50.10): OLMo 2 Instruct's template reads no tools and renders a tool turn as nothing; the OpenAI tool protocol (tools, tool_calls, tool turns, and the Responses and Messages tool items) is refused by name with a 400"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "the publisher's sampling defaults are not read yet (R4.50.6)"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   },
+   "note": "R4.50.10: template conformance 16 of 16 cases against allenai/OLMo-2-0425-1B-Instruct's chat template (48d788ec, the same bytes as its publisher GGUF's at 62f8c199), text and tokens, BOS once; its tokenizer is OLMo 3's byte for byte (vocabulary, merges, pre-tokenizer, added tokens), so tests/compatibility/tokenizer-references/olmo-3-7b-think.tokenizer-json.json covers it"
   }
  },
  "architectures": {

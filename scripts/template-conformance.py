@@ -199,6 +199,12 @@ class Family:
 
 
 FAMILIES = {
+    # OLMo 2 Instruct (R4.50.10): Tulu-style turns, BOS once (written by the template), a newline after system and user
+    # turns, the eos after an assistant turn. Runner detected it as zephyr until then (every turn ending with </s>).
+    "olmo2": Family(
+        "olmo2", ("hf", "allenai/OLMo-2-0425-1B-Instruct"),
+        note="OLMo 2 Instruct; publisher revision 48d788eca847d4d7548f375ad03d3c9312f6139e",
+        tokenizer=("OLMo-2-0425-1B-Instruct-tokenizer.gguf",)),
     "olmo3": Family(
         "olmo3", ("hf", "allenai/Olmo-3-7B-Think"),
         note="OLMo 3 Think native fields; publisher revision d97e442d",

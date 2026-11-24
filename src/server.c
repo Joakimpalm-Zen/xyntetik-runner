@@ -378,6 +378,13 @@ static bool validate_chat_messages(const jv *msgs, int tmpl, char *err, size_t e
         // OLMo 3 (R4.50.2): its template's own function fields and its environment role, rendered exactly; the OpenAI
         // tool protocol it cannot read is refused by name, never dropped (the template renders an unknown role as
         // nothing) and never translated
+        // OLMo 2 Instruct (R4.50.10): no tool protocol at all; its template renders a tool turn as nothing
+        if (tmpl == TMPL_OLMO2 &&
+            (!strcmp(role, "tool") || (jv_get(msg, "tool_calls") && jv_get(msg, "tool_calls")->type != J_NULL))) {
+            snprintf(err, err_cap, "messages[%d]: the olmo2 chat template has no tool protocol (tool turns, "
+                     "tool_calls); it renders them as nothing", i);
+            return false;
+        }
         if (tmpl == TMPL_OLMO3) {
             if (!strcmp(role, "tool") || (jv_get(msg, "tool_calls") && jv_get(msg, "tool_calls")->type != J_NULL)) {
                 snprintf(err, err_cap, "messages[%d]: the olmo3 chat template has no OpenAI tool protocol (tool "
@@ -705,6 +712,10 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     jv *tools = jv_get(req, "tools");
     // OLMo 3 declares functions in its own field (messages[].functions), so OpenAI tools[] would be dropped by its
     // template: refused by name (R4.50.2)
+    if (s->tmpl == TMPL_OLMO2 && tools && tools->type == J_ARR && tools->n > 0) {
+        send_error(fd, 400, "tools: the olmo2 chat template has no tool protocol; it renders tool turns as nothing");
+        return;
+    }
     if (s->tmpl == TMPL_OLMO3 && tools && tools->type == J_ARR && tools->n > 0) {
         send_error(fd, 400, "tools: the olmo3 chat template has no OpenAI tool protocol; declare functions as a "
                    "string in messages[].functions (system or user turn) and send calls back in "
@@ -4218,6 +4229,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                 s->m->tp = shared_pool;
             }
             template_bind_think_tags(tmpl, &s->m->think_open, &s->m->think_close);
+            template_bind_tokenizer(tmpl, s->tok);
             template_bind_split_tags(tmpl, s->tok, s->m->think_open, &s->m->split_open,
                                      &s->m->split_close);
             if (!slot_engine_init(s)) {
