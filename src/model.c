@@ -3225,6 +3225,15 @@ static bool bind_meta_olmo2(model_t *m, gguf_file *g, const char *arch) {
     m->post_norm_only  = true;
     m->qk_norm_full    = true;
     m->swa_base_global = true;
+    // olmo2 is dense (OLMoE is its own architecture). Its blocks feed the residual itself to the MLP, a path the MoE
+    // layers take on neither backend: they norm the FFN input with a weight olmo2 does not have. So a file that
+    // declares experts is refused by name rather than bound as a mixture with that norm missing.
+    unsigned n_exp = gguf_get_u32(g, AK("expert_count"), 0);
+    if (n_exp > 0) {
+        bind_err(m, "error: olmo2: the file declares %u experts, and olmo2 is dense (its MLP reads the residual "
+                 "itself, which no expert layer here does)\n", n_exp);
+        return false;
+    }
     m->rms_eps = gguf_get_f32(g, AK("attention.layer_norm_rms_epsilon"), 1e-6f);
     m->swa_window = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
     if (m->swa_window > 0) {

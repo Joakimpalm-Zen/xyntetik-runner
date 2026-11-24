@@ -21,15 +21,19 @@ frequencies rather than taking one of them whole. Every norm weight is
 1 +- 0.5 (deterministic), so a norm read at the wrong place or width moves
 the logits.
 
-    make-test-olmo2.py OUT.gguf [--llama] [--plain] [--gqa] [--no-pattern-array]
-                       [--attn-factor F] [--bad KIND]
+    make-test-olmo2.py OUT.gguf [--llama] [--plain] [--gqa] [--head-dim 16|32]
+                       [--no-pattern-array] [--attn-factor F] [--bad KIND]
 
   --llama             the same sizes and weights as a plain llama file
                       (pre-norms in place of the post-norms, no QK norm, no
                       window, no YaRN): the reference script's calibration
                       on an admitted family
   --plain             OLMo 2's layout: no sliding window, no RoPE scaling
-  --gqa               2 KV heads (kv_dim 32 != q_dim 64 != head_dim 16)
+  --gqa               half the KV heads (2 of 4: kv_dim 32 != q_dim 64 !=
+                      head_dim 16; with --head-dim 32, 1 of 2)
+  --head-dim 32       2 heads of 32 in place of 4 of 16 (n_embd stays 64):
+                      a KV row then holds whole 32-value blocks, so the q8
+                      and k8v4 caches apply (at 16 they keep f16)
   --no-pattern-array  leave out attention.sliding_window_pattern (the
                       default 3-in-4 pattern then applies)
   --attn-factor F     write rope.scaling.attn_factor as F instead of the
@@ -38,8 +42,9 @@ the logits.
                       attn_norm), no-qk-norm (blk.0 has no attn_q_norm),
                       narrow-qk-norm (blk.0's QK norms one head wide),
                       no-post-norm (blk.0 has no post_ffw_norm),
-                      pattern-period (the pattern as a u32 period) or
-                      pattern-short (a bool array one layer short)
+                      pattern-period (the pattern as a u32 period),
+                      pattern-short (a bool array one layer short) or
+                      experts (declares expert_count 4: olmo2 is dense)
 
 The options come in any order around the one output path.
 """
@@ -58,7 +63,8 @@ YARN_FACTOR, YARN_ORIG = 8.0, 4096
 CTX_TRAIN = 32768
 EPS = 1e-6
 
-BAD_KINDS = ("pre-norm", "no-qk-norm", "narrow-qk-norm", "no-post-norm", "pattern-period", "pattern-short")
+BAD_KINDS = ("pre-norm", "no-qk-norm", "narrow-qk-norm", "no-post-norm", "pattern-period", "pattern-short",
+             "experts")
 args = sys.argv[1:]
 LLAMA = PLAIN = GQA = NO_PATTERN = False
 ATTN_FACTOR = 1.0 + 0.1 * math.log(YARN_FACTOR)
@@ -73,6 +79,10 @@ while k < len(args):
         PLAIN = True
     elif a == "--gqa":
         GQA = True
+    elif a == "--head-dim" and k + 1 < len(args) and args[k + 1] in ("16", "32"):
+        k += 1
+        HEAD_DIM = int(args[k])
+        N_HEAD = N_KV = N_EMBD // HEAD_DIM
     elif a == "--no-pattern-array":
         NO_PATTERN = True
     elif a == "--attn-factor" and k + 1 < len(args):
@@ -91,7 +101,7 @@ while k < len(args):
 if OUT is None:
     sys.exit(__doc__)
 if GQA:
-    N_KV = 2
+    N_KV = N_HEAD // 2
 
 _state = 0x2F0A1B3C
 
@@ -163,6 +173,8 @@ kvs = [ks("general.architecture", A),
        ku(f"{A}.attention.head_count_kv", N_KV),
        kf(f"{A}.rope.freq_base", THETA),
        kf(f"{A}.attention.layer_norm_rms_epsilon", EPS)]
+if BAD == "experts":   # the metadata alone: the loader must refuse before it looks for an expert tensor
+    kvs += [ku(f"{A}.expert_count", 4), ku(f"{A}.expert_used_count", 2)]
 if not LLAMA and not PLAIN:
     kvs += [ks(f"{A}.rope.scaling.type", "yarn"),
             kf(f"{A}.rope.scaling.factor", YARN_FACTOR),

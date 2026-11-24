@@ -63,14 +63,17 @@ N_TOKENS = 160   # the window is 8, so every sliding layer masks
 # from these (and the runner sat inside the bound there too). The recompute is held to a factor of 2 either way.
 F32_SPREAD = 2.0
 F32_SCRIPT = {"olmo2": 2.9583724900916764e-06, "olmo2-plain": 2.886082274500268e-06,
-              "olmo2-gqa": 2.9400200860507653e-06, "llama": 2.190242642363671e-06}
+              "olmo2-gqa": 2.9400200860507653e-06, "llama": 2.190242642363671e-06,
+              "olmo2-h32-gqa": 3.1771043955686196e-06}
 BAD = {"pre-norm": "olmo2: blk.0 carries a pre-norm (attn_norm or ffn_norm)",
        "no-qk-norm": "missing tensor blk.0.attn_q_norm.weight",
        "narrow-qk-norm": "olmo2: blk.0's QK norms are 16 and 16 wide where the q and k projections are 64 and 64",
        "no-post-norm": "missing tensor blk.0.post_ffw_norm.weight",
        "pattern-period": "olmo2: olmo2.attention.sliding_window_pattern is not one bool for each of the 4 layers",
-       "pattern-short": "olmo2: olmo2.attention.sliding_window_pattern is not one bool for each of the 4 layers"}
+       "pattern-short": "olmo2: olmo2.attention.sliding_window_pattern is not one bool for each of the 4 layers",
+       "experts": "olmo2: the file declares 4 experts, and olmo2 is dense"}
 FIXTURES = {"olmo2": [], "olmo2-plain": ["--plain"], "olmo2-gqa": ["--gqa"], "llama": ["--llama"],
+            "olmo2-h32-gqa": ["--head-dim", "32", "--gqa"],
             "olmo2-nopattern": ["--no-pattern-array"], "olmo2-badaf": ["--attn-factor", "1.5"],
             **{f"bad-{k}": ["--bad", k] for k in BAD}}
 # The routes the bound covers: the default (one row a forward), and the batched prompt route at three batch sizes
@@ -104,6 +107,47 @@ def _score(runner_bin, model, route="solo -t 1", tmp=None):
     return json.loads(out.read_text())
 
 
+def _score_kv(runner_bin, model, kv, batch, threads, tmp):
+    """A score with the KV cache in format kv: one row a forward (batch None), or the batched route at -b batch;
+    the record and the stderr."""
+    env = {k: v for k, v in os.environ.items() if k != "RUNNER_SCORE_CHUNKED"}
+    flags = ["-t", str(threads)]
+    if batch:
+        env["RUNNER_SCORE_CHUNKED"] = "1"
+        flags += ["-b", str(batch)]
+    out = Path(tmp) / f"{model.stem}.kv-{kv}.b{batch}.t{threads}.json"
+    p = subprocess.run([str(runner_bin), "-m", str(model), "--score", "--score-top", "256", "-f", str(TEXT),
+                        "--score-tokens", str(N_TOKENS), "-c", "256", "--gpu", "off", "--kv", kv, *flags,
+                        "--score-out", str(out)], cwd=ROOT, env=env, capture_output=True, timeout=300)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    return json.loads(out.read_text()), p.stderr.decode(errors="replace")
+
+
+@pytest.mark.parametrize("kv", ["q8", "k8v4", "fp4"])
+def test_each_quantized_kv_cache_engages_and_keeps_the_solo_bits(runner_bin, files, tmp_path, kv):
+    """The quantized caches on olmo2, at head_dim 32 (R4.50.4): at the other fixtures' 16, q8 and k8v4 keep f16 with
+    a note, so they were never run.
+    - Each format engages: no "keeping f16" note.
+    - It keeps the solo bits: one row a forward at -t 1 and -t 4, and the batched route at -b 7, give the same
+      logprobs. A batch narrower than MV_SMALL_BATCH takes the solo step's own native dot (model.c mv_rows), and a
+      quantized row would turn any other sum into a whole step.
+      - The batched route at 8 or more is not held to it: that route takes the f32 tile, which sums in another order
+        by design. The engine's prompt prefill (prefill_pass) takes the tile at every width instead.
+    - The format is live: its scores differ from the f32 cache's.
+    Accuracy against float is test-kv-tol's question, calibrated there against the CPU's own reassociation noise."""
+    model = files["olmo2-h32-gqa"]
+    runs = {"solo -t 1": _score_kv(runner_bin, model, kv, None, 1, tmp_path),
+            "solo -t 4": _score_kv(runner_bin, model, kv, None, 4, tmp_path),
+            "batched -b 7": _score_kv(runner_bin, model, kv, 7, 2, tmp_path)}
+    for route, (rec, err) in runs.items():
+        assert "keeping f16" not in err, (kv, route, err)
+        assert rec["n_scored"] == N_TOKENS - 1, (kv, route, rec["n_scored"])
+    solo = runs["solo -t 1"][0]["logprobs"]
+    assert runs["solo -t 4"][0]["logprobs"] == solo and runs["batched -b 7"][0]["logprobs"] == solo, kv
+    f32 = _score(runner_bin, model, tmp=tmp_path)
+    assert solo != f32["logprobs"], (kv, "the format changed no score: it did not engage")
+
+
 def _f32_script_distance(model, tokens):
     a = ref.logprobs(model, tokens)
     b = ref.logprobs(model, tokens, dtype=np.float32)
@@ -111,14 +155,14 @@ def _f32_script_distance(model, tokens):
     return ref.worst_delta({"top": top}, a)
 
 
-@pytest.mark.parametrize("name", ["olmo2", "olmo2-plain", "olmo2-gqa", "llama"])
+@pytest.mark.parametrize("name", ["olmo2", "olmo2-plain", "olmo2-gqa", "olmo2-h32-gqa", "llama"])
 def test_the_stated_float32_tolerance_is_the_scripts(runner_bin, files, tmp_path, name):
     tokens = _score(runner_bin, files[name], tmp=tmp_path)["tokens"]
     got = _f32_script_distance(files[name], tokens)
     assert F32_SCRIPT[name] / F32_SPREAD <= got <= F32_SCRIPT[name] * F32_SPREAD, (name, got, F32_SCRIPT[name])
 
 
-@pytest.mark.parametrize("name", ["olmo2", "olmo2-plain", "olmo2-gqa", "llama"])
+@pytest.mark.parametrize("name", ["olmo2", "olmo2-plain", "olmo2-gqa", "olmo2-h32-gqa", "llama"])
 @pytest.mark.parametrize("route", list(ROUTES))
 def test_the_forward_matches_the_publishers_equations(runner_bin, files, tmp_path, name, route):
     rec = _score(runner_bin, files[name], route, tmp_path)
