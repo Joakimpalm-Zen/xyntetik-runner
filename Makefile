@@ -4638,6 +4638,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_receipts.py \
     tests/test_recommend.py \
     tests/test_record_sign.py \
+    tests/test_recurrent_device_contexts.py \
     tests/test_release_check.py \
     tests/test_remove_sublayer.py \
     tests/test_repeat_count.py \
@@ -5132,9 +5133,11 @@ CUDA_GATED_TESTS = tests/test_apertus.py tests/test_gpu_declines.py tests/test_a
                    tests/test_transcript.py tests/test_spec_gpu.py \
                    tests/test_server_sessions.py tests/test_draft_k_defaults.py \
                    tests/test_draft_defaults.py tests/test_tc_spark_promotion.py tests/test_tc_clef_promotion.py tests/test_tc_route_label.py tests/test_verify_tc_compat.py tests/test_cuda_plan_runs.py tests/test_cuda_fit_hybrid.py tests/test_cuda_fit_ring.py tests/test_cuda_fit_full_offload.py tests/test_cuda_rec_slots.py tests/test_attn_dec_repeat.py tests/test_qwen35_kv_rows.py \
-                   tests/test_phi3_rope.py tests/test_moe_limb_default.py
+                   tests/test_phi3_rope.py tests/test_moe_limb_default.py tests/test_recurrent_device_contexts.py
 # test_moe_limb_default.py holds moe-limb's selection as the default for
 # gemma-4's Q4_0 experts (R3.83): every case needs a CUDA device.
+# test_recurrent_device_contexts.py pins, forks and imports a recurrent
+# model's named context on CUDA (R4.48.22): every case needs a CUDA device.
 # test_phi3_rope.py serves a phi3 LongRoPE sequence across its original
 # context on the device (R4.40.2); its GPU case must not skip on a CUDA host.
 # test_qwen35_kv_rows.py holds every partial CUDA split of the hybrid fixtures

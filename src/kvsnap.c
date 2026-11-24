@@ -450,8 +450,7 @@ static bool load_one(engine *e, const char *id, const char *name, bool slot, sbu
         }
         if (n == PFX_CTX_UNSUPPORTED) {
             fail(err, 409, "context_unsupported", "this model cannot fork a "
-                 "pinned prefix (a ring or tied-V KV layout, or a recurrent "
-                 "model on a device)");
+                 "pinned prefix (a ring or tied-V KV layout)");
             break;
         }
         if (n < 0) {
