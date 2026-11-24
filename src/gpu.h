@@ -783,6 +783,22 @@ bool       gpu_ink2_msg_steps(gpu_ink2 *h, int n_roles, int T, int H, int r, flo
 bool       gpu_ink2_msg_ok(const gpu_ink2 *h);
 // TEST-ONLY: y[i] = the device's port of pmath.h's p_tanhf(x[i]), for i < n
 bool       gpu_ink2_test_ptanh(gpu_ink2 *h, const float *x, float *y, int n);
+// D1b: the router on the device, then the expert body from its choices, in one call: for each of T positions of x
+// [T][H] (host memory), the router's logits over the F32 router rows of device tensor ir ([E][H]: a serial dot
+// ascending), the scores sigmoid(l) with pmath.h's p_expf ported, the top K by score + br[e] (br host [E]; strict >,
+// the lowest index wins a tie), the weights score / (the chosen scores' sum + 1e-20) * scale: ink2_route_one
+// operation for operation; then the expert body (gpu_ink2_experts' arguments) on those choices, its tables built on
+// the device in ink2_experts_fused's order. chosen_out [T][E] and margin_out [T] (the selection observer's), when
+// given, receive the choices and the margins. False: a device failure, or the kernels are not in the module.
+bool       gpu_ink2_route_experts(gpu_ink2 *h, int ir, const float *br, float scale, int K, int i13, int i2, int type13,
+                                  int type2, size_t rb13, size_t rb2, int H, int F, int E, int T, const float *x,
+                                  const float *s13, const float *s2, float gate_cap, float up_cap, float *out,
+                                  unsigned char *chosen_out, float *margin_out);
+bool       gpu_ink2_route_ok(const gpu_ink2 *h);
+// TEST-ONLY (D1b): the device router alone (scores [T][E], choices [T][E], weights [T][E]); and the bare p_expf port
+bool       gpu_ink2_test_route(gpu_ink2 *h, int ir, const float *br, float scale, int K, int E, int H, int T,
+                               const float *x, float *sc, unsigned char *chosen, float *wt);
+bool       gpu_ink2_test_pexpf(gpu_ink2 *h, const float *x, float *y, int n);
 // TEST-ONLY (P1a): on (1), every product runs as one batch-1 launch per column (the reference); off (0), a BF16
 // or NVFP4 product of at least 16 columns runs batched (k_mv_bf16_b, k_mv_nvfp4_b; the expert body's NVFP4 tiles,
 // k_mvsegb_nvfp4; BF16 experts stay per column), the same bits

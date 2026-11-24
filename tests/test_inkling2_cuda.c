@@ -422,7 +422,7 @@ static int t_lin(const ink2_tensor *W, int64_t row0, int n_out, int n_in, int T,
     if (yc != y) free(yc);
     return ok ? 0 : -1;
 }
-static const ink2_dev_ops g_mops = { t_lin, NULL, NULL, NULL, NULL };
+static const ink2_dev_ops g_mops = { t_lin, NULL, NULL, NULL, NULL, NULL };
 static ink2_dev_hdr g_minst = { &g_mops };
 static ink2_tensor g_mt[9];
 static char g_mname[9][128];
@@ -500,6 +500,91 @@ static long msg_identity(int H, int r, int T, int n_roles, bool shared_x, long *
     free(x); free(msg); free(o1); free(o2);
     gpu_ink2_free(h);
     g_mh = NULL;
+    return diff;
+}
+
+// D1b B1: the device router against the host's ink2_route_one on the same inputs, bit for bit: scores, choices and
+// weights. Random router rows and x, with CONSTRUCTED TIES: experts 0..K-2 get bias +10 (chosen), among them 1 and 2
+// share a row (a tie inside the top K); experts K-1 and K share a row and bias 1.0 (an exact tie for the K-th place:
+// the lower index must win); with near = true expert K's bias is one ulp above (the higher index wins by one ulp);
+// expert K+1's row is 1000x (its score 0 or 1: the sigmoid's extremes), K+2's row zero (l = 0); the rest bias -10.
+// The host reference with the CPU's FTZ / DAZ off (the sigmoid's far tail is subnormal; see D1a's tanh check).
+// *nval the values compared; returns the values that differ (scores and weights by their bits), -1: did not run.
+// what route_identity's last call saw: the values that differ by kind (scores, choices, weights, constructed ties
+// gone the other way on the host) and the first differing value's place and values
+static struct {
+    long n[4], first;
+    float sh, sd, wh, wd;
+    unsigned char ch, cd;
+} g_robs;
+
+static long route_identity(int E, int K, int H, int T, bool near, long *nval) {
+    memset(&g_robs, 0, sizeof g_robs);
+    g_robs.first = -1;
+    float *wr = malloc(sizeof(float) * (size_t)E * H), *br = malloc(sizeof(float) * (size_t)E);
+    float *x = malloc(sizeof(float) * (size_t)T * H), *sh = malloc(sizeof(float) * (size_t)T * E);
+    float *sd = malloc(sizeof(float) * (size_t)T * E), *wh = malloc(sizeof(float) * (size_t)T * E);
+    float *wd = malloc(sizeof(float) * (size_t)T * E);
+    unsigned char *ch = malloc((size_t)T * E), *cd = malloc((size_t)T * E);
+    long diff = -1;
+    *nval = 0;
+    if (wr && br && x && sh && sd && wh && wd && ch && cd && K + 3 <= E) {
+        uint32_t seed = 2468u + (uint32_t)(E * 3 + T + (near ? 1 : 0));
+#define RNDF() (seed = seed * 1664525u + 1013904223u, (float)((int)(seed >> 9) % 2001 - 1000) / 1000.0f)
+        for (size_t i = 0; i < (size_t)E * H; i++) wr[i] = 0.02f * RNDF();
+        for (size_t i = 0; i < (size_t)T * H; i++) x[i] = RNDF();
+#undef RNDF
+        for (int e = 0; e < E; e++) br[e] = e < K - 1 ? 10.0f : -10.0f;
+        if (K >= 3) memcpy(wr + 2 * (size_t)H, wr + 1 * (size_t)H, sizeof(float) * H);    // a tie inside the top K
+        memcpy(wr + (size_t)K * H, wr + (size_t)(K - 1) * H, sizeof(float) * H);           // the K-th place's tie
+        // near: a one-ulp gap in the ranked value v = score + bias needs the score exact, or the two sums can round to
+        // one float (v = sc + 1 at a round-to-even tie: a one-ulp gap in the bias alone collapsed on 2 of 17 positions,
+        // on the host as on the device). Zero rows give l = 0, sc = sigmoid(0) = 0.5 exactly: v = 1.5 and 1.5 + 2^-23.
+        if (near) {
+            memset(wr + (size_t)(K - 1) * H, 0, sizeof(float) * H);
+            memset(wr + (size_t)K * H, 0, sizeof(float) * H);
+        }
+        br[K - 1] = 1.0f;
+        br[K] = near ? nextafterf(1.0f, 2.0f) : 1.0f;
+        for (int i = 0; i < H; i++) wr[(size_t)(K + 1) * H + i] *= 1000.0f;                 // the sigmoid's extremes
+        memset(wr + (size_t)(K + 2) * H, 0, sizeof(float) * H);                            // l = 0
+        ink2_shape s;
+        memset(&s, 0, sizeof s);
+        s.hidden = H; s.n_expert = E; s.n_used = K; s.route_scale = 2.5f;
+        gpu_ink2 *h = gpu_ink2_bind();
+        const int ir = h ? gpu_ink2_put(h, wr, sizeof(float) * (size_t)E * H, NULL, 0) : -1;
+        const bool ran = ir >= 0 && gpu_ink2_test_route(h, ir, br, s.route_scale, K, E, H, T, x, sd, cd, wd);
+#if defined(__x86_64__) || defined(__i386__)
+        const unsigned csr = _mm_getcsr();
+        _mm_setcsr(csr & ~0x8040u);
+#endif
+        ink2_test_route(&s, wr, br, T, x, sh, ch, wh);
+#if defined(__x86_64__) || defined(__i386__)
+        _mm_setcsr(csr);
+#endif
+        if (ran) {
+            diff = 0;
+            for (size_t i = 0; i < (size_t)T * E; i++)
+            {
+                const int ds = memcmp(sh + i, sd + i, 4) != 0, dc = ch[i] != cd[i], dw = memcmp(wh + i, wd + i, 4) != 0;
+                g_robs.n[0] += ds; g_robs.n[1] += dc; g_robs.n[2] += dw;
+                if ((ds || dc || dw) && g_robs.first < 0) {
+                    g_robs.first = (long)i; g_robs.sh = sh[i]; g_robs.sd = sd[i]; g_robs.wh = wh[i]; g_robs.wd = wd[i];
+                    g_robs.ch = ch[i]; g_robs.cd = cd[i];
+                }
+                diff += ds + dc + dw;
+            }
+            *nval = 3L * T * E;
+            // the constructed ties went the host's way (the lowest index; with near, the higher by one ulp)
+            for (int t = 0; t < T; t++) {
+                const int bad = ch[(size_t)t * E + (near ? K : K - 1)] != 1;
+                g_robs.n[3] += bad;
+                diff += bad;
+            }
+        }
+        gpu_ink2_free(h);
+    }
+    free(wr); free(br); free(x); free(sh); free(sd); free(wh); free(wd); free(ch); free(cd);
     return diff;
 }
 
@@ -1119,6 +1204,89 @@ int main(int argc, char **argv) {
         CHECK(onf && !f1 && !f2, "(y) a failed device message step: that forward %s, the next %s",
               f1 ? "gave rows" : "refused", f2 ? "gave rows" : "refused");
         drop(gf);
+    }
+    // D1b (z) B1: the device router bit for bit against the host's, its p_expf port first (the engine's own build of
+    // p_expf, FTZ / DAZ off, over its clamps, their neighbours, zeros, subnormals, infinities, NaN and random values)
+    {
+        enum { NV = 4096 };
+        static float xv[NV], yd[NV];
+        int n = 0;
+        const float edges[] = { 0.0f, -0.0f, 89.0f, -104.0f, 88.72f, -87.3f, -103.9f, 100.0f, -200.0f, 1e-30f, -1e-45f,
+                                1.0f, -1.0f, INFINITY, -INFINITY, NAN };
+        for (size_t k = 0; k < sizeof edges / sizeof *edges; k++) xv[n++] = edges[k];
+        xv[n++] = nextafterf(89.0f, 0.0f); xv[n++] = nextafterf(89.0f, 100.0f);
+        xv[n++] = nextafterf(-104.0f, 0.0f); xv[n++] = nextafterf(-104.0f, -200.0f);
+        uint32_t seed = 77u;
+        while (n < NV) {
+            seed = seed * 1664525u + 1013904223u;
+            xv[n] = (float)((int)(seed >> 9) % 2000001 - 1000000) / 1000000.0f * (n % 2 ? 110.0f : 5.0f);
+            n++;
+        }
+        gpu_ink2 *h = gpu_ink2_bind();
+        const bool ran = h && gpu_ink2_test_pexpf(h, xv, yd, NV);
+        long nd = 0;
+#if defined(__x86_64__) || defined(__i386__)
+        const unsigned csr = _mm_getcsr();
+        _mm_setcsr(csr & ~0x8040u);
+#endif
+        for (int i = 0; ran && i < NV; i++) {
+            const float yh = ink2_test_p_expf(xv[i]);
+            uint32_t bh, bd;
+            memcpy(&bh, &yh, 4); memcpy(&bd, yd + i, 4);
+            const bool nh = (bh & 0x7f800000u) == 0x7f800000u && (bh & 0x007fffffu), nd_ = (bd & 0x7f800000u) == 0x7f800000u && (bd & 0x007fffffu);
+            if (nh || nd_) { nd += nh != nd_; continue; }
+            nd += bh != bd;
+        }
+#if defined(__x86_64__) || defined(__i386__)
+        _mm_setcsr(csr);
+#endif
+        CHECK(ran && nd == 0, "(z) the device's p_expf over %d values (its clamps and their neighbours, zeros, "
+              "subnormals, infinities, NaN): %ld differ in their bits from pmath.h's (want 0)", NV, nd);
+        gpu_ink2_free(h);
+    }
+    {
+        static const struct { const char *what; int E, K, H, T; bool near; } rc[] = {
+            { "the file's widths (128 experts, 8 used, H 2304), 1 position, exact ties", 128, 8, 2304, 1, false },
+            { "the file's widths, 17 positions, a near tie (one ulp)", 128, 8, 2304, 17, true },
+            { "the file's widths, 512 positions, exact ties", 128, 8, 2304, 512, false },
+            { "6 experts, 2 used (the tiny file's 2 used; its 4 experts leave no room for the constructions), H 64, 17 "
+              "positions", 6, 2, 64, 17, false },
+            { "6 experts, 2 used, H 64, 1 position, a near tie", 6, 2, 64, 1, true },
+        };
+        for (size_t k = 0; k < sizeof rc / sizeof *rc; k++) {
+            long nv = 0;
+            const long d = route_identity(rc[k].E, rc[k].K, rc[k].H, rc[k].T, rc[k].near, &nv);
+            CHECK(d == 0 && nv > 0, "(z) B1 the device router, %s: %ld of %ld scores, choices and weights differ from the "
+                  "host's ink2_route_one, or a constructed tie went the other way (want 0) [scores %ld, choices %ld, "
+                  "weights %ld, ties %ld; first at %ld: score %a / %a, chosen %d / %d, weight %a / %a (host / device)]",
+                  rc[k].what, d, nv, g_robs.n[0], g_robs.n[1], g_robs.n[2], g_robs.n[3], g_robs.first, g_robs.sh,
+                  g_robs.sd, (int)g_robs.ch, (int)g_robs.cd, g_robs.wh, g_robs.wd);
+        }
+    }
+    // (z) B2: the model's rows with the device router equal the host router's (TEST-ONLY ..._NO_ROUTER=1) byte for byte
+    // at -b 64 and -b 1 on each dense file; one device router call per application a forward; the host router 0 times
+    for (int f = 0; f < 3; f++) {
+        static const char *kn[3] = { "F32", "BF16", "Q8_0" };
+        model_t *gr = load(argv[1 + f], true, false, 64), *gr1 = load(argv[1 + f], true, false, 1);
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_ROUTER", "1");
+        model_t *gn = load(argv[1 + f], true, false, 64);
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_ROUTER", "");
+        const void *zsp = NULL;
+        if (gr) model_inkling2_parts(gr, &zsp, NULL);
+        const int napp = zsp ? ((const ink2_shape *)zsp)->n_app : -1;
+        const long hr0 = ink2_route_host_calls();
+        float *a = gr ? rows(gr) : NULL, *a1 = gr1 ? rows(gr1) : NULL;
+        const long hr1 = ink2_route_host_calls();
+        float *b = gn ? rows(gn) : NULL;
+        const size_t n = gr ? (size_t)N_TOK * (size_t)gr->n_vocab : 0;
+        const long c64 = model_inkling2_cuda_route_calls(gr), c1 = model_inkling2_cuda_route_calls(gr1);
+        CHECK(a && a1 && b && !memcmp(a, b, sizeof(float) * n) && !memcmp(a1, b, sizeof(float) * n) && c64 == napp &&
+              c1 == (long)napp * N_TOK && hr1 - hr0 == 0,
+              "(z) B2 %s: the rows with the device router equal the host router's byte for byte at -b 64 and -b 1; %ld "
+              "and %ld device router calls (want %d and %d); the host router %ld times (want 0)", kn[f], c64, c1, napp,
+              napp * N_TOK, hr1 - hr0);
+        free(a); free(a1); free(b);
+        drop(gr); drop(gr1); drop(gn);
     }
     // D2 (k): the fused expert body equals the former per-expert launches bit for bit
     {

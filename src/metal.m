@@ -6185,6 +6185,22 @@ bool gpu_ink2_msg_steps(gpu_ink2 *h, int n_roles, int T, int H, int r, float eps
 }
 bool gpu_ink2_msg_ok(const gpu_ink2 *h) { (void)h; return false; }
 bool gpu_ink2_test_ptanh(gpu_ink2 *h, const float *x, float *y, int n) { (void)h; (void)x; (void)y; (void)n; return false; }
+bool gpu_ink2_route_experts(gpu_ink2 *h, int ir, const float *br, float scale, int K, int i13, int i2, int type13,
+                            int type2, size_t rb13, size_t rb2, int H, int F, int E, int T, const float *x,
+                            const float *s13, const float *s2, float gate_cap, float up_cap, float *out,
+                            unsigned char *chosen_out, float *margin_out) {
+    (void)h; (void)ir; (void)br; (void)scale; (void)K; (void)i13; (void)i2; (void)type13; (void)type2; (void)rb13;
+    (void)rb2; (void)H; (void)F; (void)E; (void)T; (void)x; (void)s13; (void)s2; (void)gate_cap; (void)up_cap;
+    (void)out; (void)chosen_out; (void)margin_out;
+    return false;
+}
+bool gpu_ink2_route_ok(const gpu_ink2 *h) { (void)h; return false; }
+bool gpu_ink2_test_route(gpu_ink2 *h, int ir, const float *br, float scale, int K, int E, int H, int T,
+                         const float *x, float *sc, unsigned char *chosen, float *wt) {
+    (void)h; (void)ir; (void)br; (void)scale; (void)K; (void)E; (void)H; (void)T; (void)x; (void)sc; (void)chosen; (void)wt;
+    return false;
+}
+bool gpu_ink2_test_pexpf(gpu_ink2 *h, const float *x, float *y, int n) { (void)h; (void)x; (void)y; (void)n; return false; }
 void gpu_ink2_release_experts(gpu_ink2 *h) { (void)h; }
 gpu_ink2_kv *gpu_ink2_kv_new(gpu_ink2 *h, int n_app, const int *rows, const int *C, int hist_rows) {
     (void)h; (void)n_app; (void)rows; (void)C; (void)hist_rows;

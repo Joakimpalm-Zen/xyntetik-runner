@@ -141,12 +141,30 @@ typedef struct {
     float *const *outs;
 } ink2_msg_call;
 typedef int (*ink2_dev_msg_fn)(void *dev, const ink2_msg_call *m);
+// R4.48.9 D1b: one application's expert layer offered whole (the router, then the expert body) when its views are a
+// device instance's: the router's F32 rows wr [E][H] and bias br [E], the stacks, the layer's input x [T][H] (normed)
+// and out [T][H]; chosen [T][E] and margin [T] non-NULL when the selection observer wants them. The op returns 0
+// (done), 1 (the host path: the router on the host, then the experts op), below 0 (a device failure: out is NaN).
+typedef struct {
+    const ink2_shape *s;
+    const ink2_tensor *wr, *t13, *t2;
+    const float *br;
+    int T;
+    const float *x;
+    float *out;
+    unsigned char *chosen;
+    float *margin;
+} ink2_moe_call;
+typedef int (*ink2_dev_moe_fn)(void *dev, const ink2_moe_call *m);
+// TEST-ONLY: how many times the host router ran (D1b's check that it did not on the CUDA route)
+long ink2_route_host_calls(void);
 // TEST-ONLY: how many times the host ran a message step's fast path in this process (D1a's check that it did not);
 // and the engine's p_tanhf as compiled in inkling2.c (the reference of the device port)
 long ink2_msg_host_calls(void);
 float ink2_test_p_tanhf(float x);
+float ink2_test_p_expf(float x);
 typedef struct ink2_dev_ops { ink2_dev_lin_fn lin; ink2_dev_experts_fn experts; ink2_dev_attn_fn attn;
-                              ink2_dev_block_fn block; ink2_dev_msg_fn msg; } ink2_dev_ops;
+                              ink2_dev_block_fn block; ink2_dev_msg_fn msg; ink2_dev_moe_fn moe; } ink2_dev_ops;
 typedef struct { const ink2_dev_ops *ops; } ink2_dev_hdr;   // the first member of every binder's instance
 // TEST-ONLY: how many times the host attention core ran in this process (G2b step 2a's check that it did not)
 long ink2_attn_host_core_calls(void);
@@ -166,6 +184,11 @@ typedef const ink2_tensor *(*ink2_lookup_fn)(void *ctx, const char *name);
 // The pieces hold at most two expert results at a time (the expert's gate_up_proj, then its down_proj).
 typedef const ink2_tensor *(*ink2_expert_fn)(void *ctx, const char *stack_name, int e);
 typedef struct { ink2_lookup_fn get; void *ctx; ink2_expert_fn get_expert; } ink2_weights;
+// TEST-ONLY (D1b): the host router itself (ink2_route_one) at T positions of x [T][H], router rows wr [E][H] and bias
+// br [E] (the shape's n_expert, n_used, route_scale): scores sc [T][E], choices chosen [T][E], weights wt [T][E]; B1's
+// reference
+void ink2_test_route(const ink2_shape *s, const float *wr, const float *br, int T, const float *x, float *sc,
+                     unsigned char *chosen, float *wt);
 // TEST-ONLY (D1a): the host message step itself (ink2_message_steps_c) on the given weights, the device op bypassed:
 // the reference the device message step is held to bit for bit
 ink2_status ink2_test_message_steps(const ink2_shape *s, const ink2_weights *w, int block, const char *const *roles,

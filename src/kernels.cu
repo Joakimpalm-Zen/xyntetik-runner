@@ -6041,6 +6041,144 @@ extern "C" __global__ void k_ink2_msg_norm(const float *x, const float *msg, flo
     const float r = __fdiv_rn(1.0f, __fsqrt_rn(__fadd_rn(__fdiv_rn(ss, (float)H), eps)));
     for (int i = 0; i < H; i++) dst[i] = __fmul_rn(src[i], r);
 }
+// R4.48.9 D1b: the router on the device, ink2_route_one operation for operation. Its sigmoid is 1 / (1 + p_expf(-l))
+// with pmath.h's p_expf, ported line for line as D1a's p_tanhf (the clamps, the double Horner chain with explicit
+// round-to-nearest, the exponent-field scaling, the float conversion, the quieted-NaN select by bits).
+static __device__ float ink2_p_expf(float x) {
+    const double ln2_hi = 0x1.62e42fee00000p-1, ln2_lo = 0x1.a39ef35793c76p-33, inv_ln2 = 0x1.71547652b82fep+0;
+    const double xd = (double)x;
+    double xc = xd < 89.0 ? xd : 89.0;   // a NaN too (the select below restores it)
+    xc = xc > -104.0 ? xc : -104.0;
+    const double kd = __dmul_rn(xc, inv_ln2);
+    const int k = (int)__dadd_rn(kd, kd >= 0 ? 0.5 : -0.5);
+    const double r = __dsub_rn(__dsub_rn(xc, __dmul_rn((double)k, ln2_hi)), __dmul_rn((double)k, ln2_lo));
+    double p = 0x1.6124613a86d09p-33;
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.1eed8eff8d898p-29);
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.ae64567f544e4p-26);
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.27e4fb7789f5cp-22);
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.71de3a556c734p-19);
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.a01a01a01a01ap-16);
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.a01a01a01a01ap-13);
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.6c16c16c16c17p-10);
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.1111111111111p-7);
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.5555555555555p-5);
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.5555555555555p-3);
+    p = __dadd_rn(__dmul_rn(p, r), 0.5);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0);
+    const double e = __dmul_rn(p, __longlong_as_double((long long)(k + 1023) << 52));
+    const unsigned xb = __float_as_uint(x), qb = xb | 0x00400000u;
+    const unsigned eb = __float_as_uint(__double2float_rn(e));
+    const unsigned is_nan = 0u - (unsigned)((xb & 0x7fffffffu) > 0x7f800000u);
+    return __uint_as_float((qb & is_nan) | (eb & ~is_nan));
+}
+// ink2_sigmoid: 1 / (1 + p_expf(-x))
+static __device__ float ink2_sigmoid_d(float x) { return __fdiv_rn(1.0f, __fadd_rn(1.0f, ink2_p_expf(-x))); }
+// TEST-ONLY: y[i] = the ported p_expf(x[i])
+extern "C" __global__ void k_ink2_test_pexpf(const float *x, float *y, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) y[i] = ink2_p_expf(x[i]);
+}
+// the router's logits and scores, ink2_route_range: thread (position t = blockIdx.y, expert e): l = the serial dot of
+// router row e with x[t] over h ascending (l += row[h] * x[h], no contraction), sc[t][e] = sigmoid(l); lg if given
+extern "C" __global__ void k_ink2_route_scores(const float *wr, const float *x, float *sc, float *lg, int E, int H) {
+    const int e = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;
+    if (e >= E) return;
+    const float *row = wr + (ulong64)e * H, *xt = x + (ulong64)t * H;
+    float l = 0.0f;
+    for (int h = 0; h < H; h++) l = __fadd_rn(l, __fmul_rn(row[h], xt[h]));
+    if (lg) lg[(ulong64)t * E + e] = l;
+    sc[(ulong64)t * E + e] = ink2_sigmoid_d(l);
+}
+// the top-k and the weights, ink2_route_one's loops, one thread a position: K times the unchosen e with the largest
+// sc + br (strict >: the lowest index wins a tie); wt[e] = sc[e] / (the chosen scores' sum ascending + 1e-20) * scale;
+// pc[t] the position's chosen count; mg[t] (when given) the selection observer's margin: the smallest chosen sc + br
+// minus the largest unchosen one, as ink2_expert_layer_c computes it
+extern "C" __global__ void k_ink2_route_topk(const float *sc, const float *br, uchar *chosen, float *wt, int *pc,
+                                             float *mg, int E, int K, float scale, int T) {
+    const int t = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= T) return;
+    const float *s = sc + (ulong64)t * E;
+    uchar *ch = chosen + (ulong64)t * E;
+    float *w = wt + (ulong64)t * E;
+    for (int e = 0; e < E; e++) ch[e] = 0;
+    int n = 0;
+    for (int k = 0; k < K; k++) {
+        int best = -1;
+        float bv = 0.0f;
+        for (int e = 0; e < E; e++) {
+            if (ch[e]) continue;
+            const float v = __fadd_rn(s[e], br[e]);
+            if (best < 0 || v > bv) { best = e; bv = v; }
+        }
+        if (best < 0) break;
+        ch[best] = 1;
+        n++;
+    }
+    float sum = 0.0f;
+    for (int e = 0; e < E; e++) if (ch[e]) sum = __fadd_rn(sum, s[e]);
+    const float den = __fadd_rn(sum, 1e-20f);
+    for (int e = 0; e < E; e++) w[e] = ch[e] ? __fmul_rn(__fdiv_rn(s[e], den), scale) : 0.0f;
+    pc[t] = n;
+    if (mg) {
+        float lo = __int_as_float(0x7f800000), hi = -__int_as_float(0x7f800000);
+        for (int e = 0; e < E; e++) {
+            const float v = __fadd_rn(s[e], br[e]);
+            if (ch[e]) { if (v < lo) lo = v; } else if (v > hi) hi = v;
+        }
+        mg[t] = __fsub_rn(lo, hi);
+    }
+}
+// the expert body's tables from the device's choices, ink2_experts_fused's host loops in their order (one block):
+// cnt[e] the expert's positions; the columns numbered expert-major, the experts with at least mvb_min columns FIRST
+// when tiled (P1b's renumbering), the rest after; idx/ex/wv per column (positions ascending within an expert); po/pl
+// each position's columns in ascending expert order; the tiles {first column, count <= 16, expert} of the first
+// group. Layout at fixed bounds NC = T * K: idx [NC], ex [NC], po [T + 1], pl [NC], tiles [3 (NC / 16 + E)]; hdr =
+// {nall, ntile, nbig}. cnt and off are scratch [E] each.
+extern "C" __global__ void k_ink2_route_tables(const uchar *chosen, const float *wt, const int *pc, int *tab, float *wv,
+                                               int *cnt, int *off, int *toff, int *hdr, int E, int T, int K, int tiled,
+                                               int mvb_min) {
+    const int NC = T * K;
+    int *idx = tab, *ex = tab + NC, *po = tab + 2 * NC, *pl = po + T + 1, *tl = pl + NC;
+    for (int e = threadIdx.x; e < E; e += blockDim.x) {
+        int c = 0;
+        for (int t = 0; t < T; t++) c += chosen[(ulong64)t * E + e];
+        cnt[e] = c;
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        int nbig = 0, ntile = 0, nall = 0;
+        for (int e = 0; e < E; e++) { nall += cnt[e]; if (tiled && cnt[e] >= mvb_min) { nbig += cnt[e]; } }
+        for (int e = 0, jb = 0, js = nbig; e < E; e++) {
+            const int big = tiled && cnt[e] >= mvb_min;
+            off[e] = big ? jb : js;
+            toff[e] = ntile;
+            if (big) { jb += cnt[e]; ntile += (cnt[e] + 15) / 16; } else js += cnt[e];
+        }
+        po[0] = 0;
+        for (int t = 0; t < T; t++) po[t + 1] = po[t] + pc[t];
+        hdr[0] = nall; hdr[1] = ntile; hdr[2] = nbig;
+    }
+    __syncthreads();
+    for (int e = threadIdx.x; e < E; e += blockDim.x) {
+        int j = off[e];
+        for (int t = 0; t < T; t++)
+            if (chosen[(ulong64)t * E + e]) { idx[j] = t; ex[j] = e; wv[j] = wt[(ulong64)t * E + e]; j++; }
+        if (tiled && cnt[e] >= mvb_min)
+            for (int c = 0, k = toff[e]; c < cnt[e]; c += 16, k++) {
+                tl[3 * k] = off[e] + c; tl[3 * k + 1] = cnt[e] - c < 16 ? cnt[e] - c : 16; tl[3 * k + 2] = e;
+            }
+    }
+    for (int t = threadIdx.x; t < T; t += blockDim.x) {   // each position's columns, experts ascending
+        int k = po[t];
+        for (int e = 0; e < E; e++) {
+            if (!chosen[(ulong64)t * E + e]) continue;
+            int rank = 0;
+            for (int u = 0; u < t; u++) rank += chosen[(ulong64)u * E + e];
+            pl[k++] = off[e] + rank;
+        }
+    }
+}
 // the combination, ink2_msg_comb_multi_range: out = (1 - tanh(fa)) * x + tanh(ga) * msg, over n values
 extern "C" __global__ void k_ink2_msg_comb(const float *fa, const float *ga, const float *x, const float *msg,
                                            float *out, int n) {

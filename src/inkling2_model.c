@@ -54,12 +54,19 @@ typedef struct {
     bool msg_on;          // D1a: this instance runs the loop's message steps on the device
     long n_msg_calls;     // device message steps run so far
     long msg_fail_at;     // TEST-ONLY (RUNNER_INKLING2_CUDA_TEST_MSG_FAIL=k): the k-th device message step fails; -1 none
+    bool route_on;        // D1b: this instance runs the router on the device with the expert body
+    long n_route;         // device router calls run so far
 } ink2_rt;
 
 static ink2_rt *rt_of(model_t *m) { return (ink2_rt *)m->ink2; }
 
 // R4.48.9: a view's rows (a stack's experts one after another) and its factors
 static int64_t view_rows(const ink2_tensor *t) { return t->ne[1] * t->ne[2] * t->ne[3]; }
+// D1b: a view's bytes on the device and their source: the file's rows (t->q), or for a router its decoded float32 rows
+// (t->data, no q; ink2g_each_view's last views), uploaded as F32
+static const void *view_src(const ink2_tensor *t) { return t->q ? t->q : (const void *)t->data; }
+static size_t view_row_bytes(const ink2_tensor *t) { return t->q ? t->q_row_bytes : sizeof(float) * (size_t)t->ne[0]; }
+static int view_qtype(const ink2_tensor *t) { return t->q ? t->qtype : T_F32; }
 static int view_scales(const ink2_tensor *t) { return t->q_scale ? (int)t->ne[2] : 0; }
 typedef struct {
     ink2_rt *r; bool cpu_moe; size_t need; int n; int fail_at;
@@ -73,7 +80,10 @@ static bool dev_wanted(const dev_walk *c, const ink2_tensor *t) {
     if (!strcmp(t->name, "model.embed_tokens.weight")) return false;
     if (c->cpu_moe && strstr(t->name, ".mlp.experts.")) return false;
     if (t->q_scale && t->qtype != T_NVFP4) return false;
-    return gpu_ink2_runs(c->r->gpu, t->qtype);
+    // D1b: a router goes up whenever the handle has the device router, whatever this instance's TEST-ONLY NO_ROUTER
+    // says (that switch is no part of the share key: every instance on one copy walks the same views)
+    if (!t->q && !gpu_ink2_route_ok(c->r->gpu)) return false;
+    return gpu_ink2_runs(c->r->gpu, view_qtype(t));
 }
 // a device allocation's bytes as the driver takes them: large ones in 2 MiB pages, small ones 512-byte aligned
 static size_t dev_alloc_bytes(size_t b) {
@@ -83,7 +93,7 @@ static size_t dev_alloc_bytes(size_t b) {
 static int dev_count(void *c_, const ink2_tensor *t) {
     dev_walk *c = c_;
     if (!dev_wanted(c, t)) return 0;
-    c->need += dev_alloc_bytes(t->q_row_bytes * (size_t)view_rows(t));
+    c->need += dev_alloc_bytes(view_row_bytes(t) * (size_t)view_rows(t));
     if (view_scales(t)) c->need += dev_alloc_bytes(sizeof(float) * (size_t)view_scales(t));
     if (t->ne[0] > c->max_in) c->max_in = t->ne[0];
     if (t->ne[1] > c->max_out) c->max_out = t->ne[1];   // a product's rows: at most one matrix's (one expert's)
@@ -98,7 +108,8 @@ static int dev_put(void *c_, const ink2_tensor *t) {
     // made the copy (the file's order), so view k is device tensor k; nothing goes up
     if (c->attach) { if (c->r->n_dev >= c->n) return -1; c->r->dev_of[c->r->n_dev++] = t; return 0; }
     if (c->r->n_dev == c->fail_at) return -1;   // TEST-ONLY (RUNNER_INKLING2_CUDA_TEST_PUT_FAIL=k): the k-th put fails
-    if (gpu_ink2_put(c->r->gpu, t->q, t->q_row_bytes * (size_t)view_rows(t), t->q_scale, view_scales(t)) != c->r->n_dev)
+    if (gpu_ink2_put(c->r->gpu, view_src(t), view_row_bytes(t) * (size_t)view_rows(t), t->q_scale, view_scales(t)) !=
+        c->r->n_dev)
         return -1;
     c->r->dev_of[c->r->n_dev++] = t;   // not marked on the device yet: dev_mark, once every put succeeded
     return 0;
@@ -157,6 +168,30 @@ static int dev_experts(const ink2_shape *s, const ink2_tensor *t13, const ink2_t
                                      nf ? NULL : t13->q_scale, nf ? NULL : t2->q_scale, s->gate_cap, s->up_cap, out);
     if (!ok) {
         if (!r->gpu_err) fprintf(stderr, "error: inkling2_loop: the expert body of %s failed on the device\n", t13->name);
+        r->gpu_err = true;
+        return -1;
+    }
+    return 0;
+}
+// D1b: one application's expert layer whole on the device, the router then the body, when the router's F32 view and
+// both stacks are this instance's (else the host router and dev_experts)
+static int dev_moe(void *dev, const ink2_moe_call *m) {
+    ink2_rt *r = dev;
+    if (!r->route_on || !r->exp_on) return 1;
+    if (r->gpu_err) return -1;
+    if (!m->wr || m->wr->dev != r || m->wr->qtype != T_F32 || !m->t13 || m->t13->dev != r || !m->t2 || m->t2->dev != r)
+        return 1;
+    const ink2_shape *s = m->s;
+    r->n_route++;
+    const bool inj = r->n_exp++ == r->exp_fail_at;   // TEST-ONLY: the expert call's injected failure, as dev_experts'
+    const bool nf = r->no_factor;
+    const bool ok = !inj && gpu_ink2_route_experts(r->gpu, m->wr->dev_i, m->br, s->route_scale, s->n_used, m->t13->dev_i,
+                                                   m->t2->dev_i, m->t13->qtype, m->t2->qtype, m->t13->q_row_bytes,
+                                                   m->t2->q_row_bytes, s->hidden, s->ff, s->n_expert, m->T, m->x,
+                                                   nf ? NULL : m->t13->q_scale, nf ? NULL : m->t2->q_scale, s->gate_cap,
+                                                   s->up_cap, m->out, m->chosen, m->margin);
+    if (!ok) {
+        if (!r->gpu_err) fprintf(stderr, "error: inkling2_loop: the expert layer of %s failed on the device\n", m->t13->name);
         r->gpu_err = true;
         return -1;
     }
@@ -518,7 +553,7 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
     }
     // the instance's own device functions, read-only, in place before any of its views is marked: a forward reads
     // them through its own views and cache only, so no other instance's bind writes what it reads
-    static const ink2_dev_ops ops = { dev_lin_scaled, dev_experts, dev_attn, dev_block, dev_msg };
+    static const ink2_dev_ops ops = { dev_lin_scaled, dev_experts, dev_attn, dev_block, dev_msg, dev_moe };
     r->hdr.ops = &ops;
     if (!dev_mark(r)) {
         pthread_mutex_unlock(&g_share_mu);
@@ -571,6 +606,11 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
         r->n_msg_calls = 0;
         const char *mf = getenv("RUNNER_INKLING2_CUDA_TEST_MSG_FAIL");
         r->msg_fail_at = mf && *mf ? atol(mf) : -1;
+        // D1b: the router on the device (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_NO_ROUTER=1 keeps it on the host, the
+        // baseline: an instance's own choice, no part of the share key)
+        const char *nr = getenv("RUNNER_INKLING2_CUDA_TEST_NO_ROUTER");
+        r->route_on = gpu_ink2_route_ok(r->gpu) && !(nr && !strcmp(nr, "1"));
+        r->n_route = 0;
     }
     const char *nf = getenv("RUNNER_INKLING2_CUDA_TEST_NO_FACTOR");
     r->no_factor = nf && !strcmp(nf, "1");
@@ -1067,6 +1107,10 @@ long model_inkling2_cuda_msg_calls(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
     return r && r->msg_on ? r->n_msg_calls : -1;
 }
+long model_inkling2_cuda_route_calls(const model_t *m) {
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    return r && r->route_on ? r->n_route : -1;
+}
 long model_inkling2_cuda_attn_calls(const model_t *m, size_t *kv_bytes) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
     if (kv_bytes) *kv_bytes = r ? gpu_ink2_kv_bytes(r->kv) : 0;
@@ -1103,7 +1147,9 @@ bool model_inkling2_cuda_readback(model_t *m, int *n_tensors, int *n_differ, cha
     for (int i = 0; i < r->n_dev; i++) {
         const ink2_tensor *t = r->dev_of[i];
         const int64_t nr = view_rows(t), nc = t->ne[0];
-        const size_t bytes = t->q_row_bytes * (size_t)nr;
+        const size_t rb = view_row_bytes(t), bytes = rb * (size_t)nr;   // D1b: a router's float32 rows too
+        const int qt = view_qtype(t);
+        const unsigned char *src = view_src(t);
         const int ns = view_scales(t);
         unsigned char *q = malloc(bytes);
         float *sc = ns ? malloc(sizeof(float) * (size_t)ns) : NULL, *a = malloc(sizeof(float) * (size_t)nc),
@@ -1112,8 +1158,8 @@ bool model_inkling2_cuda_readback(model_t *m, int *n_tensors, int *n_differ, cha
         if (!ok) { free(q); free(sc); free(a); free(b); return false; }
         bool same = !ns || !memcmp(sc, t->q_scale, sizeof(float) * (size_t)ns);
         for (int64_t row = 0; same && row < nr; row++) {
-            dequant_row(t->qtype, q + t->q_row_bytes * (size_t)row, a, (int)nc);
-            dequant_row(t->qtype, (const unsigned char *)t->q + t->q_row_bytes * (size_t)row, b, (int)nc);
+            dequant_row(qt, q + rb * (size_t)row, a, (int)nc);
+            dequant_row(qt, src + rb * (size_t)row, b, (int)nc);
             same = !memcmp(a, b, sizeof(float) * (size_t)nc);
         }
         if (!same && !bad++ && first && first_cap) snprintf(first, first_cap, "%s", t->name);

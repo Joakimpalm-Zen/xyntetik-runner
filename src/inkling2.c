@@ -539,7 +539,7 @@ static inline float ink2_sigmoid(float x) { return 1.0f / (1.0f + p_expf(-x)); }
 // With the weights' get_expert (ink2_weights), the stacks are not looked up: each chosen expert is, when it runs.
 // t13 / t2: the stacks as views (the fast route), the experts' rows run in place with their factors after the dot
 typedef struct { const float *wr, *br, *w13, *w2; const ink2_weights *ew; char n13[160], n2[160];
-                 const ink2_tensor *t13, *t2; } ink2_moe_w;
+                 const ink2_tensor *t13, *t2, *tr; } ink2_moe_w;   // tr: the router's tensor (D1b: its device view)
 static ink2_status ink2_moe_bind(const ink2_shape *s, const ink2_weights *w, int block, ink2_moe_w *M) {
     char n1[160], n2[160];
     snprintf(n1, sizeof n1, "model.layers.%d.mlp.gate.weight", block);
@@ -549,7 +549,7 @@ static ink2_status ink2_moe_bind(const ink2_shape *s, const ink2_weights *w, int
     const ink2_tensor *wr = w->get(w->ctx, n1), *br = w->get(w->ctx, n2);
     int H = s->hidden, E = s->n_expert, K = s->n_used, F = s->ff;
     if (!wr || !br || wr->ne[0] != H || wr->ne[1] != E || br->ne[0] != E || K < 1 || K > E) return INK2_NO_TENSOR;
-    M->wr = wr->data; M->br = br->data; M->w13 = M->w2 = NULL; M->ew = NULL; M->t13 = M->t2 = NULL;
+    M->wr = wr->data; M->br = br->data; M->w13 = M->w2 = NULL; M->ew = NULL; M->t13 = M->t2 = NULL; M->tr = wr;
     if (!M->wr || !M->br) return INK2_NO_TENSOR;
     if (w->get_expert) { M->ew = w; return INK2_OK; }
     const ink2_tensor *w13 = w->get(w->ctx, M->n13), *w2 = w->get(w->ctx, M->n2);
@@ -603,6 +603,17 @@ static void ink2_route_one(const ink2_shape *s, const ink2_moe_w *M, const float
     for (int e = 0; e < E; e++) if (chosen[e]) sum += sc[e];
     float den = sum + 1e-20f;
     for (int e = 0; e < E; e++) wt[e] = chosen[e] ? sc[e] / den * s->route_scale : 0.0f;
+}
+static long ink2_route_host_n;   // TEST-ONLY: the host router's runs over an expert layer (ink2_route_host_calls)
+long ink2_route_host_calls(void) { return __atomic_load_n(&ink2_route_host_n, __ATOMIC_RELAXED); }
+void ink2_test_route(const ink2_shape *s, const float *wr, const float *br, int T, const float *x, float *sc,
+                     unsigned char *chosen, float *wt) {
+    ink2_moe_w M;
+    memset(&M, 0, sizeof M);
+    M.wr = wr; M.br = br;
+    const size_t E = (size_t)s->n_expert, H = (size_t)s->hidden;
+    for (int t = 0; t < T; t++)
+        ink2_route_one(s, &M, x + (size_t)t * H, NULL, sc + (size_t)t * E, chosen + (size_t)t * E, wt + (size_t)t * E);
 }
 // SoftcappedSwiGLU: softcap(gate, gate cap) * sigmoid(gate) * softcap(up, up cap)
 static inline float ink2_swiglu(const ink2_shape *s, float g, float u) {
@@ -750,6 +761,23 @@ static ink2_status ink2_expert_layer_c(const ink2_shape *s, const ink2_weights *
     if (st != INK2_OK) return st;
     int H = s->hidden, E = s->n_expert, F = s->ff;
     if (M.t13) {   // the fast route: every position's routing, then the experts grouped
+        // R4.48.9 D1b: the whole layer (the router, then the body) on the device when its views are a device
+        // instance's; the selection observer gets the device's choices and margins
+        const ink2_dev_ops *mo = M.tr && M.tr->dev ? ink2_ops_of(M.tr->dev) : NULL;
+        if (mo && mo->moe) {
+            unsigned char *mch = ink2_sel_obs ? malloc((size_t)T * E) : NULL;
+            float *mmg = ink2_sel_obs ? malloc(sizeof(float) * (size_t)T) : NULL;
+            ink2_moe_call mc = { s, M.tr, M.t13, M.t2, M.br, T, x, out, mch, mmg };
+            const int rc = ink2_sel_obs && (!mch || !mmg) ? 1 : mo->moe(M.tr->dev, &mc);
+            if (rc <= 0) {
+                if (rc < 0) for (size_t i = 0; i < (size_t)T * H; i++) out[i] = NAN;
+                else if (ink2_sel_obs) ink2_sel_obs(ink2_sel_obs_ctx, block, T, E, mch, mmg);
+                free(mch); free(mmg);
+                return INK2_OK;
+            }
+            free(mch); free(mmg);
+        }
+        __atomic_add_fetch(&ink2_route_host_n, 1, __ATOMIC_RELAXED);
         if (T == 1 && E <= 256) {
             float sc[256], wt[256];
             unsigned char chosen[256];
@@ -1772,6 +1800,7 @@ static void ink2_msg_comb_multi_range(void *c, int64_t i0, int64_t i1) {
 // TEST-ONLY (D1a): the engine's own p_tanhf, compiled with this file's flags (-fno-fast-math -ffp-contract=off): the
 // reference of the device port (a test file built with -ffast-math must not inline its own copy)
 float ink2_test_p_tanhf(float x) { return p_tanhf(x); }
+float ink2_test_p_expf(float x) { return p_expf(x); }   // TEST-ONLY (D1b): the same for p_expf
 static long ink2_msg_host_n;            // TEST-ONLY: the host message step's runs (ink2_msg_host_calls)
 long ink2_msg_host_calls(void) { return __atomic_load_n(&ink2_msg_host_n, __ATOMIC_RELAXED); }
 static __thread int ink2_msg_no_dev;    // TEST-ONLY: ink2_test_message_steps keeps the step on the host
