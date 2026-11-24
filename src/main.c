@@ -5232,13 +5232,17 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
         // (slots create their pools), so the honest number here is the count
         // the slots divide, not the placeholder pool (the lab read "1 threads"
         // as a CPU fallback at one thread, 2026-09-23).
-        fprintf(stderr, "loaded %s | %s | %d layers | ctx %d | %d threads%s | %.2fs\n",
+        // R19.17.1: a split set says so, whichever part opened it (a single file's line is as it was)
+        char setnote[48] = "";
+        if (gguf_map_count(&rt->m.gf) > 1)
+            snprintf(setnote, sizeof setnote, " | a split set of %u parts", gguf_map_count(&rt->m.gf));
+        fprintf(stderr, "loaded %s | %s | %d layers | ctx %d | %d threads%s | %.2fs%s\n",
                 load_path, rt->m.arch, rt->m.n_layer, rt->m.n_ctx,
                 o->serve ? o->n_threads
                          : rt->m.ink2 ? model_inkling2_threads(&rt->m)
                                       : tpool_size(rt->m.tp),
                 o->serve ? " (divided across slots)" : "",
-                now_s() - t1);
+                now_s() - t1, setnote);
         {   // R12.1b: a canonical build says which types it cannot run canonically
             char gaps[128];
             if (model_canon_gaps(&rt->m, gaps, sizeof gaps) && gaps[0])
@@ -8188,11 +8192,19 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
     // detail line. A comparison of two routes of one file reads it, because two
     // solo scores never reach a prefill GEMM and say nothing about one; a byte
     // comparison of two scores leaves it out (scripts/score_record.py)
-    const char *mbase = plat_path_base(o->model_path ? o->model_path : "");
+    // (R19.17.1: a split set is named as the set, whichever part opened it: the first part's name and every part's
+    // bytes, gguf_set_name; a single file is itself)
+    char mset[4096];
+    uint32_t mparts = 1;
+    long long msetbytes = -1;
+    const bool mis_set = o->model_path && gguf_set_name(o->model_path, mset, sizeof mset, &mparts, &msetbytes) &&
+                         mparts > 1;
+    const char *mbase = plat_path_base(mis_set ? mset : o->model_path ? o->model_path : "");
     char mesc[600], mjson[700];
     json_escape(mbase, strlen(mbase), mesc, sizeof mesc);
     plat_stat_t mst;
-    long long mbytes = o->model_path && plat_stat(o->model_path, &mst) == 0 ? (long long)mst.st_size : -1;
+    long long mbytes = mis_set ? msetbytes
+                     : o->model_path && plat_stat(o->model_path, &mst) == 0 ? (long long)mst.st_size : -1;
     snprintf(mjson, sizeof mjson, "{\"file\":\"%s\",\"bytes\":%lld}", mesc, mbytes);
     char sroute[1800];
     model_score_route_json(&rt->m, mjson, sroute, sizeof sroute);

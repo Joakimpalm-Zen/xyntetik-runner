@@ -502,6 +502,89 @@ static bool split_part_path(char *out, size_t cap, const char *path,
     return wrote > 0 && (size_t)wrote < cap;
 }
 
+// R19.17.1: one key's value in two parts of a set, compared by its stored bits (a float by its bits, a string and
+// an array element by element)
+static bool split_kv_same(const gguf_kv *a, const gguf_kv *b) {
+    if (a->type != b->type) return false;
+    switch (a->type) {
+    case GGUF_T_STR:
+        return a->str.n == b->str.n && (a->str.n == 0 || !memcmp(a->str.s, b->str.s, (size_t)a->str.n));
+    case GGUF_T_F32: case GGUF_T_F64:
+        return a->raw == b->raw;
+    case GGUF_T_BOOL:
+        return a->v.b == b->v.b;
+    case GGUF_T_ARR: {
+        if (a->arr_type != b->arr_type || a->arr_n != b->arr_n) return false;
+        if (a->arr_type == GGUF_T_STR) {
+            for (uint64_t k = 0; k < a->arr_n; k++)
+                if (a->arr_str[k].n != b->arr_str[k].n ||
+                    (a->arr_str[k].n && memcmp(a->arr_str[k].s, b->arr_str[k].s, (size_t)a->arr_str[k].n)))
+                    return false;
+            return true;
+        }
+        static const size_t esz[] = { 1, 1, 2, 2, 4, 4, 4, 1, 0, 0, 8, 8, 8 };
+        const size_t e = a->arr_type < sizeof esz / sizeof *esz ? esz[a->arr_type] : 0;
+        if (!e || !a->arr_raw || !b->arr_raw) return a->arr_raw == b->arr_raw;
+        return !memcmp(a->arr_raw, b->arr_raw, (size_t)a->arr_n * e);
+    }
+    default:
+        return a->v.u64 == b->v.u64;   // the integers, widened into the same 64 bits by type
+    }
+}
+
+// a key's value for the refusal's sentence
+static void split_kv_text(const gguf_kv *kv, char *out, size_t cap) {
+    switch (kv->type) {
+    case GGUF_T_U8: case GGUF_T_U16: case GGUF_T_U32: case GGUF_T_U64:
+        snprintf(out, cap, "%llu", (unsigned long long)kv->v.u64); break;
+    case GGUF_T_I8: case GGUF_T_I16: case GGUF_T_I32: case GGUF_T_I64:
+        snprintf(out, cap, "%lld", (long long)kv->v.i64); break;
+    case GGUF_T_F32: case GGUF_T_F64:
+        snprintf(out, cap, "%.9g", kv->v.f64); break;
+    case GGUF_T_BOOL:
+        snprintf(out, cap, "%s", kv->v.b ? "true" : "false"); break;
+    case GGUF_T_STR:
+        snprintf(out, cap, "\"%.60s%s\"", kv->str.s ? kv->str.s : "", kv->str.n > 60 ? "..." : ""); break;
+    case GGUF_T_ARR:
+        snprintf(out, cap, "an array of %llu", (unsigned long long)kv->arr_n); break;
+    default:
+        snprintf(out, cap, "(type %u)", kv->type); break;
+    }
+}
+
+// R19.17.1: the first key part i STATES that part 0 states too and CONTRADICTS (general.file_type first, the
+// quant a set is), or NULL. The split.* keys are each part's own. A sparse part (llama.cpp's standard layout)
+// states only those, so nothing in it is compared: the format carries no set identity to check.
+static const gguf_kv *split_kv_contradiction(gguf_file *p0, gguf_file *pi, const gguf_kv **in0) {
+    const gguf_kv *ft = gguf_get(pi, "general.file_type"), *ft0 = gguf_get(p0, "general.file_type");
+    if (ft && ft0 && !split_kv_same(ft0, ft)) { *in0 = ft0; return ft; }
+    for (uint64_t k = 0; k < pi->n_kv; k++) {
+        const gguf_kv *kv = &pi->kv[k];
+        if (!kv->key || !strncmp(kv->key, "split.", 6)) continue;
+        const gguf_kv *kv0 = gguf_get(p0, kv->key);
+        if (kv0 && !split_kv_same(kv0, kv)) { *in0 = kv0; return kv; }
+    }
+    return NULL;
+}
+
+// R19.17.1: the name a split set goes by, whichever part opens it: the first part (<prefix>-00001-of-N.gguf, the
+// name the set's other parts are derived from and the one the set is listed by), with the whole set's bytes and its
+// part count; a single file is itself (1 part, its own size). false: the path cannot be read.
+bool gguf_set_name(const char *path, char *first, size_t cap, uint32_t *n_parts, long long *bytes) {
+    uint32_t n = 1;
+    if (!gguf_split_part_path(path, 0, first, cap, &n)) return false;
+    long long total = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        char part[4096];
+        plat_stat_t st;
+        if (!gguf_split_part_path(path, i, part, sizeof part, NULL) || plat_stat(part, &st) != 0) { total = -1; break; }
+        total += (long long)st.st_size;
+    }
+    if (n_parts) *n_parts = n;
+    if (bytes) *bytes = total;
+    return true;
+}
+
 bool gguf_split_part_path(const char *path, uint32_t i, char *out, size_t cap, uint32_t *count) {
     gguf_file probe;
     // this part's own header: the question is which part this file is
@@ -587,6 +670,17 @@ static bool gguf_open_set(gguf_file *g, const char *path, bool header_only) {
             mapped > UINT64_MAX - parts[i].mapped_size) {
             fprintf(stderr, "error: inconsistent split GGUF metadata in %s\n",
                     part_path);
+            ok = false; break;
+        }
+        // R19.17.1: a part from another set of the same model (another quant split the same way) agrees on every
+        // split key; where it states a key the first part states and contradicts it, it is refused by name
+        const gguf_kv *kv0 = NULL, *kvi = i ? split_kv_contradiction(&parts[0], &parts[i], &kv0) : NULL;
+        if (kvi) {
+            char v0[96], vi[96];
+            split_kv_text(kv0, v0, sizeof v0);
+            split_kv_text(kvi, vi, sizeof vi);
+            fprintf(stderr, "error: split GGUF part %u/%u is from another set: %s %s against %s in part 1: %s\n",
+                    i + 1, count, kvi->key, vi, v0, part_path);
             ok = false; break;
         }
         total += parts[i].n_tensors;

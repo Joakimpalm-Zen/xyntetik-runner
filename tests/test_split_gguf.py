@@ -107,3 +107,90 @@ def test_quantizing_a_split_source_yields_a_loadable_single_file(
     assert whole_run.returncode == 0, whole_run.stderr.decode(errors="replace")
     assert split_run.returncode == 0, split_run.stderr.decode(errors="replace")
     assert split_run.stdout == whole_run.stdout
+
+
+# R19.17.1: a part from ANOTHER SET of the same model (another quant, split the same way) carries the same
+# split.count and split.tensors.count, so the split keys alone cannot tell it. A full-metadata part states the set's
+# own keys too; where it states one the first part states and contradicts it, the set is refused by name. A sparse
+# part (llama.cpp's standard layout: the three split keys only) states nothing to compare, so it is accepted, as
+# llama.cpp accepts it: the format carries no set identity.
+def _quant_set(runner_bin, whole, quant, prefix, *flags):
+    q = whole.parent / f"{prefix}.gguf"
+    done = subprocess.run([runner_bin, "-m", str(whole), "--quantize", str(q), "--quant", quant], cwd=ROOT,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+    assert done.returncode == 0, done.stderr.decode(errors="replace")
+    subprocess.run([sys.executable, ROOT / "scripts/gguf-split.py", str(q), str(whole.parent / prefix),
+                    str(N_SHARDS), *flags], check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    found = sorted(whole.parent.glob(f"{prefix}-*-of-*.gguf"))
+    assert len(found) == N_SHARDS, found
+    return found
+
+
+def test_a_full_metadata_part_from_another_quant_set_is_refused_by_name(runner_bin, whole):
+    q8 = _quant_set(runner_bin, whole, "q8_0", "q8")
+    q4 = _quant_set(runner_bin, whole, "q4_0", "q4")
+    q8[1].write_bytes(q4[1].read_bytes())   # the Q4_0 set's part 2 in the Q8_0 set's place
+    for entry in (q8[0], q8[1], q8[2]):
+        result = _run(runner_bin, entry)
+        error = result.stderr.decode(errors="replace")
+        assert result.returncode != 0, (entry.name, error)
+        assert "split GGUF part 2/3 is from another set: general.file_type 2 against 7 in part 1" in error, error
+        assert str(q8[1]) in error, error
+
+
+def test_a_sparse_part_from_another_quant_set_is_accepted_as_the_format_allows(runner_bin, whole):
+    # the limit, held so a change to it is seen: a sparse part states only the split keys
+    q8 = _quant_set(runner_bin, whole, "q8_0", "sq8", "--sparse-metadata")
+    q4 = _quant_set(runner_bin, whole, "q4_0", "sq4", "--sparse-metadata")
+    q8[1].write_bytes(q4[1].read_bytes())
+    result = _run(runner_bin, q8[0])
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+
+
+# R19.17.1: a split set is named as the set whichever part opens it: the first part's file name (the name the set's
+# other parts are derived from, and the one llama.cpp and the Hub's listings lead with) and the whole set's bytes.
+# A single file keeps its own name and size.
+def _serve_names(runner_bin, model):
+    sys.path.insert(0, str(ROOT / "tests" / "conformance"))
+    import json
+    import urllib.request
+    from harness import RunnerServer
+    log = model.parent / f"serve-{model.name}.log"
+    with RunnerServer(runner_bin, model, ctx=256, log_path=str(log), extra_args=["--gpu", "off", "-t", "2"]) as srv:
+        models = json.load(urllib.request.urlopen(srv.base_url + "/v1/models", timeout=30))
+        caps = json.load(urllib.request.urlopen(srv.base_url + "/v1/capabilities", timeout=30))
+    loaded = [ln for ln in log.read_text(errors="replace").splitlines() if ln.startswith("loaded ")]
+    return models["data"][0]["id"], caps, loaded
+
+
+def _score_model(runner_bin, model):
+    import json
+    done = subprocess.run([runner_bin, "-m", str(model), "--score", "-p", "the warehouse keeps item 42 in aisle seven",
+                           "--gpu", "off", "-t", "2"], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          timeout=120)
+    assert done.returncode == 0, done.stderr.decode(errors="replace")
+    return json.loads(done.stdout)["score_route"]["model"]
+
+
+def _caps_names(caps):
+    import json
+    text = json.dumps(caps)
+    return sorted({n for n in ("part-00001-of-00003.gguf", "part-00002-of-00003.gguf", "part-00003-of-00003.gguf")
+                   if n in text})
+
+
+def test_a_split_set_is_named_as_the_set_from_every_part(runner_bin, whole, shards):
+    set_bytes = sum(p.stat().st_size for p in shards)
+    for entry in shards:
+        mid, caps, loaded = _serve_names(runner_bin, entry)
+        assert mid == shards[0].name, (entry.name, mid)
+        assert _caps_names(caps) == [shards[0].name], (entry.name, _caps_names(caps))
+        assert loaded and loaded[0].endswith(" | a split set of 3 parts"), (entry.name, loaded)
+        assert _score_model(runner_bin, entry) == {"file": shards[0].name, "bytes": set_bytes}, entry.name
+
+
+def test_a_single_file_keeps_its_own_name(runner_bin, whole):
+    mid, caps, loaded = _serve_names(runner_bin, whole)
+    assert mid == whole.name, mid
+    assert loaded and "split set" not in loaded[0], loaded
+    assert _score_model(runner_bin, whole) == {"file": whole.name, "bytes": whole.stat().st_size}

@@ -4022,8 +4022,15 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     if (threads_per_slot < 1) threads_per_slot = 1;
     int shared_pool_threads = n_threads;   // the slots' shared pool (see below), for the banner
 
+    // R19.17.1: a split set goes by the set's name (its first part's file) whichever part opened it, so /v1/models
+    // and the capabilities name one model; a single file keeps its own name
+    static char set_first[4096];
+    uint32_t set_parts = 1;
+    const bool is_set = SV.n_reg == 0 && !forced_name &&
+                        gguf_set_name(model_path, set_first, sizeof set_first, &set_parts, NULL) && set_parts > 1;
     SV.model_name = SV.n_reg > 0 ? SV.reg[0].name
                   : forced_name  ? forced_name
+                  : is_set       ? plat_path_base(set_first)
                                  : plat_path_base(model_path);
     SV.n_predict_cap = 1024;
     SV.reasoning_budget = reasoning_budget;
