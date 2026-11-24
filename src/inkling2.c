@@ -282,6 +282,7 @@ float ink2_inv_sqrt(int n) { return (float)(1.0 / sqrt((double)n)); }
 // nested ink2_par (including from inside a tpool worker, via ink2_tp_tramp's ink2_in_par) runs serially.
 typedef void (*ink2_range_fn)(void *ctx, int64_t i0, int64_t i1);
 static __thread int ink2_in_par;
+static __thread int ink2_par_slot_tl;   // this range's slot in the ink2_par running it (ink2_par_slot)
 static __thread tpool *ink2_tl_tp;
 static _Atomic long ink2_par_min = 16384; // the least work (multiply-adds) a chunk gets; INK2_PAR_MIN
 static _Atomic long ink2_split_loops = 0; // parallel loops that split their range over the pool, since the process began
@@ -394,26 +395,50 @@ typedef struct {
     void *ctx;
     int64_t n;
     int64_t group;
+    _Atomic int next_slot;   // the next range's slot (ink2_par_slot)
 } ink2_tp_ctx;
 
 // tpool worker threads do not inherit the caller's TLS ink2_in_par / ink2_tl_tp; mark ink2_in_par here
 // so any nested ink2_par invoked inside a worker runs serially without re-entering the pool or fallback.
 static void ink2_tp_tramp(void *raw, int i0, int i1) {
-    const ink2_tp_ctx *tc = raw;
+    ink2_tp_ctx *tc = raw;
     int64_t a = (int64_t)i0 * tc->group;
     int64_t b = (int64_t)i1 * tc->group;
     if (b > tc->n) b = tc->n;
     if (a >= b) return;
-    int prev = ink2_in_par;
+    int prev = ink2_in_par, prev_slot = ink2_par_slot_tl;
     ink2_in_par = 1;
+    ink2_par_slot_tl = atomic_fetch_add_explicit(&tc->next_slot, 1, memory_order_relaxed);
     tc->fn(tc->ctx, a, b);
+    ink2_par_slot_tl = prev_slot;
     ink2_in_par = prev;
 }
+// a loop run on the calling thread is one range, slot 0
+static void ink2_par_serial(ink2_range_fn fn, void *ctx, int64_t n) {
+    int prev_slot = ink2_par_slot_tl;
+    ink2_par_slot_tl = 0;
+    fn(ctx, 0, n);
+    ink2_par_slot_tl = prev_slot;
+}
+// R4.48.25.1: per-range scratch without an allocation inside a range (which cannot return a status). The house tpool
+// gives each worker one slice of a loop (tp_slice), so the ranges one ink2_par runs at once are at most the pool's
+// size. ink2_par_width says how many that is for a loop started from this thread: a caller sizes that many rows
+// before the loop, and each range takes its own, ink2_par_slot (0 .. width - 1, distinct among the loop's ranges).
+static int ink2_par_width(void) {
+    if (ink2_in_par) return 1;   // a nested loop runs serially
+    pthread_once(&ink2_env_once, ink2_env_init);
+    if (ink2_tl_tp) return tpool_size(ink2_tl_tp);
+    pthread_mutex_lock(&ink2_sb_mu);
+    int n = ink2_sb_threads;
+    pthread_mutex_unlock(&ink2_sb_mu);
+    return n > 1 ? n : 1;
+}
+static int ink2_par_slot(void) { return ink2_par_slot_tl; }
 
 // fn over [0, n): each index costs about `work` multiply-adds (sets minimum parallel work)
 void ink2_par(int64_t n, int64_t work, ink2_range_fn fn, void *ctx) {
     if (n <= 0) return;
-    if (ink2_in_par) { fn(ctx, 0, n); return; }
+    if (ink2_in_par) { ink2_par_serial(fn, ctx, n); return; }
     pthread_once(&ink2_env_once, ink2_env_init);
     if (work < 1) work = 1;
     int64_t min_work = atomic_load_explicit(&ink2_par_min, memory_order_relaxed);
@@ -429,7 +454,7 @@ void ink2_par(int64_t n, int64_t work, ink2_range_fn fn, void *ctx) {
     const int nt = tp ? tpool_size(tp) : 1;
     if (nt <= 1 || n <= chunk || n < 2) {
         if (drop_tp) tpool_destroy(tp);
-        fn(ctx, 0, n);
+        ink2_par_serial(fn, ctx, n);
         return;
     }
 
@@ -447,7 +472,7 @@ void ink2_par(int64_t n, int64_t work, ink2_range_fn fn, void *ctx) {
         void *hctx = (void *)atomic_load_explicit(&ink2_test_par_ctx, memory_order_acquire);
         hook(hctx);
     }
-    ink2_tp_ctx tc = { fn, ctx, n, group };
+    ink2_tp_ctx tc = { fn, ctx, n, group, 0 };
     tpool_run(tp, ink2_tp_tramp, &tc, (int)items);
     if (drop_tp) tpool_destroy(tp);
 }
@@ -1138,6 +1163,8 @@ static void ink2_attn_rel(const ink2_shape *s, const ink2_attn_layer *L, int T, 
 typedef struct {
     const ink2_shape *s; const ink2_attn_layer *L; int T; const int *pos; const float *q, *k, *v; int nk, kp0;
     const float *rl, *sk; float *lg, *att, *probs;
+    int lg_rows;          // lg holds lg_rows rows of nk + 1, one a range (ink2_par_slot)
+    _Atomic int *bad;     // set by a range that found no row of its own
 } ink2_core_ctx;
 // heads h0..h1-1 (threads over heads; each head's arithmetic is the serial loop below, in its own logit row)
 static void ink2_attn_core_range(void *cv, int64_t h0, int64_t h1) {
@@ -1146,8 +1173,10 @@ static void ink2_attn_core_range(void *cv, int64_t h0, int64_t h1) {
     const int T = c->T, nk = c->nk, kp0 = c->kp0; const int *pos = c->pos;
     const float *q = c->q, *k = c->k, *v = c->v, *rl = c->rl, *sk = c->sk; float *att = c->att, *probs = c->probs;
     int nh = L->nh, hd = L->hd, C = L->C, Q = L->Q, ext = L->ext;
-    float *lg = c->lg, *own = NULL;
-    if (h0 != 0 || h1 != nh) { own = malloc(sizeof(float) * ((size_t)nk + 1)); if (!own) abort(); lg = own; }
+    // this range's own logit row, sized by the caller (ink2_attn_scratch_c): nothing is allocated here
+    const int slot = ink2_par_slot();
+    if (slot >= c->lg_rows) { atomic_store(c->bad, 1); return; }
+    float *lg = c->lg + (size_t)slot * ((size_t)nk + 1);
     const float scale = ink2_inv_sqrt(hd);   // head_dim ** -0.5 (see ink2_inv_sqrt; no pow)
 #define INK2_ADMIT(i, j) (pos[i] - (kp0 + (j)) >= 0 && (L->g || pos[i] - (kp0 + (j)) < s->window))
     for (int h = (int)h0; h < (int)h1; h++) {
@@ -1183,7 +1212,6 @@ static void ink2_attn_core_range(void *cv, int64_t h0, int64_t h1) {
         }
     }
 #undef INK2_ADMIT
-    free(own);
 }
 static inline float ink2_dot_f32(const float *a, const float *b, int n) {
 #if INK2_SIMD_AVX2
@@ -1223,10 +1251,10 @@ static void ink2_attn_core_fast_range(void *cv, int64_t r0, int64_t r1) {
     const int T = c->T, nk = c->nk, kp0 = c->kp0; const int *pos = c->pos;
     const float *q = c->q, *k = c->k, *v = c->v, *rl = c->rl, *sk = c->sk; float *att = c->att, *probs = c->probs;
     const int nh = L->nh, hd = L->hd, C = L->C, Q = L->Q, ext = L->ext, n_kv_rep = nh / L->nkv;
-    float lg_stk[1024];
-    float *own = nk > 1024 ? malloc(sizeof(float) * (size_t)nk) : NULL;
-    if (nk > 1024 && !own) abort();
-    float *lg = nk > 1024 ? own : lg_stk;
+    // this range's own logit row, sized by the caller (ink2_attn_scratch_c): nothing is allocated here
+    const int slot = ink2_par_slot();
+    if (slot >= c->lg_rows) { atomic_store(c->bad, 1); return; }
+    float *lg = c->lg + (size_t)slot * ((size_t)nk + 1);
     const float scale = ink2_inv_sqrt(hd);
     for (int64_t idx = r0; idx < r1; idx++) {
         const int h = (int)(idx / T), i = (int)(idx % T), kh = h / n_kv_rep;
@@ -1339,14 +1367,17 @@ static void ink2_attn_core_fast_range(void *cv, int64_t r0, int64_t r1) {
             ai[e] = a;
         }
     }
-    free(own);
 }
-static void ink2_attn_core(const ink2_shape *s, const ink2_attn_layer *L, int fast, int T, const int *pos, const float *q,
+static ink2_status ink2_attn_core(const ink2_shape *s, const ink2_attn_layer *L, int fast, int T, const int *pos, const float *q,
                            const float *k, const float *v, int nk, int kp0, const float *rl, const float *sk, float *lg,
-                           float *att, float *probs) {
-    ink2_core_ctx c = { s, L, T, pos, q, k, v, nk, kp0, rl, sk, lg, att, probs };
+                           int lg_rows, float *att, float *probs) {
+    _Atomic int bad = 0;
+    ink2_core_ctx c = { s, L, T, pos, q, k, v, nk, kp0, rl, sk, lg, att, probs, lg_rows, &bad };
     if (fast) ink2_par((int64_t)T * L->nh, (int64_t)nk * 2 * L->hd, ink2_attn_core_fast_range, &c);
     else ink2_par(L->nh, (int64_t)T * nk * 2 * L->hd, ink2_attn_core_range, &c);
+    // a range without a row: the pool grew between the caller's sizing and the loop (ink2_set_threads from another
+    // thread during a forward); refused rather than two ranges sharing a row
+    return atomic_load(&bad) ? INK2_BAD_INPUT : INK2_OK;
 }
 // o_proj (Inkling2LoopGatedOutputProjection): att times sigmoid(gate_proj(x)) (att is overwritten), then linear;
 // ga is [T][Q] (each position's products are independent, so taking every gate first changes no bits); the LoRA
@@ -1369,12 +1400,16 @@ static void ink2_attn_out(const ink2_shape *s, const ink2_attn_layer *L, int T, 
 // scratch for T positions: q [T][Q], k, v, lin_k/v [T][C], dyn_k/v [T][n_kv K], rs [T][heads d_rel], rl [T][heads][extent],
 // sinks [T][heads], att [T][Q], the logit row [nk + 1] (nk keys), the gate rows [T][Q]
 enum { SQ, SK, SV, SLIN, SDYN, SLINV, SDYNV, SRS, SRL, SSK, SATT, SLG, SGA, NSCR };
-static float *ink2_attn_scratch_c(ink2_cache *c, const ink2_attn_layer *L, int T, int nk, float **p, int *owned) {
+// lg_rows: the logit rows of nk + 1 in p[SLG], one for each range the core's loop can run at once (ink2_par_width)
+static float *ink2_attn_scratch_c(ink2_cache *c, const ink2_attn_layer *L, int T, int nk, float **p, int *owned,
+                                  int *lg_rows) {
+    *lg_rows = ink2_par_width();
+    if (ink2_alloc_fail("attn_scratch")) return NULL;
     size_t n[NSCR] = { (size_t)T * L->Q, (size_t)T * L->C, (size_t)T * L->C,
                        (size_t)T * L->C, (size_t)T * L->nkv * L->K,
                        (size_t)T * L->C, (size_t)T * L->nkv * L->K,
                        (size_t)T * L->nh * L->dr, (size_t)T * L->nh * L->ext, (size_t)T * L->nh, (size_t)T * L->Q,
-                       (size_t)nk + 1, (size_t)T * L->Q }, tot = 0;
+                       (size_t)*lg_rows * ((size_t)nk + 1), (size_t)T * L->Q }, tot = 0;
     for (int i = 0; i < NSCR; i++) tot += n[i];
     float *buf = ink2_op_alloc(c, tot, owned);
     if (buf) { size_t o = 0; for (int i = 0; i < NSCR; i++) { p[i] = buf + o; o += n[i]; } }
@@ -1416,7 +1451,8 @@ static ink2_status ink2_attention_lora(const ink2_shape *s, const ink2_weights *
         if (p0 + T - kp0 > c->rows[app]) return INK2_BAD_INPUT;
     }
     int buf_owned = 0;
-    float *p[NSCR], *buf = ink2_attn_scratch_c(c, &L, T, nk, p, &buf_owned);
+    int lg_rows = 0;
+    float *p[NSCR], *buf = ink2_attn_scratch_c(c, &L, T, nk, p, &buf_owned, &lg_rows);
     if (!buf) return INK2_BAD_INPUT;
     int block = s->app_block[app];
     const int fast = L.tt[WQ] && L.tt[WQ]->q != NULL;
@@ -1451,9 +1487,9 @@ static ink2_status ink2_attention_lora(const ink2_shape *s, const ink2_weights *
         c->n_past[app] = p0 + T;
         ink2_attn_rel_finish(s, &L, T, pos, p[SRS], p[SRL]);
         const size_t koff = (size_t)(kp0 - c->k0[app]) * L.C;
-        ink2_attn_core(s, &L, fast, T, pos, p[SQ], c->k[app] + koff, c->v[app] + koff, nk, kp0, p[SRL], p[SSK], p[SLG],
-                       p[SATT], probs);
-        st = ink2_attn_out_finish(s, &L, NULL, block, T, p[SATT], p[SGA], out);
+        st = ink2_attn_core(s, &L, fast, T, pos, p[SQ], c->k[app] + koff, c->v[app] + koff, nk, kp0, p[SRL], p[SSK],
+                            p[SLG], lg_rows, p[SATT], probs);
+        if (st == INK2_OK) st = ink2_attn_out_finish(s, &L, NULL, block, T, p[SATT], p[SGA], out);
         ink2_op_free(buf, buf_owned);
         return st;
     }
@@ -1488,9 +1524,9 @@ static ink2_status ink2_attention_lora(const ink2_shape *s, const ink2_weights *
     }
     ink2_lin_rows(L.tt[WS], L.nh, s->hidden, T, xq, p[SSK]);
     const size_t koff = (size_t)(kp0 - c->k0[app]) * L.C;
-    ink2_attn_core(s, &L, fast, T, pos, p[SQ], c->k[app] + koff, c->v[app] + koff, nk, kp0, p[SRL], p[SSK], p[SLG], p[SATT],
-                   probs);
-    st = ink2_attn_out_lora(s, &L, lora, block, T, xq, p[SATT], p[SGA], out);
+    st = ink2_attn_core(s, &L, fast, T, pos, p[SQ], c->k[app] + koff, c->v[app] + koff, nk, kp0, p[SRL], p[SSK], p[SLG],
+                        lg_rows, p[SATT], probs);
+    if (st == INK2_OK) st = ink2_attn_out_lora(s, &L, lora, block, T, xq, p[SATT], p[SGA], out);
     ink2_op_free(buf, buf_owned);
     return st;
 }
@@ -1523,7 +1559,8 @@ ink2_status ink2_attention_step(const ink2_shape *s, const ink2_weights *w, int 
     ink2_status st = ink2_attn_bind(s, w, app, &L);
     if (st != INK2_OK) return st;
     int buf_owned = 0;
-    float *p[NSCR], *buf = ink2_attn_scratch_c(NULL, &L, T, T, p, &buf_owned);
+    int lg_rows = 0;
+    float *p[NSCR], *buf = ink2_attn_scratch_c(NULL, &L, T, T, p, &buf_owned, &lg_rows);
     if (!buf) return INK2_BAD_INPUT;
     int nh = L.nh, ext = L.ext, kv = step[0] == 'v';
     if (!strcmp(step, "q_proj")) ink2_attn_q(s, &L, T, pos, in[0], out);
@@ -1551,7 +1588,7 @@ ink2_status ink2_attention_step(const ink2_shape *s, const ink2_weights *w, int 
             int d = pos[i] - pos[j];
             if (d >= 0 && d < ext) p[SRL][((size_t)i * nh + h) * ext + d] = in[3][((size_t)h * T + i) * T + j];
         }
-        ink2_attn_core(s, &L, 0, T, pos, in[0], in[1], in[2], T, pos[0], p[SRL], in[4], p[SLG], out, out2);
+        st = ink2_attn_core(s, &L, 0, T, pos, in[0], in[1], in[2], T, pos[0], p[SRL], in[4], p[SLG], lg_rows, out, out2);
     } else if (!strcmp(step, "o_proj")) {
         memcpy(p[SATT], in[0], sizeof(float) * (size_t)T * L.Q); ink2_attn_out(s, &L, T, in[1], p[SATT], p[SGA], out);
     } else st = INK2_BAD_INPUT;
@@ -2240,9 +2277,10 @@ ink2_status ink2_test_attn_core(int fast, int hd, int nk, const float *q, const 
     L.g = 1; L.nh = 1; L.nkv = 1; L.hd = hd; L.C = hd; L.Q = hd;
     const int pos = nk - 1;
     const float rl = 0.0f;
-    float *lg = malloc(sizeof(float) * ((size_t)nk + 1));
+    const int rows = ink2_par_width();
+    float *lg = malloc(sizeof(float) * (size_t)rows * ((size_t)nk + 1));
     if (!lg) return INK2_BAD_INPUT;
-    ink2_attn_core(&s, &L, fast, 1, &pos, q, k, v, nk, 0, &rl, &sink, lg, out, NULL);
+    ink2_status st = ink2_attn_core(&s, &L, fast, 1, &pos, q, k, v, nk, 0, &rl, &sink, lg, rows, out, NULL);
     free(lg);
-    return INK2_OK;
+    return st;
 }

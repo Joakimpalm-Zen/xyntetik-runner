@@ -19,6 +19,7 @@
 #include "gpu.h"
 #include "inkling2.h"
 #include "inkling2_model.h"
+#include "inkling2_gguf.h"
 #include "quants.h"
 #include "tpool.h"
 #include "compat.h"
@@ -72,6 +73,36 @@ static double rel_diff(const float *a, const float *ref, size_t n) {
         if (fabs((double)ref[i]) > top) top = fabs((double)ref[i]);
     }
     return top > 0 ? d / top : d;
+}
+
+// (m)'s forward: N_LONG positions as two chunks through ink2_forward_chunk on the file's own weights (the gguf
+// source; fast or reference route) at `threads`, the logits rows into rows (N_LONG x vocab_used); the status of the
+// first chunk that failed, else INK2_OK
+enum { N_LONG = 1100, N_LONG_1 = 600 };
+static ink2_status long_rows(const char *path, int fast, int threads, float *rows, size_t *vocab) {
+    ink2_shape s;
+    char why[256];
+    ink2g *g = ink2g_open(path, &s, why, sizeof why);
+    if (!g) { printf("FAIL: (m) cannot open %s: %s\n", path, why); fails++; return INK2_BAD_INPUT; }
+    ink2g_set_route(g, fast, 0);
+    ink2_weights w;
+    ink2g_weights(g, &w);
+    ink2_cache c;
+    int ids[N_LONG];
+    uint32_t r = 12345;
+    for (int t = 0; t < N_LONG; t++) { r = r * 1103515245u + 12345u; ids[t] = (int)((r >> 16) % 256u); }
+    ink2_set_threads(threads);
+    ink2_status st = INK2_BAD_INPUT;
+    if (ink2_cache_init(&c, &s, N_LONG) == 0) {
+        *vocab = (size_t)s.vocab_used;
+        st = ink2_forward_chunk(&s, &w, &c, 0, N_LONG_1, ids, rows, 0, NULL);
+        if (st == INK2_OK)
+            st = ink2_forward_chunk(&s, &w, &c, N_LONG_1, N_LONG - N_LONG_1, ids + N_LONG_1,
+                                    rows + (size_t)N_LONG_1 * s.vocab_used, 0, NULL);
+        ink2_cache_free(&c);
+    }
+    ink2g_close(g);
+    return st;
 }
 
 int main(int argc, char **argv) {
@@ -341,6 +372,33 @@ int main(int argc, char **argv) {
                   "%ld / %ld / %ld / %ld at -b 1 / 8 / 64 / 256 (want 0 each)", kind[f], th,
                   first[0], first[1], first[2], first[3], extra[0], extra[1], extra[2], extra[3]);
         }
+    // (m) R4.48.25.1: the attention cores past 1,024 keys allocate nothing in a range, and a failed allocation is a
+    // status, not abort(). Each core took a logit row a range with malloc (the fast core past 1,024 keys, the
+    // reference core whenever its heads split over threads) and called abort() when it failed: the whole server died
+    // for one long request. The rows are now the caller's scratch, one a range (ink2_par_width / ink2_par_slot).
+    // On the F32 and BF16 files, both routes, 1,100 positions in chunks of 600 and 500 (a full layer then holds
+    // 1,100 keys):
+    //   - at 1 and 4 threads the rows are byte-identical (the 4 ranges each read their own row);
+    //   - with the attention scratch failed (RUNNER_TEST_INK2_ALLOC_FAIL=attn_scratch) the forward returns an error.
+    for (int f = 0; f < 2; f++)
+        for (int fast = 1; fast >= 0; fast--) {
+            size_t V = 0;
+            float *r1 = malloc(sizeof(float) * (size_t)N_LONG * 264), *r4 = malloc(sizeof(float) * (size_t)N_LONG * 264);
+            if (!r1 || !r4) { printf("FAIL: (m) cannot allocate the rows\n"); return 1; }
+            const ink2_status st1 = long_rows(argv[1 + f], fast, 1, r1, &V);
+            const ink2_status st4 = long_rows(argv[1 + f], fast, 4, r4, &V);
+            CHECK(st1 == INK2_OK && st4 == INK2_OK && !memcmp(r1, r4, sizeof(float) * (size_t)N_LONG * V),
+                  "(m) %s, %s route, 1,100 keys: the rows at 1 and 4 threads are byte-identical (status %d / %d)",
+                  kind[f], fast ? "fast" : "reference", (int)st1, (int)st4);
+            plat_setenv("RUNNER_TEST_INK2_ALLOC_FAIL", "attn_scratch");
+            const ink2_status stf = long_rows(argv[1 + f], fast, 4, r4, &V);
+            plat_setenv("RUNNER_TEST_INK2_ALLOC_FAIL", "");
+            CHECK(stf != INK2_OK, "(m) %s, %s route: with the attention scratch failed the forward returns an error "
+                  "(status %d), the process lives", kind[f], fast ? "fast" : "reference", (int)stf);
+            free(r1);
+            free(r4);
+        }
+    ink2_set_threads(1);
     printf(fails ? "FAIL %d\n" : "PASS\n", fails);
     return fails ? 1 : 0;
 }
