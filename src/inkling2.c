@@ -62,18 +62,26 @@ static inline __m256 ink2_vexp8(__m256 x) {
     res = _mm256_blendv_ps(res, _mm256_set1_ps(INFINITY), imask);
     return _mm256_blendv_ps(res, _mm256_add_ps(x, x), nmask);
 }
+// tanh in float32 without cancellation (R4.48.25): below 0.625 an odd polynomial, x + x s P(s) with s = x^2
+// (Cephes' tanhf coefficients); from 0.625 up 1 - 2 / (e^{2|x|} + 1), which cannot cancel there (tanh >= 0.55, so the
+// subtraction loses no digit), saturating to 1 once e^{2|x|} does. The sign is x's (tanh is odd). Within 4 u of the
+// double tanh at every float (tests/test_inkling2_vmath.c); R4.48.20's (1 - e^{-2|x|}) / (1 + e^{-2|x|}) cancelled to
+// 246 u near |x| = 1e-3
 static inline __m256 ink2_vtanh8(__m256 x) {
     const __m256 sgn = _mm256_set1_ps(-0.0f);
     const __m256 one = _mm256_set1_ps(1.0f);
     const __m256 ax = _mm256_andnot_ps(sgn, x);
-    const __m256 em2 = ink2_vexp8(_mm256_mul_ps(_mm256_set1_ps(-2.0f), ax));
-    __m256 r = _mm256_div_ps(_mm256_sub_ps(one, em2), _mm256_add_ps(one, em2));
-    r = _mm256_or_ps(r, _mm256_and_ps(x, sgn));
-    const __m256 tiny = _mm256_cmp_ps(ax, _mm256_set1_ps(1e-3f), _CMP_LT_OQ);
-    const __m256 poly = _mm256_mul_ps(x, _mm256_fnmadd_ps(_mm256_mul_ps(x, x), _mm256_set1_ps(1.0f / 3.0f), one));
-    r = _mm256_blendv_ps(r, poly, tiny);
-    const __m256 sat = _mm256_cmp_ps(ax, _mm256_set1_ps(10.0f), _CMP_GE_OQ);
-    return _mm256_blendv_ps(r, _mm256_or_ps(one, _mm256_and_ps(x, sgn)), sat);
+    const __m256 s = _mm256_mul_ps(ax, ax);
+    __m256 p = _mm256_set1_ps(-5.70498872745e-3f);
+    p = _mm256_fmadd_ps(p, s, _mm256_set1_ps(2.06390887954e-2f));
+    p = _mm256_fmadd_ps(p, s, _mm256_set1_ps(-5.37397155531e-2f));
+    p = _mm256_fmadd_ps(p, s, _mm256_set1_ps(1.33314422036e-1f));
+    p = _mm256_fmadd_ps(p, s, _mm256_set1_ps(-3.33332819422e-1f));
+    const __m256 small = _mm256_fmadd_ps(_mm256_mul_ps(p, s), ax, ax);
+    const __m256 e = ink2_vexp8(_mm256_add_ps(ax, ax));
+    const __m256 large = _mm256_sub_ps(one, _mm256_div_ps(_mm256_set1_ps(2.0f), _mm256_add_ps(e, one)));
+    const __m256 r = _mm256_blendv_ps(large, small, _mm256_cmp_ps(ax, _mm256_set1_ps(0.625f), _CMP_LT_OQ));
+    return _mm256_or_ps(r, _mm256_and_ps(x, sgn));
 }
 #elif INK2_SIMD_NEON
 static inline float32x4_t ink2_vexp4(float32x4_t x) {
@@ -104,20 +112,23 @@ static inline float32x4_t ink2_vexp4(float32x4_t x) {
     res = vbslq_f32(imask, vdupq_n_f32(INFINITY), res);
     return vbslq_f32(nmask, vaddq_f32(x, x), res);
 }
+// tanh in float32 without cancellation (R4.48.25): ink2_vtanh8's steps (see there), four lanes
 static inline float32x4_t ink2_vtanh4(float32x4_t x) {
     const uint32x4_t smask = vdupq_n_u32(0x80000000u);
     const float32x4_t one = vdupq_n_f32(1.0f);
     const float32x4_t ax = vabsq_f32(x);
-    const float32x4_t em2 = ink2_vexp4(vmulq_n_f32(ax, -2.0f));
-    float32x4_t r = vdivq_f32(vsubq_f32(one, em2), vaddq_f32(one, em2));
+    const float32x4_t s = vmulq_f32(ax, ax);
+    float32x4_t p = vdupq_n_f32(-5.70498872745e-3f);
+    p = vfmaq_f32(vdupq_n_f32(2.06390887954e-2f), p, s);
+    p = vfmaq_f32(vdupq_n_f32(-5.37397155531e-2f), p, s);
+    p = vfmaq_f32(vdupq_n_f32(1.33314422036e-1f), p, s);
+    p = vfmaq_f32(vdupq_n_f32(-3.33332819422e-1f), p, s);
+    const float32x4_t small = vfmaq_f32(ax, vmulq_f32(p, s), ax);
+    const float32x4_t e = ink2_vexp4(vaddq_f32(ax, ax));
+    const float32x4_t large = vsubq_f32(one, vdivq_f32(vdupq_n_f32(2.0f), vaddq_f32(e, one)));
+    const float32x4_t r = vbslq_f32(vcltq_f32(ax, vdupq_n_f32(0.625f)), small, large);
     const uint32x4_t xsgn = vandq_u32(vreinterpretq_u32_f32(x), smask);
-    r = vreinterpretq_f32_u32(vorrq_u32(vreinterpretq_u32_f32(r), xsgn));
-    const uint32x4_t tiny = vcltq_f32(ax, vdupq_n_f32(1e-3f));
-    const float32x4_t poly = vmulq_f32(x, vfmsq_f32(one, vmulq_f32(x, x), vdupq_n_f32(1.0f / 3.0f)));
-    r = vbslq_f32(tiny, poly, r);
-    const uint32x4_t sat = vcgeq_f32(ax, vdupq_n_f32(10.0f));
-    const float32x4_t sone = vreinterpretq_f32_u32(vorrq_u32(vreinterpretq_u32_f32(one), xsgn));
-    return vbslq_f32(sat, sone, r);
+    return vreinterpretq_f32_u32(vorrq_u32(vreinterpretq_u32_f32(r), xsgn));
 }
 #endif
 
@@ -2181,4 +2192,57 @@ ink2_rel_probe *ink2_active_rel_probe(void) {
     if (!g_rel_probe) return NULL;
     const char *e = getenv("RUNNER_TEST_INK2_REL_PROBE");
     return (e && *e) ? g_rel_probe : NULL;
+}
+
+// TEST-ONLY (R4.48.25): the fast route's own vector kernels for tests/test_inkling2_vmath.c (see inkling2.h)
+const char *ink2_test_vmath_form(void) {
+#if INK2_SIMD_AVX2
+    return "avx2";
+#elif INK2_SIMD_NEON
+    return "neon";
+#else
+    return "scalar";
+#endif
+}
+int ink2_test_vmath(int fn, const float *x, float *y, int n) {
+    if (fn != INK2_VM_EXP && fn != INK2_VM_TANH) return -1;
+    int i = 0;
+#if INK2_SIMD_AVX2
+    for (; i + 8 <= n; i += 8) {
+        const __m256 v = _mm256_loadu_ps(x + i);
+        _mm256_storeu_ps(y + i, fn == INK2_VM_EXP ? ink2_vexp8(v) : ink2_vtanh8(v));
+    }
+#elif INK2_SIMD_NEON
+    for (; i + 4 <= n; i += 4) {
+        const float32x4_t v = vld1q_f32(x + i);
+        vst1q_f32(y + i, fn == INK2_VM_EXP ? ink2_vexp4(v) : ink2_vtanh4(v));
+    }
+#endif
+    for (; i < n; i++) y[i] = fn == INK2_VM_EXP ? p_expf(x[i]) : p_tanhf(x[i]);
+    return 0;
+}
+void ink2_test_swiglu(float gate_cap, float up_cap, float *act, int F, int n) {
+    ink2_shape s;
+    memset(&s, 0, sizeof s);
+    s.gate_cap = gate_cap;
+    s.up_cap = up_cap;
+    const int nb = (F + 7) / 8;
+    ink2_swiglu_ctx sw = { &s, act, F, nb };
+    ink2_swiglu_range(&sw, 0, (int64_t)n * nb);
+}
+ink2_status ink2_test_attn_core(int fast, int hd, int nk, const float *q, const float *k, const float *v, float sink,
+                                float *out) {
+    if (hd < 1 || nk < 1) return INK2_BAD_INPUT;
+    ink2_shape s;
+    memset(&s, 0, sizeof s);
+    ink2_attn_layer L;
+    memset(&L, 0, sizeof L);
+    L.g = 1; L.nh = 1; L.nkv = 1; L.hd = hd; L.C = hd; L.Q = hd;
+    const int pos = nk - 1;
+    const float rl = 0.0f;
+    float *lg = malloc(sizeof(float) * ((size_t)nk + 1));
+    if (!lg) return INK2_BAD_INPUT;
+    ink2_attn_core(&s, &L, fast, 1, &pos, q, k, v, nk, 0, &rl, &sink, lg, out, NULL);
+    free(lg);
+    return INK2_OK;
 }
