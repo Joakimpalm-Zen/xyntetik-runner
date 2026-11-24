@@ -2081,9 +2081,7 @@ Scalar-path CPU/GPU identity is an evidence result, not a property inferred
 from a backend name. CUDA tensor-core and Metal tiled prefill kernels
 reassociate floating-point sums, so they are promoted by teacher-forced
 tolerance tests. CUDA currently promotes Q4_K, Q6_K, Q8_0 and Q4_0 on the
-gated dense families. `olmo2` is scoped to Q8_0 only; its other quant types
-stay scalar until measured ([the row](docs/tc-promotion-evidence.md#olmo2-q8_0-r4509-2026-11-24)).
-Q5_K, Q3_K, Q2_K, Q4_1, Q5_0 and Q5_1, which had no
+gated dense families. Q5_K, Q3_K, Q2_K, Q4_1, Q5_0 and Q5_1, which had no
 tensor-core kernel until 2026-10-21, joined on float32-reference rows: on
 2,000 positions of Qwen3-4B quantized to each type (and of Llama-3.2-3B at
 Q5_K and Q3_K) the tensor-core route read no further from the publisher's model than the

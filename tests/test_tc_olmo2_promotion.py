@@ -6,8 +6,9 @@ not device dispatch or arithmetic. Its expected scope comes from the measured
 Q8_0 file, not the implementation's table. It runs without CUDA.
 
 The CUDA arm runs a chunked score on generated Q8_0 and Q4_0 files, checking
-both the default's tc=taken/off label and its GEMM counter. A forced override
-is not evidence that the default was promoted. Real-file numerical evidence
+both the default's tc=taken/off label and its GEMM counter. A forced-Q4_0
+control on the same file proves its shape can dispatch TC; that control is
+not promotion evidence. Real-file numerical evidence
 is recorded in docs/tc-promotion-evidence.md.
 """
 import json
@@ -102,8 +103,9 @@ def cuda_models(runner_bin, tmp_path_factory):
     ("q8_0", None, "taken", {"Q8_0"}),
     ("q8_0", "0", "off", set()),
     ("q4_0", None, "off", set()),
+    ("q4_0", "1", "forced", {"Q4_0"}),  # control: the same shape can dispatch TC
 ])
-def test_cuda_label_and_dispatch_match_the_scoped_default(runner_bin, cuda_models, quant, override, label, types):
+def test_cuda_label_and_dispatch_match_the_policy(runner_bin, cuda_models, quant, override, label, types):
     env = dict(os.environ)
     env.pop("RUNNER_CUDA_TC", None)
     env.pop("RUNNER_CUDA_TC_NVFP4", None)

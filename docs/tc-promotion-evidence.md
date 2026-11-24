@@ -301,9 +301,11 @@ The file is `unsloth/Olmo-3-7B-Think-GGUF` at
 `1dcda0d5e447e9da698330014e38a9080616f2df`,
 `Olmo-3-7B-Think-Q8_0.gguf` (SHA256
 `3a4d7dda5778c299fe30bac76f5300beb283b48c6cc12b01c36c71310cefcf08`).
-Both rows below used a clean STRICT build at `badd9c32`, on
-an sm_120 GPU (a 24 GB MIG slice), full CUDA offload (32 of 32 layers). The candidate was forced with
-`RUNNER_CUDA_TC=1`; these runs were untimed.
+Both rows below were measured at `badd9c32`, the pre-rebase #1023, whose
+`src/cuda.c` and `src/model.c` are identical to `62c48427`'s. The clean STRICT
+build ran on an sm_120 GPU (a 24 GB MIG slice), full CUDA offload (32 of 32
+layers). The candidate was forced with `RUNNER_CUDA_TC=1`; these runs were
+untimed.
 
 | Real-file tolerance gate | Measurement | Bar |
 |---|---|---|
@@ -333,8 +335,12 @@ for that bar. No claim of statistically significant improvement is made.
 a host without a device, proving Q8_0 alone is promoted and non-matrix tensors
 do not advertise a TC prefill. Its CUDA arms check the generated Q8_0 file's
 default route label `tc=taken` and positive Q8_0 GEMM counter, the opt-out,
-and an unmeasured Q4_0 file's `tc=off` and empty counter. They join
-`make test-cuda-gated`. A forced route alone cannot prove a default promotion.
+and an unmeasured Q4_0 file's `tc=off` and empty counter. A control forces
+that same Q4_0 file with `RUNNER_CUDA_TC=1`, requiring `tc=forced` and a
+positive Q4_0 counter: the default's empty counter then means policy, not a
+shape the kernel declined. This control is not promotion evidence. The arms
+join `make test-cuda-gated`. A forced route alone cannot prove a default
+promotion.
 
 ## Tiled prefill attention
 
