@@ -1961,6 +1961,14 @@ static int encode_core(tokenizer *t, const char *text, size_t n,
                        bool add_bos, bool parse_special) {
     int n_out = 0;
     tls_encode_oom = false;   // set by a helper that had to drop a segment
+    // A render whose template writes the BOS itself (R4.50.10: OLMo 2 Instruct's, the one template that sets
+    // bos_in_template) is not given a second one. Only in prompt mode (raw_run given), and only when the render's
+    // first template-owned run spells the BOS control token. Raw prompts and caller text never take this path, nor
+    // any tokenizer bound to another template, so the BOS of every other family is as before.
+    if (raw_run && parse_special && t->bos_in_template && t->bos_id >= 0 && tok_is_control(t, t->bos_id)) {
+        const gg_str *bt = &t->tokens[t->bos_id];
+        if (bt->n > 0 && bt->n <= n && raw_run[0] >= bt->n && memcmp(text, bt->s, bt->n) == 0) add_bos = false;
+    }
     if (add_bos && t->add_bos && t->bos_id >= 0 && n_out < cap)
         out[n_out++] = t->bos_id;
 

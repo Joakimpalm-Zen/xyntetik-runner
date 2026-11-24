@@ -56,6 +56,10 @@ typedef struct {
     // the end token (embedding models such as Qwen3-Embedding pool on it).
     // Honoured where a whole input is encoded as-is: /v1/embeddings.
     bool     add_eos;
+    // The chat template bound to this tokenizer writes the BOS itself (R4.50.10: OLMo 2 Instruct's alone), so a
+    // rendered prompt that opens with it is not given another. Set by template_bind_tokenizer; read in prompt mode
+    // only (tokenizer.c encode_core).
+    bool     bos_in_template;
     // the publisher's tokenizer composes its input to NFC before splitting
     bool     nfc;
     // the publisher's BPE takes a pre-token that is a vocabulary entry whole,

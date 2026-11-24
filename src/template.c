@@ -208,8 +208,12 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
                                                 : TMPL_CHATML;
         if (strstr(meta_tmpl, "<|start_header_id|>")) return TMPL_LLAMA3;
         // OLMo 2 Instruct (R4.50.10): <|user|> turns that end with a newline where zephyr's end with the eos, and
-        // the BOS the template writes itself
-        if (strstr(meta_tmpl, "<|user|>\n' + message['content'] + '\n'") && strstr(meta_tmpl, "{{ bos_token }}"))
+        // the BOS the template writes itself. The renderer writes OLMo 2's <|endoftext|> for the template's
+        // bos_token and eos_token, so with a vocabulary at hand the file's EOS must be that token: a derivative with
+        // other specials keeps its former reading. (AllenAI's Tulu 2 and Tulu 3 are not this string: Tulu 3 writes
+        // no bos_token, and Tulu 2's user turn ends with the content alone.)
+        if (strstr(meta_tmpl, "<|user|>\n' + message['content'] + '\n'") && strstr(meta_tmpl, "{{ bos_token }}") &&
+            (!tok || (tok->eos_id >= 0 && tok_find(tok, "<|endoftext|>") == tok->eos_id)))
             return TMPL_OLMO2;
         if (strstr(meta_tmpl, "<|user|>"))
             return strstr(meta_tmpl, "<|end|>") ? TMPL_PHI3 : TMPL_ZEPHYR;
@@ -998,6 +1002,10 @@ bool template_think_tags(int tmpl, const char **open, const char **close) {
 // files, as their templates do); <think> and </think> are other ids there and
 // are bound only by a file that has no inner pair. The split and the spelling
 // go by name, and only a pair that is control tokens in the file is bound.
+void template_bind_tokenizer(int tmpl, tokenizer *tok) {
+    if (tok) tok->bos_in_template = tmpl == TMPL_OLMO2;
+}
+
 void template_bind_split_tags(int tmpl, tokenizer *tok, const char *think_open,
                               const char **open, const char **close) {
     if (think_open || *open || !tmpl_apertus(tmpl) || !tok) return;

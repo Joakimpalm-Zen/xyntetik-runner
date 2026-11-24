@@ -353,6 +353,11 @@ static inline void template_bind_think_tags(int tmpl, const char **open,
     if (*open) return;
     template_think_tags(tmpl, open, close);
 }
+// Tells the tokenizer whether this template writes the BOS itself (tokenizer.h
+// bos_in_template; R4.50.10: TMPL_OLMO2 alone), so that a chat encode does not
+// prepend a second. Called beside template_bind_think_tags, for every template:
+// it clears the flag for any other.
+void template_bind_tokenizer(int tmpl, tokenizer *tok);
 // The chat split's pair for a family whose think tags are single control
 // tokens (model.h split_open; R2.15), named from this file's vocabulary;
 // leaves the pointers alone for any other family, and where a text pair is
