@@ -4648,6 +4648,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_nonfinite_records.py \
     tests/test_nonfinite_responses.py \
     tests/test_nvfp4_scale.py \
+    tests/test_olmo2_cpu.py \
     tests/test_oms.py \
     tests/test_ornith_cpu.py \
     tests/test_ornith_reference.py \

@@ -24,7 +24,7 @@ typedef enum {
     ARCH_PHI3, ARCH_GPT_OSS, ARCH_APERTUS, ARCH_AFMOE, ARCH_MUSE_GLIMMER, ARCH_GRANITE,
     ARCH_GRANITEHYBRID, ARCH_NEMOTRON_H, ARCH_NEMOTRON_H_MOE, ARCH_CLEF, ARCH_MELLUM,
     ARCH_LFM2, ARCH_LFM2MOE, ARCH_SPARK2_5, ARCH_K2_HORIZON, ARCH_FLINT, ARCH_MISTRAL3,
-    ARCH_DEEPSEEK2, ARCH_INKLING2_LOOP,
+    ARCH_DEEPSEEK2, ARCH_INKLING2_LOOP, ARCH_OLMO2,
     ARCH_GEMMA, ARCH_GEMMA2,   // refused: they load llama-style and compute wrong
     ARCH_COUNT
 } arch_id;
@@ -61,10 +61,14 @@ typedef struct {
     // convolution has a Metal path, no CUDA one)
     const char *cpu_only_nonmetal;
     const char *refused;        // non-NULL: the load refuses the family, saying why
+    // non-NULL: the family loads, but it is not admitted until a real file of it is validated against its
+    // publisher's reference (the support list's rule: every row it claims has one). --caps lists it under
+    // architectures_pending, apart from the admitted ones, and the load says so.
+    const char *pending;
 } arch_desc;
 
-// Every row: the admitted architectures in the order --caps lists them, then
-// the refused ones.
+// Every row: the admitted architectures in the order --caps lists them (a pending
+// row among them is listed apart), then the refused ones.
 static inline const arch_desc *arch_rows(size_t *n) {
     static const arch_desc arch_table[] = {
         { .name = "llama", .id = ARCH_LLAMA },
@@ -114,6 +118,12 @@ static inline const arch_desc *arch_rows(size_t *n) {
                       "(sinks with a sliding window, NoPE full layers, "
                       "sigmoid routing with shared experts) is not checked yet" },
         { .name = "mistral3", .id = ARCH_MISTRAL3 },
+        // OLMo 2 / OLMo 3 (R4.50): the CPU forward first; Metal (R4.50.4) and CUDA (R4.50.5) follow
+        { .name = "olmo2", .id = ARCH_OLMO2, .rope_neox = true,
+          .cpu_only = "olmo2 is validated on the CPU only; its GPU paths (the post-norm-only "
+                      "blocks and the full-width QK norm) are not checked yet",
+          .pending = "its forward matches the publisher's equations on a generated file; the "
+                     "publisher's float32 reference on a real file is pending (R4.50.6)" },
         // CUDA runs both forms (R4.4.5 c1 naive, c2 absorbed)
         { .name = "inkling2_loop", .id = ARCH_INKLING2_LOOP,
           .cpu_only = "Inkling 2 Mini runs on its own serial float32 engine "

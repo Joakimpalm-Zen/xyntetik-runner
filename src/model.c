@@ -570,8 +570,9 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
         // One read at a time: AK spells into the one `key` buffer, so two
         // reads in one argument list left the key to the compiler's order of
         // evaluation (clang read rope.freq_base_swa for both).
+        // olmo2 too: its sliding layers are the publisher's rope_type "default" at the global theta
         float swa_base = gguf_get_f32(g, AK("rope.freq_base_swa"),
-                                      m->gptoss ? m->rope_base : 10000.0f);
+                                      m->gptoss || m->swa_base_global ? m->rope_base : 10000.0f);
         float local_base = gguf_get_f32(g, AK("rope.local.freq_base"), swa_base);
         int lhalf = m->rope_dim_local / 2;
         m->rope_inv_freq_local = malloc(sizeof(float) * lhalf);
@@ -2962,6 +2963,8 @@ static bool bind_admit_architecture(model_t *m, const char *arch) {
                 "RUNNER_ALLOW_UNKNOWN_ARCH is set — attempting llama-style "
                 "load, output may be silently wrong\n", m->arch);
     }
+    if (m->ad->pending)
+        bind_note(m, "note: architecture '%s' is not admitted yet: %s\n", m->arch, m->ad->pending);
     return true;
 }
 
@@ -3203,6 +3206,58 @@ static bool bind_meta_gptoss(model_t *m, gguf_file *g, const char *arch) {
     for (int i = 0; i < m->n_layer; i++)
         m->l_is_swa[i] = m->swa_window > 0 && ((i + 1) % swa_period) != 0;
     m->rms_eps = gguf_get_f32(g, AK("attention.layer_norm_rms_epsilon"), 1e-5f);
+    return true;
+}
+
+// olmo2 (OLMo 2 and OLMo 3, R4.50.1), transcribed from the publisher's modeling_olmo3 (transformers 4.57.0, the
+// version allenai/Olmo-3-7B-Think was published with, and main, which agree) and llama.cpp's olmo2.cpp:
+//   * no pre-norms: a block is x + norm(attn(x)), then x + norm(mlp(x)) (post_attention_norm, post_ffw_norm);
+//   * one RMS norm over the WHOLE q projection (n_head * head_dim wide) and one over the whole k projection,
+//     before the rotation, not one per head;
+//   * SwiGLU, no biases, NeoX rotation, an untied head.
+// OLMo 3 adds a sliding window on 3 of every 4 layers (attention.sliding_window_pattern, one bool a layer, true
+// sliding; absent, the publisher's own default (i + 1) % 4 != 0, which is llama.cpp's load_swa_pattern(ml, 4)),
+// and YaRN on the FULL layers only: the sliding layers rotate at the global base with no scaling and a magnitude
+// of 1 (rotary_embs["sliding_attention"] is rope_type "default"; llama.cpp's get_rope_params sets freq_scale 1,
+// ext_factor 0, attn_factor 1 there). A file with no window key is OLMo 2: every layer full.
+static bool bind_meta_olmo2(model_t *m, gguf_file *g, const char *arch) {
+    char key[128];
+    m->post_norm_only  = true;
+    m->qk_norm_full    = true;
+    m->swa_base_global = true;
+    m->rms_eps = gguf_get_f32(g, AK("attention.layer_norm_rms_epsilon"), 1e-6f);
+    m->swa_window = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
+    if (m->swa_window > 0) {
+        m->l_is_swa = calloc(m->n_layer, sizeof(bool));
+        if (!m->l_is_swa) return false;
+        if (!swa_pattern_array(g, AK("attention.sliding_window_pattern"), m->l_is_swa, m->n_layer)) {
+            // a pattern key in another form (a period, or an array of another length) is not the publisher's
+            if (gguf_get(g, AK("attention.sliding_window_pattern"))) {
+                bind_err(m, "error: olmo2: %s.attention.sliding_window_pattern is not one bool for each of the %d "
+                         "layers, the form the publisher's layer_types converts to\n", arch, m->n_layer);
+                return false;
+            }
+            for (int i = 0; i < m->n_layer; i++) m->l_is_swa[i] = ((i + 1) % 4) != 0;
+        }
+    }
+    // The YaRN magnitude: the rope setup takes 1 + 0.1 ln(factor), YaRN's default. This file family carries
+    // rope.scaling.attn_factor, and a converter can mean either transformers' attention_factor by it (which
+    // replaces the default) or ggml's multiplier (which scales it). The two readings coincide only when the value
+    // IS the default, as on allenai/Olmo-3-7B-Think's files (1.2079441547 for factor 8), so any other value is
+    // refused rather than guessed. Float32 rounding: the file stores the value as a float, and the default is
+    // computed in float here, each a few ulp from the exact number; 4 ulp of the default covers both.
+    if (!strcmp(gguf_get_str(g, AK("rope.scaling.type"), ""), "yarn") && gguf_get(g, AK("rope.scaling.attn_factor"))) {
+        float factor = gguf_get_f32(g, AK("rope.scaling.factor"), 0.0f);
+        float af = gguf_get_f32(g, AK("rope.scaling.attn_factor"), 0.0f);
+        float def = factor > 1.0f ? 1.0f + 0.1f * logf(factor) : 1.0f;
+        if (!(fabsf(af - def) <= 4.0f * FLT_EPSILON * def)) {
+            bind_err(m, "error: olmo2: rope.scaling.attn_factor is %.9g where YaRN's default for factor %g is %.9g; "
+                     "a converter may mean transformers' attention_factor (which replaces the default) or ggml's "
+                     "multiplier (which scales it), the two readings differ for this file, and it is refused rather "
+                     "than guessed\n", (double)af, (double)factor, (double)def);
+            return false;
+        }
+    }
     return true;
 }
 
@@ -5508,10 +5563,20 @@ static bool bind_layer_norms(model_t *m, gguf_file *g, layer_t *l, int i,
     l->bv = tensor_to_f32(opt_tensor(g, "blk.%d.attn_v.bias", i), kd_l, &ok);
     l->bo = tensor_to_f32(opt_tensor(g, "blk.%d.attn_output.bias", i),
                           m->n_embd, &ok);
-    l->qnorm_w = tensor_to_f32(opt_tensor(g, "blk.%d.attn_q_norm.weight", i),
-                               model_head_dim(m, i), &ok);
-    l->knorm_w = tensor_to_f32(opt_tensor(g, "blk.%d.attn_k_norm.weight", i),
-                               model_head_dim(m, i), &ok);
+    // olmo2's QK norms span the whole projection (q_dim, kv_dim), so they are bound at that width: read at one
+    // head's, tensor_to_f32 (which checks only that the tensor holds enough values) would take the first head's
+    // slice without a word. The file must carry them, and both post-norms, or it is not an OLMo 2 block.
+    gguf_tensor *qn = m->qk_norm_full ? need_tensor(g, "blk.%d.attn_q_norm.weight", i, &ok)
+                                      : opt_tensor(g, "blk.%d.attn_q_norm.weight", i);
+    gguf_tensor *kn = m->qk_norm_full ? need_tensor(g, "blk.%d.attn_k_norm.weight", i, &ok)
+                                      : opt_tensor(g, "blk.%d.attn_k_norm.weight", i);
+    if (m->qk_norm_full && ok && (qn->ne[0] != (uint64_t)qd_l || kn->ne[0] != (uint64_t)kd_l)) {
+        bind_err(m, "error: olmo2: blk.%d's QK norms are %llu and %llu wide where the q and k projections are %d "
+                 "and %d\n", i, (unsigned long long)qn->ne[0], (unsigned long long)kn->ne[0], qd_l, kd_l);
+        ok = false;
+    }
+    l->qnorm_w = tensor_to_f32(qn, m->qk_norm_full ? qd_l : model_head_dim(m, i), &ok);
+    l->knorm_w = tensor_to_f32(kn, m->qk_norm_full ? kd_l : model_head_dim(m, i), &ok);
     // Qwen3.5's post_attention_norm is the FFN input norm (loaded as
     // ffn_norm_w above), not a sandwich norm on the attention projection.
     // qwen35 AND gpt-oss already consumed post_attention_norm as the FFN
@@ -5519,9 +5584,11 @@ static bool bind_layer_norms(model_t *m, gguf_file *g, layer_t *l, int i,
     // to the attention output (the gemma-style placement) and quietly
     // corrupt every layer.
     l->post_attn_norm_w = (m->qwen35 || m->gptoss) ? NULL
-        : tensor_to_f32(opt_tensor(g, "blk.%d.post_attention_norm.weight", i),
+        : tensor_to_f32(m->post_norm_only ? need_tensor(g, "blk.%d.post_attention_norm.weight", i, &ok)
+                                          : opt_tensor(g, "blk.%d.post_attention_norm.weight", i),
                         m->n_embd, &ok);
-    l->post_ffn_norm_w  = tensor_to_f32(opt_tensor(g, "blk.%d.post_ffw_norm.weight", i),
+    l->post_ffn_norm_w  = tensor_to_f32(m->post_norm_only ? need_tensor(g, "blk.%d.post_ffw_norm.weight", i, &ok)
+                                                          : opt_tensor(g, "blk.%d.post_ffw_norm.weight", i),
                                         m->n_embd, &ok);
     *okp = ok;
     return true;
@@ -5566,11 +5633,20 @@ static bool bind_layer(model_t *m, gguf_file *g, const char *arch, int i,
     // qwen4exp has no pre-norms: the hyper-connection mixers replace
     // them (bound by bind_hc_block below), so both reads are optional
     // there and tensor_to_f32(NULL) leaves the norm pointers NULL.
-    gguf_tensor *an = m->hyper_conn ? opt_tensor(g, "blk.%d.attn_norm.weight", i)
+    // olmo2 has none either: its blocks norm only their branches' outputs (post_attention_norm and post_ffw_norm,
+    // bound in bind_layer_norms), and a file that carries a pre-norm is not the publisher's model
+    if (m->post_norm_only && (opt_tensor(g, "blk.%d.attn_norm.weight", i) || opt_tensor(g, "blk.%d.ffn_norm.weight", i))) {
+        bind_err(m, "error: olmo2: blk.%d carries a pre-norm (attn_norm or ffn_norm); an OLMo 2 block normalises "
+                 "only after attention and after the MLP\n", i);
+        return false;
+    }
+    gguf_tensor *an = m->post_norm_only ? NULL
+                    : m->hyper_conn ? opt_tensor(g, "blk.%d.attn_norm.weight", i)
                                     : need_tensor(g, "blk.%d.attn_norm.weight", i, &ok);
     // gpt-oss shares qwen35's shape here: post_attention_norm IS the FFN
     // input norm and there is no ffn_norm tensor at all.
-    gguf_tensor *fn = m->hyper_conn ? opt_tensor(g, "blk.%d.post_attention_norm.weight", i)
+    gguf_tensor *fn = m->post_norm_only ? NULL
+                    : m->hyper_conn ? opt_tensor(g, "blk.%d.post_attention_norm.weight", i)
                     : (m->qwen35 || m->gptoss)
         ? need_tensor(g, "blk.%d.post_attention_norm.weight", i, &ok)
         : need_tensor(g, "blk.%d.ffn_norm.weight", i, &ok);
@@ -5729,6 +5805,7 @@ static bool bind_arch_meta(model_t *m, gguf_file *g, const char *arch, bool late
     switch (m->ad->id) {
     case ARCH_GEMMA3:       return late || bind_meta_gemma3(m, g, arch);
     case ARCH_GPT_OSS:      return late || bind_meta_gptoss(m, g, arch);
+    case ARCH_OLMO2:        return late || bind_meta_olmo2(m, g, arch);
     case ARCH_AFMOE:        return late || bind_meta_afmoe(m, g, arch);
     case ARCH_SPARK2_5:     return late || bind_meta_spark25(m, g, arch);
     case ARCH_K2_HORIZON:   return late || bind_meta_k2h(m, g, arch);
@@ -12126,6 +12203,8 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
     else if (m->lfm2) r = "recurrent architecture (short convolution)";
     else if (m->deepseek2) r = "multi-head latent attention (deepseek2)";
     else if (m->hyper_conn) r = "hyper-connections (qwen4exp)";
+    // the backward has the pre-norm and per-head QK-norm adjoints only (R4.50.3 is olmo2's)
+    else if (m->post_norm_only || m->qk_norm_full) r = "olmo2's post-norm-only blocks and full-width QK norm (R4.50.3)";
     else if (m->qwen35 && m->n_expert > 0) r = "MoE on a Gated DeltaNet model";
     // R17.3 (2026-10-08): an adapter on the ATTENTION of a sparse-MoE model
     // trains, with the backward running through the frozen router and
@@ -16258,6 +16337,11 @@ NUM_STAGE void layer_mixer_input(model_t *m, fwd_layer *c) {
         hc_mix(m, ly->hc_attn_norm, ly->hc_attn_down, ly->hc_attn_up,
                ly->hc_attn_inject, m->xb, xdim, n);
         DT_MARK_AT(c->dt_t0, DT_MIX);
+    } else if (m->post_norm_only) {
+        // olmo2: the attention reads the residual itself (a NULL weight in xnorm is the weightless norm, not none)
+        for (int b = 0; b < n; b++)
+            memcpy(m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd, sizeof(float) * (size_t)n_embd);
+        DT_MARK_AT(c->dt_t0, DT_MIX);
     } else {
         for (int b = 0; b < n; b++)
             xnorm(m, m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,
@@ -16448,10 +16532,14 @@ NUM_STAGE void attn_rope_store(model_t *m, const fwd_layer *c) {
     const int dbg = c->dbg;
     uint8_t *kc_l = c->kc_l, *vc_l = c->vc_l;
     const size_t k_row_b = c->k_row_b, v_row_b = c->v_row_b;
+    // olmo2's QK norms are one group over the whole projection (qk_norm with one head of q_dim / kv_dim), the
+    // others one per head
+    const int qn_groups = m->qk_norm_full ? 1 : m->n_head, qn_width = m->qk_norm_full ? q_dim : hd;
+    const int kn_groups = m->qk_norm_full ? 1 : n_kv, kn_width = m->qk_norm_full ? kv_dim : hd;
     for (int b = 0; b < n; b++) {
         if (ly->qnorm_w)
-            qk_norm(m->q + (size_t)b * q_dim, ly->qnorm_w, m->n_head,
-                    hd, m->rms_eps);
+            qk_norm(m->q + (size_t)b * q_dim, ly->qnorm_w, qn_groups,
+                    qn_width, m->rms_eps);
         if (model_layer_ropes(m, l))
             rope_apply(m, m->q + (size_t)b * q_dim, m->n_head, pos + b, l);
         if (model_temp_applies(m, l)) {
@@ -16468,8 +16556,8 @@ NUM_STAGE void attn_rope_store(model_t *m, const fwd_layer *c) {
             // gemma4: weightless per-head RMS norm on V (pre-K-norm values)
             qk_norm(m->v_tmp + (size_t)b * kv_dim, NULL, n_kv, hd, m->rms_eps);
         if (ly->knorm_w)
-            qk_norm(m->k_tmp + (size_t)b * kv_dim, ly->knorm_w, n_kv,
-                    hd, m->rms_eps);
+            qk_norm(m->k_tmp + (size_t)b * kv_dim, ly->knorm_w, kn_groups,
+                    kn_width, m->rms_eps);
         if (model_layer_ropes(m, l))
             rope_apply(m, m->k_tmp + (size_t)b * kv_dim, n_kv, pos + b, l);
         tiedv_check_row(m, c, b);
@@ -16876,6 +16964,9 @@ NUM_STAGE void layer_ffn(model_t *m, fwd_layer *c) {
         if (m->hyper_conn)
             hc_mix(m, ly->hc_ffn_norm, ly->hc_ffn_down, ly->hc_ffn_up,
                    ly->hc_ffn_inject, m->xb, xdim, n);
+        else if (m->post_norm_only)   // olmo2: the MLP reads the residual itself
+            for (int b = 0; b < n; b++)
+                memcpy(m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd, sizeof(float) * (size_t)n_embd);
         else
         for (int b = 0; b < n; b++)
             xnorm(m, m->xb + (size_t)b * xdim, m->x + (size_t)b * n_embd,

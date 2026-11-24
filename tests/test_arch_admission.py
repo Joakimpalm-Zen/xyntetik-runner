@@ -115,6 +115,15 @@ ARCH_GATE_EXEMPTIONS = {
     "inkling2_loop": "admission in progress (R4.48.6); fixture-gated by tests/test_inkling2_hardening.py until its pins",
 }
 
+# Architectures that LOAD before their admission (arch.h's pending column): --caps lists them apart, under
+# architectures_pending, and no count, support row or coverage disposition claims them. Each names the gate that
+# holds it meanwhile; its admission moves it out of here and into the manifest.
+ARCH_PENDING = {
+    # OLMo 2 / OLMo 3 (R4.50.1): the CPU forward against the publisher's equations on the tiny files
+    # scripts/make-test-olmo2.py writes; allenai/Olmo-3-7B-Think's float32 admission and pins are R4.50.6
+    "olmo2": "tests/test_olmo2_cpu.py until R4.50.6",
+}
+
 
 def _admitted_architectures(runner_bin):
     """What model_load admits, as the binary publishes it (--caps lists the
@@ -147,6 +156,19 @@ def test_every_admitted_architecture_is_gated_or_named_as_ungated(runner_bin):
         "no row in tests/compatibility/models.json and no entry in "
         "ARCH_GATE_EXEMPTIONS: " + ", ".join(unaccounted) + ". Pin a file for "
         "each, or add it to the exemption map with the reason it is safe.")
+
+
+def test_every_pending_architecture_is_named_with_its_gate(runner_bin):
+    """A family that loads before its admission is listed apart, never in the admitted list, and each is named
+    here with the gate that holds it."""
+    import json
+    p = subprocess.run([runner_bin, "--caps"], cwd=ROOT, capture_output=True, timeout=20)
+    caps = json.loads(p.stdout)
+    pending = {a["name"] for a in caps["architectures_pending"]}
+    assert pending == set(ARCH_PENDING), (sorted(pending), sorted(ARCH_PENDING))
+    assert not pending & set(caps["architectures"]), pending & set(caps["architectures"])
+    assert not pending & _manifest_architectures(), "a pinned file means it is admitted: move it out of pending"
+    assert all(a["why"] for a in caps["architectures_pending"]), caps["architectures_pending"]
 
 
 def test_exemption_list_does_not_outlive_its_reason():
