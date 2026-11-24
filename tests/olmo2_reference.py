@@ -19,7 +19,9 @@ bound can be calibrated on an admitted family through the same arithmetic.
 
 `mutants` names a wrong implementation the gate must tell apart: "qk_per_head" (each head normed on its own, with
 its slice of the weight), "swa_yarn" (the sliding layers on the full layers' YaRN), "pre_norm" (an unweighted RMS
-norm before attention and before the MLP, which is what a NULL pre-norm weight computes) and "window_off".
+norm before attention and before the MLP, which is what a NULL pre-norm weight computes), "window_off", and two subtler
+ones: "window_plus_one" (the window off by one, key j for query i when j >= i - W, W + 1 keys) and "mscale_dropped"
+(the full layers' YaRN frequencies without its magnitude on cos and sin).
 """
 import math
 import struct
@@ -122,6 +124,8 @@ def logprobs(path, tokens, mutants=frozenset(), dtype=np.float64):
             else:
                 q, k = rms(q, qn, eps), rms(k, kn, eps)
         inv, sc = full if (not sliding[i] or "swa_yarn" in mutants) else plain
+        if "mscale_dropped" in mutants:
+            sc = dtype(1.0)
         q = rotate(q.reshape(n, H, hd), pos, inv, sc, olmo)
         k = rotate(k.reshape(n, KVH, hd), pos, inv, sc, olmo)
         v = v.reshape(n, KVH, hd)
@@ -129,6 +133,8 @@ def logprobs(path, tokens, mutants=frozenset(), dtype=np.float64):
         o = np.empty((n, H, hd), dtype=dtype)
         for t in range(n):
             lo = t - window + 1 if (sliding[i] and "window_off" not in mutants) else 0
+            if sliding[i] and "window_plus_one" in mutants:
+                lo = t - window
             lo = max(lo, 0)
             for hh in range(H):
                 kk = k[lo:t + 1, hh // rep]

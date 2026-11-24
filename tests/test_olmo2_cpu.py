@@ -20,7 +20,10 @@ llama fixture's logprobs by 1.0e-3, which would hide the forward under the cache
 
 The other gates:
 - the wrong implementations a port could make (each head's QK norm on its own, the sliding layers on YaRN, a
-  pre-norm kept, the window off) are each 1e5 times the bound away from the runner;
+  pre-norm kept, the window off, the window one key too wide, the full layers' YaRN magnitude dropped) are each over
+  1e4 times the bound away from the runner;
+- grouped-query attention (2 KV heads under 4 query heads: q_dim, kv_dim and head_dim all differ) matches as well;
+- every malformed file the loader refuses is refused, naming why;
 - the house's CPU identities: -b 8 and -b 64 store the same bits (tests/test_prefill_batch_identity.c), -b 1 is the
   decode route (the default score route's bits), and the thread count changes nothing;
 - the default sliding pattern (no array) is the publisher's 3-in-4;
@@ -51,9 +54,16 @@ N_TOKENS = 160   # the window is 8, so every sliding layer masks
 # The reference script's float32 evaluation against its float64 self (measured 2026-11-24; recomputed and
 # checked below). The bound for a file is twice its figure.
 F32_SCRIPT = {"olmo2": 2.9583724900916764e-06, "olmo2-plain": 2.886082274500268e-06,
-              "llama": 2.190242642363671e-06}
-FIXTURES = {"olmo2": [], "olmo2-plain": ["--plain"], "llama": ["--llama"],
-            "olmo2-nopattern": ["--no-pattern-array"], "olmo2-badaf": ["--attn-factor", "1.5"]}
+              "olmo2-gqa": 2.9400200860507653e-06, "llama": 2.190242642363671e-06}
+BAD = {"pre-norm": "olmo2: blk.0 carries a pre-norm (attn_norm or ffn_norm)",
+       "no-qk-norm": "missing tensor blk.0.attn_q_norm.weight",
+       "narrow-qk-norm": "olmo2: blk.0's QK norms are 16 and 16 wide where the q and k projections are 64 and 64",
+       "no-post-norm": "missing tensor blk.0.post_ffw_norm.weight",
+       "pattern-period": "olmo2: olmo2.attention.sliding_window_pattern is not one bool for each of the 4 layers",
+       "pattern-short": "olmo2: olmo2.attention.sliding_window_pattern is not one bool for each of the 4 layers"}
+FIXTURES = {"olmo2": [], "olmo2-plain": ["--plain"], "olmo2-gqa": ["--gqa"], "llama": ["--llama"],
+            "olmo2-nopattern": ["--no-pattern-array"], "olmo2-badaf": ["--attn-factor", "1.5"],
+            **{f"bad-{k}": ["--bad", k] for k in BAD}}
 # The routes the bound covers: the default (one row a forward), and the batched prompt route at three batch sizes
 ROUTES = {"solo -t 1": ([], ["-t", "1"]), "solo -t 4": ([], ["-t", "4"]),
           "batched -b 1": (["RUNNER_SCORE_CHUNKED=1"], ["-b", "1", "-t", "2"]),
@@ -92,14 +102,14 @@ def _f32_script_distance(model, tokens):
     return ref.worst_delta({"top": top}, a)
 
 
-@pytest.mark.parametrize("name", ["olmo2", "olmo2-plain", "llama"])
+@pytest.mark.parametrize("name", ["olmo2", "olmo2-plain", "olmo2-gqa", "llama"])
 def test_the_stated_float32_tolerance_is_the_scripts(runner_bin, files, tmp_path, name):
     tokens = _score(runner_bin, files[name], tmp=tmp_path)["tokens"]
     got = _f32_script_distance(files[name], tokens)
     assert got == pytest.approx(F32_SCRIPT[name], rel=1e-6), (name, got)
 
 
-@pytest.mark.parametrize("name", ["olmo2", "olmo2-plain", "llama"])
+@pytest.mark.parametrize("name", ["olmo2", "olmo2-plain", "olmo2-gqa", "llama"])
 @pytest.mark.parametrize("route", list(ROUTES))
 def test_the_forward_matches_the_publishers_equations(runner_bin, files, tmp_path, name, route):
     rec = _score(runner_bin, files[name], route, tmp_path)
@@ -109,15 +119,29 @@ def test_the_forward_matches_the_publishers_equations(runner_bin, files, tmp_pat
     assert worst <= bound, (name, route, worst, bound)
 
 
-# Measured 2026-11-24, the runner's solo route against each wrong implementation: olmo2 qk_per_head 1.22, swa_yarn
-# 1.79, pre_norm 0.85, window_off 3.31; olmo2-plain qk_per_head 1.08, pre_norm 0.89 (the plain file has no window
-# and no YaRN, so those two change nothing there). Each is over 1e5 x its bound.
-@pytest.mark.parametrize("name,mutant", [("olmo2", m) for m in ("qk_per_head", "swa_yarn", "pre_norm", "window_off")]
+# Measured 2026-11-24, the runner's solo route against each wrong implementation:
+#   olmo2      qk_per_head 1.22, swa_yarn 1.79, pre_norm 0.85, window_off 3.31, window_plus_one 2.22, mscale_dropped 0.40
+#   olmo2-gqa  qk_per_head 1.05, swa_yarn 1.63, pre_norm 0.84, window_off 3.69, window_plus_one 2.59, mscale_dropped 0.25
+#   olmo2-plain qk_per_head 1.08, pre_norm 0.89 (it has no window and no YaRN, so the other four change nothing there)
+# The nearest, the dropped YaRN magnitude on the GQA file, is 4.3e4 x its bound; the assertion is 1e4 x.
+ALL_MUTANTS = ("qk_per_head", "swa_yarn", "pre_norm", "window_off", "window_plus_one", "mscale_dropped")
+
+
+@pytest.mark.parametrize("name,mutant", [("olmo2", m) for m in ALL_MUTANTS] + [("olmo2-gqa", m) for m in ALL_MUTANTS]
                          + [("olmo2-plain", m) for m in ("qk_per_head", "pre_norm")])
 def test_each_wrong_implementation_is_far_outside_the_bound(runner_bin, files, tmp_path, name, mutant):
     rec = _score(runner_bin, files[name], tmp=tmp_path)
     away = ref.worst_delta(rec, ref.logprobs(files[name], rec["tokens"], frozenset([mutant])))
-    assert away > 1e5 * 2 * F32_SCRIPT[name], (name, mutant, away)
+    assert away > 1e4 * 2 * F32_SCRIPT[name], (name, mutant, away)
+
+
+@pytest.mark.parametrize("kind", list(BAD))
+def test_a_malformed_file_is_refused_by_name(runner_bin, files, kind):
+    p = subprocess.run([str(runner_bin), "-m", str(files[f"bad-{kind}"]), "-p", "hi", "-n", "1", "--gpu", "off"],
+                       cwd=ROOT, capture_output=True, timeout=120)
+    err = p.stderr.decode(errors="replace")
+    assert p.returncode != 0, (kind, err)
+    assert BAD[kind] in err, (kind, err)
 
 
 def _bits(rec, rows=None):

@@ -2420,8 +2420,11 @@ static int run_caps(void) {
     // the ones that load before their admission: a real file of each is not yet validated (arch.h's pending)
     printf("],\"architectures_pending\":[");
     for (size_t i = 0, shown = 0; i < n_arch; i++)
-        if (!arches[i].refused && arches[i].pending)
-            printf("%s{\"name\":\"%s\",\"why\":\"%s\"}", shown++ ? "," : "", arches[i].name, arches[i].pending);
+        if (!arches[i].refused && arches[i].pending) {
+            char esc_why[512];   // the reason as a JSON string, as the presets' sources above
+            json_escape(arches[i].pending, strlen(arches[i].pending), esc_why, sizeof esc_why);
+            printf("%s{\"name\":\"%s\",\"why\":\"%s\"}", shown++ ? "," : "", arches[i].name, esc_why);
+        }
     printf("]}\n");
     return 0;
 }

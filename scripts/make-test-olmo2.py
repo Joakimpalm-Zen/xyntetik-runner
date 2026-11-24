@@ -21,18 +21,27 @@ frequencies rather than taking one of them whole. Every norm weight is
 1 +- 0.5 (deterministic), so a norm read at the wrong place or width moves
 the logits.
 
-    make-test-olmo2.py OUT.gguf [--llama] [--plain] [--no-pattern-array]
-                       [--attn-factor F]
+    make-test-olmo2.py OUT.gguf [--llama] [--plain] [--gqa] [--no-pattern-array]
+                       [--attn-factor F] [--bad KIND]
 
   --llama             the same sizes and weights as a plain llama file
                       (pre-norms in place of the post-norms, no QK norm, no
                       window, no YaRN): the reference script's calibration
                       on an admitted family
   --plain             OLMo 2's layout: no sliding window, no RoPE scaling
+  --gqa               2 KV heads (kv_dim 32 != q_dim 64 != head_dim 16)
   --no-pattern-array  leave out attention.sliding_window_pattern (the
                       default 3-in-4 pattern then applies)
   --attn-factor F     write rope.scaling.attn_factor as F instead of the
                       factor's default 1 + 0.1 ln(factor)
+  --bad KIND          a file the loader must refuse: pre-norm (blk.0 carries
+                      attn_norm), no-qk-norm (blk.0 has no attn_q_norm),
+                      narrow-qk-norm (blk.0's QK norms one head wide),
+                      no-post-norm (blk.0 has no post_ffw_norm),
+                      pattern-period (the pattern as a u32 period) or
+                      pattern-short (a bool array one layer short)
+
+The options come in any order around the one output path.
 """
 import math
 import struct
@@ -49,22 +58,40 @@ YARN_FACTOR, YARN_ORIG = 8.0, 4096
 CTX_TRAIN = 32768
 EPS = 1e-6
 
+BAD_KINDS = ("pre-norm", "no-qk-norm", "narrow-qk-norm", "no-post-norm", "pattern-period", "pattern-short")
 args = sys.argv[1:]
-if not args or args[0].startswith("-"):
-    sys.exit(__doc__)
-OUT = args.pop(0)
-LLAMA = "--llama" in args
-PLAIN = "--plain" in args
-NO_PATTERN = "--no-pattern-array" in args
+LLAMA = PLAIN = GQA = NO_PATTERN = False
 ATTN_FACTOR = 1.0 + 0.1 * math.log(YARN_FACTOR)
-if "--attn-factor" in args:
-    ATTN_FACTOR = float(args[args.index("--attn-factor") + 1])
-known = {"--llama", "--plain", "--no-pattern-array", "--attn-factor"}
-for k, a in enumerate(args):
-    if a.startswith("-") and a not in known:
+BAD = None
+OUT = None
+k = 0
+while k < len(args):
+    a = args[k]
+    if a == "--llama":
+        LLAMA = True
+    elif a == "--plain":
+        PLAIN = True
+    elif a == "--gqa":
+        GQA = True
+    elif a == "--no-pattern-array":
+        NO_PATTERN = True
+    elif a == "--attn-factor" and k + 1 < len(args):
+        k += 1
+        ATTN_FACTOR = float(args[k])
+    elif a == "--bad" and k + 1 < len(args) and args[k + 1] in BAD_KINDS:
+        k += 1
+        BAD = args[k]
+    elif a.startswith("-"):
         sys.exit(f"make-test-olmo2: unknown option {a!r}")
-    if not a.startswith("-") and (k == 0 or args[k - 1] != "--attn-factor"):
-        sys.exit(f"make-test-olmo2: unexpected argument {a!r}")
+    elif OUT is None:
+        OUT = a
+    else:
+        sys.exit(f"make-test-olmo2: a second output path {a!r}")
+    k += 1
+if OUT is None:
+    sys.exit(__doc__)
+if GQA:
+    N_KV = 2
 
 _state = 0x2F0A1B3C
 
@@ -107,10 +134,20 @@ for i in range(N_LAYER):
         tensors += [(f"blk.{i}.attn_norm.weight", [N_EMBD], n_attn),
                     (f"blk.{i}.ffn_norm.weight", [N_EMBD], n_ffn)]
     else:
-        tensors += [(f"blk.{i}.attn_q_norm.weight", [q_dim], qn),
-                    (f"blk.{i}.attn_k_norm.weight", [kv_dim], kn),
-                    (f"blk.{i}.post_attention_norm.weight", [N_EMBD], n_attn),
-                    (f"blk.{i}.post_ffw_norm.weight", [N_EMBD], n_ffn)]
+        norms = [(f"blk.{i}.attn_q_norm.weight", [q_dim], qn),
+                 (f"blk.{i}.attn_k_norm.weight", [kv_dim], kn),
+                 (f"blk.{i}.post_attention_norm.weight", [N_EMBD], n_attn),
+                 (f"blk.{i}.post_ffw_norm.weight", [N_EMBD], n_ffn)]
+        if i == 0 and BAD == "pre-norm":
+            norms.append((f"blk.{i}.attn_norm.weight", [N_EMBD], n_attn))
+        if i == 0 and BAD == "no-qk-norm":
+            norms = [t for t in norms if "attn_q_norm" not in t[0]]
+        if i == 0 and BAD == "no-post-norm":
+            norms = [t for t in norms if "post_ffw_norm" not in t[0]]
+        if i == 0 and BAD == "narrow-qk-norm":
+            norms[0] = (f"blk.{i}.attn_q_norm.weight", [HEAD_DIM], qn[:4 * HEAD_DIM])
+            norms[1] = (f"blk.{i}.attn_k_norm.weight", [HEAD_DIM], kn[:4 * HEAD_DIM])
+        tensors += norms
     tensors += [(f"blk.{i}.ffn_gate.weight", [N_EMBD, N_FF], wg),
                 (f"blk.{i}.ffn_up.weight", [N_EMBD, N_FF], wu),
                 (f"blk.{i}.ffn_down.weight", [N_FF, N_EMBD], wd)]
@@ -132,7 +169,11 @@ if not LLAMA and not PLAIN:
             kf(f"{A}.rope.scaling.attn_factor", ATTN_FACTOR),
             ku(f"{A}.rope.scaling.original_context_length", YARN_ORIG),
             ku(f"{A}.attention.sliding_window", WINDOW)]
-    if not NO_PATTERN:
+    if BAD == "pattern-period":
+        kvs.append(ku(f"{A}.attention.sliding_window_pattern", 4))
+    elif BAD == "pattern-short":
+        kvs.append(kab(f"{A}.attention.sliding_window_pattern", PATTERN[:-1]))
+    elif not NO_PATTERN:
         kvs.append(kab(f"{A}.attention.sliding_window_pattern", PATTERN))
 kvs += [ks("tokenizer.ggml.model", "llama"),
         kas("tokenizer.ggml.tokens", VOCAB),
