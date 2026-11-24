@@ -1936,6 +1936,7 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
     // off-lock, mirroring run_completion.
     int err_code = 0;
     const char *err_msg = NULL;
+    char err_buf[128];
     // model_embed launches kernels and engine_reset touches this slot's KV —
     // the same device work every other handler serializes under dev_mu. Take the
     // device turn so an embeddings request cannot launch while decode_worker is
@@ -1965,7 +1966,15 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
         if (n == 0 || !model_embed(m, toks, n, emb, readout_should_stop, &fd)) {
             free(toks);
             err_code = 400;
-            err_msg = n == 0 ? "empty input" : "input exceeds context window";
+            if (n == 0) err_msg = "empty input";
+            else if (n > m->n_ctx) {
+                snprintf(err_buf, sizeof err_buf,
+                         "input exceeds context window (%d tokens; the context holds %d)",
+                         n, m->n_ctx);
+                err_msg = err_buf;
+            } else {
+                err_msg = "input exceeds context window";
+            }
             ok = false;
             break;
         }

@@ -5,6 +5,7 @@
 #include <math.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -13,6 +14,7 @@
 // (2026-10-16 review: 3 duplicates in 16,000 concurrent calls);
 // tests/test_decide_race.c holds both under ThreadSanitizer.
 static atomic_ullong decide_ids, rerank_ids;
+static _Thread_local char decide_err_buf[128];
 
 // log-sum-exp of raw logits in double, the same arithmetic the sampler's
 // logprob capture uses (max first, then a double accumulator)
@@ -122,7 +124,14 @@ static bool score_mode(engine *e, const char *prompt, tok_mode mode,
         while (c < np && c < nf && ptoks[c] == seq[i].toks[c]) c++;
         if (c >= nf) { *err = "an option tokenises to nothing in context"; ok = false; break; }
         if (c < 1) { *err = "the prompt is too short to score against"; ok = false; break; }
-        if (nf > m->n_ctx) { *err = "prompt plus option exceeds the context window"; ok = false; break; }
+        if (nf > m->n_ctx) {
+            snprintf(decide_err_buf, sizeof decide_err_buf,
+                     "prompt plus option exceeds the context window (%d tokens; the context holds %d)",
+                     nf, m->n_ctx);
+            *err = decide_err_buf;
+            ok = false;
+            break;
+        }
         seq[i].idx = i; seq[i].n = nf; seq[i].common = c;
         if (nf > maxn) maxn = nf;
     }

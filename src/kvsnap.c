@@ -414,6 +414,15 @@ static bool load_one(engine *e, const char *id, const char *name, bool slot, sbu
                  "this server's cache is %s (--kv)", name, kt, kv_type_of(e->m));
             break;
         }
+        int snap_n = (int)jv_num(jv_get(man, "tokens"), 0);
+        int snap_ctx = (int)jv_num(jv_get(man, "n_ctx"), 0);
+        if (snap_n >= e->m->n_ctx) {
+            fail(err, 409, "snapshot_model_mismatch",
+                 "snapshot %s holds %d tokens (saved at context %d), which does not fit "
+                 "this server's context (%d)",
+                 name, snap_n, snap_ctx > 0 ? snap_ctx : snap_n, e->m->n_ctx);
+            break;
+        }
         char origin[256];
         snprintf(origin, sizeof origin, "{\"name\":\"%s\",\"kv_sha256\":\"%s\","
                  "\"manifest_chain_hash\":\"%s\"}", name, kvsha, mchain);

@@ -209,6 +209,37 @@ def test_refusals(runner_bin, fx, saved, tmp_path):
         assert st == 400 and "--kv-snapshots" in err["message"], err
 
 
+def test_snapshot_longer_than_context_is_model_mismatch(runner_bin, fx, saved, tmp_path):
+    """R19.16.1: importing a snapshot that does not fit the server's context window
+    (strictly longer or equal, leaving no room to continue) must be refused as
+    snapshot_model_mismatch naming both lengths, not snapshot_corrupt; the other
+    side of the boundary (ctx == snap_n + 1, saved at that context) still loads."""
+    snaps = saved["snaps"]
+    snap_n = saved["snap"]["tokens"]
+    assert snap_n > 64, saved["snap"]
+    for ctx in (64, snap_n):
+        with RunnerServer(runner_bin, fx["model"], ctx=ctx,
+                          extra_args=["--gpu", "off", "-t", "2", "--kv-snapshots", str(snaps)]) as srv:
+            st, err = _refused(srv, "mem")
+        assert st == 409 and err["code"] == "snapshot_model_mismatch", (ctx, err)
+        assert str(snap_n) in err["message"] and str(ctx) in err["message"], (ctx, err)
+    # The other side of the boundary: model_identity hashes n_ctx, so save and
+    # reload at ctx == snap_n + 1 (exact 1 token of headroom) to prove the >= check
+    # does not refuse the tightest valid context.
+    edge_snaps = tmp_path / "edge-snaps"
+    edge_snaps.mkdir()
+    with RunnerServer(runner_bin, fx["model"], ctx=snap_n + 1,
+                      extra_args=["--gpu", "off", "-t", "2", "--kv-snapshots", str(edge_snaps)]) as srv:
+        st, pinned = _post(srv, "/v1/runner/contexts", {"id": "edge", "prompt": MEMORY})
+        assert st == 200 and pinned["tokens"] == snap_n, (st, pinned)
+        st, snap = _post(srv, "/v1/runner/contexts/edge/snapshot", {"name": "edge"})
+        assert st == 200 and snap["tokens"] == snap_n, (st, snap)
+    with RunnerServer(runner_bin, fx["model"], ctx=snap_n + 1,
+                      extra_args=["--gpu", "off", "-t", "2", "--kv-snapshots", str(edge_snaps)]) as srv:
+        st, body = _post(srv, "/v1/runner/contexts", {"id": "x", "snapshot": "edge"})
+    assert st == 200 and body["tokens"] == snap_n, (st, body)
+
+
 def test_the_snapshot_route_and_a_failed_write_say_what_happened(runner_bin, fx,
                                                                  tmp_path):
     """A snapshot that could not be written answered 404 context_not_found
