@@ -10,6 +10,8 @@ successful without it.
 Every case below is verified current behaviour.
 """
 
+import re
+
 import pytest
 
 from harness import ProtocolError
@@ -411,6 +413,36 @@ def test_context_overflow_is_a_typed_request_error(client):
     err = r.expect_error_envelope("context")
     assert err["param"] == "messages"
     assert err["code"] == "context_length_exceeded"
+
+
+@pytest.mark.parametrize("path,payload,param,code", [
+    ("/v1/completions", {"prompt": "hello " * 400, "max_tokens": 4, "temperature": 0},
+     "prompt", "context_length_exceeded"),
+    ("/v1/chat/completions", {"messages": [{"role": "user", "content": "hello " * 400}],
+                              "max_tokens": 4, "temperature": 0},
+     "messages", "context_length_exceeded"),
+    ("/v1/messages", {"model": "test", "max_tokens": 4,
+                      "messages": [{"role": "user", "content": "hello " * 400}]},
+     "messages", "context_length_exceeded"),
+    ("/v1/responses", {"model": "test", "max_output_tokens": 4,
+                       "input": "hello " * 400},
+     "input", "context_length_exceeded"),
+    ("/v1/embeddings", {"input": "hello " * 400}, None, None),
+    ("/v1/rerank", {"query": "hello", "documents": ["hello " * 400]}, None, None),
+])
+def test_context_overflow_names_token_count_and_context(client, path, payload, param, code):
+    """R19.16.1: context-overflow 400s name both the prompt token count and the context size."""
+    r = client.raw(f"overflow-numbers-{path.rsplit('/', 1)[-1]}", "POST", path, payload)
+    r.expect_status(400)
+    err = r.expect_error_envelope("context")
+    if param is not None:
+        assert err["param"] == param
+    if code is not None:
+        assert err["code"] == code
+    m = re.search(r"\((\d+) tokens; the context holds (\d+)\)", err["message"])
+    assert m is not None, err
+    n_tok, n_ctx = int(m.group(1)), int(m.group(2))
+    assert n_ctx == 1024 and n_tok > n_ctx, (n_tok, n_ctx, err)
 
 
 # --------------------------------------------------- accepted-then-ignored

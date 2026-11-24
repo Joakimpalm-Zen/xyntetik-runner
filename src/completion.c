@@ -4392,10 +4392,16 @@ static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api
         free(toks);
         completion_cleanup(e, q->schema, NULL);
         if (n_prompt == 0) send_error(fd, 400, "empty prompt");
-        else send_error_detail(fd, 400, "prompt exceeds context window",
-                               api == API_TEXT ? "prompt" :
-                               api == API_RESPONSES ? "input" : "messages",
-                               "context_length_exceeded");
+        else {
+            char msg[128];
+            snprintf(msg, sizeof msg,
+                     "prompt exceeds context window (%d tokens; the context holds %d)",
+                     n_prompt, m->n_ctx);
+            send_error_detail(fd, 400, msg,
+                              api == API_TEXT ? "prompt" :
+                              api == API_RESPONSES ? "input" : "messages",
+                              "context_length_exceeded");
+        }
         return false;
     }
     if (q->ctx_id) {

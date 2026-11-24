@@ -1533,9 +1533,14 @@ static int pfx_read_one(const engine *e, const char *path, int32_t **toks_out,
     if (!rd(f, magic, PFX_MAGIC_N) || memcmp(magic, PFX_MAGIC, PFX_MAGIC_N) ||
         !rd(f, &count, sizeof count) || count != 1 ||
         !rd(f, &key, sizeof key) || !rd(f, &n, sizeof n) ||
-        !rd(f, &bytes, sizeof bytes) || n < 1 || n > e->m->n_ctx ||
+        !rd(f, &bytes, sizeof bytes) || n < 1 ||
         bytes == 0 || bytes > (uint64_t)1 << 40)
         goto out;
+    if (n >= e->m->n_ctx) {
+        rc = (key == e->model_key || key == e->model_key_prior)
+           ? PFX_CTX_MISMATCH : PFX_CTX_CORRUPT;
+        goto out;
+    }
     toks = malloc(sizeof(int32_t) * (size_t)n);
     kv = malloc((size_t)bytes);
     if (!toks || !kv) { rc = PFX_CTX_NOSPACE; goto out; }
