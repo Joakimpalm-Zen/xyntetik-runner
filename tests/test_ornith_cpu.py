@@ -1,88 +1,130 @@
 """Public CPU tracer for the Ornith-1.0/Qwen3.5 hybrid architecture."""
-import math
 import json
+import os
 import pathlib
+import socket
 import subprocess
 import sys
-import os
+import time
+import urllib.request
 
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUNNER = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
+sys.path.insert(0, str(ROOT / "tests" / "conformance"))
+
+from harness import KeptProcessLog, scaled_timeout  # noqa: E402
+
+
+def _run_runner(cmd, timeout_s=60, env=None):
+    """Run a child command under scaled_timeout and keep its output on timeout."""
+    log = KeptProcessLog(prefix="runner-ornith-")
+    try:
+        proc = subprocess.run(
+            cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=log.file,
+            timeout=scaled_timeout(timeout_s), env=env,
+        )
+        log.file.flush()
+        stderr = pathlib.Path(log.path).read_bytes()
+        return proc.returncode, proc.stdout, stderr
+    except subprocess.TimeoutExpired as exc:
+        log.keep()
+        out_tail = (exc.stdout or b"")[-2000:].decode("utf-8", "replace")
+        pytest.fail(
+            f"{cmd} timed out after {exc.timeout:.1f}s; "
+            f"stderr log {log.path}:\n{log.tail()}\n"
+            f"stdout tail:\n{out_tail}"
+        )
+    finally:
+        log.close()
+
+
+def _gpu_caps():
+    rc, out, err = _run_runner([RUNNER, "--caps"], timeout_s=30)
+    assert rc == 0, err.decode(errors="replace")
+    return json.loads(out).get("gpu") or {}
+
+
+def _make_fixture(script, out, env=None):
+    rc, _, err = _run_runner([sys.executable, ROOT / "scripts" / script, out], timeout_s=60, env=env)
+    assert rc == 0, err.decode(errors="replace")
+
+
+def _wait_for_health(srv, port, log, timeout_s=30):
+    """Poll /health until timeout_s (scaled); fail with kept server log if overdue or dead."""
+    deadline = time.monotonic() + scaled_timeout(timeout_s)
+    while time.monotonic() < deadline:
+        if srv.poll() is not None:
+            pytest.fail(
+                f"server exited ({srv.returncode}) before /health; "
+                f"server log {log.keep()}:\n{log.tail()}"
+            )
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1)
+            return
+        except OSError:
+            time.sleep(0.1)
+    pytest.fail(f"server never answered /health; server log {log.keep()}:\n{log.tail()}")
+
 
 def test_qwen35_hybrid_loads_and_decodes(tmp_path):
     model = tmp_path / "ornith.gguf"
-    subprocess.run([sys.executable, ROOT / "scripts/make-test-ornith.py", model],
-                   check=True, cwd=ROOT)
-    proc = subprocess.run(
+    _make_fixture("make-test-ornith.py", model)
+    rc, out, err = _run_runner(
         [RUNNER, "-m", model, "-p", "hi", "-n", "2",
          "--temp", "0", "--gpu", "off", "-c", "32"],
-        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        timeout=20,
     )
-    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
-    assert b"hybrid SSM/attention architecture" not in proc.stderr
+    assert rc == 0, err.decode(errors="replace")
+    assert b"hybrid SSM/attention architecture" not in err
     # This greedy suffix is the llama.cpp reference result for the exact same
     # generated weights and prompt-token sequence. It protects the recurrent
     # state orientation, Q scaling, group broadcast, convolution ordering and
     # the full-attention post-norm placement as one end-to-end contract.
-    assert proc.stdout.splitlines() == [b"hiii"]
+    assert out.splitlines() == [b"hiii"]
 
 
 def test_qwen35_legacy_ornith_dt_name_loads(tmp_path):
     model = tmp_path / "ornith-legacy.gguf"
-    env = {**os.environ, "ORNITH_LEGACY_DT": "1"}
-    subprocess.run([sys.executable, ROOT / "scripts/make-test-ornith.py", model],
-                   check=True, cwd=ROOT, env=env)
-    proc = subprocess.run(
+    _make_fixture("make-test-ornith.py", model, env={**os.environ, "ORNITH_LEGACY_DT": "1"})
+    rc, _, err = _run_runner(
         [RUNNER, "-m", model, "-p", "hi", "-n", "1",
          "--temp", "0", "--gpu", "off", "-c", "32"],
-        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
     )
-    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    assert rc == 0, err.decode(errors="replace")
 
 
 def test_qwen35_hybrid_gpu_auto_matches_cpu(tmp_path):
-    caps = json.loads(subprocess.run(
-        [RUNNER, "--caps"], cwd=ROOT, stdout=subprocess.PIPE,
-        check=True, text=True).stdout)
-    gpu_caps = caps.get("gpu")
+    gpu_caps = _gpu_caps()
     if not gpu_caps:
         pytest.skip("no GPU backend: this test asserts a device/host match")
     backend = gpu_caps.get("backend")
     model = tmp_path / "ornith-gpu.gguf"
-    subprocess.run([sys.executable, ROOT / "scripts/make-test-ornith.py", model],
-                   check=True, cwd=ROOT)
+    _make_fixture("make-test-ornith.py", model)
     base = [RUNNER, "-m", model, "-p", "hi", "-n", "2",
             "--temp", "0", "-c", "32"]
-    cpu = subprocess.run([*base, "--gpu", "off"], cwd=ROOT,
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                         timeout=20)
-    gpu = subprocess.run([*base, "--gpu", "auto"], cwd=ROOT,
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                         timeout=20)
-    assert cpu.returncode == 0, cpu.stderr.decode(errors="replace")
-    assert gpu.returncode == 0, gpu.stderr.decode(errors="replace")
-    assert gpu.stdout == cpu.stdout
+    cpu_rc, cpu_out, cpu_err = _run_runner([*base, "--gpu", "off"])
+    gpu_rc, gpu_out, gpu_err = _run_runner([*base, "--gpu", "auto"])
+    assert cpu_rc == 0, cpu_err.decode(errors="replace")
+    assert gpu_rc == 0, gpu_err.decode(errors="replace")
+    assert gpu_out == cpu_out
     if backend == "cuda":
-        assert b"CUDA backend" in gpu.stderr
-        assert b"no kernels for the recurrent" not in gpu.stderr
+        assert b"CUDA backend" in gpu_err
+        assert b"no kernels for the recurrent" not in gpu_err
     elif backend == "metal":
         # the dense qwen35 hybrid runs on the device (R4.10), its greedy
         # output the CPU's (asserted above)
-        assert b"Metal backend" in gpu.stderr
-        assert b"not on the metal backend" not in gpu.stderr
+        assert b"Metal backend" in gpu_err
+        assert b"not on the metal backend" not in gpu_err
 
     if backend == "cuda":
-        fallback = subprocess.run(
-            [*base, "--gpu", "auto"], cwd=ROOT, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, timeout=20,
+        fb_rc, fb_out, fb_err = _run_runner(
+            [*base, "--gpu", "auto"],
             env={**os.environ, "RUNNER_CUDA_INJECT_FAILURE": "1"},
         )
-        assert fallback.returncode == 0, fallback.stderr.decode(errors="replace")
-        assert fallback.stdout == cpu.stdout
-        assert b"injected CUDA runtime failure" in fallback.stderr
+        assert fb_rc == 0, fb_err.decode(errors="replace")
+        assert fb_out == cpu_out
+        assert b"injected CUDA runtime failure" in fb_err
 
 
 def test_qwen35_cuda_failure_after_recurrent_state_accumulates(tmp_path):
@@ -99,31 +141,25 @@ def test_qwen35_cuda_failure_after_recurrent_state_accumulates(tmp_path):
     `RUNNER_CUDA_INJECT_FAILURE=N` fails the Nth device forward, so N=2 lands
     on the first decode step — past prefill, with state live.
     """
-    caps = json.loads(subprocess.run(
-        [RUNNER, "--caps"], cwd=ROOT, stdout=subprocess.PIPE,
-        check=True, text=True).stdout)
-    if (caps.get("gpu") or {}).get("backend") != "cuda":
+    if _gpu_caps().get("backend") != "cuda":
         pytest.skip("CUDA device not available")
 
     model = tmp_path / "ornith-late-fail.gguf"
-    subprocess.run([sys.executable, ROOT / "scripts/make-test-ornith.py", model],
-                   check=True, cwd=ROOT)
+    _make_fixture("make-test-ornith.py", model)
     base = [RUNNER, "-m", model, "-p", "hi", "-n", "4",
             "--temp", "0", "-c", "32"]
-    cpu = subprocess.run([*base, "--gpu", "off"], cwd=ROOT,
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                         timeout=20)
-    late = subprocess.run(
-        [*base, "--gpu", "auto"], cwd=ROOT, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, timeout=20,
-        env={**os.environ, "RUNNER_CUDA_INJECT_FAILURE": "2"})
-    assert cpu.returncode == 0, cpu.stderr.decode(errors="replace")
-    assert late.returncode == 0, late.stderr.decode(errors="replace")
+    cpu_rc, cpu_out, cpu_err = _run_runner([*base, "--gpu", "off"])
+    late_rc, late_out, late_err = _run_runner(
+        [*base, "--gpu", "auto"],
+        env={**os.environ, "RUNNER_CUDA_INJECT_FAILURE": "2"},
+    )
+    assert cpu_rc == 0, cpu_err.decode(errors="replace")
+    assert late_rc == 0, late_err.decode(errors="replace")
     # Naming the ordinal is what proves the failure landed past prefill; a hook
     # that always fired on tile one would report forward 1 here.
-    assert b"injected CUDA runtime failure at device forward 2" in late.stderr, \
-        late.stderr.decode(errors="replace")
-    assert late.stdout == cpu.stdout
+    assert b"injected CUDA runtime failure at device forward 2" in late_err, \
+        late_err.decode(errors="replace")
+    assert late_out == cpu_out
 
 
 def test_qwen35_cuda_failure_keeps_the_scored_logprobs(tmp_path):
@@ -137,15 +173,11 @@ def test_qwen35_cuda_failure_keeps_the_scored_logprobs(tmp_path):
     state live. The failure lands after the device changed the state; the
     host must restore the pre-forward snapshot before it recomputes that
     token, and then every log-probability stays within 1e-4 of the CPU's."""
-    caps = json.loads(subprocess.run(
-        [RUNNER, "--caps"], cwd=ROOT, stdout=subprocess.PIPE,
-        check=True, text=True).stdout)
-    if (caps.get("gpu") or {}).get("backend") != "cuda":
+    if _gpu_caps().get("backend") != "cuda":
         pytest.skip("CUDA device not available")
 
     model = tmp_path / "ornith-score-fail.gguf"
-    subprocess.run([sys.executable, ROOT / "scripts/make-test-ornith.py", model],
-                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    _make_fixture("make-test-ornith.py", model)
     text = "the runner keeps its state"
 
     def score(prompt, gpu, fail=None):
@@ -153,12 +185,12 @@ def test_qwen35_cuda_failure_keeps_the_scored_logprobs(tmp_path):
         env.pop("RUNNER_CUDA_INJECT_FAILURE", None)
         if fail is not None:
             env["RUNNER_CUDA_INJECT_FAILURE"] = str(fail)
-        p = subprocess.run([RUNNER, "-m", model, "--score", "-p", prompt,
-                            "-c", "128", "-t", "2", "--gpu", gpu],
-                           cwd=ROOT, stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, timeout=60, env=env)
-        assert p.returncode == 0, p.stderr.decode(errors="replace")
-        return json.loads(p.stdout), p.stderr
+        rc, out, err = _run_runner(
+            [RUNNER, "-m", model, "--score", "-p", prompt, "-c", "128", "-t", "2", "--gpu", gpu],
+            env=env,
+        )
+        assert rc == 0, err.decode(errors="replace")
+        return json.loads(out), err
 
     def worst(a, b):
         assert a["tokens"] == b["tokens"]
@@ -201,29 +233,25 @@ def test_metal_failure_rebuilds_the_recurrent_fold(tmp_path, fixture, nth):
     N - 1: the first forward, the third (a fold carried over two steps), and
     the twentieth, whose rebuild takes three batches.
     """
-    caps = json.loads(subprocess.run(
-        [RUNNER, "--caps"], cwd=ROOT, stdout=subprocess.PIPE,
-        check=True, text=True).stdout)
-    if (caps.get("gpu") or {}).get("backend") != "metal":
+    if _gpu_caps().get("backend") != "metal":
         pytest.skip("the Metal backend's runtime fallback")
     if fixture == "ornith":
         model = tmp_path / "ornith.gguf"
-        subprocess.run([sys.executable, ROOT / "scripts/make-test-ornith.py", model],
-                       check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+        _make_fixture("make-test-ornith.py", model)
     else:   # the script takes a prefix and writes <prefix>.gguf
         model = tmp_path / "m2.gguf"
-        subprocess.run([sys.executable, ROOT / "scripts/make-test-nemotron.py",
-                        tmp_path / "m2"], check=True, cwd=ROOT,
-                       stdout=subprocess.DEVNULL)
+        _make_fixture("make-test-nemotron.py", tmp_path / "m2")
     text = "the quick brown fox jumps over the lazy dog"
     base = [RUNNER, "-m", model, "--score", "-p", text, "-b", "8", "-c", "128"]
 
     def score(gpu, env=None):
-        r = subprocess.run([*base, "--gpu", gpu], cwd=ROOT, stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, timeout=60,
-                           env={**os.environ, **(env or {})})
-        assert r.returncode == 0, r.stderr.decode(errors="replace")
-        return json.loads(r.stdout)["logprobs"], r.stderr.decode(errors="replace")
+        rc, out, err_b = _run_runner(
+            [*base, "--gpu", gpu],
+            env={**os.environ, **(env or {})},
+        )
+        err = err_b.decode(errors="replace")
+        assert rc == 0, err
+        return json.loads(out)["logprobs"], err
 
     cpu, _ = score("off")
     gpu, err = score("auto")
@@ -259,17 +287,10 @@ def test_metal_failure_after_a_forked_prefix_rebuilds_from_that_prefix(tmp_path)
     The failure is injected at the first forward after the fork: its ordinal
     is counted in a clean run of the same three requests.
     """
-    import socket
-    import time
-    import urllib.request
-    caps = json.loads(subprocess.run(
-        [RUNNER, "--caps"], cwd=ROOT, stdout=subprocess.PIPE,
-        check=True, text=True).stdout)
-    if (caps.get("gpu") or {}).get("backend") != "metal":
+    if _gpu_caps().get("backend") != "metal":
         pytest.skip("the Metal backend's runtime fallback")
     model = tmp_path / "ornith.gguf"
-    subprocess.run([sys.executable, ROOT / "scripts/make-test-ornith.py", model],
-                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    _make_fixture("make-test-ornith.py", model)
     B = "You are a careful assistant for a warehouse inventory team. "
     A = "quite another text, sharing nothing with it, and running on for longer than it does"
     Q = "Where is item 42?"
@@ -278,43 +299,121 @@ def test_metal_failure_after_a_forked_prefix_rebuilds_from_that_prefix(tmp_path)
         with socket.socket() as so:
             so.bind(("127.0.0.1", 0))
             port = so.getsockname()[1]
-        log = tmp_path / f"server-{gpu}-{inject}.log"
+        log = KeptProcessLog(prefix="runner-ornith-srv-")
         env = {**os.environ, "RUNNER_METAL_STATS": "1"}
         if inject:
             env["RUNNER_METAL_INJECT_FAILURE"] = inject
         srv = subprocess.Popen(
             [str(RUNNER), "-m", str(model), "--serve", "--port", str(port), "--parallel", "1",
              "-c", "512", "--tray", "off", "--gpu", gpu],
-            stdout=subprocess.DEVNULL, stderr=open(log, "w"), env=env)
+            stdout=subprocess.DEVNULL, stderr=log.file, env=env)
 
         def post(path, payload):
             req = urllib.request.Request(f"http://127.0.0.1:{port}{path}",
                                          json.dumps(payload).encode(),
                                          {"Content-Type": "application/json"})
-            return json.loads(urllib.request.urlopen(req, timeout=120).read())
+            return json.loads(urllib.request.urlopen(req, timeout=scaled_timeout(120)).read())
         try:
-            for _ in range(100):
-                try:
-                    urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1)
-                    break
-                except OSError:
-                    time.sleep(0.1)
+            _wait_for_health(srv, port, log, timeout_s=30)
             post("/v1/completions", {"prompt": B, "max_tokens": 1, "temperature": 0})
             post("/v1/completions", {"prompt": A, "max_tokens": 2, "temperature": 0})
-            before = log.read_text(errors="replace").count("metal: native prompt batch")
+            log.file.flush()
+            before = pathlib.Path(log.path).read_text(errors="replace").count("metal: native prompt batch")
             r = post("/v1/completions", {"prompt": B + Q, "max_tokens": 6,
                                          "temperature": 0, "logprobs": 2})
+            log.file.flush()
+            log_text = pathlib.Path(log.path).read_text(errors="replace")
+        except BaseException:
+            log.keep()
+            raise
         finally:
-            srv.terminate()
-            srv.wait(timeout=30)
+            if srv.poll() is None:
+                srv.terminate()
+                try:
+                    srv.wait(timeout=scaled_timeout(30))
+                except subprocess.TimeoutExpired:
+                    srv.kill()
+                    srv.wait()
+            log.close()
         assert r["runner_telemetry"]["prompt_reuse"] == "prefix_cache", r["runner_telemetry"]
-        return r["choices"][0]["logprobs"]["token_logprobs"], before, log.read_text(errors="replace")
+        return r["choices"][0]["logprobs"]["token_logprobs"], before, log_text
 
-    cpu, _, _ = session("off")
-    clean, forwards_before_the_fork, _ = session("auto")
-    assert forwards_before_the_fork > 0
-    assert clean == pytest.approx(cpu, abs=5e-6)
-    failed, _, log = session("auto", inject=str(forwards_before_the_fork + 1))
-    assert "falling back to CPU" in log, log[-1200:]
-    assert "rebuilding the recurrent state" in log, log[-1200:]
-    assert failed == pytest.approx(cpu, abs=5e-6)
+
+def test_ornith_timeout_scales_and_keeps_child_output(monkeypatch):
+    """R6.117: timeouts scale via RUNNER_TEST_TIMEOUT_SCALE and keep child logs."""
+    monkeypatch.setenv("RUNNER_TEST_TIMEOUT_SCALE", "6")
+    rc, out, _ = _run_runner(
+        [sys.executable, "-c",
+         "import sys, time; time.sleep(0.25); sys.stdout.write('ok\\n')"],
+        timeout_s=0.1,
+    )
+    assert rc == 0 and out.strip() == b"ok"
+
+    monkeypatch.setenv("RUNNER_TEST_TIMEOUT_SCALE", "1")
+    with pytest.raises(pytest.fail.Exception) as excinfo:
+        _run_runner(
+            [sys.executable, "-c",
+             "import sys, time; "
+             "sys.stdout.write('partial-out\\n'); sys.stdout.flush(); "
+             "sys.stderr.write('partial-err\\n'); sys.stderr.flush(); "
+             "time.sleep(10)"],
+            timeout_s=0.1,
+        )
+    msg = str(excinfo.value)
+    assert "partial-err" in msg and "partial-out" in msg, msg
+    kept_path = None
+    for tok in msg.split():
+        cand = tok.rstrip(":,")
+        if cand.endswith(".log") and os.path.exists(cand):
+            kept_path = cand
+            break
+    assert kept_path is not None, msg
+    try:
+        assert "partial-err" in pathlib.Path(kept_path).read_text(encoding="utf-8", errors="replace")
+    finally:
+        os.unlink(kept_path)
+
+
+def test_ornith_server_health_wait_fails_with_log_on_deadline(monkeypatch):
+    """R6.117: server health wait must fail with its kept log on expiry or early exit."""
+    monkeypatch.setenv("RUNNER_TEST_TIMEOUT_SCALE", "1")
+    with socket.socket() as so:
+        so.bind(("127.0.0.1", 0))
+        dead_port = so.getsockname()[1]
+    log = KeptProcessLog(prefix="runner-ornith-srv-")
+    srv = subprocess.Popen(
+        [sys.executable, "-c",
+         "import sys, time; sys.stderr.write('booting server\\n'); "
+         "sys.stderr.flush(); time.sleep(10)"],
+        stdout=subprocess.DEVNULL, stderr=log.file,
+    )
+    try:
+        with pytest.raises(pytest.fail.Exception) as excinfo:
+            _wait_for_health(srv, dead_port, log, timeout_s=0.05)
+        msg = str(excinfo.value)
+        assert "server never answered /health" in msg and "booting server" in msg and log.path in msg, msg
+        assert log.kept and os.path.exists(log.path)
+    finally:
+        if srv.poll() is None:
+            srv.kill()
+            srv.wait()
+        log.kept = False
+        log.close()
+
+    dead_log = KeptProcessLog(prefix="runner-ornith-srv-")
+    dead = subprocess.Popen(
+        [sys.executable, "-c",
+         "import sys; sys.stderr.write('fatal startup\\n'); sys.stderr.flush(); sys.exit(2)"],
+        stdout=subprocess.DEVNULL, stderr=dead_log.file,
+    )
+    try:
+        dead.wait(timeout=5)
+        with pytest.raises(pytest.fail.Exception) as excinfo:
+            _wait_for_health(dead, dead_port, dead_log, timeout_s=5)
+        msg = str(excinfo.value)
+        assert "server exited (2) before /health" in msg and "fatal startup" in msg and dead_log.path in msg, msg
+        assert dead_log.kept and os.path.exists(dead_log.path)
+    finally:
+        dead_log.kept = False
+        dead_log.close()
+
