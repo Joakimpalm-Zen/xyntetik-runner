@@ -9,8 +9,14 @@ holds is the surface around it, on the tiny olmo2 file served with --chat-templa
   /v1/chat/completions; tools and function_call items on /v1/responses; tools and tool_use / tool_result blocks on
   /v1/messages;
 - a plain chat is served;
-- --info tools names no tool protocol.
+- --info tools names no tool protocol;
+- the BOS once, on a file of OLMo 2's own specials (<|endoftext|> its BOS and EOS) with add_bos_token true: the
+  template writes it, so the chat encode does not prepend another (tokenizer.c encode_core), read from the served
+  prompt's ids in a --record receipt;
+- detection picks olmo2 from the publisher's template only when the file's EOS is the <|endoftext|> the renderer
+  writes: the same template on a file whose EOS is </s> stays zephyr.
 """
+import glob
 import json
 import subprocess
 import sys
@@ -108,3 +114,45 @@ def test_info_tools_names_no_tool_protocol(runner_bin, model):
     assert p.returncode == 0, p.stderr.decode(errors="replace")
     info = json.loads(p.stdout)
     assert (info["template"], info["tool_family"], info["native_tool_protocol"]) == ("olmo2", "none", False), info
+
+
+@pytest.fixture(scope="module")
+def specials(tmp_path_factory):
+    """OLMo 2's <|endoftext|> as the BOS and EOS, add_bos_token true, the publisher's template in the file."""
+    path = tmp_path_factory.mktemp("olmo2sp") / "olmo2-specials.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts" / "make-test-olmo2.py", str(path), "--olmo-specials",
+                    "--instruct-template"], check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    return path
+
+
+def _detected(runner_bin, model):
+    p = subprocess.run([str(runner_bin), "-m", str(model), "--info", "tools", "--gpu", "off"], cwd=ROOT,
+                       capture_output=True, timeout=60)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    return json.loads(p.stdout)["template"]
+
+
+def test_the_bos_is_once_when_the_template_writes_it(runner_bin, specials, tmp_path):
+    assert _detected(runner_bin, specials) == "olmo2"
+    rec = tmp_path / "rec"
+    rec.mkdir()
+    with RunnerServer(runner_bin, specials, ctx=512, extra_args=["--gpu", "off", "-t", "2", "--record", str(rec)]) as srv:
+        status, doc = _post(srv, "/v1/chat/completions", {"messages": [{"role": "user", "content": "hi"}],
+                                                          "max_tokens": 1, "temperature": 0})
+        assert status == 200, doc
+        # a raw prompt is the caller's own text: the guard is never read for it
+        status, doc = _post(srv, "/v1/completions", {"prompt": "<|endoftext|>hi", "max_tokens": 1, "temperature": 0})
+        assert status == 200, doc
+    chat, raw = (json.loads(Path(f).read_text())["prompt"]["tokens"] for f in sorted(glob.glob(str(rec / "*.json"))))
+    bos = 259   # make-test-olmo2.py --olmo-specials: <|endoftext|>, the last of its 260 tokens
+    assert chat[0] == bos and chat[1] != bos, chat[:4]
+    assert raw[:2] == [bos, bos], raw[:4]   # the tokenizer's BOS, then the caller's: as before R4.50.10
+
+
+def test_the_publisher_template_with_another_eos_is_not_olmo2(runner_bin, tmp_path):
+    # the template alone, on a file whose EOS is </s> (the fixture's own): the renderer's <|endoftext|> would be no
+    # token of it, so detection leaves it to the zephyr reading it had before
+    path = tmp_path / "olmo2-other-eos.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts" / "make-test-olmo2.py", str(path), "--instruct-template"],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    assert _detected(runner_bin, path) == "zephyr"
