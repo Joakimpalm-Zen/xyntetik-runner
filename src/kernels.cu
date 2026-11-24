@@ -6079,48 +6079,93 @@ extern "C" __global__ void k_ink2_test_pexpf(const float *x, float *y, int n) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) y[i] = ink2_p_expf(x[i]);
 }
-// the router's logits and scores, ink2_route_range: thread (position t = blockIdx.y, expert e): l = the serial dot of
-// router row e with x[t] over h ascending (l += row[h] * x[h], no contraction), sc[t][e] = sigmoid(l); lg if given
-extern "C" __global__ void k_ink2_route_scores(const float *wr, const float *x, float *sc, float *lg, int E, int H) {
-    const int e = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;
-    if (e >= E) return;
-    const float *row = wr + (ulong64)e * H, *xt = x + (ulong64)t * H;
+// the router's logits and scores, ink2_route_range: (position t, expert e): l = the serial dot of router row e with x[t]
+// over h ascending (l += row[h] * x[h], no contraction), sc[t][e] = sigmoid(l); lg if given.
+// D1b.1: a block of 256 threads takes RS_E = 32 experts x RS_T = 8 positions (warp w = position t0 + w, lane = expert
+// e0 + lane); the router rows and x come through shared memory a tile of RS_H = 128 columns at a time, loaded coalesced
+// (a warp reads one row's 128 consecutive floats), so each row is read once a block, not once a thread. Each thread's dot
+// is still ONE serial chain in ascending h: only where the operands are read from changes, no sum. The grid is 1-D
+// (blockIdx.x = position block x expert blocks + expert block), so T is bounded by grid.x, not grid.y's 65535.
+#define RS_E 32
+#define RS_T 8
+#define RS_H 128
+extern "C" __global__ void __launch_bounds__(256) k_ink2_route_scores(const float *wr, const float *x, float *sc, float *lg,
+                                                                      int E, int H, int T) {
+    __shared__ float rw[RS_E][RS_H + 1], xs[RS_T][RS_H];   // +1: lanes reading rw[lane][h] fall in distinct banks
+    const int neb = (E + RS_E - 1) / RS_E;
+    const int e0 = (int)(blockIdx.x % (unsigned)neb) * RS_E, t0 = (int)(blockIdx.x / (unsigned)neb) * RS_T;
+    const int lane = threadIdx.x & 31, w = threadIdx.x >> 5;
+    const int e = e0 + lane, t = t0 + w;
     float l = 0.0f;
-    for (int h = 0; h < H; h++) l = __fadd_rn(l, __fmul_rn(row[h], xt[h]));
+    for (int h0 = 0; h0 < H; h0 += RS_H) {
+        const int nh = H - h0 < RS_H ? H - h0 : RS_H;
+        __syncthreads();
+        for (int r = w; r < RS_E; r += 8)   // warp w loads rows w, w + 8, ...: 128 consecutive floats each
+            for (int c = lane; c < nh; c += 32) rw[r][c] = e0 + r < E ? wr[(ulong64)(e0 + r) * H + h0 + c] : 0.0f;
+        for (int c = lane; c < nh; c += 32) xs[w][c] = t < T ? x[(ulong64)t * H + h0 + c] : 0.0f;
+        __syncthreads();
+        if (e < E && t < T)
+            for (int c = 0; c < nh; c++) l = __fadd_rn(l, __fmul_rn(rw[lane][c], xs[w][c]));
+    }
+    if (e >= E || t >= T) return;
     if (lg) lg[(ulong64)t * E + e] = l;
     sc[(ulong64)t * E + e] = ink2_sigmoid_d(l);
 }
-// the top-k and the weights, ink2_route_one's loops, one thread a position: K times the unchosen e with the largest
-// sc + br (strict >: the lowest index wins a tie); wt[e] = sc[e] / (the chosen scores' sum ascending + 1e-20) * scale;
-// pc[t] the position's chosen count; mg[t] (when given) the selection observer's margin: the smallest chosen sc + br
-// minus the largest unchosen one, as ink2_expert_layer_c computes it
+// the top-k and the weights, ink2_route_one's loops: K times the unchosen e with the largest sc + br; wt[e] = sc[e] /
+// (the chosen scores' sum ascending + 1e-20) * scale; pc[t] the position's chosen count; mg[t] (when given) the
+// selection observer's margin: the smallest chosen sc + br minus the largest unchosen one, as ink2_expert_layer_c
+// computes it.
+// D1b.1: a WARP a position (4 a block). Each pass reproduces the host's serial scan `best < 0 || v > bv` exactly: its
+// FIRST unchosen slot f starts as best, so when v[f] is NaN nothing compares greater and f is chosen; otherwise the
+// chosen is the largest non-NaN v, the LOWEST index among equal ones (+0 and -0 compare equal: the lower index), since
+// a NaN anywhere but the first slot never compares greater. The warp finds f by a min and the best by a reduction on
+// (v larger, then index smaller): a max of floats rounds nothing, so the choice is the serial scan's (fmaxf is NOT
+// this rule: it drops a first-slot NaN). The weights' sum stays one serial ascending chain (lane 0), as the margin.
+#define RT_NONE 0x7fffffff
 extern "C" __global__ void k_ink2_route_topk(const float *sc, const float *br, uchar *chosen, float *wt, int *pc,
                                              float *mg, int E, int K, float scale, int T) {
-    const int t = blockIdx.x * blockDim.x + threadIdx.x;
-    if (t >= T) return;
+    const unsigned FULL = 0xffffffffu;
+    const int lane = threadIdx.x & 31, t = (int)(blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5));
+    if (t >= T) return;   // the whole warp: t is the warp's
     const float *s = sc + (ulong64)t * E;
     uchar *ch = chosen + (ulong64)t * E;
     float *w = wt + (ulong64)t * E;
-    for (int e = 0; e < E; e++) ch[e] = 0;
+    for (int e = lane; e < E; e += 32) ch[e] = 0;
+    __syncwarp();
     int n = 0;
     for (int k = 0; k < K; k++) {
-        int best = -1;
+        int f = RT_NONE, bi = RT_NONE;
         float bv = 0.0f;
-        for (int e = 0; e < E; e++) {
+        for (int e = lane; e < E; e += 32) {   // the lane's experts ascending
             if (ch[e]) continue;
+            if (f == RT_NONE) f = e;
             const float v = __fadd_rn(s[e], br[e]);
-            if (best < 0 || v > bv) { best = e; bv = v; }
+            if (v != v) continue;              // a NaN wins only as the pass's first slot (below)
+            if (bi == RT_NONE || v > bv) { bi = e; bv = v; }   // strict >: the lane's lowest index on a tie
         }
-        if (best < 0) break;
-        ch[best] = 1;
+        for (int o = 16; o > 0; o >>= 1) {
+            const int f2 = __shfl_xor_sync(FULL, f, o), bi2 = __shfl_xor_sync(FULL, bi, o);
+            const float bv2 = __shfl_xor_sync(FULL, bv, o);
+            f = f2 < f ? f2 : f;
+            if (bi2 != RT_NONE && (bi == RT_NONE || bv2 > bv || (bv2 == bv && bi2 < bi))) { bi = bi2; bv = bv2; }
+        }
+        if (f == RT_NONE) break;               // nothing unchosen (the same on every lane)
+        const float vf = __fadd_rn(s[f], br[f]);
+        const int best = vf != vf ? f : bi;    // v[f] not NaN: f is among bi's candidates, so bi is set
+        if (lane == 0) ch[best] = 1;
+        __syncwarp();
         n++;
     }
-    float sum = 0.0f;
-    for (int e = 0; e < E; e++) if (ch[e]) sum = __fadd_rn(sum, s[e]);
-    const float den = __fadd_rn(sum, 1e-20f);
-    for (int e = 0; e < E; e++) w[e] = ch[e] ? __fmul_rn(__fdiv_rn(s[e], den), scale) : 0.0f;
-    pc[t] = n;
-    if (mg) {
+    float den = 0.0f;
+    if (lane == 0) {
+        float sum = 0.0f;
+        for (int e = 0; e < E; e++) if (ch[e]) sum = __fadd_rn(sum, s[e]);
+        den = __fadd_rn(sum, 1e-20f);
+        pc[t] = n;
+    }
+    den = __shfl_sync(FULL, den, 0);
+    for (int e = lane; e < E; e += 32) w[e] = ch[e] ? __fmul_rn(__fdiv_rn(s[e], den), scale) : 0.0f;
+    if (mg && lane == 0) {
         float lo = __int_as_float(0x7f800000), hi = -__int_as_float(0x7f800000);
         for (int e = 0; e < E; e++) {
             const float v = __fadd_rn(s[e], br[e]);
@@ -6135,9 +6180,12 @@ extern "C" __global__ void k_ink2_route_topk(const float *sc, const float *br, u
 // each position's columns in ascending expert order; the tiles {first column, count <= 16, expert} of the first
 // group. Layout at fixed bounds NC = T * K: idx [NC], ex [NC], po [T + 1], pl [NC], tiles [3 (NC / 16 + E)]; hdr =
 // {nall, ntile, nbig}. cnt and off are scratch [E] each.
+// D1b.1 (the second read's F2): col [T][E] (scratch) holds each chosen (position, expert)'s column number, written in
+// the per-expert pass, so each position's list reads it instead of recounting the earlier positions (O(T E), not
+// O(T^2 E)); the numbers, and so every table, are the same.
 extern "C" __global__ void k_ink2_route_tables(const uchar *chosen, const float *wt, const int *pc, int *tab, float *wv,
-                                               int *cnt, int *off, int *toff, int *hdr, int E, int T, int K, int tiled,
-                                               int mvb_min) {
+                                               int *cnt, int *off, int *toff, int *hdr, int *col, int E, int T, int K,
+                                               int tiled, int mvb_min) {
     const int NC = T * K;
     int *idx = tab, *ex = tab + NC, *po = tab + 2 * NC, *pl = po + T + 1, *tl = pl + NC;
     for (int e = threadIdx.x; e < E; e += blockDim.x) {
@@ -6163,20 +6211,19 @@ extern "C" __global__ void k_ink2_route_tables(const uchar *chosen, const float 
     for (int e = threadIdx.x; e < E; e += blockDim.x) {
         int j = off[e];
         for (int t = 0; t < T; t++)
-            if (chosen[(ulong64)t * E + e]) { idx[j] = t; ex[j] = e; wv[j] = wt[(ulong64)t * E + e]; j++; }
+            if (chosen[(ulong64)t * E + e]) {
+                idx[j] = t; ex[j] = e; wv[j] = wt[(ulong64)t * E + e]; col[(ulong64)t * E + e] = j; j++;
+            }
         if (tiled && cnt[e] >= mvb_min)
             for (int c = 0, k = toff[e]; c < cnt[e]; c += 16, k++) {
                 tl[3 * k] = off[e] + c; tl[3 * k + 1] = cnt[e] - c < 16 ? cnt[e] - c : 16; tl[3 * k + 2] = e;
             }
     }
+    __syncthreads();   // every column number written before any position's list reads it
     for (int t = threadIdx.x; t < T; t += blockDim.x) {   // each position's columns, experts ascending
         int k = po[t];
-        for (int e = 0; e < E; e++) {
-            if (!chosen[(ulong64)t * E + e]) continue;
-            int rank = 0;
-            for (int u = 0; u < t; u++) rank += chosen[(ulong64)u * E + e];
-            pl[k++] = off[e] + rank;
-        }
+        for (int e = 0; e < E; e++)
+            if (chosen[(ulong64)t * E + e]) pl[k++] = col[(ulong64)t * E + e];
     }
 }
 // the combination, ink2_msg_comb_multi_range: out = (1 - tanh(fa)) * x + tanh(ga) * msg, over n values

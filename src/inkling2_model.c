@@ -174,10 +174,14 @@ static int dev_experts(const ink2_shape *s, const ink2_tensor *t13, const ink2_t
     return 0;
 }
 // D1b: one application's expert layer whole on the device, the router then the body, when the router's F32 view and
-// both stacks are this instance's (else the host router and dev_experts)
+// both stacks are this instance's (else the host router and dev_experts).
+// D1b.1: ONLY FOR T > 1. At T == 1 (a decode step) the host router runs and dev_experts takes the body, as before D1b:
+// the device router's fixed costs (two kernels, the tables' launch, the uploads, one sync) measured 0.114 ms a call
+// against the host router's ~0.05-0.07 at one position, while from a chunk of positions up the device router wins
+// (prefill +11%). The two routers give the same bits (B1, B2, B3), so the split changes no row.
 static int dev_moe(void *dev, const ink2_moe_call *m) {
     ink2_rt *r = dev;
-    if (!r->route_on || !r->exp_on) return 1;
+    if (!r->route_on || !r->exp_on || m->T == 1) return 1;
     if (r->gpu_err) return -1;
     if (!m->wr || m->wr->dev != r || m->wr->qtype != T_F32 || !m->t13 || m->t13->dev != r || !m->t2 || m->t2->dev != r)
         return 1;

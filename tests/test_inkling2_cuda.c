@@ -518,7 +518,27 @@ static struct {
     unsigned char ch, cd;
 } g_robs;
 
+// D1b.1 (the second read's F3, before any kernel change): kind 0 the construction above; the special values, each on
+// top of it, where a parallel argmax would part from the serial scan (ink2_route_one: `best < 0 || v > bv`, so a NaN
+// in a pass's FIRST unchosen slot is chosen, a NaN anywhere else never is, ties go to the lowest index):
+//   1 NANFIRST  router row 0 all NaN: expert 0's score NaN, the first slot of the first pass
+//   2 NANLATE   row K + 2 NaN (not a first slot until the passes reach it) and expert K - 1's bias NaN
+//   3 INF       bias +inf on expert 1 and -inf on expert K; row K + 1 x 1e38 (its logits overflow to +-inf: score 1 or 0)
+//   4 ZERO      experts K - 1 and K zero rows with bias -0.5 (v = 0.5 + -0.5 = +0 exactly, a tie at +0); experts K + 1
+//               and K + 2 zero rows with bias +0.0 and -0.0 (v = 0.5 both: the K-th place's tie by a signed zero).
+//               (v = -0 itself cannot arise: a score is >= +0 and +0 + -0 rounds to +0.)
+//   5 KEQE      K == E: every expert chosen (the constructions above skipped; they need K + 3 <= E)
+// A NaN score or weight compares equal to a NaN on the other side, whatever its payload (x86 keeps a NaN's payload,
+// CUDA returns its canonical NaN); every other value by its bits.
+// (NaN by its bits: this test builds with -ffast-math, whose finite-math assumption folds isnan() to false)
+static bool nan_bits(float v) { uint32_t u; memcpy(&u, &v, 4); return (u & 0x7f800000u) == 0x7f800000u && (u & 0x007fffffu); }
+static bool same_f(float a, float b) { return memcmp(&a, &b, 4) == 0 || (nan_bits(a) && nan_bits(b)); }
+
+static long route_identity_k(int E, int K, int H, int T, bool near, int kind, long *nval);
 static long route_identity(int E, int K, int H, int T, bool near, long *nval) {
+    return route_identity_k(E, K, H, T, near, 0, nval);
+}
+static long route_identity_k(int E, int K, int H, int T, bool near, int kind, long *nval) {
     memset(&g_robs, 0, sizeof g_robs);
     g_robs.first = -1;
     float *wr = malloc(sizeof(float) * (size_t)E * H), *br = malloc(sizeof(float) * (size_t)E);
@@ -528,13 +548,15 @@ static long route_identity(int E, int K, int H, int T, bool near, long *nval) {
     unsigned char *ch = malloc((size_t)T * E), *cd = malloc((size_t)T * E);
     long diff = -1;
     *nval = 0;
-    if (wr && br && x && sh && sd && wh && wd && ch && cd && K + 3 <= E) {
-        uint32_t seed = 2468u + (uint32_t)(E * 3 + T + (near ? 1 : 0));
+    if (wr && br && x && sh && sd && wh && wd && ch && cd &&
+        (kind == 5 ? K == E : kind == 6 ? K + 32 <= E && K + 3 <= E : K + 3 <= E)) {
+        uint32_t seed = 2468u + (uint32_t)(E * 3 + T + (near ? 1 : 0) + 7 * kind);
 #define RNDF() (seed = seed * 1664525u + 1013904223u, (float)((int)(seed >> 9) % 2001 - 1000) / 1000.0f)
         for (size_t i = 0; i < (size_t)E * H; i++) wr[i] = 0.02f * RNDF();
         for (size_t i = 0; i < (size_t)T * H; i++) x[i] = RNDF();
 #undef RNDF
         for (int e = 0; e < E; e++) br[e] = e < K - 1 ? 10.0f : -10.0f;
+        if (kind == 5) goto constructed;
         if (K >= 3) memcpy(wr + 2 * (size_t)H, wr + 1 * (size_t)H, sizeof(float) * H);    // a tie inside the top K
         memcpy(wr + (size_t)K * H, wr + (size_t)(K - 1) * H, sizeof(float) * H);           // the K-th place's tie
         // near: a one-ulp gap in the ranked value v = score + bias needs the score exact, or the two sums can round to
@@ -548,6 +570,23 @@ static long route_identity(int E, int K, int H, int T, bool near, long *nval) {
         br[K] = near ? nextafterf(1.0f, 2.0f) : 1.0f;
         for (int i = 0; i < H; i++) wr[(size_t)(K + 1) * H + i] *= 1000.0f;                 // the sigmoid's extremes
         memset(wr + (size_t)(K + 2) * H, 0, sizeof(float) * H);                            // l = 0
+        if (kind == 1) for (int i = 0; i < H; i++) wr[i] = NAN;
+        if (kind == 2) { for (int i = 0; i < H; i++) wr[(size_t)(K + 2) * H + i] = NAN; br[K - 1] = NAN; }
+        if (kind == 3) {
+            br[1] = INFINITY; br[K] = -INFINITY;
+            for (int i = 0; i < H; i++) wr[(size_t)(K + 1) * H + i] = (i % 2 ? -1e38f : 1e38f);
+        }
+        if (kind == 4) {
+            for (int k = K - 1; k <= K + 2; k++) memset(wr + (size_t)k * H, 0, sizeof(float) * H);
+            br[K - 1] = -0.5f; br[K] = -0.5f; br[K + 1] = 0.0f; br[K + 2] = -0.0f;
+        }
+        // 6 LANE (D1b.1: the warp top-k scans experts lane, lane + 32, ... in a lane): the K-th place's tie three ways,
+        // K - 1, K and K - 1 + 32 (the same lane as K - 1) identical rows and biases; the lowest index, K - 1, wins
+        if (kind == 6) {
+            memcpy(wr + (size_t)(K - 1 + 32) * H, wr + (size_t)(K - 1) * H, sizeof(float) * H);
+            br[K - 1 + 32] = br[K - 1];
+        }
+    constructed:;
         ink2_shape s;
         memset(&s, 0, sizeof s);
         s.hidden = H; s.n_expert = E; s.n_used = K; s.route_scale = 2.5f;
@@ -566,7 +605,7 @@ static long route_identity(int E, int K, int H, int T, bool near, long *nval) {
             diff = 0;
             for (size_t i = 0; i < (size_t)T * E; i++)
             {
-                const int ds = memcmp(sh + i, sd + i, 4) != 0, dc = ch[i] != cd[i], dw = memcmp(wh + i, wd + i, 4) != 0;
+                const int ds = !same_f(sh[i], sd[i]), dc = ch[i] != cd[i], dw = !same_f(wh[i], wd[i]);
                 g_robs.n[0] += ds; g_robs.n[1] += dc; g_robs.n[2] += dw;
                 if ((ds || dc || dw) && g_robs.first < 0) {
                     g_robs.first = (long)i; g_robs.sh = sh[i]; g_robs.sd = sd[i]; g_robs.wh = wh[i]; g_robs.wd = wd[i];
@@ -576,8 +615,21 @@ static long route_identity(int E, int K, int H, int T, bool near, long *nval) {
             }
             *nval = 3L * T * E;
             // the constructed ties went the host's way (the lowest index; with near, the higher by one ulp)
-            for (int t = 0; t < T; t++) {
+            for (int t = 0; kind == 0 && t < T; t++) {
                 const int bad = ch[(size_t)t * E + (near ? K : K - 1)] != 1;
+                g_robs.n[3] += bad;
+                diff += bad;
+            }
+            // the special constructions did what they claim, on the host (else the case tests nothing): NANFIRST
+            // chose expert 0; ZERO gave the K-th place to K + 1 (bias +0.0) over K + 2 (-0.0), the lower index; KEQE
+            // chose all
+            for (int t = 0; t < T; t++) {
+                const unsigned char *c = ch + (size_t)t * E;
+                int bad = 0;
+                if (kind == 1) bad = c[0] != 1;
+                if (kind == 4) bad = c[K + 1] != 1 || c[K + 2] != 0;
+                if (kind == 5) for (int e = 0; e < E; e++) bad |= c[e] != 1;
+                if (kind == 6) bad = c[K - 1] != 1 || c[K] != 0 || c[K - 1 + 32] != 0;   // the lowest of the three
                 g_robs.n[3] += bad;
                 diff += bad;
             }
@@ -1252,6 +1304,9 @@ int main(int argc, char **argv) {
             { "6 experts, 2 used (the tiny file's 2 used; its 4 experts leave no room for the constructions), H 64, 17 "
               "positions", 6, 2, 64, 17, false },
             { "6 experts, 2 used, H 64, 1 position, a near tie", 6, 2, 64, 1, true },
+            // D1b.1 (the second read's F1): the scores' grid is 1-D: 600000 positions are 75000 blocks of 8, past
+            // grid.y's 65535 even with 8 positions a block (70000 positions, 8750 blocks, would not tell)
+            { "6 experts, 2 used, H 16, 600000 positions (75000 blocks of 8: past grid.y's 65535)", 6, 2, 16, 600000, false },
         };
         for (size_t k = 0; k < sizeof rc / sizeof *rc; k++) {
             long nv = 0;
@@ -1262,9 +1317,36 @@ int main(int argc, char **argv) {
                   rc[k].what, d, nv, g_robs.n[0], g_robs.n[1], g_robs.n[2], g_robs.n[3], g_robs.first, g_robs.sh,
                   g_robs.sd, (int)g_robs.ch, (int)g_robs.cd, g_robs.wh, g_robs.wd);
         }
+        // D1b.1 (the second read's F3): the special values, where a parallel argmax would part from the serial scan
+        static const struct { const char *what; int E, K, H, T, kind; } sc_[] = {
+            { "a NaN score in the first slot (router row 0 NaN), the file's widths, 17 positions", 128, 8, 2304, 17, 1 },
+            { "a NaN score in the first slot, 6 experts, 2 used", 6, 2, 64, 17, 1 },
+            { "a NaN score later and a NaN bias, the file's widths, 17 positions", 128, 8, 2304, 17, 2 },
+            { "a NaN score later and a NaN bias, 6 experts, 2 used", 6, 2, 64, 17, 2 },
+            { "biases +inf and -inf, logits overflowing to +-inf, the file's widths, 17 positions", 128, 8, 2304, 17, 3 },
+            { "biases +inf and -inf, logits overflowing, 6 experts, 2 used", 6, 2, 64, 17, 3 },
+            { "ties at v = +0 and by a signed-zero bias, the file's widths, 17 positions", 128, 8, 2304, 17, 4 },
+            { "ties at v = +0 and by a signed-zero bias, 6 experts, 2 used", 6, 2, 64, 17, 4 },
+            { "K == E (8 of 8), H 64, 17 positions", 8, 8, 64, 17, 5 },
+            { "K == E (128 of 128), the file's H, 3 positions", 128, 128, 2304, 3, 5 },
+            { "a three-way tie for the K-th place in one lane and across lanes (K - 1, K, K - 1 + 32), the file's "
+              "widths, 17 positions", 128, 8, 2304, 17, 6 },
+            { "the same lane tie, 512 positions", 128, 8, 2304, 512, 6 },
+        };
+        for (size_t k = 0; k < sizeof sc_ / sizeof *sc_; k++) {
+            long nv = 0;
+            const long d = route_identity_k(sc_[k].E, sc_[k].K, sc_[k].H, sc_[k].T, false, sc_[k].kind, &nv);
+            CHECK(d == 0 && nv > 0, "(z) B1 the device router, %s: %ld of %ld scores, choices and weights differ from the "
+                  "host's (NaN = NaN), or the construction failed on the host (want 0) [scores %ld, choices %ld, weights "
+                  "%ld, constructions %ld; first at %ld: score %a / %a, chosen %d / %d, weight %a / %a (host / device)]",
+                  sc_[k].what, d, nv, g_robs.n[0], g_robs.n[1], g_robs.n[2], g_robs.n[3], g_robs.first, g_robs.sh,
+                  g_robs.sd, (int)g_robs.ch, (int)g_robs.cd, g_robs.wh, g_robs.wd);
+        }
     }
     // (z) B2: the model's rows with the device router equal the host router's (TEST-ONLY ..._NO_ROUTER=1) byte for byte
-    // at -b 64 and -b 1 on each dense file; one device router call per application a forward; the host router 0 times
+    // at -b 64 and -b 1 on each dense file. D1b.1's split: at -b 64 (T > 1) the device router runs, once an
+    // application a forward, and the host router 0 times; at -b 1 (T == 1, a decode step's shape) the HOST router runs,
+    // once an application a position, and the device router 0 times
     for (int f = 0; f < 3; f++) {
         static const char *kn[3] = { "F32", "BF16", "Q8_0" };
         model_t *gr = load(argv[1 + f], true, false, 64), *gr1 = load(argv[1 + f], true, false, 1);
@@ -1275,16 +1357,18 @@ int main(int argc, char **argv) {
         if (gr) model_inkling2_parts(gr, &zsp, NULL);
         const int napp = zsp ? ((const ink2_shape *)zsp)->n_app : -1;
         const long hr0 = ink2_route_host_calls();
-        float *a = gr ? rows(gr) : NULL, *a1 = gr1 ? rows(gr1) : NULL;
+        float *a = gr ? rows(gr) : NULL;
         const long hr1 = ink2_route_host_calls();
+        float *a1 = gr1 ? rows(gr1) : NULL;
+        const long hr2 = ink2_route_host_calls();
         float *b = gn ? rows(gn) : NULL;
         const size_t n = gr ? (size_t)N_TOK * (size_t)gr->n_vocab : 0;
         const long c64 = model_inkling2_cuda_route_calls(gr), c1 = model_inkling2_cuda_route_calls(gr1);
         CHECK(a && a1 && b && !memcmp(a, b, sizeof(float) * n) && !memcmp(a1, b, sizeof(float) * n) && c64 == napp &&
-              c1 == (long)napp * N_TOK && hr1 - hr0 == 0,
-              "(z) B2 %s: the rows with the device router equal the host router's byte for byte at -b 64 and -b 1; %ld "
-              "and %ld device router calls (want %d and %d); the host router %ld times (want 0)", kn[f], c64, c1, napp,
-              napp * N_TOK, hr1 - hr0);
+              hr1 - hr0 == 0 && c1 == 0 && hr2 - hr1 == (long)napp * N_TOK,
+              "(z) B2 %s: the rows equal the host router's byte for byte at -b 64 and -b 1; at -b 64 %ld device router "
+              "calls (want %d) and the host router %ld times (want 0); at -b 1 %ld device router calls (want 0) and the "
+              "host router %ld times (want %d)", kn[f], c64, napp, hr1 - hr0, c1, hr2 - hr1, napp * N_TOK);
         free(a); free(a1); free(b);
         drop(gr); drop(gr1); drop(gn);
     }
