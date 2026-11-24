@@ -787,6 +787,10 @@ bool       gpu_ink2_test_ptanh(gpu_ink2 *h, const float *x, float *y, int n);
 // or NVFP4 product of at least 16 columns runs batched (k_mv_bf16_b, k_mv_nvfp4_b; the expert body's NVFP4 tiles,
 // k_mvsegb_nvfp4; BF16 experts stay per column), the same bits
 void       gpu_ink2_test_mv_ref(gpu_ink2 *h, int on);
+// TEST-ONLY: the products run batched so far (each batched dense product and each tiled expert product counts once),
+// and caps[0..4] = byte capacities: the padded inputs (the products' x, the attention output, the expert body's
+// gathered x and its activations) and the attention's stored logits; -1 without a handle
+long       gpu_ink2_test_stats(gpu_ink2 *h, size_t caps[5]);
 void       gpu_ink2_release_experts(gpu_ink2 *h);   // those buffers freed (a fit retried without the expert body)
 // G2b step 2a: an instance's K/V on the device, one ring per application (row j % rows[a] holds position j's C
 // values), owned by the instance (the weights' handle may be shared); and the attention core over it: the chunk's

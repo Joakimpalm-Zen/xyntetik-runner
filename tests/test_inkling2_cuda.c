@@ -170,6 +170,19 @@ static double rel_diff(const float *a, const float *ref, size_t n) {
 // device did not run.
 // *ndiff: the output values whose bits differ from the TEST-ONLY reference kernel's (k_ink2_attn_ref, the core before
 // the decode fix) run on its own ring over the same chunks (want 0: the fix changes no bit).
+// (ae), the second read's P2 3: what the helpers below observed of their last device call (gpu_ink2_test_stats): the
+// batched dispatches it ran, the handle's buffer capacities after it (caps: x, attention output, gathered x,
+// activations, stored logits), an expert call's columns and experts of 16+ columns, the attention's largest logits
+// buffer and its smallest attention-output buffer short of T + 16 columns ((size_t)-1: none short)
+static struct {
+    long nb;
+    size_t caps[5];
+    long nall, nbig;
+    int Q;
+    bool core_unreserved;
+    size_t alg_max, aatt_min;
+} g_obs;
+
 static double core_case(int hd, int global, int window, int R, const int *chunks, int n_chunks, size_t *nf, long *cmp,
                         long *ndiff) {
     enum { NH = 4, NKV = 2, EXT = 16 };
@@ -197,7 +210,12 @@ static double core_case(int hd, int global, int window, int R, const int *chunks
     double worst = 0, top = 0;
     // reserved as the fit does (the stored logits at most 16 MiB): 1040 queries x 4 heads x 1040 keys then run as two
     // groups of queries, so the grouping is under the byte identity too
-    bool ran = kv != NULL && kvr != NULL && att_ref != NULL && gpu_ink2_reserve_attn(h, Tmax, Q, NH, EXT, NP);
+    // (ae) g_obs.core_unreserved: no reservation (a direct caller); the stored logits must still stay within 16 MiB
+    bool ran = kv != NULL && kvr != NULL && att_ref != NULL &&
+               (g_obs.core_unreserved || gpu_ink2_reserve_attn(h, Tmax, Q, NH, EXT, NP));
+    g_obs.Q = Q;
+    g_obs.alg_max = 0;
+    g_obs.aatt_min = (size_t)-1;
     for (int c = 0, p0 = 0; ran && c < n_chunks; p0 += chunks[c], c++) {
         const int T = chunks[c];
         ran = gpu_ink2_attn(h, kv, 0, T, pos + p0, q + (size_t)p0 * Q, k + (size_t)p0 * C, v + (size_t)p0 * C,
@@ -208,6 +226,14 @@ static double core_case(int hd, int global, int window, int R, const int *chunks
                                    EXT, scale);
         gpu_ink2_test_attn_ref(h, 0);
         if (!ran) break;
+        {
+            size_t cp[5];
+            if (gpu_ink2_test_stats(h, cp) >= 0) {
+                if (cp[4] > g_obs.alg_max) g_obs.alg_max = cp[4];
+                const size_t want = sizeof(float) * ((size_t)T + 16) * (size_t)Q;   // the output, padded by INK2_XPAD
+                if (cp[1] < want && cp[1] < g_obs.aatt_min) g_obs.aatt_min = cp[1];
+            }
+        }
         for (size_t x = 0; x < (size_t)T * Q; x++) {
             uint32_t ua, ub;
             memcpy(&ua, att + x, sizeof ua);
@@ -294,8 +320,18 @@ static long exp_identity(int type, int H, int F, int E, int T, int used, int all
         const float *f13 = type == T_NVFP4 ? s13 : NULL, *f2 = type == T_NVFP4 ? s2 : NULL;
         const int i13 = h ? gpu_ink2_put(h, w13, (size_t)E * 2 * F * rb13, f13, f13 ? E : 0) : -1;
         const int i2 = h ? gpu_ink2_put(h, w2, (size_t)E * H * rb2, f2, f2 ? E : 0) : -1;
+        const long nb0 = gpu_ink2_test_stats(h, NULL);
         bool ran = i13 >= 0 && i2 >= 0 &&
                    gpu_ink2_experts(h, i13, i2, type, type, rb13, rb2, H, F, E, T, x, ch, wt, f13, f2, 4.0f, 8.0f, o1);
+        g_obs.nb = gpu_ink2_test_stats(h, g_obs.caps) - nb0;   // (ae): the tiled products, the gathered buffers
+        g_obs.nall = 0;
+        g_obs.nbig = 0;
+        for (int e = 0; e < E; e++) {
+            int n = 0;
+            for (int t = 0; t < T; t++) n += ch[(size_t)t * E + e];
+            g_obs.nall += n;
+            g_obs.nbig += n >= 16;
+        }
         gpu_ink2_test_experts_ref(h, 1);   // the reference: the former per-expert launches, each product per column
         gpu_ink2_test_mv_ref(h, 1);
         ran = ran && gpu_ink2_experts(h, i13, i2, type, type, rb13, rb2, H, F, E, T, x, ch, wt, f13, f2, 4.0f, 8.0f, o2);
@@ -351,7 +387,9 @@ static long lin_identity(int type, int n_in, int n_out, int T, long *nval) {
         }
         gpu_ink2 *h = gpu_ink2_bind();
         const int i0 = h ? gpu_ink2_put(h, w, rb * (size_t)n_out, NULL, 0) : -1;
+        const long nb0 = gpu_ink2_test_stats(h, NULL);
         bool ran = i0 >= 0 && gpu_ink2_lin(h, i0, type, rb, 0, n_out, n_in, T, x, y1, fac);
+        g_obs.nb = gpu_ink2_test_stats(h, g_obs.caps) - nb0;   // (ae): the batched dispatches of the call, its x buffer
         gpu_ink2_test_mv_ref(h, 1);
         ran = ran && gpu_ink2_lin(h, i0, type, rb, 0, n_out, n_in, T, x, y2, fac);
         gpu_ink2_test_mv_ref(h, 0);
@@ -1132,6 +1170,64 @@ int main(int argc, char **argv) {
                   "%zu not finite (%ld values)", cs[k].what, w, nf, cmp);
             CHECK(cmp > 0 && nd == 0, "(n) the device core, %s: %ld of %ld values differ in their bits from the reference "
                   "kernel's (the core before the decode fix; want 0)", cs[k].what, nd, cmp);
+        }
+    }
+    // (ae) the second read's P2 3 (and 2): the 16-column threshold observed, not only its bits: a dense product runs
+    // batched from 16 columns and per column below (one batched dispatch a product), an NVFP4 expert body tiles only
+    // an expert of 16+ columns (one tiled dispatch each for gate_up and down); the padded buffers hold INK2_XPAD
+    // columns past their last (x of a product, the gathered x and the activations, the attention output); the wide
+    // products at partial tiles (17, 33 columns) bit for bit; and P2 2: an attention call without a reservation keeps
+    // its stored logits within INK2_LOGITS_CAP (16 MiB) and still equals the reference kernel bit for bit
+    {
+        static const int Ts[] = { 1, 15, 16, 17, 48 };
+        static const struct { int type; const char *name; } ty[] = { { T_BF16, "BF16" }, { T_NVFP4, "NVFP4" } };
+        for (size_t u = 0; u < 2; u++)
+            for (size_t k = 0; k < sizeof Ts / sizeof *Ts; k++) {
+                long nv = 0;
+                const long d = lin_identity(ty[u].type, 512, 384, Ts[k], &nv);
+                const long want = Ts[k] >= 16;
+                const size_t xw = sizeof(float) * ((size_t)Ts[k] + 16) * 512;
+                CHECK(d == 0 && nv > 0 && g_obs.nb == want && g_obs.caps[0] >= xw, "(ae) a %s product at %d columns: %ld "
+                      "batched dispatches (want %ld), its x buffer %zu bytes (want >= %zu, %d columns + 16)", ty[u].name,
+                      Ts[k], g_obs.nb, want, g_obs.caps[0], xw, Ts[k]);
+            }
+        static const struct { int type, n_in, n_out, T; const char *what; } wc[] = {
+            { T_BF16, 2304, 3072, 17, "BF16 at q_proj's widths (2304 -> 3072), 17 columns (a tile of 16 and one of 1)" },
+            { T_NVFP4, 2304, 2304, 33, "NVFP4 at gate_up's widths (2304 -> 2304), 33 columns (two tiles and one of 1)" },
+        };
+        for (size_t k = 0; k < sizeof wc / sizeof *wc; k++) {
+            long nv = 0;
+            const long d = lin_identity(wc[k].type, wc[k].n_in, wc[k].n_out, wc[k].T, &nv);
+            CHECK(d == 0 && nv > 0 && g_obs.nb == 1, "(ae) %s: %ld of %ld values differ from the per-column launches' "
+                  "(want 0); %ld batched dispatches (want 1)", wc[k].what, d, nv, g_obs.nb);
+        }
+        static const struct { int T, all; const char *what; } ec[] = {
+            { 17, 3, "17 positions, expert 3 at every position (17 columns: tiled)" },
+            { 15, 3, "15 positions, expert 3 at every position (15 columns: no expert tiles)" },
+        };
+        for (size_t k = 0; k < sizeof ec / sizeof *ec; k++) {
+            long nv = 0;
+            const long d = exp_identity(T_NVFP4, 256, 128, 16, ec[k].T, 2, ec[k].all, -1, &nv);
+            const long want = g_obs.nbig > 0 ? 2 : 0;
+            const size_t we = sizeof(float) * ((size_t)g_obs.nall + 16) * 256, wa = sizeof(float) * ((size_t)g_obs.nall + 16) * (2 * 128);
+            CHECK(d == 0 && nv > 0 && g_obs.nb == want && (ec[k].T >= 16) == (g_obs.nbig > 0) && g_obs.caps[2] >= we &&
+                  g_obs.caps[3] >= wa, "(ae) the NVFP4 expert body, %s: %ld tiled dispatches (want %ld; %ld experts of 16+ "
+                  "columns); the gathered x %zu bytes (want >= %zu) and the activations %zu (want >= %zu: %ld columns + "
+                  "16)", ec[k].what, g_obs.nb, want, g_obs.nbig, g_obs.caps[2], we, g_obs.caps[3], wa, g_obs.nall);
+        }
+        static const int c_one[1] = { 1040 };
+        for (int un = 0; un < 2; un++) {
+            size_t nf = 0;
+            long cmp = 0, nd = 0;
+            g_obs.core_unreserved = un;
+            const double w = core_case(128, 1, 40, 1100, c_one, 1, &nf, &cmp, &nd);
+            g_obs.core_unreserved = false;
+            CHECK(cmp > 0 && nd == 0 && nf == 0 && w <= 1e-4 && g_obs.alg_max <= ((size_t)16 << 20) &&
+                  g_obs.aatt_min == (size_t)-1, "(ae) the device core %s, 1040 queries x 4 heads x 1040 keys (17.3 MB "
+                  "of logits at once): the stored logits' buffer %zu bytes (want <= 16 MiB); an attention output short "
+                  "of T + 16 columns: %s; %ld of %ld values differ from the reference kernel's (want 0)",
+                  un ? "WITHOUT a reservation" : "reserved as the fit does", g_obs.alg_max,
+                  g_obs.aatt_min == (size_t)-1 ? "none" : "YES", nd, cmp);
         }
     }
     // G2b 2a (o): a failed device core refuses that forward and the next; and the REWIND path through the device

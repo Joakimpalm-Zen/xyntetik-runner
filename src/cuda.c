@@ -12912,6 +12912,7 @@ struct gpu_ink2 {
     // the per-column launches, the reference
     CUfunction mvb_bf16;
     int mv_ref;
+    long n_mvb;   // TEST-ONLY observation: the products (and the expert body's tiled products) run batched so far
     // P1b: the batched NVFP4 product and its segmented expert twin (each column in k_mv_nvfp4's order)
     CUfunction mvb_nvfp4, mvsegb_nvfp4;
     // D1a: the loop's message gates (the norms, the combination with the host's tanh; TEST-ONLY the bare tanh), and
@@ -13010,6 +13011,7 @@ static bool ink2_mv_cols_xs(gpu_ink2 *h, int type, CUdeviceptr w, uint64_t w_off
         mv_args a = { n_in, n_out, w_off, 0, n, xs, n_out };
         void *p[] = { &w, &x, &y, &a, &x };
         bool ok = true;
+        h->n_mvb++;
         for (int t0 = 0; ok && t0 < n; t0 += 16 * 65535) {   // grid.y: 16-column tiles, at most 65535 a launch
             const int nt = n - t0 < 16 * 65535 ? n - t0 : 16 * 65535;
             CUdeviceptr xc = x + sizeof(float) * (size_t)t0 * (size_t)xs, yc = y + sizeof(float) * (size_t)t0 * (size_t)n_out;
@@ -13026,6 +13028,7 @@ static bool ink2_mv_cols_xs(gpu_ink2 *h, int type, CUdeviceptr w, uint64_t w_off
         mv_args a = { n_in, n_out, w_off, 0, n, xs, n_out };
         void *p[] = { &w, &x, &y, &a, &x, &scale };
         bool ok = true;
+        h->n_mvb++;
         for (int t0 = 0; ok && t0 < n; t0 += 16 * 65535) {
             const int nt = n - t0 < 16 * 65535 ? n - t0 : 16 * 65535;
             CUdeviceptr xc = x + sizeof(float) * (size_t)t0 * (size_t)xs, yc = y + sizeof(float) * (size_t)t0 * (size_t)n_out;
@@ -13061,7 +13064,8 @@ bool gpu_ink2_lin(gpu_ink2 *h, int i, int type, size_t row_bytes, int64_t row0, 
     // the columns in groups the reserved buffers hold (gpu_ink2_reserve; at least one column): a product wider than
     // the reservation's T rows (the head's vocabulary at T > 1, a keep-all forward) runs a group at a time instead of
     // growing the buffers to T of its rows. Each column is its own batch-1 product, so the grouping changes no bit.
-    // (the x buffer keeps INK2_XPAD columns of padding past a group's last: the batched kernel reads them)
+    // (the x buffer keeps INK2_XPAD columns of padding past a group's last: the batched kernel reads them; an x buffer
+    // with no room for a column past its padding counts as unreserved, as a short y buffer does: it grows to T columns)
     const size_t cx = sizeof(float) * (size_t)n_in, cy = sizeof(float) * (size_t)n_out, xcols = h->dx_cap / cx;
     int G = T;
     if (xcols > INK2_XPAD && xcols - INK2_XPAD < (size_t)G) G = (int)(xcols - INK2_XPAD);
@@ -13106,6 +13110,7 @@ static bool ink2_mvsegb(gpu_ink2 *h, int type, CUdeviceptr w, int n_in, int n_ou
     const unsigned rpb = 8, block = 256;
     mv_args a = { n_in, n_out, 0, 0, 1, n_in, n_out };
     bool ok = true;
+    h->n_mvb++;
     for (int k0 = 0; ok && k0 < ntile; k0 += 65535) {
         const unsigned g = (unsigned)(ntile - k0 < 65535 ? ntile - k0 : 65535);
         void *p[] = { &w, &x, &y, &a, &x, &d_tiles, &w_es, &xcs, &ycs, &k0, &esc };
@@ -13213,6 +13218,17 @@ void gpu_ink2_test_mv_ref(gpu_ink2 *h, int on) {
     pthread_mutex_lock(&h->mu);
     h->mv_ref = on;
     pthread_mutex_unlock(&h->mu);
+}
+// TEST-ONLY (gpu.h): the batched dispatches so far, and the padded buffers' capacities in bytes
+long gpu_ink2_test_stats(gpu_ink2 *h, size_t caps[5]) {
+    if (!h) return -1;
+    pthread_mutex_lock(&h->mu);
+    const long n = h->n_mvb;
+    if (caps) {
+        caps[0] = h->dx_cap; caps[1] = h->aatt_cap; caps[2] = h->exe_cap; caps[3] = h->eact_cap; caps[4] = h->alg_cap;
+    }
+    pthread_mutex_unlock(&h->mu);
+    return n;
 }
 // D1a (gpu.h): one message step on the device, ink2_message_steps_c's fast path operation for operation
 bool gpu_ink2_msg_steps(gpu_ink2 *h, int n_roles, int T, int H, int r, float eps, const gpu_ink2_msg_role *roles,
@@ -13454,8 +13470,11 @@ static bool ink2_core_launch(gpu_ink2 *h, gpu_ink2_kv *kv, int app, int T, int p
     }
     int nks = global ? p0 + T : (window < p0 + T ? window : p0 + T);   // the most keys a query of the call admits
     const size_t fb = sizeof(float), per_q = fb * (size_t)nh * (size_t)nks;
+    // the queries in groups the buffer holds; a buffer not reserved for this many keys (a direct caller, or keys past
+    // the reservation's nk_max) grows to INK2_LOGITS_CAP's bound, not to all T queries (at least one query)
+    const size_t lcap = h->alg_cap >= per_q ? h->alg_cap : ink2_logits_bytes(T, nh, nks);
     int G = T;
-    if (h->alg_cap >= per_q && h->alg_cap / per_q < (size_t)G) G = (int)(h->alg_cap / per_q);
+    if (lcap / per_q < (size_t)G) G = (int)(lcap / per_q);
     if (!ink2_grow(&h->alg, &h->alg_cap, per_q * (size_t)G)) return false;
     const unsigned nt = (unsigned)((hd + 31) / 32 * 32);
     bool ok = true;
@@ -13475,7 +13494,8 @@ static bool ink2_core_launch(gpu_ink2 *h, gpu_ink2_kv *kv, int app, int T, int p
 bool gpu_ink2_attn(gpu_ink2 *h, gpu_ink2_kv *kv, int app, int T, const int *pos, const float *q, const float *k,
                    const float *v, const float *rl, const float *sk, float *att, int nh, int nkv, int hd, int window,
                    int global, int ext, float scale) {
-    if (!h || !kv || kv->h != h || !h->f_attn || app < 0 || app >= kv->n_app || T <= 0 || !pos || !q || !k || !v ||
+    if (!h || !kv || kv->h != h || !h->f_attn || (!h->attn_ref && !h->f_attn_lg) ||
+        app < 0 || app >= kv->n_app || T <= 0 || !pos || !q || !k || !v ||
         !rl || !sk || !att || nh <= 0 || nkv <= 0 || nh % nkv || hd <= 0 || hd > 256 || ext <= 0 ||
         kv->C[app] != nkv * hd)
         return false;
@@ -13512,7 +13532,7 @@ void gpu_ink2_release_experts(gpu_ink2 *h) {
     pthread_mutex_unlock(&h->mu);
 }
 bool gpu_ink2_block_ok(const gpu_ink2 *h) {
-    return h && h->f_attn && h->f_sclip && h->f_kvconv && h->f_kvnorm && h->f_bank && h->f_gate;
+    return h && h->f_attn && h->f_attn_lg && h->f_sclip && h->f_kvconv && h->f_kvnorm && h->f_bank && h->f_gate;
 }
 // one view's product over T device columns x (n_in each) into y (n_out each); false for a view the handle lacks
 static bool ink2_block_mv(gpu_ink2 *h, const gpu_ink2_block *b, int role, int n_in, int n_out, int T, CUdeviceptr x,
