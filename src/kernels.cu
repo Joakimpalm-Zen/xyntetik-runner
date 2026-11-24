@@ -5675,6 +5675,70 @@ extern "C" __global__ void k_mvseg_nvfp4(MVSEG_PARAMS, const float *esc) {
         if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
     }
 }
+// P1b: the NVFP4 product BATCHED: each decoded weight applied to the tile's 16 columns. k_mv_nvfp4 (left untouched)
+// gives each lane whole 64-element blocks b = lane, lane + 32, ... and per block its four 16-element sub-blocks in
+// order: t = sum over j of kv[lo] * x[j], kv[hi] * x[j + 8] (j ascending, lo then hi), s += d * t; then the warp tree
+// and the factor. These kernels keep that per-column order exactly; only where x is read from differs (global, as the
+// i-quant batch-1 kernels read it, instead of the shared staging, which for 16 columns would not fit). Like
+// k_mv_bf16_b they compute all 16 columns of a tile (x carries 16 columns of padding past its last) and store the
+// tile's own. 8 rows a 256-thread block, a warp a row, as k_mv_nvfp4.
+#define NVFP4_B_BODY(x_, xs_, cnt_, y_, ys_, scale_)                                                                 \
+    __shared__ float kv[16];                                                                                        \
+    if (threadIdx.x < 16) kv[threadIdx.x] = kv_mxfp4[threadIdx.x];                                                  \
+    __syncthreads();                                                                                                \
+    const unsigned row = blockIdx.x * (blockDim.x / 32) + (threadIdx.x >> 5), lane = threadIdx.x & 31;              \
+    if (row >= (unsigned)a.n_out) return;                                                                          \
+    const int nb = a.n_in / 64;                                                                                     \
+    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 36;                                                        \
+    float s[16];                                                                                                    \
+    _Pragma("unroll")                                                                                               \
+    for (int c = 0; c < 16; c++) s[c] = 0;                                                                         \
+    for (int b = (int)lane; b < nb; b += 32) {                                                                     \
+        const uchar *blk = rw + (ulong64)b * 36;                                                                    \
+        for (int sub = 0; sub < 4; sub++) {                                                                         \
+            const float d = ue4m3f(blk[sub]);                                                                       \
+            const uchar *q = blk + 4 + sub * 8;                                                                     \
+            float wl[8], wh[8];                                                                                     \
+            _Pragma("unroll")                                                                                       \
+            for (int j = 0; j < 8; j++) { wl[j] = kv[q[j] & 0xF]; wh[j] = kv[q[j] >> 4]; }                          \
+            const float *xb = (x_) + (ulong64)b * 64 + sub * 16;                                                    \
+            _Pragma("unroll")                                                                                       \
+            for (int c = 0; c < 16; c++) {                                                                          \
+                const float *xp = xb + (ulong64)c * (xs_);                                                          \
+                float t = 0;                                                                                        \
+                _Pragma("unroll")                                                                                   \
+                for (int j = 0; j < 8; j++) {                                                                       \
+                    t += wl[j] * xp[j];                                                                             \
+                    t += wh[j] * xp[j + 8];                                                                         \
+                }                                                                                                   \
+                s[c] += d * t;                                                                                      \
+            }                                                                                                       \
+        }                                                                                                           \
+    }                                                                                                               \
+    _Pragma("unroll")                                                                                               \
+    for (int c = 0; c < 16; c++) {                                                                                  \
+        const float v = warp_sum(s[c]) * (scale_);                                                                  \
+        if (lane == 0 && c < (cnt_)) (y_)[(ulong64)c * (ys_) + row] = a.has_bias ? v + bias[row] : v;               \
+    }
+// a dense product: tile blockIdx.y = columns 16 y .. (a.batch in all; a.xs / a.ys the column strides)
+extern "C" __global__ void k_mv_nvfp4_b(MV_PARAMS, float scale) {
+    const int c0 = (int)blockIdx.y * 16, cnt = a.batch - c0 < 16 ? a.batch - c0 : 16;
+    const float *xt = x + (ulong64)c0 * a.xs;
+    float *yt = y + (ulong64)c0 * a.ys;
+    NVFP4_B_BODY(xt, a.xs, cnt, yt, a.ys, scale)
+}
+// the expert body's segmented twin: tile k = k0 + blockIdx.y of tiles[3 k..] = {first column, count, expert}
+extern "C" __global__ void k_mvsegb_nvfp4(const uchar *wb, const float *x, float *y, mv_args a, const float *bias,
+                                          const int *tiles, ka_u64 w_es, int xcs, int ycs, int k0, const float *esc) {
+    const int *tl = tiles + 3 * (k0 + (int)blockIdx.y);
+    a.w_off += (ka_u64)tl[2] * w_es;
+    const float *xt = x + (ulong64)tl[0] * xcs;
+    float *yt = y + (ulong64)tl[0] * ycs;
+    const int cnt = tl[1];
+    const float scale = esc ? esc[tl[2]] : 1.0f;
+    NVFP4_B_BODY(xt, xcs, cnt, yt, ycs, scale)
+}
+
 // The weighted sum per position, one thread a (position t = blockIdx.y, element i): out[t][i] = the sum over the
 // position's columns pl[po[t]..po[t+1]) in ascending expert order of w[j] * src[j][i], accumulated as the former
 // per-expert k_moe_scatter_add launches did (a zeroed accumulator, then += w * src, expert after expert), so the same

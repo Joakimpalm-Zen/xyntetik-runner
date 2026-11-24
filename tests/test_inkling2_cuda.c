@@ -314,33 +314,43 @@ done:
     return diff;
 }
 
-// P1a (i2): a BF16 product through gpu_ink2_lin at T columns, batched (k_mv_bf16_b from 16 columns) against every
-// column its own batch-1 launch (TEST-ONLY gpu_ink2_test_mv_ref), bit for bit; random weights (exponents kept sane)
-// and dense random x. *nval the values compared; returns the values whose bits differ, -1 if a call did not run.
-static long lin_identity(int n_in, int n_out, int T, long *nval) {
-    uint16_t *w = malloc(sizeof(uint16_t) * (size_t)n_in * n_out);
+// P1a/P1b (i2): a BF16 or NVFP4 product through gpu_ink2_lin at T columns, batched (k_mv_bf16_b / k_mv_nvfp4_b from 16
+// columns) against every column its own batch-1 launch (TEST-ONLY gpu_ink2_test_mv_ref), bit for bit; random weights
+// (BF16: exponents kept sane; NVFP4: random codes, scale bytes in a sane range, the factor 0.75) and dense random x.
+// *nval the values compared; returns the values whose bits differ, -1 if a call did not run.
+static long lin_identity(int type, int n_in, int n_out, int T, long *nval) {
+    const size_t rb = type == T_NVFP4 ? (size_t)n_in / 64 * 36 : (size_t)n_in * 2;
+    unsigned char *w = malloc(rb * (size_t)n_out);
     float *x = malloc(sizeof(float) * (size_t)T * n_in), *y1 = malloc(sizeof(float) * (size_t)T * n_out);
     float *y2 = malloc(sizeof(float) * (size_t)T * n_out);
+    const float fac = type == T_NVFP4 ? 0.75f : 1.0f;
     long diff = -1;
     *nval = 0;
     if (w && x && y1 && y2) {
-        uint32_t seed = 555u + (uint32_t)T;
-        for (size_t i = 0; i < (size_t)n_in * n_out; i++) {
-            seed = seed * 1664525u + 1013904223u;
-            const float f = 0.05f * (float)((int)(seed >> 9) % 2001 - 1000) / 1000.0f;
-            uint32_t u;
-            memcpy(&u, &f, 4);
-            w[i] = (uint16_t)(u >> 16);
+        uint32_t seed = 555u + (uint32_t)T + 31u * (uint32_t)type;
+        if (type == T_NVFP4) {
+            for (size_t i = 0; i < rb * (size_t)n_out; i++) { seed = seed * 1664525u + 1013904223u; w[i] = (unsigned char)(seed >> 24); }
+            for (size_t r = 0; r < (size_t)n_out; r++)
+                for (size_t b = 0; b < rb; b += 36)
+                    for (int k = 0; k < 4; k++) { seed = seed * 1664525u + 1013904223u; w[r * rb + b + k] = (unsigned char)(0x30 + (seed >> 28)); }
+        } else {
+            for (size_t i = 0; i < (size_t)n_in * n_out; i++) {
+                seed = seed * 1664525u + 1013904223u;
+                const float f = 0.05f * (float)((int)(seed >> 9) % 2001 - 1000) / 1000.0f;
+                uint32_t u;
+                memcpy(&u, &f, 4);
+                ((uint16_t *)w)[i] = (uint16_t)(u >> 16);
+            }
         }
         for (size_t i = 0; i < (size_t)T * n_in; i++) {
             seed = seed * 1664525u + 1013904223u;
             x[i] = (float)((int)(seed >> 9) % 2001 - 1000) / 1000.0f;
         }
         gpu_ink2 *h = gpu_ink2_bind();
-        const int i0 = h ? gpu_ink2_put(h, w, sizeof(uint16_t) * (size_t)n_in * n_out, NULL, 0) : -1;
-        bool ran = i0 >= 0 && gpu_ink2_lin(h, i0, T_BF16, sizeof(uint16_t) * (size_t)n_in, 0, n_out, n_in, T, x, y1, 1.0f);
+        const int i0 = h ? gpu_ink2_put(h, w, rb * (size_t)n_out, NULL, 0) : -1;
+        bool ran = i0 >= 0 && gpu_ink2_lin(h, i0, type, rb, 0, n_out, n_in, T, x, y1, fac);
         gpu_ink2_test_mv_ref(h, 1);
-        ran = ran && gpu_ink2_lin(h, i0, T_BF16, sizeof(uint16_t) * (size_t)n_in, 0, n_out, n_in, T, x, y2, 1.0f);
+        ran = ran && gpu_ink2_lin(h, i0, type, rb, 0, n_out, n_in, T, x, y2, fac);
         gpu_ink2_test_mv_ref(h, 0);
         if (ran) {
             diff = 0;
@@ -837,18 +847,23 @@ int main(int argc, char **argv) {
         gpu_ink2_free(h);
         free(w13); free(w2);
     }
-    // P1a (i): a BF16 product batched from 16 columns equals its per-column launches bit for bit
+    // P1a/P1b (i): a BF16 or NVFP4 product batched from 16 columns equals its per-column launches bit for bit
     {
         static const int Ts[] = { 1, 15, 16, 17, 31, 33, 64, 100 };
-        for (size_t k = 0; k < sizeof Ts / sizeof *Ts; k++) {
-            long nv = 0;
-            const long d = lin_identity(512, 384, Ts[k], &nv);
-            CHECK(d == 0 && nv > 0, "(i) a BF16 product (512 -> 384) at %d columns, batched from 16: %ld of %ld values "
-                  "differ in their bits from the per-column launches' (want 0)", Ts[k], d, nv);
-        }
+        static const struct { int type; const char *name; } ty[] = { { T_BF16, "BF16" }, { T_NVFP4, "NVFP4 (factor 0.75)" } };
+        for (size_t u = 0; u < 2; u++)
+            for (size_t k = 0; k < sizeof Ts / sizeof *Ts; k++) {
+                long nv = 0;
+                const long d = lin_identity(ty[u].type, 512, 384, Ts[k], &nv);
+                CHECK(d == 0 && nv > 0, "(i) a %s product (512 -> 384) at %d columns, batched from 16: %ld of %ld values "
+                      "differ in their bits from the per-column launches' (want 0)", ty[u].name, Ts[k], d, nv);
+            }
         long nv = 0;
-        const long d = lin_identity(2304, 3072, 48, &nv);
+        long d = lin_identity(T_BF16, 2304, 3072, 48, &nv);
         CHECK(d == 0 && nv > 0, "(i) a BF16 product at q_proj's widths (2304 -> 3072), 48 columns: %ld of %ld values "
+              "differ in their bits from the per-column launches' (want 0)", d, nv);
+        d = lin_identity(T_NVFP4, 2304, 2304, 48, &nv);
+        CHECK(d == 0 && nv > 0, "(i) an NVFP4 product at gate_up's widths (2304 -> 2304), 48 columns: %ld of %ld values "
               "differ in their bits from the per-column launches' (want 0)", d, nv);
     }
     // D2 (k): the fused expert body equals the former per-expert launches bit for bit
@@ -866,6 +881,10 @@ int main(int argc, char **argv) {
             { "BF16, 16 positions, expert 3 at every position (exactly one full tile)", T_BF16, 256, 128, 16, 16, 2, 3, -1 },
             { "BF16, 17 positions, expert 3 at every position (a tile of 16 and one of 1)", T_BF16, 256, 128, 16, 17, 2, 3, -1 },
             { "BF16 at the real widths, 64 positions, 8 of 16 each", T_BF16, 2304, 1152, 16, 64, 8, -1, -1 },
+            // P1b: NVFP4 experts with at least 16 columns run as batched tiles too
+            { "NVFP4, 16 positions, expert 3 at every position (exactly one full tile)", T_NVFP4, 256, 128, 16, 16, 2, 3, -1 },
+            { "NVFP4, 17 positions, expert 3 at every position (a tile of 16 and one of 1)", T_NVFP4, 256, 128, 16, 17, 2, 3, -1 },
+            { "NVFP4 at the real widths, 64 positions, 8 of 16 each", T_NVFP4, 2304, 1152, 16, 64, 8, -1, -1 },
         };
         for (size_t k = 0; k < sizeof xc / sizeof *xc; k++) {
             long nv = 0;

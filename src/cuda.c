@@ -12912,6 +12912,8 @@ struct gpu_ink2 {
     // the per-column launches, the reference
     CUfunction mvb_bf16, mvsegb_bf16;
     int mv_ref;
+    // P1b: the batched NVFP4 product and its segmented expert twin (each column in k_mv_nvfp4's order)
+    CUfunction mvb_nvfp4, mvsegb_nvfp4;
     // G2b step 2a, the attention core: the chunk's queries, bias bank, sinks, positions and output (the K/V go
     // straight into the instance's ring, gpu_ink2_kv)
     // (the decode fix) the core as two kernels, k_ink2_attn_logits then k_ink2_attn, over the stored logits alg; the
@@ -12957,6 +12959,8 @@ gpu_ink2 *gpu_ink2_bind(void) {
     if (cu.ModuleGetFunction(&h->f_scatter_pos, h->mod, "k_moe_scatter_pos") != 0) h->f_scatter_pos = NULL;
     if (cu.ModuleGetFunction(&h->mvb_bf16, h->mod, "k_mv_bf16_b") != 0) h->mvb_bf16 = NULL;
     if (cu.ModuleGetFunction(&h->mvsegb_bf16, h->mod, "k_mvsegb_bf16") != 0) h->mvsegb_bf16 = NULL;
+    if (cu.ModuleGetFunction(&h->mvb_nvfp4, h->mod, "k_mv_nvfp4_b") != 0) h->mvb_nvfp4 = NULL;
+    if (cu.ModuleGetFunction(&h->mvsegb_nvfp4, h->mod, "k_mvsegb_nvfp4") != 0) h->mvsegb_nvfp4 = NULL;
     if (cu.ModuleGetFunction(&h->f_gather, h->mod, "k_moe_gather") != 0) h->f_gather = NULL;
     if (cu.ModuleGetFunction(&h->f_scatter, h->mod, "k_moe_scatter_add") != 0) h->f_scatter = NULL;
     if (cu.ModuleGetFunction(&h->f_swiglu, h->mod, "k_ink2_swiglu") != 0) h->f_swiglu = NULL;
@@ -13008,6 +13012,21 @@ static bool ink2_mv_cols_xs(gpu_ink2 *h, int type, CUdeviceptr w, uint64_t w_off
                                  NULL) == 0;
         }
         (void)scale;   // BF16 takes no factor (gpu_ink2_lin refuses one)
+        return ok;
+    }
+    // P1b: the same for NVFP4 (k_mv_nvfp4_b, 8 rows a 256-thread block, the factor its trailing parameter)
+    if (type == T_NVFP4 && n >= INK2_MVB_MIN && h->mvb_nvfp4 && !h->mv_ref) {
+        mv_args a = { n_in, n_out, w_off, 0, n, xs, n_out };
+        void *p[] = { &w, &x, &y, &a, &x, &scale };
+        bool ok = true;
+        for (int t0 = 0; ok && t0 < n; t0 += 16 * 65535) {
+            const int nt = n - t0 < 16 * 65535 ? n - t0 : 16 * 65535;
+            CUdeviceptr xc = x + sizeof(float) * (size_t)t0 * (size_t)xs, yc = y + sizeof(float) * (size_t)t0 * (size_t)n_out;
+            a.batch = nt;
+            p[1] = &xc; p[2] = &yc;
+            ok = cu.LaunchKernel(h->mvb_nvfp4, ((unsigned)n_out + 7) / 8, (unsigned)((nt + 15) / 16), 1, 256, 1, 1, 0, NULL, p,
+                                 NULL) == 0;
+        }
         return ok;
     }
     unsigned rpb = 4, block = 128;
@@ -13069,16 +13088,21 @@ static bool ink2_mvseg(gpu_ink2 *h, int type, CUdeviceptr w, int n_in, int n_out
     }
     return ok;
 }
-// P1a: a BF16 segmented product over ntile tiles (k_mvsegb_bf16: tile {first column, count <= 16, expert}), the house's
-// batched kernel per tile; x carries INK2_XPAD columns of padding past its last
-static bool ink2_mvsegb(gpu_ink2 *h, CUdeviceptr w, int n_in, int n_out, int ntile, CUdeviceptr x, int xcs, CUdeviceptr y,
-                        int ycs, CUdeviceptr d_tiles, uint64_t w_es) {
+// P1a/P1b: a segmented product over ntile tiles (tile {first column, count <= 16, expert}): BF16 by k_mvsegb_bf16
+// (the house's batched kernel per tile, 4 rows a 128-thread block), NVFP4 by k_mvsegb_nvfp4 (8 rows a 256-thread
+// block, esc the experts' factors or 0); x carries INK2_XPAD columns of padding past its last
+static CUfunction ink2_segb_fn(const gpu_ink2 *h, int type) {
+    return type == T_BF16 ? h->mvsegb_bf16 : type == T_NVFP4 ? h->mvsegb_nvfp4 : NULL;
+}
+static bool ink2_mvsegb(gpu_ink2 *h, int type, CUdeviceptr w, int n_in, int n_out, int ntile, CUdeviceptr x, int xcs,
+                        CUdeviceptr y, int ycs, CUdeviceptr d_tiles, uint64_t w_es, CUdeviceptr esc) {
+    const unsigned rpb = type == T_NVFP4 ? 8 : 4, block = type == T_NVFP4 ? 256 : 128;
     mv_args a = { n_in, n_out, 0, 0, 1, n_in, n_out };
     bool ok = true;
     for (int k0 = 0; ok && k0 < ntile; k0 += 65535) {
         const unsigned g = (unsigned)(ntile - k0 < 65535 ? ntile - k0 : 65535);
-        void *p[] = { &w, &x, &y, &a, &x, &d_tiles, &w_es, &xcs, &ycs, &k0 };
-        ok = cu.LaunchKernel(h->mvsegb_bf16, ((unsigned)n_out + 3) / 4, g, 1, 128, 1, 1, 0, NULL, p, NULL) == 0;
+        void *p[] = { &w, &x, &y, &a, &x, &d_tiles, &w_es, &xcs, &ycs, &k0, &esc };
+        ok = cu.LaunchKernel(ink2_segb_fn(h, type), ((unsigned)n_out + rpb - 1) / rpb, g, 1, block, 1, 1, 0, NULL, p, NULL) == 0;
     }
     return ok;
 }
@@ -13091,7 +13115,7 @@ static bool ink2_mvsegb(gpu_ink2 *h, CUdeviceptr w, int n_in, int n_out, int nti
 static bool ink2_experts_fused(gpu_ink2 *h, int i13, int i2, int type13, int type2, size_t rb13, size_t rb2, int H,
                                int F, int E, int T, const float *x, const int *idx, const int *off, const float *wv,
                                int nall, const float *s13, const float *s2, float gate_cap, float up_cap, float *out) {
-    const bool tiled = !h->mv_ref && h->mvsegb_bf16 && (type13 == T_BF16 || type2 == T_BF16);
+    const bool tiled = !h->mv_ref && (ink2_segb_fn(h, type13) || ink2_segb_fn(h, type2));
     int nbig = 0, ntile = 0;
     for (int e = 0; tiled && e < E; e++)
         if (off[e + 1] - off[e] >= INK2_MVB_MIN) { nbig += off[e + 1] - off[e]; ntile += (off[e + 1] - off[e] + 15) / 16; }
@@ -13137,7 +13161,7 @@ static bool ink2_experts_fused(gpu_ink2 *h, int i13, int i2, int type13, int typ
     free(tab); free(wn);
     CUdeviceptr d_idx = h->eint, d_ex = h->eint + fi * (size_t)nall, d_po = h->eint + fi * 2 * (size_t)nall,
                 d_pl = d_po + fi * ((size_t)T + 1), d_tl = d_pl + fi * (size_t)nall;
-    const int jb13 = tiled && type13 == T_BF16 ? nbig : 0, jb2 = tiled && type2 == T_BF16 ? nbig : 0;
+    const int jb13 = tiled && ink2_segb_fn(h, type13) ? nbig : 0, jb2 = tiled && ink2_segb_fn(h, type2) ? nbig : 0;
     const CUdeviceptr esc13 = s13 ? h->esc : 0, esc2 = s2 ? h->esc + fb * (size_t)E : 0;
     int nh = H, ss = H, ds = H, f2 = 2 * F, nf = F;
     for (int j0 = 0; ok && j0 < nall; j0 += 65535) {   // the gather: column j = x[idx[j]]
@@ -13146,8 +13170,8 @@ static bool ink2_experts_fused(gpu_ink2 *h, int i13, int i2, int type13, int typ
         void *pg[] = { &dst, &h->ex, &di, &nh, &ss, &ds };
         ok = cu.LaunchKernel(h->f_gather, ((unsigned)H + 255) / 256, g, 1, 256, 1, 1, 0, NULL, pg, NULL) == 0;
     }
-    ok = ok && (!jb13 || ink2_mvsegb(h, h->t[i13].rows, H, 2 * F, ntile, h->exe, H, h->eact, 2 * F, d_tl,
-                                     (uint64_t)2 * F * rb13));
+    ok = ok && (!jb13 || ink2_mvsegb(h, type13, h->t[i13].rows, H, 2 * F, ntile, h->exe, H, h->eact, 2 * F, d_tl,
+                                     (uint64_t)2 * F * rb13, esc13));
     ok = ok && (!nall || ink2_mvseg(h, type13, h->t[i13].rows, H, 2 * F, jb13, nall, h->exe, H, h->eact, 2 * F, d_ex,
                                     (uint64_t)2 * F * rb13, esc13));
     for (int j0 = 0; ok && j0 < nall; j0 += 65535) {
@@ -13157,7 +13181,8 @@ static bool ink2_experts_fused(gpu_ink2 *h, int i13, int i2, int type13, int typ
         ok = cu.LaunchKernel(h->f_swiglu, ((unsigned)F + 255) / 256, g, 1, 256, 1, 1, 0, NULL, ps, NULL) == 0;
     }
     // down reads each column's first F values of its 2F-wide row
-    ok = ok && (!jb2 || ink2_mvsegb(h, h->t[i2].rows, F, H, ntile, h->eact, 2 * F, h->edn, H, d_tl, (uint64_t)H * rb2));
+    ok = ok && (!jb2 || ink2_mvsegb(h, type2, h->t[i2].rows, F, H, ntile, h->eact, 2 * F, h->edn, H, d_tl,
+                                    (uint64_t)H * rb2, esc2));
     ok = ok && (!nall || ink2_mvseg(h, type2, h->t[i2].rows, F, H, jb2, nall, h->eact, 2 * F, h->edn, H, d_ex,
                                     (uint64_t)H * rb2, esc2));
     for (int p0 = 0; ok && nall && p0 < T; p0 += 65535) {   // positions p0.., their offsets from d_po + p0
