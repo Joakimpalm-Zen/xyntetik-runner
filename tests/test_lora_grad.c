@@ -93,7 +93,10 @@ int main(int argc, char **argv) {
     // reported, not failed; the whole-adapter directional derivative and
     // the gradient cosine are the checks. Established on the muse fixture
     // in R8.9.4 as a reading, made a mode here.
-    bool stiff = argc > 3 && strcmp(argv[3], "stiff") == 0;
+    // The mode is one word, or several joined by commas ("slots,kvf32").
+    const char *mode = argc > 3 ? argv[3] : "";
+#define MODE_HAS(w) (strstr(mode, w) != NULL)
+    bool stiff = MODE_HAS("stiff");
     // "strict" (R17.3): the sparse-MoE fixtures. An attention adapter's
     // gradient reaches its layer input through the frozen experts AND the
     // router's softmax weights, and the router's share is small next to the
@@ -101,14 +104,21 @@ int main(int argc, char **argv) {
     // passed every check at 5% (worst rel err 0.013 to 0.020 on the three
     // MoE fixtures) while the correct backward reads 0. Strict holds the
     // resolved coordinates to 0.5%.
-    bool strict = argc > 3 && strcmp(argv[3], "strict") == 0;
+    bool strict = MODE_HAS("strict");
     // "slots" (R8.16): also a directional derivative along each projection
     // slot's own coordinates. The whole-adapter direction is dominated by
     // the large slots: on the qwen35 fixture a backward that dropped the
     // DeltaNet decay's gradient (the ssm_alpha slot, gradients near 1e-3)
     // passed it at cosine 0.99983, where its own direction reads an
     // analytic 0 against a nonzero finite difference.
-    bool slots = argc > 3 && strcmp(argv[3], "slots") == 0;
+    bool slots = MODE_HAS("slots");
+    // "kvf32" (R4.50.3): the KV rows in f32 (--train-kv-f32's cache), not f16. olmo2 normalises every branch output
+    // (post-norm-only blocks), which amplifies the f16 rows' rounding into the loss: on its fixtures 62 and 48 of 168
+    // coordinates went unresolved by the finite difference (the f16 staircase), against 0 with f32 rows and a
+    // cosine of 1.000000, the per-slot directions then within 2e-5. That rounding also blurs the k slot's slope by
+    // about 1%, so the live control below runs in this mode only.
+    bool kvf32 = MODE_HAS("kvf32");
+#undef MODE_HAS
     f16_init();
     model_params p;
     memset(&p, 0, sizeof(p));
@@ -116,6 +126,7 @@ int main(int argc, char **argv) {
     p.n_threads = 2;
     p.n_ctx = 64;
     p.n_batch = 32;
+    p.kv_f32 = kvf32;
     model_t m;
     memset(&m, 0, sizeof(m));
     if (!model_load(&m, base, &p)) {
@@ -897,6 +908,63 @@ int main(int argc, char **argv) {
         printf("lora-grad: device planes %zu bytes after the checks, %zu after the free; a fresh "
                "context's step %zu then %zu, %zu and %zu after each free\n", held0, freed[0],
                held[0], held[1], freed[1], freed[2]);
+    }
+    // ---- R4.50.3: the live control on a full-width QK norm (olmo2). The checks above must be able to fail on the
+    // mistake a port of this norm would make: its ADJOINT taken per head while the forward normalises the whole
+    // projection (model_t.test_qk_bw_per_head, TEST-ONLY, set here and nowhere else; the forward and so the loss are
+    // unchanged by it). Along the mutated gradient's own sign direction, the q and k slots' finite differences must
+    // miss it by more than the 2% the per-slot check above holds the real gradient to.
+    if (m.qk_norm_full && !kvf32)
+        printf("skip: the live control needs the kvf32 mode (f16 rows blur the k slot's slope by about 1%%)\n");
+    if (m.qk_norm_full && kvf32) {
+        const int qk_slots[2] = { LW_Q, LW_K };
+        m.test_qk_bw_per_head = true;
+        run_backward(&m, toks);
+        float *mut[MAX_BUF] = { 0 };
+        for (int i = 0; i < nsnap; i++) {
+            if (slo[i] != LW_Q && slo[i] != LW_K) continue;
+            int cnt = 0;
+            const float *g = model_lora_gradbuf(&m, lay[i], slo[i], whi[i], &cnt);
+            mut[i] = g && cnt == snap_n[i] ? malloc(sizeof(float) * (size_t)cnt) : NULL;
+            if (mut[i]) memcpy(mut[i], g, sizeof(float) * (size_t)cnt);
+            CHECK(mut[i] != NULL, "live control: grad buffer %d missing", i);
+        }
+        m.test_qk_bw_per_head = false;
+        for (int qs = 0; qs < 2; qs++) {
+            const int sl = qk_slots[qs];
+            double expect = 0;
+            for (int i = 0; i < nsnap; i++)
+                if (slo[i] == sl && mut[i])
+                    for (int k = 0; k < snap_n[i]; k++) expect += fabs(mut[i][k]);
+            const float steps[6] = { 1e-4f, 2e-4f, 5e-4f, 1e-3f, 2e-3f, 5e-3f };
+            double best = 1e9, best_fd = 0;
+            for (int si = 0; si < 6; si++) {
+                double lv[2];
+                for (int sg = 0; sg < 2; sg++) {
+                    float e = sg ? -steps[si] : steps[si];
+                    for (int pass = 0; pass < 2; pass++) {   // 0: step out and score, 1: step back
+                        for (int i = 0; i < nsnap; i++) {
+                            if (slo[i] != sl || !mut[i]) continue;
+                            int cnt = 0;
+                            float *theta = model_lora_param(&m, lay[i], slo[i], whi[i], &cnt);
+                            for (int k = 0; theta && k < cnt; k++)
+                                theta[k] += (pass ? -e : e) *
+                                            (mut[i][k] > 0 ? 1.0f : mut[i][k] < 0 ? -1.0f : 0.0f);
+                        }
+                        if (!pass) lv[sg] = run_backward(&m, toks);
+                    }
+                }
+                double fd = (lv[0] - lv[1]) / (2.0 * (double)steps[si]);
+                double mag = fabs(fd) > expect ? fabs(fd) : expect;
+                double rel = mag > 0 ? fabs(fd - expect) / mag : 0;
+                if (rel < best) { best = rel; best_fd = fd; }
+            }
+            printf("ok: live control (QK-norm adjoint per head), slot %d direction: fd %.6g vs the mutated "
+                   "analytic %.6g (rel %.5f, want > 0.02)\n", sl, best_fd, expect, best);
+            CHECK(best > 0.02, "live control: slot %d's directional derivative did not catch a per-head QK-norm "
+                  "adjoint (rel %.5f, fd %.6g, analytic %.6g)", sl, best, best_fd, expect);
+        }
+        for (int i = 0; i < nsnap; i++) free(mut[i]);
     }
     for (int i = 0; i < nsnap; i++) free(snap[i]);
     model_free(&m);

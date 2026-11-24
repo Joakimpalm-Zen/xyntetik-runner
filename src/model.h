@@ -712,6 +712,9 @@ typedef struct {
     bool   post_norm_only;
     bool   qk_norm_full;
     bool   swa_base_global;
+    // TEST-ONLY (R4.50.3): tests/test_lora_grad.c's live control sets it, nothing else does. The QK-norm ADJOINT is
+    // then taken per head while the forward stays full width, a wrong gradient the FD gate must fail on.
+    bool   test_qk_bw_per_head;
     bool   flint;            // flint: sinks + QK norms + NoPE full layers + MoE
                              // biases; no GPU kernels for those yet
     // deepseek2 (R4.4.5 step b): multi-head latent attention on the CPU. The

@@ -108,6 +108,9 @@ TRAIN_FAMILIES = {
     "partial-rope": ("make-test-model.py", ["--arch", "qwen3", "--rope-dim", "8"], None),
     "qwen35": ("make-test-ornith.py", [], None),
     "clef": ("make-test-clef.py", [], None),
+    # R4.50.3: olmo2's post-norm-only blocks and full-width QK norm, with OLMo 3's window and YaRN, and OLMo 2's plain form
+    "olmo2": ("make-test-olmo2.py", [], None),
+    "olmo2-plain": ("make-test-olmo2.py", ["--plain"], None),
     "moe-renorm": ("make-test-moe.py", [], "moe4-train"),
     "moe-no-renorm": ("make-test-moe.py", [], "moe4-train-nonorm"),
 }
@@ -182,7 +185,7 @@ def test_batched_taped_forward_is_the_solo_bytes(runner_bin, base, tmp_path, fam
 # The manual's `-t N` row: "the adapter bytes do not depend on it". Every
 # pooled pass of a step (the products, the adapter's own rank-r math since
 # R8.19, the DeltaNet heads) keeps each element's chain whatever the split.
-@pytest.mark.parametrize("family", ["base", "gemma3", "e-series", "qwen35", "clef", "moe-renorm"])
+@pytest.mark.parametrize("family", ["base", "gemma3", "e-series", "qwen35", "clef", "moe-renorm", "olmo2"])
 def test_adapter_bytes_do_not_depend_on_the_thread_count(runner_bin, base, tmp_path, family):
     d = base if family == "base" else _family_fixture(tmp_path, family)
     a1, a3 = tmp_path / "t1.gguf", tmp_path / "t3.gguf"
@@ -366,6 +369,18 @@ def test_loss_falls_and_adapter_improves_score(runner_bin, base, tmp_path):
 # and the FFN), scores the trained text better than the bare base.
 @pytest.mark.parametrize("family", ["qwen35", "clef"])
 def test_deltanet_training_learns_and_serves(runner_bin, tmp_path, family):
+    d = _family_fixture(tmp_path, family)
+    out = tmp_path / "ad.gguf"
+    losses = _train(runner_bin, d, out, steps=30)
+    assert losses[-1] < losses[0] * 0.95, (losses[0], losses[-1])
+    assert _score(runner_bin, d, lora=out) < _score(runner_bin, d) - 0.2
+
+
+# R4.50.3: training through olmo2's post-norm-only blocks and full-width QK norm learns, end to end, and the saved
+# adapter serves: loaded back through --lora it scores the trained text better than the bare base. The gradient's
+# anchor is the finite-difference gate (test-lora-grad on test-olmo2.gguf, with its live control).
+@pytest.mark.parametrize("family", ["olmo2", "olmo2-plain"])
+def test_olmo2_training_learns_and_serves(runner_bin, tmp_path, family):
     d = _family_fixture(tmp_path, family)
     out = tmp_path / "ad.gguf"
     losses = _train(runner_bin, d, out, steps=30)

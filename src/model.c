@@ -12203,8 +12203,6 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
     else if (m->lfm2) r = "recurrent architecture (short convolution)";
     else if (m->deepseek2) r = "multi-head latent attention (deepseek2)";
     else if (m->hyper_conn) r = "hyper-connections (qwen4exp)";
-    // the backward has the pre-norm and per-head QK-norm adjoints only (R4.50.3 is olmo2's)
-    else if (m->post_norm_only || m->qk_norm_full) r = "olmo2's post-norm-only blocks and full-width QK norm (R4.50.3)";
     else if (m->qwen35 && m->n_expert > 0) r = "MoE on a Gated DeltaNet model";
     // R17.3 (2026-10-08): an adapter on the ATTENTION of a sparse-MoE model
     // trains, with the backward running through the frozen router and
@@ -12650,7 +12648,7 @@ typedef struct {
     float *dxn2;
     float *dao;
     float *tmpE;
-    float *tmpH;   // one head's q/k-norm adjoint (hd_l wide, R6.68.91)
+    float *tmpH;   // one QK-norm group's adjoint: hd_l wide, or q_dim / kv_dim for olmo2's full width (R6.68.91)
     bool gate;
     float rs;
     int swa;
@@ -12770,9 +12768,10 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
     float *dxn2 = calloc((size_t)T * E, sizeof(float));
     float *dao  = calloc((size_t)T * q_dim, sizeof(float));
     float *tmpE = malloc(sizeof(float) * (size_t)E);
-    // a head's norm adjoint, as wide as the layer's head: a stack buffer
-    // of 512 was written past by a wider head (R6.68.91)
-    float *tmpH = malloc(sizeof(float) * (size_t)hd_l);
+    // a QK-norm group's adjoint, as wide as the group: one head (a stack buffer of 512 was written past by a wider
+    // head, R6.68.91), or olmo2's whole q or k projection (R4.50.3)
+    int qk_group = m->qk_norm_full ? (q_dim > kv_dim ? q_dim : kv_dim) : hd_l;
+    float *tmpH = malloc(sizeof(float) * (size_t)(qk_group > hd_l ? qk_group : hd_l));
     // R8.9.4 shapes: the attention output gate keeps its pre-activation and
     // the ungated attention output; the sandwich norms keep each branch's
     // pre-norm output; the residual scale and the per-layer output scale are
@@ -12962,9 +12961,13 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
     // order within each position.
     float *ob = ok ? malloc(sizeof(float) * (size_t)T * E) : NULL;
     if (!ob) ok = false;
-    for (int t = 0; ok && t < T; t++)
-        xnorm(m, xn1 + (size_t)t * E, tape_x + (size_t)t * E, ly->attn_norm_w,
-              ly->attn_norm_b, E, m->rms_eps);
+    for (int t = 0; ok && t < T; t++) {
+        if (m->post_norm_only)   // olmo2 (R4.50.3): the attention reads the residual itself, as layer_mixer_input
+            memcpy(xn1 + (size_t)t * E, tape_x + (size_t)t * E, sizeof(float) * (size_t)E);
+        else
+            xnorm(m, xn1 + (size_t)t * E, tape_x + (size_t)t * E, ly->attn_norm_w,
+                  ly->attn_norm_b, E, m->rms_eps);
+    }
     bool ex = t_mv_exact;
     t_mv_exact = true;
     if (ok && t_mv_dev == m) {
@@ -13038,7 +13041,9 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
         if (ly->qnorm_w) {
             memcpy(qpre + (size_t)t * q_dim, qt,
                    sizeof(float) * (size_t)q_dim);
-            qk_norm(qt, ly->qnorm_w, n_head, hd_l, m->rms_eps);
+            // olmo2: one group over the whole projection, as attn_rope_store
+            if (m->qk_norm_full) qk_norm(qt, ly->qnorm_w, 1, q_dim, m->rms_eps);
+            else                 qk_norm(qt, ly->qnorm_w, n_head, hd_l, m->rms_eps);
         }
         if (model_layer_ropes(m, l))
             rope_apply(m, qt, n_head, t, l);
@@ -13104,8 +13109,11 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
         }
         float *xat = xa + (size_t)t * E;
         for (int i = 0; i < E; i++) xat[i] = xt[i] + rs * ot[i];
-        xnorm(m, xn2 + (size_t)t * E, xat, ly->ffn_norm_w, ly->ffn_norm_b, E,
-              m->rms_eps);
+        if (m->post_norm_only)   // olmo2: the MLP reads the residual itself
+            memcpy(xn2 + (size_t)t * E, xat, sizeof(float) * (size_t)E);
+        else
+            xnorm(m, xn2 + (size_t)t * E, xat, ly->ffn_norm_w, ly->ffn_norm_b, E,
+                  m->rms_eps);
     }
     free(ob);
     for (int t = 0; ok && moe && t < T; t++) {
@@ -13439,8 +13447,12 @@ NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state
         float *dxat = dxa + (size_t)t * E;
         memcpy(dxat, dx + (size_t)t * E,
                sizeof(float) * (size_t)E);            // residual around FFN
-        rmsnorm_bw(xa + (size_t)t * E, ly->ffn_norm_w, dxn2 + (size_t)t * E,
-                   dxat, E, m->rms_eps);
+        if (m->post_norm_only) {   // olmo2: no FFN pre-norm, so its input's gradient adds straight through
+            const float *dn = dxn2 + (size_t)t * E;
+            for (int i = 0; i < E; i++) dxat[i] += dn[i];
+        } else
+            rmsnorm_bw(xa + (size_t)t * E, ly->ffn_norm_w, dxn2 + (size_t)t * E,
+                       dxat, E, m->rms_eps);
     }
     // attention output projection, whole window at once, fed by the branch
     // gradient (residual scale, then the sandwich norm's adjoint); a
@@ -13593,28 +13605,35 @@ NUM_STAGE void lbw_projections(model_t *m, int l, int T, float *dx, lbw_state *s
         // per-head QK-norm adjoints (qwen3-style): the cached/roped values
         // are POST-norm, so the projection backward needs the pre-norm
         // gradient computed against the recomputed pre-norm activations
+        // olmo2 (R4.50.3): one group over the whole q (k) projection with the full-width weight, as the forward
+        // normed it. test_qk_bw_per_head is the FD gate's live control (TEST-ONLY, set by tests/test_lora_grad.c
+        // alone): it takes this adjoint per head against a forward that stays full width, a wrong gradient the gate
+        // must catch.
+        const bool qk_full = m->qk_norm_full && !m->test_qk_bw_per_head;
         if (ly->qnorm_w) {
             float *dqt = dq + (size_t)t * q_dim;
             const float *qp = qpre + (size_t)t * q_dim;
-            for (int h = 0; h < n_head; h++) {
+            const int ng = qk_full ? 1 : n_head, gw = qk_full ? q_dim : hd_l;
+            for (int h = 0; h < ng; h++) {
                 float *tmp = s->tmpH;
-                memset(tmp, 0, sizeof(float) * (size_t)hd_l);
-                rmsnorm_bw(qp + (size_t)h * hd_l, ly->qnorm_w,
-                           dqt + (size_t)h * hd_l, tmp, hd_l, m->rms_eps);
-                memcpy(dqt + (size_t)h * hd_l, tmp,
-                       sizeof(float) * (size_t)hd_l);
+                memset(tmp, 0, sizeof(float) * (size_t)gw);
+                rmsnorm_bw(qp + (size_t)h * gw, ly->qnorm_w + (m->qk_norm_full && !qk_full ? (size_t)h * gw : 0),
+                           dqt + (size_t)h * gw, tmp, gw, m->rms_eps);
+                memcpy(dqt + (size_t)h * gw, tmp,
+                       sizeof(float) * (size_t)gw);
             }
         }
         if (owns && ly->knorm_w) {
             float *dkt = dk + (size_t)t * kv_dim;
             const float *kp = kpre + (size_t)t * kv_dim;
-            for (int h = 0; h < n_kv; h++) {
+            const int ng = qk_full ? 1 : n_kv, gw = qk_full ? kv_dim : hd_l;
+            for (int h = 0; h < ng; h++) {
                 float *tmp = s->tmpH;
-                memset(tmp, 0, sizeof(float) * (size_t)hd_l);
-                rmsnorm_bw(kp + (size_t)h * hd_l, ly->knorm_w,
-                           dkt + (size_t)h * hd_l, tmp, hd_l, m->rms_eps);
-                memcpy(dkt + (size_t)h * hd_l, tmp,
-                       sizeof(float) * (size_t)hd_l);
+                memset(tmp, 0, sizeof(float) * (size_t)gw);
+                rmsnorm_bw(kp + (size_t)h * gw, ly->knorm_w + (m->qk_norm_full && !qk_full ? (size_t)h * gw : 0),
+                           dkt + (size_t)h * gw, tmp, gw, m->rms_eps);
+                memcpy(dkt + (size_t)h * gw, tmp,
+                       sizeof(float) * (size_t)gw);
             }
         }
         if (vnorm) {
@@ -13675,8 +13694,12 @@ NUM_STAGE void lbw_input_grad(model_t *m, int l, int T, float *dx, lbw_state *s,
     for (int t = 0; ok && t < T; t++) {
         float *out = dx + (size_t)t * E;
         memcpy(out, dxa + (size_t)t * E, sizeof(float) * (size_t)E);
-        rmsnorm_bw(tape_x + (size_t)t * E, ly->attn_norm_w,
-                   dxn1 + (size_t)t * E, out, E, m->rms_eps);
+        if (m->post_norm_only) {   // olmo2: no attention pre-norm, so its input's gradient adds straight through
+            const float *dn = dxn1 + (size_t)t * E;
+            for (int i = 0; i < E; i++) out[i] += dn[i];
+        } else
+            rmsnorm_bw(tape_x + (size_t)t * E, ly->attn_norm_w,
+                       dxn1 + (size_t)t * E, out, E, m->rms_eps);
     }
 
     if (lprof) lbw_tick(m, LBW_B2B3, &lt, &s->dt);
