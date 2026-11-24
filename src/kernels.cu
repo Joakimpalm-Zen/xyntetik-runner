@@ -5676,49 +5676,75 @@ extern "C" __global__ void k_mvseg_nvfp4(MVSEG_PARAMS, const float *esc) {
     }
 }
 // P1b: the NVFP4 product BATCHED: each decoded weight applied to the tile's 16 columns. k_mv_nvfp4 (left untouched)
-// gives each lane whole 64-element blocks b = lane, lane + 32, ... and per block its four 16-element sub-blocks in
-// order: t = sum over j of kv[lo] * x[j], kv[hi] * x[j + 8] (j ascending, lo then hi), s += d * t; then the warp tree
-// and the factor. These kernels keep that per-column order exactly; only where x is read from differs (global, as the
-// i-quant batch-1 kernels read it, instead of the shared staging, which for 16 columns would not fit). Like
-// k_mv_bf16_b they compute all 16 columns of a tile (x carries 16 columns of padding past its last) and store the
-// tile's own. 8 rows a 256-thread block, a warp a row, as k_mv_nvfp4.
-#define NVFP4_B_BODY(x_, xs_, cnt_, y_, ys_, scale_)                                                                 \
+// gives each lane whole 64-element blocks b = lane, lane + 32, ... (rounds of 32 blocks, x staged in shared memory a
+// round at a time, rows of 65 floats) and per block its four 16-element sub-blocks in order: t = sum over j of
+// kv[lo] * x[j], kv[hi] * x[j + 8] (j ascending, lo then hi), s += d * t; then the warp tree and the factor. These
+// kernels keep that per-column order exactly. Per round each lane decodes its block's 64 weights once into registers,
+// then the tile's columns are staged NVFP4_B_CG at a time in k_mv_nvfp4's own layout (the block's 8 rows share each
+// staged copy, as there) and the lane applies its weights to each staged column. Like k_mv_bf16_b they compute all 16
+// columns of a tile (x carries 16 columns of padding past its last) and store the tile's own. 8 rows a 256-thread
+// block, a warp a row, as k_mv_nvfp4. (The first version read every column's x from global per row, 8 times the x
+// traffic and uncoalesced: 2.3x SLOWER than per-column launches; this staging is the fix.)
+#define NVFP4_B_CG 4
+#define NVFP4_B_BODY(x_, xs_, cnt_, y_, ys_, scale_)                                                                \
     __shared__ float kv[16];                                                                                        \
+    __shared__ float xsm[NVFP4_B_CG * 32 * 65];                                                                     \
     if (threadIdx.x < 16) kv[threadIdx.x] = kv_mxfp4[threadIdx.x];                                                  \
     __syncthreads();                                                                                                \
     const unsigned row = blockIdx.x * (blockDim.x / 32) + (threadIdx.x >> 5), lane = threadIdx.x & 31;              \
-    if (row >= (unsigned)a.n_out) return;                                                                          \
+    const bool live = row < (unsigned)a.n_out;                                                                      \
     const int nb = a.n_in / 64;                                                                                     \
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 36;                                                        \
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 36;                                           \
     float s[16];                                                                                                    \
     _Pragma("unroll")                                                                                               \
-    for (int c = 0; c < 16; c++) s[c] = 0;                                                                         \
-    for (int b = (int)lane; b < nb; b += 32) {                                                                     \
-        const uchar *blk = rw + (ulong64)b * 36;                                                                    \
-        for (int sub = 0; sub < 4; sub++) {                                                                         \
-            const float d = ue4m3f(blk[sub]);                                                                       \
-            const uchar *q = blk + 4 + sub * 8;                                                                     \
-            float wl[8], wh[8];                                                                                     \
+    for (int c = 0; c < 16; c++) s[c] = 0;                                                                          \
+    for (int b0 = 0; b0 < nb; b0 += 32) {                                                                           \
+        const int nblk = nb - b0 < 32 ? nb - b0 : 32;                                                               \
+        const bool mine = live && (int)lane < nblk;                                                                 \
+        float d[4], w[64];                                                                                          \
+        if (mine) {                                                                                                 \
+            const uchar *blk = rw + (ulong64)(b0 + (int)lane) * 36;                                                 \
             _Pragma("unroll")                                                                                       \
-            for (int j = 0; j < 8; j++) { wl[j] = kv[q[j] & 0xF]; wh[j] = kv[q[j] >> 4]; }                          \
-            const float *xb = (x_) + (ulong64)b * 64 + sub * 16;                                                    \
-            _Pragma("unroll")                                                                                       \
-            for (int c = 0; c < 16; c++) {                                                                          \
-                const float *xp = xb + (ulong64)c * (xs_);                                                          \
-                float t = 0;                                                                                        \
+            for (int sub = 0; sub < 4; sub++) {                                                                     \
+                d[sub] = ue4m3f(blk[sub]);                                                                          \
+                const uchar *q = blk + 4 + sub * 8;                                                                 \
                 _Pragma("unroll")                                                                                   \
-                for (int j = 0; j < 8; j++) {                                                                       \
-                    t += wl[j] * xp[j];                                                                             \
-                    t += wh[j] * xp[j + 8];                                                                         \
+                for (int j = 0; j < 8; j++) { w[sub * 16 + j] = kv[q[j] & 0xF]; w[sub * 16 + 8 + j] = kv[q[j] >> 4]; }\
+            }                                                                                                       \
+        }                                                                                                           \
+        _Pragma("unroll")                                                                                           \
+        for (int cg = 0; cg < 16; cg += NVFP4_B_CG) {                                                               \
+            __syncthreads();                                                                                        \
+            for (int i_ = threadIdx.x; i_ < NVFP4_B_CG * nblk * 64; i_ += blockDim.x) {                             \
+                const int c_ = i_ / (nblk * 64), r_ = i_ % (nblk * 64);                                             \
+                xsm[c_ * 32 * 65 + (r_ / 64) * 65 + (r_ % 64)] = (x_)[(ulong64)(cg + c_) * (xs_) + (ulong64)b0 * 64 + r_];\
+            }                                                                                                       \
+            __syncthreads();                                                                                        \
+            if (mine) {                                                                                             \
+                _Pragma("unroll")                                                                                   \
+                for (int c = 0; c < NVFP4_B_CG; c++) {                                                              \
+                    const float *xs_l = xsm + c * 32 * 65 + lane * 65;                                              \
+                    _Pragma("unroll")                                                                               \
+                    for (int sub = 0; sub < 4; sub++) {                                                             \
+                        const float *xp = xs_l + sub * 16;                                                          \
+                        float t = 0;                                                                                \
+                        _Pragma("unroll")                                                                           \
+                        for (int j = 0; j < 8; j++) {                                                               \
+                            t += w[sub * 16 + j] * xp[j];                                                           \
+                            t += w[sub * 16 + 8 + j] * xp[j + 8];                                                   \
+                        }                                                                                           \
+                        s[cg + c] += d[sub] * t;                                                                    \
+                    }                                                                                               \
                 }                                                                                                   \
-                s[c] += d * t;                                                                                      \
             }                                                                                                       \
         }                                                                                                           \
     }                                                                                                               \
-    _Pragma("unroll")                                                                                               \
-    for (int c = 0; c < 16; c++) {                                                                                  \
-        const float v = warp_sum(s[c]) * (scale_);                                                                  \
-        if (lane == 0 && c < (cnt_)) (y_)[(ulong64)c * (ys_) + row] = a.has_bias ? v + bias[row] : v;               \
+    if (live) {                                                                                                     \
+        _Pragma("unroll")                                                                                           \
+        for (int c = 0; c < 16; c++) {                                                                              \
+            const float v = warp_sum(s[c]) * (scale_);                                                              \
+            if (lane == 0 && c < (cnt_)) (y_)[(ulong64)c * (ys_) + row] = a.has_bias ? v + bias[row] : v;           \
+        }                                                                                                           \
     }
 // a dense product: tile blockIdx.y = columns 16 y .. (a.batch in all; a.xs / a.ys the column strides)
 extern "C" __global__ void k_mv_nvfp4_b(MV_PARAMS, float scale) {
