@@ -1850,17 +1850,19 @@ plat_lock_status plat_publish_lock(const char *path, void **lock_out) {
             DWORD err = GetLastError();
             // The holder deletes the lock file as it releases it
             // (plat_publish_unlock). An open that meets the file in the
-            // middle of that delete is refused with ERROR_ACCESS_DENIED, for
-            // a moment: the next try either finds the name gone and creates
-            // the file, or finds the next holder's. This wait used to run
-            // only when an attributes query on the path then succeeded, and
-            // for 50 tries at most; under contention that was not enough
-            // (R6.118: 214 of 1,200 takes failed here with eight takers, each
-            // with this error). It now waits on that error alone, bounded:
-            // 20 tries of 1 ms, then 10 ms each, about 4 s in all. A lock
-            // path we truly may not open fails after that wait, with the
-            // error named.
-            if (err == ERROR_ACCESS_DENIED && pending_tries < 400) {
+            // middle of that delete is refused with ERROR_ACCESS_DENIED, and a
+            // third-party scanner holding a new file without sharing refuses
+            // with ERROR_SHARING_VIOLATION, each for a moment: the next try
+            // either finds the name gone and creates the file, or opens the
+            // next holder's. This wait used to run only for ERROR_ACCESS_DENIED
+            // when an attributes query succeeded, and for 50 tries at most
+            // (R6.118: 214 of 1,200 takes failed under eight takers). It now
+            // waits on those two errors alone, bounded: 20 tries of 1 ms, then
+            // 380 tries of 10 ms each (about 4 to 6 s in all on Windows'
+            // default timer tick). A lock path we truly may not open fails
+            // after that wait, with the error named.
+            if ((err == ERROR_ACCESS_DENIED || err == ERROR_SHARING_VIOLATION) &&
+                pending_tries < 400) {
                 pending_tries++;
                 plat_sleep_ms(pending_tries <= 20 ? 1 : 10);
                 continue;
@@ -1878,7 +1880,8 @@ plat_lock_status plat_publish_lock(const char *path, void **lock_out) {
         if ((i1.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
             CloseHandle(h);
             free(wl);
-            return pub_lock_fail(path, "the lock file is a reparse point:", 0);
+            fprintf(stderr, "publish lock: refusing %s (the lock file is a reparse point)\n", path);
+            return PLAT_LOCK_ERROR;
         }
         OVERLAPPED ov = {0};
         if (!LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK, 0, MAXDWORD, MAXDWORD, &ov)) {
