@@ -47,6 +47,13 @@
 // tokenizer, whose encoder (mistral-common) writes the v0.3 form. A v0.1
 // literal over a vocabulary holding that token is therefore a stale v0.3
 // template, and gets the publisher's current v0.3 framing.
+// OLMo 3's default system turn, the publisher's text (allenai/Olmo-3-7B-Think chat_template.jinja, revision
+// d97e442d): written when no message is a system message, and detection's key for the family (TMPL_OLMO3).
+#define OLMO3_DEFAULT_SYSTEM \
+    "You are OLMo, a helpful function-calling AI assistant built by Ai2. Your date cutoff is November 2024, and " \
+    "your model weights are available at https://huggingface.co/allenai. You do not currently have access to any " \
+    "functions. <functions></functions>"
+
 static int mistral_variant(const char *meta_tmpl, tokenizer *tok) {
     // the [SYSTEM_PROMPT] form (mistral3's files) before the [INST] spacing
     // rules: its user turns are Nemo's `[INST]`, its frame is its own
@@ -177,6 +184,12 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
         // MiniCPM5: ChatML with Qwen3's think shape and an XML tool protocol
         // of its own; the example call in its guideline text is the phrase
         // no other template writes.
+        // OLMo 3 (allenai/Olmo-3-7B-Think): keyed on what the template reads (its native function fields and its
+        // environment role) AND on the publisher's default system turn, which TMPL_OLMO3 writes as its own text: a
+        // derivative that rewrote that turn is not this template
+        if (strstr(meta_tmpl, "<|im_start|>") && strstr(meta_tmpl, "<function_calls>") &&
+            strstr(meta_tmpl, "'environment'") && strstr(meta_tmpl, OLMO3_DEFAULT_SYSTEM))
+            return TMPL_OLMO3;
         if (strstr(meta_tmpl, "<|im_start|>") &&
             strstr(meta_tmpl, "<function name=\"function-name\">"
                               "<param name=\"param-name\">"))
@@ -264,6 +277,7 @@ static const struct { int tmpl; const char *name; bool flag; } TEMPLATE_NAMES[] 
     { TMPL_CHATML, "chatml", true },
     { TMPL_TRINITY, "trinity", true },
     { TMPL_CHATML_THINK, "chatml-think", true },
+    { TMPL_OLMO3, "olmo3", true },
     { TMPL_MELLUM, "mellum", true },
     { TMPL_MINICPM5, "minicpm5", true },
     { TMPL_LFM2, "lfm2", true },
@@ -961,6 +975,11 @@ bool template_think_tags(int tmpl, const char **open, const char **close) {
     if (tmpl == TMPL_INKLING2) {
         *open = "<|content_thinking|>";
         *close = "<|end_message|>";
+        return true;
+    }
+    if (tmpl == TMPL_OLMO3) {   // its generation prompt opens the block (render_olmo3)
+        *open = "<think>";
+        *close = "</think>";
         return true;
     }
     return false;
@@ -2561,6 +2580,56 @@ static size_t render_hermes4(int tmpl, const chat_msg *msgs, int n_msgs,
     }
     if (add_assistant)
         off = emit(out, cap, off, "<|im_start|>assistant\n", NULL, NULL);
+    return off;
+}
+
+// TMPL_OLMO3 (R4.50.2): allenai/Olmo-3-7B-Think's chat_template.jinja (revision d97e442d, byte-identical to the
+// file's tokenizer.chat_template), every branch transcribed:
+//   * no message is a system message: the publisher's default system turn first (OLMO3_DEFAULT_SYSTEM);
+//   * a system turn: its content, then ` <functions>F</functions>` when the message carries `functions`, else
+//     ` You do not currently have access to any functions. <functions></functions>`;
+//   * a user turn: its content, then `\n<functions>F</functions>` when it carries `functions`;
+//   * an assistant turn: its content, then `<function_calls>C</function_calls>` when it carries `function_calls`;
+//     `<|im_end|>\n` after every message but the LAST one, which ends with the eos token instead (`<|endoftext|>`,
+//     the tokenizer this template ships with);
+//   * an `environment` turn: a call's result, as written;
+//   * after the last message, a generation prompt opens the thought: `<|im_start|>assistant\n<think>`. With no
+//     message at all the loop that writes it never runs, so neither does it here.
+// `functions` and `function_calls` are STRINGS the caller writes (the template concatenates them), read off the
+// message itself (chat_msg.source); a JSON null reads as absent, as the template's `is not none`. A role the template
+// does not know renders nothing there: the server refuses those, and the OpenAI tool protocol, before this.
+static size_t render_olmo3(const chat_msg *msgs, int n_msgs, bool add_assistant, char *out, size_t cap,
+                           render_state *st) {
+    size_t off = 0;
+    bool has_system = false;
+    for (int i = 0; i < n_msgs; i++) has_system |= !strcmp(msgs[i].role, "system");
+    if (!has_system)
+        off = emit(out, cap, off, "<|im_start|>system\n" OLMO3_DEFAULT_SYSTEM "<|im_end|>\n", NULL, NULL);
+    for (int i = 0; i < n_msgs; i++) {
+        const chat_msg *m = &msgs[i];
+        const char *fns = m->source ? jv_str(jv_get((jv *)m->source, "functions"), NULL) : NULL;
+        if (!strcmp(m->role, "system")) {
+            off = emit(out, cap, off, "<|im_start|>system\n%s", m->content, NULL);
+            off = fns ? emit(out, cap, off, " <functions>%s</functions><|im_end|>\n", fns, NULL)
+                      : emit(out, cap, off, " You do not currently have access to any functions. "
+                                            "<functions></functions><|im_end|>\n", NULL, NULL);
+        } else if (!strcmp(m->role, "user")) {
+            off = fns ? emit(out, cap, off, "<|im_start|>user\n%s\n<functions>%s</functions><|im_end|>\n",
+                             m->content, fns)
+                      : emit(out, cap, off, "<|im_start|>user\n%s<|im_end|>\n", m->content, NULL);
+        } else if (!strcmp(m->role, "assistant")) {
+            const char *calls = m->source ? jv_str(jv_get((jv *)m->source, "function_calls"), NULL) : NULL;
+            off = emit(out, cap, off, "<|im_start|>assistant\n%s", m->content, NULL);
+            if (calls) off = emit(out, cap, off, "<function_calls>%s</function_calls>", calls, NULL);
+            off = emit(out, cap, off, i + 1 < n_msgs ? "<|im_end|>\n" : "<|endoftext|>", NULL, NULL);
+        } else if (!strcmp(m->role, "environment")) {
+            off = emit(out, cap, off, "<|im_start|>environment\n%s<|im_end|>\n", m->content, NULL);
+        }
+    }
+    if (add_assistant && n_msgs > 0) {
+        off = emit(out, cap, off, "<|im_start|>assistant\n<think>", NULL, NULL);
+        if (st) { st->reasoning_open = true; st->opener = "<think>"; }
+    }
     return off;
 }
 
@@ -4803,6 +4872,8 @@ size_t render_messages_state_rf(int tmpl, const chat_msg *msgs, int n_msgs,
     case TMPL_MELLUM:
     case TMPL_MINICPM5:
         return render_chatml(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
+    case TMPL_OLMO3:
+        return render_olmo3(msgs, n_msgs, add_assistant, out, cap, st);
     case TMPL_LFM2:
     case TMPL_LFM2_8B:
     case TMPL_LFM2_24B:
@@ -6682,6 +6753,9 @@ const char *tool_envelope_protocol_name(const tool_envelope *e) {
 }
 
 const char *tool_protocol_name(int tmpl, bool *native) {
+    // OLMo 3 (R4.50.2): no tool protocol is offered on it. The template's own function fields pass through as the
+    // caller writes them, and the OpenAI protocol is refused, so "generic" (the marker fallback) would be untrue.
+    if (tmpl == TMPL_OLMO3) { *native = false; return "none"; }
     tool_envelope env = {0};
     bool skip_generic = false;
     // strict + atem_tool_calling: each family's NATIVE default

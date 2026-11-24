@@ -2002,6 +2002,66 @@ static void test_chatml_think_shape(void) {
 //   - tools are declared under the template's own guideline text and a call
 //     replays as <function name="N"><param name="K">V</param></function>,
 //     CDATA-wrapped where a string value holds '<', '&' or a newline.
+// R4.50.2: OLMo 3 (allenai/Olmo-3-7B-Think chat_template.jinja, revision d97e442d). The anchor is
+// scripts/template-conformance.py's olmo3 and olmo3-gguf families, which render the publisher's own template and
+// compare every case byte for byte and token for token; these goldens hold the same branches offline:
+//   - detection keys on the native fields, the environment role AND the publisher's default system turn;
+//   - no system message: the default system turn, then each turn; the generation prompt opens the thought;
+//   - a system turn's functions suffix, a user turn's functions line, an assistant's function_calls block;
+//   - the LAST message, if an assistant turn, ends with the eos token, not <|im_end|>;
+//   - an environment turn as written; no message at all: the default system turn and no generation prompt.
+static void test_olmo3_shape(void) {
+    char out[4096];
+    const char *def = "You are OLMo, a helpful function-calling AI assistant built by Ai2. Your date cutoff is "
+                      "November 2024, and your model weights are available at https://huggingface.co/allenai. You do "
+                      "not currently have access to any functions. <functions></functions>";
+    char tmpl[1024];
+    snprintf(tmpl, sizeof tmpl, "<|im_start|>system\n%s ... <function_calls> ... 'environment' ... <think>", def);
+    assert(template_detect(tmpl, NULL) == TMPL_OLMO3);
+    // a derivative that rewrote the default turn is not this template (its renderer writes the publisher's)
+    assert(template_detect("<|im_start|>system\nYou are a bot. <function_calls> 'environment' <think>", NULL) ==
+           TMPL_CHATML_THINK);
+    assert(template_from_name("olmo3") == TMPL_OLMO3);
+    assert(!strcmp(template_name(TMPL_OLMO3), "olmo3"));
+    const char *to = NULL, *tc = NULL;
+    assert(template_think_tags(TMPL_OLMO3, &to, &tc) && !strcmp(to, "<think>") && !strcmp(tc, "</think>"));
+
+    char want[2048];
+    const chat_msg one[] = { CHAT_MSG("user", "HI") };
+    render_messages(TMPL_OLMO3, one, 1, true, THINK_DEFAULT, out, sizeof(out));
+    snprintf(want, sizeof want, "<|im_start|>system\n%s<|im_end|>\n<|im_start|>user\nHI<|im_end|>\n"
+             "<|im_start|>assistant\n<think>", def);
+    assert(strcmp(out, want) == 0);
+    render_messages(TMPL_OLMO3, one, 0, true, THINK_DEFAULT, out, sizeof(out));
+    snprintf(want, sizeof want, "<|im_start|>system\n%s<|im_end|>\n", def);
+    assert(strcmp(out, want) == 0);
+
+    // a system turn without functions, a trailing assistant turn: its eos, and no generation prompt without one
+    const chat_msg hist[] = { CHAT_MSG("system", "S"), CHAT_MSG("user", "Q"), CHAT_MSG("assistant", "A"),
+                              CHAT_MSG("user", "Q2"), CHAT_MSG("assistant", "A2") };
+    render_messages(TMPL_OLMO3, hist, 5, false, THINK_DEFAULT, out, sizeof(out));
+    assert(strcmp(out, "<|im_start|>system\nS You do not currently have access to any functions. "
+                       "<functions></functions><|im_end|>\n<|im_start|>user\nQ<|im_end|>\n<|im_start|>assistant\nA"
+                       "<|im_end|>\n<|im_start|>user\nQ2<|im_end|>\n<|im_start|>assistant\nA2<|endoftext|>") == 0);
+
+    // the native fields, read off each message
+    const char *sj = "{\"role\":\"system\",\"content\":\"S\",\"functions\":\"[F]\"}";
+    const char *uj = "{\"role\":\"user\",\"content\":\"Q\",\"functions\":\"[G]\"}";
+    const char *aj = "{\"role\":\"assistant\",\"content\":null,\"function_calls\":\"[C]\"}";
+    jv *sv = json_parse(sj, strlen(sj)), *uv = json_parse(uj, strlen(uj)), *av = json_parse(aj, strlen(aj));
+    assert(sv && uv && av);
+    const chat_msg nat[] = { { .role = "system", .content = "S", .source = sv },
+                             { .role = "user", .content = "Q", .source = uv },
+                             { .role = "assistant", .content = "", .source = av },
+                             CHAT_MSG("environment", "{\"t\":20}") };
+    render_messages(TMPL_OLMO3, nat, 4, true, THINK_DEFAULT, out, sizeof(out));
+    assert(strcmp(out, "<|im_start|>system\nS <functions>[F]</functions><|im_end|>\n<|im_start|>user\nQ\n"
+                       "<functions>[G]</functions><|im_end|>\n<|im_start|>assistant\n<function_calls>[C]"
+                       "</function_calls><|im_end|>\n<|im_start|>environment\n{\"t\":20}<|im_end|>\n"
+                       "<|im_start|>assistant\n<think>") == 0);
+    jv_free(sv); jv_free(uv); jv_free(av);
+}
+
 static void test_minicpm5_shape(void) {
     char out[4096];
     assert(template_detect("<|im_start|>system ... <think> ... <function name=\"function-name\">"
@@ -3788,6 +3848,7 @@ int main(void) {
     test_gemma4_consecutive_assistant();
     test_gemma4_tool_turns();
     test_chatml_think_shape();
+    test_olmo3_shape();
     test_minicpm5_shape();
     test_mimo_shape();
     test_spark_shape();

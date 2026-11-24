@@ -370,7 +370,28 @@ static bool validate_chat_messages(const jv *msgs, int tmpl, char *err, size_t e
             return false;
         }
         const char *role = role_v->str;
-        if (strcmp(role, "system") && strcmp(role, "developer") &&
+        // OLMo 3 (R4.50.2): its template's own function fields and its environment role, rendered exactly; the OpenAI
+        // tool protocol it cannot read is refused by name, never dropped (the template renders an unknown role as
+        // nothing) and never translated
+        if (tmpl == TMPL_OLMO3) {
+            if (!strcmp(role, "tool") || (jv_get(msg, "tool_calls") && jv_get(msg, "tool_calls")->type != J_NULL)) {
+                snprintf(err, err_cap, "messages[%d]: the olmo3 chat template has no OpenAI tool protocol (tool "
+                         "turns, tool_calls); it reads messages[].functions and messages[].function_calls as strings "
+                         "and an environment role for results", i);
+                return false;
+            }
+            for (int f = 0; f < 2; f++) {
+                const char *key = f ? "function_calls" : "functions";
+                jv *fv = jv_get(msg, key);
+                if (fv && fv->type != J_NULL && fv->type != J_STR) {
+                    snprintf(err, err_cap, "messages[%d].%s must be a string (the olmo3 template writes it as text)",
+                             i, key);
+                    return false;
+                }
+            }
+        }
+        bool olmo3_env = tmpl == TMPL_OLMO3 && !strcmp(role, "environment");
+        if (!olmo3_env && strcmp(role, "system") && strcmp(role, "developer") &&
             strcmp(role, "user") && strcmp(role, "assistant") &&
             strcmp(role, "tool")) {
             snprintf(err, err_cap,
@@ -462,7 +483,9 @@ static bool validate_chat_messages(const jv *msgs, int tmpl, char *err, size_t e
         const char *reason = jv_str(reasoning, NULL);
         bool assistant_payload = !strcmp(role, "assistant") &&
             ((calls && calls->type == J_ARR && calls->n > 0) ||
-             (reason && reason[0]));
+             (reason && reason[0]) ||
+             // OLMo 3's turn may be only its calls (the template's `content is not none` guard)
+             (tmpl == TMPL_OLMO3 && jv_str(jv_get(msg, "function_calls"), NULL)));
         jv *content = jv_get(msg, "content");
         bool content_shape = content &&
                              (content->type == J_STR || content->type == J_ARR);
@@ -674,6 +697,14 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     // demultiplexed as it is generated (tool_stream) rather than parsed
     // afterward, so both paths reach the same call from the same guarantee.
     jv *tools = jv_get(req, "tools");
+    // OLMo 3 declares functions in its own field (messages[].functions), so OpenAI tools[] would be dropped by its
+    // template: refused by name (R4.50.2)
+    if (s->tmpl == TMPL_OLMO3 && tools && tools->type == J_ARR && tools->n > 0) {
+        send_error(fd, 400, "tools: the olmo3 chat template has no OpenAI tool protocol; declare functions as a "
+                   "string in messages[].functions (system or user turn) and send calls back in "
+                   "messages[].function_calls, results as an environment turn");
+        return;
+    }
     // What the request owns from here on, released at the one exit below
     // (each refusal carried its own copy of the release, R6.68.43).
     tool_envelope env = {0};
@@ -862,6 +893,8 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
                                     .effort = req_inkling_effort(req) };
             continue;
         }
+        // OLMo 3's renderer reads the turn's own functions / function_calls off it (render_olmo3)
+        const jv *olmo3_source = s->tmpl == TMPL_OLMO3 ? msgs->items[i] : NULL;
         if (s->tmpl == TMPL_MUSE && !strcmp(role, "assistant")) {
             jv *calls = jv_get(msgs->items[i], "tool_calls");
             if (calls && calls->type == J_ARR && calls->n) {
@@ -936,12 +969,15 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
         char *content = message_text(msgs->items[i], s->tmpl, replay_reason,
                                      &oom);
         if (oom) break;
+        // OLMo 3 writes every turn, an empty one included (and an assistant turn that is only function_calls)
+        if (!content && olmo3_source && !(content = strdup(""))) { oom = true; break; }
         if (!content) continue;
         owned[n_own++] = content;
         if (tmpl_ornith_like(s->tmpl) && !strcmp(role, "tool")) role = "user";
         cm[n_cm++] = (chat_msg){
             .role = role, .content = content, .name = turn_name,
             .no_thought = s->tmpl == TMPL_QWEN38 && !replay_reason,
+            .source = olmo3_source,
         };
         total += strlen(role) + strlen(content) + 64;
     }
