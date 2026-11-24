@@ -237,7 +237,7 @@ def test_an_attn_factor_other_than_the_default_is_refused(runner_bin, files):
     assert "refused rather than guessed" in err, err
 
 
-def test_the_gpu_backends_say_where_it_runs_and_its_admission_is_pending(runner_bin, files):
+def test_the_gpu_backends_say_where_the_admitted_family_runs(runner_bin, files):
     p = subprocess.run([str(runner_bin), "-m", str(files["olmo2"]), "-p", "hi", "-n", "1"],
                        cwd=ROOT, capture_output=True, timeout=120)
     err = p.stderr.decode(errors="replace")
@@ -249,10 +249,10 @@ def test_the_gpu_backends_say_where_it_runs_and_its_admission_is_pending(runner_
         assert "Metal backend" in err and "validated on the CPU" not in err, err
     elif backend == "cuda":
         assert "CUDA backend" in err and "validated on the CPU" not in err, err
-    # it loads before its admission: --caps lists it apart, and the load says so
-    assert "olmo2" not in caps["architectures"], caps["architectures"]
-    assert [a["name"] for a in caps["architectures_pending"]] == ["olmo2"], caps["architectures_pending"]
-    assert "note: architecture 'olmo2' is not admitted yet: " in err and "(R4.50.6)" in err, err
+    # R4.50.6 admits the family: it is in the admitted list, never the pending list or load note.
+    assert "olmo2" in caps["architectures"], caps["architectures"]
+    assert "olmo2" not in {a["name"] for a in caps["architectures_pending"]}, caps["architectures_pending"]
+    assert "note: architecture 'olmo2' is not admitted yet: " not in err, err
     info = subprocess.run([str(runner_bin), "-m", str(files["olmo2"]), "--adapt-info", "--no-tray"],
                           capture_output=True, timeout=120)
     assert info.returncode == 0, info.stderr.decode(errors="replace")
