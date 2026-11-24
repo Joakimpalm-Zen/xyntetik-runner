@@ -328,6 +328,11 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // last assistant turn ended by the eos token, a generation prompt that opens the thought. The OpenAI tool
        // protocol is refused on it by name (server.c, api_responses.c, api_anthropic.c), never translated.
        TMPL_OLMO3,
+       // AI2 OLMo 2 Instruct (allenai/OLMo-2-0425-1B-Instruct, R4.50.10): Tulu-style <|system|> / <|user|> /
+       // <|assistant|> turns. BOS once, which the template writes itself (see render_messages); a system or user turn
+       // ends with a newline, an assistant turn with the eos (and a newline unless it is the last message). Any other
+       // role renders as nothing, so the OpenAI tool protocol is refused on it by name, as on OLMo 3.
+       TMPL_OLMO2,
        // Not a family: how many there are, so a test can walk every one (R2.4.8).
        TMPL_COUNT };
 

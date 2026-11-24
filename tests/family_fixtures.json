@@ -141,6 +141,10 @@
       "fixture": "plain",
       "reasoning": "tags"
     },
+    "olmo2": {
+      "fixture": "plain",
+      "reasoning": "none"
+    },
     "olmo3": {
       "fixture": "plain",
       "reasoning": "tags"

@@ -38,7 +38,7 @@
     "in-progress": "someone is actively fixing this; see `note`"
   },
   "generated_by": "scripts/template-conformance.py --write-baseline",
-  "generated_at": "2026-11-22T19:47:09+00:00",
+  "generated_at": "2026-11-24T21:17:00+00:00",
   "oracles": {
     "apertus": {
       "source": "hf:swiss-ai/Apertus-8B-Instruct-2509",
@@ -139,6 +139,10 @@
     "nemotron-nano": {
       "source": "hf:nvidia/NVIDIA-Nemotron-Nano-9B-v2",
       "sha256": "b7a3a520a4bc1bea"
+    },
+    "olmo2": {
+      "source": "hf:allenai/OLMo-2-0425-1B-Instruct",
+      "sha256": "fe689ffbd6a4e2d0"
     },
     "olmo3": {
       "source": "hf:allenai/Olmo-3-7B-Think",
