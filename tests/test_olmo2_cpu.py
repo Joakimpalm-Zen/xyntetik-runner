@@ -28,7 +28,11 @@ The other gates:
   decode route (the default score route's bits), and the thread count changes nothing;
 - the default sliding pattern (no array) is the publisher's 3-in-4;
 - a YaRN attention factor other than its default is refused by name (the two readings of the key differ there);
-- the GPU backends do not run it yet (the CPU's reason is printed) and LoRA training is refused by name (R4.50.3).
+- the GPU backends do not run it yet (the CPU's reason is printed);
+- a LoRA adapter serves on it as the house holds every family to (R4.50.3): a zero adapter is the base byte for
+  byte, and an adapter on all seven projections sits within 5e-4 of the merged weights (the two sum in different
+  orders), while moving the score; training is on the CPU (--train-gpu refuses it by name until R4.50.5), and its
+  gradient is gated by test-lora-grad (Makefile) and its learning and determinism by tests/test_train.py.
 """
 import json
 import os
@@ -45,6 +49,7 @@ except ImportError:   # CI installs it (tests/ci/requirements.txt), and there it
         raise
     pytest.skip("numpy is not installed (tests/ci/requirements.txt has it)", allow_module_level=True)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import olmo2_reference as ref  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -201,5 +206,50 @@ def test_the_gpu_backends_leave_it_to_the_cpu_and_training_is_refused(runner_bin
     info = subprocess.run([str(runner_bin), "-m", str(files["olmo2"]), "--adapt-info", "--no-tray"],
                           capture_output=True, timeout=120)
     assert info.returncode == 0, info.stderr.decode(errors="replace")
-    assert json.loads(info.stdout)["training"] == {
-        "supported": False, "reason": "olmo2's post-norm-only blocks and full-width QK norm (R4.50.3)", "host": "cpu"}
+    assert json.loads(info.stdout)["training"] == {"supported": True, "reason": None, "host": "cpu"}
+
+
+@pytest.fixture(scope="module")
+def adapters(files, tmp_path_factory):
+    """make-test-lora.py's adapters on the OLMo 3 fixture: on all seven projections of block 0 (LORA_TARGETS=all),
+    its zero twin and the merged weights W += (alpha / r) B A."""
+    d = tmp_path_factory.mktemp("olmo2-lora")
+    env = dict(os.environ, LORA_TARGETS="all")
+    subprocess.run([sys.executable, ROOT / "scripts" / "make-test-lora.py", str(files["olmo2"]), str(d / "fx")],
+                   check=True, cwd=ROOT, env=env, stdout=subprocess.DEVNULL)
+    return {"adapter": d / "fx.adapter.gguf", "zero": d / "fx.zero.gguf", "merged": d / "fx.merged.gguf"}
+
+
+def _served(runner_bin, model, lora=None):
+    cmd = [str(runner_bin), "-m", str(model), "--score", "-p", "the quick brown fox jumps over the lazy dog",
+           "-t", "2", "--gpu", "off"] + (["--lora", str(lora)] if lora else [])
+    p = subprocess.run(cmd, cwd=ROOT, capture_output=True, timeout=120)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    return p.stdout
+
+
+def test_a_zero_adapter_serves_the_base_byte_for_byte(runner_bin, files, adapters):
+    import score_record
+    assert score_record.body_bytes(_served(runner_bin, files["olmo2"], adapters["zero"])) == \
+        score_record.body_bytes(_served(runner_bin, files["olmo2"]))
+
+
+def test_an_adapter_on_every_projection_serves_as_the_merged_weights(runner_bin, files, adapters):
+    adapted = json.loads(_served(runner_bin, files["olmo2"], adapters["adapter"]))["logprobs"]
+    merged = json.loads(_served(runner_bin, adapters["merged"]))["logprobs"]
+    base = json.loads(_served(runner_bin, files["olmo2"]))["logprobs"]
+    # Wx + B(Ax) against (W + BA)x: the summation order only; a hook that scaled wrong, read the wrong rows or sat on
+    # the wrong projection lands orders of magnitude past this (tests/test_lora.py's bound)
+    assert max(abs(a - b) for a, b in zip(adapted, merged)) <= 5e-4
+    assert max(abs(a - b) for a, b in zip(base, merged)) > 1e-3, "the adapter does not move the score: vacuous"
+
+
+def test_train_gpu_is_refused_by_name(runner_bin, files, tmp_path):
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_text("the quick brown fox jumps over the lazy dog " * 8)
+    p = subprocess.run([str(runner_bin), "-m", str(files["olmo2"]), "--train", str(corpus), "--train-steps", "1",
+                        "--train-out", str(tmp_path / "a.gguf"), "--train-gpu"], cwd=ROOT, capture_output=True,
+                       timeout=120)
+    err = p.stderr.decode(errors="replace")
+    assert p.returncode != 0, err
+    assert "--train-gpu: olmo2's backward runs on the CPU only until its CUDA path is validated (R4.50.5)" in err, err

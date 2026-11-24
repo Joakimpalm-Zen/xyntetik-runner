@@ -1380,7 +1380,7 @@ $(TEST_TC_TOL): $(TEST_TC_TOL_SRC) $(HDR) tests/finite_check.h
 TEST_LORA_GRAD_SRC = tests/test_lora_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o \
                   $(GPU_OBJ)
-$(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-apertus-train.gguf test-lora-apertus.full.gguf test-apertus-wide.gguf test-lora-apertus-wide.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-prope.gguf test-lora-prope.full.gguf test-prope-neox.gguf test-lora-prope-neox.full.gguf test-ornith.gguf test-lora-ornith.full.gguf test-clef.gguf test-lora-clef.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf test-gemma3.gguf test-lora-gemma3.full.gguf test-gemma4.gguf test-lora-gemma4.full.gguf test-g4v.gguf test-lora-g4v.full.gguf test-es8.gguf test-lora-es8.full.gguf test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n.full.gguf
+$(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-apertus-train.gguf test-lora-apertus.full.gguf test-apertus-wide.gguf test-lora-apertus-wide.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-prope.gguf test-lora-prope.full.gguf test-prope-neox.gguf test-lora-prope-neox.full.gguf test-ornith.gguf test-lora-ornith.full.gguf test-clef.gguf test-lora-clef.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf test-gemma3.gguf test-lora-gemma3.full.gguf test-gemma4.gguf test-lora-gemma4.full.gguf test-g4v.gguf test-lora-g4v.full.gguf test-es8.gguf test-lora-es8.full.gguf test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n.full.gguf test-olmo2.gguf test-lora-olmo2.full.gguf test-olmo2-plain.gguf test-lora-olmo2-plain.full.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_LORA_GRAD_SRC) -o $@ $(LDFLAGS)
 
 # R4.48.10: finite-difference gradient, recompute bit-identity and control gate for inkling2_loop
@@ -1520,6 +1520,20 @@ test-lora-granite.full.gguf: test-granite.gguf scripts/make-test-lora.py $(GGUF_
 
 test-muse.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py --muse-glimmer test-muse.gguf
+
+# R4.50.3: olmo2's post-norm-only blocks and full-width QK norm (OLMo 3: sliding window, YaRN on the full layers;
+# plain: OLMo 2, neither), from the family's own generator
+test-olmo2.gguf: scripts/make-test-olmo2.py $(GGUF_FIXTURE_LIB)
+	$(PYTHON) scripts/make-test-olmo2.py test-olmo2.gguf > /dev/null
+
+test-olmo2-plain.gguf: scripts/make-test-olmo2.py $(GGUF_FIXTURE_LIB)
+	$(PYTHON) scripts/make-test-olmo2.py test-olmo2-plain.gguf --plain > /dev/null
+
+test-lora-olmo2.full.gguf: test-olmo2.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
+	$(PYTHON) scripts/make-test-lora.py test-olmo2.gguf test-lora-olmo2
+
+test-lora-olmo2-plain.full.gguf: test-olmo2-plain.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
+	$(PYTHON) scripts/make-test-lora.py test-olmo2-plain.gguf test-lora-olmo2-plain
 
 test-lora-muse.full.gguf: test-muse.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-lora.py test-muse.gguf test-lora-muse
@@ -4060,6 +4074,13 @@ test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SC
 	@# norms, sliding window and softcapped head, all through the adjoint
 	./$(TEST_LORA_GRAD) test-granite.gguf test-lora-granite.full.gguf
 	./$(TEST_LORA_GRAD) test-muse.gguf test-lora-muse.full.gguf
+	@# R4.50.3: olmo2's post-norm-only blocks (identity input adjoints, the post-norms' adjoints) and its
+	@# full-width QK norm (one group over q_dim / kv_dim), per slot; on a full-width QK norm the gate also runs its
+	@# live control, a per-head QK-norm adjoint it must fail
+	@# with f32 KV rows (kvf32): f16 rows' rounding, amplified by the branch norms, leaves a third of the per-
+	@# coordinate differences unresolved there and blurs the live control's k slot
+	./$(TEST_LORA_GRAD) test-olmo2.gguf test-lora-olmo2.full.gguf slots,kvf32
+	./$(TEST_LORA_GRAD) test-olmo2-plain.gguf test-lora-olmo2-plain.full.gguf slots,kvf32
 	@# R8.9.5: gemma3's tanh-GELU gated FFN, the first refusal gemma3/gemma4
 	@# hit under --train -- act_f/act_d beside the SiLU pair, gated_act
 	@# itself recomputed at the tape site so serving and training agree

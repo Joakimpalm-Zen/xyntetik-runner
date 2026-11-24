@@ -5573,6 +5573,12 @@ static bool train_prepare(cli_opts *o, cli_run *rt) {
     // heads, the recompute, the transposed products) on the device. Asked
     // for by name, so no device is an error, not a quiet CPU run.
     if (o->train_gpu) {
+        // olmo2's backward (the post-norm-only blocks, the full-width QK norm) has no device form yet (R4.50.5)
+        if (rt->m.ad && rt->m.ad->id == ARCH_OLMO2) {
+            fprintf(stderr, "error: --train-gpu: olmo2's backward runs on the CPU only until its CUDA path is "
+                    "validated (R4.50.5); train without --train-gpu\n");
+            return false;
+        }
         rt->m.train_gpu_budget = o->train_gpu_budget;
         if (!gpu_train_init(&rt->m)) {
             // a budget the device cannot give has said so itself
