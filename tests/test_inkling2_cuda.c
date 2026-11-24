@@ -293,9 +293,11 @@ static long exp_identity(int type, int H, int F, int E, int T, int used, int all
         const int i2 = h ? gpu_ink2_put(h, w2, (size_t)E * H * rb2, f2, f2 ? E : 0) : -1;
         bool ran = i13 >= 0 && i2 >= 0 &&
                    gpu_ink2_experts(h, i13, i2, type, type, rb13, rb2, H, F, E, T, x, ch, wt, f13, f2, 4.0f, 8.0f, o1);
-        gpu_ink2_test_experts_ref(h, 1);
+        gpu_ink2_test_experts_ref(h, 1);   // the reference: the former per-expert launches, each product per column
+        gpu_ink2_test_mv_ref(h, 1);
         ran = ran && gpu_ink2_experts(h, i13, i2, type, type, rb13, rb2, H, F, E, T, x, ch, wt, f13, f2, 4.0f, 8.0f, o2);
         gpu_ink2_test_experts_ref(h, 0);
+        gpu_ink2_test_mv_ref(h, 0);
         if (ran) {
             diff = 0;
             for (size_t i = 0; i < (size_t)T * H; i++) {
@@ -309,6 +311,45 @@ static long exp_identity(int type, int H, int F, int E, int T, int used, int all
     }
 done:
     free(w13); free(w2); free(x); free(o1); free(o2); free(wt); free(s13); free(s2); free(ch);
+    return diff;
+}
+
+// P1a (i2): a BF16 product through gpu_ink2_lin at T columns, batched (k_mv_bf16_b from 16 columns) against every
+// column its own batch-1 launch (TEST-ONLY gpu_ink2_test_mv_ref), bit for bit; random weights (exponents kept sane)
+// and dense random x. *nval the values compared; returns the values whose bits differ, -1 if a call did not run.
+static long lin_identity(int n_in, int n_out, int T, long *nval) {
+    uint16_t *w = malloc(sizeof(uint16_t) * (size_t)n_in * n_out);
+    float *x = malloc(sizeof(float) * (size_t)T * n_in), *y1 = malloc(sizeof(float) * (size_t)T * n_out);
+    float *y2 = malloc(sizeof(float) * (size_t)T * n_out);
+    long diff = -1;
+    *nval = 0;
+    if (w && x && y1 && y2) {
+        uint32_t seed = 555u + (uint32_t)T;
+        for (size_t i = 0; i < (size_t)n_in * n_out; i++) {
+            seed = seed * 1664525u + 1013904223u;
+            const float f = 0.05f * (float)((int)(seed >> 9) % 2001 - 1000) / 1000.0f;
+            uint32_t u;
+            memcpy(&u, &f, 4);
+            w[i] = (uint16_t)(u >> 16);
+        }
+        for (size_t i = 0; i < (size_t)T * n_in; i++) {
+            seed = seed * 1664525u + 1013904223u;
+            x[i] = (float)((int)(seed >> 9) % 2001 - 1000) / 1000.0f;
+        }
+        gpu_ink2 *h = gpu_ink2_bind();
+        const int i0 = h ? gpu_ink2_put(h, w, sizeof(uint16_t) * (size_t)n_in * n_out, NULL, 0) : -1;
+        bool ran = i0 >= 0 && gpu_ink2_lin(h, i0, T_BF16, sizeof(uint16_t) * (size_t)n_in, 0, n_out, n_in, T, x, y1, 1.0f);
+        gpu_ink2_test_mv_ref(h, 1);
+        ran = ran && gpu_ink2_lin(h, i0, T_BF16, sizeof(uint16_t) * (size_t)n_in, 0, n_out, n_in, T, x, y2, 1.0f);
+        gpu_ink2_test_mv_ref(h, 0);
+        if (ran) {
+            diff = 0;
+            for (size_t i = 0; i < (size_t)T * n_out; i++) diff += memcmp(y1 + i, y2 + i, 4) != 0;
+            *nval = (long)T * n_out;
+        }
+        gpu_ink2_free(h);
+    }
+    free(w); free(x); free(y1); free(y2);
     return diff;
 }
 
@@ -796,6 +837,20 @@ int main(int argc, char **argv) {
         gpu_ink2_free(h);
         free(w13); free(w2);
     }
+    // P1a (i): a BF16 product batched from 16 columns equals its per-column launches bit for bit
+    {
+        static const int Ts[] = { 1, 15, 16, 17, 31, 33, 64, 100 };
+        for (size_t k = 0; k < sizeof Ts / sizeof *Ts; k++) {
+            long nv = 0;
+            const long d = lin_identity(512, 384, Ts[k], &nv);
+            CHECK(d == 0 && nv > 0, "(i) a BF16 product (512 -> 384) at %d columns, batched from 16: %ld of %ld values "
+                  "differ in their bits from the per-column launches' (want 0)", Ts[k], d, nv);
+        }
+        long nv = 0;
+        const long d = lin_identity(2304, 3072, 48, &nv);
+        CHECK(d == 0 && nv > 0, "(i) a BF16 product at q_proj's widths (2304 -> 3072), 48 columns: %ld of %ld values "
+              "differ in their bits from the per-column launches' (want 0)", d, nv);
+    }
     // D2 (k): the fused expert body equals the former per-expert launches bit for bit
     {
         static const struct { const char *what; int type, H, F, E, T, used, all, none; } xc[] = {
@@ -804,6 +859,13 @@ int main(int argc, char **argv) {
             { "NVFP4, 300 positions, 8 of 16 each (2400 columns)", T_NVFP4, 256, 128, 16, 300, 8, -1, -1 },
             { "BF16 (no factors), 6 positions, 2 of 8 each", T_BF16, 256, 128, 8, 6, 2, -1, -1 },
             { "BF16 at the real widths, one position, 8 of 16 experts", T_BF16, 2304, 1152, 16, 1, 8, -1, -1 },
+            // P1a: BF16 experts with at least 16 columns run as batched tiles, the rest per column
+            { "BF16, 300 positions, 8 of 16 each (every expert tiled)", T_BF16, 256, 128, 16, 300, 8, -1, -1 },
+            { "BF16, 20 positions, 8 of 16 each plus expert 1 at every position (tiled and per-column experts in one call)",
+              T_BF16, 256, 128, 16, 20, 8, 1, -1 },
+            { "BF16, 16 positions, expert 3 at every position (exactly one full tile)", T_BF16, 256, 128, 16, 16, 2, 3, -1 },
+            { "BF16, 17 positions, expert 3 at every position (a tile of 16 and one of 1)", T_BF16, 256, 128, 16, 17, 2, 3, -1 },
+            { "BF16 at the real widths, 64 positions, 8 of 16 each", T_BF16, 2304, 1152, 16, 64, 8, -1, -1 },
         };
         for (size_t k = 0; k < sizeof xc / sizeof *xc; k++) {
             long nv = 0;
@@ -907,9 +969,11 @@ int main(int argc, char **argv) {
         const size_t bb0 = model_inkling2_cuda_block_buf_bytes(g);
         float *r0 = g ? rows(g) : NULL;
         const size_t bb1 = model_inkling2_cuda_block_buf_bytes(g);
-        const size_t want_b = xs ? sizeof(float) * 64 * (size_t)(4 * xs->hidden + 3 * xs->n_kv * xs->head_dim +
-                                                                 xs->n_kv * xs->conv_k + xs->n_head * xs->d_rel +
-                                                                 xs->n_head * xs->head_dim) : 0;
+        // (the three inputs q, k, v with P1a's 16 columns of padding the batched BF16 product reads)
+        const size_t want_b = xs ? sizeof(float) * ((64 + 16) * (size_t)(3 * xs->hidden) +
+                                                    64 * (size_t)(xs->hidden + 3 * xs->n_kv * xs->head_dim +
+                                                                  xs->n_kv * xs->conv_k + xs->n_head * xs->d_rel +
+                                                                  xs->n_head * xs->head_dim)) : 0;
         CHECK(g && r0 && bb0 == want_b && bb1 == bb0 && want_b > 0, "(x) the attention block's buffers before the first "
               "forward %zu bytes (want %zu, reserved with the fit), %zu after it (want unchanged)", bb0, want_b, bb1);
         // THE CONTRACT: an adapter active at a position past 0 of a sequence the device block began is refused (a

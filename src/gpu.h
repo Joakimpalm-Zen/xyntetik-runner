@@ -771,6 +771,9 @@ bool       gpu_ink2_experts(gpu_ink2 *h, int i13, int i2, int type13, int type2,
 bool       gpu_ink2_experts_ok(const gpu_ink2 *h);
 bool       gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F, int E, int U);
 void       gpu_ink2_test_experts_ref(gpu_ink2 *h, int on);
+// TEST-ONLY (P1a): on (1), every product runs as one batch-1 launch per column (the reference); off (0), a BF16
+// product of at least 16 columns runs batched (k_mv_bf16_b; the expert body's tiles, k_mvsegb_bf16), the same bits
+void       gpu_ink2_test_mv_ref(gpu_ink2 *h, int on);
 void       gpu_ink2_release_experts(gpu_ink2 *h);   // those buffers freed (a fit retried without the expert body)
 // G2b step 2a: an instance's K/V on the device, one ring per application (row j % rows[a] holds position j's C
 // values), owned by the instance (the weights' handle may be shared); and the attention core over it: the chunk's

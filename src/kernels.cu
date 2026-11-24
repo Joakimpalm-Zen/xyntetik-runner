@@ -5596,6 +5596,28 @@ extern "C" __global__ void k_mvseg_bf16(MVSEG_PARAMS) {
     for (int i = lane; i < a.n_in; i += 32) s += bf16f(rw[i]) * x[i];
     MV_TAIL;
 }
+// P1a: the BF16 products' batched segmented twin: tile k = k0 + blockIdx.y of tiles[3 k..]: {its first column j,
+// its column count (<= MVT), its expert}: the house's k_mv_bf16_b over that expert's columns j.. (each decoded weight
+// applied to the tile's columns, MV_FMA), its row arithmetic a VERBATIM COPY of k_mv_bf16_b's (which, measured, gives
+// the batch-1 kernel's bits per column). As k_mv_bf16_b it reads x for every one of the tile's MVT columns: the x
+// buffer carries MVT columns of padding past its last.
+extern "C" __global__ void k_mvsegb_bf16(const uchar *wb, const float *x, float *y, mv_args a, const float *bias,
+                                         const int *tiles, ka_u64 w_es, int xcs, int ycs, int k0) {
+    {
+        const int *tl = tiles + 3 * (k0 + (int)blockIdx.y);
+        a.w_off += (ka_u64)tl[2] * w_es;
+        x += (ulong64)tl[0] * xcs;
+        y += (ulong64)tl[0] * ycs;
+        a.batch = tl[1];
+        a.xs = xcs;
+        a.ys = ycs;
+    }
+    MV_HEAD;
+    float s[MVT] = {0};
+    const unsigned short *rw = (const unsigned short *)(wb + a.w_off) + (ulong64)row * a.n_in;
+    for (int i = lane; i < a.n_in; i += 32) MV_FMA(bf16f(rw[i]), i);
+    MV_TAIL_B;
+}
 extern "C" __global__ void k_mvseg_q8_0(MVSEG_PARAMS) {
     MVSEG_HEAD;
     MV_HEAD;
