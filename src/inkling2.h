@@ -283,18 +283,19 @@ typedef struct {
 void ink2_set_rel_probe(ink2_rel_probe *p);
 ink2_rel_probe *ink2_active_rel_probe(void);
 
-// TEST-ONLY (R4.48.25, tests/test_inkling2_vmath.c): the fast route's own vector kernels, run as the route runs them,
+// TEST-ONLY (R4.48.25, tests/test_inkling2_vmath.c): the fast route's own kernels, run as the route runs them,
 // for the operation-level gate.
 // - ink2_test_vmath_form: the form this build takes, "avx2", "neon" or "scalar" (a build without either takes
 //   pmath's scalar forms on the fast route too).
-// - ink2_test_vmath: y[i] = exp(x[i]) (fn INK2_VM_EXP) or tanh(x[i]) (fn INK2_VM_TANH), in whole vector blocks and
-//   a scalar tail, as the route's callers take them. Returns 0, or -1 for an unknown fn.
+// - ink2_test_vmath: y[i] = exp(x[i]) (fn INK2_VM_EXP), in whole vector blocks and a scalar tail, as the attention's
+//   softmax takes them. Returns 0, or -1 for an unknown fn. (R4.48.26 removed the vector tanh: its only caller was the
+//   vector SwiGLU.)
 // - ink2_test_swiglu: the SwiGLU of n rows of act [n][2F] (the gate's F values then the up's), in place, through the
 //   route's ink2_swiglu_range, with the given softcaps.
 // - ink2_test_swiglu_ref (R4.48.26): the reference route's scalar SwiGLU (ink2_swiglu) of one gate and up value.
 // - ink2_test_attn_core: one query against nk keys of one head (hd wide, keys and values nk x hd, a sink logit, no
 //   relative bias, every key admitted), through the fast core (fast = 1) or the reference core (fast = 0); out [hd].
-enum { INK2_VM_EXP = 0, INK2_VM_TANH = 1 };
+enum { INK2_VM_EXP = 0 };
 const char *ink2_test_vmath_form(void);
 int ink2_test_vmath(int fn, const float *x, float *y, int n);
 void ink2_test_swiglu(float gate_cap, float up_cap, float *act, int F, int n);
