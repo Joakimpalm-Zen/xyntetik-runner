@@ -614,6 +614,22 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
         send_error(fd, 400, "Inkling structured history is supported on /v1/chat/completions only");
         return;
     }
+    // OLMo 3 (R4.50.2): its template reads its own function fields, never this tool protocol, and would render a
+    // call or its result as nothing; refused by name, not dropped
+    if (s->tmpl == TMPL_OLMO3) {
+        jv *tools = jv_get(req, "tools"), *input = jv_get(req, "input");
+        bool tooled = tools && tools->type == J_ARR && tools->n > 0;
+        for (int i = 0; !tooled && input && input->type == J_ARR && i < input->n; i++) {
+            const char *type = jv_str(jv_get(input->items[i], "type"), "");
+            tooled = !strcmp(type, "function_call") || !strcmp(type, "function_call_output");
+        }
+        if (tooled) {
+            send_error(fd, 400, "the olmo3 chat template has no tool protocol on /v1/responses (tools, function_call "
+                       "items); it reads messages[].functions and messages[].function_calls as strings and an "
+                       "environment role, on /v1/chat/completions");
+            return;
+        }
+    }
     if (responses_reject_stateful(fd, req)) return;
     if (!responses_expand_previous(fd, req)) return;
     if (!req_thinking_mode_valid(req)) {

@@ -323,6 +323,11 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        TMPL_APERTUS15,
        // Thinking Machines Inkling 2: message/content channel framing.
        TMPL_INKLING2,
+       // AI2 OLMo 3 (allenai/Olmo-3-7B-Think, R4.50.2): ChatML framing around the template's OWN function fields
+       // (messages[].functions and .function_calls, strings) and an `environment` role, a default system turn, the
+       // last assistant turn ended by the eos token, a generation prompt that opens the thought. The OpenAI tool
+       // protocol is refused on it by name (server.c, api_responses.c, api_anthropic.c), never translated.
+       TMPL_OLMO3,
        // Not a family: how many there are, so a test can walk every one (R2.4.8).
        TMPL_COUNT };
 

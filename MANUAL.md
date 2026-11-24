@@ -2856,7 +2856,7 @@ Force `chatml`, `chatml-think`, `llama2`, `llama3`, `mistral`, `mistral-v1`,
 `mistral-nemo`, `mistral-sys`, `zephyr`, `phi3`, `phi4`, `gemma`, `gemma4`, `gemma4-mainline`, `apertus`,
 `ornith`, `qwen35`, `qwen35-nothink`, `qwen36`, `nemotron`, `nemotron35`, `hermes4`, `granite`, `granite4`, `granite42`,
 `qwen38`, `qwen3-coder`, `mellum`, `minicpm5`, `trinity`, `lfm2`, `lfm2-8b`, `lfm2-24b`, `mimo`, `spark`, `spark25`,
-`k2-horizon`, `flint`, `muse`, `harmony`, or `raw`; default is auto-detection. The three Mistral framings are not interchangeable: `mistral`
+`k2-horizon`, `flint`, `muse`, `harmony`, `olmo3`, or `raw`; default is auto-detection. The three Mistral framings are not interchangeable: `mistral`
 is the v0.3 / Mistral-Small-2409 form and the fallback for an unrecognised Mistral
 template, `mistral-v1` is v0.1/v0.2, `mistral-nemo` is Nemo-Instruct-2407. They differ
 by a space beside each `[INST]`/`[/INST]` marker and by which user turn carries the
@@ -2866,7 +2866,11 @@ marker. gemma-4 likewise ships two
 chat-template revisions that auto-detect and are byte-exact to their own reference:
 `gemma4` is the E-series (E2B/E4B) form, `gemma4-mainline` is the 12B/26B-A4B/31B form,
 which pre-seeds an empty thought block on the thinking-off generation prompt where the
-E-series pre-seeds nothing. Applies to interactive chat and to `--serve`, including
+E-series pre-seeds nothing. `olmo3` is OLMo 3's own template (allenai/Olmo-3-7B-Think), byte-exact to
+it: a request declares functions as a string in `messages[].functions` (a system or user turn), replays a call as
+a string in `messages[].function_calls`, and returns its result as an `environment` turn. The template has no
+OpenAI tool protocol, so `tools`, `tool_calls` and `tool` turns (and the Responses and Messages surfaces' tool
+items) are refused on it with a 400 naming those fields, never dropped. Applies to interactive chat and to `--serve`, including
 reloads after `/unload` or a `--ttl` expiry. An unrecognized name is an error, and the
 flag is refused with a swap set (`-m "name=path,name2=path2"`) because it names one
 template for a set of models that each detect their own - serve that model on its own

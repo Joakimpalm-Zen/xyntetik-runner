@@ -940,6 +940,25 @@
     "metal": "NOT RUN"
    },
    "note": "R4.48.13: tokenizer 721/721 and 197,979 whole-UTF-8 vocab differential pass, 37/37 template conformance token-identical, native TP_INKLING2 protocol/closure/budget/loop-guard/turn-header-stop pass on fixtures"
+  },
+  "olmo3": {
+   "tool_protocol": {
+    "status": "UNSUPPORTED",
+    "note": "no tool protocol is offered on olmo3 (R4.50.2): its template reads its own messages[].functions and .function_calls strings and an environment role, which pass through as the caller writes them; the OpenAI tool protocol (tools, tool_calls, tool turns, and the Responses and Messages tool items) is refused by name with a 400"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "the publisher's sampling defaults are not read yet (R4.50.6)"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   },
+   "note": "R4.50.2: template conformance 24 of 24 cases against allenai/Olmo-3-7B-Think's chat_template.jinja (d97e442d) and 24 of 24 against the Hub GGUF's tokenizer.chat_template (the same bytes), text and tokens; tokenizer 721 of 721 corpus strings and 99,474 of 99,474 vocabulary entries identical to transformers' (tests/compatibility/tokenizer-references/olmo-3-7b-think.tokenizer-json.json)"
   }
  },
  "architectures": {

@@ -117,6 +117,17 @@ MSYS_ROLES = (
     "later one: 'Only user, assistant and tool roles are supported, got system'")
 
 
+# OLMo 3 (R4.50.2): its template reads its own function fields, never the OpenAI tool protocol, and renders a tool
+# turn as nothing; the server refuses the protocol by name instead of letting the call or its result vanish.
+OLMO3_CANNOT = {
+    "reasoning-tool-loop": (
+        "runner",
+        "the case carries OpenAI tool_calls and a tool turn; the olmo3 template has no such protocol (it reads "
+        "messages[].functions and .function_calls as strings and an environment role), so runner refuses the "
+        "request by name rather than render the turns as nothing"),
+}
+
+
 class Family:
     def __init__(self, runner, source, note="", tool_family=False,
                  thinking_var=None, skip=None, tokenizer=(), cannot=None,
@@ -188,6 +199,14 @@ class Family:
 
 
 FAMILIES = {
+    "olmo3": Family(
+        "olmo3", ("hf", "allenai/Olmo-3-7B-Think"),
+        note="OLMo 3 Think native fields; publisher revision d97e442d",
+        reasoning_history=True, tokenizer=("Olmo-3-7B-Think-tokenizer.gguf",), cannot=OLMO3_CANNOT),
+    "olmo3-gguf": Family(
+        "olmo3", ("hf-gguf", "unsloth/Olmo-3-7B-Think-GGUF"),
+        note="Hub's parsed GGUF chat_template, metadata only; revision 1dcda0d5",
+        reasoning_history=True, tokenizer=("Olmo-3-7B-Think-tokenizer.gguf",), cannot=OLMO3_CANNOT),
     "inkling2": Family(
         "inkling2", ("hf", "thinkingmachines/Inkling-2-Mini"),
         note="Publisher revision b85c3cfa615fc413cc9af3379f491b963f3b586a",
@@ -758,7 +777,7 @@ FAMILIES = {
 # a fresh clone -- only this subset is checkable, and asking for the rest
 # would make the gate red for a reason that has nothing to do with drift.
 NETWORK_ONLY = tuple(n for n, f in FAMILIES.items()
-                     if f.source and f.source[0] == "hf")
+                     if f.source and f.source[0] in ("hf", "hf-gguf"))
 
 
 
@@ -1135,6 +1154,23 @@ def matrix(family):
             ("rf-text",
              [{"role": "user", "content": U1}], True, "default", None, {"type": "text"}),
         ])
+    if family.source and family.source[1] in ("allenai/Olmo-3-7B-Think", "unsloth/Olmo-3-7B-Think-GGUF"):
+        functions = '[{"name":"weather","parameters":{"type":"object"}}]'
+        calls = '[{"name":"weather","arguments":{"city":"Paris"}}]'
+        cases.extend([
+            ("native-functions-system", [{"role": "system", "content": SYS, "functions": functions},
+                                         {"role": "user", "content": U1}], True, "default"),
+            ("native-functions-user", [{"role": "user", "content": U1, "functions": functions}], True, "default"),
+            ("native-call-environment", [{"role": "user", "content": U1},
+                                        {"role": "assistant", "content": None, "function_calls": calls},
+                                        {"role": "environment", "content": '{"temperature":20}'}], True, "default"),
+            ("native-empty-fields", [{"role": "system", "content": "", "functions": ""},
+                                    {"role": "user", "content": U1, "functions": ""},
+                                    {"role": "assistant", "content": "", "function_calls": ""}], False, "default"),
+            ("native-inline-thinking", [{"role": "user", "content": U1},
+                                       {"role": "assistant", "content": "<think>check</think>\nanswer"}], True, "default"),
+            ("native-trailing-call", [{"role": "assistant", "content": None, "function_calls": calls}], False, "default"),
+        ])
     normalized = []
     for c in cases:
         if len(c) == 4:
@@ -1232,6 +1268,22 @@ def fetch_oracle(name, fam, oracle_dir):
             err = err or err2
         if tmpl is None:
             return False, "cannot fetch %s (%s)" % (ref, err)
+    elif kind == "hf-gguf":
+        # The Hub exposes parsed GGUF template metadata as JSON. No model
+        # file or binary range is downloaded for this oracle.
+        url = "https://huggingface.co/api/models/%s" % ref
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "runner-conf"}), timeout=60) as response:
+                doc = json.load(response)
+        except Exception as exc:
+            return False, "cannot fetch GGUF metadata for %s (%s)" % (ref, exc)
+        data = doc.get("gguf") or {}
+        tmpl = data.get("chat_template")
+        if not isinstance(tmpl, str):
+            return False, "no GGUF chat_template in metadata for %s" % ref
+        for k in ("bos_token", "eos_token"):
+            meta[k] = data.get(k)
+        meta["revision"] = doc.get("sha")
     else:
         # models/ is gitignored, so the GGUF may live elsewhere:
         # RUNNER_MODELS_DIR overrides, otherwise ROOT/models.

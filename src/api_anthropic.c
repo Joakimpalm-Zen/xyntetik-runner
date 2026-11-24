@@ -957,6 +957,24 @@ void handle_messages(slot_t *s, sock_t fd, jv *req) {
         send_error(fd, 400, "Inkling structured history is supported on /v1/chat/completions only");
         return;
     }
+    // OLMo 3 (R4.50.2): as on /v1/responses, this tool protocol has no place in its template; refused by name
+    if (s->tmpl == TMPL_OLMO3) {
+        jv *tools = jv_get(req, "tools"), *msgs = jv_get(req, "messages");
+        bool tooled = tools && tools->type == J_ARR && tools->n > 0;
+        for (int i = 0; !tooled && msgs && msgs->type == J_ARR && i < msgs->n; i++) {
+            jv *content = jv_get(msgs->items[i], "content");
+            for (int k = 0; !tooled && content && content->type == J_ARR && k < content->n; k++) {
+                const char *type = jv_str(jv_get(content->items[k], "type"), "");
+                tooled = !strcmp(type, "tool_use") || !strcmp(type, "tool_result");
+            }
+        }
+        if (tooled) {
+            send_error(fd, 400, "the olmo3 chat template has no tool protocol on /v1/messages (tools, tool_use and "
+                       "tool_result blocks); it reads messages[].functions and messages[].function_calls as strings "
+                       "and an environment role, on /v1/chat/completions");
+            return;
+        }
+    }
     if (anth_reject_unsupported(s, fd, req)) return;
     // max_tokens is required on this surface, unlike the OpenAI ones where it
     // defaults. A caller that forgot it wants a cap, not the server's.
