@@ -618,16 +618,18 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
     }
     // OLMo 3 (R4.50.2): its template reads its own function fields, never this tool protocol, and would render a
     // call or its result as nothing; refused by name, not dropped
-    if (s->tmpl == TMPL_OLMO3 || s->tmpl == TMPL_OLMO2) {   // OLMo 2 Instruct (R4.50.10): no tool protocol either
+    if (s->tmpl == TMPL_OLMO3 || tmpl_no_tool_protocol(s->tmpl)) {   // OLMo 2 Instruct, Tulu 3: no tool protocol
         jv *tools = jv_get(req, "tools"), *input = jv_get(req, "input");
         bool tooled = tools && tools->type == J_ARR && tools->n > 0;
         for (int i = 0; !tooled && input && input->type == J_ARR && i < input->n; i++) {
             const char *type = jv_str(jv_get(input->items[i], "type"), "");
             tooled = !strcmp(type, "function_call") || !strcmp(type, "function_call_output");
         }
-        if (tooled && s->tmpl == TMPL_OLMO2) {
-            send_error(fd, 400, "the olmo2 chat template has no tool protocol on /v1/responses (tools, function_call "
-                       "items); it renders tool turns as nothing");
+        if (tooled && tmpl_no_tool_protocol(s->tmpl)) {
+            char e[192];
+            snprintf(e, sizeof e, "the %s chat template has no tool protocol on /v1/responses (tools, function_call "
+                     "items); it renders tool turns as nothing", template_name(s->tmpl));
+            send_error(fd, 400, e);
             return;
         }
         if (tooled) {

@@ -978,6 +978,44 @@
     "metal": "NOT RUN"
    },
    "note": "R4.50.10: template conformance 16 of 16 cases against allenai/OLMo-2-0425-1B-Instruct's chat template (48d788ec, the same bytes as its publisher GGUF's at 62f8c199), text and tokens, BOS once; its tokenizer is OLMo 3's byte for byte (vocabulary, merges, pre-tokenizer, added tokens), so tests/compatibility/tokenizer-references/olmo-3-7b-think.tokenizer-json.json covers it"
+  },
+  "tulu3": {
+   "tool_protocol": {
+    "status": "UNSUPPORTED",
+    "note": "no tool protocol is offered on tulu3 (R4.50.11): Tulu 3's template reads no tools and renders a tool turn as nothing; the OpenAI tool protocol (tools, tool_calls, tool turns, and the Responses and Messages tool items) is refused by name with a 400"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "the publisher's sampling defaults are not read yet"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   },
+   "note": "R4.50.11: template conformance 16 of 16 cases against allenai/Llama-3.1-Tulu-3-8B's chat template (66694379; 70B cfc1d855 and 405B eac9accd ship the same bytes), text and tokens, the eos <|end_of_text|>, BOS the tokenizer's; the tokenizer is a header from bartowski/Llama-3.1-Tulu-3-8B-GGUF (0a0c4fcc; AllenAI publishes no Tulu 3 GGUF), held to the publisher's tokenizer.json at every id, merges, specials, BOS and EOS; no tokenizer reference of its own"
+  },
+  "tulu3-olmo2": {
+   "tool_protocol": {
+    "status": "UNSUPPORTED",
+    "note": "no tool protocol is offered on tulu3-olmo2 (R4.50.11): Tulu 3's template reads no tools and renders a tool turn as nothing; the OpenAI tool protocol (tools, tool_calls, tool turns, and the Responses and Messages tool items) is refused by name with a 400"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "the publisher's sampling defaults are not read yet"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   },
+   "note": "R4.50.11: template conformance 16 of 16 cases against allenai/OLMo-2-0325-32B-Instruct's chat template (6be039a1, Tulu 3's byte for byte; the same bytes as its publisher GGUF's at 66b39389), text and tokens, the eos <|endoftext|>, no BOS (its tokenizer adds none); its tokenizer is OLMo 2 1B Instruct's byte for byte and so OLMo 3's, which tests/compatibility/tokenizer-references/olmo-3-7b-think.tokenizer-json.json covers"
   }
  },
  "architectures": {

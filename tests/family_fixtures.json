@@ -145,6 +145,14 @@
       "fixture": "plain",
       "reasoning": "none"
     },
+    "tulu3": {
+      "fixture": "plain",
+      "reasoning": "none"
+    },
+    "tulu3-olmo2": {
+      "fixture": "plain",
+      "reasoning": "none"
+    },
     "olmo3": {
       "fixture": "plain",
       "reasoning": "tags"

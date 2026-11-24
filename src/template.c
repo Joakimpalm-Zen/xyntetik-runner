@@ -215,6 +215,16 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
         if (strstr(meta_tmpl, "<|user|>\n' + message['content'] + '\n'") && strstr(meta_tmpl, "{{ bos_token }}") &&
             (!tok || (tok->eos_id >= 0 && tok_find(tok, "<|endoftext|>") == tok->eos_id)))
             return TMPL_OLMO2;
+        // Tulu 3's template (R4.50.11): the same turns with no bos_token written, and the eos after an assistant
+        // turn. The renderer writes the eos as a literal, one family per vocabulary, so with a vocabulary at hand the
+        // file's EOS picks it: Tulu 3's <|end_of_text|> or OLMo 2's <|endoftext|> (OLMo-2-0325-32B-Instruct). A file
+        // with another EOS keeps its former reading; with no vocabulary (a sampler preset's lookup), Tulu 3's own.
+        if (strstr(meta_tmpl, "<|user|>\n' + message['content'] + '\n'") &&
+            strstr(meta_tmpl, "+ message['content'] + eos_token + '\n'") && !strstr(meta_tmpl, "bos_token")) {
+            if (!tok) return TMPL_TULU3;
+            if (tok->eos_id >= 0 && tok_find(tok, "<|end_of_text|>") == tok->eos_id) return TMPL_TULU3;
+            if (tok->eos_id >= 0 && tok_find(tok, "<|endoftext|>") == tok->eos_id) return TMPL_TULU3_OLMO2;
+        }
         if (strstr(meta_tmpl, "<|user|>"))
             return strstr(meta_tmpl, "<|end|>") ? TMPL_PHI3 : TMPL_ZEPHYR;
         // Phi-4-mini writes '<|' + role + '|>', so no literal role tag is
@@ -287,6 +297,8 @@ static const struct { int tmpl; const char *name; bool flag; } TEMPLATE_NAMES[] 
     { TMPL_CHATML_THINK, "chatml-think", true },
     { TMPL_OLMO3, "olmo3", true },
     { TMPL_OLMO2, "olmo2", true },
+    { TMPL_TULU3, "tulu3", true },
+    { TMPL_TULU3_OLMO2, "tulu3-olmo2", true },
     { TMPL_MELLUM, "mellum", true },
     { TMPL_MINICPM5, "minicpm5", true },
     { TMPL_LFM2, "lfm2", true },
@@ -4910,7 +4922,15 @@ size_t render_messages_state_rf(int tmpl, const chat_msg *msgs, int n_msgs,
         // - assistant: the tag, the content and the eos, then a newline unless it is the last message;
         // - any other role: nothing (the server refuses the tool protocol by name rather than let it vanish);
         // - the generation prompt after the last message only, so none without messages.
+        // After the BOS it is Tulu 3's template on OLMo 2's vocabulary, so the turns are TMPL_TULU3_OLMO2's.
         off = emit(out, cap, off, "<|endoftext|>", NULL, NULL);
+        // fall through
+    case TMPL_TULU3:
+    case TMPL_TULU3_OLMO2: {
+        // Tulu 3's template (allenai/Llama-3.1-Tulu-3-8B revision 66694379, and OLMo-2-0325-32B-Instruct's, the same
+        // bytes; R4.50.11): OLMo 2's turns, no BOS written. The eos is the file's: Tulu 3's <|end_of_text|>, OLMo
+        // 2's <|endoftext|> (TMPL_OLMO2 and TMPL_TULU3_OLMO2).
+        const bool l3 = tmpl == TMPL_TULU3;
         for (int i = 0; i < n_msgs; i++) {
             const char *r = msgs[i].role;
             if (!strcmp(r, "system"))
@@ -4918,11 +4938,14 @@ size_t render_messages_state_rf(int tmpl, const chat_msg *msgs, int n_msgs,
             else if (!strcmp(r, "user"))
                 off = emit(out, cap, off, "<|user|>\n%s\n", msgs[i].content, NULL);
             else if (!strcmp(r, "assistant"))
-                off = emit(out, cap, off, i + 1 < n_msgs ? "<|assistant|>\n%s<|endoftext|>\n"
-                                                          : "<|assistant|>\n%s<|endoftext|>", msgs[i].content, NULL);
+                off = emit(out, cap, off,
+                           i + 1 < n_msgs ? (l3 ? "<|assistant|>\n%s<|end_of_text|>\n" : "<|assistant|>\n%s<|endoftext|>\n")
+                                          : (l3 ? "<|assistant|>\n%s<|end_of_text|>" : "<|assistant|>\n%s<|endoftext|>"),
+                           msgs[i].content, NULL);
         }
         if (add_assistant && n_msgs > 0) off = emit(out, cap, off, "<|assistant|>\n", NULL, NULL);
         break;
+    }
     case TMPL_ZEPHYR:
         for (int i = 0; i < n_msgs; i++)
         {   // the role sits inside the control token: template-owned
@@ -6788,12 +6811,16 @@ const char *tool_envelope_protocol_name(const tool_envelope *e) {
     return "generic";
 }
 
+bool tmpl_no_tool_protocol(int tmpl) {
+    return tmpl == TMPL_OLMO2 || tmpl == TMPL_TULU3 || tmpl == TMPL_TULU3_OLMO2;
+}
+
 const char *tool_protocol_name(int tmpl, bool *native) {
     // OLMo 3 (R4.50.2): no tool protocol is offered on it. The template's own function fields pass through as the
     // caller writes them, and the OpenAI protocol is refused, so "generic" (the marker fallback) would be untrue.
     // OLMo 2 Instruct (R4.50.10): none either; its template renders a tool turn as nothing, and the protocol is
-    // refused on it by name.
-    if (tmpl == TMPL_OLMO3 || tmpl == TMPL_OLMO2) { *native = false; return "none"; }
+    // refused on it by name. Tulu 3 (R4.50.11): the same.
+    if (tmpl == TMPL_OLMO3 || tmpl_no_tool_protocol(tmpl)) { *native = false; return "none"; }
     tool_envelope env = {0};
     bool skip_generic = false;
     // strict + atem_tool_calling: each family's NATIVE default
