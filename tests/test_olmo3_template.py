@@ -27,6 +27,8 @@ sys.path.insert(0, str(ROOT / "tests" / "conformance"))
 from harness import RunnerServer  # noqa: E402
 
 NATIVE = "olmo3 chat template has no"
+TOOL_TURN_END = "as strings and an environment role for results"
+TOOLS_END = "results as an environment turn"
 
 
 @pytest.fixture(scope="module")
@@ -76,6 +78,8 @@ TOOLS = [{"type": "function", "function": {"name": "weather", "parameters": {"ty
 def test_the_openai_tool_protocol_is_refused_by_name_on_chat(olmo3, case, body):
     status, doc = _post(olmo3, "/v1/chat/completions", {**body, "max_tokens": 1})
     assert status == 400 and NATIVE in _message(doc) and "messages[].functions" in _message(doc), (case, doc)
+    # the whole sentence, never cut: its end arrives too (a 192-byte buffer once cut it on clang and failed gcc's build)
+    assert _message(doc).endswith(TOOL_TURN_END if case != "tools[]" else TOOLS_END), (case, _message(doc))
 
 
 @pytest.mark.parametrize("path,body", [

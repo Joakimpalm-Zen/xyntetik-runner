@@ -357,6 +357,11 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
 // Validate the message envelope before any turn is rendered. Defaults and
 // `continue` are unsafe at this boundary: either can make a successful request
 // mean a different conversation from the one the caller submitted.
+// The room validate_chat_messages' refusals need: the longest is the olmo3 tool-protocol sentence, 207 bytes with the
+// widest index (196 of text and an int's 11 digits and sign), the others at most 106; the caller's buffer is this
+// size, so none of them is cut, and gcc's -Wformat-truncation checks every snprintf below against it at build time.
+// (The unsupported content type echoes the request's own type string, which is cut at the cap if it is longer.)
+enum { CHAT_MSG_ERR_CAP = 256 };
 static bool validate_chat_messages(const jv *msgs, int tmpl, char *err, size_t err_cap) {
     for (int i = 0; i < msgs->n; i++) {
         jv *msg = msgs->items[i];
@@ -657,7 +662,7 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
         send_error(fd, 400, "missing messages");
         return;
     }
-    char merr[192];
+    char merr[CHAT_MSG_ERR_CAP];
     if (!validate_chat_messages(msgs, s->tmpl, merr, sizeof(merr))) {
         send_error(fd, 400, merr);
         return;
