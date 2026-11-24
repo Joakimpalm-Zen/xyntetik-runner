@@ -4680,6 +4680,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_recommend.py \
     tests/test_record_sign.py \
     tests/test_recurrent_device_contexts.py \
+    tests/test_recurrent_prefix_pick.py \
     tests/test_release_check.py \
     tests/test_remove_sublayer.py \
     tests/test_repeat_count.py \
@@ -5180,14 +5181,17 @@ CUDA_GATED_TESTS = tests/test_apertus.py tests/test_gpu_declines.py tests/test_a
                    tests/test_server_sessions.py tests/test_draft_k_defaults.py \
                    tests/test_draft_defaults.py tests/test_tc_spark_promotion.py tests/test_tc_clef_promotion.py tests/test_tc_route_label.py tests/test_verify_tc_compat.py tests/test_cuda_plan_runs.py tests/test_cuda_fit_hybrid.py tests/test_cuda_fit_ring.py tests/test_cuda_fit_full_offload.py tests/test_cuda_rec_slots.py tests/test_attn_dec_repeat.py tests/test_qwen35_kv_rows.py \
                    tests/test_phi3_rope.py tests/test_moe_limb_default.py tests/test_recurrent_device_contexts.py \
-                   tests/test_ple_fork_history.py
+                   tests/test_ple_fork_history.py tests/test_recurrent_prefix_pick.py
+# test_recurrent_prefix_pick.py's CUDA cases fork a recurrent model's named
+# context and automatic tier on the device (R4.48.22.4); they must not skip here.
 # test_ple_fork_history.py's CUDA case forks qwen4exp's automatic prefix tier
 # on the device after a longer prompt (R4.48.22.1); it must not skip here.
 # test_moe_limb_default.py holds moe-limb's selection as the default for
 # gemma-4's Q4_0 experts (R3.83): every case needs a CUDA device.
 # test_recurrent_device_contexts.py pins, forks and imports a recurrent
-# model's named context on CUDA, and holds the pin's and the import's refusal
-# on the Metal backend (R4.48.22): every case needs a CUDA or Metal device.
+# model's named context on CUDA and on the Metal backend (R4.48.22,
+# R4.48.22.2): its device cases need a CUDA or Metal device and must not
+# skip here; its CPU case of the messages pin runs everywhere.
 # test_phi3_rope.py serves a phi3 LongRoPE sequence across its original
 # context on the device (R4.40.2); its GPU case must not skip on a CUDA host.
 # test_qwen35_kv_rows.py holds every partial CUDA split of the hybrid fixtures

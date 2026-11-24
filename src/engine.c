@@ -886,6 +886,12 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
     int best = 0;
     pfx_entry *hit = NULL;
     const uint64_t route = engine_prompt_route(e);
+    // A recurrent model forks only an entry the prompt holds whole (its fold is the one at the entry's end, see
+    // below), so only such an entry is a candidate, and the longest of them is forked. Picked by the longest common
+    // prefix instead, a longer entry the prompt shares only in part (the previous request's own prompt, published
+    // whole) won and was declined, and the shorter whole one was never tried: a pinned context's next use after an
+    // unrelated prompt was refused, and the automatic tier prefilled that prompt cold (R4.48.22.4).
+    const bool whole_only = model_has_recurrent(e->m);
     for (pfx_entry *p = PFX.head; p; p = p->next) {
         if (p->key != e->model_key || p->cls != route) continue;
         // R3.60: rows from disk are of a provenance this process cannot vouch
@@ -897,6 +903,7 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
         if (model_rope_wants_long(e->m, p->n) != e->m->rope_long) continue;
         int c = 0;
         while (c < p->n && c < n - 1 && p->toks[c] == toks[c]) c++;
+        if (whole_only && c != p->n) continue;
         if (c > best && pfx_ring_serves(e->m, p, c)) { best = c; hit = p; }
     }
     // A shared snapshot stores KV (sliceable, Fact 1) plus — for a recurrent
@@ -1020,7 +1027,7 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
             pthread_mutex_unlock(&PFX.mu);
             return;
         }
-        if (c == lim && !p->pinned) pfx_drop(pp);   // ours strictly extends p
+        if (c == lim && !p->pinned && !recur) pfx_drop(pp);   // ours strictly extends p
         else if (c == lim) pp = &p->next;           // a named one stays
         else {
             if (c > diverge_at) diverge_at = c;
@@ -1095,34 +1102,18 @@ static pfx_entry **pfx_find_named(const char *name) {
     return NULL;
 }
 
-// R4.48.22: a recurrent model's pin and import stay refused on the Metal
-// backend. Measured on an arm64 Mac (2026-11-24, the fixtures of
-// tests/test_recurrent_device_contexts.py): the snapshot round trip is exact
-// there (an import gives its pin's bits, and the automatic tier's restore the
-// live state's), but the pin's own prefill rounds differently from a
-// completion's prefill for nemotron-H (the pinned fork 4.7e-7 from the
-// automatic fork in its logprobs, the same text) and lfm2 (3.5e-3 from a cold
-// prefill), so a request naming the context would not answer as the automatic
-// tier does. CUDA pins all four families bit for bit; the CPU always did.
-// Lifted on Metal when the pin's prefill is a completion's there.
-bool prefix_context_metal_recurrent(const model_t *m) {
-    return m && model_has_recurrent(m) && !strcmp(model_backend_name(m), "metal");
-}
-
 int prefix_context_pin(engine *e, const char *name, const int32_t *toks, int n) {
     if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
     // what the tier does not serve (pfx_tier_serves, as engine_prefix_reuse and _publish ask it), or no history
     if (!pfx_tier_serves(e->m) || !e->hist)
         return PFX_CTX_UNSUPPORTED;
-    // A recurrent model on CUDA pins too (R4.48.22). Its fold is moved
+    // A recurrent model on a device pins too (R4.48.22). Its fold is moved
     // through the host buffers both ways (model_recurrent_blob_save pulls the
     // device layers' fold for pfx_save below, model_recurrent_blob_load pushes
     // it back on the fork), the seam the automatic tier forks through since
     // R4.26.7; a request naming the context is an exact full-prefix hit, the
     // only kind engine_prefix_reuse forks for a recurrent model. Until then a
     // pin there was refused (2026-10-02: the fork could not reach the fold).
-    // On the Metal backend it still is (prefix_context_metal_recurrent).
-    if (prefix_context_metal_recurrent(e->m)) return PFX_CTX_UNSUPPORTED;
     // the snapshot is taken from the slot's KV, which must hold exactly toks:
     // a recurrent fold belongs to position e->pos and nowhere else
     if (n < 1 || e->pos != n || memcmp(e->hist, toks, sizeof(int32_t) * (size_t)n))
@@ -1565,9 +1556,9 @@ out:
 int prefix_context_import(const engine *e, const char *name, const char *path,
                           const char *origin) {
     if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
-    // what a pin refuses (R4.48.22: a recurrent model on CUDA imports too, the fork restoring the fold the file
-    // holds through the host buffers as the pin's own does; on the Metal backend it is refused as the pin is)
-    if (!e || !pfx_tier_serves(e->m) || prefix_context_metal_recurrent(e->m))
+    // what a pin refuses (R4.48.22: a recurrent model on a device imports too; the fork restores the fold the
+    // file holds through the host buffers, as the pin's own does)
+    if (!e || !pfx_tier_serves(e->m))
         return PFX_CTX_UNSUPPORTED;
     uint64_t bytes = 0;
     int32_t n = 0;
@@ -1854,6 +1845,28 @@ float *engine_feed(engine *e, const int32_t *toks, int n) {
     unstamp_if_moved(e, r);
     e->m->prefill_pass = false;
     return lg;
+}
+
+// R4.48.22.2: a prompt's prefill in the shape every recurrent fold is built in, for a completion and for a pinned
+// context alike (completion.c; server.c context_pin_prompt): tokens [keep, mark_at), the fold marked there (at the
+// anchor when it lies inside the prompt, else one token short of its end), the rest of the prompt up to its last
+// token, then the last token alone. A fold's bits depend on these shapes wherever a backend's prefill chunk is not its
+// decode step's bits: the Metal backend's prefill GEMM is a tolerance class against its decode matvec by design
+// (metal.m enc_mv_n), and a pin fed as one batch answered differently from the automatic tier there (nemotron-H
+// 4.7e-7, lfm2 more), as it did under a T3 build on CUDA (qwen4exp 4.8e-7); the CPU and a default CUDA build were
+// bit-equal. One helper builds both, so they cannot drift. The last token's logits, or NULL.
+float *engine_feed_prompt(engine *e, const int32_t *toks, int keep, int n, int anchor) {
+    if (n < 2 || keep < 0 || keep >= n) return NULL;
+    const int last = n - 1;
+    const bool at_anchor = anchor >= keep && anchor < last;
+    const int mark_at = at_anchor ? anchor : last;
+    bool ok = mark_at == keep ||   // resumed at the mark: nothing before it to feed
+              engine_feed(e, toks + keep, mark_at - keep) != NULL;
+    if (ok && at_anchor) engine_mark_anchor(e);
+    else if (ok) engine_mark_turn(e);
+    // the generation prompt, up to its last token
+    if (ok && mark_at < last) ok = engine_feed(e, toks + mark_at, last - mark_at) != NULL;
+    return ok ? engine_feed(e, toks + last, 1) : NULL;
 }
 
 // the decode step's route: prefill_pass stays false (engine.h)

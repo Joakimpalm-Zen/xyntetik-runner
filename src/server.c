@@ -1044,7 +1044,10 @@ static void context_pin_prompt(slot_t *s, sock_t fd, const char *prompt,
     double t0 = now_s();
     readout_turn_begin(e);
     prefix_reuse r = engine_prefix_reuse(e, toks, n);
-    float *lg = engine_feed(e, toks + r.keep, n - r.keep);
+    // a recurrent model's pin prefills in the shape a completion's prefill takes (engine_feed_prompt, R4.48.22.2),
+    // so its fold is the automatic tier's on every backend; the messages and the prompt entry both come here
+    float *lg = model_has_recurrent(e->m) ? engine_feed_prompt(e, toks, r.keep, n, -1)
+                                          : engine_feed(e, toks + r.keep, n - r.keep);
     int rc = lg ? prefix_context_pin(e, id, toks, n) : PFX_CTX_NOSPACE;
     readout_turn_end(e);
     double secs = now_s() - t0;
@@ -1054,13 +1057,6 @@ static void context_pin_prompt(slot_t *s, sock_t fd, const char *prompt,
         send_error_detail(fd, 409, "this model cannot fork a pinned prefix: inkling2_loop keeps its K/V and "
                           "convolution histories in its own cache, which the shared prefix cache does not "
                           "serve (a request repeating a prefix re-prefills it)", NULL, "context_unsupported");
-        return;
-    }
-    if (rc == PFX_CTX_UNSUPPORTED && prefix_context_metal_recurrent(s->m)) {
-        send_error_detail(fd, 409, "this model cannot pin a context here: a "
-                          "recurrent model on the Metal backend is not pinned "
-                          "yet (serve it with --gpu off to use contexts)", NULL,
-                          "context_unsupported");
         return;
     }
     if (rc == PFX_CTX_UNSUPPORTED) {
