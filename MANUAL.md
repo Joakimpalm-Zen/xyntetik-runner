@@ -1283,10 +1283,15 @@ in part 1`). A part in llama.cpp's standard sparse layout states only the three
 split keys, so nothing in it can tell another set's part: such a part is
 accepted, as llama.cpp accepts it (the format carries no set identity). A split
 set goes by the set's name whichever part opens it, the first part's file name
-(the name the other parts are derived from): `/v1/models`, the capabilities'
-`resident`, `--score`'s `score_route.model` (with the whole set's bytes), and
-the load line, which ends `| a split set of N parts`. A single file keeps its
-own name. Nonstandard filenames and remote/streamed parts are not resolved
+(the name the other parts are derived from), wherever the model is named:
+`/v1/models`, the capabilities' `resident`, the discovery record the tray reads,
+`--score`'s `score_route.model` and `--info doctor`'s `model` (each with the
+whole set's bytes), `--bench-json`'s `model`, `--decide`'s `model`, and the
+load line, which names the first part and ends `| a split set of N parts`. Where
+one file is named beside that file's digest, it is the part the model was
+started from, the one hashed: `/v1/runner/provenance`'s `model` and the
+receipts. A single file keeps its own name, also with an `--mtp-file`
+companion attached. Nonstandard filenames and remote/streamed parts are not resolved
 automatically; merge or rename those sets to the standard layout first.
 
 Fetch the small test model with:

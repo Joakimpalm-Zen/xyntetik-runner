@@ -2651,6 +2651,9 @@ static void send_provenance(sock_t fd) {
     int res = resident_load();
     const char *id = SV.n_reg == 0 ? SV.model_name
                    : res >= 0      ? SV.reg[res].name : NULL;
+    // R19.17.1: the model block names one file beside that file's digest; for a split set, the part it was started
+    // from (the one hashed, as receipts name it), while /v1/models names the set
+    if (id && SV.file_name && (SV.n_reg == 0 || (SV.single && res == 0))) id = SV.file_name;
     const slot_t *s0 = SV.slots ? &SV.slots[0] : NULL;
     const model_t *m = (s0 && (SV.n_reg == 0 || res >= 0)) ? s0->m : NULL;
     sb_lit(&r, "{\"object\":\"runner.provenance\"," BUILD_JSON ",");
@@ -4032,6 +4035,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                   : forced_name  ? forced_name
                   : is_set       ? plat_path_base(set_first)
                                  : plat_path_base(model_path);
+    SV.file_name = is_set ? plat_path_base(model_path) : NULL;
     SV.n_predict_cap = 1024;
     SV.reasoning_budget = reasoning_budget;
     SV.reasoning_budget_message = reasoning_budget_message;

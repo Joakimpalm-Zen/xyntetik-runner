@@ -112,6 +112,9 @@ typedef struct {
     int        n_slots;
     fdqueue    q;
     const char *model_name;
+    // R19.17.1: the file a split set was started from, when model_name is the set's name: provenance names the file
+    // it hashes, as a receipt does (NULL for a single file, whose name is its own)
+    const char *file_name;
     int        n_predict_cap;
     // R4.12.16: default reasoning budget in tokens (0 = off), from
     // --reasoning-budget. A request's reasoning_max_tokens overrides it.

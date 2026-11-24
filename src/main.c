@@ -2591,7 +2591,16 @@ typedef struct {
     // checkpoints and checkpoint_chain (train_checkpoint fills it)
     struct train_ckpt { int step; long long cursor; char adapter[65], optim[65]; } *ckpt;
     int n_ckpt, cap_ckpt;
+    // R19.17.1: a split set's name, its first part's path, whichever part was loaded (set_parts > 1); the surfaces
+    // that name THE MODEL name it by this (cli_model_name), the ones that name a file beside its digest keep the file
+    char set_path[4096];
+    uint32_t set_parts;
 } cli_run;
+
+// the path the loaded model goes by: a split set's first part, or the path itself
+static const char *cli_model_name(const cli_run *rt, const char *path) {
+    return rt && rt->set_parts > 1 ? rt->set_path : path;
+}
 
 static void cli_opts_init(cli_opts *o) {
     memset(o, 0, sizeof *o);
@@ -5232,12 +5241,15 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
         // (slots create their pools), so the honest number here is the count
         // the slots divide, not the placeholder pool (the lab read "1 threads"
         // as a CPU fallback at one thread, 2026-09-23).
-        // R19.17.1: a split set says so, whichever part opened it (a single file's line is as it was)
+        // R19.17.1: a split set is named as the set, whichever part opened it, and says so; its split.count
+        // decides, never the count of mapped files, which an --mtp-file companion adds to (a single file's line is
+        // as it was)
+        rt->set_parts = 1;
+        if (!gguf_set_name(load_path, rt->set_path, sizeof rt->set_path, &rt->set_parts, NULL)) rt->set_parts = 1;
         char setnote[48] = "";
-        if (gguf_map_count(&rt->m.gf) > 1)
-            snprintf(setnote, sizeof setnote, " | a split set of %u parts", gguf_map_count(&rt->m.gf));
+        if (rt->set_parts > 1) snprintf(setnote, sizeof setnote, " | a split set of %u parts", rt->set_parts);
         fprintf(stderr, "loaded %s | %s | %d layers | ctx %d | %d threads%s | %.2fs%s\n",
-                load_path, rt->m.arch, rt->m.n_layer, rt->m.n_ctx,
+                cli_model_name(rt, load_path), rt->m.arch, rt->m.n_layer, rt->m.n_ctx,
                 o->serve ? o->n_threads
                          : rt->m.ink2 ? model_inkling2_threads(&rt->m)
                                       : tpool_size(rt->m.tp),
@@ -5300,9 +5312,10 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
         // never affects the run. Utility modes (--quantize/--caps/--bench)
         // stay unregistered.
         if (!o->bench_json && !o->quant_out) {
-            const char *bn = plat_path_base(load_path);
+            const char *named = cli_model_name(rt, load_path);   // R19.17.1: the name /v1/models lists
+            const char *bn = plat_path_base(named);
             const char *const names[] = { bn };
-            const char *const paths[] = { load_path };
+            const char *const paths[] = { named };
             instances_register(o->serve ? "serve" : "cli", o->serve ? o->port : 0,
                                names, paths, 1);
         }
@@ -7907,7 +7920,8 @@ static int run_jsonl(cli_opts *o, cli_run *rt, const char *path, jsonl_handler h
     // the file's name, as the server names it (plat_path_base: a Windows
     // path ends its directories with a backslash, and the name taken after
     // the last '/' was then the whole path, R6.68.81)
-    const char *label = plat_path_base(o->model_path);
+    // (R19.17.1: a split set by the set's name, as the server names it)
+    const char *label = plat_path_base(cli_model_name(rt, o->model_path));
     for (;;) {
         c = fgetc(df);
         if (c != EOF && c != '\n') {
@@ -8317,8 +8331,9 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
 #endif
     sbuf r = {0};
     sb_lit(&r, "{\"schema\":\"xyntetik.runner.doctor.v1\",\"runner\":{\"version\":\"" RUNNER_VERSION "\"},");
-    // identity: what the file says it is, never where it lives
-    const char *bn = plat_path_base(o->model_path);
+    // identity: what the file says it is, never where it lives (R19.17.1: a split set by the set's name, beside the
+    // whole set's bytes, which file_size holds for a set)
+    const char *bn = plat_path_base(cli_model_name(rt, o->model_path));
     sb_lit(&r, "\"model\":{\"file\":\"");
     sb_esc(&r, bn, strlen(bn));
     sb_fmt(&r, "\",\"bytes\":%llu,\"architecture\":\"", (unsigned long long)rt->m.file_size);
@@ -8529,7 +8544,8 @@ static int run_bench(cli_opts *o, cli_run *rt) {
     }
     n_gen = engine_generate(&rt->e, logits, o->n_predict, discard_cb, NULL, &gtime);
     char esc_model[1024];
-    json_escape(o->model_path, strlen(o->model_path), esc_model, sizeof(esc_model));
+    const char *bench_model = cli_model_name(rt, o->model_path);   // R19.17.1: a split set by the set's name
+    json_escape(bench_model, strlen(bench_model), esc_model, sizeof(esc_model));
     // prompt_s is time-to-first-token for this prompt length: the number
     // an editor-assistant user actually waits on, and the one a rate alone
     // hides. Both phases report seconds beside their rates.

@@ -502,6 +502,11 @@ static bool split_part_path(char *out, size_t cap, const char *path,
     return wrote > 0 && (size_t)wrote < cap;
 }
 
+// a scalar array element's stored size by GGUF type (0: not a scalar)
+static const size_t split_esz[] = { 1, 1, 2, 2, 4, 4, 4, 1, 0, 0, 8, 8, 8 };
+
+static size_t split_elem_size(uint32_t t) { return t < sizeof split_esz / sizeof *split_esz ? split_esz[t] : 0; }
+
 // R19.17.1: one key's value in two parts of a set, compared by its stored bits (a float by its bits, a string and
 // an array element by element)
 static bool split_kv_same(const gguf_kv *a, const gguf_kv *b) {
@@ -522,14 +527,32 @@ static bool split_kv_same(const gguf_kv *a, const gguf_kv *b) {
                     return false;
             return true;
         }
-        static const size_t esz[] = { 1, 1, 2, 2, 4, 4, 4, 1, 0, 0, 8, 8, 8 };
-        const size_t e = a->arr_type < sizeof esz / sizeof *esz ? esz[a->arr_type] : 0;
+        const size_t e = split_elem_size(a->arr_type);
         if (!e || !a->arr_raw || !b->arr_raw) return a->arr_raw == b->arr_raw;
         return !memcmp(a->arr_raw, b->arr_raw, (size_t)a->arr_n * e);
     }
     default:
         return a->v.u64 == b->v.u64;   // the integers, widened into the same 64 bits by type
     }
+}
+
+// the first element two arrays of one type and length differ at, for a refusal whose two values read alike (0
+// when their element types differ)
+static uint64_t split_arr_first_diff(const gguf_kv *a, const gguf_kv *b) {
+    if (a->arr_type != b->arr_type || a->arr_n != b->arr_n) return 0;
+    if (a->arr_type == GGUF_T_STR) {
+        for (uint64_t k = 0; k < a->arr_n; k++)
+            if (a->arr_str[k].n != b->arr_str[k].n ||
+                (a->arr_str[k].n && memcmp(a->arr_str[k].s, b->arr_str[k].s, (size_t)a->arr_str[k].n)))
+                return k;
+        return 0;
+    }
+    const size_t e = split_elem_size(a->arr_type);
+    if (!e || !a->arr_raw || !b->arr_raw) return 0;
+    const unsigned char *pa = a->arr_raw, *pb = b->arr_raw;
+    for (uint64_t k = 0; k < a->arr_n; k++)
+        if (memcmp(pa + k * e, pb + k * e, e)) return k;
+    return 0;
 }
 
 // a key's value for the refusal's sentence
@@ -570,36 +593,52 @@ static const gguf_kv *split_kv_contradiction(gguf_file *p0, gguf_file *pi, const
 // R19.17.1: the name a split set goes by, whichever part opens it: the first part (<prefix>-00001-of-N.gguf, the
 // name the set's other parts are derived from and the one the set is listed by), with the whole set's bytes and its
 // part count; a single file is itself (1 part, its own size). false: the path cannot be read.
-bool gguf_set_name(const char *path, char *first, size_t cap, uint32_t *n_parts, long long *bytes) {
-    uint32_t n = 1;
-    if (!gguf_split_part_path(path, 0, first, cap, &n)) return false;
-    long long total = 0;
-    for (uint32_t i = 0; i < n; i++) {
-        char part[4096];
-        plat_stat_t st;
-        if (!gguf_split_part_path(path, i, part, sizeof part, NULL) || plat_stat(part, &st) != 0) { total = -1; break; }
-        total += (long long)st.st_size;
-    }
-    if (n_parts) *n_parts = n;
-    if (bytes) *bytes = total;
+// Which part of its set this file is, from its own header (split.no of split.count; a single file is part 0 of 1).
+// The one header read a caller of the set's paths needs: each part's path is then the name's arithmetic.
+static bool split_probe(const char *path, uint32_t *current, uint32_t *count) {
+    gguf_file probe;
+    if (!gguf_open_one_x(&probe, path, true)) return false;
+    uint32_t n = gguf_get_u32(&probe, "split.count", 0);
+    *current = gguf_get_u32(&probe, "split.no", UINT32_MAX);
+    gguf_close(&probe);
+    *count = n <= 1 ? 1 : n;
     return true;
 }
 
-bool gguf_split_part_path(const char *path, uint32_t i, char *out, size_t cap, uint32_t *count) {
-    gguf_file probe;
-    // this part's own header: the question is which part this file is
-    if (!gguf_open_one_x(&probe, path, true)) return false;
-    uint32_t n = gguf_get_u32(&probe, "split.count", 0);
-    uint32_t current = gguf_get_u32(&probe, "split.no", UINT32_MAX);
-    gguf_close(&probe);
-    if (count) *count = n <= 1 ? 1 : n;
-    if (n <= 1) {
+// part i's path, for a file that is part `current` of `count` (split_probe's answer)
+static bool split_sibling(const char *path, uint32_t current, uint32_t count, uint32_t i, char *out, size_t cap) {
+    if (count <= 1) {
         if (i != 0) return false;
         int wrote = snprintf(out, cap, "%s", path);
         return wrote > 0 && (size_t)wrote < cap;
     }
-    if (current >= n || i >= n) return false;
-    return split_part_path(out, cap, path, current, n, i);
+    if (current >= count || i >= count) return false;
+    return split_part_path(out, cap, path, current, count, i);
+}
+
+bool gguf_set_name(const char *path, char *first, size_t cap, uint32_t *n_parts, long long *bytes) {
+    uint32_t cur = 0, n = 1;
+    if (!split_probe(path, &cur, &n) || !split_sibling(path, cur, n, 0, first, cap)) return false;
+    if (bytes) {   // each part's size from the file system: no part's header is read again
+        long long total = 0;
+        for (uint32_t i = 0; i < n; i++) {
+            char part[4096];
+            plat_stat_t st;
+            if (!split_sibling(path, cur, n, i, part, sizeof part) || plat_stat(part, &st) != 0) { total = -1; break; }
+            total += (long long)st.st_size;
+        }
+        *bytes = total;
+    }
+    if (n_parts) *n_parts = n;
+    return true;
+}
+
+bool gguf_split_part_path(const char *path, uint32_t i, char *out, size_t cap, uint32_t *count) {
+    uint32_t cur = 0, n = 1;
+    // this part's own header: the question is which part this file is
+    if (!split_probe(path, &cur, &n)) return false;
+    if (count) *count = n;
+    return split_sibling(path, cur, n, i, out, cap);
 }
 
 bool gguf_open(gguf_file *g, const char *path) {
@@ -679,8 +718,14 @@ static bool gguf_open_set(gguf_file *g, const char *path, bool header_only) {
             char v0[96], vi[96];
             split_kv_text(kv0, v0, sizeof v0);
             split_kv_text(kvi, vi, sizeof vi);
-            fprintf(stderr, "error: split GGUF part %u/%u is from another set: %s %s against %s in part 1: %s\n",
-                    i + 1, count, kvi->key, vi, v0, part_path);
+            if (kvi->type == GGUF_T_ARR && kv0->type == GGUF_T_ARR && !strcmp(v0, vi))
+                // two arrays of one length read alike: the sentence names where they part
+                fprintf(stderr, "error: split GGUF part %u/%u is from another set: %s, %s, differs from part 1's "
+                        "at element %llu: %s\n", i + 1, count, kvi->key, vi,
+                        (unsigned long long)split_arr_first_diff(kv0, kvi), part_path);
+            else
+                fprintf(stderr, "error: split GGUF part %u/%u is from another set: %s %s against %s in part 1: %s\n",
+                        i + 1, count, kvi->key, vi, v0, part_path);
             ok = false; break;
         }
         total += parts[i].n_tensors;
