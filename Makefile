@@ -3807,6 +3807,16 @@ test-metal:
 # RUNNER_METAL_FRONT=all megakernel refusal, partial offload, microbatch, and
 # speculative verify. Healthy f16-KV residue on the F32 fixtures: 7.16e-6
 # (OLMo 3), 8.35e-7 (OLMo 3 GQA), 1.78e-6 (OLMo 2 plain), held to 1e-5.
+# The quantized KV caches run on head_dim-32 files (make-test-olmo2.py
+# --head-dim 32: at 16, q8 and k8v4 keep f16 with a note, which fails here),
+# fp4 on the GQA file too. Each runs at n_batch 7 and decode-only, never at 8
+# or more. The gate's CPU arm calls the model without the engine's prefill_pass,
+# so at MV_SMALL_BATCH (8) columns or more its products take the f32 tile, which
+# sums in another order than the native dot below it and than the device. A
+# quantized row turns that reassociation into whole steps: 3.19e-5 on fp4 and
+# 1.27e-4 on q8 at n_batch 32 on these toy files, with the CPU arm alone moving
+# and the device byte-identical at every width. Below 8 both arms take the
+# native dot (5e-8).
 test-metal-olmo2: runner $(TEST_GPU_ID) $(TEST_BATCH_ID) $(TEST_SPEC_ID)
 ifeq ($(BUILD_OS),Darwin)
 	@set -e; \
@@ -3815,7 +3825,9 @@ ifeq ($(BUILD_OS),Darwin)
 	$(PYTHON) scripts/make-test-olmo2.py test-olmo2.gguf > /dev/null; \
 	$(PYTHON) scripts/make-test-olmo2.py test-olmo2-gqa.gguf --gqa > /dev/null; \
 	$(PYTHON) scripts/make-test-olmo2.py test-olmo2-plain.gguf --plain > /dev/null; \
-	for f in test-olmo2.gguf test-olmo2-gqa.gguf test-olmo2-plain.gguf; do \
+	$(PYTHON) scripts/make-test-olmo2.py test-olmo2-h32.gguf --head-dim 32 > /dev/null; \
+	$(PYTHON) scripts/make-test-olmo2.py test-olmo2-h32-gqa.gguf --head-dim 32 --gqa > /dev/null; \
+	for f in test-olmo2.gguf test-olmo2-gqa.gguf test-olmo2-plain.gguf test-olmo2-h32.gguf test-olmo2-h32-gqa.gguf; do \
 	  GPU_ID_LIMIT=1e-5 ./$(TEST_GPU_ID) $$f > test-metal-olmo2.out 2>&1 || { cat test-metal-olmo2.out; exit 1; }; \
 	  if grep -q 'skipped' test-metal-olmo2.out; then cat test-metal-olmo2.out; \
 	    echo "test-metal-olmo2: $$f did not run on the device"; exit 1; fi; \
@@ -3824,6 +3836,16 @@ ifeq ($(BUILD_OS),Darwin)
 	  if grep -q 'skipped' test-metal-olmo2.out; then cat test-metal-olmo2.out; \
 	    echo "test-metal-olmo2: $$f decode-only did not run on the device"; exit 1; fi; \
 	  ./$(TEST_SPEC_ID) $$f | tail -1 | grep -q 'ok (gpu' || { ./$(TEST_SPEC_ID) $$f; exit 1; }; \
+	done; \
+	for spec in test-olmo2-h32.gguf:q8 test-olmo2-h32.gguf:k8v4 test-olmo2-h32-gqa.gguf:q8 \
+	            test-olmo2-h32-gqa.gguf:k8v4 test-olmo2-h32-gqa.gguf:fp4 test-olmo2-gqa.gguf:fp4; do \
+	  f=$${spec%%:*}; kv=$${spec##*:}; \
+	  for nb in 7 1; do \
+	    GPU_ID_KV=$$kv GPU_ID_LIMIT=1e-5 ./$(TEST_GPU_ID) $$f 0 $$nb > test-metal-olmo2.out 2>&1 || { cat test-metal-olmo2.out; exit 1; }; \
+	    if grep -Eq 'skipped|keeping f16' test-metal-olmo2.out; then cat test-metal-olmo2.out; \
+	      echo "test-metal-olmo2: $$f at n_batch $$nb did not run the $$kv cache on the device"; exit 1; fi; \
+	  done; \
+	  echo "$$f, KV $$kv: $$(tail -1 test-metal-olmo2.out)"; \
 	done; \
 	GPU_ID_LIMIT=1e-5 ./$(TEST_GPU_ID) test-olmo2-gqa.gguf 2 > test-metal-olmo2.out 2>&1 || { cat test-metal-olmo2.out; exit 1; }; \
 	if grep -q 'skipped' test-metal-olmo2.out; then cat test-metal-olmo2.out; \
@@ -3841,6 +3863,7 @@ ifeq ($(BUILD_OS),Darwin)
 	  echo "test-metal-olmo2: attention front megakernel must refuse olmo2"; exit 1; fi; \
 	./$(TEST_BATCH_ID) test-olmo2-plain.gguf > test-metal-olmo2.out 2>&1 || { cat test-metal-olmo2.out; exit 1; }; \
 	rm -f test-olmo2.gguf test-olmo2-gqa.gguf test-olmo2-plain.gguf test-olmo2-gqa-q8.gguf \
+	      test-olmo2-h32.gguf test-olmo2-h32-gqa.gguf \
 	      test-metal-olmo2.out test-metal-olmo2-fuse0.out test-metal-olmo2-fuse1.out test-metal-olmo2-fuse1.err; \
 	echo "test-metal-olmo2: ok"
 else
