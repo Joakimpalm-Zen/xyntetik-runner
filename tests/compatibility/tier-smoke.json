@@ -5390,7 +5390,7 @@
     },
     "olmo-3-7b-think-q8_0": {
       "ctx": 4096,
-      "n_predict": 600,
+      "n_predict": 3072,
       "pins": {},
       "pending_pins": {
         "linux-x86_64-cuda/cpu": {
@@ -5408,7 +5408,8 @@
           "path": "tests/compatibility/tier-smoke/olmo-3-7b-think-q8_0.windows-x86_64-cuda.cuda.txt",
           "record": "TODO-windows-x86_64-cuda"
         }
-      }
+      },
+      "request": {}
     }
   }
 }

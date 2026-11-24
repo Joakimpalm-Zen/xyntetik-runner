@@ -2280,12 +2280,12 @@ Against the publisher's float32 reference Runner reads 2.3159e-04 mean KL and 10
 - **Numerical anchor (a publisher float32 comparison exists):** Publisher's reference: allenai/OLMo-2-0425-1B at a1847dff35000b4271fa70afc5db10fd29fedbdf, float32, transformers-main 046bdb8 (5.24.0.dev0), CPU. Runner mean KL 2.3159e-04 [1.5377e-04, 3.1844e-04], plain top-1 100%, margin-qualified 100%. Second read: llama.cpp 56eea9e4 on this same GGUF and positions, mean KL 2.2777e-04 [1.5055e-04, 3.1416e-04], plain top-1 100%, margin-qualified 100%. Default KV f16, gold-corpus-2k, 2000 scored positions at stride 2, context 4096. Admission requires 100% margin-qualified top-1 and no wholly worse separated KL interval than llama.cpp. Record: docs/compat-reports/olmo2-admission-2026-11-24/README.md.
 - **Context tested:** 4096.
 - **Known limitations:** LoRA training runs on the CPU only; --train-gpu is refused because the gradient gate needs f32 KV rows, which the GPU trainer does not keep. Compact KV CPU/Metal identity is gated below batch 8 and in decode; at wider direct-model batches fp4 KV can amplify different product sums across backends. This is not a task-quality claim. OLMo 3 refuses a non-default YaRN attn_factor and either model refuses experts.
-- **Still missing:** TODO-linux-x86_64-cuda: linked raw reference/bootstrap records; TODO-linux-x86_64-cuda / TODO-windows-x86_64-cuda / TODO-macos-arm64-metal: scheduled smoke pins and recorded backend cells. Task quality and live modern tool use are not claimed.
+- **Still missing:** Chat smoke held: this base model echoed the user prompt. Replace the chat-validation row with Instruct F16 only after its own publisher float32 bar passes and R4.50.10 merges; preserve this base-file fidelity evidence separately. Scheduled backend recordings remain unrecorded.
 - **Evidence:** [docs/compat-reports/olmo2-admission-2026-11-24/README.md](compat-reports/olmo2-admission-2026-11-24/README.md).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; no run recorded yet.
 - **CPU:** ☐ not run
 - **CUDA:** ☐ not run
 - **Metal:** ☐ not run
+- **Chat smoke hold:** at a97acfa6 both linux-x86_64-cuda CPU and CUDA attempts stopped after 25 tokens, echoing the prompt without the required fact. No pin or result was written. The base file has no chat smoke configured while the Instruct replacement is gated.
 - **TODO-macos-arm64-metal:** macos-arm64-metal/cpu, output pin sha256 and --record result pending; no pass is inferred.
 - **TODO-macos-arm64-metal:** macos-arm64-metal/metal, output pin sha256 and --record result pending; no pass is inferred.
 - **TODO-windows-x86_64-cuda:** windows-x86_64-cuda/cuda, output pin sha256 and --record result pending; no pass is inferred.
@@ -2313,6 +2313,7 @@ The 7B file exceeds the owned 8 GB macos-arm64-metal device; Metal is a declared
 - **CPU:** ☐ not run
 - **CUDA:** ☐ not run
 - **Metal:** [n/a](../MANUAL.md#support-matrix): The measured Q8_0 file is 7.76 GB; it cannot fit with its runtime state on the owned 8 GB macos-arm64-metal device. No larger owned Metal class is recorded. This is a file/hardware limit, not a missing olmo2 Metal implementation.
+- **Chat smoke request:** the initial 600-token linux-x86_64-cuda CPU/CUDA attempts reached the cap with empty content and wrote no pin. The fixed rerun uses max_tokens 3072, context 4096, the same greedy prompt and fact/length guards, and no ignored thinking flag. Pin and comparison on that class both use taskset -c 0-15; no per-backend request tuning.
 - **TODO-linux-x86_64-cuda:** linux-x86_64-cuda/cpu, output pin sha256 and --record result pending; no pass is inferred.
 - **TODO-linux-x86_64-cuda:** linux-x86_64-cuda/cuda, output pin sha256 and --record result pending; no pass is inferred.
 - **TODO-windows-x86_64-cuda:** windows-x86_64-cuda/cuda, output pin sha256 and --record result pending; no pass is inferred.

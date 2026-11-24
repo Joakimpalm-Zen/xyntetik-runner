@@ -10413,11 +10413,7 @@
         "evidence": [
           "docs/compat-reports/olmo2-admission-2026-11-24/README.md"
         ],
-        "missing": "TODO-linux-x86_64-cuda: linked raw reference/bootstrap records; TODO-linux-x86_64-cuda / TODO-windows-x86_64-cuda / TODO-macos-arm64-metal: scheduled smoke pins and recorded backend cells. Task quality and live modern tool use are not claimed."
-      },
-      "smoke": {
-        "device_class": "linux-x86_64-cuda",
-        "backend": "cpu"
+        "missing": "Chat smoke held: this base model echoed the user prompt. Replace the chat-validation row with Instruct F16 only after its own publisher float32 bar passes and R4.50.10 merges; preserve this base-file fidelity evidence separately. Scheduled backend recordings remain unrecorded."
       },
       "backends": {
         "cpu": null,
@@ -10426,6 +10422,7 @@
       },
       "lora": null,
       "measurements": [
+        "**Chat smoke hold:** at a97acfa6 both linux-x86_64-cuda CPU and CUDA attempts stopped after 25 tokens, echoing the prompt without the required fact. No pin or result was written. The base file has no chat smoke configured while the Instruct replacement is gated.",
         "**TODO-macos-arm64-metal:** macos-arm64-metal/cpu, output pin sha256 and --record result pending; no pass is inferred.",
         "**TODO-macos-arm64-metal:** macos-arm64-metal/metal, output pin sha256 and --record result pending; no pass is inferred.",
         "**TODO-windows-x86_64-cuda:** windows-x86_64-cuda/cuda, output pin sha256 and --record result pending; no pass is inferred.",
@@ -10497,6 +10494,7 @@
       },
       "lora": null,
       "measurements": [
+        "**Chat smoke request:** the initial 600-token linux-x86_64-cuda CPU/CUDA attempts reached the cap with empty content and wrote no pin. The fixed rerun uses max_tokens 3072, context 4096, the same greedy prompt and fact/length guards, and no ignored thinking flag. Pin and comparison on that class both use taskset -c 0-15; no per-backend request tuning.",
         "**TODO-linux-x86_64-cuda:** linux-x86_64-cuda/cpu, output pin sha256 and --record result pending; no pass is inferred.",
         "**TODO-linux-x86_64-cuda:** linux-x86_64-cuda/cuda, output pin sha256 and --record result pending; no pass is inferred.",
         "**TODO-windows-x86_64-cuda:** windows-x86_64-cuda/cuda, output pin sha256 and --record result pending; no pass is inferred."

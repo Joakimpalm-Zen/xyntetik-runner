@@ -61,6 +61,35 @@ wrong per-head QK adjoint fails its live control. The learning, serving,
 thread and tape-width checks are generated-file checks, not training-quality
 measurements on these checkpoints. GPU training remains refused.
 
+
+## Chat smoke: failed first request and fixed rerun
+
+At `a97acfa6`, all four initial linux-x86_64-cuda pin attempts failed the
+unchanged fact rule. The 1B base F16 on CPU and CUDA echoed the prompt,
+finish stop, 25 tokens. This is not a chat-validation pass. That row's chat
+smoke is now held. Its replacement is the publisher's Instruct F16, only
+after its own float32 bar passes and its template-conformance fix
+(R4.50.10) merges. The base F16 fidelity result above remains separate;
+it is not an Instruct checkpoint's result.
+
+The 7B Think CPU and CUDA runs reached the 600-token cap with empty content.
+That fact alone does not establish what the reasoning channel held. The
+smoke's failed-fact diagnostic now reports its UTF-8 byte count, and the
+original response's reasoning channel is being checked separately. No pin
+or result JSON was written for these failures.
+
+The fixed 7B rerun, stated before measuring it, keeps the same planets
+prompt, required fact, minimum 96 content bytes, temperature zero, batch 64
+and context 4,096. It changes max_tokens to 3,072 and sets the row's request
+to `{}`: the native template unconditionally opens `<think>` and has no
+`enable_thinking` or `reasoning_effort` branch. This is a larger total cap,
+not a no-think claim or a weakened fact rule. If it still fails, nothing is
+pinned; the request is not tuned separately for each backend.
+
+Both linux-x86_64-cuda pin and comparison commands use `taskset -c 0-15`.
+The smoke supplies no thread-count flag, so its default counts that same
+affinity mask on both runs. Other device classes record their own pins.
+
 ## Pending backend recordings
 
 Each entry below needs a real `scripts/tier-smoke.py --pin`, followed by its
