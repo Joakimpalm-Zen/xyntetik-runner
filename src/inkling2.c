@@ -1,10 +1,22 @@
 // R4.48: Inkling 2 Mini (inkling2_loop), the text path: the structure as data, the application-indexed cache, and
 // the pieces. See inkling2.h.
 //
-// This file is built STRICT in every build (the Makefile adds -fno-fast-math -ffp-contract=off for it): every
-// reduction is a serial float32 loop in index order, nothing is contracted, and the transcendentals are pmath.h's
-// portable p_expf and p_tanhf, so a strict build gives the same bits on every machine. Against the reference
-// (torch's blocked BLAS order) the pieces are compared under the error bound the fixture harness states.
+// This file is built STRICT in every build (the Makefile adds -fno-fast-math -ffp-contract=off for it). Its two routes
+// (inkling2_model.c, RUNNER_INKLING2_ROUTE) keep two different contracts:
+// - THE REFERENCE ROUTE (float32 weights, the expert cache): every reduction is a serial float32 loop in index order,
+//   nothing is contracted, and the transcendentals are pmath.h's portable p_expf and p_tanhf, so a strict build gives
+//   the same bits on every machine. Against the reference (torch's blocked BLAS order) the pieces are compared under
+//   the error bound the fixture harness states.
+// - THE FAST ROUTE (the weights in their file formats, decoded at use; R4.48.15 and R4.48.20):
+//   - it sums in the house kernels' vectorized orders (quants.c's dots and exact tile, ink2_dot_f32);
+//   - it takes vector exp and tanh (ink2_vexp8 / ink2_vtanh8 on AVX2, ink2_vexp4 / ink2_vtanh4 on NEON);
+//   - so its bits differ from the reference route's and from one ISA to another;
+//   - they do not depend on the thread count, the batch width or the chunking (threads split outputs, never a sum).
+//   - Each of its vector kernels is held to a bound a few roundings wide (tests/test_inkling2_vmath.c), and the
+//     route as a whole to the reference route (tests/test_inkling2_fast.c).
+//   - A fast-route change that "only changes rounding" is held to those bounds, not to this paragraph's first
+//     contract. On the real file, a kernel 246 roundings off moved argmaxes through the routers' near-ties
+//     (R4.48.24 and R4.48.25).
 #include "inkling2.h"
 #include "pmath.h"
 #include "quants.h"
