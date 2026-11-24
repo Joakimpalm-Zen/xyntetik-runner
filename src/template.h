@@ -649,6 +649,13 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
                              bool add_assistant, int thinking,
                              const struct jv *tools,
                              char *out, size_t cap, render_state *st);
+// Response-format schema variant: passes the caller's parsed `json_schema`
+// object for templates that include it in the system turn (TMPL_MUSE).
+size_t render_messages_state_rf(int tmpl, const chat_msg *msgs, int n_msgs,
+                                bool add_assistant, int thinking,
+                                const struct jv *tools,
+                                const struct jv *response_schema,
+                                char *out, size_t cap, render_state *st);
 
 // chat tool-call convention (template.c; sbuf/jv live in json.h)
 struct sbuf;

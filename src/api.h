@@ -44,6 +44,11 @@ char *render_prompt_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
 char *render_prompt_state_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
                                 bool add_assistant, int thinking, const jv *tools,
                                 size_t hint, render_state *st);
+// Response-format schema variant forwarding `response_schema` to render_muse.
+char *render_prompt_state_rf_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
+                                   bool add_assistant, int thinking, const jv *tools,
+                                   const jv *response_schema, size_t hint,
+                                   render_state *st);
 
 // The one function declared, when exactly one is; NULL otherwise (server.c).
 //

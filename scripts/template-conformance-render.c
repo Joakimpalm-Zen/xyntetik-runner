@@ -113,7 +113,24 @@ bool request_keep_alive(jv *req, bool *present, int *seconds) {
     return true;
 }
 
-jv *request_schema(jv *req) { (void)req; return NULL; }
+jv *request_schema(jv *req) {
+    jv *rf = jv_get(req, "response_format");
+    jv *sch = NULL;
+    if (rf && strcmp(jv_str(jv_get(rf, "type"), ""), "json_schema") == 0) {
+        jv *js = jv_get(rf, "json_schema");
+        sch = js ? (jv_get(js, "schema") ? jv_get(js, "schema") : js) : NULL;
+    }
+    jv *fmt = jv_get(req, "format");
+    if (!sch && fmt && fmt->type == J_OBJ) sch = fmt;
+    if (!sch) {
+        jv *tf = jv_get(jv_get(req, "text"), "format");
+        if (tf && strcmp(jv_str(jv_get(tf, "type"), ""), "json_schema") == 0) {
+            jv *inner = jv_get(tf, "schema");
+            if (inner && inner->type == J_OBJ) sch = inner;
+        }
+    }
+    return sch;
+}
 
 void server_record_work(const work_record *w) { (void)w; }
 
@@ -140,22 +157,24 @@ void handle_count_tokens(slot_t *s, sock_t fd, jv *req) {
 // render_messages_state(), the one server.c's render_prompt_state_alloc()
 // makes; a substitution of a function server.c no longer calls would leave
 // every no-generation-prompt case rendered with handle_chat's `true`.
-size_t conf_render_messages_state(int tmpl, const chat_msg *msgs,
-                                  int n_msgs, bool add_assistant,
-                                  int thinking, const jv *tools,
-                                  char *out, size_t cap, render_state *st);
+size_t conf_render_messages_state_rf(int tmpl, const chat_msg *msgs,
+                                      int n_msgs, bool add_assistant,
+                                      int thinking, const jv *tools,
+                                      const jv *response_schema,
+                                      char *out, size_t cap, render_state *st);
 
-#define render_messages_state conf_render_messages_state
+#define render_messages_state_rf conf_render_messages_state_rf
 #include "../src/server.c"
-#undef render_messages_state
+#undef render_messages_state_rf
 
-size_t conf_render_messages_state(int tmpl, const chat_msg *msgs,
-                                  int n_msgs, bool add_assistant,
-                                  int thinking, const jv *tools,
-                                  char *out, size_t cap, render_state *st) {
+size_t conf_render_messages_state_rf(int tmpl, const chat_msg *msgs,
+                                      int n_msgs, bool add_assistant,
+                                      int thinking, const jv *tools,
+                                      const jv *response_schema,
+                                      char *out, size_t cap, render_state *st) {
     (void)add_assistant;   // always true from handle_chat; see the header note
-    return render_messages_state(tmpl, msgs, n_msgs, g_addgen, thinking,
-                                 tools, out, cap, st);
+    return render_messages_state_rf(tmpl, msgs, n_msgs, g_addgen, thinking,
+                                    tools, response_schema, out, cap, st);
 }
 
 // ------------------------------------------------------------------- input

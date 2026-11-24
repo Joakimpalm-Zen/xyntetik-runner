@@ -1094,7 +1094,56 @@ def matrix(family):
         for effort in (0, 0.37, 0.99):
             cases.append(("numeric-effort-" + str(effort), [{"role": "user", "content": U1}],
                           True, "number:" + str(effort)))
-    return [c if len(c) == 5 else (c + (None,)) for c in cases]
+    if family.runner == "muse":
+        tricky_rf = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "muse_reply",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "zeta": {
+                            "type": "string",
+                            "description": "café Ångström <tag & attr='x'>",
+                        },
+                        "alpha": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                            "examples": [[1, 2], [3, 4]],
+                        },
+                    },
+                    "required": ["zeta", "alpha"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+        cases.extend([
+            ("rf-json-schema-default-system",
+             [{"role": "user", "content": U1}], True, "default", None, tricky_rf),
+            ("rf-json-schema-caller-system",
+             [{"role": "system", "content": SYS},
+              {"role": "user", "content": U1}], True, "default", None, tricky_rf),
+            ("rf-json-schema-caller-system-reasoning",
+             [{"role": "system", "content": SYS + " Reasoning effort: low."},
+              {"role": "user", "content": U1}], True, "default", None, tricky_rf),
+            ("tool-rf-json-schema",
+             [{"role": "system", "content": SYS},
+              {"role": "user", "content": "Weather in Oslo?"}], True, "default", None, tricky_rf),
+            ("rf-json-object",
+             [{"role": "user", "content": U1}], True, "default", None, {"type": "json_object"}),
+            ("rf-text",
+             [{"role": "user", "content": U1}], True, "default", None, {"type": "text"}),
+        ])
+    normalized = []
+    for c in cases:
+        if len(c) == 4:
+            normalized.append((*c, None, None))
+        elif len(c) == 5:
+            normalized.append((*c, None))
+        else:
+            normalized.append(c)
+    return normalized
 
 
 # ------------------------------------------------- runner-side flattening
@@ -1117,11 +1166,13 @@ def matrix(family):
 # (add_generation_prompt, which handle_chat hard-codes to true).
 
 
-def request_body(family, msgs, thinking, tools):
+def request_body(family, msgs, thinking, tools, response_format=None):
     """The request an OpenAI client would send for this case."""
     req = {"model": "template-conformance", "messages": msgs}
     if tools:
         req["tools"] = tools
+    if response_format is not None:
+        req["response_format"] = response_format
     if family.thinking_var and thinking != "default":
         # runner reads this off the request (template.c:req_thinking_mode);
         # the reference takes it as a jinja variable named per family.
@@ -1324,7 +1375,7 @@ def harmony_oracle(cases):
 def harmony_cases(fam):
     """The matrix as the harmony oracle script wants it."""
     out = []
-    for cid, msgs, add_gen, _thinking, omsgs in matrix(fam):
+    for cid, msgs, add_gen, _thinking, omsgs, _rf in matrix(fam):
         out.append({"id": cid,
                     "messages": omsgs if omsgs is not None else msgs,
                     "add_generation_prompt": add_gen,
@@ -1442,12 +1493,14 @@ def jinja_env():
 
 
 def render_reference(env, tmpl_src, meta, msgs, add_gen, thinking,
-                     thinking_var, tools):
+                     thinking_var, tools, response_format=None):
     kwargs = dict(messages=msgs, add_generation_prompt=add_gen,
                   bos_token=meta.get("bos_token") or "",
                   eos_token=meta.get("eos_token") or "")
     if tools:
         kwargs["tools"] = tools
+    if response_format is not None:
+        kwargs["response_format"] = response_format
     if thinking_var and thinking != "default":
         kwargs[thinking_var] = (thinking == "on")
     if thinking.startswith(("effort:", "number:")):
@@ -1988,9 +2041,9 @@ def run(args):
                  "chat_template": tmpl_src if fam.source else None,
                  "add_generation_prompt": add_gen,
                  "request": request_body(fam, msgs, thinking,
-                                         TOOLS if "tool" in cid else None),
+                                         TOOLS if "tool" in cid else None, rf),
                  **({"gguf": tok_gguf} if tok_gguf else {})}
-                for cid, msgs, add_gen, thinking, _om in cases]
+                for cid, msgs, add_gen, thinking, _om, rf in cases]
         got = render_runner(binary, jobs)
 
         if tok_gguf:
@@ -2007,7 +2060,7 @@ def run(args):
         tok_jobs = []
         tok_ctx = {}    # cid_full -> (tokenizer GGUF, the caller's text)
 
-        for cid, msgs, add_gen, thinking, omsgs_override in cases:
+        for cid, msgs, add_gen, thinking, omsgs_override, rf in cases:
             cid_full = "%s/%s" % (n, cid)
             tools = TOOLS if "tool" in cid else None
             declined = fam.cannot.get(cid)
@@ -2049,7 +2102,7 @@ def run(args):
                 try:
                     want = render_reference(env, tmpl_src, meta, omsgs,
                                             add_gen, thinking,
-                                            fam.thinking_var, tools)
+                                            fam.thinking_var, tools, rf)
                 except Exception as e:                      # noqa: BLE001
                     refused = ("reference", "%s: %s" % (type(e).__name__, e))
             if refused is None and mine_err:

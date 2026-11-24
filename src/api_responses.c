@@ -998,9 +998,9 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
         thinking |= effort;
     }
     render_state rs;
-    prompt = render_prompt_state_alloc(s->tmpl, cm, n_cm, true,
-                                             thinking,
-                                             native_tools, total + 256, &rs);
+    prompt = render_prompt_state_rf_alloc(s->tmpl, cm, n_cm, true,
+                                          thinking, native_tools, final_schema,
+                                          total + 256, &rs);
     if (!prompt) {
         send_error(fd, 500, "out of memory building responses prompt");
         goto out;
