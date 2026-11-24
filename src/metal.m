@@ -6177,6 +6177,13 @@ bool gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F, int E, int U) {
 }
 void gpu_ink2_test_experts_ref(gpu_ink2 *h, int on) { (void)h; (void)on; }
 void gpu_ink2_test_mv_ref(gpu_ink2 *h, int on) { (void)h; (void)on; }
+bool gpu_ink2_msg_steps(gpu_ink2 *h, int n_roles, int T, int H, int r, float eps, const gpu_ink2_msg_role *roles,
+                        const float *const *xs, const float *const *ms, size_t ms_stride, float *const *outs) {
+    (void)h; (void)n_roles; (void)T; (void)H; (void)r; (void)eps; (void)roles; (void)xs; (void)ms; (void)ms_stride; (void)outs;
+    return false;
+}
+bool gpu_ink2_msg_ok(const gpu_ink2 *h) { (void)h; return false; }
+bool gpu_ink2_test_ptanh(gpu_ink2 *h, const float *x, float *y, int n) { (void)h; (void)x; (void)y; (void)n; return false; }
 void gpu_ink2_release_experts(gpu_ink2 *h) { (void)h; }
 gpu_ink2_kv *gpu_ink2_kv_new(gpu_ink2 *h, int n_app, const int *rows, const int *C, int hist_rows) {
     (void)h; (void)n_app; (void)rows; (void)C; (void)hist_rows;

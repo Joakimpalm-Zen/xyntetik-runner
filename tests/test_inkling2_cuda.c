@@ -63,6 +63,9 @@
 #include "compat.h"
 #include "quants.h"
 #include <math.h>
+#if defined(__x86_64__) || defined(__i386__)
+#include <xmmintrin.h>   // D1a's tanh check: the reference with the FTZ / DAZ modes off (_mm_getcsr / _mm_setcsr)
+#endif
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -363,6 +366,105 @@ static long lin_identity(int type, int n_in, int n_out, int T, long *nval) {
     return diff;
 }
 
+// D1a (y2): the reference for the device message step is the host's ink2_message_steps_c AS THE CUDA ROUTE RUNS IT:
+// its norms and combination on the host, its products on the device through the view's lin op. This test instance's
+// lin op runs a product on the device as the route's dev_lin does (gpu_ink2_lin on the view's device index).
+static gpu_ink2 *g_mh;
+static int t_lin(const ink2_tensor *W, int64_t row0, int n_out, int n_in, int T, const float *x, size_t xs, float *y,
+                 size_t ys, float scale) {
+    float *xc = (float *)x, *yc = y;
+    if (xs != (size_t)n_in) {
+        xc = malloc(sizeof(float) * (size_t)T * n_in);
+        for (int t = 0; t < T; t++) memcpy(xc + (size_t)t * n_in, x + (size_t)t * xs, sizeof(float) * (size_t)n_in);
+    }
+    if (ys != (size_t)n_out) yc = malloc(sizeof(float) * (size_t)T * n_out);
+    const bool ok = gpu_ink2_lin(g_mh, W->dev_i, W->qtype, W->q_row_bytes, row0, n_out, n_in, T, xc, yc, scale);
+    if (ok && yc != y) for (int t = 0; t < T; t++) memcpy(y + (size_t)t * ys, yc + (size_t)t * n_out, sizeof(float) * (size_t)n_out);
+    if (xc != x) free(xc);
+    if (yc != y) free(yc);
+    return ok ? 0 : -1;
+}
+static const ink2_dev_ops g_mops = { t_lin, NULL, NULL, NULL, NULL };
+static ink2_dev_hdr g_minst = { &g_mops };
+static ink2_tensor g_mt[9];
+static char g_mname[9][128];
+static const ink2_tensor *t_get(void *ctx, const char *name) {
+    (void)ctx;
+    for (int k = 0; k < 9; k++) if (g_mname[k][0] && !strcmp(name, g_mname[k])) return &g_mt[k];
+    return NULL;
+}
+// one message step (block 1, roles q/k/v or mlp) on random BF16 gates whose forget and message rows are scaled in
+// thirds by 1000, 1e-6 and 1 (so their outputs land in tanh's three branches: |v| > 20, |v| < 1e-4, between), dense
+// random x (shared: all roles one x, as a sliding layer passes it) and messages [T][4][H] at stride 4H: the device step
+// against the host's, bit for bit. *nval the values compared; returns the values whose bits differ, -1: did not run.
+static long msg_identity(int H, int r, int T, int n_roles, bool shared_x, long *nval) {
+    static const char *const qkv[3] = { "q", "k", "v" }, *const mlp[1] = { "mlp" };
+    const char *const *roles = n_roles == 3 ? qkv : mlp;
+    static const char *const part[3] = { "down_proj", "forget_gate_proj", "message_gate_proj" };
+    gpu_ink2 *h = gpu_ink2_bind();
+    g_mh = h;
+    long diff = -1;
+    *nval = 0;
+    uint16_t *wb[9] = { 0 };
+    float *x = malloc(sizeof(float) * 3 * (size_t)T * H), *msg = malloc(sizeof(float) * (size_t)T * 4 * H);
+    float *o1 = malloc(sizeof(float) * 3 * (size_t)T * H), *o2 = malloc(sizeof(float) * 3 * (size_t)T * H);
+    uint32_t seed = 4321u + (uint32_t)(T * 7 + n_roles + (shared_x ? 100 : 0) + H);
+#define RNDF() (seed = seed * 1664525u + 1013904223u, (float)((int)(seed >> 9) % 2001 - 1000) / 1000.0f)
+    bool ok = h && x && msg && o1 && o2;
+    memset(g_mt, 0, sizeof g_mt);
+    memset(g_mname, 0, sizeof g_mname);
+    gpu_ink2_msg_role ro[3];
+    for (int k = 0; ok && k < n_roles; k++) {
+        int idx[3];
+        for (int u = 0; u < 3; u++) {
+            const int n_in = u == 0 ? 2 * H : r, n_out = u == 0 ? r : H, slot = 3 * k + u;
+            wb[slot] = malloc(sizeof(uint16_t) * (size_t)n_in * n_out);
+            if (!wb[slot]) { ok = false; break; }
+            for (int o = 0; o < n_out; o++)
+                for (int i = 0; i < n_in; i++) {
+                    const float sc = u == 0 ? 0.05f : o % 3 == 0 ? 50.0f : o % 3 == 1 ? 5e-8f : 0.05f;
+                    const float f = sc * RNDF();
+                    uint32_t bits;
+                    memcpy(&bits, &f, 4);
+                    wb[slot][(size_t)o * n_in + i] = (uint16_t)(bits >> 16);
+                }
+            idx[u] = gpu_ink2_put(h, wb[slot], sizeof(uint16_t) * (size_t)n_in * n_out, NULL, 0);
+            snprintf(g_mname[slot], sizeof g_mname[slot], "model.layers.1.%s_message_gate.%s.weight", roles[k], part[u]);
+            g_mt[slot] = (ink2_tensor){ g_mname[slot], NULL, 2, { n_in, n_out, 1, 1 }, T_BF16, wb[slot],
+                                        sizeof(uint16_t) * (size_t)n_in, NULL, 0, &g_minst, idx[u] };
+            ok = idx[u] >= 0;
+        }
+        ro[k] = (gpu_ink2_msg_role){ idx[0], idx[1], idx[2], T_BF16, T_BF16, T_BF16, 1.0f, 1.0f, 1.0f };
+    }
+    if (ok) {
+        for (size_t i = 0; i < 3 * (size_t)T * H; i++) x[i] = RNDF();
+        for (size_t i = 0; i < (size_t)T * 4 * H; i++) msg[i] = RNDF();
+        ink2_shape s;
+        memset(&s, 0, sizeof s);
+        s.hidden = H; s.loop_gate_rank = r; s.eps = 1e-6f;
+        ink2_weights w = { t_get, NULL, NULL };
+        const float *xs[3], *ms[3];
+        float *r1[3], *r2[3];
+        for (int k = 0; k < n_roles; k++) {
+            xs[k] = x + (shared_x ? 0 : (size_t)k * T * H); ms[k] = msg + (size_t)k * H;
+            r1[k] = o1 + (size_t)k * T * H; r2[k] = o2 + (size_t)k * T * H;
+        }
+        ok = ink2_test_message_steps(&s, &w, 1, roles, n_roles, T, xs, ms, (size_t)4 * H, r1) == INK2_OK &&
+             gpu_ink2_msg_steps(h, n_roles, T, H, r, s.eps, ro, xs, ms, (size_t)4 * H, r2);
+        if (ok) {
+            diff = 0;
+            for (size_t i = 0; i < (size_t)n_roles * T * H; i++) diff += memcmp(o1 + i, o2 + i, 4) != 0;
+            *nval = (long)n_roles * T * H;
+        }
+    }
+#undef RNDF
+    for (int k = 0; k < 9; k++) free(wb[k]);
+    free(x); free(msg); free(o1); free(o2);
+    gpu_ink2_free(h);
+    g_mh = NULL;
+    return diff;
+}
+
 int main(int argc, char **argv) {
     if (argc < 6) {
         fprintf(stderr, "usage: %s TINY_F32.gguf TINY_BF16.gguf TINY_Q8_0.gguf TINY_F16.gguf TINY_LORA.gguf\n", argv[0]);
@@ -635,9 +737,11 @@ int main(int argc, char **argv) {
         drop(ok);
         drop(cpu);
     }
-    // G2 (h), on the BF16 file: the third device product fails; that forward and the next refuse
+    // G2 (h), on the BF16 file: the first device product fails; that forward and the next refuse. (Since D1a the
+    // message gates' products run inside the device message step, so a forward of the tiny file makes one product
+    // through the product hook, the head's: the injection takes the first; (y) injects a failed message step.)
     {
-        plat_setenv("RUNNER_INKLING2_CUDA_TEST_LIN_FAIL", "2");
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_LIN_FAIL", "0");
         model_t *g = load(argv[2], true, false, 64);
         plat_setenv("RUNNER_INKLING2_CUDA_TEST_LIN_FAIL", "");
         const bool on = g && model_inkling2_cuda(g);
@@ -865,6 +969,110 @@ int main(int argc, char **argv) {
         d = lin_identity(T_NVFP4, 2304, 2304, 48, &nv);
         CHECK(d == 0 && nv > 0, "(i) an NVFP4 product at gate_up's widths (2304 -> 2304), 48 columns: %ld of %ld values "
               "differ in their bits from the per-column launches' (want 0)", d, nv);
+    }
+    // D1a (y): the loop's message gates on the device. First the ported tanh against pmath.h's p_tanhf over its three
+    // branches and their edges (|x| > 20, |x| < 1e-4 and the boundaries' neighbours), the signed zeros, subnormals,
+    // the infinities and 4000 random values; a NaN in gives a NaN out on both (their payloads are the hardware's, not
+    // compared)
+    {
+        enum { NV = 4096 };
+        static float xv[NV], yd[NV];
+        int n = 0;
+        const float edges[] = { 0.0f, -0.0f, 20.0f, -20.0f, 1e-4f, -1e-4f, 1e-30f, -1e-30f, 1e-45f, -1e-45f, 0.5f,
+                                -0.5f, 1.0f, -1.0f, 9.0f, -9.0f, 19.99f, -19.99f, 1e10f, -1e10f, INFINITY, -INFINITY, NAN };
+        for (size_t k = 0; k < sizeof edges / sizeof *edges; k++) xv[n++] = edges[k];
+        const float near[] = { 20.0f, -20.0f, 1e-4f, -1e-4f };
+        for (size_t k = 0; k < 4; k++) { xv[n++] = nextafterf(near[k], 0.0f); xv[n++] = nextafterf(near[k], near[k] * 2.0f); }
+        uint32_t seed = 99u;
+        while (n < NV) {
+            seed = seed * 1664525u + 1013904223u;
+            const float u = (float)((int)(seed >> 9) % 2000001 - 1000000) / 1000000.0f;
+            xv[n] = (n % 3 == 0) ? u * 25.0f : (n % 3 == 1) ? u * 2e-4f : u * 3.0f;
+            n++;
+        }
+        gpu_ink2 *h = gpu_ink2_bind();
+        const bool ran = h && gpu_ink2_test_ptanh(h, xv, yd, NV);
+        long nd = 0;
+        // the reference with the CPU's flush-to-zero and denormals-are-zero modes OFF: a binary linked with -ffast-math
+        // (this test, and the default build's runner) starts with them on (crtfastmath), which flushes a subnormal
+        // operand even in inkling2.o's strictly compiled p_tanhf; the device kernels (-ftz=false) and the strict T3
+        // build do not flush. NaN by its bits (-ffast-math folds x != x).
+#if defined(__x86_64__) || defined(__i386__)
+        const unsigned csr = _mm_getcsr();
+        _mm_setcsr(csr & ~0x8040u);   // FTZ (bit 15) and DAZ (bit 6) off
+#endif
+        for (int i = 0; ran && i < NV; i++) {
+            const float yh = ink2_test_p_tanhf(xv[i]);   // the engine's own build of it (this file has -ffast-math)
+            uint32_t bh, bd;
+            memcpy(&bh, &yh, 4); memcpy(&bd, yd + i, 4);
+            const bool nh = (bh & 0x7f800000u) == 0x7f800000u && (bh & 0x007fffffu), nd_ = (bd & 0x7f800000u) == 0x7f800000u && (bd & 0x007fffffu);
+            if (nh || nd_) { nd += nh != nd_; continue; }
+            nd += bh != bd;
+        }
+#if defined(__x86_64__) || defined(__i386__)
+        _mm_setcsr(csr);
+#endif
+        CHECK(ran && nd == 0, "(y) the device's p_tanhf over %d values (its three branches, their edges, zeros, "
+              "subnormals, infinities, NaN): %ld differ in their bits from pmath.h's (want 0)", NV, nd);
+        gpu_ink2_free(h);
+    }
+    {
+        static const struct { const char *what; int H, r, T, n_roles; bool shared; } mc[] = {
+            { "q/k/v (a full layer's three reads), 1 position", 256, 64, 1, 3, false },
+            { "q/k/v on one read (a sliding layer), 1 position", 256, 64, 1, 3, true },
+            { "mlp, 5 positions", 256, 64, 5, 1, false },
+            { "q/k/v, 20 positions (the products batched)", 256, 64, 20, 3, false },
+            { "mlp, 20 positions", 256, 64, 20, 1, false },
+            { "q/k/v at the real widths (H 2304, rank 64), 1 position", 2304, 64, 1, 3, false },
+        };
+        for (size_t k = 0; k < sizeof mc / sizeof *mc; k++) {
+            long nv = 0;
+            const long d = msg_identity(mc[k].H, mc[k].r, mc[k].T, mc[k].n_roles, mc[k].shared, &nv);
+            CHECK(d == 0 && nv > 0, "(y) the device message step, %s: %ld of %ld values differ in their bits from the "
+                  "host's ink2_message_steps_c (its products on the device, as the route runs it; want 0)", mc[k].what, d, nv);
+        }
+    }
+    // (y) the model: the loop's message steps on the device give the rows of the host message steps byte for byte
+    // (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_NO_MSG=1, the baseline), at -b 64 and -b 1; two device steps for every
+    // application with messages (the loop's later passes) a forward; the host message path 0 times
+    {
+        model_t *gm = load(argv[2], true, false, 64), *gm1 = load(argv[2], true, false, 1);
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_MSG", "1");
+        model_t *gh = load(argv[2], true, false, 64);
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_MSG", "");
+        const void *ysp = NULL;
+        if (gm) model_inkling2_parts(gm, &ysp, NULL);
+        const ink2_shape *ys = ysp;
+        int n_msg_app = 0;
+        for (int a = 0; ys && a < ys->n_app; a++) {
+            const int b = ys->app_block[a];
+            n_msg_app += b >= ys->loop_start && b < ys->loop_end && ys->app_pass[a] > 0;
+        }
+        const long hm0 = ink2_msg_host_calls();
+        float *rm = gm ? rows(gm) : NULL, *rm1 = gm1 ? rows(gm1) : NULL;
+        const long hm1 = ink2_msg_host_calls();
+        float *rh = gh ? rows(gh) : NULL;
+        const size_t n = gm ? (size_t)N_TOK * (size_t)gm->n_vocab : 0;
+        const long c64 = model_inkling2_cuda_msg_calls(gm), c1 = model_inkling2_cuda_msg_calls(gm1);
+        CHECK(rm && rm1 && rh && n_msg_app > 0 && !memcmp(rm, rh, sizeof(float) * n) && !memcmp(rm1, rh, sizeof(float) * n) &&
+              c64 == 2L * n_msg_app && c1 == 2L * n_msg_app * N_TOK && hm1 - hm0 == 0,
+              "(y) the model's message steps on the device: rows equal the host steps' byte for byte at -b 64 and -b 1; "
+              "%ld and %ld device steps (want %d and %d: two for each of the %d applications with messages a forward); "
+              "the host message path %ld times (want 0)", c64, c1, 2 * n_msg_app, 2 * n_msg_app * N_TOK, n_msg_app,
+              hm1 - hm0);
+        free(rm); free(rm1); free(rh);
+        drop(gm); drop(gm1); drop(gh);
+        // a failed device message step (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_MSG_FAIL=0: the first) refuses that forward
+        // and the next, as a failed product does
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_MSG_FAIL", "0");
+        model_t *gf = load(argv[2], true, false, 64);
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_MSG_FAIL", "");
+        const bool onf = gf && model_inkling2_cuda_msg_calls(gf) >= 0;
+        const float *f1 = onf ? model_inkling2_forward(gf, PROMPT, N_TOK, 0, true, true) : NULL;
+        const float *f2 = onf ? model_inkling2_forward(gf, PROMPT, 1, 0, true, true) : NULL;
+        CHECK(onf && !f1 && !f2, "(y) a failed device message step: that forward %s, the next %s",
+              f1 ? "gave rows" : "refused", f2 ? "gave rows" : "refused");
+        drop(gf);
     }
     // D2 (k): the fused expert body equals the former per-expert launches bit for bit
     {

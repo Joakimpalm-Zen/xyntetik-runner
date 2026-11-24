@@ -128,8 +128,25 @@ typedef struct {
 typedef int (*ink2_dev_block_fn)(void *dev, const ink2_block_call *b);
 // TEST-ONLY: how many times the host ran an attention block's q/k/v/bank work in this process (step 2b's check)
 long ink2_attn_host_glue_calls(void);
+// R4.48.9 D1a: one message step of the loop's message gates (ink2_message_steps_c's fast path) offered to the device
+// when its weights' views are a device instance's: per role (n_roles <= 3) the down, forget and message gate views,
+// x rows [T][H], message rows at stride msg_stride, out [T][H] (host memory). The op returns 0 (done), 1 (the host
+// path), below 0 (a device failure: the outputs are NaN).
+typedef struct {
+    int n_roles, T, H, r;
+    float eps;
+    const ink2_tensor *wd[3], *wf[3], *wg[3];
+    const float *const *xs, *const *msgs;
+    size_t msg_stride;
+    float *const *outs;
+} ink2_msg_call;
+typedef int (*ink2_dev_msg_fn)(void *dev, const ink2_msg_call *m);
+// TEST-ONLY: how many times the host ran a message step's fast path in this process (D1a's check that it did not);
+// and the engine's p_tanhf as compiled in inkling2.c (the reference of the device port)
+long ink2_msg_host_calls(void);
+float ink2_test_p_tanhf(float x);
 typedef struct ink2_dev_ops { ink2_dev_lin_fn lin; ink2_dev_experts_fn experts; ink2_dev_attn_fn attn;
-                              ink2_dev_block_fn block; } ink2_dev_ops;
+                              ink2_dev_block_fn block; ink2_dev_msg_fn msg; } ink2_dev_ops;
 typedef struct { const ink2_dev_ops *ops; } ink2_dev_hdr;   // the first member of every binder's instance
 // TEST-ONLY: how many times the host attention core ran in this process (G2b step 2a's check that it did not)
 long ink2_attn_host_core_calls(void);
@@ -149,6 +166,11 @@ typedef const ink2_tensor *(*ink2_lookup_fn)(void *ctx, const char *name);
 // The pieces hold at most two expert results at a time (the expert's gate_up_proj, then its down_proj).
 typedef const ink2_tensor *(*ink2_expert_fn)(void *ctx, const char *stack_name, int e);
 typedef struct { ink2_lookup_fn get; void *ctx; ink2_expert_fn get_expert; } ink2_weights;
+// TEST-ONLY (D1a): the host message step itself (ink2_message_steps_c) on the given weights, the device op bypassed:
+// the reference the device message step is held to bit for bit
+ink2_status ink2_test_message_steps(const ink2_shape *s, const ink2_weights *w, int block, const char *const *roles,
+                                    int n_roles, int T, const float *const *xs, const float *const *msgs,
+                                    size_t msg_stride, float *const *outs);
 
 // The cache, indexed by APPLICATION. Each application owns its K and V rows and its convolution histories; two
 // passes over one physical layer never share a slot.

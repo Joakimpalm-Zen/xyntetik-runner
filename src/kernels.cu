@@ -5980,6 +5980,75 @@ extern "C" __global__ void k_ink2_gate(float *att, const float *ga, int n) {
     att[i] = __fmul_rn(att[i], __fdiv_rn(1.0f, __fadd_rn(1.0f, expf(-ga[i]))));
 }
 
+// R4.48.9 D1a: the loop's message gates on the device. The host's tanh there is pmath.h's p_tanhf (double precision
+// over pm_exp_d), ported LINE FOR LINE: every double operation an explicit round-to-nearest intrinsic (no contraction:
+// the host builds it with -ffp-contract=off), the constants the hex of the host's folded divisions
+// (scripts/pm_exp_consts.py), the int conversion a truncation as C's cast; so the same bits for every float.
+static __device__ double ink2_pm_ldexp2(double x, int k) {
+    while (k > 1000) { x = __dmul_rn(x, 0x1p1000); k -= 1000; }
+    while (k < -1000) { x = __dmul_rn(x, 0x1p-1000); k += 1000; }
+    return __dmul_rn(x, __longlong_as_double((long long)(k + 1023) << 52));
+}
+static __device__ double ink2_pm_exp_d(double x) {
+    if (x != x) return x;
+    if (x > 709.0) return __longlong_as_double(0x7ff0000000000000LL);   // 1.0 / 0.0
+    if (x < -745.0) return 0.0;
+    const double ln2_hi = 0x1.62e42fee00000p-1, ln2_lo = 0x1.a39ef35793c76p-33, inv_ln2 = 0x1.71547652b82fep+0;
+    const double kd = __dmul_rn(x, inv_ln2);
+    const int k = (int)(kd >= 0 ? __dadd_rn(kd, 0.5) : __dsub_rn(kd, 0.5));
+    const double r = __dsub_rn(__dsub_rn(x, __dmul_rn((double)k, ln2_hi)), __dmul_rn((double)k, ln2_lo));
+    double p = 0x1.6124613a86d09p-33;                 // 1 / 13!
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.1eed8eff8d898p-29);   // 1 / 12!
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.ae64567f544e4p-26);   // 1 / 11!
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.27e4fb7789f5cp-22);   // 1 / 10!
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.71de3a556c734p-19);   // 1 / 9!
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.a01a01a01a01ap-16);   // 1 / 8!
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.a01a01a01a01ap-13);   // 1 / 7!
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.6c16c16c16c17p-10);   // 1 / 6!
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.1111111111111p-7);    // 1 / 5!
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.5555555555555p-5);    // 1 / 4!
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.5555555555555p-3);    // 1 / 3!
+    p = __dadd_rn(__dmul_rn(p, r), 0.5);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0);
+    return ink2_pm_ldexp2(p, k);
+}
+static __device__ float ink2_p_tanhf(float x) {
+    const double xd = (double)x;
+    if (xd > 20.0) return 1.0f;
+    if (xd < -20.0) return -1.0f;
+    if (xd < 1e-4 && xd > -1e-4)
+        return __double2float_rn(__dmul_rn(xd, __dsub_rn(1.0, __dmul_rn(__dmul_rn(xd, xd), 0x1.5555555555555p-2))));
+    const double e = ink2_pm_exp_d(__dmul_rn(2.0, xd));
+    return __double2float_rn(__ddiv_rn(__dsub_rn(e, 1.0), __dadd_rn(e, 1.0)));
+}
+// TEST-ONLY: y[i] = the ported p_tanhf(x[i]) (tests/test_inkling2_cuda.c holds it to pmath.h's for every branch)
+extern "C" __global__ void k_ink2_test_ptanh(const float *x, float *y, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) y[i] = ink2_p_tanhf(x[i]);
+}
+// the message step's norms, ink2_msg_norm_range: gh[row] = [norm(x[row]), norm(msg[row])], the unweighted RMS norm of
+// ink2_unweighted_norm (a serial sum of squares ascending, the mean, + eps, 1 / sqrt, one multiply an element). One
+// thread a norm: n_rows rows, each two norms (x and msg), x rows and msg rows H wide (contiguous), gh rows 2H.
+extern "C" __global__ void k_ink2_msg_norm(const float *x, const float *msg, float *gh, int n_rows, int H, float eps) {
+    const int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k >= 2 * n_rows) return;
+    const int row = k >> 1, which = k & 1;
+    const float *src = (which ? msg : x) + (ulong64)row * H;
+    float *dst = gh + (ulong64)row * 2 * H + (which ? H : 0);
+    float ss = 0.0f;
+    for (int i = 0; i < H; i++) ss = __fadd_rn(ss, __fmul_rn(src[i], src[i]));
+    const float r = __fdiv_rn(1.0f, __fsqrt_rn(__fadd_rn(__fdiv_rn(ss, (float)H), eps)));
+    for (int i = 0; i < H; i++) dst[i] = __fmul_rn(src[i], r);
+}
+// the combination, ink2_msg_comb_multi_range: out = (1 - tanh(fa)) * x + tanh(ga) * msg, over n values
+extern "C" __global__ void k_ink2_msg_comb(const float *fa, const float *ga, const float *x, const float *msg,
+                                           float *out, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    out[i] = __fadd_rn(__fmul_rn(__fsub_rn(1.0f, ink2_p_tanhf(fa[i])), x[i]), __fmul_rn(ink2_p_tanhf(ga[i]), msg[i]));
+}
+
 // Gated activation over per-column gate/up at arbitrary column strides,
 // with NO weight fold (the grouped path applies selw in the scatter, like
 // the CPU grouping). Same per-element arithmetic as k_silu_mul/k_gelu_mul.

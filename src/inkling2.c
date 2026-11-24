@@ -1769,6 +1769,12 @@ static void ink2_msg_comb_multi_range(void *c, int64_t i0, int64_t i1) {
             m->out[k] = (1.0f - p_tanhf(m->fa[k])) * m->x[k] + p_tanhf(m->ga[k]) * m->msg[k];
     }
 }
+// TEST-ONLY (D1a): the engine's own p_tanhf, compiled with this file's flags (-fno-fast-math -ffp-contract=off): the
+// reference of the device port (a test file built with -ffast-math must not inline its own copy)
+float ink2_test_p_tanhf(float x) { return p_tanhf(x); }
+static long ink2_msg_host_n;            // TEST-ONLY: the host message step's runs (ink2_msg_host_calls)
+long ink2_msg_host_calls(void) { return __atomic_load_n(&ink2_msg_host_n, __ATOMIC_RELAXED); }
+static __thread int ink2_msg_no_dev;    // TEST-ONLY: ink2_test_message_steps keeps the step on the host
 static ink2_status ink2_message_steps_c(const ink2_shape *s, const ink2_weights *w, int block, const char *const *roles,
                                         int n_roles, int T, const float *const *xs, const float *const *msgs,
                                         size_t msg_stride, float *const *outs, ink2_cache *c) {
@@ -1790,6 +1796,21 @@ static ink2_status ink2_message_steps_c(const ink2_shape *s, const ink2_weights 
             has_act8 = 1;
         }
     }
+    // R4.48.9 D1a: the whole step on the device when its views are a device instance's (the fast path's arithmetic,
+    // there operation for operation); 1 back: the host path below. TEST-ONLY ink2_test_message_steps bypasses it.
+    const ink2_dev_ops *mo = fast && !has_act8 && !ink2_msg_no_dev ? ink2_ops_of(wd[0]->dev) : NULL;
+    if (mo && mo->msg) {
+        ink2_msg_call mc = { n_roles, T, H, r, s->eps, { 0 }, { 0 }, { 0 }, xs, msgs, msg_stride, outs };
+        for (int r_i = 0; r_i < n_roles; r_i++) { mc.wd[r_i] = wd[r_i]; mc.wf[r_i] = wf[r_i]; mc.wg[r_i] = wg[r_i]; }
+        const int rc = mo->msg(wd[0]->dev, &mc);
+        if (rc <= 0) {
+            if (rc < 0)
+                for (int r_i = 0; r_i < n_roles; r_i++)
+                    for (size_t i = 0; i < (size_t)T * H; i++) outs[r_i][i] = NAN;
+            return INK2_OK;
+        }
+    }
+    __atomic_add_fetch(&ink2_msg_host_n, 1, __ATOMIC_RELAXED);
     const size_t TH = (size_t)T * H;
     if (fast && !has_act8 && (n_roles == 1 || ink2_decode_fuse_enabled())) {
         const int need_unpack = (T > 1 && msg_stride != (size_t)H);
@@ -1887,6 +1908,14 @@ static ink2_status ink2_message_steps_c(const ink2_shape *s, const ink2_weights 
     }
     ink2_op_free(gh, owned);
     return INK2_OK;
+}
+ink2_status ink2_test_message_steps(const ink2_shape *s, const ink2_weights *w, int block, const char *const *roles,
+                                    int n_roles, int T, const float *const *xs, const float *const *msgs,
+                                    size_t msg_stride, float *const *outs) {
+    ink2_msg_no_dev = 1;
+    const ink2_status st = ink2_message_steps_c(s, w, block, roles, n_roles, T, xs, msgs, msg_stride, outs, NULL);
+    ink2_msg_no_dev = 0;
+    return st;
 }
 ink2_status ink2_message_step(const ink2_shape *s, const ink2_weights *w, int block, const char *role, int T,
                               const float *x, const float *message, float *out) {

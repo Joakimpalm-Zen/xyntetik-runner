@@ -51,6 +51,9 @@ typedef struct {
     bool block_on;        // G2b step 2b: this instance runs each attention block whole on the device
     bool seq_block;       // the current sequence's blocks run on the device (its K/V histories are the device's)
     long n_block_calls;   // device block calls run so far (one per application per forward)
+    bool msg_on;          // D1a: this instance runs the loop's message steps on the device
+    long n_msg_calls;     // device message steps run so far
+    long msg_fail_at;     // TEST-ONLY (RUNNER_INKLING2_CUDA_TEST_MSG_FAIL=k): the k-th device message step fails; -1 none
 } ink2_rt;
 
 static ink2_rt *rt_of(model_t *m) { return (ink2_rt *)m->ink2; }
@@ -180,6 +183,26 @@ static int dev_attn(void *dev, int app, const ink2_attn_dims *d, int T, const in
 // with a LoRA adapter active runs 2a's path to its end (the adapter's terms are host code, and its K/V histories are
 // then the host's); an adapter appearing in the middle of a sequence the device began is refused, since the host
 // holds no history for it.
+// D1a: one message step on the device when every view is this instance's (a view left on the host: the host path)
+static int dev_msg(void *dev, const ink2_msg_call *m) {
+    ink2_rt *r = dev;
+    if (!r->msg_on) return 1;
+    if (r->gpu_err) return -1;
+    gpu_ink2_msg_role ro[3];
+    for (int k = 0; k < m->n_roles; k++) {
+        const ink2_tensor *t[3] = { m->wd[k], m->wf[k], m->wg[k] };
+        for (int u = 0; u < 3; u++) if (!t[u] || t[u]->dev != r) return 1;
+        ro[k] = (gpu_ink2_msg_role){ t[0]->dev_i, t[1]->dev_i, t[2]->dev_i, t[0]->qtype, t[1]->qtype, t[2]->qtype,
+                                     1.0f, 1.0f, 1.0f };
+    }
+    const bool inj = r->n_msg_calls++ == r->msg_fail_at;   // TEST-ONLY: an injected failure
+    if (inj || !gpu_ink2_msg_steps(r->gpu, m->n_roles, m->T, m->H, m->r, m->eps, ro, m->xs, m->msgs, m->msg_stride, m->outs)) {
+        if (!r->gpu_err) fprintf(stderr, "error: inkling2_loop: a message step failed on the device\n");
+        r->gpu_err = true;
+        return -1;
+    }
+    return 0;
+}
 static int dev_block(void *dev, const ink2_block_call *bc) {
     ink2_rt *r = dev;
     if (!r->block_on) return 1;
@@ -495,7 +518,7 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
     }
     // the instance's own device functions, read-only, in place before any of its views is marked: a forward reads
     // them through its own views and cache only, so no other instance's bind writes what it reads
-    static const ink2_dev_ops ops = { dev_lin_scaled, dev_experts, dev_attn, dev_block };
+    static const ink2_dev_ops ops = { dev_lin_scaled, dev_experts, dev_attn, dev_block, dev_msg };
     r->hdr.ops = &ops;
     if (!dev_mark(r)) {
         pthread_mutex_unlock(&g_share_mu);
@@ -541,6 +564,13 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
         }
         r->block_on = all;
         r->n_block_calls = 0;
+        // D1a: the loop's message steps on the device (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_NO_MSG=1 keeps them on the
+        // host, the baseline; an instance's own choice, not the copy's: no part of the share key)
+        const char *nm = getenv("RUNNER_INKLING2_CUDA_TEST_NO_MSG");
+        r->msg_on = gpu_ink2_msg_ok(r->gpu) && !(nm && !strcmp(nm, "1"));
+        r->n_msg_calls = 0;
+        const char *mf = getenv("RUNNER_INKLING2_CUDA_TEST_MSG_FAIL");
+        r->msg_fail_at = mf && *mf ? atol(mf) : -1;
     }
     const char *nf = getenv("RUNNER_INKLING2_CUDA_TEST_NO_FACTOR");
     r->no_factor = nf && !strcmp(nf, "1");
@@ -1032,6 +1062,10 @@ size_t model_inkling2_cuda_block_buf_bytes(const model_t *m) {
 long model_inkling2_cuda_block_calls(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
     return r && r->block_on ? r->n_block_calls : -1;
+}
+long model_inkling2_cuda_msg_calls(const model_t *m) {
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    return r && r->msg_on ? r->n_msg_calls : -1;
 }
 long model_inkling2_cuda_attn_calls(const model_t *m, size_t *kv_bytes) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;

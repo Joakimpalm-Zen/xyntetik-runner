@@ -771,6 +771,18 @@ bool       gpu_ink2_experts(gpu_ink2 *h, int i13, int i2, int type13, int type2,
 bool       gpu_ink2_experts_ok(const gpu_ink2 *h);
 bool       gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F, int E, int U);
 void       gpu_ink2_test_experts_ref(gpu_ink2 *h, int on);
+// D1a: one message step of the loop's message gates on the device, ink2_message_steps_c's fast path operation for
+// operation: per role k (n_roles <= 3) and position t: gh = [norm(x_k[t]), norm(m_k[t])] (the unweighted RMS norm,
+// eps), d = wd_k gh (r rows of 2H), fa = wf_k d and ga = wg_k d (H rows of r), out_k[t] = (1 - tanh fa) x_k[t] +
+// tanh(ga) m_k[t] with the host's p_tanhf (pmath.h) ported to the device line for line. x_k and out_k [T][H] (host
+// memory), m_k rows of H at stride ms_stride. The views by device index, ggml type and factor (1: none). One upload of
+// the x and message rows, one download of the outputs. False: a device failure, or the kernels are not in the module.
+typedef struct { int i_d, i_f, i_g, t_d, t_f, t_g; float s_d, s_f, s_g; } gpu_ink2_msg_role;
+bool       gpu_ink2_msg_steps(gpu_ink2 *h, int n_roles, int T, int H, int r, float eps, const gpu_ink2_msg_role *roles,
+                              const float *const *xs, const float *const *ms, size_t ms_stride, float *const *outs);
+bool       gpu_ink2_msg_ok(const gpu_ink2 *h);
+// TEST-ONLY: y[i] = the device's port of pmath.h's p_tanhf(x[i]), for i < n
+bool       gpu_ink2_test_ptanh(gpu_ink2 *h, const float *x, float *y, int n);
 // TEST-ONLY (P1a): on (1), every product runs as one batch-1 launch per column (the reference); off (0), a BF16
 // or NVFP4 product of at least 16 columns runs batched (k_mv_bf16_b, k_mv_nvfp4_b; the expert body's NVFP4 tiles,
 // k_mvsegb_nvfp4; BF16 experts stay per column), the same bits
