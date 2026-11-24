@@ -25,7 +25,8 @@ Where a family runs is the backend's: lfm2's short convolution runs on the CPU u
 but on the device under Metal, as its --wide fixture quantized to Q4_K (the shape the Apple GPU path takes, R3.42), so
 lfm2 is a case on Metal only; qwen4exp is not on the Metal backend yet (its load says so and runs it on the CPU), so
 on Metal the test holds that load line and skips it.
-The module skips without a CUDA or Metal device.
+The "messages" entry point is held the same way (a chat prefix pinned by messages forks as the automatic tier does),
+on the device and on the CPU. The device cases skip without a CUDA or Metal device; the CPU case runs everywhere.
 """
 import json
 import os
@@ -86,7 +87,7 @@ def backend(runner_bin):
 
 
 @pytest.fixture(scope="module")
-def models(runner_bin, backend, tmp_path_factory):
+def models(runner_bin, tmp_path_factory):
     d = tmp_path_factory.mktemp("recctx")
     out = {}
     for name, gen, args, env in FAMILIES:
@@ -145,9 +146,7 @@ def _on_device(log, backend):
         assert bad not in text, text[-1500:]
 
 
-@pytest.mark.parametrize("name", [f[0] for f in FAMILIES])
-def test_a_pinned_context_on_the_device_forks_as_the_automatic_tier_does(runner_bin, backend, models, name, tmp_path):
-    model, prompt, logs = models[name], SYS + QUESTION, []
+def _skip_off_device(runner_bin, model, name, backend, tmp_path):
     if (name, backend) in HOST_SKIP:
         pytest.skip(HOST_SKIP[(name, backend)] + ": not a device fold there")
     if (name, backend) in HOST_LINE:
@@ -156,6 +155,12 @@ def test_a_pinned_context_on_the_device_forks_as_the_automatic_tier_does(runner_
             pass
         assert HOST_LINE[(name, backend)] in log.read_text(errors="replace"), log.read_text(errors="replace")[-1500:]
         pytest.skip(f"{name} runs on the CPU under {backend} (its load says so): not a device fold there")
+
+
+@pytest.mark.parametrize("name", [f[0] for f in FAMILIES])
+def test_a_pinned_context_on_the_device_forks_as_the_automatic_tier_does(runner_bin, backend, models, name, tmp_path):
+    model, prompt, logs = models[name], SYS + QUESTION, []
+    _skip_off_device(runner_bin, model, name, backend, tmp_path)
     # the automatic tier: P is published whole after its prefill, then P + the question is an exact full-prefix hit
     logs.append(tmp_path / "auto.log")
     with _serve(runner_bin, model, logs[-1]) as srv:
@@ -201,3 +206,82 @@ def test_a_pinned_context_on_the_device_forks_as_the_automatic_tier_does(runner_
     assert _ans(imp) == _ans(warm), (name, _ans(imp), _ans(warm))
     for log in logs:
         _on_device(log, backend)
+
+
+
+# The "messages" entry point (context_from_chat, then context_pin_prompt): a chat prefix pinned by messages forks as
+# the automatic tier does. chatml renders the system turn on its own as CHATML_SYS (src/template.c), so a raw completion
+# of that text publishes exactly the pinned context's tokens to the automatic tier (its hit count says so), and a chat
+# request of the system turn and the question then forks it. Both build the fold as all but the last token, then that
+# token alone (engine_feed_prompt). A chat completion that marks its anchor builds its own slot fold as one batch to
+# the anchor, so the slot's REWIND_ANCHOR fold is not this one on the Metal backend or under a T3 CUDA build; the pin
+# answers as the shared tier does.
+CHAT_SYS = {"role": "system", "content": SYS}
+CHAT_Q = {"role": "user", "content": QUESTION}
+CHATML_SYS = "<|im_start|>system\n" + SYS + "<|im_end|>\n"
+
+
+def _chat(srv, **extra):
+    st, b = _req(srv, "POST", "/v1/chat/completions", {
+        "messages": [CHAT_SYS, CHAT_Q], "max_tokens": 6, "temperature": 0, "logprobs": True, "top_logprobs": 2,
+        **extra})
+    assert st == 200, b
+    return b
+
+
+def _chat_ans(b):
+    c = b["choices"][0]
+    return c["message"]["content"], [t["logprob"] for t in c["logprobs"]["content"]]
+
+
+def _serve_cpu(runner_bin, model, log, *extra):
+    return RunnerServer(runner_bin, model, ctx=512, log_path=str(log), extra_args=["--gpu", "off", "-t", "2", *extra])
+
+
+def _messages_pin_forks_as_the_tier(serve, name, tmp_path, cold_tol):
+    logs = []
+    logs.append(tmp_path / "chat-auto.log")
+    with serve(logs[-1]) as srv:
+        _complete(srv, CHATML_SYS)
+        auto = _chat(srv)
+    tel = auto["runner_telemetry"]
+    assert tel["prompt_reuse"] == "prefix_cache" and tel["prompt_cached_tokens"] > 16, (name, tel)
+    n_auto = tel["prompt_cached_tokens"]
+    logs.append(tmp_path / "chat-cold.log")
+    with serve(logs[-1]) as srv:
+        cold = _chat(srv, cache_prompt=False)
+    assert cold["runner_telemetry"]["prompt_cached_tokens"] == 0, (name, cold["runner_telemetry"])
+    logs.append(tmp_path / "chat-pin.log")
+    with serve(logs[-1]) as srv:
+        st, pin = _req(srv, "POST", "/v1/runner/contexts", {"id": "chat-sys", "messages": [CHAT_SYS]})
+        assert st == 200 and pin["tokens"] == n_auto, (name, st, pin, n_auto)
+        # overwrite the slot's own rows and fold, so only the pinned snapshot can serve
+        _complete(srv, "unrelated text that shares nothing")
+        warm = _chat(srv, context_id="chat-sys")
+    tel = warm["runner_telemetry"]
+    assert tel["context"] == {"id": "chat-sys", "tokens": n_auto}, (name, tel)
+    assert tel["prompt_cached_tokens"] == n_auto and tel["prompt_reuse"] == "prefix_cache", (name, tel)
+    assert _chat_ans(warm) == _chat_ans(auto), (name, _chat_ans(warm), _chat_ans(auto))
+    assert _chat_ans(warm)[0] == _chat_ans(cold)[0], (name, _chat_ans(warm), _chat_ans(cold))
+    assert _chat_ans(warm)[1] == pytest.approx(_chat_ans(cold)[1], abs=cold_tol), (name, cold_tol, _chat_ans(warm),
+                                                                                    _chat_ans(cold))
+    return logs
+
+
+@pytest.mark.parametrize("name", [f[0] for f in FAMILIES])
+def test_a_messages_pin_on_the_device_forks_as_the_automatic_tier_does(runner_bin, backend, models, name, tmp_path):
+    model = models[name]
+    _skip_off_device(runner_bin, model, name, backend, tmp_path)
+    tol = COLD_TOL_FAMILY.get((name, backend), COLD_TOL[backend])
+    logs = _messages_pin_forks_as_the_tier(lambda log: _serve(runner_bin, model, log, "--chat-template", "chatml"),
+                                           name, tmp_path, tol)
+    for log in logs:
+        _on_device(log, backend)
+
+
+# On the CPU, which the house holds batch-invariant, the cold prefill's logprobs are the pin's bit for bit too.
+@pytest.mark.parametrize("name", [f[0] for f in FAMILIES])
+def test_a_messages_pin_on_the_cpu_forks_as_the_automatic_tier_does(runner_bin, models, name, tmp_path):
+    model = models[name]
+    _messages_pin_forks_as_the_tier(lambda log: _serve_cpu(runner_bin, model, log, "--chat-template", "chatml"),
+                                    name, tmp_path, 0.0)
