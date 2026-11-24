@@ -43,6 +43,7 @@ test-cuda-qwen35moe.out
 test-metal-qwen35.out
 test-metal-mamba2.out
 test-cuda-hybrids.out
+test-cuda-olmo2.out
 test-cuda-kv-f32.out
 test-metal-qwen35moe.out
 test-cuda-spec-identity.out

@@ -5573,10 +5573,13 @@ static bool train_prepare(cli_opts *o, cli_run *rt) {
     // heads, the recompute, the transposed products) on the device. Asked
     // for by name, so no device is an error, not a quiet CPU run.
     if (o->train_gpu) {
-        // olmo2's backward (the post-norm-only blocks, the full-width QK norm) has no device form yet (R4.50.5)
+        // olmo2 (R4.50.5): CUDA runs its forward, but its gradient gate (test-lora-grad slots,kvf32) needs
+        // the f32 KV rows the GPU trainer does not keep (--train-kv-f32 is the CPU's): with f16 rows the
+        // finite differences leave 63 of 168 coordinates unresolved on the fixture, so no gate holds a
+        // device step's gradient yet
         if (rt->m.ad && rt->m.ad->id == ARCH_OLMO2) {
-            fprintf(stderr, "error: --train-gpu: olmo2's backward runs on the CPU only until its CUDA path is "
-                    "validated (R4.50.5); train without --train-gpu\n");
+            fprintf(stderr, "error: --train-gpu: olmo2's backward runs on the CPU only: its gradient gate needs "
+                    "f32 KV rows, which the GPU trainer does not keep yet; train without --train-gpu\n");
             return false;
         }
         rt->m.train_gpu_budget = o->train_gpu_budget;

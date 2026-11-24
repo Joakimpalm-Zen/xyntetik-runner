@@ -3307,6 +3307,68 @@ test-cuda-hybrids: runner $(TEST_GPU_ID) test-ornith.gguf
 	  echo "cuda hybrids skipped: no CUDA device reported by --caps"; \
 	fi
 
+# olmo2 on CUDA (R4.50.5): post-norm-only blocks (no attention or MLP pre-norm,
+# each branch's output normed), one RMS norm over the whole q and k projections,
+# OLMo 3's sliding window on 3 of every 4 layers at the global base and YaRN on
+# the full layers. scripts/make-test-olmo2.py's fixtures (OLMo 3, OLMo 2 with
+# --plain, --gqa, and the 32-wide heads of --head-dim 32 with and without
+# --gqa) held to the CPU by gpu-identity at 1e-5: prefill batch 32 and 1, a
+# partial offload (2 of 4 layers); and with f32 KV rows in both arms at 1e-6,
+# where the healthy residue is 7e-8 to 8e-8 (the f16 rows' rounding takes it to
+# 1.9e-6 to 7.9e-6, the residue Metal measured too). Then the microbatch and
+# speculative verify identities. Measured (R4.50.5, sm_120): the QK norm taken
+# per head, the K norm dropped, a norm read at the wrong place, the sliding
+# window dropped, and the sliding layers rotated with the full layers' YaRN
+# table or magnitude each fail it, at 247x the bound and more.
+# The compact KV caches run where they engage: q8 and k8v4 need a head width a
+# multiple of 32 (at 16 the load keeps f16 with a note), fp4 one of 16. An arm
+# whose cache did not engage FAILS: gpu-identity checks the load took it, and a
+# 'keeping f16' note fails here. Each at prefill batch 32, 7 and 1, the CPU
+# arm's two paths: gpu-identity calls the model without the engine's
+# prefill_pass, so at MV_SMALL_BATCH (8) columns or more its products take the
+# f32 tile, and below it the native dot.
+# On these toys a compact cache turns any reassociation of the K and V products
+# into a whole code step, and the CPU's two paths are not consistent with each
+# other there: h32's q8 rows move the CPU's own logits by 6.25e-5 of range
+# between batch 32 and 7, and gqa's fp4 rows by 3.19e-5, where the device is
+# byte-identical at every width. So those two arms hold the house's bound for a
+# compact cache, 1e-3; the others, where no step flips, hold 1e-5.
+# Skips itself on a box whose --caps report no CUDA device.
+OLMO2_ID_RUN = > test-cuda-olmo2.out 2>&1 || { cat test-cuda-olmo2.out; echo "test-cuda-olmo2: $$f ($$what) FAILED"; exit 1; }; \
+	  if grep -q 'skipped\|cpu,\|keeping f16' test-cuda-olmo2.out; then cat test-cuda-olmo2.out; \
+	    echo "test-cuda-olmo2: $$f ($$what) did not run on the device, or not with its KV cache"; exit 1; fi; \
+	  echo "$$f ($$what): $$(tail -1 test-cuda-olmo2.out)"
+# file:cache:bound, the compact KV caches' arms
+OLMO2_KV_ARMS = h32:q8:1e-3 h32:k8v4:1e-5 h32-gqa:q8:1e-5 h32-gqa:k8v4:1e-5 h32-gqa:fp4:1e-5 \
+                gqa:fp4:1e-3 olmo3:fp4:1e-5
+test-cuda-olmo2: runner $(TEST_GPU_ID) $(TEST_BATCH_ID) $(TEST_SPEC_ID)
+	@set -e; \
+	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'cuda' else 1)"; then \
+	  $(PYTHON) scripts/make-test-olmo2.py test-cuda-olmo2-olmo3.gguf > /dev/null; \
+	  $(PYTHON) scripts/make-test-olmo2.py test-cuda-olmo2-plain.gguf --plain > /dev/null; \
+	  $(PYTHON) scripts/make-test-olmo2.py test-cuda-olmo2-gqa.gguf --gqa > /dev/null; \
+	  $(PYTHON) scripts/make-test-olmo2.py test-cuda-olmo2-h32.gguf --head-dim 32 > /dev/null; \
+	  $(PYTHON) scripts/make-test-olmo2.py test-cuda-olmo2-h32-gqa.gguf --head-dim 32 --gqa > /dev/null; \
+	  for x in olmo3 plain gqa h32 h32-gqa; do f=test-cuda-olmo2-$$x.gguf; \
+	    what="prefill batch 32"; GPU_ID_LIMIT=1e-5 ./$(TEST_GPU_ID) $$f 0 32 $(OLMO2_ID_RUN); \
+	    what="prefill batch 1"; GPU_ID_LIMIT=1e-5 ./$(TEST_GPU_ID) $$f 0 1 $(OLMO2_ID_RUN); \
+	    what="2 of 4 layers on the device"; GPU_ID_LIMIT=1e-5 ./$(TEST_GPU_ID) $$f 2 32 $(OLMO2_ID_RUN); \
+	    what="f32 KV rows at 1e-6"; GPU_ID_KV=f32 GPU_ID_LIMIT=1e-6 ./$(TEST_GPU_ID) $$f 0 32 $(OLMO2_ID_RUN); \
+	    what="microbatch"; ./$(TEST_BATCH_ID) $$f $(OLMO2_ID_RUN); \
+	    what="speculative verify"; ./$(TEST_SPEC_ID) $$f $(OLMO2_ID_RUN); \
+	  done; \
+	  for arm in $(OLMO2_KV_ARMS); do \
+	    x=$${arm%%:*}; r=$${arm#*:}; kv=$${r%%:*}; lim=$${r#*:}; f=test-cuda-olmo2-$$x.gguf; \
+	    for nb in 32 7 1; do \
+	      what="KV $$kv at $$lim, prefill batch $$nb"; GPU_ID_KV=$$kv GPU_ID_LIMIT=$$lim ./$(TEST_GPU_ID) $$f 0 $$nb $(OLMO2_ID_RUN); \
+	    done; \
+	  done; \
+	  rm -f test-cuda-olmo2*.gguf test-cuda-olmo2.out; \
+	  echo "cuda olmo2 ok"; \
+	else \
+	  echo "cuda olmo2 skipped: no CUDA device reported by --caps"; \
+	fi
+
 # The wide-head tensor-core prefill attention (R3.6.3.1, k_attn_tcw) against
 # the CPU on fixtures with 256- and 512-wide heads (make-test-model.py
 # --head-dim; four query heads on two KV heads, and 24 on 2 at 256 wide, the
@@ -5338,7 +5400,7 @@ test-anchors: runner test.gguf $(TEST_LORA_GRAD) $(DIFFTOK)
 	    --allow-skip 'this OS refuses a deliberate self-connect' .build/ci/anchors.xml
 
 .PHONY: test-anchors
-.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-hybrids test-cuda-qwen4exp test-cuda-qwen35moe test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity test-cuda-longrope test-cuda-batch-columns test-cuda-batch-q35
+.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-hybrids test-cuda-olmo2 test-cuda-qwen4exp test-cuda-qwen35moe test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity test-cuda-longrope test-cuda-batch-columns test-cuda-batch-q35
 .PHONY: test-gates test-gates-core test-gates-batch test-python
 .PHONY: test-deepseek2 test-metal-kv-fp4 test-metal-olmo2 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 

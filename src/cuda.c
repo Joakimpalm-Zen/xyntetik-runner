@@ -3402,9 +3402,10 @@ static bool shared_upload_layer_tables(gpu_weights *w, model_t *m) {
         w->bk[l] = f32_dbuf(ly->bk, model_kv_dim(m, l), "K bias", l);
         w->bv[l] = f32_dbuf(ly->bv, model_kv_dim(m, l), "V bias", l);
         w->bo[l] = f32_dbuf(ly->bo, m->n_embd, "attention output bias", l);
-        w->qn[l] = f32_dbuf(ly->qnorm_w, model_head_dim(m, l),
+        // olmo2's QK norms span the whole projections (qk_norm_full)
+        w->qn[l] = f32_dbuf(ly->qnorm_w, m->qk_norm_full ? model_q_dim(m, l) : model_head_dim(m, l),
                             "Q norm", l);
-        w->kn[l] = f32_dbuf(ly->knorm_w, model_head_dim(m, l),
+        w->kn[l] = f32_dbuf(ly->knorm_w, m->qk_norm_full ? model_kv_dim(m, l) : model_head_dim(m, l),
                             "K norm", l);
         w->mla_kvn[l] = f32_dbuf(ly->kv_a_norm_w, (size_t)m->mla_kv_lora,
                                  "latent norm", l);
@@ -5449,6 +5450,26 @@ static bool enc_qknorm(gpu_t *g, model_t *m, CUdeviceptr v, CUdeviceptr w,
     float eps = m->rms_eps;
     void *p[] = { &v, &w, &hd, &eps, &vs };
     return launch(g, g->sw->f_qknorm, n_heads, batch, 1, 64, p);
+}
+
+// A layer's Q or K norm: one per head of hd (qwen3), or, for olmo2
+// (qk_norm_full, R4.50.5), one over the whole projection, width wide (q_dim
+// or kv_dim): k_qknorm's loop takes any width, here as a single head.
+static bool enc_qk_norm(gpu_t *g, model_t *m, CUdeviceptr v, CUdeviceptr w, int n_heads,
+                        int hd, int width, int batch, int vs) {
+    return m->qk_norm_full ? enc_qknorm(g, m, v, w, 1, width, batch, vs)
+                           : enc_qknorm(g, m, v, w, n_heads, hd, batch, vs);
+}
+
+// A branch's input in xb: the residual x normed by the branch's pre-norm, or,
+// where the block has none (olmo2's post-norm-only blocks, R4.50.5), the
+// residual itself, copied column by column (x is n_embd-strided, xb xdim):
+// the CPU's branch reads the residual unnormed (layer_mixer_input).
+static bool enc_branch_in(gpu_t *g, model_t *m, CUdeviceptr norm, int n_embd, int batch,
+                          int xdim) {
+    if (norm) return enc_rmsnorm(g, g->x, g->xb, norm, n_embd, m->rms_eps, batch, n_embd, xdim);
+    void *p[] = { &g->xb, &g->x, &n_embd, &xdim, &n_embd };
+    return launch(g, g->sw->f_moe_copy, (unsigned)(n_embd + 255) / 256, batch, 1, 256, p);
 }
 
 static bool enc_rope(gpu_t *g, model_t *m, CUdeviceptr v, int n_heads,
@@ -8076,7 +8097,7 @@ static bool tile_kv_store(gpu_t *g, model_t *m, int l, int tn, int hd,
     if (m->v_rmsnorm)
         // weightless per-head RMS norm on V (pre-K-norm values)
         ok = ok && enc_qknorm(g, m, g->vt, g->sw->ones, n_kv, hd, tn, kv_dim);
-    if (g->sw->kn[l]) ok = ok && enc_qknorm(g, m, g->kt, g->sw->kn[l], n_kv, hd, tn, kv_dim);
+    if (g->sw->kn[l]) ok = ok && enc_qk_norm(g, m, g->kt, g->sw->kn[l], n_kv, hd, kv_dim, tn, kv_dim);
     if (model_layer_ropes(m, l))
         ok = ok && enc_rope(g, m, g->kt, n_kv, tn, kv_dim, l);
 
@@ -8733,8 +8754,7 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
             ok = ok && gpu_hc_mix(g, m, g->sw->hc_an[l], ly->hc_attn_down, ly->hc_attn_up,
                                   ly->hc_attn_inject, g->x_hc, g->xb, xdim, tn);
         } else
-        ok = ok && enc_rmsnorm(g, g->x, g->xb, g->sw->attn_norm[l], n_embd, m->rms_eps,
-                               tn, n_embd, xdim);
+        ok = ok && enc_branch_in(g, m, g->sw->attn_norm[l], n_embd, tn, xdim);
         prof_mark(g, PH_NORM);
         if (ly->recurrent) {
             ok = ok && (m->qwen35
@@ -8755,7 +8775,7 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
         prof_mark(g, PH_MATVEC);
         ok = ok && tile_kv_store(g, m, l, tn, hd, n_kv, kv_dim);
     kv_done:
-        if (g->sw->qn[l]) ok = ok && enc_qknorm(g, m, g->q,  g->sw->qn[l], m->n_head, hd, tn, q_dim);
+        if (g->sw->qn[l]) ok = ok && enc_qk_norm(g, m, g->q, g->sw->qn[l], m->n_head, hd, q_dim, tn, q_dim);
         prof_mark(g, PH_NORM);
         ok = ok && enc_rope_or_temp(g, m, g->q, m->n_head, tn, q_dim, l,
                                     pos, enc_rope);
@@ -8831,8 +8851,7 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
             ok = ok && gpu_hc_mix(g, m, g->sw->hc_fn[l], ly->hc_ffn_down, ly->hc_ffn_up,
                                   ly->hc_ffn_inject, g->x_hc, g->xb, xdim, tn);
         else
-        ok = ok && enc_rmsnorm(g, g->x, g->xb, g->sw->ffn_norm[l], n_embd, m->rms_eps,
-                               tn, n_embd, xdim);
+        ok = ok && enc_branch_in(g, m, g->sw->ffn_norm[l], n_embd, tn, xdim);
         prof_mark(g, PH_NORM);
         if (ly->is_moe) {
             // The shared expert reads the normed input the routed experts
@@ -12026,8 +12045,7 @@ static bool fwd_batch(gpu_batch *B, model_t *m, int tn) {
         int q_dim   = model_q_dim(m, l);
         int kv_dim  = model_kv_dim(m, l);
 
-        ok = ok && enc_rmsnorm(g, g->x, g->xb, g->sw->attn_norm[l], n_embd,
-                               m->rms_eps, tn, n_embd, xdim);
+        ok = ok && enc_branch_in(g, m, g->sw->attn_norm[l], n_embd, tn, xdim);
         if (m->qwen35 && ly->recurrent) {
             ok = ok && fwd_batch_q35_mixer(B, m, ly, l, tn);
             goto mixer_done;
@@ -12054,7 +12072,7 @@ static bool fwd_batch(gpu_batch *B, model_t *m, int tn) {
         }
         if (m->v_rmsnorm)
             ok = ok && enc_qknorm(g, m, g->vt, g->sw->ones, n_kv, hd, tn, kv_dim);
-        if (g->sw->kn[l]) ok = ok && enc_qknorm(g, m, g->kt, g->sw->kn[l], n_kv, hd, tn, kv_dim);
+        if (g->sw->kn[l]) ok = ok && enc_qk_norm(g, m, g->kt, g->sw->kn[l], n_kv, hd, kv_dim, tn, kv_dim);
         ok = ok && enc_rope_batch(B, m, g->kt, n_kv, tn, kv_dim, l);
 
         {   // each column stores into its own sequence's cache at its own row
@@ -12068,7 +12086,7 @@ static bool fwd_batch(gpu_batch *B, model_t *m, int tn) {
             ok = ok && launch(g, g->sw->f_store_seq, (units + 63) / 64, tn, 1, 64, ps);
         }
         }
-        if (g->sw->qn[l]) ok = ok && enc_qknorm(g, m, g->q,  g->sw->qn[l], m->n_head, hd, tn, q_dim);
+        if (g->sw->qn[l]) ok = ok && enc_qk_norm(g, m, g->q, g->sw->qn[l], m->n_head, hd, q_dim, tn, q_dim);
         ok = ok && enc_rope_batch(B, m, g->q, m->n_head, tn, q_dim, l);
         {   // flash-decoding over N sequences: grid (head, split, sequence).
             // The extra grid dimension is free occupancy — a solo decode step
@@ -12111,7 +12129,7 @@ static bool fwd_batch(gpu_batch *B, model_t *m, int tn) {
             ok = ok && enc_scale(g, g->xb, m->resid_scale, n_embd, tn, xdim);
         ok = ok && enc_add(g, g->x, g->xb, n_embd, tn, n_embd, xdim);
 
-        ok = ok && enc_rmsnorm(g, g->x, g->xb, g->sw->ffn_norm[l], n_embd, m->rms_eps, tn, n_embd, xdim);
+        ok = ok && enc_branch_in(g, m, g->sw->ffn_norm[l], n_embd, tn, xdim);
         ok = ok && enc_mv_batch(g, m, ly->w_gate, g->xb, g->hb,  n_embd, ly->n_ff, 0, tn, xdim, m->n_ff);
         ok = ok && enc_mv_batch(g, m, ly->w_up,   g->xb, g->hb2, n_embd, ly->n_ff, 0, tn, xdim, m->n_ff);
         ok = ok && enc_actmul(g, m, g->hb, g->hb2, tn * m->n_ff);

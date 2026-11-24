@@ -28,11 +28,13 @@ The other gates:
   decode route (the default score route's bits), and the thread count changes nothing;
 - the default sliding pattern (no array) is the publisher's 3-in-4;
 - a YaRN attention factor other than its default is refused by name (the two readings of the key differ there);
-- the GPU backends do not run it yet (the CPU's reason is printed);
+- both GPU backends run it: Metal (R4.50.4, held to the CPU by make test-metal-olmo2) and CUDA (R4.50.5, by make
+  test-cuda-olmo2);
 - a LoRA adapter serves on it as the house holds every family to (R4.50.3): a zero adapter is the base byte for
   byte, and an adapter on all seven projections sits within 5e-4 of the merged weights (the two sum in different
-  orders), while moving the score; training is on the CPU (--train-gpu refuses it by name until R4.50.5), and its
-  gradient is gated by test-lora-grad (Makefile) and its learning and determinism by tests/test_train.py.
+  orders), while moving the score; training is on the CPU (--train-gpu refuses it by name: its gradient gate
+  needs f32 KV rows, which the GPU trainer does not keep), and its gradient is gated by test-lora-grad
+  (Makefile) and its learning and determinism by tests/test_train.py.
 """
 import json
 import os
@@ -235,17 +237,18 @@ def test_an_attn_factor_other_than_the_default_is_refused(runner_bin, files):
     assert "refused rather than guessed" in err, err
 
 
-def test_the_gpu_backends_leave_it_to_the_cpu_and_training_is_refused(runner_bin, files):
+def test_the_gpu_backends_say_where_it_runs_and_its_admission_is_pending(runner_bin, files):
     p = subprocess.run([str(runner_bin), "-m", str(files["olmo2"]), "-p", "hi", "-n", "1"],
                        cwd=ROOT, capture_output=True, timeout=120)
     err = p.stderr.decode(errors="replace")
     assert p.returncode == 0, err
     caps = json.loads(subprocess.run([str(runner_bin), "--caps"], capture_output=True, timeout=30).stdout)
     backend = (caps.get("gpu") or {}).get("backend")
+    # both GPU backends run it: Metal (R4.50.4) and CUDA (R4.50.5), with no line saying it stays on the CPU
     if backend == "metal":
-        assert "Metal backend" in err, err
-    elif backend:   # another GPU backend (CUDA until R4.50.5): it says why it does not run here
-        assert "gpu: olmo2 is validated on the CPU and the Apple GPU only" in err, err
+        assert "Metal backend" in err and "validated on the CPU" not in err, err
+    elif backend == "cuda":
+        assert "CUDA backend" in err and "validated on the CPU" not in err, err
     # it loads before its admission: --caps lists it apart, and the load says so
     assert "olmo2" not in caps["architectures"], caps["architectures"]
     assert [a["name"] for a in caps["architectures_pending"]] == ["olmo2"], caps["architectures_pending"]
@@ -299,4 +302,4 @@ def test_train_gpu_is_refused_by_name(runner_bin, files, tmp_path):
                        timeout=120)
     err = p.stderr.decode(errors="replace")
     assert p.returncode != 0, err
-    assert "--train-gpu: olmo2's backward runs on the CPU only until its CUDA path is validated (R4.50.5)" in err, err
+    assert "--train-gpu: olmo2's backward runs on the CPU only: its gradient gate needs f32 KV rows" in err, err

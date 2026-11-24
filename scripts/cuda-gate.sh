@@ -37,6 +37,8 @@
 #                decode, byte for byte, on the F32, Q8_0 and BF16 fixtures)
 #   hybrids      make test-cuda-hybrids (the Mamba-2, Nemotron-H and Qwen3.5
 #                hybrids on CUDA against the CPU, R3.25)
+#   olmo2        make test-cuda-olmo2 (OLMo 2 and OLMo 3 on CUDA against the CPU:
+#                post-norm-only blocks, the full-width QK norm, R4.50.5)
 #   attn-wide    make test-cuda-attn-wide (the wide-head tensor-core prefill
 #                attention against the CPU at head_dim 256 and 512, R3.6.3.1)
 #   spec-id      make test-cuda-spec-identity (a speculative verify round's rows
@@ -314,7 +316,7 @@ FAIL=0
 # Run the gate on a release build with tools/release-make first on PATH.
 exe_sha() { "$PY" -c "import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$EXE"; }
 SHA0=$(exe_sha)
-DEVICE_STEPS="tc-overflow:test-tc-overflow iquants:test-cuda-iquants cuda-gated:test-cuda-gated kv-fp4:test-cuda-kv-fp4 kv-f32:test-cuda-kv-f32 nvfp4:test-cuda-nvfp4 qwen4exp:test-cuda-qwen4exp qwen35moe:test-cuda-qwen35moe q3k:test-cuda-q3k tc-kq:test-cuda-tc-kq i8:test-cuda-i8 moe-legacy:test-cuda-moe-legacy varff:test-cuda-varff tc2-bytes:test-cuda-tc2-bytes moe-twin:test-cuda-moe-twin keepn:test-cuda-keepn moe-replay:test-cuda-moe-replay batch-id:test-cuda-batch-identity hybrids:test-cuda-hybrids attn-wide:test-cuda-attn-wide spec-id:test-cuda-spec-identity longrope:test-cuda-longrope batch-cols:test-cuda-batch-columns batch-q35:test-cuda-batch-q35 moe-limb:test-cuda-moe-limb-fixture"
+DEVICE_STEPS="tc-overflow:test-tc-overflow iquants:test-cuda-iquants cuda-gated:test-cuda-gated kv-fp4:test-cuda-kv-fp4 kv-f32:test-cuda-kv-f32 nvfp4:test-cuda-nvfp4 qwen4exp:test-cuda-qwen4exp qwen35moe:test-cuda-qwen35moe q3k:test-cuda-q3k tc-kq:test-cuda-tc-kq i8:test-cuda-i8 moe-legacy:test-cuda-moe-legacy varff:test-cuda-varff tc2-bytes:test-cuda-tc2-bytes moe-twin:test-cuda-moe-twin keepn:test-cuda-keepn moe-replay:test-cuda-moe-replay batch-id:test-cuda-batch-identity hybrids:test-cuda-hybrids olmo2:test-cuda-olmo2 attn-wide:test-cuda-attn-wide spec-id:test-cuda-spec-identity longrope:test-cuda-longrope batch-cols:test-cuda-batch-columns batch-q35:test-cuda-batch-q35 moe-limb:test-cuda-moe-limb-fixture"
 for pair in $DEVICE_STEPS; do
   name=${pair%%:*}; target=${pair#*:}
   # shellcheck disable=SC2086
