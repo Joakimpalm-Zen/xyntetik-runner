@@ -21,7 +21,8 @@ frequencies rather than taking one of them whole. Every norm weight is
 1 +- 0.5 (deterministic), so a norm read at the wrong place or width moves
 the logits.
 
-    make-test-olmo2.py OUT.gguf [--llama] [--plain] [--gqa] [--head-dim 16|32] [--olmo-specials] [--instruct-template]
+    make-test-olmo2.py OUT.gguf [--llama] [--plain] [--gqa] [--head-dim 16|32] [--olmo-specials | --tulu3-specials]
+                       [--instruct-template | --tulu3-template]
                        [--no-pattern-array] [--attn-factor F] [--bad KIND]
 
   --llama             the same sizes and weights as a plain llama file
@@ -34,6 +35,10 @@ the logits.
   --olmo-specials     OLMo 2's <|endoftext|> as one control token, the file's BOS and EOS (add_bos_token
                       stays true: the case a template that writes its own BOS must not double)
   --instruct-template write OLMo 2 Instruct's chat template (revision 48d788ec) into the file
+  --tulu3-specials    Tulu 3's <|begin_of_text|> (BOS) and <|end_of_text|> (EOS), two control tokens
+                      (add_bos_token true, as Tulu 3's tokenizer adds its BOS)
+  --tulu3-template    write Tulu 3's chat template (allenai/Llama-3.1-Tulu-3-8B revision 66694379, the same
+                      bytes as OLMo-2-0325-32B-Instruct's) into the file
   --head-dim 32       2 heads of 32 in place of 4 of 16 (n_embd stays 64):
                       a KV row then holds whole 32-value blocks, so the q8
                       and k8v4 caches apply (at 16 they keep f16)
@@ -69,8 +74,8 @@ EPS = 1e-6
 BAD_KINDS = ("pre-norm", "no-qk-norm", "narrow-qk-norm", "no-post-norm", "pattern-period", "pattern-short",
              "experts")
 args = sys.argv[1:]
-LLAMA = PLAIN = GQA = NO_PATTERN = OLMO_SPECIALS = False
-INSTRUCT_TEMPLATE = False
+LLAMA = PLAIN = GQA = NO_PATTERN = OLMO_SPECIALS = TULU3_SPECIALS = False
+INSTRUCT_TEMPLATE = TULU3_TEMPLATE = False
 ATTN_FACTOR = 1.0 + 0.1 * math.log(YARN_FACTOR)
 BAD = None
 OUT = None
@@ -93,6 +98,10 @@ while k < len(args):
         OLMO_SPECIALS = True
     elif a == "--instruct-template":
         INSTRUCT_TEMPLATE = True
+    elif a == "--tulu3-specials":
+        TULU3_SPECIALS = True
+    elif a == "--tulu3-template":
+        TULU3_TEMPLATE = True
     elif a == "--attn-factor" and k + 1 < len(args):
         k += 1
         ATTN_FACTOR = float(args[k])
@@ -120,6 +129,15 @@ OLMO2_INSTRUCT_TEMPLATE = (
     "+ eos_token + '\n' }}{% else %}{{ '<|assistant|>\n'  + message['content'] + eos_token }}{% endif %}{% endif "
     "%}{% if loop.last and add_generation_prompt %}{{ '<|assistant|>\n' }}{% endif %}{% endfor %}")
 
+# allenai/Llama-3.1-Tulu-3-8B's chat template at revision 666943798adbde0b1aff34626007e26986a3c107 (70B, 405B and
+# allenai/OLMo-2-0325-32B-Instruct ship the same bytes)
+TULU3_TEMPLATE_TEXT = (
+    "{% for message in messages %}{% if message['role'] == 'system' %}{{ '<|system|>\n' + message['content'] + "
+    "'\n' }}{% elif message['role'] == 'user' %}{{ '<|user|>\n' + message['content'] + '\n' }}{% elif "
+    "message['role'] == 'assistant' %}{% if not loop.last %}{{ '<|assistant|>\n'  + message['content'] + "
+    "eos_token + '\n' }}{% else %}{{ '<|assistant|>\n'  + message['content'] + eos_token }}{% endif %}{% endif "
+    "%}{% if loop.last and add_generation_prompt %}{{ '<|assistant|>\n' }}{% endif %}{% endfor %}")
+
 _state = 0x2F0A1B3C
 
 
@@ -144,6 +162,10 @@ if OLMO_SPECIALS:   # OLMo 2's own BOS and EOS, one control token, as its vocabu
     VOCAB.append("<|endoftext|>")
     TTYPE.append(3)
 BOS_ID = EOS_ID = len(VOCAB) - 1 if OLMO_SPECIALS else None
+if TULU3_SPECIALS:   # Tulu 3's (Llama 3.1's) BOS and EOS, two control tokens
+    VOCAB += ["<|begin_of_text|>", "<|end_of_text|>"]
+    TTYPE += [3, 3]
+    BOS_ID, EOS_ID = len(VOCAB) - 2, len(VOCAB) - 1
 q_dim, kv_dim = N_HEAD * HEAD_DIM, N_KV * HEAD_DIM
 
 # Every draw happens in one order whatever the options, so --llama and the
@@ -212,9 +234,11 @@ kvs += [ks("tokenizer.ggml.model", "llama"),
         kas("tokenizer.ggml.tokens", VOCAB),
         kaf("tokenizer.ggml.scores", [0.0] * len(VOCAB)),
         kai("tokenizer.ggml.token_type", TTYPE),
-        ku("tokenizer.ggml.bos_token_id", BOS_ID if OLMO_SPECIALS else 1),
-        ku("tokenizer.ggml.eos_token_id", EOS_ID if OLMO_SPECIALS else 2),
+        ku("tokenizer.ggml.bos_token_id", BOS_ID if BOS_ID is not None else 1),
+        ku("tokenizer.ggml.eos_token_id", EOS_ID if EOS_ID is not None else 2),
         kb("tokenizer.ggml.add_bos_token", True)]
 if INSTRUCT_TEMPLATE:   # allenai/OLMo-2-0425-1B-Instruct's chat template (revision 48d788ec), byte for byte
     kvs.append(ks("tokenizer.chat_template", OLMO2_INSTRUCT_TEMPLATE))
+elif TULU3_TEMPLATE:   # allenai/Llama-3.1-Tulu-3-8B's chat template (revision 66694379), byte for byte
+    kvs.append(ks("tokenizer.chat_template", TULU3_TEMPLATE_TEXT))
 write_gguf(OUT, tensors, kvs)

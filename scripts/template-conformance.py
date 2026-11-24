@@ -210,12 +210,12 @@ FAMILIES = {
     # byte for byte; one family per vocabulary, because the eos it spells is the file's: Tulu 3's <|end_of_text|>,
     # OLMo 2's <|endoftext|>. Runner read it as zephyr until then (every turn ending with </s>).
     "tulu3": Family(
-        "zephyr", ("hf", "allenai/Llama-3.1-Tulu-3-8B"),
+        "tulu3", ("hf", "allenai/Llama-3.1-Tulu-3-8B"),
         note="Tulu 3; publisher revision 666943798adbde0b1aff34626007e26986a3c107 (70B cfc1d855, 405B eac9accd: "
              "the same template)",
         tokenizer=("Llama-3.1-Tulu-3-8B-tokenizer.gguf",)),
     "tulu3-olmo2": Family(
-        "zephyr", ("hf", "allenai/OLMo-2-0325-32B-Instruct"),
+        "tulu3-olmo2", ("hf", "allenai/OLMo-2-0325-32B-Instruct"),
         note="OLMo 2 Instruct 32B, Tulu 3's template; publisher revision 6be039a1d9a088cf7f1b835cf1f570d0eac956f8",
         tokenizer=("OLMo-2-0325-32B-Instruct-tokenizer.gguf",)),
     "olmo3": Family(

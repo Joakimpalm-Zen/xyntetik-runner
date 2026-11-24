@@ -333,6 +333,13 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // ends with a newline, an assistant turn with the eos (and a newline unless it is the last message). Any other
        // role renders as nothing, so the OpenAI tool protocol is refused on it by name, as on OLMo 3.
        TMPL_OLMO2,
+       // Tulu 3's template (allenai/Llama-3.1-Tulu-3 8B / 70B / 405B, and allenai/OLMo-2-0325-32B-Instruct, which
+       // ships it byte for byte; R4.50.11): OLMo 2 Instruct's turns with no BOS written (the tokenizer's, where it
+       // adds one) and the FILE'S OWN eos after an assistant turn. One family per vocabulary, because the eos is the
+       // file's: TMPL_TULU3 writes Tulu 3's <|end_of_text|>, TMPL_TULU3_OLMO2 OLMo 2's <|endoftext|>. Detection picks
+       // by the file's EOS; no tool protocol, refused by name as on OLMo 2.
+       TMPL_TULU3,
+       TMPL_TULU3_OLMO2,
        // Not a family: how many there are, so a test can walk every one (R2.4.8).
        TMPL_COUNT };
 
@@ -943,6 +950,9 @@ const struct jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
 // that renders the generic declarations and envelope. Derived from
 // tool_decl_native's own selection, never a static table.
 const char *tool_protocol_name(int tmpl, bool *native);
+// The families whose template has no tool protocol at all and renders a tool turn as nothing: OLMo 2 Instruct's
+// (R4.50.10) and Tulu 3's (R4.50.11). The server refuses tools, tool turns and calls on them by name.
+bool tmpl_no_tool_protocol(int tmpl);
 // The protocol THIS request's envelope runs under: the family's native one,
 // or "generic" when the request fell back to the JSON envelope (a schema the
 // native syntax cannot enforce) or the family has none.

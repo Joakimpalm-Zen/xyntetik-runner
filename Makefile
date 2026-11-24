@@ -4933,6 +4933,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_tray_not_raised_without_console.py \
     tests/test_truncation_benchmark.py \
     tests/test_ttl_releases_draft.py \
+    tests/test_tulu3_template.py \
     tests/test_turn_mark.py \
     tests/test_turn_write_guard.py \
     tests/test_type_plan.py \

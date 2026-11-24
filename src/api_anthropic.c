@@ -959,7 +959,7 @@ void handle_messages(slot_t *s, sock_t fd, jv *req) {
         return;
     }
     // OLMo 3 (R4.50.2): as on /v1/responses, this tool protocol has no place in its template; refused by name
-    if (s->tmpl == TMPL_OLMO3 || s->tmpl == TMPL_OLMO2) {   // OLMo 2 Instruct (R4.50.10): no tool protocol either
+    if (s->tmpl == TMPL_OLMO3 || tmpl_no_tool_protocol(s->tmpl)) {   // OLMo 2 Instruct, Tulu 3: no tool protocol
         jv *tools = jv_get(req, "tools"), *msgs = jv_get(req, "messages");
         bool tooled = tools && tools->type == J_ARR && tools->n > 0;
         for (int i = 0; !tooled && msgs && msgs->type == J_ARR && i < msgs->n; i++) {
@@ -969,9 +969,11 @@ void handle_messages(slot_t *s, sock_t fd, jv *req) {
                 tooled = !strcmp(type, "tool_use") || !strcmp(type, "tool_result");
             }
         }
-        if (tooled && s->tmpl == TMPL_OLMO2) {
-            send_error(fd, 400, "the olmo2 chat template has no tool protocol on /v1/messages (tools, tool_use and "
-                       "tool_result blocks); it renders tool turns as nothing");
+        if (tooled && tmpl_no_tool_protocol(s->tmpl)) {
+            char e[192];
+            snprintf(e, sizeof e, "the %s chat template has no tool protocol on /v1/messages (tools, tool_use and "
+                     "tool_result blocks); it renders tool turns as nothing", template_name(s->tmpl));
+            send_error(fd, 400, e);
             return;
         }
         if (tooled) {
