@@ -783,10 +783,18 @@ int main(int argc, char **argv) {
         model_t *g = load(argv[2], true, false, 64);
         plat_setenv("RUNNER_INKLING2_CUDA_TEST_LIN_FAIL", "");
         const bool on = g && model_inkling2_cuda(g);
+        // the thread's pool binding before the forward (ink2_set_tpool returns the one it replaces)
+        struct tpool *tp0 = ink2_set_tpool(NULL);
+        ink2_set_tpool(tp0);
         const float *first = on ? model_inkling2_forward(g, PROMPT, N_TOK, 0, true, true) : NULL;
+        struct tpool *tp1 = ink2_set_tpool(tp0);
         const float *again = on ? model_inkling2_forward(g, PROMPT, 1, 0, true, true) : NULL;
         CHECK(on && !first && !again, "(h) a failed device product: on CUDA (%d), that forward %s, the next %s", on,
               first ? "gave rows" : "refused", again ? "gave rows" : "refused");
+        // the rebase onto 317a128c: the forward that fails on the device gives the thread back its pool binding, as
+        // every other return of the forward does (left bound, the thread kept this instance's pool past its life)
+        CHECK(on && tp1 == tp0, "(h) after the forward that failed on the device, the thread's pool binding is the one "
+              "it had before (%s)", tp1 == tp0 ? "restored" : "LEFT BOUND to the instance's pool");
         drop(g);
         // the same inside the expert body (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_EXP_FAIL=k: the k-th body call fails)
         plat_setenv("RUNNER_INKLING2_CUDA_TEST_EXP_FAIL", "2");
