@@ -2182,3 +2182,56 @@ ink2_rel_probe *ink2_active_rel_probe(void) {
     const char *e = getenv("RUNNER_TEST_INK2_REL_PROBE");
     return (e && *e) ? g_rel_probe : NULL;
 }
+
+// TEST-ONLY (R4.48.25): the fast route's own vector kernels for tests/test_inkling2_vmath.c (see inkling2.h)
+const char *ink2_test_vmath_form(void) {
+#if INK2_SIMD_AVX2
+    return "avx2";
+#elif INK2_SIMD_NEON
+    return "neon";
+#else
+    return "scalar";
+#endif
+}
+int ink2_test_vmath(int fn, const float *x, float *y, int n) {
+    if (fn != INK2_VM_EXP && fn != INK2_VM_TANH) return -1;
+    int i = 0;
+#if INK2_SIMD_AVX2
+    for (; i + 8 <= n; i += 8) {
+        const __m256 v = _mm256_loadu_ps(x + i);
+        _mm256_storeu_ps(y + i, fn == INK2_VM_EXP ? ink2_vexp8(v) : ink2_vtanh8(v));
+    }
+#elif INK2_SIMD_NEON
+    for (; i + 4 <= n; i += 4) {
+        const float32x4_t v = vld1q_f32(x + i);
+        vst1q_f32(y + i, fn == INK2_VM_EXP ? ink2_vexp4(v) : ink2_vtanh4(v));
+    }
+#endif
+    for (; i < n; i++) y[i] = fn == INK2_VM_EXP ? p_expf(x[i]) : p_tanhf(x[i]);
+    return 0;
+}
+void ink2_test_swiglu(float gate_cap, float up_cap, float *act, int F, int n) {
+    ink2_shape s;
+    memset(&s, 0, sizeof s);
+    s.gate_cap = gate_cap;
+    s.up_cap = up_cap;
+    const int nb = (F + 7) / 8;
+    ink2_swiglu_ctx sw = { &s, act, F, nb };
+    ink2_swiglu_range(&sw, 0, (int64_t)n * nb);
+}
+ink2_status ink2_test_attn_core(int fast, int hd, int nk, const float *q, const float *k, const float *v, float sink,
+                                float *out) {
+    if (hd < 1 || nk < 1) return INK2_BAD_INPUT;
+    ink2_shape s;
+    memset(&s, 0, sizeof s);
+    ink2_attn_layer L;
+    memset(&L, 0, sizeof L);
+    L.g = 1; L.nh = 1; L.nkv = 1; L.hd = hd; L.C = hd; L.Q = hd;
+    const int pos = nk - 1;
+    const float rl = 0.0f;
+    float *lg = malloc(sizeof(float) * ((size_t)nk + 1));
+    if (!lg) return INK2_BAD_INPUT;
+    ink2_attn_core(&s, &L, fast, 1, &pos, q, k, v, nk, 0, &rl, &sink, lg, out, NULL);
+    free(lg);
+    return INK2_OK;
+}

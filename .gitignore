@@ -188,6 +188,9 @@ test-inkling2-fast.out
 test-nvfp4-dot
 test-nvfp4-dot.exe
 test-nvfp4-dot.out
+test-inkling2-vmath
+test-inkling2-vmath.exe
+test-inkling2-vmath.out
 test-metal-ownership
 test-metal-ownership.exe
 test-model-load-failure
