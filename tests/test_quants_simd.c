@@ -1781,6 +1781,46 @@ int main(void) {
         free(wbf); free(xbf); free(ybf);
     }
 
+    // R4.48.25.1: the tile's tail and the dot's are one rule (quants.c DOT_TAIL). At every length mod 32 (the AVX-512
+    // dots step 32 then 16, NEON 16, AVX2 8, so this reaches every tail each ISA has) past 64 and past Inkling 2
+    // Mini's 2304, the exact tile at 7, 8 and 9 columns and the multi-column dot at 7 (inkling2.c sends a batch of 8
+    // or more to the tile, fewer to vec_dot_multi) equal vec_dot*scale bit for bit.
+    {
+        enum { NR = 5, NB = 9, MAXK = 2304 + 32 };
+        uint16_t *w = malloc(sizeof(uint16_t) * NR * MAXK);
+        float *x = malloc(sizeof(float) * NB * MAXK), *y = malloc(sizeof(float) * NB * NR);
+        for (int r = 0; r < NR; r++) make_row(T_BF16, (uint8_t *)(w + (size_t)r * MAXK), MAXK);
+        for (int i = 0; i < NB * MAXK; i++) x[i] = frnd();
+        long diff = 0, checked = 0;
+        for (int base = 64; base <= 2304; base += 2240)
+            for (int rem = 0; rem < 32; rem++) {
+                const int n = base + rem;
+                for (int nb = 7; nb <= NB; nb++) {
+                    vec_dot_exact_tile(T_BF16, w, (size_t)MAXK * 2, NR, x, MAXK, nb, n, 0.75f, y, NR);
+                    for (int c = 0; c < nb; c++)
+                        for (int r = 0; r < NR; r++) {
+                            const float want = vec_dot(T_BF16, w + (size_t)r * MAXK, x + (size_t)c * MAXK, n) * 0.75f;
+                            diff += memcmp(&y[(size_t)c * NR + r], &want, 4) != 0;
+                            checked++;
+                        }
+                }
+                for (int r = 0; r < NR; r++) {
+                    const float *xs[7];
+                    float out[7];
+                    for (int c = 0; c < 7; c++) xs[c] = x + (size_t)c * MAXK;
+                    vec_dot_multi(T_BF16, w + (size_t)r * MAXK, xs, 7, n, out);
+                    for (int c = 0; c < 7; c++) {
+                        const float want = vec_dot(T_BF16, w + (size_t)r * MAXK, xs[c], n);
+                        diff += memcmp(&out[c], &want, 4) != 0;
+                        checked++;
+                    }
+                }
+            }
+        CHECK(diff == 0, "BF16 tile at 7/8/9 columns and multi at 7 equal vec_dot bit for bit at K = 64 + r and "
+              "2304 + r, r = 0..31: %ld of %ld differ", diff, checked);
+        free(w); free(x); free(y);
+    }
+
     if (g_fail) { fprintf(stderr, "test_quants_simd: %d FAILURES\n", g_fail); return 1; }
     printf("test_quants_simd: OK\n");
     return 0;
