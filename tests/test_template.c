@@ -2653,6 +2653,58 @@ static void test_muse_reasoning_strength(void) {
     assert(strstr(out, "\n\nReasoning strength: high.") == NULL);
 }
 
+static void test_muse_response_format(void) {
+    // R6.110: meta-models/Muse-Glimmer-30B (1297fd7d) appends
+    // render_response_format() to both system-message paths after
+    // render_reasoning() when response_format.type is json_schema.
+    const char *sch_src =
+        "{\"type\":\"object\",\"properties\":{"
+        "\"zeta\":{\"type\":\"string\",\"description\":\"caf\\u00e9 <tag & attr='x'>\"},"
+        "\"alpha\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"},\"examples\":[[1,2],[3,4]]}"
+        "},\"required\":[\"zeta\",\"alpha\"],\"additionalProperties\":false}";
+    jv *sch = json_parse(sch_src, strlen(sch_src));
+    assert(sch != NULL);
+
+    const char *want_sentence =
+        "\n\nIn your final response to the user's latest message the output must adhere to the following json schema: "
+        "{\"type\": \"object\", \"properties\": {\"zeta\": {\"type\": \"string\", \"description\": \"café <tag & attr='x'>\"}, "
+        "\"alpha\": {\"type\": \"array\", \"items\": {\"type\": \"integer\"}, \"examples\": [[1, 2], [3, 4]]}}, "
+        "\"required\": [\"zeta\", \"alpha\"], \"additionalProperties\": false}\n\n# Valid recipients:";
+
+    char out[4096];
+    render_state st;
+    const chat_msg no_sys[] = { { .role = "user", .content = "HI" } };
+    size_t n = render_messages_state_rf(TMPL_MUSE, no_sys, 1, true, THINK_DEFAULT,
+                                        NULL, sch, out, sizeof(out), &st);
+    assert(n < sizeof(out));
+    tok_strip_marks(out);
+    assert(strstr(out, want_sentence) != NULL);
+
+    const chat_msg with_sys[] = {
+        { .role = "system", .content = "Be brief. Reasoning effort: low." },
+        { .role = "user", .content = "HI" },
+    };
+    n = render_messages_state_rf(TMPL_MUSE, with_sys, 2, true, THINK_DEFAULT,
+                                 NULL, sch, out, sizeof(out), &st);
+    assert(n < sizeof(out));
+    tok_strip_marks(out);
+    assert(strstr(out, "<|start|>system<|message|>Be brief. Reasoning strength: low.") != NULL);
+    assert(strstr(out, want_sentence) != NULL);
+
+    n = render_messages_state_rf(TMPL_MUSE, no_sys, 1, true, THINK_DEFAULT,
+                                 NULL, NULL, out, sizeof(out), &st);
+    assert(n < sizeof(out));
+    tok_strip_marks(out);
+    assert(strstr(out, "must adhere") == NULL);
+
+    n = render_messages_state_rf(TMPL_CHATML, no_sys, 1, true, THINK_DEFAULT,
+                                 NULL, sch, out, sizeof(out), &st);
+    assert(n < sizeof(out));
+    tok_strip_marks(out);
+    assert(strstr(out, "must adhere") == NULL);
+    jv_free(sch);
+}
+
 // R4.12.20: a bare tool name in the valid-recipients line. The reference
 // renders every name as a namespace pattern; discussion #60's patch renders a
 // bare name verbatim and keeps the pattern for a dotted one. The reference
@@ -3722,6 +3774,7 @@ int main(void) {
     test_muse_split_closes_on_fed_reasoning_boundary();
     test_muse_plain_thinking_close_leaves_no_recipient_residue();
     test_muse_reasoning_strength();
+    test_muse_response_format();
     test_detect_and_render_apertus(&t);
     test_render_apertus_without_system();
     test_apertus_consecutive_assistant();

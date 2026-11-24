@@ -95,7 +95,24 @@ bool request_keep_alive(jv *req, bool *present, int *seconds) {
     return true;
 }
 
-jv *request_schema(jv *req) { (void)req; return NULL; }
+jv *request_schema(jv *req) {
+    jv *rf = jv_get(req, "response_format");
+    jv *sch = NULL;
+    if (rf && strcmp(jv_str(jv_get(rf, "type"), ""), "json_schema") == 0) {
+        jv *js = jv_get(rf, "json_schema");
+        sch = js ? (jv_get(js, "schema") ? jv_get(js, "schema") : js) : NULL;
+    }
+    jv *fmt = jv_get(req, "format");
+    if (!sch && fmt && fmt->type == J_OBJ) sch = fmt;
+    if (!sch) {
+        jv *tf = jv_get(jv_get(req, "text"), "format");
+        if (tf && strcmp(jv_str(jv_get(tf, "type"), ""), "json_schema") == 0) {
+            jv *inner = jv_get(tf, "schema");
+            if (inner && inner->type == J_OBJ) sch = inner;
+        }
+    }
+    return sch;
+}
 
 void server_record_work(const work_record *w) { (void)w; }
 
@@ -1577,6 +1594,64 @@ static void test_inkling_protocol_surface_limits(void) {
     ta_tmpl = TMPL_HARMONY;
 }
 
+static void test_muse_response_format_both_surfaces(void) {
+    ta_tmpl = TMPL_MUSE;
+    const char *sch =
+        "{\"type\":\"object\",\"properties\":{"
+        "\"z\":{\"type\":\"string\",\"description\":\"café <tag & 'q'>\"},"
+        "\"a\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"},\"examples\":[[1,2]]}"
+        "},\"required\":[\"z\",\"a\"]}";
+    const char *want =
+        "In your final response to the user's latest message the output must adhere to the following json schema: "
+        "{\"type\": \"object\", \"properties\": {\"z\": {\"type\": \"string\", \"description\": \"café <tag & 'q'>\"}, "
+        "\"a\": {\"type\": \"array\", \"items\": {\"type\": \"integer\"}, \"examples\": [[1, 2]]}}, "
+        "\"required\": [\"z\", \"a\"]}\n\n# Valid recipients:";
+
+    char chat_body[1024], resp_body[1024];
+    snprintf(chat_body, sizeof chat_body,
+             "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],"
+             "\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"r\",\"schema\":%s}}}",
+             sch);
+    snprintf(resp_body, sizeof resp_body,
+             "{\"model\":\"m\",\"input\":\"hi\","
+             "\"text\":{\"format\":{\"type\":\"json_schema\",\"name\":\"r\",\"schema\":%s}}}",
+             sch);
+    ta_run(handle_chat, chat_body);
+    char *chat_default = ta_prompt ? strdup(ta_prompt) : NULL;
+    ta_run(handle_responses, resp_body);
+    ck(chat_default && ta_prompt && strcmp(chat_default, ta_prompt) == 0 &&
+       strstr(chat_default, want) != NULL,
+       "muse json_schema default system matches across /v1/chat/completions and /v1/responses");
+    free(chat_default);
+
+    snprintf(chat_body, sizeof chat_body,
+             "{\"model\":\"m\",\"messages\":[{\"role\":\"system\",\"content\":\"Be brief.\"},{\"role\":\"user\",\"content\":\"hi\"}],"
+             "\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"r\",\"schema\":%s}}}",
+             sch);
+    snprintf(resp_body, sizeof resp_body,
+             "{\"model\":\"m\",\"instructions\":\"Be brief.\",\"input\":\"hi\","
+             "\"text\":{\"format\":{\"type\":\"json_schema\",\"name\":\"r\",\"schema\":%s}}}",
+             sch);
+    ta_run(handle_chat, chat_body);
+    char *chat_sys = ta_prompt ? strdup(ta_prompt) : NULL;
+    ta_run(handle_responses, resp_body);
+    ck(chat_sys && ta_prompt && strcmp(chat_sys, ta_prompt) == 0 &&
+       strstr(chat_sys, want) != NULL,
+       "muse json_schema caller system matches across /v1/chat/completions and /v1/responses");
+    free(chat_sys);
+
+    ta_run(handle_chat,
+           "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],"
+           "\"response_format\":{\"type\":\"json_object\"}}");
+    ck(ta_prompt && strstr(ta_prompt, "must adhere") == NULL,
+       "muse json_object adds no schema sentence");
+    ta_run(handle_responses,
+           "{\"model\":\"m\",\"input\":\"hi\",\"text\":{\"format\":{\"type\":\"json_object\"}}}");
+    ck(ta_prompt && strstr(ta_prompt, "must adhere") == NULL,
+       "muse responses json_object adds no schema sentence");
+    ta_tmpl = TMPL_HARMONY;
+}
+
 int main(void) {
     test_inkling_protocol_surface_limits();
     test_history_serialization_contract();
@@ -1598,6 +1673,7 @@ int main(void) {
     test_messages_thinking_dropped_off_harmony();
     test_muse_replays_reasoning_as_a_self_turn();
     test_muse_three_reasoning_turns_render_every_turn();
+    test_muse_response_format_both_surfaces();
     test_messages_redacted_thinking_never_replays();
     test_chat_text_spelled_call_resolves();
     test_chat_text_spelled_positional();

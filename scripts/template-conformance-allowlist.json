@@ -398,7 +398,7 @@
       "why": "The reference folds the system text into the user turn on `loop.last`, so a conversation that ends in a tool result (or a prefill) renders with the caller's system prompt dropped. Runner folds it into the last USER turn, which is where mistral-common, Mistral's own encoder, puts it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "3529-3538",
+        "lines": "3536-3545",
         "anchor": "as mistral-common's own encoder does."
       },
       "patch": {
@@ -412,7 +412,7 @@
       "why": "The reference folds the system text into the user turn on `loop.last`, so a conversation that ends in a tool result (or a prefill) renders with the caller's system prompt dropped. Runner folds it into the last USER turn, which is where mistral-common, Mistral's own encoder, puts it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "3529-3538",
+        "lines": "3536-3545",
         "anchor": "as mistral-common's own encoder does."
       },
       "patch": {
@@ -426,7 +426,7 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time (tokenizer.c sets add_bos for the k2-horizon pre, as IFM's tokenizer.json does; K2-Horizon's template opens with `{{- bos_token }}`), so a template that also emitted it would double it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "4620-4621",
+        "lines": "4627-4628",
         "anchor": "The template opens with `{{- bos_token }}`; that token comes from the"
       },
       "corroborating_cite": {
@@ -507,7 +507,7 @@
       "why": "Inkling text path only: the publisher template can render <|content_image|><|unused_200054|>, but this API has no image encoder for the model. Refuse image parts rather than silently treating the placeholder as image understanding. Publisher source: https://huggingface.co/thinkingmachines/Inkling-2-Mini/blob/b85c3cfa615fc413cc9af3379f491b963f3b586a/chat_template.jinja, image content branch.",
       "cite": {
         "file": "src/server.c",
-        "lines": "475-484",
+        "lines": "489-498",
         "anchor": "only text is accepted"
       }
     },
@@ -520,7 +520,7 @@
       "why": "Inkling text path only: the publisher template can render <|content_image|><|unused_200054|>, but this API has no image encoder for the model. Refuse image parts rather than silently treating the placeholder as image understanding. Publisher source: https://huggingface.co/thinkingmachines/Inkling-2-Mini/blob/b85c3cfa615fc413cc9af3379f491b963f3b586a/chat_template.jinja, image content branch.",
       "cite": {
         "file": "src/server.c",
-        "lines": "475-484",
+        "lines": "489-498",
         "anchor": "only text is accepted"
       }
     }

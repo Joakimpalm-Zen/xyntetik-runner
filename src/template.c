@@ -3001,6 +3001,7 @@ static size_t render_harmony(int tmpl, const chat_msg *msgs, int n_msgs,
 // TMPL_MUSE.
 static size_t render_muse(int tmpl, const chat_msg *msgs, int n_msgs,
                           bool add_assistant, int thinking, const jv *tools,
+                          const jv *response_schema,
                           char *out, size_t cap, render_state *st) {
     size_t off = 0;
     // muse-glimmer (reference: the model's OWN tokenizer.chat_template,
@@ -3035,6 +3036,12 @@ static size_t render_muse(int tmpl, const chat_msg *msgs, int n_msgs,
     pl_lit(&muse_line, strength);
     pl_lit(&muse_line, ".");
     sbuf muse_tail = {0};
+    if (response_schema && response_schema->type == J_OBJ) {
+        pl_lit(&muse_tail,
+               "\n\nIn your final response to the user's latest message the "
+               "output must adhere to the following json schema: ");
+        jv_dump_tojson(response_schema, &muse_tail);
+    }
     if (tools && tools->type == J_ARR && tools->n) {
         pl_lit(&muse_tail, "\n\n");
         muse_render_tool_defs(tools, &muse_tail);
@@ -4748,6 +4755,14 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
                              bool add_assistant, int thinking,
                              const jv *tools,
                              char *out, size_t cap, render_state *st) {
+    return render_messages_state_rf(tmpl, msgs, n_msgs, add_assistant, thinking,
+                                    tools, NULL, out, cap, st);
+}
+
+size_t render_messages_state_rf(int tmpl, const chat_msg *msgs, int n_msgs,
+                                bool add_assistant, int thinking,
+                                const jv *tools, const jv *response_schema,
+                                char *out, size_t cap, render_state *st) {
     render_state unused;
     if (!st) st = &unused;
     *st = (render_state){ .reasoning_open = false, .opener = NULL,
@@ -4851,7 +4866,8 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
     case TMPL_INKLING2:
         return render_inkling(msgs, n_msgs, tools, out, cap);
     case TMPL_MUSE:
-        return render_muse(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
+        return render_muse(tmpl, msgs, n_msgs, add_assistant, thinking, tools,
+                           response_schema, out, cap, st);
     case TMPL_GRANITE:
     case TMPL_GRANITE4:
         return render_granite(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);

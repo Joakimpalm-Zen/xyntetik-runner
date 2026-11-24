@@ -99,7 +99,8 @@ char *render_prompt_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
 // marks one token short of the prompt end as it always has. One more render
 // of the prompt, on every chat surface alike.
 static size_t generation_prompt_at(int tmpl, const chat_msg *msgs, int n_msgs,
-                                   int thinking, const jv *tools, const char *prompt) {
+                                   int thinking, const jv *tools,
+                                   const jv *response_schema, const char *prompt) {
     size_t plen = strlen(prompt), at = 0;
     // A head that does not fit in the prompt's own length is not its prefix.
     // Room beyond it for what a template writes only when no reply follows
@@ -109,8 +110,8 @@ static size_t generation_prompt_at(int tmpl, const chat_msg *msgs, int n_msgs,
     char *head = malloc(cap);
     if (!head) return 0;
     render_state hs;
-    size_t n = render_messages_state(tmpl, msgs, n_msgs, false, thinking, tools,
-                                     head, cap, &hs);
+    size_t n = render_messages_state_rf(tmpl, msgs, n_msgs, false, thinking, tools,
+                                        response_schema, head, cap, &hs);
     size_t hn = n == SIZE_MAX || n >= cap ? 0 : strlen(head);
     if (hn && hs.close_len && hs.close_len < hn) hn -= hs.close_len;
     if (hn && hn < plen && !memcmp(head, prompt, hn)) at = hn;
@@ -123,24 +124,28 @@ static size_t generation_prompt_at(int tmpl, const chat_msg *msgs, int n_msgs,
 // those bytes are what the prompt starts with. An agent's preamble is its
 // system message and tool list; everything after it changes per session.
 static size_t preamble_at(int tmpl, const chat_msg *msgs, int n_msgs,
-                          int thinking, const jv *tools, const char *prompt,
+                          int thinking, const jv *tools,
+                          const jv *response_schema, const char *prompt,
                           bool *has_system) {
     int k = 0;
     while (k < n_msgs && msgs[k].role && !strcmp(msgs[k].role, "system")) k++;
     *has_system = k > 0 && k < n_msgs;
     if (!*has_system) return 0;
-    return generation_prompt_at(tmpl, msgs, k, thinking, tools, prompt);
+    return generation_prompt_at(tmpl, msgs, k, thinking, tools, response_schema,
+                                prompt);
 }
 
-char *render_prompt_state_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
-                                bool add_assistant, int thinking, const jv *tools,
-                                size_t hint, render_state *st) {
+char *render_prompt_state_rf_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
+                                   bool add_assistant, int thinking, const jv *tools,
+                                   const jv *response_schema, size_t hint,
+                                   render_state *st) {
     size_t cap = hint < 512 ? 512 : hint;
     for (;;) {
         char *p = malloc(cap);
         if (!p) return NULL;
-        size_t n = render_messages_state(tmpl, msgs, n_msgs, add_assistant,
-                                         thinking, tools, p, cap, st);
+        size_t n = render_messages_state_rf(tmpl, msgs, n_msgs, add_assistant,
+                                            thinking, tools, response_schema,
+                                            p, cap, st);
         if (n == SIZE_MAX) {
             free(p);
             return NULL;
@@ -154,9 +159,11 @@ char *render_prompt_state_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
         // user's question.
         if (n < cap && strlen(p) + 1 < cap) {
             if (st && add_assistant)
-                st->gen_at = generation_prompt_at(tmpl, msgs, n_msgs, thinking, tools, p);
+                st->gen_at = generation_prompt_at(tmpl, msgs, n_msgs, thinking,
+                                                  tools, response_schema, p);
             if (st && add_assistant && kvsnap_auto_on())
-                st->pre_at = preamble_at(tmpl, msgs, n_msgs, thinking, tools, p, &st->pre_sys);
+                st->pre_at = preamble_at(tmpl, msgs, n_msgs, thinking, tools,
+                                         response_schema, p, &st->pre_sys);
             return p;
         }
         free(p);
@@ -164,6 +171,13 @@ char *render_prompt_state_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
         size_t want = (n > cap ? n : cap) + 1;
         cap = want > cap * 2 ? want : cap * 2;
     }
+}
+
+char *render_prompt_state_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
+                                bool add_assistant, int thinking, const jv *tools,
+                                size_t hint, render_state *st) {
+    return render_prompt_state_rf_alloc(tmpl, msgs, n_msgs, add_assistant,
+                                        thinking, tools, NULL, hint, st);
 }
 
 // flatten one OpenAI message to plain text: string content passes through, the
@@ -694,8 +708,9 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     // closing it, and moving to the next -- so both modes stream several
     // calls in one turn and the refusal is gone.
     char terr[224];
+    jv *rf_schema = request_schema(req);
     int rc = tool_envelope_build_ex(tools, jv_get(req, "tool_choice"),
-                                    request_schema(req), parallel, &env,
+                                    rf_schema, parallel, &env,
                                     terr, sizeof(terr));
     if (rc < 0) {
         send_error(fd, rc == TOOL_ENVELOPE_OOM ? 500 : 400, terr);
@@ -964,9 +979,9 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
         thinking |= effort;
     }
     render_state rs;
-    prompt = render_prompt_state_alloc(s->tmpl, cm, n_cm, add_assistant,
-                                             thinking, native_tools,
-                                             total + 256, &rs);
+    prompt = render_prompt_state_rf_alloc(s->tmpl, cm, n_cm, add_assistant,
+                                          thinking, native_tools, rf_schema,
+                                          total + 256, &rs);
     if (!prompt) {
         send_error(fd, 500, "out of memory building chat prompt");
         goto out;
