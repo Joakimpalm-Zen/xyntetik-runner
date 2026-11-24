@@ -1056,6 +1056,13 @@ static void context_pin_prompt(slot_t *s, sock_t fd, const char *prompt,
                           "serve (a request repeating a prefix re-prefills it)", NULL, "context_unsupported");
         return;
     }
+    if (rc == PFX_CTX_UNSUPPORTED && prefix_context_metal_recurrent(s->m)) {
+        send_error_detail(fd, 409, "this model cannot pin a context here: a "
+                          "recurrent model on the Metal backend is not pinned "
+                          "yet (serve it with --gpu off to use contexts)", NULL,
+                          "context_unsupported");
+        return;
+    }
     if (rc == PFX_CTX_UNSUPPORTED) {
         send_error_detail(fd, 409, "this model cannot fork a pinned prefix: its "
                           "KV layout has no contiguous prefix (a ring or "
