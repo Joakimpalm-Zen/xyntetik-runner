@@ -1009,8 +1009,8 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
     if (store_n < n && model_rope_wants_long(e->m, store_n) != e->m->rope_long) store_n = 0;
     if (store_n < PFX_MIN_TOKENS) { pthread_mutex_unlock(&PFX.mu); return; }
 
-    // Already covered? Refresh it. A strict extension of an existing entry
-    // replaces it rather than sitting beside it.
+    // Identical entries need only refresh. A longer entry covers a shorter
+    // one only for non-recurrent models: a fold belongs to its own end.
     int diverge_at = 0;   // longest prefix shared with an entry we diverge from
     for (pfx_entry **pp = &PFX.head; *pp; ) {
         pfx_entry *p = *pp;
@@ -1022,13 +1022,13 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
             continue;
         }
         while (c < lim && p->toks[c] == toks[c]) c++;
-        if (c == lim && p->n >= store_n) {   // nothing new to say
+        if (c == lim && (p->n == store_n || (!recur && p->n > store_n))) {
             p->used = now;
             pthread_mutex_unlock(&PFX.mu);
             return;
         }
         if (c == lim && !p->pinned && !recur) pfx_drop(pp);   // ours strictly extends p
-        else if (c == lim) pp = &p->next;           // a named one stays
+        else if (c == lim) pp = &p->next;           // keep named and recurrent fork points
         else {
             if (c > diverge_at) diverge_at = c;
             pp = &p->next;

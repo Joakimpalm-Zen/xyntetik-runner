@@ -248,3 +248,61 @@ def test_a_dense_model_picks_as_before(runner_bin, models, tmp_path):
     assert n < tel_q2["prompt_cached_tokens"] < n_prompt2 - 1, (n, tel_q2, n_prompt2)
     _, tel1, _, tel2, n_prompt = run.auto_twice()
     assert tel1["prompt_cached_tokens"] == n and tel2["prompt_cached_tokens"] == n_prompt - 1, (tel1, tel2, n_prompt)
+
+
+@pytest.mark.parametrize("name,gpu", ARMS)
+def test_a_shorter_recurrent_prefix_published_after_a_longer_one_is_kept(runner_bin, models, name, gpu, tmp_path):
+    # Publication order: P+Q1, then P, then P+Q2. Clear the live slot before
+    # the last request so only the shared tier can supply P's fold.
+    run = _arm(runner_bin, models, name, gpu, tmp_path)
+    cold = run.cold(SYS + Q2)
+    with run.serve() as srv:
+        _complete(srv, SYS + Q1)
+        _, _, n_p = _complete(srv, SYS)
+        _complete(srv, SYS)  # an equal-length publication must refresh, not duplicate
+        after_shorter = _stats(srv)
+        _complete(srv, UNRELATED, cache_prompt=False)
+        answer, tel, _ = _complete(srv, SYS + Q2)
+    assert tel["prompt_reuse"] == "prefix_cache" and tel["prompt_cached_tokens"] == n_p, (
+        "the later shorter entry must retain its own fold", n_p, tel, after_shorter)
+    assert after_shorter["entries"] == 2, after_shorter
+    if gpu == "off":
+        assert answer == cold, (answer, cold)
+    else:
+        assert answer[0] == cold[0], (answer, cold)
+        run.on_device()
+
+
+def test_a_dense_shorter_prefix_still_uses_the_covering_entry(runner_bin, models, tmp_path):
+    run = _Run(runner_bin, models["dense"], tmp_path, "off")
+    with run.serve() as srv:
+        _complete(srv, SYS + Q1)
+        _, shorter, n_p = _complete(srv, SYS)
+        assert _stats(srv)["entries"] == 1
+        _complete(srv, UNRELATED, cache_prompt=False)
+        _, later, n_later = _complete(srv, SYS + Q2)
+    assert shorter["prompt_cached_tokens"] == n_p - 1, shorter
+    assert n_p < later["prompt_cached_tokens"] < n_later - 1, later
+
+
+def test_shorter_recurrent_entries_keep_the_existing_budget_and_pin(runner_bin, models, tmp_path):
+    # Descending prefixes exercise new entries from the longer-first path.
+    # Like the ascending conversation above, they fill a 1 MiB budget.
+    turn = "The next bin holds item %d, then the shelf beside it, and the one after that. "
+    prompts = [SYS]
+    for k in range(16):
+        prompts.append(prompts[-1] + turn.replace("%d", str(k)))
+    with RunnerServer(runner_bin, models["qwen4exp"], ctx=2048,
+                      log_path=str(tmp_path / "shorter-budget.log"),
+                      env=dict(os.environ, RUNNER_PREFIX_CACHE_MB="1"),
+                      extra_args=["--gpu", "off", "-t", "2"]) as srv:
+        status, pin = _req(srv, {"_path": "/v1/runner/contexts", "id": "sys", "prompt": SYS})
+        assert status == 200, pin
+        for prompt in reversed(prompts[1:]):
+            _complete(srv, prompt)
+            stats = _stats(srv)
+            assert stats["budget_bytes"] == 1 << 20 and stats["bytes"] <= stats["budget_bytes"], stats
+        assert stats["evictions"] > 0 and 2 < stats["entries"] < len(prompts), stats
+        _complete(srv, UNRELATED, cache_prompt=False)
+        _, tel, _ = _complete(srv, SYS + Q2, context_id="sys")
+        assert tel["prompt_cached_tokens"] == pin["tokens"], tel
