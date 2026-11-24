@@ -374,6 +374,7 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-python
             mingw-w64-ucrt-x86_64-python-pytest
+            mingw-w64-ucrt-x86_64-python-numpy
       - name: build
         run: make
       # R6.86: MinGW gcc's own report that the attention softmax's and
@@ -1003,6 +1004,7 @@ jobs:
             mingw-w64-ucrt-x86_64-python
             mingw-w64-ucrt-x86_64-python-pytest
             mingw-w64-ucrt-x86_64-python-pytest-xdist
+            mingw-w64-ucrt-x86_64-python-numpy
       - name: make test-${{ matrix.part }}
         env:
           PYTHONUTF8: "1"
