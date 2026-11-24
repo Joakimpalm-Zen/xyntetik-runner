@@ -124,6 +124,8 @@ typedef struct {
                              // drops the first key the mask admits; 0 in use
     float *work_fwd, *work_dl, *work_op;            // reusable forward/layer/op scratch; grown lazily, freed in ink2_cache_free
     size_t work_fwd_cap, work_dl_cap, work_op_cap;
+    float *work_route;       // the MoE layer's routing tables over T positions (R4.48.20.4); as work_op
+    size_t work_route_cap;
 } ink2_cache;
 int  ink2_cache_init(ink2_cache *c, const ink2_shape *s, int n_ctx);
 // The same with each SLIDING application's K and V held for the window only: window - 1 + max_chunk rows that slide
@@ -161,6 +163,9 @@ ink2_status ink2_attention(const ink2_shape *s, const ink2_weights *w, ink2_cach
 ink2_status ink2_head(const ink2_shape *s, const ink2_weights *w, int T, const float *x, float *logits);
 // TEST-ONLY: cumulative rows evaluated by ink2_head (across all forwards in the process).
 long ink2_head_rows(void);
+// TEST-ONLY (R4.48.20.4): the MoE layer's allocations since the process began, its routing tables, the expert body's
+// position lists and an instance's scratch growing; a forward after the first at the same width allocates none.
+long ink2_moe_allocs(void);
 // TEST-ONLY: perturb position p0's post-embed hidden state by delta when p0 > 0, so split invariance tests can
 // prove chunk boundaries are live.
 void ink2_set_test_chunk_bump(float delta);

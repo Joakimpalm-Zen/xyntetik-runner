@@ -286,6 +286,28 @@ int main(int argc, char **argv) {
               "(k) BF16 272p+8d fused decode: -b 256 == -b 8 byte-identical");
         for (int bi = 0; bi < 3; bi++) free(bdec[bi]);
     }
+    // (l) R4.48.20.4: the MoE layer allocates nothing a call. It allocated its routing tables (T x E bytes and T x E
+    // floats: 320 KB a layer at 512 positions and 128 experts), its scores and the expert body's position lists on
+    // every call, past glibc's 128 KB mmap threshold and the size Windows' heap returns to the system on free. On each
+    // file at 1 and 4 threads and -b 1, 8, 64 and 256, a prefill after the first at the same width allocates nothing:
+    // the tables live in the instance's scratch.
+    for (int f = 0; f < 3; f++)
+        for (int th = 1; th <= 4; th += 3) {
+            static const int BS[4] = { 1, 8, 64, 256 };
+            long extra[4] = { -1, -1, -1, -1 };
+            for (int bi = 0; bi < 4; bi++) {
+                model_t *m = load_ctx(argv[1 + f], NULL, false, th, 384, BS[bi]);
+                const int nt = BS[bi] == 1 ? N_TOK : N_SPLIT;
+                float *r0 = m ? rows_n(m, split_tok, nt) : NULL;
+                const long a0 = ink2_moe_allocs();
+                float *r1 = r0 ? rows_n(m, split_tok, nt) : NULL, *r2 = r1 ? rows_n(m, split_tok, nt) : NULL;
+                if (r2) extra[bi] = ink2_moe_allocs() - a0;
+                free(r0); free(r1); free(r2); drop(m);
+            }
+            CHECK(extra[0] == 0 && extra[1] == 0 && extra[2] == 0 && extra[3] == 0,
+                  "(l) %s, %d thread(s): two prefills after the first allocate in the MoE layer %ld / %ld / %ld / %ld "
+                  "times at -b 1 / 8 / 64 / 256 (want 0 each)", kind[f], th, extra[0], extra[1], extra[2], extra[3]);
+        }
     printf(fails ? "FAIL %d\n" : "PASS\n", fails);
     return fails ? 1 : 0;
 }
