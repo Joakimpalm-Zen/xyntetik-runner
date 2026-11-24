@@ -706,6 +706,12 @@ typedef struct {
                                   // applies it on the NoPE layers only)
     bool   swa_rope_global;
     bool   gptoss;           // gpt-oss: attention sinks + swiglu_oai + MoE
+    // olmo2 (R4.50.1): no pre-norms (each branch's OUTPUT is normed, post_attn_norm_w / post_ffn_norm_w), one RMS norm
+    // over the whole q and k projections rather than per head, and sliding layers that rotate at the global base
+    // unscaled (rope.freq_base_swa when the file has it), not at the 10k other families default to
+    bool   post_norm_only;
+    bool   qk_norm_full;
+    bool   swa_base_global;
     bool   flint;            // flint: sinks + QK norms + NoPE full layers + MoE
                              // biases; no GPU kernels for those yet
     // deepseek2 (R4.4.5 step b): multi-head latent attention on the CPU. The

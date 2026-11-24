@@ -556,8 +556,9 @@ These capabilities help when managing several models or evaluating decisions:
 - **You can ask what fits before loading anything.** The usual way to find out
   whether a model fits is to load it and wait for the failure. `--info caps` needs no
   model file and returns one JSON document containing live RAM/VRAM, backend and
-  GPU limits, CPU and GPU quant lists, admitted architectures, placement modes,
-  and model-count limits. A supervisor, tray controller, or CI job can reject an
+  GPU limits, CPU and GPU quant lists, admitted architectures (and apart, under
+  `architectures_pending`, any that load before a real file of theirs is validated,
+  each with why), placement modes, and model-count limits. A supervisor, tray controller, or CI job can reject an
   incompatible placement before dispatch, which removes a whole class of
   load-wait-fail-retry loops. For a specific file, `--info fit` answers the same
   question from the model's GGUF header - the first few megabytes - so a ranged

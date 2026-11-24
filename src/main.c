@@ -2416,7 +2416,12 @@ static int run_caps(void) {
     size_t n_arch;
     const arch_desc *arches = arch_rows(&n_arch);
     for (size_t i = 0, shown = 0; i < n_arch; i++)
-        if (!arches[i].refused) printf("%s\"%s\"", shown++ ? "," : "", arches[i].name);
+        if (!arches[i].refused && !arches[i].pending) printf("%s\"%s\"", shown++ ? "," : "", arches[i].name);
+    // the ones that load before their admission: a real file of each is not yet validated (arch.h's pending)
+    printf("],\"architectures_pending\":[");
+    for (size_t i = 0, shown = 0; i < n_arch; i++)
+        if (!arches[i].refused && arches[i].pending)
+            printf("%s{\"name\":\"%s\",\"why\":\"%s\"}", shown++ ? "," : "", arches[i].name, arches[i].pending);
     printf("]}\n");
     return 0;
 }

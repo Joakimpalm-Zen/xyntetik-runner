@@ -1,2 +1,4 @@
 pytest==9.1.1
 pytest-xdist==3.8.0
+# the olmo2 gate's float64 / float32 reference of the publisher's equations (tests/olmo2_reference.py)
+numpy==2.5.3
