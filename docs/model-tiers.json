@@ -10376,27 +10376,27 @@
       ]
     },
     {
-      "id": "olmo-2-0425-1b-f16",
-      "model": "OLMo 2 0425 1B",
+      "id": "olmo-2-0425-1b-instruct-f16",
+      "model": "OLMo 2 0425 1B Instruct",
       "family": "OLMo 2 / OLMo 3",
       "tier": "tier2",
-      "claim": "Against the publisher's float32 reference Runner reads 2.3159e-04 mean KL and 100% margin-qualified top-1; llama.cpp on the same file reads 2.2777e-04 and 100%. CPU LoRA training is supported; GPU training is refused.",
+      "claim": "Against its own publisher float32 reference Runner reads 1.0642e-04 mean KL and 100% margin-qualified top-1; llama.cpp on the same Instruct F16 file reads 1.1261e-04 and 100%, with overlapping 95% intervals. Native template conformance is 16/16 in text and tokens. CPU LoRA training is supported; GPU training is refused.",
       "architecture": "olmo2",
       "upstream": {
-        "checkpoint": "allenai/OLMo-2-0425-1B",
-        "revision": "a1847dff35000b4271fa70afc5db10fd29fedbdf"
+        "checkpoint": "allenai/OLMo-2-0425-1B-Instruct",
+        "revision": "48d788eca847d4d7548f375ad03d3c9312f6139e"
       },
       "licence": {
         "id": "apache-2.0",
-        "from": "allenai/OLMo-2-0425-1B"
+        "from": "allenai/OLMo-2-0425-1B-Instruct"
       },
       "files": [
         {
-          "name": "OLMo-2-0425-1B-F16.gguf",
-          "repo": "allenai/OLMo-2-0425-1B-GGUF",
-          "revision": "d4cd762e4f991e42421f5340290afeff8c5ff146",
-          "sha256": "452d42f1ac5a1d1d62a6a7c4e2c6adfe4ac279f6b4ff44c9e2ea452a0d9c6df2",
-          "bytes": 2973650560
+          "name": "OLMo-2-0425-1B-Instruct-F16.gguf",
+          "repo": "allenai/OLMo-2-0425-1B-Instruct-GGUF",
+          "revision": "62f8c199538474c3e33ed5d7e0580abd66686a27",
+          "sha256": "376249dff02917a8cf5ea413d2bfdf2802f10f7d92973d95a6f28b2204ac4eab",
+          "bytes": 2973652128
         }
       ],
       "quantization": "F16",
@@ -10407,13 +10407,13 @@
           "adapters"
         ],
         "fp32_reference": "measured",
-        "anchor": "Publisher's reference: allenai/OLMo-2-0425-1B at a1847dff35000b4271fa70afc5db10fd29fedbdf, float32, transformers-main 046bdb8 (5.24.0.dev0), CPU. Runner mean KL 2.3159e-04 [1.5377e-04, 3.1844e-04], plain top-1 100%, margin-qualified 100%. Second read: llama.cpp 56eea9e4 on this same GGUF and positions, mean KL 2.2777e-04 [1.5055e-04, 3.1416e-04], plain top-1 100%, margin-qualified 100%. Default KV f16, gold-corpus-2k, 2000 scored positions at stride 2, context 4096. Admission requires 100% margin-qualified top-1 and no wholly worse separated KL interval than llama.cpp. Record: docs/compat-reports/olmo2-admission-2026-11-24/README.md.",
+        "anchor": "Publisher's reference: allenai/OLMo-2-0425-1B-Instruct at 48d788eca847d4d7548f375ad03d3c9312f6139e, float32 checkpoint loaded in float32 (no tensors cast), transformers-main 046bdb8 (5.24.0.dev0), torch 2.14.0+cpu, CPU with 16 threads. Runner f3ff8e84 CPU, default f16 KV: mean KL 1.0642e-04 [6.1904e-05, 1.5615e-04], plain top-1 100%, margin-qualified 100%. Second read: llama.cpp 56eea9e4 on this exact Instruct F16 file, mean KL 1.1261e-04 [6.6509e-05, 1.6433e-04], plain top-1 100%, margin-qualified 100%. Both read 2000 gold-corpus-2k positions at stride 2, context 4096. The 95% intervals overlap, satisfying the predeclared bar. The llama.cpp read matches 2000/2000 positions by token id, with 10 spelling mismatches and no dropped mass. OLMo 2 Instruct template conformance: 16/16 cases in text and tokens (R4.50.10). Record: docs/compat-reports/olmo2-admission-2026-11-24/README.md#olmo-2-instruct.",
         "context": 4096,
-        "limitations": "LoRA training runs on the CPU only; --train-gpu is refused because the gradient gate needs f32 KV rows, which the GPU trainer does not keep. Compact KV CPU/Metal identity is gated below batch 8 and in decode; at wider direct-model batches fp4 KV can amplify different product sums across backends. This is not a task-quality claim. OLMo 3 refuses a non-default YaRN attn_factor and either model refuses experts.",
+        "limitations": "LoRA training runs on the CPU only; --train-gpu is refused because the gradient gate needs f32 KV rows, which the GPU trainer does not keep. Compact KV CPU/Metal identity is gated below batch 8 and in decode; at wider direct-model batches fp4 KV can amplify different product sums across backends. This is not a task-quality claim. OLMo 3 refuses a non-default YaRN attn_factor and either model refuses experts. Its native template offers no OpenAI tool protocol; those requests are refused by name.",
         "evidence": [
           "docs/compat-reports/olmo2-admission-2026-11-24/README.md"
         ],
-        "missing": "Chat smoke held: this base model echoed the user prompt. Replace the chat-validation row with Instruct F16 only after its own publisher float32 bar passes and R4.50.10 merges; preserve this base-file fidelity evidence separately. Scheduled backend recordings remain unrecorded."
+        "missing": "TODO-linux-x86_64-cuda: linked raw Instruct reference/bootstrap records; TODO-linux-x86_64-cuda / TODO-windows-x86_64-cuda / TODO-macos-arm64-metal: scheduled Instruct smoke pins and real recorded backend cells. The base file's numerical evidence is separate and no base chat result is inherited."
       },
       "backends": {
         "cpu": null,
@@ -10422,7 +10422,6 @@
       },
       "lora": null,
       "measurements": [
-        "**Chat smoke hold:** at a97acfa6 both linux-x86_64-cuda CPU and CUDA attempts stopped after 25 tokens, echoing the prompt without the required fact. No pin or result was written. The base file has no chat smoke configured while the Instruct replacement is gated.",
         "**TODO-macos-arm64-metal:** macos-arm64-metal/cpu, output pin sha256 and --record result pending; no pass is inferred.",
         "**TODO-macos-arm64-metal:** macos-arm64-metal/metal, output pin sha256 and --record result pending; no pass is inferred.",
         "**TODO-windows-x86_64-cuda:** windows-x86_64-cuda/cuda, output pin sha256 and --record result pending; no pass is inferred.",
@@ -10432,11 +10431,15 @@
       "transitions": [
         {
           "tier": "tier2",
-          "effective": "2026-11-24",
-          "reason": "R4.50.6: publisher float32 admission bar passed on this exact file, with llama.cpp as the second read; backend smoke cells remain unrecorded until their scheduled runs.",
+          "effective": "2026-11-25",
+          "reason": "R4.50.6.1: this exact Instruct F16 file passes its own publisher float32 bar; R4.50.10 provides native template conformance. Replaces the base-file validation row; the base evidence is disclosed separately. Backend smoke recordings are still pending.",
           "last_validated_release": null
         }
-      ]
+      ],
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      }
     },
     {
       "id": "olmo-3-7b-think-q8_0",

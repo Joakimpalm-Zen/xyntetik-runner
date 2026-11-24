@@ -403,7 +403,7 @@ names, and the page records when each file last passed and with which Runner.
 
 OLMo 2 and OLMo 3 run on the CPU, Metal and CUDA, with LoRA training on the
 CPU. GPU training is refused; compact KV caches have a cross-backend limit.
-[The files and their measurements](docs/model-support.md#olmo-2-0425-1b-f16) · [Limits](MANUAL.md#olmo-2-and-olmo-3)
+[The files and their measurements](docs/model-support.md#olmo-2-0425-1b-instruct-f16) · [Limits](MANUAL.md#olmo-2-and-olmo-3)
 
 <a id="more"></a>
 ## Also in the box

@@ -19,9 +19,11 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 GIB = 1 << 30
+# R4.50.6.1: Instruct F16 is 2,973,652,128 bytes, within the 4 GiB share; size puts it after Bolt E4B and before MiniCPM5.
 DOJO_8GIB = ["qwen3-4b-runner-tooluse-merged-q8_0", "phi-3.5-mini-instruct-q8_0",
              "ministral-3-3b-instruct-2512-q8_0", "spark-x2.6-4b-q4_k_m",
-             "granite-4.0-h-micro-q8_0", "nemotron-3.5-bolt-e4b-q4_k_m", "minicpm5-2b-q8_0", "spark-x2.5-4b-q4_k_m",
+             "granite-4.0-h-micro-q8_0", "nemotron-3.5-bolt-e4b-q4_k_m", "olmo-2-0425-1b-instruct-f16",
+             "minicpm5-2b-q8_0", "spark-x2.5-4b-q4_k_m",
              "qwen3-4b-q4_k_m-bartowski", "phi-3.5-mini-instruct-q4_k_m",
              "ministral-3-3b-instruct-2512-q4_k_m",
              "granite-4.0-h-micro-q4_k_m-unsloth", "qwen2.5-1.5b-instruct-q8_0",

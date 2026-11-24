@@ -1779,7 +1779,7 @@ Metal and CUDA, and serve LoRA adapters. LoRA training runs on the CPU;
 `--train-gpu` is refused because its gradient gate needs f32 KV rows, which
 the GPU trainer does not keep. These are architecture paths: each file's
 recorded backend results and memory limits are in the
-[validated file rows](docs/model-support.md#olmo-2-0425-1b-f16).
+[validated file rows](docs/model-support.md#olmo-2-0425-1b-instruct-f16).
 
 On CUDA, `olmo2` is scoped to Q8_0 only for tensor-core prefill; other quant
 types stay scalar until measured ([the row](docs/tc-promotion-evidence.md#olmo2-q8_0-r4509-2026-11-24)).
@@ -1811,7 +1811,9 @@ OLMo 3 Think uses the publisher's native chat template, including its
 `functions` and `function_calls` string fields, `environment` role and
 `<think>` generation prompt. Runner refuses modern OpenAI `tools`,
 `tool_calls` and `tool` messages by name rather than translating or silently
-dropping them. The base OLMo 2 file has no claimed chat or tool protocol.
+dropping them. OLMo 2 1B Instruct uses its own native `olmo2` template (16/16 cases in text
+and tokens); modern OpenAI tool requests are refused. The base file has no
+claimed chat protocol, and its numerical evidence is disclosed separately.
 
 The publisher's float32 reference is the headline; llama.cpp on the same
 files and positions is the second read. The [admission record](docs/compat-reports/olmo2-admission-2026-11-24/README.md)

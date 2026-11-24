@@ -3120,18 +3120,19 @@
       }
     },
     {
-      "id": "olmo-2-0425-1b-f16",
+      "id": "olmo-2-0425-1b-instruct-f16",
       "architecture": "olmo2",
       "family": "OLMo 2 / OLMo 3",
-      "file": "models/OLMo-2-0425-1B-F16.gguf",
-      "sha256": "452d42f1ac5a1d1d62a6a7c4e2c6adfe4ac279f6b4ff44c9e2ea452a0d9c6df2",
-      "upstream": "allenai/OLMo-2-0425-1B-GGUF",
-      "tokenizer_reference": "allenai/OLMo-2-0425-1B",
-      "tokenizer_reference_revision": "a1847dff35000b4271fa70afc5db10fd29fedbdf",
+      "file": "models/OLMo-2-0425-1B-Instruct-F16.gguf",
+      "sha256": "376249dff02917a8cf5ea413d2bfdf2802f10f7d92973d95a6f28b2204ac4eab",
+      "upstream": "allenai/OLMo-2-0425-1B-Instruct-GGUF",
+      "tokenizer_reference": "allenai/OLMo-2-0425-1B-Instruct",
+      "tokenizer_reference_revision": "48d788eca847d4d7548f375ad03d3c9312f6139e",
       "checks": [
         "load"
       ],
-      "notes": "Publisher's reference: allenai/OLMo-2-0425-1B at a1847dff35000b4271fa70afc5db10fd29fedbdf, float32, transformers-main 046bdb8 (5.24.0.dev0), CPU. Runner mean KL 2.3159e-04 [1.5377e-04, 3.1844e-04], plain top-1 100%, margin-qualified 100%. Second read: llama.cpp 56eea9e4 on this same GGUF and positions, mean KL 2.2777e-04 [1.5055e-04, 3.1416e-04], plain top-1 100%, margin-qualified 100%. Default KV f16, gold-corpus-2k, 2000 scored positions at stride 2, context 4096. Admission requires 100% margin-qualified top-1 and no wholly worse separated KL interval than llama.cpp. Record: docs/compat-reports/olmo2-admission-2026-11-24/README.md. TODO-linux-x86_64-cuda: import final real-file tokenizer/backend records before adding corresponding compatibility checks."
+      "notes": "Publisher's reference: allenai/OLMo-2-0425-1B-Instruct at 48d788eca847d4d7548f375ad03d3c9312f6139e, float32 checkpoint loaded in float32 (no tensors cast), transformers-main 046bdb8 (5.24.0.dev0), torch 2.14.0+cpu, CPU with 16 threads. Runner f3ff8e84 CPU, default f16 KV: mean KL 1.0642e-04 [6.1904e-05, 1.5615e-04], plain top-1 100%, margin-qualified 100%. Second read: llama.cpp 56eea9e4 on this exact Instruct F16 file, mean KL 1.1261e-04 [6.6509e-05, 1.6433e-04], plain top-1 100%, margin-qualified 100%. Both read 2000 gold-corpus-2k positions at stride 2, context 4096. The 95% intervals overlap, satisfying the predeclared bar. The llama.cpp read matches 2000/2000 positions by token id, with 10 spelling mismatches and no dropped mass. OLMo 2 Instruct template conformance: 16/16 cases in text and tokens (R4.50.10). Record: docs/compat-reports/olmo2-admission-2026-11-24/README.md#olmo-2-instruct. TODO-linux-x86_64-cuda: import raw records before adding the corresponding compatibility checks.",
+      "template": "olmo2"
     },
     {
       "id": "olmo-3-7b-think-q8_0",

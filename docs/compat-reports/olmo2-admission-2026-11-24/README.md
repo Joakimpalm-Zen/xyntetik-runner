@@ -10,7 +10,7 @@ with runtime state on the owned 8 GB macos-arm64-metal device.
 
 ## Reference and bar
 
-Both files are compared with their publisher's reference implementation in
+The two listed Instruct/Think files are each compared with their own publisher's implementation in
 float32, on the CPU, using transformers-main `046bdb8` (`5.24.0.dev0`). The
 OLMo 2 checkpoint is float32; OLMo 3's BF16 checkpoint is upcast at use.
 Runner's CPU route at `f3ff8e84` and llama.cpp `56eea9e4` each read the same
@@ -26,7 +26,7 @@ with a fixed seed; paired differences are information, not another bar.
 
 | File | Runner vs publisher float32: mean KL [95% interval] | Plain / margin-qualified top-1 | llama.cpp vs publisher float32: mean KL [95% interval] | Plain / margin-qualified top-1 | Bar |
 |---|---|---|---|---|---|
-| OLMo-2-0425-1B-F16 | 2.3159e-04 [1.5377e-04, 3.1844e-04] | 100% / 100% | 2.2777e-04 [1.5055e-04, 3.1416e-04] | 100% / 100% | Pass: intervals overlap |
+| OLMo-2-0425-1B-Instruct-F16 | 1.0642e-04 [6.1904e-05, 1.5615e-04] | 100% / 100% | 1.1261e-04 [6.6509e-05, 1.6433e-04] | 100% / 100% | Pass: intervals overlap |
 | Olmo-3-7B-Think-Q8_0 | 1.3671e-03 [1.1975e-03, 1.5472e-03] | 98.55% / 100% | 9.1434e-02 [8.5543e-02, 9.8364e-02] | 85.25% / 95.77% | Pass: separated in Runner's favour |
 
 TODO-linux-x86_64-cuda: commit the raw gold-logits and bootstrap result files for both
@@ -37,12 +37,52 @@ R4.50.6 read; no claim about why llama.cpp differs is made without tracing.
 
 | File repository and revision | File | SHA256 | Bytes | Publisher checkpoint and revision |
 |---|---|---|---|---|
-| allenai/OLMo-2-0425-1B-GGUF at d4cd762e4f991e42421f5340290afeff8c5ff146 | OLMo-2-0425-1B-F16.gguf | 452d42f1ac5a1d1d62a6a7c4e2c6adfe4ac279f6b4ff44c9e2ea452a0d9c6df2 | 2973650560 | allenai/OLMo-2-0425-1B at a1847dff35000b4271fa70afc5db10fd29fedbdf |
+| allenai/OLMo-2-0425-1B-Instruct-GGUF at 62f8c199538474c3e33ed5d7e0580abd66686a27 | OLMo-2-0425-1B-Instruct-F16.gguf | 376249dff02917a8cf5ea413d2bfdf2802f10f7d92973d95a6f28b2204ac4eab | 2973652128 | allenai/OLMo-2-0425-1B-Instruct at 48d788eca847d4d7548f375ad03d3c9312f6139e |
 | unsloth/Olmo-3-7B-Think-GGUF at 1dcda0d5e447e9da698330014e38a9080616f2df | Olmo-3-7B-Think-Q8_0.gguf | 3a4d7dda5778c299fe30bac76f5300beb283b48c6cc12b01c36c71310cefcf08 | 7759251584 | allenai/Olmo-3-7B-Think at d97e442d7cc678210054dbcc9b440894d62c89a4 |
 
 The other downloaded quantizations, OLMo 2 Q8_0 and OLMo 3 Q4_K_M, are not
 admitted by these measurements. A quantized sibling cannot inherit the
 F16 or Q8_0 file's fidelity result.
+
+
+## OLMo 2 Instruct
+
+This is the Instruct checkpoint's own read, not the base model's result.
+The clean Runner build is `f3ff8e84e60f0d75ad5357a667a8ac1f338a694e`, binary
+SHA256 `3428416e04f813be3422b45c01a4038e66b59a27f7c2201d2beead45d67fad70`.
+Its CPU command scores 4,009 tokens, top 20, context 4,096, 16 threads and
+f16 KV: 4,008 solo forwards. The comparison takes 2,000 positions at stride
+2. The publisher checkpoint is loaded in float32 with zero tensors cast,
+using transformers-main `046bdb8cc2cee29d233964bb77fe6fd37cfe4aa3`
+(`5.24.0.dev0`), torch `2.14.0+cpu`, CPU, 16 OpenMP threads. The run was
+2026-11-24, 21:08:15 to 21:12:44 UTC, untimed.
+Attention implementation was not recorded: the loader passed no
+`attn_implementation`, leaving transformers-main `046bdb8`'s default.
+
+The llama.cpp read matches 2,000 of 2,000 positions by token ID, with zero
+dropped mass and 10 token-spelling mismatches (informational; the ID-keyed
+read is the comparison). Its maximum KL is 0.01889. Intervals use 10,000
+percentile-bootstrap resamples, seed 4506.
+
+R4.50.10 (#1029) supplies the native `olmo2` chat template: 16 of 16 cases
+match the publisher and file in text and tokens. The two gates are separate:
+the raw forward's float32 bar does not certify chat rendering. Template
+conformance and the Instruct file's own bar both passed before this row
+replaced the base file. The backend smoke cells are still unrecorded.
+
+## Base 1B: separate numerical evidence
+
+The base file is no longer a support-list or recommendation row and has no
+chat smoke. It remains measured evidence: `allenai/OLMo-2-0425-1B-GGUF` at
+`d4cd762e4f991e42421f5340290afeff8c5ff146`, `OLMo-2-0425-1B-F16.gguf`,
+2,973,650,560 bytes, SHA256
+`452d42f1ac5a1d1d62a6a7c4e2c6adfe4ac279f6b4ff44c9e2ea452a0d9c6df2`.
+Its reference is the base checkpoint `allenai/OLMo-2-0425-1B` at
+`a1847dff35000b4271fa70afc5db10fd29fedbdf`, float32. On the same numerical
+setup, Runner reads mean KL 2.3159e-04 [1.5377e-04, 3.1844e-04], llama.cpp
+2.2777e-04 [1.5055e-04, 3.1416e-04]; both plain and margin-qualified top-1
+are 100%. These are only the base file's numbers and are not inherited by
+Instruct.
 
 ## Protocol and training
 
@@ -66,17 +106,17 @@ measurements on these checkpoints. GPU training remains refused.
 
 At `a97acfa6`, all four initial linux-x86_64-cuda pin attempts failed the
 unchanged fact rule. The 1B base F16 on CPU and CUDA echoed the prompt,
-finish stop, 25 tokens. This is not a chat-validation pass. That row's chat
-smoke is now held. Its replacement is the publisher's Instruct F16, only
-after its own float32 bar passes and its template-conformance fix
-(R4.50.10) merges. The base F16 fidelity result above remains separate;
-it is not an Instruct checkpoint's result.
+finish stop, 25 tokens. This is not a chat-validation pass. That support
+row was removed once the Instruct file passed its own float32 bar and
+R4.50.10 merged. Its base-file numbers remain separately disclosed above;
+no result or backend mark is inherited by the Instruct row.
 
 The 7B Think CPU and CUDA runs reached the 600-token cap with empty content.
-That fact alone does not establish what the reasoning channel held. The
-smoke's failed-fact diagnostic now reports its UTF-8 byte count, and the
-original response's reasoning channel is being checked separately. No pin
-or result JSON was written for these failures.
+The retained CPU response confirms 2,610 UTF-8 bytes in reasoning_content,
+zero content bytes, all 600 completion tokens in reasoning, finish length,
+and no closing `</think>`. The template's opener was already in the prompt.
+The smoke's failed-fact diagnostic now reports the channel's byte count.
+No pin or result JSON was written for these failures.
 
 The fixed 7B rerun, stated before measuring it, keeps the same planets
 prompt, required fact, minimum 96 content bytes, temperature zero, batch 64
@@ -98,11 +138,11 @@ output SHA256 and each gate/adapter answer must come from those commands.
 
 | Row | Device class / backend | State |
 |---|---|---|
-| olmo-2-0425-1b-f16 | macos-arm64-metal / cpu | TODO-macos-arm64-metal: disk space, pin and record |
-| olmo-2-0425-1b-f16 | macos-arm64-metal / metal | TODO-macos-arm64-metal: disk space, pin and record |
-| olmo-2-0425-1b-f16 | windows-x86_64-cuda / cuda | TODO-windows-x86_64-cuda: pin and record |
-| olmo-2-0425-1b-f16 | linux-x86_64-cuda / cpu | TODO-linux-x86_64-cuda: pin and record |
-| olmo-2-0425-1b-f16 | linux-x86_64-cuda / cuda | TODO-linux-x86_64-cuda: pin and record |
+| olmo-2-0425-1b-instruct-f16 | macos-arm64-metal / cpu | TODO-macos-arm64-metal: disk space, pin and record |
+| olmo-2-0425-1b-instruct-f16 | macos-arm64-metal / metal | TODO-macos-arm64-metal: disk space, pin and record |
+| olmo-2-0425-1b-instruct-f16 | windows-x86_64-cuda / cuda | TODO-windows-x86_64-cuda: pin and record |
+| olmo-2-0425-1b-instruct-f16 | linux-x86_64-cuda / cpu | TODO-linux-x86_64-cuda: pin and record |
+| olmo-2-0425-1b-instruct-f16 | linux-x86_64-cuda / cuda | TODO-linux-x86_64-cuda: pin and record |
 | olmo-3-7b-think-q8_0 | linux-x86_64-cuda / cpu | TODO-linux-x86_64-cuda: pin and record |
 | olmo-3-7b-think-q8_0 | linux-x86_64-cuda / cuda | TODO-linux-x86_64-cuda: pin and record |
 | olmo-3-7b-think-q8_0 | windows-x86_64-cuda / cuda | TODO-windows-x86_64-cuda: pin and record |
