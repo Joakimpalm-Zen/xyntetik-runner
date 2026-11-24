@@ -158,6 +158,20 @@ static float *rows_n(model_t *m, const int32_t *prompt, int n_tok) {
     return r;
 }
 static float *rows_p(model_t *m, const int32_t *prompt) { return rows_n(m, prompt, N_TOK); }
+// D1d.3b (ak2): the prompt one position a call whatever the instance's -b (each a resident step when the step is on)
+static float *rows_steps(model_t *m) {
+    float *r = malloc(sizeof(float) * (size_t)N_TOK * (size_t)m->n_vocab);
+    for (int pos = 0; r && pos < N_TOK; pos++) {
+        if (!model_inkling2_forward(m, PROMPT + pos, 1, pos, true, true)) { free(r); return NULL; }
+        memcpy(r + (size_t)pos * (size_t)m->n_vocab, model_inkling2_row(m, 0), sizeof(float) * (size_t)m->n_vocab);
+    }
+    return r;
+}
+static void *par_run_steps(void *a) {
+    par_job *j = a;
+    for (int k = 0; k < 4; k++) j->out[k] = rows_steps(j->m);
+    return NULL;
+}
 static float *rows(model_t *m) { return rows_p(m, PROMPT); }
 static void drop(model_t *m) { if (m) { model_free(m); free(m); } }
 // a value that is not finite on either side scores as a failure (1e30), whatever the compiler makes of a NaN compare
@@ -921,9 +935,9 @@ int main(int argc, char **argv) {
             model_t *g1 = load(argv[1 + f], true, false, 1);
             float *x1 = g1 ? rows(g1) : NULL;
             const double d1 = x1 && b ? rel_diff(x1, b, n) : 1;
-            // (D1d.3b: at -b 1 the resident step takes every position: its calls count as the block's)
-            CHECK(on_cuda && g1 && (model_inkling2_cuda_block_calls(g1) > 0 || model_inkling2_cuda_step_calls(g1) > 0) && x1 && a &&
-                  !memcmp(a, x1, sizeof(float) * n) &&
+            // (D1d.3b: the file runs with the step off, so this is the block path's own -b 1 and the step is absent)
+            CHECK(on_cuda && g1 && model_inkling2_cuda_block_calls(g1) > 0 && model_inkling2_cuda_step_calls(g1) == -1 && x1 &&
+                  a && !memcmp(a, x1, sizeof(float) * n) &&
                   d1 <= 1e-4, "(s) %s: at -b 1 (the history read at every step) the device block's rows equal -b 64's byte "
                   "for byte, %.2e from the reference, want <= 1e-4", kind[f], d1);
             free(x1); drop(g1);
@@ -1720,6 +1734,61 @@ int main(int argc, char **argv) {
         free(ref);
         drop(a); drop(b); drop(c);
     }
+    // R4.48.9 D1d.3b (ak2), the stage-3 read's F3: one slot's PREFILL (its non-resident chunks, then the post
+    // convolutions' host-to-device sync) interleaved with another slot's resident STEPS on ONE device copy (both at
+    // -b 64: a server's slots share their -b). Slot A runs the prompt as one chunk (rows); slot B runs it one position a
+    // call (every position a step); each alone first, then both at once from two threads, 4 sequences each. Every row
+    // set byte-identical to its slot's alone run; one handle; B's steps 5 x 24, A's 0.
+    {
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_STEP", "");
+        model_t *a = load(argv[2], true, false, 64), *b = load(argv[2], true, false, 64);
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_STEP", "1");
+        float *ra = a ? rows(a) : NULL, *rb = b ? rows_steps(b) : NULL;
+        par_job ja = { a, { 0 } }, jb = { b, { 0 } };
+        pthread_t ta, tb;
+        const bool st = ra && rb && !pthread_create(&ta, NULL, par_run, &ja) && !pthread_create(&tb, NULL, par_run_steps, &jb);
+        if (st) { pthread_join(ta, NULL); pthread_join(tb, NULL); }
+        const size_t n = a ? (size_t)N_TOK * (size_t)a->n_vocab : 0;
+        int sa = 0, sb = 0;
+        for (int k = 0; st && k < 4; k++) {
+            sa += ja.out[k] && !memcmp(ja.out[k], ra, sizeof(float) * n);
+            sb += jb.out[k] && !memcmp(jb.out[k], rb, sizeof(float) * n);
+        }
+        const void *ha = NULL, *hb = NULL;
+        char pl = 0;
+        size_t need = 0;
+        if (a) model_inkling2_cuda_placement(a, &pl, &need, &ha);
+        if (b) model_inkling2_cuda_placement(b, &pl, &need, &hb);
+        const long na = a ? model_inkling2_cuda_step_calls(a) : -2, nb = b ? model_inkling2_cuda_step_calls(b) : -2;
+        CHECK(st && sa == 4 && sb == 4 && ha && ha == hb && na == 0 && nb == 5 * N_TOK,
+              "(ak2) one slot's prefill (chunks + the post-convolution sync) beside another's resident steps on one copy "
+              "(BF16, -b 64): A %d / 4, B %d / 4 row sets byte-identical to each alone (want 4 / 4); one handle: %s; steps "
+              "A %ld (want 0), B %ld (want %d)", sa, sb, ha && ha == hb ? "yes" : "NO", na, nb, 5 * N_TOK);
+        for (int k = 0; k < 4; k++) { free(ja.out[k]); free(jb.out[k]); }
+        free(ra); free(rb);
+        drop(a); drop(b);
+    }
+    // R4.48.9 D1d.3b (al), the stage-3 read's F2: the resident step's FAILURE path with the step on (every other op's
+    // injection runs step-off, and at T == 1 the step replaces those ops): RUNNER_INKLING2_CUDA_TEST_STEP_FAIL=2 fails
+    // the third step attempt. Single steps from 0: positions 0 and 1 give rows, position 2's forward is refused, and the
+    // instance refuses every forward after (its device failed: never a CPU row in its place)
+    {
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_STEP", "");
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_STEP_FAIL", "2");
+        model_t *g = load(argv[2], true, false, 64);
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_STEP_FAIL", "");
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_STEP", "1");
+        const bool on = g && model_inkling2_cuda_step_calls(g) >= 0;
+        const float *s0 = on ? model_inkling2_forward(g, PROMPT, 1, 0, true, false) : NULL;
+        const float *s1 = s0 ? model_inkling2_forward(g, PROMPT + 1, 1, 1, true, false) : NULL;
+        const float *s2 = s1 ? model_inkling2_forward(g, PROMPT + 2, 1, 2, true, false) : NULL;
+        const float *s3 = s1 ? model_inkling2_forward(g, PROMPT, 4, 0, true, false) : NULL;   // a chunk: refused too
+        CHECK(on && s0 && s1 && !s2 && !s3 && model_inkling2_cuda_step_calls(g) == 2,
+              "(al) a failed resident step (step on, the third attempt injected): positions 0 / 1 %s / %s, position 2 %s, "
+              "the next forward (a chunk from 0) %s; steps %ld (want 2)", s0 ? "rows" : "REFUSED", s1 ? "rows" : "REFUSED",
+              s2 ? "GAVE ROWS" : "refused", s3 ? "GAVE ROWS" : "refused", g ? model_inkling2_cuda_step_calls(g) : -2);
+        drop(g);
+    }
     // R4.48.9 D1d.1 (af): the decode step's remaining ops on the device, each against the host function the forward
     // runs (inkling2.c's own, through its TEST-ONLY wrappers) on the same inputs, BIT FOR BIT (NaN by its bits), the
     // host with the CPU's FTZ / DAZ off (the device never flushes; D1a's tanh check): the RMS norm rows (weighted and
@@ -2048,15 +2117,31 @@ int main(int argc, char **argv) {
             float *fh = gf ? rows_p(gf, half) : NULL, *ch = cf ? rows_p(cf, half) : NULL;
             const size_t n = gs ? (size_t)N_TOK * (size_t)gs->n_vocab : 0;
             const double dc = rh && ch ? rel_diff(rh, ch, n) : 1;
-            // (D1d.3b: at -b 1 the resident step takes every position, so its calls count as the device's too)
-            CHECK(gs && (model_inkling2_cuda_attn_calls(gs, NULL) + model_inkling2_cuda_block_calls(gs) > 0 ||
-                         model_inkling2_cuda_step_calls(gs) > 0) && ra && rb && rh &&
+            // (D1d.3b: the file runs with the step off, so the step is absent here)
+            CHECK(gs && model_inkling2_cuda_attn_calls(gs, NULL) + model_inkling2_cuda_block_calls(gs) > 0 &&
+                  model_inkling2_cuda_step_calls(gs) == -1 && ra && rb && rh &&
                   fh && !memcmp(rh, fh, sizeof(float) * n) && dc <= 1e-4, "(o) rewind through the device ring (-b %d): A, B, "
                   "then HALF from 0 equal a fresh instance's HALF byte for byte, %.2e from the CPU fast route's, want <= 1e-4",
                   bt, dc);
             free(ra); free(rb); free(rh); free(fh); free(ch);
             drop(gs); drop(gf); drop(cf);
         }
+    }
+    // (x2) the stage-3 read's F1: the fit's resident-step terms with the step ON, against the bytes actually allocated,
+    // each by the driver's rounding: the copy's part (the step's small tensors + its program's 16 allocations, each
+    // equal to the fit's term in order, the index list at most its bound) and one slot's post-convolution copies
+    {
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_STEP", "");
+        model_t *g = load(argv[2], true, false, 64);
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_STEP", "1");
+        const float *f = g ? model_inkling2_forward(g, PROMPT, 1, 0, true, false) : NULL;   // one step: the program is up
+        size_t sb[5] = { 0 };
+        const bool on = f && model_inkling2_cuda_step_calls(g) == 1 && model_inkling2_cuda_step_bytes(g, sb);
+        CHECK(on && sb[4] == 1 && sb[1] <= sb[0] && sb[1] > 0 && sb[2] == sb[3] && sb[3] > 0,
+              "(x2) the fit's step terms with the step on: the copy's part counted %zu, allocated %zu (want <= and > 0); the "
+              "16 allocations each the fit's term: %s; one slot's post copies counted %zu, allocated %zu (want equal, > 0)",
+              sb[0], sb[1], sb[4] ? "yes" : "NO", sb[2], sb[3]);
+        drop(g);
     }
     // (x) the second read of 2b's P2: the fit counts what a slot and the block allocate; the block refuses an adapter
     // in the middle of a sequence it began and leaves the slot where it was

@@ -63,6 +63,8 @@ typedef struct {
     bool last_was_step;
     float *post_stage;
     long n_step;
+    long n_step_try;      // steps attempted so far (for step_fail_at)
+    long step_fail_at;    // TEST-ONLY (RUNNER_INKLING2_CUDA_TEST_STEP_FAIL=k): the k-th step attempt fails; -1 none
 } ink2_rt;
 
 static ink2_rt *rt_of(model_t *m) { return (ink2_rt *)m->ink2; }
@@ -553,8 +555,11 @@ static size_t step_dev_bytes(const ink2_rt *r) {
         step_small *ss = n > 0 ? malloc(sizeof *ss * (size_t)n) : NULL;
         if (ss && step_smalls(r, &P, ss, NULL) == n) {
             for (int k = 0; k < n; k++) b += dev_alloc_bytes(sizeof(float) * ss[k].n);
-            // the program's own allocations, as gpu_ink2_step_set makes them (16 of them, each rounded up)
-            b += gpu_ink2_step_bytes(r->s.n_app, r->s.hidden, r->s.vocab_used) + 16 * dev_alloc_bytes(1);
+            // the program's own allocations, as gpu_ink2_step_set makes them, EACH rounded by the driver's rule (the
+            // stage-3 read's F1: a flat allowance holds only while every allocation is under the rounding unit)
+            size_t sz[16];
+            const int na = gpu_ink2_step_sizes(r->s.n_app, r->s.hidden, r->s.vocab_used, sz);
+            for (int k = 0; k < na; k++) b += dev_alloc_bytes(sz[k]);
         }
         free(ss);
     }
@@ -650,7 +655,8 @@ static int dev_step(void *dev, int p0, const float *emb_row, float *logits) {
         return 1;
     }
     r->seq_block = true;
-    if (!gpu_ink2_step(r->gpu, r->kv, p0, emb_row, logits)) {
+    const bool inj = r->n_step_try++ == r->step_fail_at;   // TEST-ONLY: an injected failure, as the other device ops'
+    if (inj || !gpu_ink2_step(r->gpu, r->kv, p0, emb_row, logits)) {
         if (!r->gpu_err) fprintf(stderr, "error: inkling2_loop: the decode step at position %d failed on the device\n", p0);
         r->gpu_err = true;
         return -1;
@@ -830,6 +836,9 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
         if (!r->step_on) { free(r->post_stage); r->post_stage = NULL; }
         r->post_dev_newer = false;
         r->n_step = 0;
+        r->n_step_try = 0;
+        const char *sf = getenv("RUNNER_INKLING2_CUDA_TEST_STEP_FAIL");
+        r->step_fail_at = sf && *sf ? atol(sf) : -1;
     }
     fprintf(stderr, "inkling2_loop: the weights on CUDA (%s): %d tensors, %.3f GB, their stored rows%s; their products "
                     "on the device%s, the rest of the forward on the CPU (R4.48.9 G2b)%s%s\n", dev, r->n_dev,
@@ -1328,6 +1337,33 @@ long model_inkling2_cuda_route_calls(const model_t *m) {
 long model_inkling2_cuda_step_calls(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
     return r && r->step_on ? r->n_step : -1;
+}
+bool model_inkling2_cuda_step_bytes(const model_t *m, size_t out[5]) {
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    if (!r || !r->step_on || !r->share || r->share->step_base < 0 || !out) return false;
+    out[0] = step_dev_bytes(r);
+    // as allocated: the small tensors from step_base (their count by the same list), then the program's allocations
+    ink2_step_app *apps = calloc((size_t)r->s.n_app, sizeof *apps);
+    ink2_step_plan P = { 0 };
+    P.app = apps;
+    const int ns = apps && ink2_step_plan_build(&r->s, &r->w, &P) == INK2_OK ? step_smalls(r, &P, NULL, NULL) : -1;
+    free(apps);
+    if (ns <= 0) return false;
+    size_t real = 0;
+    for (int k = 0; k < ns; k++) real += dev_alloc_bytes(gpu_ink2_test_tensor_bytes(r->share->gpu, r->share->step_base + k));
+    size_t got[16], sz[16];
+    const int na = gpu_ink2_test_step_allocs(r->gpu, got), nf = gpu_ink2_step_sizes(r->s.n_app, r->s.hidden, r->s.vocab_used, sz);
+    bool same = na == nf && na > 0;
+    for (int k = 0; k < na; k++) {
+        real += dev_alloc_bytes(got[k]);
+        if (k < nf) same = same && (k == 0 ? got[k] <= sz[k] : got[k] == sz[k]);
+    }
+    out[1] = real;
+    const int hist = r->share->block_dev ? r->s.conv_k - 1 : 0;
+    out[2] = dev_instance_bytes(r, r->share->attn_dev, hist, true) - dev_instance_bytes(r, r->share->attn_dev, hist, false);
+    out[3] = dev_alloc_bytes(gpu_ink2_kv_post_bytes(r->kv));
+    out[4] = same;
+    return true;
 }
 long model_inkling2_cuda_attn_calls(const model_t *m, size_t *kv_bytes) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;

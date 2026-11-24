@@ -910,7 +910,11 @@ typedef struct {
 // lacks, a device failure, or a walk past its lists.
 bool       gpu_ink2_step_set(gpu_ink2 *h, const gpu_ink2_step_plan *plan);
 bool       gpu_ink2_step_ready(const gpu_ink2 *h);
-size_t     gpu_ink2_step_bytes(int n_app, int H, int V);   // the program's device bytes at this shape (for the fit)
+// the program's 16 device allocations at this shape, in gpu_ink2_step_set's order (the fit rounds each); returns 16
+int        gpu_ink2_step_sizes(int n_app, int H, int V, size_t out[16]);
+// TEST-ONLY: the program's allocations as made (count, sizes), and one device tensor's bytes (rows + factors)
+int        gpu_ink2_test_step_allocs(gpu_ink2 *h, size_t out[16]);
+size_t     gpu_ink2_test_tensor_bytes(gpu_ink2 *h, int i);
 // ONE decode step at position p0 on the device, the handle's lock held throughout (F1): emb_row [H] (the token's
 // embedding row, dequantized on the host as the engine does) up, the position up, the logits row [V] down; nothing
 // moves to or from the host inside the applications' loop. kv: the instance's rings and histories (its post

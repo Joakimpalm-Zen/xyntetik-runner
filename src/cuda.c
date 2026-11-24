@@ -14206,7 +14206,15 @@ struct ink2_step_prog {
     CUdeviceptr hn;                    // a row of SR (the head's input)
     CUdeviceptr logits;                // V floats
     size_t SR;                         // a padded raw row's floats: (1 + INK2_XPAD) * H
+    size_t alloc[16];                  // the program's allocations as made (the stage-3 read's F1: a real counter)
+    int n_alloc;
 };
+// one of the program's allocations, recorded
+static bool st_alloc(struct ink2_step_prog *S, CUdeviceptr *p, size_t bytes) {
+    if (cu.MemAlloc(p, bytes) != 0) { *p = 0; return false; }
+    if (S->n_alloc < 16) S->alloc[S->n_alloc++] = bytes;
+    return true;
+}
 static void ink2_step_free(gpu_ink2 *h) {
     struct ink2_step_prog *S = h->step;
     if (!S) return;
@@ -14295,16 +14303,16 @@ bool gpu_ink2_step_set(gpu_ink2 *h, const gpu_ink2_step_plan *P) {
         return false;
     }
     S->SR = (size_t)(1 + INK2_XPAD) * (size_t)H;
-    ok = ok && cu.MemAlloc(&S->ix, sizeof(int) * (size_t)nix) == 0 && cu.MemcpyHtoD(S->ix, ix, sizeof(int) * (size_t)nix) == 0;
-    ok = ok && cu.MemAlloc(&S->raw, fb * S->SR * ST_NRAW) == 0 && cu.MemsetD8(S->raw, 0, fb * S->SR * ST_NRAW) == 0 &&
-         cu.MemAlloc(&S->normed, fb * (size_t)S->n_norm * H) == 0 && cu.MemAlloc(&S->qkv, fb * 3 * S->SR) == 0 &&
+    ok = ok && st_alloc(S, &S->ix, sizeof(int) * (size_t)nix) && cu.MemcpyHtoD(S->ix, ix, sizeof(int) * (size_t)nix) == 0;
+    ok = ok && st_alloc(S, &S->raw, fb * S->SR * ST_NRAW) && cu.MemsetD8(S->raw, 0, fb * S->SR * ST_NRAW) == 0 &&
+         st_alloc(S, &S->normed, fb * (size_t)S->n_norm * H) && st_alloc(S, &S->qkv, fb * 3 * S->SR) &&
          cu.MemsetD8(S->qkv, 0, fb * 3 * S->SR) == 0 &&
-         cu.MemAlloc(&S->rd, fb * 3 * (size_t)H) == 0 && cu.MemAlloc(&S->gt, fb * 3 * (size_t)H) == 0 &&
-         cu.MemAlloc(&S->msgs, fb * 4 * (size_t)H) == 0;
+         st_alloc(S, &S->rd, fb * 3 * (size_t)H) && st_alloc(S, &S->gt, fb * 3 * (size_t)H) &&
+         st_alloc(S, &S->msgs, fb * 4 * (size_t)H);
     CUdeviceptr *one[] = { &S->att, &S->res, &S->mi, &S->g2, &S->mo, &S->g3, &S->fin };
-    for (size_t k = 0; ok && k < sizeof one / sizeof *one; k++) ok = cu.MemAlloc(one[k], fb * (size_t)H) == 0;
-    ok = ok && cu.MemAlloc(&S->hn, fb * S->SR) == 0 && cu.MemsetD8(S->hn, 0, fb * S->SR) == 0 &&
-         cu.MemAlloc(&S->logits, fb * (size_t)P->V) == 0;
+    for (size_t k = 0; ok && k < sizeof one / sizeof *one; k++) ok = st_alloc(S, one[k], fb * (size_t)H);
+    ok = ok && st_alloc(S, &S->hn, fb * S->SR) && cu.MemsetD8(S->hn, 0, fb * S->SR) == 0 &&
+         st_alloc(S, &S->logits, fb * (size_t)P->V);
     // the cores' scratch at one position, reserved here so a step grows nothing (the cores refuse a short buffer)
     int maxC = 0, maxR = 0, maxQ = 0, maxnh = 0, maxdr = 0, maxext = 0;
     for (int a = 0; a < n; a++) {
@@ -14338,12 +14346,30 @@ bool gpu_ink2_step_set(gpu_ink2 *h, const gpu_ink2_step_plan *P) {
     return ok;
 }
 bool gpu_ink2_step_ready(const gpu_ink2 *h) { return h && h->step; }
-// the bytes gpu_ink2_step_set allocates for its program at this shape (the fit counts them on the copy)
-size_t gpu_ink2_step_bytes(int n_app, int H, int V) {
-    if (n_app <= 0 || H <= 0 || V <= 0) return 0;
-    const size_t fb = sizeof(float), SR = (size_t)(1 + INK2_XPAD) * (size_t)H, n = (size_t)n_app;
-    return sizeof(int) * (n + 2) * (3 * (n + 2) + 1) + fb * SR * ST_NRAW + fb * (n + 2) * (size_t)H + fb * 3 * SR +
-           fb * (3 + 3 + 4 + 7) * (size_t)H + fb * SR + fb * (size_t)V;
+// the allocations gpu_ink2_step_set makes for its program at this shape, in its order (the fit rounds each by the
+// driver's rule; the stage-3 read's F1). The index list is its bound: the walk's lists never exceed it. Returns 16.
+int gpu_ink2_step_sizes(int n_app, int H, int V, size_t out[16]) {
+    if (n_app <= 0 || H <= 0 || V <= 0 || !out) return 0;
+    const size_t fb = sizeof(float), SR = (size_t)(1 + INK2_XPAD) * (size_t)H, n = (size_t)n_app, h = (size_t)H;
+    const size_t s[16] = { sizeof(int) * (n + 2) * (3 * (n + 2) + 1), fb * SR * ST_NRAW, fb * (n + 2) * h, fb * 3 * SR,
+                           fb * 3 * h, fb * 3 * h, fb * 4 * h, fb * h, fb * h, fb * h, fb * h, fb * h, fb * h, fb * h,
+                           fb * SR, fb * (size_t)V };
+    memcpy(out, s, sizeof s);
+    return 16;
+}
+// TEST-ONLY (gpu.h): the program's allocations as gpu_ink2_step_set made them (the index list at its real length),
+// and a device tensor's bytes
+int gpu_ink2_test_step_allocs(gpu_ink2 *h, size_t out[16]) {
+    if (!h || !out) return -1;
+    pthread_mutex_lock(&h->mu);
+    const int n = h->step ? h->step->n_alloc : 0;
+    if (h->step) memcpy(out, h->step->alloc, sizeof(size_t) * (size_t)n);
+    pthread_mutex_unlock(&h->mu);
+    return n;
+}
+size_t gpu_ink2_test_tensor_bytes(gpu_ink2 *h, int i) {
+    if (!h || i < 0 || i >= h->n) return 0;
+    return h->t[i].bytes + sizeof(float) * (size_t)h->t[i].n_scale;
 }
 // one host transfer of the step, counted (in_app: inside the applications' loop, the bar's per-application count)
 static bool st_htod(gpu_ink2 *h, CUdeviceptr d, const void *s, size_t b, bool in_app) {

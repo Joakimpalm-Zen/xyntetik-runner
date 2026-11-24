@@ -70,6 +70,11 @@ long   model_inkling2_cuda_msg_calls(const model_t *m);
 long   model_inkling2_cuda_route_calls(const model_t *m);
 // R4.48.9, TEST-ONLY (D1d.3b): the resident decode steps this instance ran since its load, -1 when it has no step
 long   model_inkling2_cuda_step_calls(const model_t *m);
+// R4.48.9, TEST-ONLY (the stage-3 read's F1): the resident step's bytes as the fit counted them against what was
+// allocated, each term by the driver's rounding: out[0] the copy's step part as counted, out[1] as allocated (its small
+// tensors + the program's allocations), out[2] one slot's post copies as counted, out[3] as allocated; out[4] 1 when
+// every program allocation equals the fit's term in order (the index list: at most its bound). False: no step
+bool   model_inkling2_cuda_step_bytes(const model_t *m, size_t out[5]);
 // R4.48.9, TEST-ONLY: the device products' output buffer's bytes now (the fit's reservation unless a product grew it),
 // 0 off the device
 size_t model_inkling2_cuda_lin_out_bytes(const model_t *m);
