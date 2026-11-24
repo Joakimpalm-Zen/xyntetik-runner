@@ -190,6 +190,34 @@ static double swiglu_worst(float gc, float uc, int F, int ctl, float *wg, float 
     return worst;
 }
 
+// R4.48.26: the outputs of the route's SwiGLU (ink2_swiglu_range, as the fast route's expert body calls it) that differ
+// in their bits from the reference route's scalar ink2_swiglu, over every (g, u) pair of swiglu_inputs; the first
+// differing pair in *fg, *fu
+static long swiglu_bit_diffs(float gc, float uc, int F, float *fg, float *fu) {
+    float vals[1 + 2 * NMAG];
+    const int nv = swiglu_inputs(vals);
+    const int npairs = nv * nv, rows = (npairs + F - 1) / F;
+    float *act = calloc((size_t)rows * 2 * F, sizeof(float));
+    if (!act) { printf("FAIL: cannot allocate the SwiGLU identity sweep\n"); exit(1); }
+    for (int p = 0; p < rows * F; p++) {
+        const int q = p % npairs;
+        act[(size_t)(p / F) * 2 * F + p % F] = vals[q / nv];
+        act[(size_t)(p / F) * 2 * F + F + p % F] = vals[q % nv];
+    }
+    ink2_test_swiglu(gc, uc, act, F, rows);
+    long nd = 0;
+    for (int p = 0; p < rows * F; p++) {
+        const int q = p % npairs;
+        const float want = ink2_test_swiglu_ref(gc, uc, vals[q / nv], vals[q % nv]);
+        if (memcmp(&want, &act[(size_t)(p / F) * 2 * F + p % F], sizeof want)) {
+            if (!nd) { *fg = vals[q / nv]; *fu = vals[q % nv]; }
+            nd++;
+        }
+    }
+    free(act);
+    return nd;
+}
+
 // ---- ATTENTION -------------------------------------------------------------------------------------------------
 static uint64_t rng = 0x9e3779b97f4a7c15ull;
 static double gauss(void) {   // Box-Muller on a 64-bit LCG: reproducible, no libc rand
@@ -279,6 +307,15 @@ int main(int argc, char **argv) {
         w = swiglu_worst(4.0f, 25.0f, 64, 1, &wg, &wu);
         CHECK(w > 20.0, "CONTROL: the cancelling tanh fails the SwiGLU sweep (worst %.2f u, g %.3g u %.3g)", w, wg, wu);
     }
+    // R4.48.26: the fast route's SwiGLU IS the reference route's scalar one, bit for bit
+    for (int c = 0; c < 2; c++)
+        for (int F = 64; F <= 67; F += 3) {
+            float fg = 0, fu = 0;
+            const long nd = swiglu_bit_diffs(caps[c][0], caps[c][1], F, &fg, &fu);
+            CHECK(nd == 0, "swiglu caps %g/%g F %d: the fast route's outputs equal the reference route's scalar "
+                  "ink2_swiglu bit for bit (%ld differ; the first at g %.9g u %.9g)", caps[c][0], caps[c][1], F, nd,
+                  fg, fu);
+        }
 
     const int nks[] = { 1, 2, 7, 8, 9, 15, 16, 17, 33, 500, 1024, 1025, 2000 };
     const double spreads[] = { 1.0, 9.0 };

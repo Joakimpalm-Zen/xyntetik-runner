@@ -2291,6 +2291,13 @@ void ink2_test_swiglu(float gate_cap, float up_cap, float *act, int F, int n) {
     ink2_swiglu_ctx sw = { &s, act, F, nb };
     ink2_swiglu_range(&sw, 0, (int64_t)n * nb);
 }
+float ink2_test_swiglu_ref(float gate_cap, float up_cap, float g, float u) {
+    ink2_shape s;
+    memset(&s, 0, sizeof s);
+    s.gate_cap = gate_cap;
+    s.up_cap = up_cap;
+    return ink2_swiglu(&s, g, u);
+}
 ink2_status ink2_test_attn_core(int fast, int hd, int nk, const float *q, const float *k, const float *v, float sink,
                                 float *out) {
     if (hd < 1 || nk < 1) return INK2_BAD_INPUT;

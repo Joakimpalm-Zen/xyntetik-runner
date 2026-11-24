@@ -291,12 +291,14 @@ ink2_rel_probe *ink2_active_rel_probe(void);
 //   a scalar tail, as the route's callers take them. Returns 0, or -1 for an unknown fn.
 // - ink2_test_swiglu: the SwiGLU of n rows of act [n][2F] (the gate's F values then the up's), in place, through the
 //   route's ink2_swiglu_range, with the given softcaps.
+// - ink2_test_swiglu_ref (R4.48.26): the reference route's scalar SwiGLU (ink2_swiglu) of one gate and up value.
 // - ink2_test_attn_core: one query against nk keys of one head (hd wide, keys and values nk x hd, a sink logit, no
 //   relative bias, every key admitted), through the fast core (fast = 1) or the reference core (fast = 0); out [hd].
 enum { INK2_VM_EXP = 0, INK2_VM_TANH = 1 };
 const char *ink2_test_vmath_form(void);
 int ink2_test_vmath(int fn, const float *x, float *y, int n);
 void ink2_test_swiglu(float gate_cap, float up_cap, float *act, int F, int n);
+float ink2_test_swiglu_ref(float gate_cap, float up_cap, float g, float u);
 ink2_status ink2_test_attn_core(int fast, int hd, int nk, const float *q, const float *k, const float *v, float sink,
                                 float *out);
 
