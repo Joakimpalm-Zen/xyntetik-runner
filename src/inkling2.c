@@ -62,18 +62,26 @@ static inline __m256 ink2_vexp8(__m256 x) {
     res = _mm256_blendv_ps(res, _mm256_set1_ps(INFINITY), imask);
     return _mm256_blendv_ps(res, _mm256_add_ps(x, x), nmask);
 }
+// tanh in float32 without cancellation (R4.48.25): below 0.625 an odd polynomial, x + x s P(s) with s = x^2
+// (Cephes' tanhf coefficients); from 0.625 up 1 - 2 / (e^{2|x|} + 1), which cannot cancel there (tanh >= 0.55, so the
+// subtraction loses no digit), saturating to 1 once e^{2|x|} does. The sign is x's (tanh is odd). Within 4 u of the
+// double tanh at every float (tests/test_inkling2_vmath.c); R4.48.20's (1 - e^{-2|x|}) / (1 + e^{-2|x|}) cancelled to
+// 246 u near |x| = 1e-3
 static inline __m256 ink2_vtanh8(__m256 x) {
     const __m256 sgn = _mm256_set1_ps(-0.0f);
     const __m256 one = _mm256_set1_ps(1.0f);
     const __m256 ax = _mm256_andnot_ps(sgn, x);
-    const __m256 em2 = ink2_vexp8(_mm256_mul_ps(_mm256_set1_ps(-2.0f), ax));
-    __m256 r = _mm256_div_ps(_mm256_sub_ps(one, em2), _mm256_add_ps(one, em2));
-    r = _mm256_or_ps(r, _mm256_and_ps(x, sgn));
-    const __m256 tiny = _mm256_cmp_ps(ax, _mm256_set1_ps(1e-3f), _CMP_LT_OQ);
-    const __m256 poly = _mm256_mul_ps(x, _mm256_fnmadd_ps(_mm256_mul_ps(x, x), _mm256_set1_ps(1.0f / 3.0f), one));
-    r = _mm256_blendv_ps(r, poly, tiny);
-    const __m256 sat = _mm256_cmp_ps(ax, _mm256_set1_ps(10.0f), _CMP_GE_OQ);
-    return _mm256_blendv_ps(r, _mm256_or_ps(one, _mm256_and_ps(x, sgn)), sat);
+    const __m256 s = _mm256_mul_ps(ax, ax);
+    __m256 p = _mm256_set1_ps(-5.70498872745e-3f);
+    p = _mm256_fmadd_ps(p, s, _mm256_set1_ps(2.06390887954e-2f));
+    p = _mm256_fmadd_ps(p, s, _mm256_set1_ps(-5.37397155531e-2f));
+    p = _mm256_fmadd_ps(p, s, _mm256_set1_ps(1.33314422036e-1f));
+    p = _mm256_fmadd_ps(p, s, _mm256_set1_ps(-3.33332819422e-1f));
+    const __m256 small = _mm256_fmadd_ps(_mm256_mul_ps(p, s), ax, ax);
+    const __m256 e = ink2_vexp8(_mm256_add_ps(ax, ax));
+    const __m256 large = _mm256_sub_ps(one, _mm256_div_ps(_mm256_set1_ps(2.0f), _mm256_add_ps(e, one)));
+    const __m256 r = _mm256_blendv_ps(large, small, _mm256_cmp_ps(ax, _mm256_set1_ps(0.625f), _CMP_LT_OQ));
+    return _mm256_or_ps(r, _mm256_and_ps(x, sgn));
 }
 #elif INK2_SIMD_NEON
 static inline float32x4_t ink2_vexp4(float32x4_t x) {
@@ -104,20 +112,23 @@ static inline float32x4_t ink2_vexp4(float32x4_t x) {
     res = vbslq_f32(imask, vdupq_n_f32(INFINITY), res);
     return vbslq_f32(nmask, vaddq_f32(x, x), res);
 }
+// tanh in float32 without cancellation (R4.48.25): ink2_vtanh8's steps (see there), four lanes
 static inline float32x4_t ink2_vtanh4(float32x4_t x) {
     const uint32x4_t smask = vdupq_n_u32(0x80000000u);
     const float32x4_t one = vdupq_n_f32(1.0f);
     const float32x4_t ax = vabsq_f32(x);
-    const float32x4_t em2 = ink2_vexp4(vmulq_n_f32(ax, -2.0f));
-    float32x4_t r = vdivq_f32(vsubq_f32(one, em2), vaddq_f32(one, em2));
+    const float32x4_t s = vmulq_f32(ax, ax);
+    float32x4_t p = vdupq_n_f32(-5.70498872745e-3f);
+    p = vfmaq_f32(vdupq_n_f32(2.06390887954e-2f), p, s);
+    p = vfmaq_f32(vdupq_n_f32(-5.37397155531e-2f), p, s);
+    p = vfmaq_f32(vdupq_n_f32(1.33314422036e-1f), p, s);
+    p = vfmaq_f32(vdupq_n_f32(-3.33332819422e-1f), p, s);
+    const float32x4_t small = vfmaq_f32(ax, vmulq_f32(p, s), ax);
+    const float32x4_t e = ink2_vexp4(vaddq_f32(ax, ax));
+    const float32x4_t large = vsubq_f32(one, vdivq_f32(vdupq_n_f32(2.0f), vaddq_f32(e, one)));
+    const float32x4_t r = vbslq_f32(vcltq_f32(ax, vdupq_n_f32(0.625f)), small, large);
     const uint32x4_t xsgn = vandq_u32(vreinterpretq_u32_f32(x), smask);
-    r = vreinterpretq_f32_u32(vorrq_u32(vreinterpretq_u32_f32(r), xsgn));
-    const uint32x4_t tiny = vcltq_f32(ax, vdupq_n_f32(1e-3f));
-    const float32x4_t poly = vmulq_f32(x, vfmsq_f32(one, vmulq_f32(x, x), vdupq_n_f32(1.0f / 3.0f)));
-    r = vbslq_f32(tiny, poly, r);
-    const uint32x4_t sat = vcgeq_f32(ax, vdupq_n_f32(10.0f));
-    const float32x4_t sone = vreinterpretq_f32_u32(vorrq_u32(vreinterpretq_u32_f32(one), xsgn));
-    return vbslq_f32(sat, sone, r);
+    return vreinterpretq_f32_u32(vorrq_u32(vreinterpretq_u32_f32(r), xsgn));
 }
 #endif
 
