@@ -4592,6 +4592,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_embeddings_pooling.py \
     tests/test_envelope_gate.py \
     tests/test_envelope_swap.py \
+    tests/test_error_messages_whole.py \
     tests/test_eseries.py \
     tests/test_eval_record.py \
     tests/test_evidence_pack.py \

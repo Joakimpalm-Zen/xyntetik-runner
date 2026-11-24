@@ -16,6 +16,23 @@
 #include <stdbool.h>
 
 #include "json.h"
+#include <stdio.h>
+#include <string.h>
+
+// A request's own string echoed in a refusal, never cut without saying so (R4.48.25.1). s itself when it is at most
+// ERR_ECHO_MAX bytes; else its first ERR_ECHO_MAX bytes, ending on a UTF-8 boundary, then "... (N bytes)". It was
+// echoed whole into the refusal's fixed buffer, which a long value cut mid-sentence without a word. ERR_ECHO_CAP:
+// 64 bytes, "... (" 5, a size_t's 20 digits, " bytes)" 7 and the NUL = 97. A refusal that echoes one sizes its buffer
+// for its own text plus ERR_ECHO_CAP, which gcc's -Wformat-truncation checks at build time.
+enum { ERR_ECHO_MAX = 64, ERR_ECHO_CAP = 100 };
+static inline const char *err_echo(char out[ERR_ECHO_CAP], const char *s) {
+    size_t n = strlen(s);
+    if (n <= ERR_ECHO_MAX) { memcpy(out, s, n + 1); return out; }
+    size_t k = ERR_ECHO_MAX;
+    while (k > 0 && ((unsigned char)s[k] & 0xC0) == 0x80) k--;   // s[k] would start a cut UTF-8 sequence's tail
+    snprintf(out, ERR_ECHO_CAP, "%.*s... (%zu bytes)", (int)k, s, n);
+    return out;
+}
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN

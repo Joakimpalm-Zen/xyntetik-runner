@@ -89,9 +89,10 @@ static char *anth_tool_result_text(jv *b, char *err, int errcap) {
                 return NULL;
             }
             if (strcmp(type, "text")) {
+                char te[ERR_ECHO_CAP];
                 snprintf(err, errcap,
                          "tool_result.content[%d] type %s is unsupported; "
-                         "Runner accepts text tool results only", i, type);
+                         "Runner accepts text tool results only", i, err_echo(te, type));
                 free(r.s);
                 return NULL;
             }
