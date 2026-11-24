@@ -12,8 +12,8 @@ the CPU an error):
 - a pin of P and a request naming it gives the automatic fork's tokens and logprobs bit for bit (both load the same
   snapshot, KV rows and fold, and feed the same question), and the text of a cold prefill of the same prompt (its
   logprobs to 1e-5: the cold prompt runs the question at another batch width);
-- the pin exported to a snapshot file and imported into a new process gives the pin's bits again (qwen4exp: its
-  text, and its logprobs to 1e-3, for a PLE difference of imports the CPU has too; see the test).
+- the pin exported to a snapshot file and imported into a new process gives the pin's bits again, every family
+  (qwen4exp too since R4.48.22.1: a fold load rebuilds its PLE n-gram token history from the forked tokens).
 On the Metal backend a recurrent model's pin and import stay refused (409 context_unsupported, the message naming the
 Metal backend): measured on an arm64 Mac, the pin's own prefill rounds differently from a completion's there for
 nemotron-H (its pinned fork 4.7e-7 from the automatic fork) and lfm2 (3.5e-3 from a cold prefill), while the snapshot
@@ -219,14 +219,6 @@ def test_a_pinned_context_on_the_device_forks_as_the_automatic_tier_does(runner_
         imp = _complete(srv, prompt, context_id="inv-sys2")
     tel = imp["runner_telemetry"]
     assert tel["prompt_cached_tokens"] == n and tel["prompt_reuse"] == "prefix_cache", (name, tel)
-    if name == "qwen4exp":
-        # qwen4exp's PLE n-gram block: a context imported into a new process does not restore quite the pin's PLE
-        # state. That is so on the CPU too and is not the device's (with the fixture's PLE zeroed,
-        # QWEN4EXP_TEST_ZERO=ple, the import is the pin's bit for bit, on the CPU and on CUDA), so here the text is
-        # held and the logprobs to 1e-3 (measured 1.0e-4)
-        assert _ans(imp)[0] == _ans(warm)[0], (name, _ans(imp), _ans(warm))
-        assert _ans(imp)[1] == pytest.approx(_ans(warm)[1], abs=1e-3), (name, _ans(imp), _ans(warm))
-    else:
-        assert _ans(imp) == _ans(warm), (name, _ans(imp), _ans(warm))
+    assert _ans(imp) == _ans(warm), (name, _ans(imp), _ans(warm))
     for log in logs:
         _on_device(log, backend)

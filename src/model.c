@@ -10803,6 +10803,11 @@ bool model_recurrent_blob_save(const model_t *m, uint8_t *dst) {
 bool model_recurrent_blob_load(model_t *m, const uint8_t *src,
                                const int32_t *toks, int n) {
     if (!rec_fold(m)) return false;
+    // qwen4exp: the PLE block hashes each token's n-grams with the token's predecessors, read from the token history
+    // the feed writes (ple4_prev, ple4_rows), which the blob does not hold: a fold installed without the tokens it
+    // was taken over would leave the next ngram - 1 tokens hashing another sequence's, or none, so it is refused
+    // before anything changes (see below for the rebuild)
+    if (m->ple4_prev && (!toks || n < 1 || n > m->n_ctx)) return false;
     size_t cb = recurrent_conv_bytes(m), sb = recurrent_state_bytes(m);
     memcpy(m->ssm_conv_state, src, cb);
     memcpy(m->ssm_state_mem, src + cb, sb);
@@ -10818,6 +10823,11 @@ bool model_recurrent_blob_load(model_t *m, const uint8_t *src,
         memcpy(m->seq, toks, sizeof(int32_t) * (size_t)n);
         m->seq_n = n;
     }
+    // and the tokens the fold was taken over become that history: left as it was, the first ngram - 1 tokens after
+    // a fork hashed the slot's previous prompt's tokens, or, in a new process, none (R4.48.22.1: an imported
+    // context, a pin forked after a longer prompt and the automatic prefix tier's fork each answered about 1e-4 off
+    // the cold prefill). Positions from n on are written by the feed before any token reads them.
+    if (m->ple4_prev) memcpy(m->ple4_prev, toks, sizeof(int32_t) * (size_t)n);
     // and pushed back onto the device layers (see blob_save)
     if (m->gpu && !gpu_recurrent_upload(m)) return false;
     return true;

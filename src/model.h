@@ -1652,8 +1652,11 @@ bool model_recurrent_restore_row(model_t *m, int r);
 // not sliceable, so a load is only valid at the exact position it was saved.
 size_t model_recurrent_blob_bytes(const model_t *m);
 bool model_recurrent_blob_save(const model_t *m, uint8_t *dst);
-// `toks[0, n)`: the sequence the blob's fold was taken over (NULL when the
-// caller does not hold it), which a later rebuild of the fold feeds again
+// `toks[0, n)`: the sequence the blob's fold was taken over, which a later
+// rebuild of the fold feeds again and which becomes qwen4exp's PLE token
+// history (R4.48.22.1). NULL when the caller does not hold it, which a
+// qwen4exp model refuses (false, nothing changed): its next tokens hash their
+// predecessors, and a fold without them cannot be continued exactly.
 bool model_recurrent_blob_load(model_t *m, const uint8_t *src,
                                const int32_t *toks, int n);
 // Turn mark (tracer 7). The snapshot above is the rollback slot: spec-decode

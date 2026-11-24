@@ -4416,12 +4416,14 @@ test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SC
 	@# the host files a per-row recurrent checkpoint on every verify forward
 	@# for qwen35 and the Mamba-2 hybrids (Granite MoE and dense, Nemotron-H's
 	@# grouped scan): a partial round restores the state after its last kept
-	@# row, and the next round's rows must still be the plain path's bits
+	@# row, and the next round's rows must still be the plain path's bits;
+	@# qwen4exp (R4.48.22.1): a fold reloaded with no tokens named is refused,
+	@# and the reference's reloads, naming them, stay the verify rows' bits
 	$(PYTHON) scripts/make-test-hybrid.py test-spec-cpu-granite > /dev/null
 	$(PYTHON) scripts/make-test-hybrid.py test-spec-cpu-granite-dense --dense --rope > /dev/null
 	$(PYTHON) scripts/make-test-nemotron.py test-spec-cpu-nemotron > /dev/null
 	@for f in test-ornith.gguf test-spec-cpu-granite.gguf test-spec-cpu-granite-dense.gguf \
-	  test-spec-cpu-nemotron.gguf; do ./$(TEST_SPEC_ID) $$f cpu || exit 1; done
+	  test-spec-cpu-nemotron.gguf test-qwen4exp.gguf; do ./$(TEST_SPEC_ID) $$f cpu || exit 1; done
 	$(PYTHON) scripts/check-generated.py
 	$(MAKE) --no-print-directory test-moe PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-deepseek2 PYTHON="$(PYTHON)"
@@ -4656,6 +4658,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_pe_buildid_link.py \
     tests/test_phi3_rope.py \
     tests/test_phys_footprint.py \
+    tests/test_ple_fork_history.py \
     tests/test_port_in_use.py \
     tests/test_prefix_budget.py \
     tests/test_prefix_scored.py \
@@ -5175,7 +5178,10 @@ CUDA_GATED_TESTS = tests/test_apertus.py tests/test_gpu_declines.py tests/test_a
                    tests/test_transcript.py tests/test_spec_gpu.py \
                    tests/test_server_sessions.py tests/test_draft_k_defaults.py \
                    tests/test_draft_defaults.py tests/test_tc_spark_promotion.py tests/test_tc_clef_promotion.py tests/test_tc_route_label.py tests/test_verify_tc_compat.py tests/test_cuda_plan_runs.py tests/test_cuda_fit_hybrid.py tests/test_cuda_fit_ring.py tests/test_cuda_fit_full_offload.py tests/test_cuda_rec_slots.py tests/test_attn_dec_repeat.py tests/test_qwen35_kv_rows.py \
-                   tests/test_phi3_rope.py tests/test_moe_limb_default.py tests/test_recurrent_device_contexts.py
+                   tests/test_phi3_rope.py tests/test_moe_limb_default.py tests/test_recurrent_device_contexts.py \
+                   tests/test_ple_fork_history.py
+# test_ple_fork_history.py's CUDA case forks qwen4exp's automatic prefix tier
+# on the device after a longer prompt (R4.48.22.1); it must not skip here.
 # test_moe_limb_default.py holds moe-limb's selection as the default for
 # gemma-4's Q4_0 experts (R3.83): every case needs a CUDA device.
 # test_recurrent_device_contexts.py pins, forks and imports a recurrent
