@@ -146,6 +146,8 @@ static const char *TEXT =
 
 // set by run() when a device run lost its backend part-way (see run())
 static bool g_fell_back;
+// set by run() when a load did not take the cache GPU_ID_KV asked for
+static bool g_kv_dropped;
 
 static float *run(const char *path, int gpu_mode, int *n_vocab_out,
                   bool *used_gpu, const int32_t *toks, int n_tok) {
@@ -174,6 +176,11 @@ static float *run(const char *path, int gpu_mode, int *n_vocab_out,
     if (kv && !strcmp(kv, "q8")) p.kv_q8 = true;
     else if (kv && !strcmp(kv, "fp4")) p.kv_fp4 = true;
     else if (kv && !strcmp(kv, "k8v4")) p.kv_split = true;
+    // GPU_ID_KV=f32 (R4.50.5): both arms keep an f32 cache, so the bound sees
+    // the arithmetic without the f16 rows' rounding: two values a few ulps
+    // apart that round to neighbouring f16 values move olmo2's toys by 7.9e-6
+    // of range against 7.9e-8 with f32 rows
+    else if (kv && !strcmp(kv, "f32")) p.kv_f32 = true;
     // GPU_ID_CPU_MOE=1: the device arm keeps every expert bank on the host
     // (--cpu-moe), the shape a router with no device kernel runs in (R3.43a:
     // nemotron_h_moe routes on the host while the trunk runs on the device).
@@ -192,6 +199,12 @@ static float *run(const char *path, int gpu_mode, int *n_vocab_out,
     *n_vocab_out = m.n_vocab;
     g_expert_used = m.n_expert > 0 ? m.n_expert_used : 0;
     const bool loaded_on_gpu = m.gpu != NULL;
+    // R4.50.5: a GPU_ID_KV cache the load did not take (it keeps f16 with a
+    // note: a head width the format's blocks do not divide, or a backend
+    // without its kernels) would compare f16 rows under that cache's name
+    if ((p.kv_q8 && !m.kv_q8) || (p.kv_fp4 && !m.kv_fp4) || (p.kv_split && !m.kv_split) ||
+        (p.kv_f32 && !m.kv_f32))
+        g_kv_dropped = true;
 
     float *out = malloc(sizeof(float) * (size_t)STEPS * (size_t)m.n_vocab);
     if (!out) { model_free(&m); return NULL; }
@@ -418,6 +431,13 @@ int main(int argc, char **argv) {
     if (!cpu) { printf("gpu-identity: FAILED (cpu run)\n"); return 1; }
     float *gpu = run(path, GPU_AUTO, &nv_gpu, &gpu_used_gpu, toks, n_tok);
     if (!gpu) { free(cpu); printf("gpu-identity: FAILED (gpu run)\n"); return 1; }
+    if (g_kv_dropped) {
+        printf("FAIL: GPU_ID_KV=%s did not engage (the load kept the f16 cache, see its kv: line): the "
+               "comparison would hold f16 rows under that cache's name\ngpu-identity: FAILED\n",
+               getenv("GPU_ID_KV"));
+        free(cpu); free(gpu);
+        return 1;
+    }
     if (g_fell_back) {
         printf("FAIL: the device run lost its backend part-way and finished on the CPU "
                "(a device fault; see the gpu: lines above)\ngpu-identity: FAILED\n");
