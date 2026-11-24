@@ -27,6 +27,10 @@ snode *sn_new(int kind) {
     if (!n) return NULL;
     n->kind = kind;
     n->max_items = -1;
+    if (kind == SN_OBJ) {
+        const char *e = getenv("RUNNER_SCHEMA_ORDERED");
+        n->ordered = e && *e && strcmp(e, "0") != 0;
+    }
     return n;
 }
 
@@ -2148,6 +2152,36 @@ static bool close_allowed(const snode *n, int from, int branch) {
     return true;
 }
 
+// JSON object candidates and close guard (R4.48.23): free key order by
+// default using sframe.num_abs as a 64-bit seen mask (properties <= 60),
+// keeping discriminator / SN_COND keys gated until branch >= 0; falls back
+// to declaration order when compiled under RUNNER_SCHEMA_ORDERED=1.
+static uint64_t obj_key_candidates(const snode *n, const sframe *f, int branch) {
+    if (n->ordered) return key_candidates(n, f->idx, branch);
+    uint64_t seen = f->num_abs;
+    if (n->discriminated && branch < 0)
+        return (n->n_props > 0 && !(seen & 1ull)) ? 1ull : 0;
+    uint64_t m = 0;
+    for (int i = 0; i < n->n_props; i++) {
+        if (seen & (1ull << i)) continue;
+        if (branch < 0 && n->props[i]->kind == SN_COND) continue;
+        if (!prop_in(n, i, branch)) continue;
+        m |= 1ull << i;
+    }
+    return m;
+}
+
+static bool obj_close_allowed(const snode *n, const sframe *f, int branch) {
+    if (n->ordered) return close_allowed(n, f->idx, branch);
+    if (n->discriminated && branch < 0) return false;
+    uint64_t seen = f->num_abs;
+    for (int i = 0; i < n->n_props; i++) {
+        if (seen & (1ull << i)) continue;
+        if (prop_req(n, i, branch)) return false;
+    }
+    return true;
+}
+
 // Native ordered members use one extra candidate bit for the closing literal.
 // A close is reachable only when no required member remains, exactly as for a
 // JSON object; already-consumed members lie below `from`, so duplicates and
@@ -3357,7 +3391,7 @@ static int feed_byte(sval *v, uint8_t c) {
         case SN_OBJ:
         case SN_MAP:
             if (c != '{') return -1;
-            f->phase = P_OBJ_KEY1; f->idx = 0;
+            f->phase = P_OBJ_KEY1; f->idx = 0; f->num_abs = 0;
             return 0;
         case SN_ARR:
             if (c != '[') return -1;
@@ -3552,7 +3586,7 @@ static int feed_byte(sval *v, uint8_t c) {
     case P_OBJ_KEY:
         if (json_is_ws(c)) return 0;
         if (c == '}' && f->phase == P_OBJ_KEY1) {
-            if (n->kind == SN_OBJ && !close_allowed(n, f->idx, (int)f->disc - 1)) return -1;
+            if (n->kind == SN_OBJ && !obj_close_allowed(n, f, (int)f->disc - 1)) return -1;
             frame_done(v);
             return 0;
         }
@@ -3569,7 +3603,7 @@ static int feed_byte(sval *v, uint8_t c) {
             f->phase = P_OBJ_INKEY;
             return 0;
         }
-        f->alive = key_candidates(n, f->idx, (int)f->disc - 1);
+        f->alive = obj_key_candidates(n, f, (int)f->disc - 1);
         if (!f->alive) return -1;
         f->phase = P_OBJ_INKEY;
         f->lit_pos = 0;
@@ -3637,6 +3671,7 @@ static int feed_byte(sval *v, uint8_t c) {
                 if ((f->alive & (1ull << i)) && n->key_len[i] == f->lit_pos) {
                     f->idx = i + 1;
                     f->sub = i; // remember which prop for the value
+                    f->num_abs |= 1ull << i;
                     f->phase = P_OBJ_COLON;
                     return 0;
                 }
@@ -3663,8 +3698,7 @@ static int feed_byte(sval *v, uint8_t c) {
     case P_OBJ_NEXT:
         if (json_is_ws(c)) return 0;
         if (c == ',') {
-            if (n->kind == SN_OBJ &&
-                (f->idx >= n->n_props || !key_candidates(n, f->idx, (int)f->disc - 1))) return -1;
+            if (n->kind == SN_OBJ && !obj_key_candidates(n, f, (int)f->disc - 1)) return -1;
             // FAIL CLOSED at guard capacity: a comma the guard could not
             // track would reopen the duplicate hole the guard exists to
             // close, so the map cannot grow past it — but `}` stays legal
@@ -3674,7 +3708,7 @@ static int feed_byte(sval *v, uint8_t c) {
             return 0;
         }
         if (c == '}') {
-            if (n->kind == SN_OBJ && !close_allowed(n, f->idx, (int)f->disc - 1)) return -1;
+            if (n->kind == SN_OBJ && !obj_close_allowed(n, f, (int)f->disc - 1)) return -1;
             frame_done(v);
             return 0;
         }
@@ -4342,15 +4376,17 @@ static void emit_min_choice(emitq *q, const snode *n, int depth, int choice) {
 // need_comma: a ',' must precede the first emitted property.
 // force_one: at least one property must be emitted (a ',' was already
 // consumed, so a bare '}' would be invalid JSON).
-static void close_obj(emitq *q, const snode *n, int from, bool need_comma,
-                      bool force_one, int choice) {
+static void close_obj(emitq *q, const snode *n, const sframe *f,
+                      bool need_comma, bool force_one, int choice) {
     // A discriminated object whose discriminator is not complete yet closes
     // in branch 0: the discriminator itself is emitted as lits[0] (or was
     // completed by close_literal_frame, which set the frame's choice).
     if (n->discriminated && choice < 0) choice = 0;
     int branch = n->discriminated ? choice : -1;
     bool emitted = false;
-    for (int i = from; i < n->n_props; i++) {
+    int start = n->ordered ? f->idx : 0;
+    for (int i = start; i < n->n_props; i++) {
+        if (!n->ordered && (f->num_abs & (1ull << i))) continue;
         if (!prop_req(n, i, branch)) continue;
         if (need_comma) eq_putc(q, ',');
         need_comma = true;
@@ -4359,9 +4395,11 @@ static void close_obj(emitq *q, const snode *n, int from, bool need_comma,
         emit_min_choice(q, n->props[i], 0, choice);
     }
     if (force_one && !emitted) {
-        // a ',' was consumed, so some key must follow: the first one this
-        // branch has (the comma was only admitted because one exists)
-        for (int i = from; i < n->n_props; i++) {
+        // a ',' was consumed, so some key must follow: the first unseen one
+        // this branch has (the comma was only admitted because one exists)
+        for (int i = start; i < n->n_props; i++) {
+            if (!n->ordered && (f->num_abs & (1ull << i))) continue;
+            if (!n->ordered && branch < 0 && n->props[i]->kind == SN_COND) continue;
             if (!prop_in(n, i, branch)) continue;
             eq_putc(q, '"'); eq_put(q, n->keys[i]); eq_put(q, "\":");
             emit_min_choice(q, n->props[i], 0, choice);
@@ -4505,9 +4543,10 @@ static void close_inkey_frame(sval *v, emitq *q, const snode *n, sframe *f,
         eq_put(q, "\":");
         emit_min_choice(q, n->props[i], 0, choice);
         f->idx = i + 1;
+        f->num_abs |= 1ull << i;
         break;
     }
-    close_obj(q, n, f->idx, true, false, choice);
+    close_obj(q, n, f, true, false, choice);
 }
 
 // A native member list: finish the member in progress, then the required
@@ -4573,7 +4612,7 @@ static int sval_close_q(sval *v, emitq *q) {
             break;
         case P_OBJ_KEY1:
             if (n->kind == SN_MAP) eq_putc(q, '}');
-            else close_obj(q, n, f->idx, false, false, choice);
+            else close_obj(q, n, f, false, false, choice);
             break;
         case P_OBJ_KEY: // a ',' was already consumed
             if (n->kind == SN_MAP) {
@@ -4583,7 +4622,7 @@ static int sval_close_q(sval *v, emitq *q) {
                 eq_putc(q, '"');
                 close_map_key(v, q, n, kh, choice);
             } else {
-                close_obj(q, n, f->idx, false, true, choice);
+                close_obj(q, n, f, false, true, choice);
             }
             break;
         case P_OBJ_INKEY:
@@ -4594,11 +4633,11 @@ static int sval_close_q(sval *v, emitq *q) {
             emit_min_choice(q, n->kind == SN_MAP ? n->items : n->props[f->sub],
                             0, choice);
             if (n->kind == SN_MAP) eq_putc(q, '}');
-            else close_obj(q, n, f->idx, true, false, choice);
+            else close_obj(q, n, f, true, false, choice);
             break;
         case P_OBJ_NEXT: // a value just completed, comma needed before more
             if (n->kind == SN_MAP) eq_putc(q, '}');
-            else close_obj(q, n, f->idx, true, false, choice);
+            else close_obj(q, n, f, true, false, choice);
             break;
         case P_ARR_FIRST:
         case P_ARR_NEXT:

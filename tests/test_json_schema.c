@@ -3825,7 +3825,7 @@ static void test_schema_const_discriminated_union(void) {
     // a key the branch lacks would be a dead end for constrained sampling,
     // `"fn":` written with no value that can follow
     assert(!prefix_ok(s, "{\"op\":\"HEAD\",\"f"));
-    assert(!prefix_ok(s, "{\"op\":\"MAP\",\"a"));      // MAP's lambda comes first
+    assert(prefix_ok(s, "{\"op\":\"MAP\",\"a"));       // remaining MAP keys may come in any order (R4.48.23)
     assert(prefix_ok(s, "{\"op\":\"MAP\",\"f"));
     assert(!prefix_ok(s, "{\"op\":\"HEAD\",\"args\":[\"a\"],"));  // nothing after HEAD's args
     assert(!prefix_ok(s, "{\"a"));                     // the discriminator comes first
@@ -4800,6 +4800,158 @@ static void test_schema_segment_classes_mean_what_ecma_means(void) {
     printf("ok: segment patterns mean what ECMA means; the largest maxLength compiles and closes\n");
 }
 
+// R4.48.23: closed SN_OBJ schemas accept declared keys in any order, enforce
+// each at most once, require every required key before close, keep the
+// discriminator first on discriminated unions / tool unions, and honour
+// RUNNER_SCHEMA_ORDERED=1 as a kill switch.
+static void test_free_key_order_claim1_schemas(void) {
+    // 1. github_star (c1_094): repos(req), aligned(opt)
+    const char *s_star =
+        "{\"type\":\"object\",\"properties\":{"
+        "\"repos\":{\"type\":\"string\"},"
+        "\"aligned\":{\"type\":\"boolean\"}"
+        "},\"required\":[\"repos\"]}";
+    assert(schema_accepts(s_star, "{\"aligned\":true,\"repos\":\"octocat/Hello-World\"}"));
+    assert(schema_accepts(s_star, "{\"repos\":\"octocat/Hello-World\",\"aligned\":false}"));
+    assert(schema_accepts(s_star, "{\"repos\":\"octocat/Hello-World\"}"));
+    assert(!schema_accepts(s_star, "{\"aligned\":true}"));
+    assert(!schema_accepts(s_star, "{\"aligned\":true,\"repos\":\"a\",\"aligned\":false}"));
+    assert(!schema_accepts(s_star, "{\"extra\":1,\"repos\":\"a\"}"));
+    assert(!prefix_ok(s_star, "{\"aligned\":true,\"repos\":\"a\","));
+
+    // 2. play_spotify_song (c1_097): query(req), device_id(opt), play(opt)
+    const char *s_spotify =
+        "{\"type\":\"object\",\"properties\":{"
+        "\"query\":{\"type\":\"string\"},"
+        "\"device_id\":{\"type\":\"string\"},"
+        "\"play\":{\"type\":\"boolean\"}"
+        "},\"required\":[\"query\"]}";
+    assert(schema_accepts(s_spotify, "{\"play\":true,\"query\":\"q\"}"));
+    assert(schema_accepts(s_spotify, "{\"device_id\":\"d1\",\"play\":false,\"query\":\"q\"}"));
+    assert(schema_accepts(s_spotify, "{\"query\":\"q\"}"));
+    assert(!schema_accepts(s_spotify, "{\"device_id\":\"d1\",\"play\":true}"));
+    assert(!schema_accepts(s_spotify, "{\"play\":true,\"play\":false,\"query\":\"q\"}"));
+
+    // 3. sitefinity_create_contentitem (c1_090): all 5 required, emitted alphabetically
+    const char *s_sitefinity =
+        "{\"type\":\"object\",\"properties\":{"
+        "\"Title\":{\"type\":\"string\"},"
+        "\"Content\":{\"type\":\"string\"},"
+        "\"MetaTitle\":{\"type\":\"string\"},"
+        "\"MetaDescription\":{\"type\":\"string\"},"
+        "\"UrlName\":{\"type\":\"string\"}"
+        "},\"required\":[\"Title\",\"Content\",\"MetaTitle\",\"MetaDescription\",\"UrlName\"]}";
+    assert(schema_accepts(s_sitefinity,
+        "{\"Content\":\"c\",\"MetaDescription\":\"d\",\"MetaTitle\":\"m\",\"Title\":\"t\",\"UrlName\":\"u\"}"));
+    assert(!schema_accepts(s_sitefinity,
+        "{\"Content\":\"c\",\"MetaDescription\":\"d\",\"MetaTitle\":\"m\",\"UrlName\":\"u\"}"));
+
+    // 4. linear_regression (c1_088): x(req), y(req), point(req)
+    const char *s_linreg =
+        "{\"type\":\"object\",\"properties\":{"
+        "\"x\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}},"
+        "\"y\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}},"
+        "\"point\":{\"type\":\"integer\"}"
+        "},\"required\":[\"x\",\"y\",\"point\"]}";
+    assert(schema_accepts(s_linreg, "{\"point\":3,\"x\":[1,2],\"y\":[2,4]}"));
+    assert(schema_accepts(s_linreg, "{\"y\":[2,4],\"point\":3,\"x\":[1,2]}"));
+    assert(!schema_accepts(s_linreg, "{\"point\":3,\"x\":[1,2]}"));
+
+    // 5. fetch_weather_data (c1_079): url(opt), latitude(req), longitude(req), units(opt), language(opt)
+    const char *s_weather =
+        "{\"type\":\"object\",\"properties\":{"
+        "\"url\":{\"type\":\"string\"},"
+        "\"latitude\":{\"type\":\"number\"},"
+        "\"longitude\":{\"type\":\"number\"},"
+        "\"units\":{\"type\":\"string\",\"enum\":[\"metric\",\"imperial\"]},"
+        "\"language\":{\"type\":\"string\",\"enum\":[\"en\",\"es\",\"de\",\"fr\"]}"
+        "},\"required\":[\"latitude\",\"longitude\"]}";
+    assert(schema_accepts(s_weather, "{\"latitude\":59.3,\"longitude\":18.1}"));
+    assert(schema_accepts(s_weather,
+        "{\"language\":\"en\",\"latitude\":59.3,\"longitude\":18.1,\"units\":\"metric\",\"url\":\"https://x\"}"));
+    assert(schema_accepts(s_weather,
+        "{\"units\":\"metric\",\"longitude\":18.1,\"url\":\"https://x\",\"latitude\":59.3}"));
+    assert(!schema_accepts(s_weather, "{\"url\":\"https://x\",\"latitude\":59.3}"));
+    assert(!schema_accepts(s_weather, "{\"units\":\"metric\",\"latitude\":59.3,\"longitude\":18.1,\"units\":\"imperial\"}"));
+    puts("ok: free key order accepts reordered Claim 1 schemas and refuses duplicates/unknowns/missing required");
+}
+
+static void test_free_key_order_close_and_prefix(void) {
+    char doc[512];
+    const char *s_star =
+        "{\"type\":\"object\",\"properties\":{"
+        "\"repos\":{\"type\":\"string\"},"
+        "\"aligned\":{\"type\":\"boolean\"}"
+        "},\"required\":[\"repos\"]}";
+    // Optional key written first; close fills missing required `repos` in declaration order.
+    jv *d = close_prefix(s_star, "{\"aligned\":true", doc, sizeof(doc));
+    assert(jv_get(d, "aligned") && jv_get(d, "repos"));
+    jv_free(d);
+    // Truncated inside optional key name written first.
+    d = close_prefix(s_star, "{\"alig", doc, sizeof(doc));
+    assert(jv_get(d, "aligned") && jv_get(d, "repos"));
+    jv_free(d);
+    // Trailing comma after all required keys filled: forces one remaining optional key.
+    d = close_prefix(s_star, "{\"repos\":\"r\",", doc, sizeof(doc));
+    assert(jv_get(d, "aligned") && jv_get(d, "repos"));
+    jv_free(d);
+
+    // Partial reordered multi-required object: fill unseen required keys in declaration order.
+    const char *s_weather =
+        "{\"type\":\"object\",\"properties\":{"
+        "\"url\":{\"type\":\"string\"},"
+        "\"latitude\":{\"type\":\"number\"},"
+        "\"longitude\":{\"type\":\"number\"},"
+        "\"units\":{\"type\":\"string\",\"enum\":[\"metric\",\"imperial\"]}"
+        "},\"required\":[\"latitude\",\"longitude\"]}";
+    d = close_prefix(s_weather, "{\"units\":\"imperial\",\"longitude\":10.5", doc, sizeof(doc));
+    assert(jv_get(d, "units") && jv_get(d, "longitude") && jv_get(d, "latitude"));
+    assert(!jv_get(d, "url"));
+    jv_free(d);
+
+    // Key prefix collision under free key order: `"a"` vs `"ab"`.
+    const char *s_pfx =
+        "{\"type\":\"object\",\"properties\":{"
+        "\"a\":{\"type\":\"integer\"},"
+        "\"ab\":{\"type\":\"string\"}"
+        "},\"required\":[\"a\",\"ab\"]}";
+    assert(schema_accepts(s_pfx, "{\"ab\":\"x\",\"a\":1}"));
+    assert(schema_accepts(s_pfx, "{\"a\":1,\"ab\":\"x\"}"));
+    assert(!prefix_ok(s_pfx, "{\"a\":1,\"a\""));
+    assert(prefix_ok(s_pfx, "{\"a\":1,\"ab\""));
+    assert(!prefix_ok(s_pfx, "{\"ab\":\"x\",\"ab"));
+    puts("ok: free key order closes partial reordered objects and avoids prefix collisions");
+}
+
+static void test_free_key_order_discriminated_and_kill_switch(void) {
+    // Discriminated union keeps discriminator first, then allows remaining branch keys in any order.
+    assert(!prefix_ok(LX_STATEMENT, "{\"a"));
+    assert(!schema_accepts(LX_STATEMENT, "{\"args\":[\"a\",\"b\"],\"op\":\"TAKE\"}"));
+    assert(schema_accepts(LX_STATEMENT, "{\"op\":\"MAP\",\"args\":[\"a\"],\"fn\":\"INC\"}"));
+    assert(!schema_accepts(LX_STATEMENT, "{\"op\":\"MAP\",\"args\":[\"a\"],\"args\":[\"b\"]}"));
+
+    char doc[512];
+    jv *d = close_prefix(LX_STATEMENT, "{\"op\":\"MAP\",\"args\":[\"a\"]", doc, sizeof(doc));
+    assert(!strcmp(jv_str(jv_get(d, "op"), ""), "MAP"));
+    assert(jv_get(d, "args") && jv_get(d, "fn"));
+    jv_free(d);
+
+    // RUNNER_SCHEMA_ORDERED=1 kill switch restores declaration order.
+    const char *s_star =
+        "{\"type\":\"object\",\"properties\":{"
+        "\"repos\":{\"type\":\"string\"},"
+        "\"aligned\":{\"type\":\"boolean\"}"
+        "},\"required\":[\"repos\"]}";
+    setenv_compat("RUNNER_SCHEMA_ORDERED", "1");
+    assert(schema_accepts(s_star, "{\"repos\":\"a\",\"aligned\":true}"));
+    assert(!schema_accepts(s_star, "{\"aligned\":true,\"repos\":\"a\"}"));
+    assert(!schema_accepts(LX_STATEMENT, "{\"op\":\"MAP\",\"args\":[\"a\"],\"fn\":\"INC\"}"));
+    setenv_compat("RUNNER_SCHEMA_ORDERED", "0");
+    assert(schema_accepts(s_star, "{\"aligned\":true,\"repos\":\"a\"}"));
+    assert(schema_accepts(LX_STATEMENT, "{\"op\":\"MAP\",\"args\":[\"a\"],\"fn\":\"INC\"}"));
+    puts("ok: discriminated key order and RUNNER_SCHEMA_ORDERED kill switch hold");
+}
+
 int main(void) {
     test_schema_sibling_constraints_are_not_dropped();
     test_strict_bounded_numbers();
@@ -4902,6 +5054,9 @@ int main(void) {
     test_enum_order_is_the_stable_sorted_order();
     test_pattern_counts_past_int_are_refused();
     test_allof_patterns_are_checked_by_segment_not_by_byte();
+    test_free_key_order_claim1_schemas();
+    test_free_key_order_close_and_prefix();
+    test_free_key_order_discriminated_and_kill_switch();
     puts("json/schema tests ok");
     return 0;
 }
