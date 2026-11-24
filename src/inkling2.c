@@ -263,10 +263,7 @@ static float *ink2_route_alloc(ink2_cache *c, size_t n_floats, int *owned) {
     atomic_fetch_add(&ink2_moe_alloc_n, 1);
     return malloc(sizeof(float) * (n_floats ? n_floats : 1));
 }
-static int ink2_decode_fuse_enabled(void) {
-    const char *e = getenv("RUNNER_INK2_DECODE_FUSE");
-    return !(e && e[0] == '0' && e[1] == 0);
-}
+static int ink2_decode_fuse_enabled(void);   // RUNNER_INK2_DECODE_FUSE, read once (ink2_env_init)
 
 size_t ink2_cache_bytes(const ink2_cache *c, const ink2_shape *s) {
     size_t n = 0;
@@ -310,6 +307,7 @@ static tpool *ink2_sb_tp = NULL;
 static int ink2_sb_threads = 0;
 static int ink2_sb_atexit_armed = 0;
 static pthread_once_t ink2_env_once = PTHREAD_ONCE_INIT;
+static _Atomic int ink2_decode_fuse = 1;   // RUNNER_INK2_DECODE_FUSE (ink2_env_init); TEST-ONLY ink2_set_decode_fuse
 
 static void ink2_sb_cleanup(void) {
     pthread_mutex_lock(&ink2_sb_mu);
@@ -332,6 +330,18 @@ static void ink2_env_init(void) {
         ink2_sb_threads = n < 1 ? 1 : n > INK2_MAX_THREADS ? INK2_MAX_THREADS : n;
     }
     pthread_mutex_unlock(&ink2_sb_mu);
+    // the decode fusion's kill switch: "0" turns it off. Read once with the others, not on every layer of every step,
+    // where getenv walked the environment each time and raced a setenv from another thread
+    e = getenv("RUNNER_INK2_DECODE_FUSE");
+    if (e && e[0] == '0' && e[1] == 0) atomic_store_explicit(&ink2_decode_fuse, 0, memory_order_relaxed);
+}
+static int ink2_decode_fuse_enabled(void) {
+    pthread_once(&ink2_env_once, ink2_env_init);
+    return atomic_load_explicit(&ink2_decode_fuse, memory_order_relaxed);
+}
+void ink2_set_decode_fuse(int on) {
+    pthread_once(&ink2_env_once, ink2_env_init);
+    atomic_store_explicit(&ink2_decode_fuse, on ? 1 : 0, memory_order_relaxed);
 }
 
 static tpool *ink2_standalone_acquire(void) {
@@ -1416,13 +1426,15 @@ enum { SQ, SK, SV, SLIN, SDYN, SLINV, SDYNV, SRS, SRL, SSK, SATT, SLG, SGA, NSCR
 static float *ink2_attn_scratch_c(ink2_cache *c, const ink2_attn_layer *L, int T, int nk, float **p, int *owned,
                                   int *lg_rows) {
     *lg_rows = ink2_par_width();
-    if (ink2_alloc_fail("attn_scratch")) return NULL;
     size_t n[NSCR] = { (size_t)T * L->Q, (size_t)T * L->C, (size_t)T * L->C,
                        (size_t)T * L->C, (size_t)T * L->nkv * L->K,
                        (size_t)T * L->C, (size_t)T * L->nkv * L->K,
                        (size_t)T * L->nh * L->dr, (size_t)T * L->nh * L->ext, (size_t)T * L->nh, (size_t)T * L->Q,
                        (size_t)*lg_rows * ((size_t)nk + 1), (size_t)T * L->Q }, tot = 0;
     for (int i = 0; i < NSCR; i++) tot += n[i];
+    // TEST-ONLY RUNNER_TEST_INK2_ALLOC_FAIL=attn_scratch fails the allocation; consulted only when there is one (no
+    // instance, or its scratch must grow), so a forward at a steady width reads no environment
+    if ((!c || c->work_op_cap < tot) && ink2_alloc_fail("attn_scratch")) return NULL;
     float *buf = ink2_op_alloc(c, tot, owned);
     if (buf) { size_t o = 0; for (int i = 0; i < NSCR; i++) { p[i] = buf + o; o += n[i]; } }
     return buf;

@@ -285,7 +285,7 @@ int main(int argc, char **argv) {
         if (!m_unfused || !m_f4 || !m_f1) { CHECK(0, "(k) %s load", kind[f]); drop(m_unfused); drop(m_f4); drop(m_f1); continue; }
         const size_t nv = (size_t)m_f4->n_vocab;
         float *u_dec = malloc(sizeof(float) * 8 * nv), *f4_dec = malloc(sizeof(float) * 8 * nv), *f1_dec = malloc(sizeof(float) * 8 * nv);
-        plat_setenv("RUNNER_INK2_DECODE_FUSE", "0");
+        ink2_set_decode_fuse(0);   // RUNNER_INK2_DECODE_FUSE=0, which the engine reads once (R4.48.25.1)
         bool ok_u = model_inkling2_forward(m_unfused, PROMPT, 8, 0, true, false) != NULL;
         long su0 = 0, su1 = 0, sf0 = 0, sf1 = 0;
         int lu = 0, lf = 0;
@@ -295,7 +295,7 @@ int main(int argc, char **argv) {
             if (t == 0) ink2_par_stats(&su1, &lu);
             if (!lg) ok_u = false; else memcpy(u_dec + (size_t)t * nv, lg, sizeof(float) * nv);
         }
-        plat_setenv("RUNNER_INK2_DECODE_FUSE", "");
+        ink2_set_decode_fuse(1);
         bool ok_f4 = model_inkling2_forward(m_f4, PROMPT, 8, 0, true, false) != NULL;
         for (int t = 0; t < 8 && ok_f4; t++) {
             if (t == 0) ink2_par_stats(&sf0, &lf);
@@ -308,7 +308,17 @@ int main(int argc, char **argv) {
             float *lg = model_inkling2_forward(m_f1, &PROMPT[8 + t], 1, 8 + t, true, false);
             if (!lg) ok_f1 = false; else memcpy(f1_dec + (size_t)t * nv, lg, sizeof(float) * nv);
         }
+        // R4.48.25.1: the switch is read once, not on every layer of every step (getenv walked the environment each
+        // time and raced a setenv from another thread): setting it mid-process changes no barrier
+        long se0 = 0, se1 = 0;
+        plat_setenv("RUNNER_INK2_DECODE_FUSE", "0");
+        ink2_par_stats(&se0, &lf);
+        bool ok_env = ok_f4 && model_inkling2_forward(m_f4, &PROMPT[16], 1, 16, true, false) != NULL;
+        ink2_par_stats(&se1, &lf);
+        plat_setenv("RUNNER_INK2_DECODE_FUSE", "");
         const long du = su1 - su0, df = sf1 - sf0;
+        CHECK(ok_env && se1 - se0 == df, "(k) %s RUNNER_INK2_DECODE_FUSE=0 set mid-process: a decode step still splits "
+              "%ld barriers, as fused (%ld): the switch is read once", kind[f], se1 - se0, df);
         CHECK(ok_u && ok_f4 && ok_f1 && df > 0 && lf == 4 && df * 2 <= du,
               "(k) %s decode splits %ld barriers (unfused %ld, want >0, last_pool=4, <=50%% of unfused)", kind[f], df, du);
         CHECK(ok_u && ok_f4 && !memcmp(f4_dec, u_dec, sizeof(float) * 8 * nv),
