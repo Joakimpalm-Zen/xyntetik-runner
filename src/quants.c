@@ -1771,8 +1771,17 @@ static inline float f32_dot_tail(float s, const float *w, const float *x, int i,
 }
 // Same contraction-safe tail for BF16: single, multi-column, and exact-tile kernels must pick the same rounding
 // (explicit fmaf on FMA targets) so GCC's -ffp-contract=fast never splits unrolled tiles from single dots.
+// GCC 16.2 (MSYS2 UCRT64) crashes in its loop vectorizer on this fmaf reduction at -O3 with reassociation allowed
+// (-ffast-math, as the test binaries that compile quants.c with CFLAGS have) on an AVX-512 target, once
+// dot_bf16_avx512 inlines it into vec_dot: an internal compiler error in the vect pass. That one configuration
+// keeps the loop scalar. In every other build (quants.o and the T3 build without reassociation, a fast-math build
+// without AVX-512) the pragma is not there and the code is what it was.
 static inline float bf16_dot_tail(float s, const uint16_t *w, const float *x, int i, int n) {
 #if defined(__FMA__) || defined(__ARM_FEATURE_FMA)
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 14 && defined(__ASSOCIATIVE_MATH__) && \
+    defined(__AVX512F__)
+#pragma GCC novector
+#endif
     for (; i < n; i++) s = fmaf(bf16_to_f32(w[i]), x[i], s);
 #else
     for (; i < n; i++) s += bf16_to_f32(w[i]) * x[i];
