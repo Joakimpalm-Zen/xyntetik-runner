@@ -1095,18 +1095,34 @@ static pfx_entry **pfx_find_named(const char *name) {
     return NULL;
 }
 
+// R4.48.22: a recurrent model's pin and import stay refused on the Metal
+// backend. Measured on an arm64 Mac (2026-11-24, the fixtures of
+// tests/test_recurrent_device_contexts.py): the snapshot round trip is exact
+// there (an import gives its pin's bits, and the automatic tier's restore the
+// live state's), but the pin's own prefill rounds differently from a
+// completion's prefill for nemotron-H (the pinned fork 4.7e-7 from the
+// automatic fork in its logprobs, the same text) and lfm2 (3.5e-3 from a cold
+// prefill), so a request naming the context would not answer as the automatic
+// tier does. CUDA pins all four families bit for bit; the CPU always did.
+// Lifted on Metal when the pin's prefill is a completion's there.
+bool prefix_context_metal_recurrent(const model_t *m) {
+    return m && model_has_recurrent(m) && !strcmp(model_backend_name(m), "metal");
+}
+
 int prefix_context_pin(engine *e, const char *name, const int32_t *toks, int n) {
     if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
     // what the tier does not serve (pfx_tier_serves, as engine_prefix_reuse and _publish ask it), or no history
     if (!pfx_tier_serves(e->m) || !e->hist)
         return PFX_CTX_UNSUPPORTED;
-    // A recurrent model on a device keeps its fold there, out of the host
-    // blob's reach, so engine_prefix_reuse never forks a snapshot for it. A
-    // context pinned there could not be honoured: every request naming it
-    // passed the prefix check and was then served cold under its name
-    // (Qwen3.5 on CUDA, the family sweep, 2026-10-02). Refused where it is
-    // asked for.
-    if (model_has_recurrent(e->m) && e->m->gpu) return PFX_CTX_UNSUPPORTED;
+    // A recurrent model on CUDA pins too (R4.48.22). Its fold is moved
+    // through the host buffers both ways (model_recurrent_blob_save pulls the
+    // device layers' fold for pfx_save below, model_recurrent_blob_load pushes
+    // it back on the fork), the seam the automatic tier forks through since
+    // R4.26.7; a request naming the context is an exact full-prefix hit, the
+    // only kind engine_prefix_reuse forks for a recurrent model. Until then a
+    // pin there was refused (2026-10-02: the fork could not reach the fold).
+    // On the Metal backend it still is (prefix_context_metal_recurrent).
+    if (prefix_context_metal_recurrent(e->m)) return PFX_CTX_UNSUPPORTED;
     // the snapshot is taken from the slot's KV, which must hold exactly toks:
     // a recurrent fold belongs to position e->pos and nowhere else
     if (n < 1 || e->pos != n || memcmp(e->hist, toks, sizeof(int32_t) * (size_t)n))
@@ -1549,7 +1565,9 @@ out:
 int prefix_context_import(const engine *e, const char *name, const char *path,
                           const char *origin) {
     if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
-    if (!e || !pfx_tier_serves(e->m) || (model_has_recurrent(e->m) && e->m->gpu))
+    // what a pin refuses (R4.48.22: a recurrent model on CUDA imports too, the fork restoring the fold the file
+    // holds through the host buffers as the pin's own does; on the Metal backend it is refused as the pin is)
+    if (!e || !pfx_tier_serves(e->m) || prefix_context_metal_recurrent(e->m))
         return PFX_CTX_UNSUPPORTED;
     uint64_t bytes = 0;
     int32_t n = 0;

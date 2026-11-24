@@ -742,6 +742,10 @@ bool prefix_context_name_ok(const char *name);
 // Pin the KV the slot holds for toks[0, n) (e->pos must be n, e->hist toks)
 // under `name`, replacing a context of that name. Returns n or a PFX_CTX_*.
 int  prefix_context_pin(engine *e, const char *name, const int32_t *toks, int n);
+// A recurrent model on the Metal backend: its pin and import are refused
+// (PFX_CTX_UNSUPPORTED; R4.48.22, why at the definition). For the refusal's
+// message.
+bool prefix_context_metal_recurrent(const model_t *m);
 // Does context `name` (for e's model) strictly prefix toks[0, n)? Returns its
 // token count, or PFX_CTX_UNKNOWN / PFX_CTX_MISMATCH (*at = the first token
 // that differs) / PFX_CTX_BADNAME.

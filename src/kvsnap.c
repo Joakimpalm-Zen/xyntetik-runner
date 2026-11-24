@@ -448,10 +448,15 @@ static bool load_one(engine *e, const char *id, const char *name, bool slot, sbu
                  "this context beside the ones already pinned");
             break;
         }
+        if (n == PFX_CTX_UNSUPPORTED && prefix_context_metal_recurrent(e->m)) {
+            fail(err, 409, "context_unsupported", "this model cannot import a "
+                 "context here: a recurrent model on the Metal backend is not "
+                 "pinned yet (serve it with --gpu off to use contexts)");
+            break;
+        }
         if (n == PFX_CTX_UNSUPPORTED) {
             fail(err, 409, "context_unsupported", "this model cannot fork a "
-                 "pinned prefix (a ring or tied-V KV layout, or a recurrent "
-                 "model on a device)");
+                 "pinned prefix (a ring or tied-V KV layout)");
             break;
         }
         if (n < 0) {
