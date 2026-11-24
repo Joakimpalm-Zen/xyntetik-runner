@@ -2445,9 +2445,10 @@ ifeq ($(BUILD_OS),Darwin)
 		./$(RUNNER_EXE) -m test.gguf -p "hello" -n 8 --temp 0 --gpu off > metal-cpu.out 2>/dev/null; \
 		env RUNNER_METAL_INJECT_FAILURE=once MallocScribble=1 MallocGuardEdges=1 \
 		    env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MV=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test.gguf -p "hello" -n 8 --temp 0 --gpu auto > metal-fallback.out 2> metal-fallback.err; \
-		cmp -s metal-cpu.out metal-fallback.out; \
-		grep -q "falling back to CPU" metal-fallback.err; \
-		test $$(grep -c "command buffer failed" metal-fallback.err) -eq 1; \
+		cmp -s metal-cpu.out metal-fallback.out || { echo "FAIL: metal fallback output differed from CPU"; cat metal-fallback.err; exit 1; }; \
+		grep -q "falling back to CPU" metal-fallback.err || { echo "FAIL: missing falling back to CPU"; cat metal-fallback.err; exit 1; }; \
+		grep -q "finished on the CPU (forward failed at runtime: command buffer failed)" metal-fallback.err || { echo "FAIL: gpu_lost_note missing runtime error detail"; cat metal-fallback.err; exit 1; }; \
+		test $$(grep -c "^gpu: command buffer failed" metal-fallback.err) -eq 1 || { echo "FAIL: expected 1 command-buffer failure line, got $$(grep -c '^gpu: command buffer failed' metal-fallback.err)"; cat metal-fallback.err; exit 1; }; \
 		env RUNNER_METAL_INIT_INJECT_FAILURE=after-kv MallocScribble=1 MallocGuardEdges=1 \
 		    env RUNNER_METAL_MM=0 RUNNER_METAL_ATTN_COOP=0 RUNNER_METAL_MV=0 RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m test.gguf -p "hello" -n 8 --temp 0 --gpu auto > metal-init-fallback.out 2> metal-init-fallback.err; \
 		cmp -s metal-cpu.out metal-init-fallback.out; \

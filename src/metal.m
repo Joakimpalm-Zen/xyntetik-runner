@@ -102,6 +102,7 @@ typedef struct {
     int           kv_refused_rows;   // the grow that did not fit, when one did not
     bool          kv_refused;    // a grow did not fit: every later reserve says so (kv_why)
     char          kv_why[256];
+    char          last_error[256];  // R6.98: last runtime forward error, carried into route_fallback
     id<MTLBuffer> x, xb, xb2, q, kt, vt, hb, hb2, att, logits;
     id<MTLBuffer> xsc;              // per-column max|x| for the scaled tiled GEMMs
     int           xsc_cap;          // columns it holds
@@ -394,8 +395,10 @@ static inline uint64_t metal_voff(const gpu_t *g, const model_t *m, int l) {
 // reads must be mapped. A kernel reading past a region's buffer is undefined
 // on Apple GPUs, so a missed grow is refused here, loudly, as a runtime
 // failure (the CPU then continues on the same rows).
-static bool metal_kv_covers(const gpu_t *g, int rows) {
+static bool metal_kv_covers(gpu_t *g, int rows) {
     if (rows <= g->kv_mapped) return true;
+    snprintf(g->last_error, sizeof g->last_error,
+             "KV rows up to %d are not mapped (%d mapped)", rows, g->kv_mapped);
     fprintf(stderr, "gpu: KV rows up to %d are not mapped (%d mapped): the forward is "
             "refused before it is encoded\n", rows, g->kv_mapped);
     return false;
@@ -641,9 +644,9 @@ static void metal_flat_copy(char *dst, size_t cap, const char *src) {
     dst[j] = '\0';
 }
 
-static void metal_report_cb_error(const char *what, const char *action,
+static void metal_format_cb_error(char *out, size_t cap, const char *what,
                                   id<MTLCommandBuffer> cb) {
-    char detail[512] = "";
+    if (!cap) return;
     if (cb && cb.status == MTLCommandBufferStatusError) {
         NSError *err = cb.error;
         char dom[128], desc[256], lbl[128];
@@ -657,11 +660,19 @@ static void metal_report_cb_error(const char *what, const char *action,
         const char *d = dom[0] ? dom : "unknown";
         const char *m = desc[0] ? desc : "no description";
         if (lbl[0])
-            snprintf(detail, sizeof detail, " (%s code=%ld: %s, label=%s)", d, code, m, lbl);
+            snprintf(out, cap, "%s (%s code=%ld: %s, label=%s)", what, d, code, m, lbl);
         else
-            snprintf(detail, sizeof detail, " (%s code=%ld: %s)", d, code, m);
+            snprintf(out, cap, "%s (%s code=%ld: %s)", what, d, code, m);
+    } else {
+        snprintf(out, cap, "%s", what);
     }
-    fprintf(stderr, "gpu: %s%s — %s\n", what, detail, action);
+}
+
+static void metal_report_cb_error(const char *what, const char *action,
+                                  id<MTLCommandBuffer> cb) {
+    char msg[576];
+    metal_format_cb_error(msg, sizeof msg, what, cb);
+    fprintf(stderr, "gpu: %s — %s\n", msg, action);
 }
 
 static id<MTLBuffer> new_f32_scratch(id<MTLDevice> dev, size_t n) {
@@ -2027,6 +2038,9 @@ static uint64_t metal_bind_weights(gpu_t *g, id<MTLComputeCommandEncoder> e,
     if (!wb || metal_bind_inject()) {
         if (!g->bind_failed) {
             g->bind_failed = true;
+            snprintf(g->last_error, sizeof g->last_error,
+                     "no weight wrap holds [%llu,+%llu)",
+                     (unsigned long long)off, (unsigned long long)len);
             fprintf(stderr, "gpu: no weight wrap holds [%llu,+%llu) — "
                     "falling back to CPU\n",
                     (unsigned long long)off, (unsigned long long)len);
@@ -4130,7 +4144,11 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
     // eligibility check, a double-applied logit softcap, and wrong output on
     // real gemma-4 E2B weights) before it was removed. A scratch allocation
     // failure now falls back to the CPU loudly instead of to a second path.
-    if (!metal_ensure_batch((gpu_t *)m->gpu, m, n)) {
+    gpu_t *g = (gpu_t *)m->gpu;
+    if (g) g->last_error[0] = '\0';
+    if (!metal_ensure_batch(g, m, n)) {
+        if (g) snprintf(g->last_error, sizeof g->last_error,
+                        "Metal batch scratch allocation failed");
         fprintf(stderr, "gpu: Metal batch scratch allocation failed — "
                 "releasing the backend, continuing on CPU\n");
         return false;
@@ -5514,6 +5532,8 @@ static float *metal_fwd_submit(metal_fwd *F, double t_enc0) {
                 (now - t_enc0) * 1e3);
     }
     if (metal_command_failed(F->cb)) {
+        metal_format_cb_error(g->last_error, sizeof g->last_error,
+                              "command buffer failed", F->cb);
         metal_report_cb_error("command buffer failed", "falling back to CPU", F->cb);
         return NULL;
     }
@@ -5878,6 +5898,11 @@ bool gpu_kv_rows(const model_t *m, int *mapped, int *step) {
     *step = g->kv_step;
     return true;
     }
+}
+
+const char *gpu_last_error(const model_t *m) {
+    const gpu_t *g = m ? (const gpu_t *)m->gpu : NULL;
+    return (g && g->last_error[0]) ? g->last_error : "";
 }
 
 bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,

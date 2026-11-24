@@ -188,6 +188,15 @@ static void check_cb_error_reporting(void) {
     assert(strstr(buf, "host execution failed") != NULL);
     assert(strstr(buf, "label=") == NULL);
 
+    model_t em = {0};
+    gpu_t eg = {0};
+    em.gpu = &eg;
+    assert(strcmp(gpu_last_error(&em), "") == 0);
+    metal_format_cb_error(eg.last_error, sizeof eg.last_error,
+                          "command buffer failed", (id<MTLCommandBuffer>)cb);
+    assert(strstr(gpu_last_error(&em), "command buffer failed") != NULL);
+    assert(strstr(gpu_last_error(&em), "MTLCommandBufferErrorDomain code=2: host execution failed") != NULL);
+
     cb.status = MTLCommandBufferStatusCompleted;
     cb.error = nil;
     capture_report("command buffer failed", "falling back to CPU", cb, buf, sizeof buf);
@@ -196,8 +205,14 @@ static void check_cb_error_reporting(void) {
 }
 
 int main(void) {
+    printf("test-metal-ownership: check_layer_tables_freed\n");
+    fflush(stdout);
     check_layer_tables_freed();
+    printf("test-metal-ownership: check_cb_error_reporting\n");
+    fflush(stdout);
     check_cb_error_reporting();
+    printf("test-metal-ownership: gpu_disable/gpu_free\n");
+    fflush(stdout);
 
     model_t m = {0};
     gpu_t *g = calloc(1, sizeof(*g));
@@ -248,5 +263,6 @@ int main(void) {
     free(cpu.kcache);
     free(cpu.vcache);
 
+    printf("test-metal-ownership: ok\n");
     return 0;
 }
