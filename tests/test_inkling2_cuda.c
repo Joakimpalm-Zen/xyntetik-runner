@@ -497,7 +497,7 @@ static int t_lin(const ink2_tensor *W, int64_t row0, int n_out, int n_in, int T,
     if (yc != y) free(yc);
     return ok ? 0 : -1;
 }
-static const ink2_dev_ops g_mops = { t_lin, NULL, NULL, NULL, NULL, NULL };
+static const ink2_dev_ops g_mops = { t_lin, NULL, NULL, NULL, NULL, NULL, NULL };
 static ink2_dev_hdr g_minst = { &g_mops };
 static ink2_tensor g_mt[9];
 static char g_mname[9][128];
@@ -1499,6 +1499,53 @@ int main(int argc, char **argv) {
                   !d ? "the load FAILED" : r ? "it RAN" : "refused");
             free(r);
             drop(d);
+        }
+    }
+    // R4.48.9 D1d.3b (aj): the RESIDENT decode step (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_STEP=1) against the same
+    // file's instance without it, over one sequence that crosses between the two forms: a prefill of 10, 8 decode
+    // steps, a chunk of 4 (the post convolutions' histories down to the host first, up after), a step (they went up
+    // right), then a step the step must decline (the selection observer is on: the device's histories down first). Every
+    // row returned byte-identical to the control's; the step counter 9; the handle's host transfers 3 a step (the
+    // embedding row and the position up, the logits row down) and 0 inside the applications' loop. The F16 file runs
+    // 2a's path (no block calls): its instance has no step (counter -1), its rows unchanged.
+    {
+        static const struct { int p0, n; bool obs; } seq[] = {
+            { 0, 10, false }, { 10, 1, false }, { 11, 1, false }, { 12, 1, false }, { 13, 1, false }, { 14, 1, false },
+            { 15, 1, false }, { 16, 1, false }, { 17, 1, false }, { 18, 4, false }, { 22, 1, false }, { 23, 1, true } };
+        const int ns = (int)(sizeof seq / sizeof *seq);
+        static const char *const fname[5] = { "", "F32", "BF16", "Q8_0", "F16" };
+        for (int f = 1; f <= 4; f++) {
+            model_t *c0 = load(argv[f], true, false, 64);
+            plat_setenv("RUNNER_INKLING2_CUDA_TEST_STEP", "1");
+            model_t *rs = load(argv[f], true, false, 64);
+            plat_setenv("RUNNER_INKLING2_CUDA_TEST_STEP", "");
+            const size_t V = c0 ? (size_t)c0->n_vocab : 0;
+            long nd = 0, bad = 0;
+            int first = -1;
+            for (int k = 0; c0 && rs && k < ns; k++) {
+                if (seq[k].obs) ink2_set_sel_observer(obs_fn, NULL);
+                const float *a = model_inkling2_forward(c0, PROMPT + seq[k].p0, seq[k].n, seq[k].p0, true, false);
+                float *ac = a ? malloc(sizeof(float) * V) : NULL;
+                if (ac) memcpy(ac, a, sizeof(float) * V);
+                const float *b = model_inkling2_forward(rs, PROMPT + seq[k].p0, seq[k].n, seq[k].p0, true, false);
+                if (seq[k].obs) ink2_set_sel_observer(NULL, NULL);
+                if (!ac || !b) bad++;
+                else if (memcmp(ac, b, sizeof(float) * V)) { nd++; if (first < 0) first = k; }
+                free(ac);
+            }
+            const long steps = rs ? model_inkling2_cuda_step_calls(rs) : -2;
+            const void *hv = NULL;
+            char pl = 0;
+            size_t need = 0;
+            long st[3] = { -1, -1, -1 };
+            if (rs && model_inkling2_cuda_placement(rs, &pl, &need, &hv)) gpu_ink2_test_step_stats((gpu_ink2 *)(uintptr_t)hv, st);
+            const bool has = f != 4;
+            CHECK(c0 && rs && bad == 0 && nd == 0 && (has ? steps == 9 && st[0] == 9 && st[1] == 27 && st[2] == 0 : steps == -1),
+                  "(aj) the resident decode step, %s: %d forwards (a prefill, 8 steps, a chunk, a step, a declined step) "
+                  "byte-identical to the control's (%ld differ, the first at forward %d; %ld failed); steps %ld (want %s); "
+                  "host transfers %ld (want 27: 3 a step), inside the applications' loop %ld (want 0)", fname[f], ns, nd,
+                  first, bad, steps, has ? "9" : "-1: no step", st[1], st[2]);
+            drop(c0); drop(rs);
         }
     }
     // R4.48.9 D1d.1 (af): the decode step's remaining ops on the device, each against the host function the forward

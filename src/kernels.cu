@@ -6362,6 +6362,37 @@ extern "C" __global__ void k_ink2_depth_attn(const float *q, const float *normed
         oi[h] = a;
     }
 }
+// D1d.3b: k_ink2_depth_attn at ONE position over states read through an index list: state j is the normed row
+// normed + ix[j] * H (the resident step's slabs, each normed once when written; the lists fixed by the forward's walk
+// and uploaded with the plan, so a read packs nothing). The arithmetic is k_ink2_depth_attn's, operation for operation.
+extern "C" __global__ void k_ink2_depth_attn_ix(const float *q, const float *normed, const int *ix, float *out, int nq,
+                                                int n_kv, int H, float scale, int ois) {
+    extern __shared__ float sc[];   // n_kv scores
+    const int i = blockIdx.x;
+    if (i >= nq) return;
+    const float *qi = q + (ulong64)i * H;
+    for (int j = threadIdx.x; j < n_kv; j += blockDim.x) {
+        const float *nj = normed + (ulong64)ix[j] * H;
+        float d = 0.0f;
+        for (int h = 0; h < H; h++) d = __fadd_rn(d, __fmul_rn(qi[h], nj[h]));
+        sc[j] = __fmul_rn(d, scale);
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        float mx = -__int_as_float(0x7f800000);
+        for (int j = 0; j < n_kv; j++) if (sc[j] > mx) mx = sc[j];
+        float sum = 0.0f;
+        for (int j = 0; j < n_kv; j++) { sc[j] = ink2_p_expf(__fsub_rn(sc[j], mx)); sum = __fadd_rn(sum, sc[j]); }
+        for (int j = 0; j < n_kv; j++) sc[j] = __fdiv_rn(sc[j], sum);
+    }
+    __syncthreads();
+    float *oi = out + (ulong64)i * ois;
+    for (int h = threadIdx.x; h < H; h += blockDim.x) {
+        float a = 0.0f;
+        for (int j = 0; j < n_kv; j++) a = __fadd_rn(a, __fmul_rn(sc[j], normed[(ulong64)ix[j] * H + h]));
+        oi[h] = a;
+    }
+}
 // ink2_short_conv with its history (ink2_conv_hist: row u % (K - 1) holds position u's input row, C wide): thread
 // (position t = blockIdx.y, channel ch): the serial sum over the taps ascending j, the input row's own value, / div
 // (the host's (float)sqrt((double)(K + 1)), passed). hist NULL: p0 taken as 0 and no history (a prefill).

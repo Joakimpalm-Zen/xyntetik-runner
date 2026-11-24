@@ -558,6 +558,15 @@ bool gpu_ink2_attn_block(gpu_ink2 *h, gpu_ink2_kv *kv, int app, const gpu_ink2_b
 }
 size_t gpu_ink2_kv_bytes(const gpu_ink2_kv *kv) { (void)kv; return 0; }
 void gpu_ink2_kv_free(gpu_ink2_kv *kv) { (void)kv; }
+bool gpu_ink2_kv_post_init(gpu_ink2_kv *kv, int H, int hist_rows) { (void)kv; (void)H; (void)hist_rows; return false; }
+bool gpu_ink2_kv_post_sync(gpu_ink2_kv *kv, float *host, int up) { (void)kv; (void)host; (void)up; return false; }
+size_t gpu_ink2_kv_post_bytes(const gpu_ink2_kv *kv) { (void)kv; return 0; }
+bool gpu_ink2_step_set(gpu_ink2 *h, const gpu_ink2_step_plan *plan) { (void)h; (void)plan; return false; }
+bool gpu_ink2_step_ready(const gpu_ink2 *h) { (void)h; return false; }
+bool gpu_ink2_step(gpu_ink2 *h, gpu_ink2_kv *kv, int p0, const float *emb_row, float *logits) {
+    (void)h; (void)kv; (void)p0; (void)emb_row; (void)logits; return false;
+}
+void gpu_ink2_test_step_stats(gpu_ink2 *h, long out[3]) { (void)h; if (out) out[0] = out[1] = out[2] = -1; }
 bool gpu_ink2_attn_ok(const gpu_ink2 *h) { (void)h; return false; }
 bool gpu_ink2_reserve_block(gpu_ink2 *h, int T, int H, int C, int R, int nhdr, int Q) {
     (void)h; (void)T; (void)H; (void)C; (void)R; (void)nhdr; (void)Q;

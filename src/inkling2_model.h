@@ -68,6 +68,8 @@ long   model_inkling2_cuda_block_calls(const model_t *m);
 long   model_inkling2_cuda_msg_calls(const model_t *m);
 // R4.48.9, TEST-ONLY (D1b): the device router calls this instance ran since its load, -1 when the router runs on the host
 long   model_inkling2_cuda_route_calls(const model_t *m);
+// R4.48.9, TEST-ONLY (D1d.3b): the resident decode steps this instance ran since its load, -1 when it has no step
+long   model_inkling2_cuda_step_calls(const model_t *m);
 // R4.48.9, TEST-ONLY: the device products' output buffer's bytes now (the fit's reservation unless a product grew it),
 // 0 off the device
 size_t model_inkling2_cuda_lin_out_bytes(const model_t *m);

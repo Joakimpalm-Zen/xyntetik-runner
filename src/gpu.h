@@ -842,6 +842,12 @@ typedef struct gpu_ink2_kv gpu_ink2_kv;
 gpu_ink2_kv *gpu_ink2_kv_new(gpu_ink2 *h, int n_app, const int *rows, const int *C, int hist_rows);
 size_t     gpu_ink2_kv_bytes(const gpu_ink2_kv *kv);
 void       gpu_ink2_kv_free(gpu_ink2_kv *kv);
+// R4.48.9 D1d.3b: the post convolutions' device copies of one instance, [n_app][2][hist_rows][H] floats in the host's
+// order (ink2_cache_post_hist: k 0 post_attention, 1 post_mlp), zeroed at init; sync moves all of them at once, up
+// (host -> device, up 1) or down. A resident decode step updates the device copy; the model keeps the newer side.
+bool       gpu_ink2_kv_post_init(gpu_ink2_kv *kv, int H, int hist_rows);
+bool       gpu_ink2_kv_post_sync(gpu_ink2_kv *kv, float *host, int up);
+size_t     gpu_ink2_kv_post_bytes(const gpu_ink2_kv *kv);
 bool       gpu_ink2_attn_ok(const gpu_ink2 *h);
 // (nk_max: the most keys a query admits, -c: the stored logits' buffer, at most 16 MiB, is reserved with the rest)
 bool       gpu_ink2_reserve_attn(gpu_ink2 *h, int T, int Q, int nh, int ext, int nk_max);
@@ -875,6 +881,38 @@ typedef struct {
 bool       gpu_ink2_block_ok(const gpu_ink2 *h);
 bool       gpu_ink2_attn_block(gpu_ink2 *h, gpu_ink2_kv *kv, int app, const gpu_ink2_block *b, int T, const int *pos,
                                const float *xq, const float *xk, const float *xv, float *out);
+// R4.48.9 D1d.3b: the resident decode step's plan, by device tensor index (gpu_ink2_put's; the small F32 tensors the
+// step reads follow the copy's views), built once by inkling2_model.c from the engine's ink2_step_plan.
+typedef struct {
+    int block, global, loop, pass, boundary, n_read;   // the application, as the engine's forward walks it
+    int i_read_q, i_norm[3], i_mlp_q, i_post_norm, i_conv[2];   // small F32 tensors (-1: none; sliding: i_norm[0] only)
+    gpu_ink2_msg_role gate[4];                          // a loop layer's q, k, v, mlp message gates
+    gpu_ink2_block blk;                                 // the attention block
+    int ir, i_br, i13, i2, t13, t2;                     // the router's F32 view, its bias, the stacks (index, type)
+    size_t rb13, rb2;
+    int f13, f2;                                        // the stacks carry their NVFP4 factors on the device (1) or not
+} gpu_ink2_step_app;
+typedef struct {
+    int n_app, H, V, E, K, F, conv_k, loop_start, loop_end, rank;   // loop_start / end: blocks; rank: the gates'
+    float eps, route_scale, gate_cap, up_cap, final_cap;
+    float read_scale;                                   // the depth reads' scale: the engine's ink2_inv_sqrt(H)
+    int i_embed_norm, i_final_q, i_norm, i_msg_q;       // small F32 tensors (i_msg_q -1 without a loop)
+    int i_head, t_head;                                 // lm_head's view and type
+    size_t rb_head;
+    const gpu_ink2_step_app *app;                       // [n_app]
+} gpu_ink2_step_plan;
+// the handle's step program from a plan (once a handle: a second call with the same shape is a yes): the walk's
+// state lists and the step's scratch, every core's scratch reserved at one position. False: a kernel the module
+// lacks, a device failure, or a walk past its lists.
+bool       gpu_ink2_step_set(gpu_ink2 *h, const gpu_ink2_step_plan *plan);
+bool       gpu_ink2_step_ready(const gpu_ink2 *h);
+// ONE decode step at position p0 on the device, the handle's lock held throughout (F1): emb_row [H] (the token's
+// embedding row, dequantized on the host as the engine does) up, the position up, the logits row [V] down; nothing
+// moves to or from the host inside the applications' loop. kv: the instance's rings and histories (its post
+// convolutions' copies initialized, gpu_ink2_kv_post_init).
+bool       gpu_ink2_step(gpu_ink2 *h, gpu_ink2_kv *kv, int p0, const float *emb_row, float *logits);
+// TEST-ONLY: out[0] the steps run, out[1] their host transfers, out[2] those inside the applications' loop (the bar: 0)
+void       gpu_ink2_test_step_stats(gpu_ink2 *h, long out[3]);
 void       gpu_ink2_free(gpu_ink2 *h);
 
 #endif // RUNNER_GPU_H

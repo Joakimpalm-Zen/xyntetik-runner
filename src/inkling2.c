@@ -176,6 +176,12 @@ static float *ink2_conv_hist(const ink2_shape *s, ink2_cache *c, int app, int id
     if (!c || s->conv_k <= 1 || !c->conv[app]) return NULL;
     return c->conv[app] + (size_t)idx * (size_t)(s->conv_k - 1) * (size_t)ink2_conv_width(s, app);
 }
+// R4.48.9 D1d.3b (inkling2.h): the post convolutions' histories (k 0: post_attention, 1: post_mlp; conv_k - 1 rows of
+// hidden), the ones a resident decode step keeps a device copy of
+float *ink2_cache_post_hist(const ink2_shape *s, ink2_cache *c, int app, int k) {
+    if (!s || !c || app < 0 || app >= c->n_app || k < 0 || k > 1) return NULL;
+    return ink2_conv_hist(s, c, app, 2 + k);
+}
 // After a call over positions p0..p0+T-1 has read its history: the last conv_k - 1 input rows (x [T][C]) into it
 static void ink2_conv_hist_store(float *hist, int K, int C, int p0, int T, const float *x) {
     if (!hist) return;
@@ -2099,6 +2105,95 @@ static ink2_status ink2_decoder_layer_lora(const ink2_shape *s, const ink2_weigh
 done:
     return st;
 }
+
+// R4.48.9 D1d.3b (inkling2.h): the decode step's plan. Each lookup is the forward's own, the same name built the same
+// way (ink2_decoder_layer_lora, ink2_attention_lora, ink2_expert_layer_c, ink2_message_steps_c, ink2_post_conv,
+// ink2_forward_chunk_lora), checked with the same shapes; a missing or misshapen tensor is INK2_NO_TENSOR.
+ink2_status ink2_step_plan_build(const ink2_shape *s, const ink2_weights *w, ink2_step_plan *p) {
+    if (!s || !w || !p || !p->app || s->n_app <= 0) return INK2_BAD_INPUT;
+    const int H = s->hidden;
+    char name[160];
+#define GET(n_) w->get(w->ctx, (n_))
+    p->n_app = s->n_app;
+    p->embed = GET("model.embed_tokens.weight");
+    p->embed_norm = GET("model.embed_tokens.embed_norm.weight");
+    p->final_q = GET("model.final_input.query");
+    p->norm = GET("model.norm.weight");
+    p->msg_q = s->loop_end > s->loop_start ? GET("model.message_input.query") : NULL;
+    p->head = GET("lm_head.weight");
+    if (!p->embed || p->embed->ne[0] != H || !p->embed_norm || p->embed_norm->ne[0] != H || !p->final_q ||
+        p->final_q->ne[0] != H || (p->final_q->n_dims != 1 && p->final_q->ne[1] != 1) || !p->norm ||
+        p->norm->ne[0] != H || !p->head || p->head->ne[0] != H || p->head->ne[1] < s->vocab_used ||
+        (s->loop_end > s->loop_start && (!p->msg_q || p->msg_q->ne[0] != H || p->msg_q->ne[1] != 4 ||
+                                         p->msg_q->ne[2] != s->loop_end - s->loop_start)))
+        return INK2_NO_TENSOR;
+    static const char *const role[4] = { "q", "k", "v", "mlp" };
+    for (int a = 0; a < s->n_app; a++) {
+        ink2_step_app *A = &p->app[a];
+        memset(A, 0, sizeof *A);
+        const int b = s->app_block[a], g = s->block_global[b];
+        A->block = b; A->global = g;
+        A->loop = b >= s->loop_start && b < s->loop_end;
+        A->boundary = ink2_block_boundary(s, b);
+        A->n_read = g ? 3 : 1;
+        if (b > 0) {
+            snprintf(name, sizeof name, "model.layers.%d.attention_input.query", b);
+            A->read_q = GET(name);
+            const int nq = !A->read_q ? 0 : A->read_q->n_dims == 1 ? 1 : (int)A->read_q->ne[1];
+            if (!A->read_q || A->read_q->ne[0] != H || nq != A->n_read) return INK2_NO_TENSOR;
+        }
+        for (int r = 0; r < (g ? 3 : 1); r++) {
+            if (g) snprintf(name, sizeof name, "model.layers.%d.%s_input_layernorm.weight", b, role[r]);
+            else snprintf(name, sizeof name, "model.layers.%d.input_layernorm.weight", b);
+            A->norm[r] = GET(name);
+            if (!A->norm[r] || A->norm[r]->ne[0] != H || A->norm[r]->n_dims != 1) return INK2_NO_TENSOR;
+        }
+        snprintf(name, sizeof name, "model.layers.%d.mlp_input.query", b);
+        A->mlp_q = GET(name);
+        if (!A->mlp_q || A->mlp_q->ne[0] != H || (A->mlp_q->n_dims != 1 && A->mlp_q->ne[1] != 1)) return INK2_NO_TENSOR;
+        snprintf(name, sizeof name, "model.layers.%d.post_attention_layernorm.weight", b);
+        A->post_norm = GET(name);
+        if (!A->post_norm || A->post_norm->ne[0] != H || A->post_norm->n_dims != 1) return INK2_NO_TENSOR;
+        if (A->loop) {
+            const int rk = s->loop_gate_rank;
+            for (int r = 0; r < 4; r++) {
+                static const char *const part[3] = { "down_proj", "forget_gate_proj", "message_gate_proj" };
+                for (int k = 0; k < 3; k++) {
+                    snprintf(name, sizeof name, "model.layers.%d.%s_message_gate.%s.weight", b, role[r], part[k]);
+                    A->gate[r][k] = GET(name);
+                    if (!A->gate[r][k]) return INK2_NO_TENSOR;
+                }
+                if (A->gate[r][0]->ne[0] != 2 * H || A->gate[r][0]->ne[1] != rk || A->gate[r][1]->ne[0] != rk ||
+                    A->gate[r][1]->ne[1] != H || A->gate[r][2]->ne[0] != rk || A->gate[r][2]->ne[1] != H)
+                    return INK2_NO_TENSOR;
+            }
+        }
+        for (int k = 0; k < 2; k++) {
+            snprintf(name, sizeof name, "model.layers.%d.%s.conv1d.weight", b,
+                     k == 0 ? "post_attention_convolution" : "post_mlp_convolution");
+            A->conv[k] = GET(name);
+            const ink2_tensor *t = A->conv[k];
+            if (!t || t->ne[0] != s->conv_k || t->ne[0] * t->ne[1] * t->ne[2] * t->ne[3] != (int64_t)H * s->conv_k)
+                return INK2_NO_TENSOR;
+        }
+        ink2_attn_layer L;
+        ink2_status st = ink2_attn_bind(s, w, a, &L);
+        if (st != INK2_OK) return st;
+        ink2_block_call bc = { a, 0, NULL, NULL, NULL, NULL, NULL, 0, H, L.nh, L.nkv, L.hd, L.K, L.dr,
+                               L.ext, s->window, L.g ? 1 : 0, ink2_inv_sqrt(L.hd), s->qk_clip, s->rel_clip, s->eps,
+                               s->log_alpha, (float)s->log_floor,
+                               { L.tt[WQ], L.tt[WK], L.tt[WV], L.tt[WKD], L.tt[WVD], L.tt[WR], L.tt[WS], L.tt[WG], L.tt[WO] },
+                               { L.tt[WQS], L.tt[WKC], L.tt[WVC], L.tt[WRS], L.tt[WRP] } };
+        A->blk = bc;
+        ink2_moe_w M;
+        st = ink2_moe_bind(s, w, b, &M);
+        if (st != INK2_OK) return st;
+        A->router = M.tr; A->t13 = M.t13; A->t2 = M.t2; A->br = M.br;
+        if (!A->router || !A->t13 || !A->t2 || !A->br) return INK2_NO_TENSOR;   // the fast route's views only
+    }
+#undef GET
+    return INK2_OK;
+}
 ink2_status ink2_decoder_layer_sel(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int app, int T,
                                    const int *pos, const float *x, const float *block_states, int n_blocks,
                                    const float *messages, float *out, int *sel) {
@@ -2131,6 +2226,31 @@ ink2_status ink2_forward_chunk_lora(const ink2_shape *s, const ink2_weights *w, 
     const ink2_tensor *emb = w->get(w->ctx, "model.embed_tokens.weight");
     if (!emb || emb->ne[0] != H) return INK2_NO_TENSOR;
     for (int t = 0; t < T; t++) if (ids[t] < 0 || ids[t] >= emb->ne[1]) return INK2_BAD_INPUT;
+    // R4.48.9 D1d.3b: ONE position whole on the device when the cache's binder offers the resident step; only the plain
+    // forward (no adapter, no test flag but INK2_LOGITS_LAST, no per-application outputs, no selection observer, no
+    // test bump), which the step reproduces bit for bit; anything else, or a binder that declines, runs below
+    {
+        const ink2_dev_ops *so = ink2_ops_of(c->dev);
+        if (so && so->step && T == 1 && !lora && (flags & ~INK2_LOGITS_LAST) == 0 && !app_states && !app_sel && logits &&
+            !ink2_sel_obs && !atomic_load_explicit(&ink2_test_chunk_bump_bits, memory_order_relaxed)) {
+            float *er = malloc(sizeof(float) * (size_t)H);
+            if (!er) return INK2_BAD_INPUT;
+            if (emb->q) dequant_row(emb->qtype, (const unsigned char *)emb->q + (size_t)ids[0] * emb->q_row_bytes, er, H);
+            else memcpy(er, emb->data + (size_t)ids[0] * H, sizeof(float) * H);
+            const int rc = so->step(c->dev, p0, er, logits);
+            free(er);
+            if (rc <= 0) {
+                if (rc < 0) for (int i = 0; i < s->vocab_used; i++) logits[i] = NAN;
+                else for (int a = 0; a < s->n_app; a++) c->n_past[a] = p0 + 1;
+                return INK2_OK;
+            }
+        }
+        // the forward below runs on the host's state: the binder brings its copies there first (p0 -1: prepare only)
+        if (so && so->step && so->step(c->dev, -1, NULL, NULL) < 0) {
+            if (logits) for (size_t i = 0; i < (size_t)((flags & INK2_LOGITS_LAST) ? 1 : T) * s->vocab_used; i++) logits[i] = NAN;
+            return INK2_OK;
+        }
+    }
     // slabs [T][H]: every appended block state gets its own (a pass's states outlive its restart, for the messages),
     // plus the hidden state ping-pong, the pre-loop state, the pre-pre-loop state (control 1) and the previous pass's
     // final state. At most one append per application, plus the embedding.

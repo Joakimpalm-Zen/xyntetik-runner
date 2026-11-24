@@ -56,6 +56,13 @@ typedef struct {
     long msg_fail_at;     // TEST-ONLY (RUNNER_INKLING2_CUDA_TEST_MSG_FAIL=k): the k-th device message step fails; -1 none
     bool route_on;        // D1b: this instance runs the router on the device with the expert body
     long n_route;         // device router calls run so far
+    // D1d.3b: the resident decode step (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_STEP=1 until 3b.3), its post convolutions'
+    // device copies (post_dev_newer: they are newer than the host's, a step ran last; the sync's staging)
+    bool step_on;
+    bool post_dev_newer;
+    bool last_was_step;
+    float *post_stage;
+    long n_step;
 } ink2_rt;
 
 static ink2_rt *rt_of(model_t *m) { return (ink2_rt *)m->ink2; }
@@ -242,6 +249,24 @@ static int dev_msg(void *dev, const ink2_msg_call *m) {
     }
     return 0;
 }
+// the attention block's device descriptor from the engine's block call (its views and small tensors this instance's
+// device tensors); false: one is not
+static bool block_desc(ink2_rt *r, const ink2_block_call *bc, gpu_ink2_block *gb) {
+    *gb = (gpu_ink2_block){ bc->H, bc->nh, bc->nkv, bc->hd, bc->K, bc->dr, bc->ext, bc->window, bc->global, bc->scale,
+                            bc->qk_clip, bc->rel_clip, bc->eps, bc->log_alpha, bc->log_floor, { 0 }, { 0 }, { 0 }, { 0 } };
+    for (int k = 0; k < GI2_NV; k++) {
+        const ink2_tensor *t = bc->v[k];
+        if (!t) { gb->vi[k] = -1; gb->vtype[k] = -1; continue; }
+        if (t->dev != r) return false;
+        gb->vi[k] = t->dev_i; gb->vtype[k] = t->qtype; gb->vrb[k] = t->q_row_bytes;
+    }
+    for (int k = 0; k < GI2_NF; k++) {
+        const ink2_tensor *t = bc->f[k];
+        if (!t || t->dev != r) return false;
+        gb->fi[k] = t->dev_i;
+    }
+    return true;
+}
 static int dev_block(void *dev, const ink2_block_call *bc) {
     ink2_rt *r = dev;
     if (!r->block_on) return 1;
@@ -258,19 +283,8 @@ static int dev_block(void *dev, const ink2_block_call *bc) {
     }
     if (p0 > 0 && !r->seq_block) return 1;   // a sequence begun on 2a's path continues there
     r->seq_block = true;
-    gpu_ink2_block gb = { bc->H, bc->nh, bc->nkv, bc->hd, bc->K, bc->dr, bc->ext, bc->window, bc->global, bc->scale,
-                          bc->qk_clip, bc->rel_clip, bc->eps, bc->log_alpha, bc->log_floor, { 0 }, { 0 }, { 0 }, { 0 } };
-    for (int k = 0; k < GI2_NV; k++) {
-        const ink2_tensor *t = bc->v[k];
-        if (!t) { gb.vi[k] = -1; gb.vtype[k] = -1; continue; }
-        if (t->dev != r) { r->gpu_err = true; return -1; }   // block_on said every view is there
-        gb.vi[k] = t->dev_i; gb.vtype[k] = t->qtype; gb.vrb[k] = t->q_row_bytes;
-    }
-    for (int k = 0; k < GI2_NF; k++) {
-        const ink2_tensor *t = bc->f[k];
-        if (!t || t->dev != r) { r->gpu_err = true; return -1; }
-        gb.fi[k] = t->dev_i;
-    }
+    gpu_ink2_block gb;
+    if (!block_desc(r, bc, &gb)) { r->gpu_err = true; return -1; }   // block_on said every view is there
     r->n_block_calls++;
     const bool inj = r->n_attn++ == r->attn_fail_at;   // TEST-ONLY: the same injected failure as the core's
     const bool ok = !inj && gpu_ink2_attn_block(r->gpu, r->kv, bc->app, &gb, bc->T, bc->pos, bc->xq, bc->xk, bc->xv,
@@ -305,6 +319,7 @@ typedef struct ink2_share {
     size_t fit_free; // the free memory the deciding fit read (after its context, module and buffers; test-only cap)
     bool block_dev;  // step 2b: the whole attention block; its small tensors follow the views in the copy
     int n_views;     // the views in the copy (the small tensors are device tensors n_views..)
+    int step_base;   // D1d.3b: the resident step's small tensors are device tensors step_base.. (-1: none up)
     int refs;
     char why[200];   // 'C': the sentence each instance says
     struct ink2_share *next;
@@ -479,6 +494,138 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
 // The weights the device computes on it (their stored rows), shared with the file's other instances of the same
 // placement; or a sentence why not and the CPU route for every such instance. 1: on CUDA; 0: on the CPU; -1: this
 // instance refuses its load (it could not join a copy its placement holds: never a CPU slot beside CUDA ones).
+// ---- R4.48.9 D1d.3b: the resident decode step's model side ----
+// the step's small F32 tensors in their device order: the globals (embed_norm, final_input.query, model.norm, and on a
+// loop the message_input.query), then per block at its first application: its input norms (3 full, 1 sliding),
+// attention_input.query (block > 0), mlp_input.query, post_attention_layernorm, the two post convolutions' conv1d, the
+// router's bias. out NULL: count only; blk_at[b] (when given) the block's first index in that order (-1: no
+// application). Returns the count, -1 when a tensor has no float data.
+typedef struct { const float *src; size_t n; } step_small;
+static int step_smalls(const ink2_rt *r, const ink2_step_plan *P, step_small *out, int *blk_at) {
+    const int H = r->s.hidden;
+    int k = 0;
+    bool ok = true;
+#define ADD(p_, n_) do { const float *p__ = (p_); if (!p__) ok = false; if (out) { out[k].src = p__; out[k].n = (n_); } k++; } while (0)
+    ADD(P->embed_norm->data, (size_t)H);
+    ADD(P->final_q->data, (size_t)H);
+    ADD(P->norm->data, (size_t)H);
+    if (P->msg_q) ADD(P->msg_q->data, (size_t)4 * H * (size_t)(r->s.loop_end - r->s.loop_start));
+    for (int b = 0; b < r->s.n_block; b++) {
+        int a = 0;
+        while (a < P->n_app && P->app[a].block != b) a++;
+        if (blk_at) blk_at[b] = a < P->n_app ? k : -1;
+        if (a == P->n_app) continue;
+        const ink2_step_app *A = &P->app[a];
+        for (int rr = 0; rr < (A->global ? 3 : 1); rr++) ADD(A->norm[rr]->data, (size_t)H);
+        if (A->read_q) ADD(A->read_q->data, (size_t)A->n_read * H);
+        ADD(A->mlp_q->data, (size_t)H);
+        ADD(A->post_norm->data, (size_t)H);
+        ADD(A->conv[0]->data, (size_t)H * (size_t)r->s.conv_k);
+        ADD(A->conv[1]->data, (size_t)H * (size_t)r->s.conv_k);
+        ADD(A->br, (size_t)r->s.n_expert);
+    }
+#undef ADD
+    return ok ? k : -1;
+}
+// the step's small tensors up, as device tensors base.. (the copy new, under g_share_mu: no instance reads h->t yet)
+static bool step_put(ink2_rt *r, gpu_ink2 *h, int base) {
+    ink2_step_app *apps = calloc((size_t)r->s.n_app, sizeof *apps);
+    ink2_step_plan P = { 0 };
+    P.app = apps;
+    bool ok = apps && ink2_step_plan_build(&r->s, &r->w, &P) == INK2_OK;
+    const int n = ok ? step_smalls(r, &P, NULL, NULL) : -1;
+    step_small *ss = n > 0 ? malloc(sizeof *ss * (size_t)n) : NULL;
+    ok = ok && ss && step_smalls(r, &P, ss, NULL) == n;
+    for (int k = 0; ok && k < n; k++) ok = gpu_ink2_put(h, ss[k].src, sizeof(float) * ss[k].n, NULL, 0) == base + k;
+    free(ss); free(apps);
+    return ok;
+}
+// this instance's device plan: the engine's plan by device index; false (the step declined) when any tensor it needs
+// is not this instance's on the device, or a stack's type has no bounded kernel
+static bool step_plan_make(ink2_rt *r, int base, gpu_ink2_step_plan *G, gpu_ink2_step_app *GA) {
+    const ink2_shape *s = &r->s;
+    ink2_step_app *apps = calloc((size_t)s->n_app, sizeof *apps);
+    int *blk_at = malloc(sizeof(int) * (size_t)s->n_block);
+    ink2_step_plan P = { 0 };
+    P.app = apps;
+    bool ok = apps && blk_at && ink2_step_plan_build(s, &r->w, &P) == INK2_OK && step_smalls(r, &P, NULL, blk_at) > 0;
+    ok = ok && P.head->dev == r && !r->no_factor;
+    const int nglob = P.msg_q ? 4 : 3;
+    for (int a = 0; ok && a < s->n_app; a++) {
+        const ink2_step_app *A = &P.app[a];
+        gpu_ink2_step_app *g = &GA[a];
+        memset(g, 0, sizeof *g);
+        int i = base + blk_at[A->block];
+        g->block = A->block; g->global = A->global; g->loop = A->loop; g->pass = s->app_pass[a];
+        g->boundary = A->boundary; g->n_read = A->n_read;
+        g->i_norm[0] = g->i_norm[1] = g->i_norm[2] = -1;
+        for (int rr = 0; rr < (A->global ? 3 : 1); rr++) g->i_norm[rr] = i++;
+        g->i_read_q = A->read_q ? i++ : -1;
+        g->i_mlp_q = i++; g->i_post_norm = i++; g->i_conv[0] = i++; g->i_conv[1] = i++; g->i_br = i++;
+        for (int rr = 0; A->loop && rr < 4; rr++) {
+            const ink2_tensor *t[3] = { A->gate[rr][0], A->gate[rr][1], A->gate[rr][2] };
+            for (int u = 0; u < 3; u++) if (!t[u] || t[u]->dev != r || !t[u]->q || t[u]->q_act8) ok = false;
+            if (ok) g->gate[rr] = (gpu_ink2_msg_role){ t[0]->dev_i, t[1]->dev_i, t[2]->dev_i, t[0]->qtype, t[1]->qtype,
+                                                       t[2]->qtype, 1.0f, 1.0f, 1.0f };
+        }
+        ok = ok && block_desc(r, &A->blk, &g->blk);
+        ok = ok && A->router->dev == r && A->router->qtype == T_F32 && A->t13->dev == r && A->t2->dev == r &&
+             (A->t13->qtype == T_NVFP4 || A->t13->qtype == T_BF16) && (A->t2->qtype == T_NVFP4 || A->t2->qtype == T_BF16);
+        if (ok) {
+            g->ir = A->router->dev_i; g->i13 = A->t13->dev_i; g->i2 = A->t2->dev_i;
+            g->t13 = A->t13->qtype; g->t2 = A->t2->qtype; g->rb13 = A->t13->q_row_bytes; g->rb2 = A->t2->q_row_bytes;
+            g->f13 = A->t13->q_scale != NULL; g->f2 = A->t2->q_scale != NULL;
+        }
+    }
+    if (ok) {
+        *G = (gpu_ink2_step_plan){ s->n_app, s->hidden, s->vocab_used, s->n_expert, s->n_used, s->ff, s->conv_k,
+                                   s->loop_start, s->loop_end, s->loop_gate_rank, s->eps, s->route_scale, s->gate_cap,
+                                   s->up_cap, s->final_cap, ink2_inv_sqrt(s->hidden), base, base + 1, base + 2,
+                                   P.msg_q ? base + 3 : -1, P.head->dev_i, P.head->qtype, P.head->q_row_bytes, GA };
+        (void)nglob;
+    }
+    free(apps); free(blk_at);
+    return ok;
+}
+// the post convolutions' copies: up (the host's to the device, after a forward the step did not take) or down (the
+// device's to the host, before one, when a step ran last); one transfer each way
+static bool post_sync(ink2_rt *r, int up) {
+    const int K1 = r->s.conv_k - 1, H = r->s.hidden;
+    const size_t one = (size_t)K1 * (size_t)H;
+    if (!r->post_stage || !r->kv) return false;
+    if (!up && !gpu_ink2_kv_post_sync(r->kv, r->post_stage, 0)) return false;
+    for (int a = 0; a < r->s.n_app; a++)
+        for (int k = 0; k < 2; k++) {
+            float *hs = ink2_cache_post_hist(&r->s, &r->c, a, k), *st = r->post_stage + ((size_t)a * 2 + (size_t)k) * one;
+            if (!hs) return false;
+            if (up) memcpy(st, hs, sizeof(float) * one); else memcpy(hs, st, sizeof(float) * one);
+        }
+    return !up || gpu_ink2_kv_post_sync(r->kv, r->post_stage, 1);
+}
+// the engine's step op: declines (1) unless this instance's step is on and its sequence's blocks are the device's; a
+// decline with the device's histories newer brings them down first (the forward that runs instead reads the host's)
+static int dev_step(void *dev, int p0, const float *emb_row, float *logits) {
+    ink2_rt *r = dev;
+    if (!r->step_on) return 1;
+    if (r->gpu_err) return -1;
+    if (p0 < 0 || (p0 > 0 && !r->seq_block)) {   // the prepare call, or a sequence begun on 2a's path: the host's turn
+        if (r->post_dev_newer) {
+            if (!post_sync(r, 0)) { r->gpu_err = true; return -1; }
+            r->post_dev_newer = false;
+        }
+        return 1;
+    }
+    r->seq_block = true;
+    if (!gpu_ink2_step(r->gpu, r->kv, p0, emb_row, logits)) {
+        if (!r->gpu_err) fprintf(stderr, "error: inkling2_loop: the decode step at position %d failed on the device\n", p0);
+        r->gpu_err = true;
+        return -1;
+    }
+    r->post_dev_newer = true;
+    r->last_was_step = true;
+    r->n_step++;
+    return 0;
+}
 static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
     // until the whole CUDA forward is built (R4.48.9 G2b) the route is opt-in: G2a runs only the products on the
     // device, so a default GPU load keeps the CPU
@@ -514,10 +661,14 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
     const char *pf = getenv("RUNNER_INKLING2_CUDA_TEST_PUT_FAIL"), *ne = getenv("RUNNER_INKLING2_CUDA_TEST_NO_EXP");
     const char *capv = getenv("RUNNER_INKLING2_CUDA_TEST_FREE"), *nav = getenv("RUNNER_INKLING2_CUDA_TEST_NO_ATTN");
     const char *nbv = getenv("RUNNER_INKLING2_CUDA_TEST_NO_BLOCK");
+    // D1d.3b TEST-ONLY: the resident decode step (its small tensors go up with the copy: part of the key)
+    const char *stv = getenv("RUNNER_INKLING2_CUDA_TEST_STEP");
+    const bool step_req = stv && !strcmp(stv, "1");
     char key[1200];
-    snprintf(key, sizeof key, "%s|%llu|%llu|%lld|moe %d|%s|c %d|b %d|slots %d|pf %s|ne %s|cap %s|na %s|nb %s", m->path,
+    snprintf(key, sizeof key, "%s|%llu|%llu|%lld|moe %d|%s|c %d|b %d|slots %d|pf %s|ne %s|cap %s|na %s|nb %s|st %d", m->path,
              (unsigned long long)fsize, (unsigned long long)fino, (long long)fmt, p->cpu_moe ? 1 : 0, dev, m->n_ctx,
-             m->n_batch, n_slots, pf ? pf : "", ne ? ne : "", capv ? capv : "", nav ? nav : "", nbv ? nbv : "");
+             m->n_batch, n_slots, pf ? pf : "", ne ? ne : "", capv ? capv : "", nav ? nav : "", nbv ? nbv : "",
+             step_req ? 1 : 0);
     pthread_mutex_lock(&g_share_mu);
     ink2_share *sh = NULL;
     for (ink2_share *q = g_shares; q; q = q->next)
@@ -528,6 +679,12 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
         if (!sh) { pthread_mutex_unlock(&g_share_mu); fprintf(stderr, "note: out of memory binding inkling2_loop; running on the CPU\n"); return 0; }
         snprintf(sh->key, sizeof sh->key, "%s", key);
         share_place(sh, r, p->cpu_moe, m->n_batch, m->n_ctx, n_slots, dev);
+        // D1d.3b: the step's small tensors after the block's, while the copy is new (no instance reads it yet)
+        sh->step_base = -1;
+        if (step_req && sh->placed == 'W' && sh->block_dev && sh->gpu) {
+            const int base = sh->n_views + r->s.n_block * GI2_NF;
+            if (step_put(r, sh->gpu, base)) sh->step_base = base;
+        }
         sh->next = g_shares;
         g_shares = sh;
         made = true;
@@ -557,7 +714,7 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
     }
     // the instance's own device functions, read-only, in place before any of its views is marked: a forward reads
     // them through its own views and cache only, so no other instance's bind writes what it reads
-    static const ink2_dev_ops ops = { dev_lin_scaled, dev_experts, dev_attn, dev_block, dev_msg, dev_moe };
+    static const ink2_dev_ops ops = { dev_lin_scaled, dev_experts, dev_attn, dev_block, dev_msg, dev_moe, dev_step };
     r->hdr.ops = &ops;
     if (!dev_mark(r)) {
         pthread_mutex_unlock(&g_share_mu);
@@ -625,6 +782,20 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
     const char *xf = getenv("RUNNER_INKLING2_CUDA_TEST_EXP_FAIL");
     r->exp_fail_at = xf && *xf ? atol(xf) : -1;
     r->exp_on = sh->exp_dev;
+    // D1d.3b (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_STEP=1 until 3b.3): the resident decode step, when every op of the
+    // chain is this instance's on the device and the copy holds the step's small tensors
+    if (step_req && sh->step_base >= 0 && r->kv && r->block_on && r->msg_on && r->route_on && r->exp_on) {
+        gpu_ink2_step_app *ga = malloc(sizeof *ga * (size_t)r->s.n_app);
+        gpu_ink2_step_plan gp;
+        const size_t one = (size_t)(r->s.conv_k - 1) * (size_t)r->s.hidden;
+        r->post_stage = malloc(sizeof(float) * one * 2 * (size_t)r->s.n_app);
+        r->step_on = ga && r->post_stage && step_plan_make(r, sh->step_base, &gp, ga) && gpu_ink2_step_set(r->gpu, &gp) &&
+                     gpu_ink2_kv_post_init(r->kv, r->s.hidden, r->s.conv_k - 1);
+        free(ga);
+        if (!r->step_on) { free(r->post_stage); r->post_stage = NULL; }
+        r->post_dev_newer = false;
+        r->n_step = 0;
+    }
     fprintf(stderr, "inkling2_loop: the weights on CUDA (%s): %d tensors, %.3f GB, their stored rows%s; their products "
                     "on the device%s, the rest of the forward on the CPU (R4.48.9 G2b)%s%s\n", dev, r->n_dev,
             gpu_ink2_bytes(r->gpu) / 1e9, made ? "" : ", shared with this file's other instances",
@@ -914,9 +1085,12 @@ float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos,
                          : (want_logits && last_chunk) ? m->logits
                          : NULL;
         const int chunk_flags = (!need_all && want_logits && last_chunk) ? INK2_LOGITS_LAST : 0;
+        r->last_was_step = false;   // D1d.3b: dev_step sets it when the engine hands it this chunk
         ink2_status st = ink2_forward_chunk_lora(&r->s, &r->w, lora, &r->c, pos + done, T,
                                                  (const int *)(tokens + done), chunk_out, chunk_flags,
                                                  NULL, NULL);   // int32_t is int on every target Runner builds for
+        // D1d.3b: a chunk the step did not take ran on the host's post-convolution histories: the device copies follow
+        if (st == INK2_OK && r->step_on && !r->gpu_err && !r->last_was_step && !post_sync(r, 1)) r->gpu_err = true;
         if (st == INK2_OK && r->gpu_err) {   // on the flag alone: it does not depend on r->gpu
             ink2_set_tpool(prev_tp);
             fprintf(stderr, "error: inkling2_loop: the forward at position %d failed on the device\n", pos + done);
@@ -989,6 +1163,7 @@ void model_inkling2_free(model_t *m) {
     r->kv = NULL;
     share_release(r);   // the file's shared device copy: freed with its last instance
     free(r->dev_of);
+    free(r->post_stage);   // D1d.3b
     if (r->g) ink2g_close(r->g);
     free(r->last_sel);
     free(r->rows);
@@ -1114,6 +1289,10 @@ long model_inkling2_cuda_msg_calls(const model_t *m) {
 long model_inkling2_cuda_route_calls(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
     return r && r->route_on ? r->n_route : -1;
+}
+long model_inkling2_cuda_step_calls(const model_t *m) {
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    return r && r->step_on ? r->n_step : -1;
 }
 long model_inkling2_cuda_attn_calls(const model_t *m, size_t *kv_bytes) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;

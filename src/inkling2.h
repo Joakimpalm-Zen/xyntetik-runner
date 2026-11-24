@@ -125,6 +125,28 @@ typedef struct {
     const ink2_tensor *v[9];    // q, k, v, kd, vd, r, s, g, o
     const ink2_tensor *f[5];    // q scale, k taps, v taps, bank scale, bank proj
 } ink2_block_call;
+// R4.48.9 D1d.3b: the decode step's plan, every tensor one application of the forward reads, resolved ONCE by the
+// engine's own binds (ink2_attn_bind, ink2_moe_bind, the forward's names), so a resident step reads exactly what
+// ink2_decoder_layer_lora does. The block call's views and dimensions are filled; its T, positions, rows are not.
+typedef struct {
+    int block, global, loop, boundary;   // the application's block; a full layer; a loop class; a block boundary
+    int n_read;                          // attention_input's queries: 1 sliding, 3 full (layer 0 reads none: x itself)
+    const ink2_tensor *read_q;           // model.layers.b.attention_input.query (NULL at layer 0)
+    const ink2_tensor *norm[3];          // q / k / v input norms (sliding: input_layernorm in [0], [1] and [2] NULL)
+    const ink2_tensor *mlp_q;            // mlp_input.query
+    const ink2_tensor *post_norm;        // post_attention_layernorm
+    const ink2_tensor *gate[4][3];       // a loop layer's q, k, v, mlp message gates: down, forget, message (else NULL)
+    const ink2_tensor *conv[2];          // post_attention_convolution / post_mlp_convolution conv1d weights
+    ink2_block_call blk;                 // the attention block (the views, the dimensions)
+    const ink2_tensor *router, *t13, *t2;   // the expert layer: the router's view, the stacks (the fast route's views)
+    const float *br;                     // the router's bias
+} ink2_step_app;
+typedef struct {
+    const ink2_tensor *embed, *embed_norm, *final_q, *norm, *msg_q, *head;
+    ink2_step_app *app;                  // [n_app], the caller's
+    int n_app;
+} ink2_step_plan;
+// (ink2_step_plan_build and ink2_cache_post_hist: declared after ink2_weights and ink2_cache, below)
 typedef int (*ink2_dev_block_fn)(void *dev, const ink2_block_call *b);
 // TEST-ONLY: how many times the host ran an attention block's q/k/v/bank work in this process (step 2b's check)
 long ink2_attn_host_glue_calls(void);
@@ -170,8 +192,15 @@ void ink2_test_rms_norm(const float *x, int n, float eps, const float *wt, float
 int ink2_test_depth_attn(const float *q, int nq, const float *states, int n_kv, int H, float *out);
 void ink2_test_short_conv(const float *cw, int C, int K, int T, const float *lin, float *out, int p0, float *hist);
 float ink2_test_softcap(float v, float cap);
+// R4.48.9 D1d.3b: the whole forward of ONE position on the device (the resident decode step): emb_row [hidden] is the
+// token's embedding row as the forward dequantizes it, logits [vocab_used] the softcapped row out. 0 done (every
+// application's slot then holds p0 + 1), 1 not taken (the forward runs as before), -1 a device failure. p0 -1 (and
+// NULL rows): no step, the forward is about to run on the host's state; the binder brings what it keeps on the device
+// there first (1, or -1 on a failure).
+typedef int (*ink2_dev_step_fn)(void *dev, int p0, const float *emb_row, float *logits);
 typedef struct ink2_dev_ops { ink2_dev_lin_fn lin; ink2_dev_experts_fn experts; ink2_dev_attn_fn attn;
-                              ink2_dev_block_fn block; ink2_dev_msg_fn msg; ink2_dev_moe_fn moe; } ink2_dev_ops;
+                              ink2_dev_block_fn block; ink2_dev_msg_fn msg; ink2_dev_moe_fn moe;
+                              ink2_dev_step_fn step; } ink2_dev_ops;
 typedef struct { const ink2_dev_ops *ops; } ink2_dev_hdr;   // the first member of every binder's instance
 // TEST-ONLY: how many times the host attention core ran in this process (G2b step 2a's check that it did not)
 long ink2_attn_host_core_calls(void);
@@ -358,6 +387,12 @@ ink2_status ink2_forward_chunk(const ink2_shape *s, const ink2_weights *w, ink2_
                                const int *ids, float *logits, int flags, float *app_states);
 // Same forward with an optional LoRA adapter (`lora` may be NULL) and optional expert selection output.
 // `logits` may be NULL to skip the final norm and lm_head pass (when caller recomputes head downstream).
+// R4.48.9 D1d.3b: the decode step's plan (ink2_step_plan above). p->app must hold s->n_app entries; INK2_NO_TENSOR
+// names nothing (the caller then declines the resident step)
+ink2_status ink2_step_plan_build(const ink2_shape *s, const ink2_weights *w, ink2_step_plan *p);
+// the post convolutions' host histories of application app (k 0: post_attention, 1: post_mlp): conv_k - 1 rows of
+// hidden floats, position u's row at u % (conv_k - 1); NULL without one
+float *ink2_cache_post_hist(const ink2_shape *s, ink2_cache *c, int app, int k);
 ink2_status ink2_forward_chunk_lora(const ink2_shape *s, const ink2_weights *w, const ink2_lora *lora, ink2_cache *c,
                                     int p0, int T, const int *ids, float *logits, int flags, float *app_states,
                                     int *app_sel);
