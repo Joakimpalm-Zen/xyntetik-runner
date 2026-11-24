@@ -12910,7 +12910,7 @@ struct gpu_ink2 {
     int exp_ref;
     // P1a: the house's batched BF16 product and its segmented expert twin; mv_ref (TEST-ONLY) keeps every product on
     // the per-column launches, the reference
-    CUfunction mvb_bf16, mvsegb_bf16;
+    CUfunction mvb_bf16;
     int mv_ref;
     // P1b: the batched NVFP4 product and its segmented expert twin (each column in k_mv_nvfp4's order)
     CUfunction mvb_nvfp4, mvsegb_nvfp4;
@@ -12958,7 +12958,6 @@ gpu_ink2 *gpu_ink2_bind(void) {
         if (cu.ModuleGetFunction(&h->mvseg[ms[k].type], h->mod, ms[k].name) != 0) h->mvseg[ms[k].type] = NULL;
     if (cu.ModuleGetFunction(&h->f_scatter_pos, h->mod, "k_moe_scatter_pos") != 0) h->f_scatter_pos = NULL;
     if (cu.ModuleGetFunction(&h->mvb_bf16, h->mod, "k_mv_bf16_b") != 0) h->mvb_bf16 = NULL;
-    if (cu.ModuleGetFunction(&h->mvsegb_bf16, h->mod, "k_mvsegb_bf16") != 0) h->mvsegb_bf16 = NULL;
     if (cu.ModuleGetFunction(&h->mvb_nvfp4, h->mod, "k_mv_nvfp4_b") != 0) h->mvb_nvfp4 = NULL;
     if (cu.ModuleGetFunction(&h->mvsegb_nvfp4, h->mod, "k_mvsegb_nvfp4") != 0) h->mvsegb_nvfp4 = NULL;
     if (cu.ModuleGetFunction(&h->f_gather, h->mod, "k_moe_gather") != 0) h->f_gather = NULL;
@@ -13088,15 +13087,15 @@ static bool ink2_mvseg(gpu_ink2 *h, int type, CUdeviceptr w, int n_in, int n_out
     }
     return ok;
 }
-// P1a/P1b: a segmented product over ntile tiles (tile {first column, count <= 16, expert}): BF16 by k_mvsegb_bf16
-// (the house's batched kernel per tile, 4 rows a 128-thread block), NVFP4 by k_mvsegb_nvfp4 (8 rows a 256-thread
-// block, esc the experts' factors or 0); x carries INK2_XPAD columns of padding past its last
+// P1b: a segmented product over ntile tiles (tile {first column, count <= 16, expert}) by k_mvsegb_nvfp4 (8 rows a
+// 256-thread block, esc the experts' factors or 0); x carries INK2_XPAD columns of padding past its last. Only NVFP4
+// stacks tile: a BF16 tile (P1a's k_mvsegb_bf16) measured 1.06x the per-column segmented launch and was removed.
 static CUfunction ink2_segb_fn(const gpu_ink2 *h, int type) {
-    return type == T_BF16 ? h->mvsegb_bf16 : type == T_NVFP4 ? h->mvsegb_nvfp4 : NULL;
+    return type == T_NVFP4 ? h->mvsegb_nvfp4 : NULL;
 }
 static bool ink2_mvsegb(gpu_ink2 *h, int type, CUdeviceptr w, int n_in, int n_out, int ntile, CUdeviceptr x, int xcs,
                         CUdeviceptr y, int ycs, CUdeviceptr d_tiles, uint64_t w_es, CUdeviceptr esc) {
-    const unsigned rpb = type == T_NVFP4 ? 8 : 4, block = type == T_NVFP4 ? 256 : 128;
+    const unsigned rpb = 8, block = 256;
     mv_args a = { n_in, n_out, 0, 0, 1, n_in, n_out };
     bool ok = true;
     for (int k0 = 0; ok && k0 < ntile; k0 += 65535) {
@@ -13108,10 +13107,10 @@ static bool ink2_mvsegb(gpu_ink2 *h, int type, CUdeviceptr w, int n_in, int n_ou
 }
 // D2, the fused expert body: the columns are the (expert, position) pairs expert-major (idx, off, wv as the caller
 // built them); five launches whatever the experts: gather, segmented gate_up, SwiGLU, segmented down, and the weighted
-// sum per position over its columns in ascending expert order (k_moe_scatter_pos). P1a: with a BF16 stack the columns
-// are renumbered, the experts with at least INK2_MVB_MIN columns first (their BF16 products as tiles of 16 columns,
-// k_mvsegb_bf16), then the rest (one segmented launch a column); within each group expert-major as before. Each
-// position still adds its experts in ascending expert order (its list below), so the renumbering changes no sum.
+// sum per position over its columns in ascending expert order (k_moe_scatter_pos). P1b: with an NVFP4 stack the
+// columns are renumbered, the experts with at least INK2_MVB_MIN columns first (their NVFP4 products as tiles of 16
+// columns, k_mvsegb_nvfp4), then the rest (one segmented launch a column); within each group expert-major as before.
+// Each position still adds its experts in ascending expert order (its list below), so the renumbering changes no sum.
 static bool ink2_experts_fused(gpu_ink2 *h, int i13, int i2, int type13, int type2, size_t rb13, size_t rb2, int H,
                                int F, int E, int T, const float *x, const int *idx, const int *off, const float *wv,
                                int nall, const float *s13, const float *s2, float gate_cap, float up_cap, float *out) {

@@ -874,12 +874,12 @@ int main(int argc, char **argv) {
             { "NVFP4, 300 positions, 8 of 16 each (2400 columns)", T_NVFP4, 256, 128, 16, 300, 8, -1, -1 },
             { "BF16 (no factors), 6 positions, 2 of 8 each", T_BF16, 256, 128, 8, 6, 2, -1, -1 },
             { "BF16 at the real widths, one position, 8 of 16 experts", T_BF16, 2304, 1152, 16, 1, 8, -1, -1 },
-            // P1a: BF16 experts with at least 16 columns run as batched tiles, the rest per column
-            { "BF16, 300 positions, 8 of 16 each (every expert tiled)", T_BF16, 256, 128, 16, 300, 8, -1, -1 },
-            { "BF16, 20 positions, 8 of 16 each plus expert 1 at every position (tiled and per-column experts in one call)",
-              T_BF16, 256, 128, 16, 20, 8, 1, -1 },
-            { "BF16, 16 positions, expert 3 at every position (exactly one full tile)", T_BF16, 256, 128, 16, 16, 2, 3, -1 },
-            { "BF16, 17 positions, expert 3 at every position (a tile of 16 and one of 1)", T_BF16, 256, 128, 16, 17, 2, 3, -1 },
+            // BF16 experts run per column whatever their column count (P1a's BF16 tile measured slower and went): these
+            // hold that path to the reference at the counts where an NVFP4 expert tiles
+            { "BF16, 300 positions, 8 of 16 each (~150 columns an expert)", T_BF16, 256, 128, 16, 300, 8, -1, -1 },
+            { "BF16, 20 positions, 8 of 16 each plus expert 1 at every position", T_BF16, 256, 128, 16, 20, 8, 1, -1 },
+            { "BF16, 16 positions, expert 3 at every position (16 columns)", T_BF16, 256, 128, 16, 16, 2, 3, -1 },
+            { "BF16, 17 positions, expert 3 at every position (17 columns)", T_BF16, 256, 128, 16, 17, 2, 3, -1 },
             { "BF16 at the real widths, 64 positions, 8 of 16 each", T_BF16, 2304, 1152, 16, 64, 8, -1, -1 },
             // P1b: NVFP4 experts with at least 16 columns run as batched tiles too
             { "NVFP4, 16 positions, expert 3 at every position (exactly one full tile)", T_NVFP4, 256, 128, 16, 16, 2, 3, -1 },
