@@ -13186,7 +13186,7 @@ static bool ink2_experts_fused(gpu_ink2 *h, int i13, int i2, int type13, int typ
               ink2_grow(&h->eact, &h->eact_cap, fb * ((size_t)nall + INK2_XPAD) * 2 * F) &&
               ink2_grow(&h->edn, &h->edn_cap, fb * (size_t)nall * H) && ink2_grow(&h->ew, &h->ew_cap, fb * ((size_t)nall + 1)) &&
               ink2_grow(&h->eint, &h->eint_cap, fi * ni) && ink2_grow(&h->esc, &h->esc_cap, fb * 2 * (size_t)E) &&
-              cu.MemcpyHtoD(h->ex, x, fb * (size_t)T * H) == 0 && cu.MemsetD8(h->eo, 0, fb * (size_t)T * H) == 0 &&
+              (!x || cu.MemcpyHtoD(h->ex, x, fb * (size_t)T * H) == 0) && cu.MemsetD8(h->eo, 0, fb * (size_t)T * H) == 0 &&
               cu.MemcpyHtoD(h->eint, tab, fi * ni) == 0 && (!nall || cu.MemcpyHtoD(h->ew, wn, fb * (size_t)nall) == 0) &&
               (!s13 || cu.MemcpyHtoD(h->esc, s13, fb * (size_t)E) == 0) &&
               (!s2 || cu.MemcpyHtoD(h->esc + fb * (size_t)E, s2, fb * (size_t)E) == 0);
@@ -13237,7 +13237,8 @@ static bool ink2_experts_launch(gpu_ink2 *h, int i13, int i2, int type13, int ty
         void *pa[] = { &o, &h->edn, &po, &d_pl, &h->ew, &nh, &ss, &ds };
         ok = cu.LaunchKernel(h->f_scatter_pos, ((unsigned)H + 255) / 256, g, 1, 256, 1, 1, 0, NULL, pa, NULL) == 0;
     }
-    ok = ok && cu.MemcpyDtoH(out, h->eo, fb * (size_t)T * H) == 0;   // the null stream: after every launch above
+    // D1d.2: out NULL leaves the rows in h->eo (the resident step reads them there); else down, the null stream
+    ok = ok && (!out || cu.MemcpyDtoH(out, h->eo, fb * (size_t)T * H) == 0);
     return ok;
 }
 void gpu_ink2_test_experts_ref(gpu_ink2 *h, int on) {
@@ -13264,6 +13265,33 @@ long gpu_ink2_test_stats(gpu_ink2 *h, size_t caps[5]) {
     return n;
 }
 // D1a (gpu.h): one message step on the device, ink2_message_steps_c's fast path operation for operation
+// D1d.2: the message steps on device rows (dx: the n_roles x T x rows role-major, contiguous; dm the same for the
+// messages; dout the same out): the norms, each role's three products, the combination; no upload, no download (the
+// resident step's form; gpu_ink2_msg_steps uploads into h->mx / h->mm and downloads h->mout around it). Under h->mu,
+// the context current.
+static bool ink2_msg_core(gpu_ink2 *h, int n_roles, int T, int H, int r, float eps, const gpu_ink2_msg_role *roles,
+                          CUdeviceptr dx, CUdeviceptr dm, CUdeviceptr dout) {
+    const size_t fb = sizeof(float), rows = (size_t)n_roles * T, TH = (size_t)T * H;
+    // gh and d feed products: INK2_XPAD columns of padding past their last (the batched kernels read them)
+    bool ok = ink2_grow(&h->mgh, &h->mgh_cap, fb * (rows + INK2_XPAD) * 2 * (size_t)H) &&
+              ink2_grow(&h->md, &h->md_cap, fb * (rows + INK2_XPAD) * (size_t)r) && ink2_grow(&h->mfa, &h->mfa_cap, fb * rows * H) &&
+              ink2_grow(&h->mga, &h->mga_cap, fb * rows * H);
+    int nr = (int)rows, hh = H;
+    float e = eps;
+    void *pn[] = { &dx, &dm, &h->mgh, &nr, &hh, &e };
+    ok = ok && cu.LaunchKernel(h->f_msgnorm, (unsigned)((2 * rows + 63) / 64), 1, 1, 64, 1, 1, 0, NULL, pn, NULL) == 0;
+    for (int k = 0; ok && k < n_roles; k++) {   // per role: d = wd gh, fa = wf d, ga = wg d (the products' own kernels)
+        const gpu_ink2_msg_role *ro = &roles[k];
+        CUdeviceptr gh = h->mgh + fb * (size_t)k * T * 2 * H, d = h->md + fb * (size_t)k * T * r;
+        ok = ink2_mv_cols(h, ro->t_d, h->t[ro->i_d].rows, 0, 2 * H, r, T, gh, d, ro->s_d) &&
+             ink2_mv_cols(h, ro->t_f, h->t[ro->i_f].rows, 0, r, H, T, d, h->mfa + fb * (size_t)k * TH, ro->s_f) &&
+             ink2_mv_cols(h, ro->t_g, h->t[ro->i_g].rows, 0, r, H, T, d, h->mga + fb * (size_t)k * TH, ro->s_g);
+    }
+    int n = (int)(rows * H);
+    void *pc[] = { &h->mfa, &h->mga, &dx, &dm, &dout, &n };
+    ok = ok && cu.LaunchKernel(h->f_msgcomb, (unsigned)((rows * H + 255) / 256), 1, 1, 256, 1, 1, 0, NULL, pc, NULL) == 0;
+    return ok;
+}
 bool gpu_ink2_msg_steps(gpu_ink2 *h, int n_roles, int T, int H, int r, float eps, const gpu_ink2_msg_role *roles,
                         const float *const *xs, const float *const *ms, size_t ms_stride, float *const *outs) {
     if (!h || !h->f_msgnorm || !h->f_msgcomb || n_roles < 1 || n_roles > 3 || T <= 0 || H <= 0 || r <= 0 || !roles ||
@@ -13285,27 +13313,10 @@ bool gpu_ink2_msg_steps(gpu_ink2 *h, int n_roles, int T, int H, int r, float eps
             memcpy(stage + rows * H + (size_t)k * TH + (size_t)t * H, ms[k] + (size_t)t * ms_stride, fb * (size_t)H);
     }
     pthread_mutex_lock(&h->mu);
-    // gh and d feed products: INK2_XPAD columns of padding past their last (the batched kernels read them)
     bool ok = cu.CtxSetCurrent(h->ctx) == 0 && ink2_grow(&h->mx, &h->mx_cap, fb * rows * H) &&
-              ink2_grow(&h->mm, &h->mm_cap, fb * rows * H) &&
-              ink2_grow(&h->mgh, &h->mgh_cap, fb * (rows + INK2_XPAD) * 2 * (size_t)H) &&
-              ink2_grow(&h->md, &h->md_cap, fb * (rows + INK2_XPAD) * (size_t)r) && ink2_grow(&h->mfa, &h->mfa_cap, fb * rows * H) &&
-              ink2_grow(&h->mga, &h->mga_cap, fb * rows * H) && ink2_grow(&h->mout, &h->mout_cap, fb * rows * H) &&
+              ink2_grow(&h->mm, &h->mm_cap, fb * rows * H) && ink2_grow(&h->mout, &h->mout_cap, fb * rows * H) &&
               cu.MemcpyHtoD(h->mx, stage, fb * rows * H) == 0 && cu.MemcpyHtoD(h->mm, stage + rows * H, fb * rows * H) == 0;
-    int nr = (int)rows, hh = H;
-    float e = eps;
-    void *pn[] = { &h->mx, &h->mm, &h->mgh, &nr, &hh, &e };
-    ok = ok && cu.LaunchKernel(h->f_msgnorm, (unsigned)((2 * rows + 63) / 64), 1, 1, 64, 1, 1, 0, NULL, pn, NULL) == 0;
-    for (int k = 0; ok && k < n_roles; k++) {   // per role: d = wd gh, fa = wf d, ga = wg d (the products' own kernels)
-        const gpu_ink2_msg_role *ro = &roles[k];
-        CUdeviceptr gh = h->mgh + fb * (size_t)k * T * 2 * H, d = h->md + fb * (size_t)k * T * r;
-        ok = ink2_mv_cols(h, ro->t_d, h->t[ro->i_d].rows, 0, 2 * H, r, T, gh, d, ro->s_d) &&
-             ink2_mv_cols(h, ro->t_f, h->t[ro->i_f].rows, 0, r, H, T, d, h->mfa + fb * (size_t)k * TH, ro->s_f) &&
-             ink2_mv_cols(h, ro->t_g, h->t[ro->i_g].rows, 0, r, H, T, d, h->mga + fb * (size_t)k * TH, ro->s_g);
-    }
-    int n = (int)(rows * H);
-    void *pc[] = { &h->mfa, &h->mga, &h->mx, &h->mm, &h->mout, &n };
-    ok = ok && cu.LaunchKernel(h->f_msgcomb, (unsigned)((rows * H + 255) / 256), 1, 1, 256, 1, 1, 0, NULL, pc, NULL) == 0;
+    ok = ok && ink2_msg_core(h, n_roles, T, H, r, eps, roles, h->mx, h->mm, h->mout);
     ok = ok && cu.MemcpyDtoH(stage, h->mout, fb * rows * H) == 0;   // the null stream: after every launch above
     pthread_mutex_unlock(&h->mu);
     for (int k = 0; ok && k < n_roles; k++) memcpy(outs[k], stage + (size_t)k * TH, fb * TH);
@@ -13345,7 +13356,8 @@ bool gpu_ink2_route_experts(gpu_ink2 *h, int ir, const float *br, float scale, i
     if (!h || !gpu_ink2_route_ok(h) || !gpu_ink2_experts_ok(h) || !h->f_scatter_pos || ir < 0 || ir >= h->n ||
         i13 < 0 || i13 >= h->n || i2 < 0 || i2 >= h->n || type13 < 0 || type13 >= KT_N || type2 < 0 || type2 >= KT_N ||
         !h->mv[type13] || !h->mv[type2] || !h->mvseg[type13] || !h->mvseg[type2] || T <= 0 || H <= 0 || F <= 0 ||
-        E <= 0 || K < 1 || K > E || !br || !x || !out || (s13 && type13 != T_NVFP4) || (s2 && type2 != T_NVFP4))
+        E <= 0 || K < 1 || K > E || !br || (s13 && type13 != T_NVFP4) || (s2 && type2 != T_NVFP4))   // (D1d.2: x NULL =
+        // the positions already in h->ex, out NULL = the rows left in h->eo: the resident step's form)
         return false;
     const size_t fb = sizeof(float), fi = sizeof(int), NC = (size_t)T * K;
     const size_t ni = 3 * NC + (size_t)T + 1 + 3 * (NC / 16 + (size_t)E);
@@ -13355,7 +13367,7 @@ bool gpu_ink2_route_experts(gpu_ink2 *h, int ir, const float *br, float scale, i
               ink2_grow(&h->exe, &h->exe_cap, fb * (NC + INK2_XPAD) * H) && ink2_grow(&h->eact, &h->eact_cap, fb * (NC + INK2_XPAD) * 2 * F) &&
               ink2_grow(&h->edn, &h->edn_cap, fb * NC * H) && ink2_grow(&h->ew, &h->ew_cap, fb * (NC + 1)) &&
               ink2_grow(&h->eint, &h->eint_cap, fi * ni) && ink2_grow(&h->esc, &h->esc_cap, fb * 2 * (size_t)E) &&
-              cu.MemcpyHtoD(h->ex, x, fb * (size_t)T * H) == 0 && cu.MemsetD8(h->eo, 0, fb * (size_t)T * H) == 0 &&
+              (!x || cu.MemcpyHtoD(h->ex, x, fb * (size_t)T * H) == 0) && cu.MemsetD8(h->eo, 0, fb * (size_t)T * H) == 0 &&
               cu.MemcpyHtoD(h->rbr, br, fb * (size_t)E) == 0 &&
               (!s13 || cu.MemcpyHtoD(h->esc, s13, fb * (size_t)E) == 0) &&
               (!s2 || cu.MemcpyHtoD(h->esc + fb * (size_t)E, s2, fb * (size_t)E) == 0);
@@ -13765,8 +13777,10 @@ static bool ink2_launch1(CUfunction f, unsigned gx, unsigned gy, void **p) {
 }
 bool gpu_ink2_attn_block(gpu_ink2 *h, gpu_ink2_kv *kv, int app, const gpu_ink2_block *b, int T, const int *pos,
                          const float *xq, const float *xk, const float *xv, float *out) {
+    // (D1d.2: xq NULL = the q / k / v inputs already in h->bxq / bxk / bxv and the positions in h->apos, the resident
+    // step's form, no upload; out NULL = the rows left in h->bout, no download. pos stays the host's, for p0)
     if (!h || !kv || kv->h != h || !b || !gpu_ink2_block_ok(h) || app < 0 || app >= kv->n_app || T <= 0 || !pos ||
-        !xq || !xk || !xv || !out || kv->hist_rows != b->K - 1 || b->K < 2 || b->nh <= 0 || b->nkv <= 0 ||
+        (xq && (!xk || !xv)) || kv->hist_rows != b->K - 1 || b->K < 2 || b->nh <= 0 || b->nkv <= 0 ||
         b->nh % b->nkv || b->hd <= 0 || b->hd > 256 || kv->C[app] != b->nkv * b->hd || T > kv->rows[app])
         return false;
     for (int t = 0; t < T; t++) if (pos[t] != pos[0] + t || pos[t] < 0) return false;
@@ -13785,9 +13799,11 @@ bool gpu_ink2_attn_block(gpu_ink2 *h, gpu_ink2_kv *kv, int app, const gpu_ink2_b
               ink2_grow(&h->aatt, &h->aatt_cap, fb * ((size_t)T + INK2_XPAD) * Q) && ink2_grow(&h->arl, &h->arl_cap, fb * (size_t)T * nh * ext) &&
               ink2_grow(&h->ask, &h->ask_cap, fb * (size_t)T * nh) && ink2_grow(&h->apos, &h->apos_cap, sizeof(int) * (size_t)T);
     // the inputs: one upload for a sliding layer's shared input
-    CUdeviceptr dxq = h->bxq, dxk = xk == xq ? h->bxq : h->bxk, dxv = xv == xq ? h->bxq : xv == xk ? dxk : h->bxv;
-    ok = ok && cu.MemcpyHtoD(h->bxq, xq, TH) == 0 && (dxk == h->bxq || cu.MemcpyHtoD(h->bxk, xk, TH) == 0) &&
-         (dxv != h->bxv || cu.MemcpyHtoD(h->bxv, xv, TH) == 0) && cu.MemcpyHtoD(h->apos, pos, sizeof(int) * (size_t)T) == 0;
+    CUdeviceptr dxq = h->bxq, dxk = !xq ? h->bxk : xk == xq ? h->bxq : h->bxk,
+                dxv = !xq ? h->bxv : xv == xq ? h->bxq : xv == xk ? dxk : h->bxv;
+    ok = ok && (!xq || (cu.MemcpyHtoD(h->bxq, xq, TH) == 0 && (dxk == h->bxq || cu.MemcpyHtoD(h->bxk, xk, TH) == 0) &&
+                        (dxv != h->bxv || cu.MemcpyHtoD(h->bxv, xv, TH) == 0) &&
+                        cu.MemcpyHtoD(h->apos, pos, sizeof(int) * (size_t)T) == 0));
     int full = b->global ? 1 : 0;
     float alpha = b->log_alpha, floor_ = b->log_floor, thr = b->qk_clip, rthr = b->rel_clip, eps = b->eps;
     // Q: the product, then per head the scale, the clip, tau
@@ -13844,7 +13860,7 @@ bool gpu_ink2_attn_block(gpu_ink2 *h, gpu_ink2_kv *kv, int app, const gpu_ink2_b
         ok = ok && ink2_launch1(h->f_gate, ((unsigned)n + 127) / 128, 1, p);
     }
     ok = ok && ink2_block_mv(h, b, GI2_O, Q, H, T, h->aatt, h->bout);
-    ok = ok && cu.MemcpyDtoH(out, h->bout, TH) == 0;   // the null stream: after every launch above
+    ok = ok && (!out || cu.MemcpyDtoH(out, h->bout, TH) == 0);   // the null stream: after every launch above
     pthread_mutex_unlock(&h->mu);
     return ok;
 }
