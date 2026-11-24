@@ -36,6 +36,7 @@ struct ink2g {
     size_t ring_floats;
     int ring_next;
     int ctrl;
+    int fast, act8;   // R4.48.15: serve the matrices and the stacks as views (ink2g_set_route)
     ink2_tensor ring_t[2];
     float e2m1[16], e4m3[256];
 };
@@ -482,6 +483,28 @@ void ink2g_close(ink2g *g) {
 char ink2g_expert_kind(const ink2g *g, int b) { return b >= 0 && b < g->s.n_block ? g->gu[b].kind : 0; }
 
 // ---------------------------------------------------------------- lookups
+// The reference names the engine reads only through its linear operation (ink2_lin) or as embedding rows: on the fast
+// route these are views of the stored rows, never decoded. Everything else (norms, convolution taps, queries, clip
+// scales, the relative bank, the router) stays a float32 decode: small, and read element by element.
+static int is_matrix(const char *name) {
+    if (!strcmp(name, "lm_head.weight") || !strcmp(name, "model.embed_tokens.weight")) return 1;
+    static const char *const suffix[] = {
+        ".self_attn.q_proj.linear.weight", ".self_attn.k_proj.linear.weight", ".self_attn.v_proj.linear.weight",
+        ".self_attn.k_proj.sconv.weight_proj.weight", ".self_attn.v_proj.sconv.weight_proj.weight",
+        ".self_attn.o_proj.gate_proj.weight", ".self_attn.o_proj.linear.weight", ".self_attn.sink_proj.weight",
+        ".self_attn.relative_position_bias.linear.weight", "_message_gate.down_proj.weight",
+        "_message_gate.forget_gate_proj.weight", "_message_gate.message_gate_proj.weight",
+    };
+    const size_t n = strlen(name);
+    for (size_t i = 0; i < sizeof suffix / sizeof *suffix; i++) {
+        const size_t m = strlen(suffix[i]);
+        if (n > m && !strcmp(name + n - m, suffix[i])) return 1;
+    }
+    return 0;
+}
+static size_t row_bytes(const gguf_tensor *t, int64_t cols) {
+    return ggml_type_size((int)t->type) * (size_t)(cols / ggml_block_size((int)t->type));
+}
 static slot_t *slot_new(ink2g *g, const char *name) {
     if (g->n_slots == g->cap_slots) {
         int cap = g->cap_slots ? 2 * g->cap_slots : 1024;
@@ -498,16 +521,40 @@ static slot_t *slot_new(ink2g *g, const char *name) {
     return sl;
 }
 
+static const ink2_stack_t *stack_of(const ink2g *g, const char *name);
 const ink2_tensor *ink2g_get(void *ctx, const char *name) {
     ink2g *g = ctx;
     const ink2_shape *s = &g->s;
     for (int i = 0; i < g->n_slots; i++) if (!strcmp(g->slots[i]->name, name)) return &g->slots[i]->t;
     int64_t d[4] = { 1, 1, 1, 1 };
     const int nd = ref_dims(s, name, d);
-    if (!nd || strstr(name, ".mlp.experts.")) return NULL;   // the stacks are served per expert only
+    if (!nd) return NULL;
+    if (strstr(name, ".mlp.experts.")) {   // the stacks: per expert on the reference route, whole views on the fast
+        const ink2_stack_t *st = g->fast ? stack_of(g, name) : NULL;
+        if (!st) return NULL;
+        slot_t *sl = slot_new(g, name);
+        if (!sl) return NULL;
+        sl->t.n_dims = 3;
+        sl->t.ne[0] = st->cols; sl->t.ne[1] = st->rows; sl->t.ne[2] = g->s.n_expert; sl->t.ne[3] = 1;
+        sl->t.qtype = (int)st->w->type; sl->t.q = st->w->data; sl->t.q_row_bytes = row_bytes(st->w, st->cols);
+        sl->t.q_scale = st->scale ? (const float *)st->scale->data : NULL;
+        sl->t.q_act8 = g->act8;
+        return &sl->t;
+    }
     char gn[160];
     int op;
     if (gguf_name(s, name, gn, sizeof gn, &op)) return NULL;
+    if (g->fast && is_matrix(name) && (op == OP_RENAME || op == OP_UNPAD)) {
+        gguf_tensor *t = gguf_find_tensor(g->fp, gn);
+        if (!t) return NULL;
+        slot_t *sl = slot_new(g, name);
+        if (!sl) return NULL;
+        sl->t.n_dims = nd;
+        for (int i = 0; i < 4; i++) sl->t.ne[i] = i < nd ? d[nd - 1 - i] : 1;
+        sl->t.qtype = (int)t->type; sl->t.q = t->data; sl->t.q_row_bytes = row_bytes(t, sl->t.ne[0]);
+        sl->t.q_act8 = g->act8;
+        return &sl->t;   // data NULL: nothing decoded (unpad: the first vocab_used rows are the view's rows)
+    }
     int64_t n = 1;
     for (int i = 0; i < nd; i++) n *= d[i];
     float *data = malloc(sizeof(float) * (size_t)n);
@@ -601,6 +648,7 @@ const ink2_tensor *ink2g_get_expert(void *ctx, const char *stack, int e) {
     g->ring_next ^= 1;
     if (ink2g_fill_expert(g, stack, e, g->ring[k], &R, &C)) return NULL;
     ink2_tensor *t = &g->ring_t[k];
+    *t = (ink2_tensor){ 0 };
     t->name = stack;
     t->data = g->ring[k];
     t->n_dims = 2;
@@ -622,7 +670,7 @@ int ink2g_decode_all(ink2g *g, size_t *bytes) {
         size_t n = 0;
         for (int i = 0; i < g->n_slots; i++) {
             const ink2_tensor *t = &g->slots[i]->t;
-            n += sizeof(float) * (size_t)(t->ne[0] * t->ne[1] * t->ne[2] * t->ne[3]);
+            if (t->data) n += sizeof(float) * (size_t)(t->ne[0] * t->ne[1] * t->ne[2] * t->ne[3]);
         }
         *bytes = n;
     }
@@ -638,5 +686,20 @@ void ink2g_set_control(ink2g *g, int flags) {
 void ink2g_weights(ink2g *g, ink2_weights *w) {
     w->get = ink2g_get;
     w->ctx = g;
-    w->get_expert = ink2g_get_expert;
+    w->get_expert = g->fast ? NULL : ink2g_get_expert;   // the fast route reads the stacks whole, as views
+}
+
+void ink2g_set_route(ink2g *g, int fast, int act8) {
+    ink2g_set_control(g, g->ctrl);   // drops what was served on the other route
+    g->fast = fast ? 1 : 0;
+    g->act8 = fast && act8 ? 1 : 0;
+}
+
+size_t ink2g_matrix_bytes(const ink2g *g) {
+    size_t n = 0;
+    for (int i = 0; i < g->n_slots; i++) {
+        const ink2_tensor *t = &g->slots[i]->t;
+        if (t->data && is_matrix(g->slots[i]->name)) n += sizeof(float) * (size_t)(t->ne[0] * t->ne[1] * t->ne[2] * t->ne[3]);
+    }
+    return n;
 }

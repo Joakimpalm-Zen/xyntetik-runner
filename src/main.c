@@ -5183,7 +5183,10 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
                            int tmpl_override, const oms_policy *signing, int *rc) {
     // training is the CPU path (v1), for both objectives: --train-dpo used to
     // load onto the GPU and then refuse with a message naming --train
-    if (o->train_path || o->dpo_path) o->mp.gpu_mode = GPU_OFF;
+    if (o->train_path || o->dpo_path) {
+        o->mp.gpu_mode = GPU_OFF;
+        o->mp.train = true;   // inkling2_loop: the reference route (its backward reads float32 matrices)
+    }
     // --adapt-info answers for the model, not for where it happened to load:
     // training is CPU-hosted, and the device half is named separately
     if (o->adapt_info) o->mp.gpu_mode = GPU_OFF;
@@ -5228,10 +5231,12 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
         // serve mode: the registry model's own pool is one thread by design
         // (slots create their pools), so the honest number here is the count
         // the slots divide, not the placeholder pool (the lab read "1 threads"
-        // as a CPU fallback at one thread, 2026-09-23)
+        // as a CPU fallback at one thread, 2026-09-23).
         fprintf(stderr, "loaded %s | %s | %d layers | ctx %d | %d threads%s | %.2fs\n",
                 load_path, rt->m.arch, rt->m.n_layer, rt->m.n_ctx,
-                o->serve ? o->n_threads : tpool_size(rt->m.tp),
+                o->serve ? o->n_threads
+                         : rt->m.ink2 ? model_inkling2_threads(&rt->m)
+                                      : tpool_size(rt->m.tp),
                 o->serve ? " (divided across slots)" : "",
                 now_s() - t1);
         {   // R12.1b: a canonical build says which types it cannot run canonically

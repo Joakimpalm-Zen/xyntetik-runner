@@ -23,10 +23,13 @@
 #include "inkling2.h"
 #include "tpool.h"
 #include "compat.h"
+#include <errno.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 enum { N_TOK = 8, ROUNDS = 25 };
 static const int32_t PROMPT[N_TOK] = { 1, 5, 9, 2, 7, 3, 8, 4 };
@@ -68,9 +71,77 @@ static void *run(void *arg) {
     return NULL;
 }
 
+typedef struct {
+    pthread_t main_th;
+    _Atomic int worker_hits;
+    _Atomic int nested_dispatches;
+    _Atomic long inner_done;
+} nested_ctx;
+
+typedef struct {
+    nested_ctx *nc;
+    pthread_t outer_th;
+} nested_inner_ctx;
+
+static void nested_inner(void *arg, int64_t j0, int64_t j1) {
+    nested_inner_ctx *ic = arg;
+    if (!pthread_equal(pthread_self(), ic->outer_th))
+        atomic_fetch_add(&ic->nc->nested_dispatches, 1);
+    atomic_fetch_add(&ic->nc->inner_done, (long)(j1 - j0));
+}
+
+static void nested_outer(void *arg, int64_t i0, int64_t i1) {
+    nested_ctx *nc = arg;
+    pthread_t self = pthread_self();
+    if (!pthread_equal(self, nc->main_th))
+        atomic_fetch_add(&nc->worker_hits, 1);
+    nested_inner_ctx ic = { nc, self };
+    for (int64_t i = i0; i < i1; i++)
+        ink2_par(4, 1, nested_inner, &ic);
+}
+
+typedef struct {
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    int active;
+    int max_active;
+    int arrived;
+} overlap_barrier_t;
+
+static __thread int overlap_seen;
+
+static void overlap_hook(void *arg) {
+    if (overlap_seen) return;
+    overlap_seen = 1;
+    overlap_barrier_t *ob = arg;
+    struct timespec ts;
+    timespec_get(&ts, TIME_UTC);
+    ts.tv_sec += 2;
+    pthread_mutex_lock(&ob->mu);
+    ob->arrived++;
+    ob->active++;
+    if (ob->active > ob->max_active) ob->max_active = ob->active;
+    pthread_cond_broadcast(&ob->cv);
+    while (ob->max_active < 2) {
+        if (pthread_cond_timedwait(&ob->cv, &ob->mu, &ts) == ETIMEDOUT) break;
+    }
+    ob->active--;
+    pthread_mutex_unlock(&ob->mu);
+}
+
+typedef struct { model_t *m; const float *want; int bad; } single_fwd_job;
+static void *run_one_overlap(void *arg) {
+    single_fwd_job *j = arg;
+    float *got = rows(j->m, PROMPT);
+    if (!got || memcmp(got, j->want, sizeof(float) * (size_t)j->m->n_vocab)) j->bad++;
+    free(got);
+    return NULL;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s TINY.gguf\n", argv[0]); return 2; }
     plat_setenv("INK2_PAR_MIN", "1");
+    plat_setenv("INK2_THREADS", "4");
     plat_setenv("RUNNER_INKLING2_EXPERT_CACHE", "64M");
     model_t *a = malloc(sizeof *a), *b = malloc(sizeof *b), *c = malloc(sizeof *c);
     if (!load(a, argv[1], 1)) { printf("FAIL: the tiny file does not load\n"); return 1; }
@@ -115,9 +186,9 @@ int main(int argc, char **argv) {
           ja.ran, jb.ran, ja.bad, jb.bad);
     CHECK(t1 > t0, "case 3: %ld loops split while the two ran", t1 - t0);
 
-    // 4. load with n_threads=4 WITHOUT a pool swap (CLI path: m->tp stays NULL, count comes from load's n_threads)
+    // 4. load with n_threads=4 WITHOUT a pool swap (CLI path: CLI binds its own 4-thread tpool onto c->tp)
     if (!load(c, argv[1], 4)) { printf("FAIL: the third instance does not load\n"); return 1; }
-    CHECK(c->tp == NULL, "case 4: CLI load left c->tp NULL as expected");
+    CHECK(c->tp != NULL && tpool_size(c->tp) == 4, "case 4: CLI load bound 4-thread tpool (%d)", tpool_size(c->tp));
     long s3 = 0; int last3 = 1;
     float *cli4 = rows(c, PROMPT);
     ink2_par_stats(&s3, &last3);
@@ -140,6 +211,38 @@ int main(int argc, char **argv) {
           !model_recurrent_blob_load(a, blob, PROMPT, 1) && !model_recurrent_restore_row(a, 0),
           "case 6: the fold functions decline inkling2_loop (blob bytes %zu, save, load and restore refused)",
           model_recurrent_blob_bytes(a));
+
+    // 6b. nested ink2_par from inside tpool workers runs serially even with INK2_THREADS=4 fallback active
+    nested_ctx nc = { .main_th = pthread_self() };
+    long s5 = 0, s6 = 0;
+    int last6 = 1;
+    ink2_par_stats(&s5, NULL);
+    struct tpool *prev_tp = ink2_set_tpool(c->tp);
+    ink2_par(4, 1, nested_outer, &nc);
+    ink2_set_tpool(prev_tp);
+    ink2_par_stats(&s6, &last6);
+    CHECK(s6 - s5 == 1 && last6 == 4,
+          "case 6b: nested ink2_par from 4-thread workers split %ld loop(s), last_pool %d (want 1 and 4)",
+          s6 - s5, last6);
+    CHECK(atomic_load(&nc.worker_hits) == 3 && atomic_load(&nc.nested_dispatches) == 0 &&
+          atomic_load(&nc.inner_done) == 16,
+          "case 6b: workers ran %d slices serially inside caller workers (nested dispatches %d, inner_done %ld)",
+          atomic_load(&nc.worker_hits), atomic_load(&nc.nested_dispatches), atomic_load(&nc.inner_done));
+
+    // 7. R4.48.20.2 fifth bar: two instances (4 and 2 threads) overlap inside ink2_par at the exact same moment
+    //    (serialised by the old process-global ink2_cfg_mu on 92c204f8, concurrent on 24dd0d11).
+    overlap_barrier_t ob = { .mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER };
+    ink2_set_test_par_hook(overlap_hook, &ob);
+    single_fwd_job oa = { a, one, 0 }, ob_job = { b, one, 0 };
+    pthread_t ota, otb;
+    pthread_create(&ota, NULL, run_one_overlap, &oa);
+    pthread_create(&otb, NULL, run_one_overlap, &ob_job);
+    pthread_join(ota, NULL);
+    pthread_join(otb, NULL);
+    ink2_set_test_par_hook(NULL, NULL);
+    CHECK(ob.arrived == 2 && ob.max_active == 2 && !oa.bad && !ob_job.bad,
+          "case 7: concurrent 4T and 2T forwards overlapped inside ink2_par (arrived=%d, max_active=%d, bad=%d+%d)",
+          ob.arrived, ob.max_active, oa.bad, ob_job.bad);
 
     free(one); free(four); free(cli4); free(other);
     model_free(a); model_free(b); model_free(c);

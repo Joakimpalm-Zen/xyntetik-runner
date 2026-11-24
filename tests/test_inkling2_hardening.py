@@ -10,193 +10,15 @@ load and answer; then each damaged copy must be refused, naming what is wrong:
   - an NVFP4 tensor where the loader takes only a float or a dequantizable type (a dense one).
 """
 
-import struct
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
-T_F32, T_NVFP4 = 0, 40
-U32, I32, F32, BOOL, STR, ARR = 4, 5, 6, 7, 8, 9
-
-H, NH, NKV, HD, E, USED, FF, VOCAB, VUSED, K, WIN, DREL, EXT, RANK = 64, 2, 1, 32, 4, 2, 64, 264, 260, 4, 8, 4, 8, 4
-N_BLOCK, LOOP_START, LOOP_END, PASSES = 4, 1, 3, 3
-FULL = [False, True, False, True]   # layer types: sliding, full, sliding, full
-
-
-def _byte_tokens():
-    """GPT-2's byte-to-unicode map: 256 printable stand-ins, one per byte."""
-    bs = list(range(ord("!"), ord("~") + 1)) + list(range(ord("\xa1"), ord("\xac") + 1)) + list(range(ord("\xae"), ord("\xff") + 1))
-    cs = bs[:]
-    n = 0
-    for b in range(256):
-        if b not in bs:
-            bs.append(b)
-            cs.append(256 + n)
-            n += 1
-    m = dict(zip(bs, (chr(c) for c in cs)))
-    return [m[b] for b in range(256)]
-
-
-def _s(x):
-    b = x.encode()
-    return struct.pack("<Q", len(b)) + b
-
-
-def _kv(key, typ, val):
-    out = _s(key) + struct.pack("<I", typ)
-    if typ == U32:
-        return out + struct.pack("<I", val)
-    if typ == I32:
-        return out + struct.pack("<i", val)
-    if typ == F32:
-        return out + struct.pack("<f", val)
-    if typ == BOOL:
-        return out + struct.pack("<B", 1 if val else 0)
-    if typ == STR:
-        return out + _s(val)
-    et, items = val
-    out += struct.pack("<IQ", et, len(items))
-    for it in items:
-        if et == STR:
-            out += _s(it)
-        elif et == I32:
-            out += struct.pack("<i", it)
-        elif et == BOOL:
-            out += struct.pack("<B", 1 if it else 0)
-        else:
-            raise ValueError(et)
-    return out
-
-
-def _f32(n, scale, seed):
-    import random
-    r = random.Random(seed)
-    return struct.pack(f"<{n}f", *[(r.random() - 0.5) * 2 * scale for _ in range(n)])
-
-
-def _nvfp4(n_el, seed):
-    import random
-    r = random.Random(seed)
-    out = bytearray()
-    for _ in range(n_el // 64):
-        out += bytes([0x30, 0x30, 0x30, 0x30])                 # UE4M3 0.5 for each sub-block
-        out += bytes(r.randrange(256) for _ in range(32))      # E2M1 codes
-    return bytes(out)
-
-
-def _tensors(no_scale_layer=None, scale_len=E, dense_nvfp4=False):
-    """(name, ggml dims, type, bytes) for every tensor of the tiny model."""
-    t = []
-    seed = [0]
-
-    def f(name, dims, scale=0.05, value=None):
-        seed[0] += 1
-        n = 1
-        for d in dims:
-            n *= d
-        data = struct.pack(f"<{n}f", *([value] * n)) if value is not None else _f32(n, scale, seed[0])
-        t.append((name, dims, T_F32, data))
-
-    f("token_embd.weight", [H, VOCAB], 0.5)
-    f("token_embd_norm.weight", [H], value=1.0)
-    f("output_norm.weight", [H], value=1.0)
-    f("output_res_query.weight", [H], 0.1)
-    f("output.weight", [H, VOCAB], 0.5)
-    for b in range(N_BLOCK):
-        p = f"blk.{b}."
-        C = NKV * HD
-        if dense_nvfp4 and b == 0:
-            seed[0] += 1
-            t.append((p + "attn_q.weight", [H, NH * HD], T_NVFP4, _nvfp4(H * NH * HD, seed[0])))
-        else:
-            f(p + "attn_q.weight", [H, NH * HD])
-        f(p + "attn_q_clip.weight", [HD, NH], value=1.0)
-        f(p + "attn_k.weight", [H, C])
-        f(p + "attn_v.weight", [H, C])
-        f(p + "attn_k_conv.weight", [K, C], 0.3)
-        f(p + "attn_v_conv.weight", [K, C], 0.3)
-        if FULL[b]:
-            f(p + "attn_k_conv_proj.weight", [H, NKV * K])
-            f(p + "attn_v_conv_proj.weight", [H, NKV * K])
-            for x in ("q", "k", "v"):
-                f(p + f"attn_{x}_inp_norm.weight", [H], value=1.0)
-        else:
-            f(p + "attn_norm.weight", [H], value=1.0)
-        f(p + "attn_gate.weight", [H, NH * HD])
-        f(p + "attn_output.weight", [NH * HD, H])
-        f(p + "attn_sink_proj.weight", [H, NH], 0.22)
-        f(p + "attn_rel_bias.weight", [DREL, EXT], 0.1)
-        f(p + "attn_rel.weight", [H, NH * DREL])
-        f(p + "attn_rel_clip.weight", [DREL, NH], value=1.0)
-        f(p + "ffn_gate_inp.weight", [H, E])
-        f(p + "exp_probs_b.bias", [E], value=0.0)
-        f(p + "ffn_norm.weight", [H], value=1.0)
-        f(p + "attn_post_conv.weight", [K, H], 0.3)
-        f(p + "ffn_post_conv.weight", [K, H], 0.3)
-        if b >= 1:
-            f(p + "attn_res_query.weight", [H, 3] if FULL[b] else [H], 0.1)
-        f(p + "ffn_res_query.weight", [H], 0.1)
-        if LOOP_START <= b < LOOP_END:
-            for r in ("q", "k", "v", "ffn"):
-                f(p + f"loop_{r}_ctrl_down.weight", [2 * H, RANK], 0.15)
-                f(p + f"loop_{r}_ctrl_forget.weight", [RANK, H], 0.15)
-                f(p + f"loop_{r}_ctrl_gain.weight", [RANK, H], 0.15)
-            f(p + "loop_msg_query.weight", [H, 4], 0.2)
-        seed[0] += 1
-        t.append((p + "ffn_gate_up_exps.weight", [H, 2 * FF, E], T_NVFP4, _nvfp4(H * 2 * FF * E, seed[0])))
-        seed[0] += 1
-        t.append((p + "ffn_down_exps.weight", [FF, H, E], T_NVFP4, _nvfp4(FF * H * E, seed[0])))
-        for which in ("gate_up", "down"):
-            if no_scale_layer == b and which == "down":
-                continue
-            n = scale_len if b == 0 and which == "gate_up" else E
-            t.append((p + f"ffn_{which}_exps.scale", [n], T_F32, struct.pack(f"<{n}f", *([0.25] * n))))
-    return t
-
-
-def _kvs(drop=None, used=USED):
-    a = "inkling2_loop."
-    kv = [("general.architecture", STR, "inkling2_loop"), ("general.alignment", U32, 32),
-          (a + "block_count", U32, N_BLOCK), (a + "context_length", U32, 256), (a + "embedding_length", U32, H),
-          (a + "feed_forward_length", U32, FF), (a + "attention.head_count", ARR, (I32, [NH] * N_BLOCK)),
-          (a + "attention.head_count_kv", ARR, (I32, [NKV] * N_BLOCK)),
-          (a + "attention.layer_norm_rms_epsilon", F32, 1e-6), (a + "expert_count", U32, E),
-          (a + "expert_used_count", U32, used), (a + "attention.key_length", U32, HD),
-          (a + "attention.value_length", U32, HD), (a + "loop.count", U32, PASSES), (a + "loop.start", U32, LOOP_START),
-          (a + "loop.end", U32, LOOP_END), (a + "loop.gate_rank", U32, RANK), (a + "vocab_size", U32, VOCAB),
-          (a + "vocab_size_unpadded", U32, VUSED), (a + "expert_feed_forward_length", U32, FF),
-          (a + "attention.key_length_swa", U32, HD), (a + "attention.value_length_swa", U32, HD),
-          (a + "attention.sliding_window", U32, WIN),
-          (a + "attention.sliding_window_pattern", ARR, (BOOL, [not x for x in FULL])),
-          (a + "shortconv.l_cache", U32, K), (a + "expert_weights_scale", F32, 1.0),
-          (a + "activation.situ_beta", F32, 4.0), (a + "activation.situ_linear_beta", F32, 25.0),
-          (a + "attn_res.block_size", U32, 1), (a + "final_logit_softcapping", F32, 30.0),
-          (a + "attention.relative_length", U32, DREL), (a + "attention.relative_extent", U32, EXT),
-          (a + "attention.qk_clip", F32, 22.0), (a + "attention.relative_clip", F32, 8.0),
-          (a + "attention.log_scale_floor", U32, 8192), (a + "attention.log_scale_alpha", F32, 0.1),
-          (a + "loop.varying", BOOL, False),
-          ("tokenizer.ggml.model", STR, "gpt2"), ("tokenizer.ggml.pre", STR, "inkling2"),
-          ("tokenizer.ggml.tokens", ARR, (STR, _byte_tokens() + [f"<|s{i}|>" for i in range(VUSED - 256)])),
-          ("tokenizer.ggml.token_type", ARR, (I32, [1] * 256 + [3] * (VUSED - 256))),
-          ("tokenizer.ggml.merges", ARR, (STR, [])), ("tokenizer.ggml.eos_token_id", U32, 256)]
-    return [x for x in kv if x[0] != drop]
-
-
-def _write(path, kvs, tensors, cut=0):
-    head = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(kvs))
-    for k, typ, v in kvs:
-        head += _kv(k, typ, v)
-    off, infos, blobs = 0, b"", []
-    for name, dims, typ, data in tensors:
-        infos += _s(name) + struct.pack("<I", len(dims)) + struct.pack(f"<{len(dims)}Q", *dims) + struct.pack("<IQ", typ, off)
-        pad = (-len(data)) % 32
-        blobs.append(data + b"\0" * pad)
-        off += len(data) + pad
-    body = head + infos
-    body += b"\0" * ((-len(body)) % 32)
-    data = b"".join(blobs)
-    path.write_bytes(body + (data[:len(data) - cut] if cut else data))
-    return path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from inkling2_tiny import *  # noqa: E402,F401,F403  (the tiny file's constants, for the tests that import this module)
+from inkling2_tiny import E, _kvs, _tensors, _write  # noqa: E402
 
 
 def _run(runner_bin, model, *args):
@@ -215,6 +37,14 @@ def test_the_tiny_file_loads_and_answers(runner_bin, tiny):
     r = _run(runner_bin, good, "-p", "hello", "-n", "3", "--temp", "0")
     assert r.returncode == 0, r.stderr[-2000:]
     assert "inkling2_loop: 4 layers, 8 applications" in r.stderr
+
+
+def test_the_load_line_prints_the_requested_thread_count(runner_bin, tiny):
+    """R4.48.18: CLI load line prints the thread count the forward will use (model_inkling2_threads), not 0."""
+    _, good = tiny
+    r = _run(runner_bin, good, "-p", "hello", "-n", "1", "--temp", "0")
+    assert r.returncode == 0, r.stderr[-2000:]
+    assert "| 2 threads |" in r.stderr, r.stderr[-2000:]
 
 
 @pytest.mark.parametrize("case,make,sentence", [
@@ -242,14 +72,82 @@ def test_the_expert_cache_line_is_a_budget_capped_at_every_expert_decoded(runner
     """R4.48.17: the expert cache holds at most every expert decoded (the tiny file's: 4 blocks x 4 experts x (2 x 64 x
     64 + 64 x 64) floats, 786432 bytes), so --info fit and the load line print the budget capped there, not the
     4 GiB default as a size; fit's total counts the capped figure."""
+    import os
     import re
     _, good = tiny
+    # the expert cache is the reference route's (R4.48.15/19: the fast route keeps none, tests/test_inkling2_fast.py)
+    env = dict(os.environ, RUNNER_INKLING2_ROUTE="reference")
     r = subprocess.run([str(runner_bin), "-m", str(good), "--info", "fit", "-c", "64", "--gpu", "off"],
-                       capture_output=True, text=True, errors="replace", timeout=300)
+                       capture_output=True, text=True, errors="replace", timeout=300, env=env)
     assert r.returncode == 0, r.stdout + r.stderr
     assert "expert cache  up to 0.00 GiB (the budget, RUNNER_INKLING2_EXPERT_CACHE)" in r.stdout, r.stdout
     total = re.search(r"total\s+([0-9.]+) GiB", r.stdout)
     assert total and float(total.group(1)) < 0.01, r.stdout
-    r = _run(runner_bin, good, "-p", "hello", "-n", "1", "--temp", "0")
+    r = subprocess.run([str(runner_bin), "-m", str(good), "--gpu", "off", "-t", "2", "-c", "64", "-p", "hello", "-n", "1",
+                        "--temp", "0"], capture_output=True, text=True, errors="replace", timeout=600, env=env)
     assert r.returncode == 0, r.stderr[-2000:]
     assert "expert cache up to 0.00 GiB (the budget, RUNNER_INKLING2_EXPERT_CACHE)" in r.stderr, r.stderr[-2000:]
+
+
+def test_score_keep_all_matches_solo_and_rows_dump(runner_bin, tiny):
+    """--score (keep_all) and RUNNER_INKLING2_ROWS still compute and emit every row identically to -b 1."""
+    import json
+    import os
+    d, good = tiny
+    prompt = "hello world, inkling2_loop score check!"
+    r_batched = _run(runner_bin, good, "--score", "1", "-b", "8", "-p", prompt)
+    assert r_batched.returncode == 0, r_batched.stderr[-2000:]
+    r_solo = _run(runner_bin, good, "--score", "1", "-b", "1", "-p", prompt)
+    assert r_solo.returncode == 0, r_solo.stderr[-2000:]
+    j_batched = json.loads(r_batched.stdout)
+    j_solo = json.loads(r_solo.stdout)
+    assert j_batched["logprobs"] == j_solo["logprobs"]
+    assert j_batched["top1"] == j_solo["top1"]
+    assert j_batched["top"] == j_solo["top"]
+    rows_file = d / "rows.f32"
+    env = dict(os.environ, RUNNER_INKLING2_ROWS=str(rows_file))
+    r_dump = subprocess.run([str(runner_bin), "-m", str(good), "--gpu", "off", "-t", "2", "-c", "64",
+                             "-b", "8", "--score", "1", "-p", prompt],
+                            capture_output=True, text=True, errors="replace", timeout=600, env=env)
+    assert r_dump.returncode == 0, r_dump.stderr[-2000:]
+    assert rows_file.exists() and rows_file.stat().st_size == len(j_batched["logprobs"]) * VUSED * 4
+    r_gen = subprocess.run([str(runner_bin), "-m", str(good), "--gpu", "off", "-t", "2", "-c", "64",
+                            "-b", "8", "-p", prompt, "-n", "1", "--temp", "0"],
+                           capture_output=True, text=True, errors="replace", timeout=600)
+    assert r_gen.returncode == 0, r_gen.stderr[-2000:]
+    r_gen_dump = subprocess.run([str(runner_bin), "-m", str(good), "--gpu", "off", "-t", "2", "-c", "64",
+                                 "-b", "8", "-p", prompt, "-n", "1", "--temp", "0"],
+                                capture_output=True, text=True, errors="replace", timeout=600, env=env)
+    assert r_gen_dump.returncode == 0, r_gen_dump.stderr[-2000:]
+    assert r_gen.stdout == r_gen_dump.stdout
+
+
+def test_default_batch_256_in_fit_and_score_split(runner_bin, tiny):
+    """Default chunk is 256 (clamped to -c) in --info fit, and --score on >256 tokens matches at -b 256 and -b 1."""
+    import json
+    import re
+    _, good = tiny
+    r_384 = subprocess.run([str(runner_bin), "-m", str(good), "--info", "fit", "-c", "384", "--gpu", "off"],
+                           capture_output=True, text=True, errors="replace", timeout=300)
+    assert r_384.returncode == 0, r_384.stdout + r_384.stderr
+    assert re.search(r"context\s+384\b.*batch 256\b", r_384.stdout), r_384.stdout
+    r_128 = subprocess.run([str(runner_bin), "-m", str(good), "--info", "fit", "-c", "128", "--gpu", "off"],
+                           capture_output=True, text=True, errors="replace", timeout=300)
+    assert r_128.returncode == 0, r_128.stdout + r_128.stderr
+    assert re.search(r"context\s+128\b.*batch 128\b", r_128.stdout), r_128.stdout
+
+    prompt = "abcdefg " * 35  # 280 ASCII bytes -> 280 tokens in byte-level vocab, > 256 chunk boundary
+    r_256 = subprocess.run([str(runner_bin), "-m", str(good), "--gpu", "off", "-t", "2", "-c", "384",
+                            "-b", "256", "--score", "1", "-p", prompt],
+                           capture_output=True, text=True, errors="replace", timeout=600)
+    assert r_256.returncode == 0, r_256.stderr[-2000:]
+    r_1 = subprocess.run([str(runner_bin), "-m", str(good), "--gpu", "off", "-t", "2", "-c", "384",
+                          "-b", "1", "--score", "1", "-p", prompt],
+                         capture_output=True, text=True, errors="replace", timeout=600)
+    assert r_1.returncode == 0, r_1.stderr[-2000:]
+    j_256 = json.loads(r_256.stdout)
+    j_1 = json.loads(r_1.stdout)
+    assert len(j_256["logprobs"]) > 256, len(j_256["logprobs"])
+    assert j_256["logprobs"] == j_1["logprobs"]
+    assert j_256["top1"] == j_1["top1"]
+    assert j_256["top"] == j_1["top"]

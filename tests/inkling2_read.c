@@ -112,6 +112,7 @@ int main(int argc, char **argv) {
     double t0 = now_s();
     ink2p *p = NULL;
     ink2g *g = NULL;
+    int fast_route = 0;
     ink2_weights pw, w;
     ink2_ec_fill_fn fill;
     void *fctx;
@@ -132,6 +133,14 @@ int main(int argc, char **argv) {
             if (memcmp(&r, &s, sizeof s)) { fprintf(stderr, "FAIL the shape from the file's metadata differs from %s\n", sh); return 1; }
             fprintf(stderr, "the shape from the file's metadata equals %s's, field for field\n", sh);
         }
+        // R4.48.15: INK2_READ_ROUTE=fast reads the fast route (the views, no expert cache); fast-act8 its 8-bit control
+        const char *route = getenv("INK2_READ_ROUTE");
+        if (route && *route) {
+            if (strcmp(route, "fast") && strcmp(route, "fast-act8")) { fprintf(stderr, "INK2_READ_ROUTE: fast or fast-act8\n"); return 2; }
+            ink2g_set_route(g, 1, !strcmp(route, "fast-act8"));
+            fast_route = 1;
+            fprintf(stderr, "route: %s\n", route);
+        }
         ink2g_weights(g, &pw);
         fill = ink2g_fill_expert; fctx = g;
         fprintf(stderr, "experts by layer:");
@@ -145,7 +154,7 @@ int main(int argc, char **argv) {
         if (ids[t] < 0 || ids[t] >= s.vocab_used) { fprintf(stderr, "id %d at %d out of range\n", ids[t], t); return 1; }
     ink2_ecache *ec = NULL;
     ink2_ec_cfg cfg = ink2_ec_cfg_env();
-    if (cfg.enabled) {
+    if (cfg.enabled && !fast_route) {
         ec = ink2_ec_new(&pw, fill, fctx, cfg);
         ink2_ec_weights(ec, &w);
     } else {

@@ -54,4 +54,13 @@ void ink2g_set_control(ink2g *g, int flags);
 // The expert storage of physical layer b's gate_up stack: 'N' NVFP4 + .scale, 'B' BF16, 'F' F32, 'Q' another ggml type
 // (Runner's dequantizer; with a .scale beside it, the decoded value times the expert's factor).
 char ink2g_expert_kind(const ink2g *g, int b);
+// R4.48.15: the route the source serves, set before the first lookup. fast = 0, the reference route (above: every
+// tensor float32 in the reference loader's order, the experts per expert). fast = 1: the projections, the head, the
+// embedding and the expert stacks are VIEWS of the stored rows (ink2_tensor.q: the file's type, its row stride, a
+// stack's per-expert .scale beside it), never decoded; get_expert is not offered; everything else is decoded as on
+// the reference route (small: norms, taps, queries, scales, the router). act8: TEST-ONLY, the 8-bit control on every
+// view.
+void ink2g_set_route(ink2g *g, int fast, int act8);
+// the float32 bytes of decoded matrices (the projections, the head, the embedding): 0 on the fast route
+size_t ink2g_matrix_bytes(const ink2g *g);
 #endif

@@ -245,6 +245,9 @@ void   vec_dot_multi(int type, const void *row, const float *const *xs, int nc,
 // for x, vec_dot_xs takes them and is byte-equal to vec_dot. vec_dot_xs_ok
 // says whether a type (on this build) has such a kernel.
 bool   vec_dot_xs_ok(int type);
+// R4.48.15: whether this build's vec_dot for `type` is a SIMD kernel (AVX2 + FMA, or NEON) rather than the scalar
+// loop, for the tests that hold a kernel's presence.
+bool   vec_dot_simd(int type);
 // R12.1b: whether this build runs `type`'s vec_dot in the canonical order
 // (RUNNER_CANON_KERNELS, the T3 build: one eight-lane tree on every ISA), and
 // whether it is such a build at all. A canonical build names the types it
@@ -275,6 +278,21 @@ void   i8_dot_force(int on);
 // Matvecs that took the fused route since process start. A tolerance gate
 // that sees zero is comparing the scalar path with itself.
 unsigned long i8_dot_dispatches(void);
-unsigned long vec_dot_multi_calls(void);   // route gate: calls into vec_dot_multi
+unsigned long vec_dot_multi_calls(void);       // route gate: calls into vec_dot_multi
+unsigned long vec_dot_multi_fallbacks(void);   // route gate: columns taking the per-column vec_dot fallback
+
+// Tier C exact wide-batch tile (inkling2_loop): decodes rows once into per-thread scratch
+// and accumulates in each ISA's exact single-column vec_dot order (scale applied after).
+enum { VEC_DOT_EXACT_TILE_MIN = 8 };
+#if defined(__aarch64__) && defined(__ARM_NEON)
+enum { VEC_DOT_EXACT_TILE_ROWS = 8 };
+#else
+enum { VEC_DOT_EXACT_TILE_ROWS = 16 };
+#endif
+bool          vec_dot_exact_tile_ok(int type, int n);
+void          vec_dot_exact_tile(int type, const void *row_base, size_t row_bytes,
+                                 int nr, const float *x, size_t x_stride,
+                                 int nb, int n, float scale, float *y, size_t y_stride);
+unsigned long vec_dot_exact_tile_cols(void);   // route gate: columns computed on the exact tile path
 
 #endif // RUNNER_QUANTS_H

@@ -182,6 +182,12 @@ test-inkling2-threads-tsan-bin
 test-inkling2-read-san
 test-inkling2-read-san.ids
 test-inkling2-read-san.out.*
+test-inkling2-fast
+test-inkling2-fast.exe
+test-inkling2-fast.out
+test-nvfp4-dot
+test-nvfp4-dot.exe
+test-nvfp4-dot.out
 test-metal-ownership
 test-metal-ownership.exe
 test-model-load-failure
@@ -458,3 +464,5 @@ test-inkling2-provider-bin
 /test-inkling2-grad.exe
 /test-inkling2-train.gguf
 /test-inkling2-grad-tmp.lora.gguf
+/test-ink2-pool-bench-bin
+/test-ink2-pool-bench-bin.exe

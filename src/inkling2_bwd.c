@@ -1166,6 +1166,11 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
         fprintf(stderr, "error: inkling2_loop backward: model runtime parts unavailable\n");
         return false;
     }
+    if (model_inkling2_route(m) != 'R') {
+        fprintf(stderr, "error: inkling2_loop backward needs the reference route (load with train=true or "
+                        "RUNNER_INKLING2_ROUTE=reference, whose float32 matrices the backward reads)\n");
+        return false;
+    }
     const ink2_shape *s = (const ink2_shape *)sp;
     const ink2_weights *w = (const ink2_weights *)wp;
     if (!model_lora_grad_alloc(m)) {
@@ -1187,8 +1192,6 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
     }
 
     int ctrl = read_bwd_ctrl();
-    const int nt = model_inkling2_threads(m);
-    if (nt != ink2_get_threads()) ink2_set_threads(nt);
     size_t TH = (size_t)T * H;
 
     // Allocate checkpoint activations ckpt[n_app + 1] and gradient slabs d_ckpt[n_app + 1]
@@ -1215,6 +1218,7 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
         free(ckpt); free(d_ckpt);
         return false;
     }
+    struct tpool *prev_tp = ink2_set_tpool(m->tp);
 
     for (int t = 0; t < T; t++) ids[t] = (int)toks[t];
 
@@ -1230,7 +1234,7 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
 
     const ink2_tensor *emb = w->get(w->ctx, "model.embed_tokens.weight");
     const ink2_tensor *emb_nw = w->get(w->ctx, "model.embed_tokens.embed_norm.weight");
-    if (!emb || !emb_nw || emb->ne[0] != H || emb_nw->ne[0] != H) {
+    if (!emb || !emb->data || !emb_nw || !emb_nw->data || emb->ne[0] != H || emb_nw->ne[0] != H) {
         fprintf(stderr, "error: inkling2_loop backward: missing or invalid embedding tensors\n");
         ok = false;
     }
@@ -1731,5 +1735,6 @@ bool model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const 
     if (ok && loss_out) *loss_out = total_loss;
     for (int k = 0; k <= n_app; k++) { free(ckpt[k]); free(d_ckpt[k]); }
     free(ckpt); free(d_ckpt); free(meta); free(ids);
+    ink2_set_tpool(prev_tp);
     return ok;
 }

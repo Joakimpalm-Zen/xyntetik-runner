@@ -372,6 +372,7 @@ const ink2_tensor *ink2p_get(void *ctx, const char *name) {
     dec_tensor(p, E, s->data);
     p->st.decode_s_tensor += now_s() - t0; p->st.decoded_floats_tensor += n;
     s->ent = i; s->e = -1; s->tick = p->tp.now;
+    s->t = (ink2_tensor){ 0 };
     s->t.name = E->name; s->t.data = s->data; s->t.n_dims = E->nd;
     for (int d = 0; d < 4; d++) s->t.ne[d] = d < E->nd ? E->dims[E->nd - 1 - d] : 1;
     return &s->t;
@@ -392,6 +393,7 @@ const ink2_tensor *ink2p_get_expert(void *ctx, const char *stack, int e) {
     deq_expert(p, E, e, s->data);
     p->st.decode_s_expert += now_s() - t0; p->st.decoded_floats_expert += n;
     s->ent = i; s->e = e; s->tick = p->ep.now;
+    s->t = (ink2_tensor){ 0 };
     s->t.name = E->name; s->t.data = s->data; s->t.n_dims = 2;
     s->t.ne[0] = E->dims[2]; s->t.ne[1] = E->dims[1]; s->t.ne[2] = s->t.ne[3] = 1;
     return &s->t;

@@ -57,19 +57,34 @@ float ink2_inv_sqrt(int n);
 
 // Threads over independent OUTPUTS (matvec rows, the experts' rows, the router's experts, vocabulary rows, attention
 // heads, message-gate rows): each output is computed by the same serial loop at any thread count, so the bits do not
-// depend on it. The count: ink2_set_threads(n), or INK2_THREADS at the first parallel loop; default 1 (the serial
-// code path). INK2_PAR_MIN: the least work (multiply-adds) a chunk gets, default 16384 (1 forces every loop parallel,
-// for the tests). Returns the count set (1..INK2_MAX_THREADS).
+// depend on it. Model loads bind their house `tpool` onto the calling thread via ink2_set_tpool (CLI's m->tp or the
+// server's shared_pool); standalone callers without a model_t fall back to ink2_set_threads / INK2_THREADS (default 1).
+// INK2_PAR_MIN: the least work (multiply-adds) a chunk gets, default 16384 (1 forces every loop parallel, for tests).
+struct tpool;
+struct tpool *ink2_set_tpool(struct tpool *tp);
 int ink2_set_threads(int n);
 int ink2_get_threads(void);
 // What the pool really did, for the tests: the parallel loops that split their range over more than one thread since
 // the process began, and the threads (workers + the caller) the last of them ran on. A count of 1 splits nothing.
 #define INK2_PAR_STATS 1
 void ink2_par_stats(long *split_loops, int *last_pool);
+// TEST-ONLY hook called on the caller thread each time ink2_par enters a parallel split; NULL disables.
+void ink2_set_test_par_hook(void (*fn)(void *ctx), void *ctx);
 
 // A tensor as the pieces see it: float32, row-major, ne[0] the fastest dimension (GGUF order). The fixture's reader
 // and, later, the GGUF reader both hand pieces this; names are the reference's module paths for now.
-typedef struct { const char *name; const float *data; int n_dims; int64_t ne[4]; } ink2_tensor;
+//
+// R4.48.15, the fast route's VIEW: q non-NULL means the tensor is also (or only) its rows as stored in the file, ggml
+// type qtype, q_row_bytes apart, ne[0] values a row, and the engine's linear operations run on them with the house
+// kernels (src/quants.h vec_dot / vec_dot_multi: float32 activations, the weights decoded in registers, a vectorized
+// sum; threads split rows, never a sum). data may then be NULL. q_scale: NULL, or one factor per ne[2] (an expert
+// stack's per-expert .scale), applied after the dot. q_act8: TEST-ONLY, the 8-bit control (each activation row
+// quantized to 8 bits before the dot, as llama.cpp's CPU product does). A builder zeroes the struct first, so a
+// provider that knows nothing of views serves none and the reference code runs.
+typedef struct {
+    const char *name; const float *data; int n_dims; int64_t ne[4];
+    int qtype; const void *q; size_t q_row_bytes; const float *q_scale; int q_act8;
+} ink2_tensor;
 typedef const ink2_tensor *(*ink2_lookup_fn)(void *ctx, const char *name);
 // OPTIONAL: one expert of an expert stack (`model.layers.<b>.mlp.experts.gate_up_proj` [E][2F][H] or `.down_proj`
 // [E][H][F]), as a 2-D tensor (ne[0] the stack's ne[0], ne[1] its ne[1]): the same float32 values as row e of the
@@ -107,6 +122,8 @@ typedef struct {
     int max_chunk;           // 0: any T up to n_ctx; else the widest call the sliding buffers take
     int test_drop_key;       // TEST-ONLY (the cap's control, which must change the rows): the windowed path also
                              // drops the first key the mask admits; 0 in use
+    float *work_fwd, *work_dl, *work_op;            // reusable forward/layer/op scratch; grown lazily, freed in ink2_cache_free
+    size_t work_fwd_cap, work_dl_cap, work_op_cap;
 } ink2_cache;
 int  ink2_cache_init(ink2_cache *c, const ink2_shape *s, int n_ctx);
 // The same with each SLIDING application's K and V held for the window only: window - 1 + max_chunk rows that slide
@@ -142,6 +159,11 @@ ink2_status ink2_attention(const ink2_shape *s, const ink2_weights *w, ink2_cach
 // The head: `model.norm` output in, `lm_head` then `logit_softcap` out; logits are [T][vocab_used] (the padded rows
 // never reach them).
 ink2_status ink2_head(const ink2_shape *s, const ink2_weights *w, int T, const float *x, float *logits);
+// TEST-ONLY: cumulative rows evaluated by ink2_head (across all forwards in the process).
+long ink2_head_rows(void);
+// TEST-ONLY: perturb position p0's post-embed hidden state by delta when p0 > 0, so split invariance tests can
+// prove chunk boundaries are live.
+void ink2_set_test_chunk_bump(float delta);
 
 // The block-state read: Inkling2LoopBlockAttentionResidual (`model.layers.<b>.attention_input`, `.mlp_input`,
 // `model.final_input`): a depth-wise attention over the completed block states [T][n_blocks][hidden] and the partial
@@ -205,6 +227,7 @@ ink2_status ink2_forward(const ink2_shape *s, const ink2_weights *w, int T, cons
 // controls, which must fail its wiring gate).
 #define INK2_MISWIRE_RESTART  1   // later passes restart from the input of the last pre-loop layer, not its output
 #define INK2_MISWIRE_OWN_PASS 2   // later passes read their own pass's block states for the messages
+#define INK2_LOGITS_LAST      4   // when logits != NULL, compute norm + head only for the final row (T - 1) into logits[0..vocab_used-1]
 // Optional LoRA adapter callback on attention linear projections (slots 0=Q, 1=K, 2=V, 3=O).
 // When NULL or slot returns false, the unadapted base forward runs untouched.
 typedef struct {

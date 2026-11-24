@@ -1499,11 +1499,16 @@ int main(void) {
         test_vec_dot_xs(types[t], 4096);
         test_vec_dot_xs(types[t], 256);
     }
-    // BF16 rows of any length: 1003 leaves a tail after the 16-wide NEON
-    // and 8-wide AVX2 steps, which every column must sum in the single
-    // kernel's order
-    test_vec_dot(T_BF16, 1003);
-    test_vec_dot_multi(T_BF16, 1003);
+    // BF16 rows of any length: odd lengths exercise every scalar tail after
+    // the 16-wide NEON / AVX-512 and 8-wide AVX2 steps, which every multi
+    // and tile blocking must sum in the single kernel's explicit-fmaf order
+    {
+        static const int odd_bf[] = { 1, 7, 15, 17, 31, 33, 63, 1003 };
+        for (size_t oi = 0; oi < sizeof(odd_bf) / sizeof(*odd_bf); oi++) {
+            test_vec_dot(T_BF16, odd_bf[oi]);
+            test_vec_dot_multi(T_BF16, odd_bf[oi]);
+        }
+    }
     CHECK(vec_dot_xs_ok(T_Q4_K) == vec_dot_xs_ok(T_Q5_K) && !vec_dot_xs_ok(T_Q6_K),
           "vec_dot_xs covers exactly the min-term K-quants");
     test_dequant(T_Q8_0, 4096);
@@ -1713,6 +1718,67 @@ int main(void) {
                               "vec_dot_f32_tile rows=%d n=%d nb=%d wrote outside its outputs at row=%d col=%d",
                               NROW, n, nb, r, k);
             }
+    }
+
+    // BF16 SIMD row decode: bit-identical to bf16_to_f32 over all 65536 uint16_t
+    // encodings and every odd tail length (1..63, 1003).
+    {
+        uint16_t *u = malloc(sizeof(uint16_t) * 65536);
+        float *got_dq = malloc(sizeof(float) * 65536);
+        float *want_dq = malloc(sizeof(float) * 65536);
+        for (int i = 0; i < 65536; i++) {
+            u[i] = (uint16_t)i;
+            want_dq[i] = bf16_to_f32(u[i]);
+        }
+        dequant_row(T_BF16, u, got_dq, 65536);
+        CHECK(memcmp(got_dq, want_dq, sizeof(float) * 65536) == 0,
+              "dequant_row(T_BF16) equals scalar bf16_to_f32 over all 65536 encodings");
+        static const int bf_lens[] = { 1, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 1003 };
+        for (size_t li = 0; li < sizeof(bf_lens) / sizeof(*bf_lens); li++) {
+            const int len = bf_lens[li];
+            memset(got_dq, 0, sizeof(float) * (size_t)(len + 4));
+            dequant_row(T_BF16, u + (li * 137) % 1024, got_dq, len);
+            for (int i = 0; i < len; i++) {
+                float w = bf16_to_f32(u[(li * 137) % 1024 + i]);
+                CHECK(memcmp(&got_dq[i], &w, 4) == 0,
+                      "dequant_row(T_BF16) odd len=%d idx=%d mismatch", len, i);
+            }
+        }
+        free(u); free(got_dq); free(want_dq);
+    }
+
+    // Tier C exact wide-batch tile for T_BF16: 0 bits differ against single-column
+    // vec_dot(T_BF16) * scale across row counts, 1..64 columns, lengths, strides, scales.
+    {
+        enum { MAXR = 17, MAXB = 64, MAXN = 1050, XSTRIDE = 1063, YSTRIDE = 23 };
+        uint16_t *wbf = malloc(sizeof(uint16_t) * MAXR * MAXN);
+        float *xbf = malloc(sizeof(float) * MAXB * XSTRIDE);
+        float *ybf = malloc(sizeof(float) * MAXB * YSTRIDE);
+        for (int r = 0; r < MAXR; r++) make_row(T_BF16, (uint8_t *)(wbf + (size_t)r * MAXN), MAXN);
+        for (int c = 0; c < MAXB; c++)
+            for (int i = 0; i < MAXN; i++) xbf[(size_t)c * XSTRIDE + i] = frnd();
+        static const int b_nrs[] = { 1, 2, 3, 4, 7, 16, 17 };
+        static const int b_nbs[] = { 1, 2, 3, 7, 8, 9, 16, 33, 64 };
+        static const int b_ns[]  = { 1, 7, 8, 15, 16, 17, 31, 32, 33, 64, 128, 1003 };
+        static const float b_sc[] = { 1.0f, -0.375f };
+        long bf_diff = 0;
+        for (size_t ri = 0; ri < sizeof(b_nrs) / sizeof(*b_nrs); ri++)
+            for (size_t bi = 0; bi < sizeof(b_nbs) / sizeof(*b_nbs); bi++)
+                for (size_t ni = 0; ni < sizeof(b_ns) / sizeof(*b_ns); ni++) {
+                    int nr = b_nrs[ri], nb = b_nbs[bi], n = b_ns[ni];
+                    float scale = b_sc[(ri + bi + ni) % 2];
+                    for (size_t i = 0; i < (size_t)MAXB * YSTRIDE; i++) ybf[i] = -999.0f;
+                    vec_dot_exact_tile(T_BF16, wbf, (size_t)MAXN * 2, nr, xbf, XSTRIDE,
+                                       nb, n, scale, ybf, YSTRIDE);
+                    for (int c = 0; c < nb; c++)
+                        for (int r = 0; r < nr; r++) {
+                            float want = vec_dot(T_BF16, wbf + (size_t)r * MAXN,
+                                                 xbf + (size_t)c * XSTRIDE, n) * scale;
+                            bf_diff += memcmp(&ybf[(size_t)c * YSTRIDE + r], &want, 4) != 0;
+                        }
+                }
+        CHECK(bf_diff == 0, "vec_dot_exact_tile(T_BF16) matches vec_dot*scale bit-for-bit: %ld differ", bf_diff);
+        free(wbf); free(xbf); free(ybf);
     }
 
     if (g_fail) { fprintf(stderr, "test_quants_simd: %d FAILURES\n", g_fail); return 1; }
