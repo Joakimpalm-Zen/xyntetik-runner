@@ -886,6 +886,12 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
     int best = 0;
     pfx_entry *hit = NULL;
     const uint64_t route = engine_prompt_route(e);
+    // A recurrent model forks only an entry the prompt holds whole (its fold is the one at the entry's end, see
+    // below), so only such an entry is a candidate, and the longest of them is forked. Picked by the longest common
+    // prefix instead, a longer entry the prompt shares only in part (the previous request's own prompt, published
+    // whole) won and was declined, and the shorter whole one was never tried: a pinned context's next use after an
+    // unrelated prompt was refused, and the automatic tier prefilled that prompt cold (R4.48.22.4).
+    const bool whole_only = model_has_recurrent(e->m);
     for (pfx_entry *p = PFX.head; p; p = p->next) {
         if (p->key != e->model_key || p->cls != route) continue;
         // R3.60: rows from disk are of a provenance this process cannot vouch
@@ -897,6 +903,7 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
         if (model_rope_wants_long(e->m, p->n) != e->m->rope_long) continue;
         int c = 0;
         while (c < p->n && c < n - 1 && p->toks[c] == toks[c]) c++;
+        if (whole_only && c != p->n) continue;
         if (c > best && pfx_ring_serves(e->m, p, c)) { best = c; hit = p; }
     }
     // A shared snapshot stores KV (sliceable, Fact 1) plus — for a recurrent
@@ -1020,7 +1027,7 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
             pthread_mutex_unlock(&PFX.mu);
             return;
         }
-        if (c == lim && !p->pinned) pfx_drop(pp);   // ours strictly extends p
+        if (c == lim && !p->pinned && !recur) pfx_drop(pp);   // ours strictly extends p
         else if (c == lim) pp = &p->next;           // a named one stays
         else {
             if (c > diverge_at) diverge_at = c;
