@@ -50,7 +50,22 @@ def _message(doc):
 
 
 LONG = "x" * 500
-WIDE = "é" * 100   # 200 bytes of UTF-8: the cut must not split one
+WIDE = "é" * 100   # 200 bytes of UTF-8; byte 64 starts a character, so this cut needs no backing up
+# byte 64 falls INSIDE a character, so err_echo must back up to its start: a two-byte one after a one-byte lead-in,
+# and a three-byte one
+MID2 = "a" + "é" * 100
+MID3 = "€" * 30
+
+
+def _whole_chars(value, cap=64):
+    """The longest prefix of whole characters within cap bytes: what a cut on the last boundary echoes."""
+    out, n = "", 0
+    for ch in value:
+        n += len(ch.encode())
+        if n > cap:
+            break
+        out += ch
+    return out
 
 
 def _cases(t):
@@ -70,7 +85,8 @@ def _cases(t):
     ]
 
 
-@pytest.mark.parametrize("value,nbytes", [(LONG, 500), (WIDE, 200)], ids=["ascii", "utf8"])
+@pytest.mark.parametrize("value,nbytes", [(LONG, 500), (WIDE, 200), (MID2, 201), (MID3, 90)],
+                         ids=["ascii", "utf8", "utf8-mid2", "utf8-mid3"])
 @pytest.mark.parametrize("case", range(4))
 def test_a_long_echoed_type_is_marked_as_cut_and_the_refusal_ends_whole(srv, value, nbytes, case):
     path, body, ending = _cases(value)[case]
@@ -80,6 +96,8 @@ def test_a_long_echoed_type_is_marked_as_cut_and_the_refusal_ends_whole(srv, val
     assert msg.endswith(ending), (path, msg)
     assert f"... ({nbytes} bytes)" in msg and value not in msg, (path, msg)
     assert "�" not in msg, (path, msg)   # the cut ends on a UTF-8 boundary
+    # and on the LAST boundary within 64 bytes: every whole character that fits is echoed, then the marker
+    assert f"{_whole_chars(value)}... ({nbytes} bytes)" in msg, (path, msg)
 
 
 @pytest.mark.parametrize("case", range(4))
