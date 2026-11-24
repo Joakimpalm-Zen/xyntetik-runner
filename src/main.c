@@ -16,6 +16,7 @@
 #include "envelope.h"
 #include "lineage.h"
 #include "train_record.h"
+#include "train_lr.h"
 #include "oms.h"
 #include "server.h"
 #include "provenance.h"
@@ -5920,13 +5921,8 @@ static bool train_teacher_open(const char *dir, const model_t *m,
 // --lr-floor x --lr at the last step (a distillation pipeline's schedule(),
 // with the floor as a flag).
 static double train_lr_at(const cli_opts *o, int s) {
-    double base = o->train_lr;
-    if (s < o->lr_warmup) return base * (double)(s + 1) / (double)o->lr_warmup;
-    if (o->lr_schedule != 1) return base;
-    int span = o->train_steps - o->lr_warmup;
-    double p = (double)(s - o->lr_warmup) / (double)(span > 1 ? span : 1);
-    double f = o->lr_floor;
-    return base * (f + (1.0 - f) * 0.5 * (1.0 + cos(3.14159265358979323846 * p)));
+    return train_lr_schedule_at(o->train_lr, s, o->lr_warmup,
+                                o->lr_schedule, o->train_steps, o->lr_floor);
 }
 
 // Where a run stands: optimizer steps done, and rows consumed (the next row is
