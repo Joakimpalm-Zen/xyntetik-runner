@@ -566,6 +566,7 @@ bool gpu_ink2_kv_post_sync(gpu_ink2_kv *kv, float *host, int up) { (void)kv; (vo
 size_t gpu_ink2_kv_post_bytes(const gpu_ink2_kv *kv) { (void)kv; return 0; }
 bool gpu_ink2_step_set(gpu_ink2 *h, const gpu_ink2_step_plan *plan) { (void)h; (void)plan; return false; }
 bool gpu_ink2_step_ready(const gpu_ink2 *h) { (void)h; return false; }
+size_t gpu_ink2_step_bytes(int n_app, int H, int V) { (void)n_app; (void)H; (void)V; return 0; }
 bool gpu_ink2_step(gpu_ink2 *h, gpu_ink2_kv *kv, int p0, const float *emb_row, float *logits) {
     (void)h; (void)kv; (void)p0; (void)emb_row; (void)logits; return false;
 }

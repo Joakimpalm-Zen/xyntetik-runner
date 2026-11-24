@@ -910,6 +910,7 @@ typedef struct {
 // lacks, a device failure, or a walk past its lists.
 bool       gpu_ink2_step_set(gpu_ink2 *h, const gpu_ink2_step_plan *plan);
 bool       gpu_ink2_step_ready(const gpu_ink2 *h);
+size_t     gpu_ink2_step_bytes(int n_app, int H, int V);   // the program's device bytes at this shape (for the fit)
 // ONE decode step at position p0 on the device, the handle's lock held throughout (F1): emb_row [H] (the token's
 // embedding row, dequantized on the host as the engine does) up, the position up, the logits row [V] down; nothing
 // moves to or from the host inside the applications' loop. kv: the instance's rings and histories (its post

@@ -56,7 +56,7 @@ typedef struct {
     long msg_fail_at;     // TEST-ONLY (RUNNER_INKLING2_CUDA_TEST_MSG_FAIL=k): the k-th device message step fails; -1 none
     bool route_on;        // D1b: this instance runs the router on the device with the expert body
     long n_route;         // device router calls run so far
-    // D1d.3b: the resident decode step (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_STEP=1 until 3b.3), its post convolutions'
+    // D1d.3b: the resident decode step (on by default; TEST-ONLY RUNNER_INKLING2_CUDA_TEST_NO_STEP=1 off), its post convolutions'
     // device copies (post_dev_newer: they are newer than the host's, a step ran last; the sync's staging)
     bool step_on;
     bool post_dev_newer;
@@ -331,7 +331,19 @@ static ink2_share *g_shares;
 // the expert body's and the core's scratch belong to the shared copy (used under its lock).
 // one slot's own device bytes: per application its K and V rings and, on the block path (hist_rows = conv_k - 1),
 // its K and V convolution histories, each as the driver allocates it
-static size_t dev_instance_bytes(const ink2_rt *r, bool attn_dev, int hist_rows) {
+static size_t dev_instance_bytes(const ink2_rt *r, bool attn_dev, int hist_rows, bool step);
+// D1d.3b: the resident step's bytes on the COPY: its small F32 tensors (step_smalls' list) and its program's scratch
+// (gpu_ink2_step_set's allocations: the raw rows, the normed rows, the block's inputs, the reads' rows, the logits, the
+// lists), each as the driver allocates it; 0 when the plan cannot be built (the step then stays off)
+static size_t step_dev_bytes(const ink2_rt *r);
+static size_t dev_instance_bytes_core(const ink2_rt *r, bool attn_dev, int hist_rows);
+static size_t dev_instance_bytes(const ink2_rt *r, bool attn_dev, int hist_rows, bool step) {
+    // D1d.3b: with the step, each slot's post convolutions' device copies (one allocation, gpu_ink2_kv_post_init)
+    const size_t post = step && hist_rows > 0 ?
+        dev_alloc_bytes(sizeof(float) * (size_t)r->s.n_app * 2 * (size_t)hist_rows * (size_t)r->s.hidden) : 0;
+    return post + dev_instance_bytes_core(r, attn_dev, hist_rows);
+}
+static size_t dev_instance_bytes_core(const ink2_rt *r, bool attn_dev, int hist_rows) {
     if (!attn_dev) return 0;
     size_t b = 0;
     for (int a = 0; a < r->s.n_app; a++) {
@@ -385,7 +397,7 @@ static const ink2_tensor *block_view(ink2_rt *r, int b, int role) {
 // plus N slots' own bytes, against the free memory with 512 MiB kept. Whole first (unless --cpu-moe was asked), then
 // the expert stacks on the host, then the CPU.
 static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batch, int n_ctx, int n_slots,
-                        const char *dev) {
+                        const char *dev, bool step_req) {
     sh->placed = 'C';
     gpu_ink2 *h = gpu_ink2_bind();
     if (!h) { snprintf(sh->why, sizeof sh->why, "no CUDA device for inkling2_loop"); return; }
@@ -413,8 +425,12 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
             small += dev_alloc_bytes(small_bytes(t));
         }
     if (!block_dev) small = 0;
+    // D1d.3b: the resident step's small tensors and program on the copy, and per slot its post convolutions' copies
+    const size_t step_b = step_req && block_dev ? step_dev_bytes(r) : 0;
+    const bool step_fit = step_b > 0;
+    small += step_b;
     // every slot's own rings (and on the block path its convolution histories), counted N times
-    const size_t inst = (size_t)n_slots * dev_instance_bytes(r, attn_dev, block_dev ? sp->conv_k - 1 : 0);
+    const size_t inst = (size_t)n_slots * dev_instance_bytes(r, attn_dev, block_dev ? sp->conv_k - 1 : 0, step_fit);
     // the block's buffers at a chunk of T, by the largest layer's widths
     const int c_max = sp->n_kv * sp->head_dim > sp->swa_n_kv * sp->swa_head_dim ? sp->n_kv * sp->head_dim
                                                                                    : sp->swa_n_kv * sp->swa_head_dim;
@@ -526,6 +542,24 @@ static int step_smalls(const ink2_rt *r, const ink2_step_plan *P, step_small *ou
     }
 #undef ADD
     return ok ? k : -1;
+}
+static size_t step_dev_bytes(const ink2_rt *r) {
+    ink2_step_app *apps = calloc((size_t)r->s.n_app, sizeof *apps);
+    ink2_step_plan P = { 0 };
+    P.app = apps;
+    size_t b = 0;
+    if (apps && ink2_step_plan_build(&r->s, &r->w, &P) == INK2_OK) {
+        const int n = step_smalls(r, &P, NULL, NULL);
+        step_small *ss = n > 0 ? malloc(sizeof *ss * (size_t)n) : NULL;
+        if (ss && step_smalls(r, &P, ss, NULL) == n) {
+            for (int k = 0; k < n; k++) b += dev_alloc_bytes(sizeof(float) * ss[k].n);
+            // the program's own allocations, as gpu_ink2_step_set makes them (16 of them, each rounded up)
+            b += gpu_ink2_step_bytes(r->s.n_app, r->s.hidden, r->s.vocab_used) + 16 * dev_alloc_bytes(1);
+        }
+        free(ss);
+    }
+    free(apps);
+    return b;
 }
 // the step's small tensors up, as device tensors base.. (the copy new, under g_share_mu: no instance reads h->t yet)
 static bool step_put(ink2_rt *r, gpu_ink2 *h, int base) {
@@ -661,9 +695,10 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
     const char *pf = getenv("RUNNER_INKLING2_CUDA_TEST_PUT_FAIL"), *ne = getenv("RUNNER_INKLING2_CUDA_TEST_NO_EXP");
     const char *capv = getenv("RUNNER_INKLING2_CUDA_TEST_FREE"), *nav = getenv("RUNNER_INKLING2_CUDA_TEST_NO_ATTN");
     const char *nbv = getenv("RUNNER_INKLING2_CUDA_TEST_NO_BLOCK");
-    // D1d.3b TEST-ONLY: the resident decode step (its small tensors go up with the copy: part of the key)
-    const char *stv = getenv("RUNNER_INKLING2_CUDA_TEST_STEP");
-    const bool step_req = stv && !strcmp(stv, "1");
+    // D1d.3b: the resident decode step, ON by default (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_NO_STEP=1 keeps every
+    // position on the non-resident route, the baseline); its small tensors go up with the copy: part of the key
+    const char *stv = getenv("RUNNER_INKLING2_CUDA_TEST_NO_STEP");
+    const bool step_req = !(stv && !strcmp(stv, "1"));
     char key[1200];
     snprintf(key, sizeof key, "%s|%llu|%llu|%lld|moe %d|%s|c %d|b %d|slots %d|pf %s|ne %s|cap %s|na %s|nb %s|st %d", m->path,
              (unsigned long long)fsize, (unsigned long long)fino, (long long)fmt, p->cpu_moe ? 1 : 0, dev, m->n_ctx,
@@ -678,7 +713,7 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
         sh = calloc(1, sizeof *sh);
         if (!sh) { pthread_mutex_unlock(&g_share_mu); fprintf(stderr, "note: out of memory binding inkling2_loop; running on the CPU\n"); return 0; }
         snprintf(sh->key, sizeof sh->key, "%s", key);
-        share_place(sh, r, p->cpu_moe, m->n_batch, m->n_ctx, n_slots, dev);
+        share_place(sh, r, p->cpu_moe, m->n_batch, m->n_ctx, n_slots, dev, step_req);
         // D1d.3b: the step's small tensors after the block's, while the copy is new (no instance reads it yet)
         sh->step_base = -1;
         if (step_req && sh->placed == 'W' && sh->block_dev && sh->gpu) {
@@ -782,7 +817,7 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
     const char *xf = getenv("RUNNER_INKLING2_CUDA_TEST_EXP_FAIL");
     r->exp_fail_at = xf && *xf ? atol(xf) : -1;
     r->exp_on = sh->exp_dev;
-    // D1d.3b (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_STEP=1 until 3b.3): the resident decode step, when every op of the
+    // D1d.3b (on by default; TEST-ONLY RUNNER_INKLING2_CUDA_TEST_NO_STEP=1 off): the resident decode step, when every op of the
     // chain is this instance's on the device and the copy holds the step's small tensors
     if (step_req && sh->step_base >= 0 && r->kv && r->block_on && r->msg_on && r->route_on && r->exp_on) {
         gpu_ink2_step_app *ga = malloc(sizeof *ga * (size_t)r->s.n_app);
@@ -1272,7 +1307,7 @@ size_t model_inkling2_cuda_lin_out_bytes(const model_t *m) {
 size_t model_inkling2_cuda_slot_fit_bytes(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
     if (!r || !r->share || !r->gpu) return 0;
-    return dev_instance_bytes(r, r->share->attn_dev, r->share->block_dev ? r->s.conv_k - 1 : 0);
+    return dev_instance_bytes(r, r->share->attn_dev, r->share->block_dev ? r->s.conv_k - 1 : 0, r->share->step_base >= 0);
 }
 size_t model_inkling2_cuda_block_buf_bytes(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;

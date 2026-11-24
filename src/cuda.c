@@ -13867,6 +13867,7 @@ bool gpu_ink2_kv_post_init(gpu_ink2_kv *kv, int H, int hist_rows) {
     if (cu.MemAlloc(&kv->post, b) != 0) { kv->post = 0; return false; }
     if (cu.MemsetD8(kv->post, 0, b) != 0) { cu.MemFree(kv->post); kv->post = 0; return false; }
     kv->post_H = H; kv->post_rows = hist_rows; kv->post_bytes = b;
+    kv->bytes += b;   // the slot's own bytes (the fit counts them with its rings: dev_instance_bytes' step part)
     return true;
 }
 bool gpu_ink2_kv_post_sync(gpu_ink2_kv *kv, float *host, int up) {
@@ -14337,6 +14338,13 @@ bool gpu_ink2_step_set(gpu_ink2 *h, const gpu_ink2_step_plan *P) {
     return ok;
 }
 bool gpu_ink2_step_ready(const gpu_ink2 *h) { return h && h->step; }
+// the bytes gpu_ink2_step_set allocates for its program at this shape (the fit counts them on the copy)
+size_t gpu_ink2_step_bytes(int n_app, int H, int V) {
+    if (n_app <= 0 || H <= 0 || V <= 0) return 0;
+    const size_t fb = sizeof(float), SR = (size_t)(1 + INK2_XPAD) * (size_t)H, n = (size_t)n_app;
+    return sizeof(int) * (n + 2) * (3 * (n + 2) + 1) + fb * SR * ST_NRAW + fb * (n + 2) * (size_t)H + fb * 3 * SR +
+           fb * (3 + 3 + 4 + 7) * (size_t)H + fb * SR + fb * (size_t)V;
+}
 // one host transfer of the step, counted (in_app: inside the applications' loop, the bar's per-application count)
 static bool st_htod(gpu_ink2 *h, CUdeviceptr d, const void *s, size_t b, bool in_app) {
     h->n_step_xfer++; if (in_app) h->n_step_app_xfer++;
