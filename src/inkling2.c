@@ -9,14 +9,15 @@
 //   the error bound the fixture harness states.
 // - THE FAST ROUTE (the weights in their file formats, decoded at use; R4.48.15 and R4.48.20):
 //   - it sums in the house kernels' vectorized orders (quants.c's dots and exact tile, ink2_dot_f32);
-//   - it takes vector exp and tanh (ink2_vexp8 / ink2_vtanh8 on AVX2, ink2_vexp4 / ink2_vtanh4 on NEON);
+//   - it takes the vector exp in its attention softmax (ink2_vexp8 on AVX2, ink2_vexp4 on NEON); its SwiGLU is
+//     the reference route's scalar one (R4.48.26: the vector SwiGLU moved the real file's routing);
 //   - so its bits differ from the reference route's and from one ISA to another;
 //   - they do not depend on the thread count, the batch width or the chunking (threads split outputs, never a sum).
 //   - Each of its vector kernels is held to a bound a few roundings wide (tests/test_inkling2_vmath.c), and the
 //     route as a whole to the reference route (tests/test_inkling2_fast.c).
 //   - A fast-route change that "only changes rounding" is held to those bounds, not to this paragraph's first
 //     contract. On the real file, a kernel 246 roundings off moved argmaxes through the routers' near-ties
-//     (R4.48.24 and R4.48.25).
+//     (R4.48.24 and R4.48.25), and the vector SwiGLU still did within 4 u of the double forms (R4.48.26).
 #include "inkling2.h"
 #include "pmath.h"
 #include "quants.h"
@@ -74,27 +75,6 @@ static inline __m256 ink2_vexp8(__m256 x) {
     res = _mm256_blendv_ps(res, _mm256_set1_ps(INFINITY), imask);
     return _mm256_blendv_ps(res, _mm256_add_ps(x, x), nmask);
 }
-// tanh in float32 without cancellation (R4.48.25): below 0.625 an odd polynomial, x + x s P(s) with s = x^2
-// (Cephes' tanhf coefficients); from 0.625 up 1 - 2 / (e^{2|x|} + 1), which cannot cancel there (tanh >= 0.55, so the
-// subtraction loses no digit), saturating to 1 once e^{2|x|} does. The sign is x's (tanh is odd). Within 4 u of the
-// double tanh at every float (tests/test_inkling2_vmath.c); R4.48.20's (1 - e^{-2|x|}) / (1 + e^{-2|x|}) cancelled to
-// 246 u near |x| = 1e-3
-static inline __m256 ink2_vtanh8(__m256 x) {
-    const __m256 sgn = _mm256_set1_ps(-0.0f);
-    const __m256 one = _mm256_set1_ps(1.0f);
-    const __m256 ax = _mm256_andnot_ps(sgn, x);
-    const __m256 s = _mm256_mul_ps(ax, ax);
-    __m256 p = _mm256_set1_ps(-5.70498872745e-3f);
-    p = _mm256_fmadd_ps(p, s, _mm256_set1_ps(2.06390887954e-2f));
-    p = _mm256_fmadd_ps(p, s, _mm256_set1_ps(-5.37397155531e-2f));
-    p = _mm256_fmadd_ps(p, s, _mm256_set1_ps(1.33314422036e-1f));
-    p = _mm256_fmadd_ps(p, s, _mm256_set1_ps(-3.33332819422e-1f));
-    const __m256 small = _mm256_fmadd_ps(_mm256_mul_ps(p, s), ax, ax);
-    const __m256 e = ink2_vexp8(_mm256_add_ps(ax, ax));
-    const __m256 large = _mm256_sub_ps(one, _mm256_div_ps(_mm256_set1_ps(2.0f), _mm256_add_ps(e, one)));
-    const __m256 r = _mm256_blendv_ps(large, small, _mm256_cmp_ps(ax, _mm256_set1_ps(0.625f), _CMP_LT_OQ));
-    return _mm256_or_ps(r, _mm256_and_ps(x, sgn));
-}
 #elif INK2_SIMD_NEON
 static inline float32x4_t ink2_vexp4(float32x4_t x) {
     const float32x4_t hi = vdupq_n_f32(88.3762626647949f);
@@ -123,24 +103,6 @@ static inline float32x4_t ink2_vexp4(float32x4_t x) {
     res = vreinterpretq_f32_u32(vbicq_u32(vreinterpretq_u32_f32(res), zmask));
     res = vbslq_f32(imask, vdupq_n_f32(INFINITY), res);
     return vbslq_f32(nmask, vaddq_f32(x, x), res);
-}
-// tanh in float32 without cancellation (R4.48.25): ink2_vtanh8's steps (see there), four lanes
-static inline float32x4_t ink2_vtanh4(float32x4_t x) {
-    const uint32x4_t smask = vdupq_n_u32(0x80000000u);
-    const float32x4_t one = vdupq_n_f32(1.0f);
-    const float32x4_t ax = vabsq_f32(x);
-    const float32x4_t s = vmulq_f32(ax, ax);
-    float32x4_t p = vdupq_n_f32(-5.70498872745e-3f);
-    p = vfmaq_f32(vdupq_n_f32(2.06390887954e-2f), p, s);
-    p = vfmaq_f32(vdupq_n_f32(-5.37397155531e-2f), p, s);
-    p = vfmaq_f32(vdupq_n_f32(1.33314422036e-1f), p, s);
-    p = vfmaq_f32(vdupq_n_f32(-3.33332819422e-1f), p, s);
-    const float32x4_t small = vfmaq_f32(ax, vmulq_f32(p, s), ax);
-    const float32x4_t e = ink2_vexp4(vaddq_f32(ax, ax));
-    const float32x4_t large = vsubq_f32(one, vdivq_f32(vdupq_n_f32(2.0f), vaddq_f32(e, one)));
-    const float32x4_t r = vbslq_f32(vcltq_f32(ax, vdupq_n_f32(0.625f)), small, large);
-    const uint32x4_t xsgn = vandq_u32(vreinterpretq_u32_f32(x), smask);
-    return vreinterpretq_f32_u32(vorrq_u32(vreinterpretq_u32_f32(r), xsgn));
 }
 #endif
 
@@ -647,41 +609,18 @@ static inline float ink2_swiglu(const ink2_shape *s, float g, float u) {
     return ink2_softcap(g, s->gate_cap) * ink2_sigmoid(g) * ink2_softcap(u, s->up_cap);
 }
 typedef struct { const ink2_shape *s; float *act; int F, nb; } ink2_swiglu_ctx;
+// The fast route's SwiGLU over blocks of 8 values (the pool's items): the reference route's own scalar ink2_swiglu on
+// every value (R4.48.26). R4.48.20 vectorised it (a vector exp and tanh, 7c5d190a). R4.48.24's real-file chat read
+// then failed its bar at 10 positions through the routers' near-ties: the vector exp and the vector tanh each moved
+// the SwiGLU's bits, even within 4 u of the double forms. The scalar block read like the reference route there. The
+// fast route keeps the reference's bits here: tests/test_inkling2_vmath.c holds the two equal byte for byte.
 static void ink2_swiglu_range(void *c, int64_t b0, int64_t b1) {
     const ink2_swiglu_ctx *sw = c;
     const ink2_shape *s = sw->s;
     const int F = sw->F, nb = sw->nb;
-#if INK2_SIMD_AVX2
-    const __m256 vgc = _mm256_set1_ps(s->gate_cap), vuc = _mm256_set1_ps(s->up_cap);
-    const __m256 vone = _mm256_set1_ps(1.0f), vzero = _mm256_setzero_ps();
-#elif INK2_SIMD_NEON
-    const float32x4_t vgc = vdupq_n_f32(s->gate_cap), vuc = vdupq_n_f32(s->up_cap);
-    const float32x4_t vone = vdupq_n_f32(1.0f);
-#endif
     for (int64_t idx = b0; idx < b1; idx++) {
         const int i = (int)(idx / nb), j0 = (int)(idx % nb) * 8;
         float *a = sw->act + (size_t)i * 2 * F;
-        if (j0 + 8 <= F) {
-#if INK2_SIMD_AVX2
-            const __m256 g = _mm256_loadu_ps(a + j0);
-            const __m256 u = _mm256_loadu_ps(a + F + j0);
-            const __m256 sg = _mm256_mul_ps(ink2_vtanh8(_mm256_div_ps(g, vgc)), vgc);
-            const __m256 sig = _mm256_div_ps(vone, _mm256_add_ps(vone, ink2_vexp8(_mm256_sub_ps(vzero, g))));
-            const __m256 su = _mm256_mul_ps(ink2_vtanh8(_mm256_div_ps(u, vuc)), vuc);
-            _mm256_storeu_ps(a + j0, _mm256_mul_ps(_mm256_mul_ps(sg, sig), su));
-            continue;
-#elif INK2_SIMD_NEON
-            for (int k = 0; k < 8; k += 4) {
-                const float32x4_t g = vld1q_f32(a + j0 + k);
-                const float32x4_t u = vld1q_f32(a + F + j0 + k);
-                const float32x4_t sg = vmulq_f32(ink2_vtanh4(vdivq_f32(g, vgc)), vgc);
-                const float32x4_t sig = vdivq_f32(vone, vaddq_f32(vone, ink2_vexp4(vnegq_f32(g))));
-                const float32x4_t su = vmulq_f32(ink2_vtanh4(vdivq_f32(u, vuc)), vuc);
-                vst1q_f32(a + j0 + k, vmulq_f32(vmulq_f32(sg, sig), su));
-            }
-            continue;
-#endif
-        }
         const int j1 = j0 + 8 < F ? j0 + 8 : F;
         for (int j = j0; j < j1; j++) a[j] = ink2_swiglu(s, a[j], a[F + j]);
     }
@@ -2266,20 +2205,20 @@ const char *ink2_test_vmath_form(void) {
 #endif
 }
 int ink2_test_vmath(int fn, const float *x, float *y, int n) {
-    if (fn != INK2_VM_EXP && fn != INK2_VM_TANH) return -1;
+    if (fn != INK2_VM_EXP) return -1;
     int i = 0;
 #if INK2_SIMD_AVX2
     for (; i + 8 <= n; i += 8) {
         const __m256 v = _mm256_loadu_ps(x + i);
-        _mm256_storeu_ps(y + i, fn == INK2_VM_EXP ? ink2_vexp8(v) : ink2_vtanh8(v));
+        _mm256_storeu_ps(y + i, ink2_vexp8(v));
     }
 #elif INK2_SIMD_NEON
     for (; i + 4 <= n; i += 4) {
         const float32x4_t v = vld1q_f32(x + i);
-        vst1q_f32(y + i, fn == INK2_VM_EXP ? ink2_vexp4(v) : ink2_vtanh4(v));
+        vst1q_f32(y + i, ink2_vexp4(v));
     }
 #endif
-    for (; i < n; i++) y[i] = fn == INK2_VM_EXP ? p_expf(x[i]) : p_tanhf(x[i]);
+    for (; i < n; i++) y[i] = p_expf(x[i]);
     return 0;
 }
 void ink2_test_swiglu(float gate_cap, float up_cap, float *act, int F, int n) {
@@ -2290,6 +2229,13 @@ void ink2_test_swiglu(float gate_cap, float up_cap, float *act, int F, int n) {
     const int nb = (F + 7) / 8;
     ink2_swiglu_ctx sw = { &s, act, F, nb };
     ink2_swiglu_range(&sw, 0, (int64_t)n * nb);
+}
+float ink2_test_swiglu_ref(float gate_cap, float up_cap, float g, float u) {
+    ink2_shape s;
+    memset(&s, 0, sizeof s);
+    s.gate_cap = gate_cap;
+    s.up_cap = up_cap;
+    return ink2_swiglu(&s, g, u);
 }
 ink2_status ink2_test_attn_core(int fast, int hd, int nk, const float *q, const float *k, const float *v, float sink,
                                 float *out) {
