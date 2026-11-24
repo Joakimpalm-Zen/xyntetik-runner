@@ -1045,10 +1045,13 @@ one is checked by the JSON parser, as before),
 string
 lengths and `pattern`s (below), array item/count constraints,
 scalar-const `oneOf`/`anyOf`, const-discriminated object unions (below), and
-the tool-discriminated object union used by agent clients. Required
-properties are present, unknown properties are blocked
-for closed objects, and tool arguments are generated against the selected
-tool's schema. Over scalar literal alternatives, `anyOf` admits every value
+the tool-discriminated object union used by agent clients. Required properties are present, unknown properties are blocked for closed
+objects, and tool arguments are generated against the selected tool's schema.
+Closed fixed-property objects (`response_format` `json_schema` and JSON tool
+parameters alike) accept their declared properties in any order, each at most
+once, enforcing required keys before closing (a forced close emits any missing
+required keys in declaration order); `RUNNER_SCHEMA_ORDERED=1` restores strict
+declaration key order. Over scalar literal alternatives, `anyOf` admits every value
 an alternative lists and `oneOf` only the values exactly one alternative
 lists, so `oneOf: [{"enum": [1, 2]}, {"enum": [2, 3]}]` admits 1 and 3; a
 `oneOf` that leaves no value is refused.
@@ -4350,6 +4353,7 @@ Beyond these, the binary reads a number of development switches -
 `RUNNER_SPEC_STATS` / `RUNNER_SPEC_PROF` (the speculative walk's round
 summary and per-phase timing),
 `RUNNER_SCHEMA_ALLOW_WS` (the pre-fix whitespace behaviour, for A/B runs),
+`RUNNER_SCHEMA_ORDERED` (`1` restores declaration key order on closed `SN_OBJ` objects instead of free key order),
 `RUNNER_MOE_GROUPED` (`1` runs the grouped CUDA MoE prefill on any MoE model whose expert types it admits, `0` or `off` on none; unset, the family and expert types measured for it, qwen3moe with Q4_K or Q6_K experts, take it),
 `RUNNER_GPU_FALLBACK=fail` (a device forward that fails at runtime ends the process
 with exit status 3 instead of releasing the GPU and continuing on the CPU; the

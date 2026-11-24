@@ -48,6 +48,7 @@ struct snode {
     // (NULL: branch b does not have it) and req[b] whether branch b requires
     // it; the object's own req[] holds only the discriminator's.
     bool    discriminated;
+    bool    ordered;                                // RUNNER_SCHEMA_ORDERED=1: declaration key order
     bool    whitespace_significant;                 // protocol literals/branches
     int64_t num_min, num_max;                       // enforced integer interval
     bool    has_num_min, has_num_max;

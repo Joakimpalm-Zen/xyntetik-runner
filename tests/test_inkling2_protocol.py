@@ -1371,5 +1371,75 @@ def test_r4416_other_families_enable_thinking_unchanged():
     assert "reasoning strength: none" not in res["muse_off"]["prompt"]
 
 
+def test_r4423_inkling2_tool_args_free_key_order(server):
+    """R4.48.23: Inkling 2 constrained tool calls accept argument keys in any
+    order (e.g. optional/alphabetical key before required declared key) and
+    close truncated partial reordered arguments cleanly with required keys."""
+    star_tool = {
+        "type": "function",
+        "function": {
+            "name": "github_star",
+            "description": "Track GitHub stars.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repos": {"type": "string"},
+                    "aligned": {"type": "boolean"},
+                },
+                "required": ["repos"],
+            },
+        },
+    }
+    # Constrained tool call emits optional `aligned` before required `repos`.
+    reordered_reply = (
+        '<|message_model|>github_star<|content_invoke_tool_json|>'
+        '{"name":"github_star","args":{"aligned":true,"repos":"octocat/Hello-World"}}<|end_message|>'
+        '<|content_model_end_sampling|>'
+    )
+    code, d = _post(
+        server,
+        "/v1/chat/completions",
+        {
+            "model": server.model_id,
+            "messages": [{"role": "user", "content": "star octocat/Hello-World"}],
+            "tools": [star_tool],
+            "tool_choice": "required",
+            "max_tokens": 128,
+            "temperature": 0,
+            "runner_test_reply": reordered_reply,
+        },
+    )
+    assert code == 200, d
+    assert d["choices"][0]["finish_reason"] == "tool_calls", d
+    assert d.get("runner_telemetry", {}).get("tool_protocol", {}).get("family") == "inkling2", d
+    tc = d["choices"][0]["message"].get("tool_calls") or []
+    assert len(tc) == 1 and tc[0]["function"]["name"] == "github_star", d
+    raw_args = tc[0]["function"]["arguments"]
+    assert raw_args.index('"aligned"') < raw_args.index('"repos"'), raw_args
+    assert json.loads(raw_args) == {"aligned": True, "repos": "octocat/Hello-World"}
+
+    # Truncated mid-call after emitting `aligned` first closes cleanly with required `repos`.
+    code, d_cut = _post(
+        server,
+        "/v1/chat/completions",
+        {
+            "model": server.model_id,
+            "messages": [{"role": "user", "content": "star octocat/Hello-World"}],
+            "tools": [star_tool],
+            "tool_choice": "required",
+            "max_tokens": 16,
+            "temperature": 0,
+            "runner_test_reply": reordered_reply,
+        },
+    )
+    assert code == 200, d_cut
+    assert d_cut["choices"][0]["finish_reason"] == "length", d_cut
+    cut_tc = d_cut["choices"][0]["message"].get("tool_calls") or []
+    assert len(cut_tc) == 1 and cut_tc[0]["function"]["name"] == "github_star", d_cut
+    cut_args = json.loads(cut_tc[0]["function"]["arguments"])
+    assert "repos" in cut_args, cut_args
+
+
+
 
 
