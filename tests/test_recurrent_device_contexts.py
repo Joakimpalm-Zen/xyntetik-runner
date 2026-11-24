@@ -16,9 +16,10 @@ CPU an error):
   (qwen4exp too since R4.48.22.1: a fold load rebuilds its PLE n-gram token history from the forked tokens).
 The pin prefills its prompt in the shape a completion's prefill builds every recurrent fold in, the prompt but its last
 token, then the last token alone (engine_feed_prompt, R4.48.22.2), so a pinned context is the automatic tier's state
-on every backend by construction. Before, the pin fed one batch: equal on the CPU and CUDA, but on the Metal backend
-prefill chunks of 4 or more take the tiled GEMM, a tolerance class against the decode matvec by design (src/metal.m
-enc_mv_n), and the pin answered differently from the automatic fork (nemotron-H 4.7e-7 in its logprobs, lfm2 more).
+on every backend and build by construction. Before, the pin fed one batch: equal on the CPU and a default CUDA build,
+but not under a T3 build on CUDA (qwen4exp 4.8e-7 in its logprobs) nor on the Metal backend, where prefill chunks of 4
+or more take the tiled GEMM, a tolerance class against the decode matvec by design (src/metal.m enc_mv_n), and the pin
+answered differently from the automatic fork (nemotron-H 4.7e-7 in its logprobs, lfm2 more).
 The cold prefill runs the whole prompt as one batch, so on Metal it is held to that backend's measured class (COLD_TOL).
 Where a family runs is the backend's: lfm2's short convolution runs on the CPU under CUDA (arch.h cpu_only_nonmetal)
 but on the device under Metal, as its --wide fixture quantized to Q4_K (the shape the Apple GPU path takes, R3.42), so

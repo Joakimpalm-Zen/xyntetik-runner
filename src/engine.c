@@ -1846,8 +1846,8 @@ float *engine_feed(engine *e, const int32_t *toks, int n) {
 // token, then the last token alone. A fold's bits depend on these shapes wherever a backend's prefill chunk is not its
 // decode step's bits: the Metal backend's prefill GEMM is a tolerance class against its decode matvec by design
 // (metal.m enc_mv_n), and a pin fed as one batch answered differently from the automatic tier there (nemotron-H
-// 4.7e-7, lfm2 more; the CPU and CUDA were bit-equal). One helper builds both, so they cannot drift. The last token's
-// logits, or NULL.
+// 4.7e-7, lfm2 more), as it did under a T3 build on CUDA (qwen4exp 4.8e-7); the CPU and a default CUDA build were
+// bit-equal. One helper builds both, so they cannot drift. The last token's logits, or NULL.
 float *engine_feed_prompt(engine *e, const int32_t *toks, int keep, int n, int anchor) {
     if (n < 2 || keep < 0 || keep >= n) return NULL;
     const int last = n - 1;
