@@ -507,7 +507,7 @@
       "why": "Inkling text path only: the publisher template can render <|content_image|><|unused_200054|>, but this API has no image encoder for the model. Refuse image parts rather than silently treating the placeholder as image understanding. Publisher source: https://huggingface.co/thinkingmachines/Inkling-2-Mini/blob/b85c3cfa615fc413cc9af3379f491b963f3b586a/chat_template.jinja, image content branch.",
       "cite": {
         "file": "src/server.c",
-        "lines": "512-521",
+        "lines": "514-524",
         "anchor": "only text is accepted"
       }
     },
@@ -520,7 +520,7 @@
       "why": "Inkling text path only: the publisher template can render <|content_image|><|unused_200054|>, but this API has no image encoder for the model. Refuse image parts rather than silently treating the placeholder as image understanding. Publisher source: https://huggingface.co/thinkingmachines/Inkling-2-Mini/blob/b85c3cfa615fc413cc9af3379f491b963f3b586a/chat_template.jinja, image content branch.",
       "cite": {
         "file": "src/server.c",
-        "lines": "512-521",
+        "lines": "514-524",
         "anchor": "only text is accepted"
       }
     }
