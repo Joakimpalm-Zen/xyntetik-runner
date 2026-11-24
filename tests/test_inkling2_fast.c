@@ -153,24 +153,43 @@ int main(int argc, char **argv) {
         CHECK(no_lg == NULL && h5 - h4 == 0, "(g) prefill with want_logits=false runs the head %ld row(s), want 0", h5 - h4);
         free(krows); drop(p64); drop(p8); drop(p0); drop(rk);
     }
-    // (h) Tier C prefill dispatch: a T=64 prefill takes the exact wide-batch tile (>0 columns). A T3 build has none:
-    // its canonical kernels (RUNNER_CANON_KERNELS) leave vec_dot_exact_tile_ok false, so its prefill takes the
-    // multi-column dot and the check skips, saying why (R4.48.20.4; it failed there before).
-#ifdef RUNNER_CANON_KERNELS
-    printf("ok: (h) skipped: a T3 build's canonical kernels have no exact tile (its prefill takes vec_dot_multi)\n");
-    if (vec_dot_exact_tile_ok(T_BF16, 64)) CHECK(0, "(h) a T3 build reports an exact tile it should not have");
-#else
+    // (h) Tier C prefill dispatch: a T=64 prefill takes the exact wide-batch tile (>0 columns) wherever the build has
+    // one for BF16 at the model's width. A build without one leaves vec_dot_exact_tile_ok false and its prefill takes
+    // the multi-column dot, so the check follows that capability and skips, saying why: a T3 build's canonical
+    // kernels (RUNNER_CANON_KERNELS), or a build with no SIMD kernels, such as a sanitized build with no -march
+    // (R4.48.20.4; both failed here before). A build compiled for the SIMD set quants.c keys its kernels on (AVX2 with
+    // FMA and F16C, or aarch64 NEON) and not T3 must report the tile, so the skip cannot hide a tile that went missing.
     {
+#if !defined(RUNNER_CANON_KERNELS) && ((defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)) || \
+                                       (defined(__aarch64__) && defined(__ARM_NEON)))
+        const bool simd_build = true;
+#else
+        const bool simd_build = false;
+#endif
         model_t *p64t = load(argv[2], NULL, false, 1, 64);
-        int32_t prompt64[64];
-        for (int i = 0; i < 64; i++) prompt64[i] = PROMPT[i % N_TOK];
-        const unsigned long tc0 = vec_dot_exact_tile_cols();
-        float *out64 = p64t ? model_inkling2_forward(p64t, prompt64, 64, 0, true, false) : NULL;
-        const unsigned long tc1 = vec_dot_exact_tile_cols();
-        CHECK(out64 && tc1 > tc0, "(h) T=64 BF16 prefill takes exact tile path (%lu cols, want > 0)", tc1 - tc0);
+        const int hn = p64t ? p64t->n_embd : 0;
+        if (!p64t) CHECK(0, "(h) the BF16 model did not load at -b 64");
+        else if (!vec_dot_exact_tile_ok(T_BF16, hn)) {
+            if (simd_build) CHECK(0, "(h) a SIMD build reports no BF16 exact tile at n=%d", hn);
+#ifdef RUNNER_CANON_KERNELS
+            const char *why = "a T3 build's canonical kernels have none";
+#else
+            const char *why = "no AVX2/FMA/F16C or NEON kernels in this build";
+#endif
+            printf("ok: (h) skipped: no BF16 exact tile at n=%d (%s), so the prefill takes vec_dot_multi\n", hn, why);
+        } else {
+#ifdef RUNNER_CANON_KERNELS
+            CHECK(0, "(h) a T3 build reports an exact tile it should not have");
+#endif
+            int32_t prompt64[64];
+            for (int i = 0; i < 64; i++) prompt64[i] = PROMPT[i % N_TOK];
+            const unsigned long tc0 = vec_dot_exact_tile_cols();
+            float *out64 = model_inkling2_forward(p64t, prompt64, 64, 0, true, false);
+            const unsigned long tc1 = vec_dot_exact_tile_cols();
+            CHECK(out64 && tc1 > tc0, "(h) T=64 BF16 prefill takes exact tile path (%lu cols, want > 0)", tc1 - tc0);
+        }
         drop(p64t);
     }
-#endif
     // (i) default chunk size 256 (clamped to n_ctx) and lazy r->rows allocation (only allocated on keep_all / dump)
     enum { N_SPLIT = 280 };
     int32_t split_tok[N_SPLIT];
