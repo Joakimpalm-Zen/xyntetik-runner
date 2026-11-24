@@ -5355,6 +5355,60 @@
           }
         }
       }
+    },
+    "olmo-2-0425-1b-f16": {
+      "ctx": 4096,
+      "n_predict": 600,
+      "pins": {},
+      "pending_pins": {
+        "macos-arm64-metal/cpu": {
+          "sha256": "TODO-macos-arm64-metal",
+          "path": "tests/compatibility/tier-smoke/olmo-2-0425-1b-f16.macos-arm64-metal.cpu.txt",
+          "record": "TODO-macos-arm64-metal"
+        },
+        "macos-arm64-metal/metal": {
+          "sha256": "TODO-macos-arm64-metal",
+          "path": "tests/compatibility/tier-smoke/olmo-2-0425-1b-f16.macos-arm64-metal.metal.txt",
+          "record": "TODO-macos-arm64-metal"
+        },
+        "windows-x86_64-cuda/cuda": {
+          "sha256": "TODO-windows-x86_64-cuda",
+          "path": "tests/compatibility/tier-smoke/olmo-2-0425-1b-f16.windows-x86_64-cuda.cuda.txt",
+          "record": "TODO-windows-x86_64-cuda"
+        },
+        "linux-x86_64-cuda/cpu": {
+          "sha256": "TODO-linux-x86_64-cuda",
+          "path": "tests/compatibility/tier-smoke/olmo-2-0425-1b-f16.linux-x86_64-cuda.cpu.txt",
+          "record": "TODO-linux-x86_64-cuda"
+        },
+        "linux-x86_64-cuda/cuda": {
+          "sha256": "TODO-linux-x86_64-cuda",
+          "path": "tests/compatibility/tier-smoke/olmo-2-0425-1b-f16.linux-x86_64-cuda.cuda.txt",
+          "record": "TODO-linux-x86_64-cuda"
+        }
+      }
+    },
+    "olmo-3-7b-think-q8_0": {
+      "ctx": 4096,
+      "n_predict": 600,
+      "pins": {},
+      "pending_pins": {
+        "linux-x86_64-cuda/cpu": {
+          "sha256": "TODO-linux-x86_64-cuda",
+          "path": "tests/compatibility/tier-smoke/olmo-3-7b-think-q8_0.linux-x86_64-cuda.cpu.txt",
+          "record": "TODO-linux-x86_64-cuda"
+        },
+        "linux-x86_64-cuda/cuda": {
+          "sha256": "TODO-linux-x86_64-cuda",
+          "path": "tests/compatibility/tier-smoke/olmo-3-7b-think-q8_0.linux-x86_64-cuda.cuda.txt",
+          "record": "TODO-linux-x86_64-cuda"
+        },
+        "windows-x86_64-cuda/cuda": {
+          "sha256": "TODO-windows-x86_64-cuda",
+          "path": "tests/compatibility/tier-smoke/olmo-3-7b-think-q8_0.windows-x86_64-cuda.cuda.txt",
+          "record": "TODO-windows-x86_64-cuda"
+        }
+      }
     }
   }
 }

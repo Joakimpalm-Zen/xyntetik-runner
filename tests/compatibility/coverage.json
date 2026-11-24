@@ -1672,6 +1672,29 @@
     "cuda": "UNSUPPORTED",
     "metal": "UNSUPPORTED"
    }
+  },
+  "olmo2": {
+   "templates": [
+    "olmo3",
+    "llama2-fallback"
+   ],
+   "artifacts": [
+    "olmo-2-0425-1b-f16",
+    "olmo-3-7b-think-q8_0"
+   ],
+   "tool_protocol": {
+    "status": "UNSUPPORTED",
+    "note": "OLMo 3's template renders native functions/function_calls strings and the environment role; Runner refuses modern tools/tool_calls/tool-role requests rather than translating them. OLMo 2's base file has no claimed tool protocol."
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   },
+   "note": "R4.50.6: both exact files pass the publisher float32 bar, with llama.cpp as a separate read. TODO-linux-x86_64-cuda / TODO-windows-x86_64-cuda / TODO-macos-arm64-metal: each file/backend smoke record. Native template conformance is recorded by R4.50.2 (#1020)."
   }
  }
 }

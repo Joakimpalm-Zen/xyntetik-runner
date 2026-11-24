@@ -573,6 +573,19 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
+<summary><b>OLMo 2 / OLMo 3</b>, 2 models: CPU - · CUDA - · Metal - · Train -</summary>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td colspan="5"><b>OLMo 2 0425 1B</b></td></tr>
+<tr><td><a href="#olmo-2-0425-1b-f16"><code>OLMo-2-0425-1B-F16.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td colspan="5"><b>OLMo 3 7B Think</b></td></tr>
+<tr><td><a href="#olmo-3-7b-think-q8_0"><code>Olmo-3-7B-Think-Q8_0.gguf</code></a></td><td></td><td></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td></td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
 <summary><b>Ornith 1.5</b>, 1 model: CPU ✅ · CUDA ✅ · Metal n/a · Train n/a</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
@@ -2250,6 +2263,60 @@ A plain Q8_0 of NVIDIA's Nemotron-Nano-9B-v2 (Mamba-2 hybrid), text path: 100% m
 - **LoRA training:** no: recurrent architecture (Mamba-2) (runner 1.7.1, 2026-10-29).
 - **LoRA adapter serving:** no: --lora does not cover Mamba-2 hybrid architectures yet (nemotron_h) (runner 1.7.1, 2026-10-29).
 
+### OLMo 2 / OLMo 3
+
+#### OLMo 2 0425 1B
+
+<a id="olmo-2-0425-1b-f16"></a>
+##### `OLMo-2-0425-1B-F16.gguf`
+
+Against the publisher's float32 reference Runner reads 2.3159e-04 mean KL and 100% margin-qualified top-1; llama.cpp on the same file reads 2.2777e-04 and 100%. CPU LoRA training is supported; GPU training is refused.
+
+- **File:** `OLMo-2-0425-1B-F16.gguf` (sha256 `452d42f1ac5a1d1d62a6a7c4e2c6adfe4ac279f6b4ff44c9e2ea452a0d9c6df2`, 2,973,650,560 bytes, from [allenai/OLMo-2-0425-1B-GGUF](https://huggingface.co/allenai/OLMo-2-0425-1B-GGUF) at revision `d4cd762e4f99`).
+- **Upstream checkpoint:** allenai/OLMo-2-0425-1B at revision `a1847dff3500`.
+- **Quantization:** F16.
+- **Licence:** `apache-2.0`, as the allenai/OLMo-2-0425-1B model card states it.
+- **Features claimed:** text, adapters. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Publisher's reference: allenai/OLMo-2-0425-1B at a1847dff35000b4271fa70afc5db10fd29fedbdf, float32, transformers-main 046bdb8 (5.24.0.dev0), CPU. Runner mean KL 2.3159e-04 [1.5377e-04, 3.1844e-04], plain top-1 100%, margin-qualified 100%. Second read: llama.cpp 56eea9e4 on this same GGUF and positions, mean KL 2.2777e-04 [1.5055e-04, 3.1416e-04], plain top-1 100%, margin-qualified 100%. Default KV f16, gold-corpus-2k, 2000 scored positions at stride 2, context 4096. Admission requires 100% margin-qualified top-1 and no wholly worse separated KL interval than llama.cpp. Record: docs/compat-reports/olmo2-admission-2026-11-24/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** LoRA training runs on the CPU only; --train-gpu is refused because the gradient gate needs f32 KV rows, which the GPU trainer does not keep. Compact KV CPU/Metal identity is gated below batch 8 and in decode; at wider direct-model batches fp4 KV can amplify different product sums across backends. This is not a task-quality claim. OLMo 3 refuses a non-default YaRN attn_factor and either model refuses experts.
+- **Still missing:** TODO-linux-x86_64-cuda: linked raw reference/bootstrap records; TODO-linux-x86_64-cuda / TODO-windows-x86_64-cuda / TODO-macos-arm64-metal: scheduled smoke pins and recorded backend cells. Task quality and live modern tool use are not claimed.
+- **Evidence:** [docs/compat-reports/olmo2-admission-2026-11-24/README.md](compat-reports/olmo2-admission-2026-11-24/README.md).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; no run recorded yet.
+- **CPU:** ☐ not run
+- **CUDA:** ☐ not run
+- **Metal:** ☐ not run
+- **TODO-macos-arm64-metal:** macos-arm64-metal/cpu, output pin sha256 and --record result pending; no pass is inferred.
+- **TODO-macos-arm64-metal:** macos-arm64-metal/metal, output pin sha256 and --record result pending; no pass is inferred.
+- **TODO-windows-x86_64-cuda:** windows-x86_64-cuda/cuda, output pin sha256 and --record result pending; no pass is inferred.
+- **TODO-linux-x86_64-cuda:** linux-x86_64-cuda/cpu, output pin sha256 and --record result pending; no pass is inferred.
+- **TODO-linux-x86_64-cuda:** linux-x86_64-cuda/cuda, output pin sha256 and --record result pending; no pass is inferred.
+
+#### OLMo 3 7B Think
+
+<a id="olmo-3-7b-think-q8_0"></a>
+##### `Olmo-3-7B-Think-Q8_0.gguf`
+
+The 7B file exceeds the owned 8 GB macos-arm64-metal device; Metal is a declared file/hardware limit. Against the publisher's float32 reference Runner reads 1.3671e-03 mean KL and 100% margin-qualified top-1; llama.cpp on the same file reads 9.1434e-02 and 95.77%. CPU LoRA training is supported; GPU training is refused.
+
+- **File:** `Olmo-3-7B-Think-Q8_0.gguf` (sha256 `3a4d7dda5778c299fe30bac76f5300beb283b48c6cc12b01c36c71310cefcf08`, 7,759,251,584 bytes, from [unsloth/Olmo-3-7B-Think-GGUF](https://huggingface.co/unsloth/Olmo-3-7B-Think-GGUF) at revision `1dcda0d5e447`).
+- **Upstream checkpoint:** allenai/Olmo-3-7B-Think at revision `d97e442d7cc6`.
+- **Quantization:** Q8_0.
+- **Licence:** `apache-2.0`, as the allenai/Olmo-3-7B-Think model card states it.
+- **Features claimed:** text, adapters, reasoning. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Publisher's reference: allenai/Olmo-3-7B-Think at d97e442d7cc678210054dbcc9b440894d62c89a4, BF16, upcast to float32 at use, transformers-main 046bdb8 (5.24.0.dev0), CPU. Runner mean KL 1.3671e-03 [1.1975e-03, 1.5472e-03], plain top-1 98.55%, margin-qualified 100%. Second read: llama.cpp 56eea9e4 on this same GGUF and positions, mean KL 9.1434e-02 [8.5543e-02, 9.8364e-02], plain top-1 85.25%, margin-qualified 95.77%. Default KV f16, gold-corpus-2k, 2000 scored positions at stride 2, context 4096. Admission requires 100% margin-qualified top-1 and no wholly worse separated KL interval than llama.cpp. Record: docs/compat-reports/olmo2-admission-2026-11-24/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** LoRA training runs on the CPU only; --train-gpu is refused because the gradient gate needs f32 KV rows, which the GPU trainer does not keep. Compact KV CPU/Metal identity is gated below batch 8 and in decode; at wider direct-model batches fp4 KV can amplify different product sums across backends. This is not a task-quality claim. OLMo 3 refuses a non-default YaRN attn_factor and either model refuses experts. Modern OpenAI tools, tool_calls and tool-role messages are refused by name; its native template fields are rendered without translating them into a tool protocol.
+- **Still missing:** TODO-linux-x86_64-cuda: linked raw reference/bootstrap records; TODO-linux-x86_64-cuda / TODO-windows-x86_64-cuda / TODO-macos-arm64-metal: scheduled smoke pins and recorded backend cells. Task quality and live modern tool use are not claimed.
+- **Evidence:** [docs/compat-reports/olmo2-admission-2026-11-24/README.md](compat-reports/olmo2-admission-2026-11-24/README.md).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; no run recorded yet.
+- **CPU:** ☐ not run
+- **CUDA:** ☐ not run
+- **Metal:** [n/a](../MANUAL.md#support-matrix): The measured Q8_0 file is 7.76 GB; it cannot fit with its runtime state on the owned 8 GB macos-arm64-metal device. No larger owned Metal class is recorded. This is a file/hardware limit, not a missing olmo2 Metal implementation.
+- **TODO-linux-x86_64-cuda:** linux-x86_64-cuda/cpu, output pin sha256 and --record result pending; no pass is inferred.
+- **TODO-linux-x86_64-cuda:** linux-x86_64-cuda/cuda, output pin sha256 and --record result pending; no pass is inferred.
+- **TODO-windows-x86_64-cuda:** windows-x86_64-cuda/cuda, output pin sha256 and --record result pending; no pass is inferred.
+
 ### Ornith 1.5
 
 #### Text path only: Ornith-1.5-35B-A3B (ornith-ai)
@@ -3193,5 +3260,7 @@ The record from when tiers applied (retired 2026-11-07), oldest first. Last vali
 | 2026-11-19 | [gpt-oss-20b, `gpt-oss-20b-MXFP4.gguf`](#gpt-oss-20b-mxfp4) | Tier 2, maintained on report | Measured and not admitted: the chat-frame KLD interval is wholly above 0.05; the raw-text interval straddles it. Listed as a disclosed shortfall, with no gate cells. | none recorded |
 | 2026-11-23 | [Inkling 2 Mini (Thinking Machines Lab), `Mainline_Support/Inkling-2-Mini-UD-Q8_K_XL.gguf_file`](#inkling-2-mini-ud-q8_k_xl) | Tier 2, maintained on report | Admitted with R4.48.6 on the owner's decision of 2026-11-22 to validate the community's exact file instead of building a converter: the fidelity anchor, the loader's gates and the smoke on linux-x86_64-cuda (CPU cell). | none recorded |
 | 2026-11-23 | [Inkling 2 Mini (Thinking Machines Lab), `Mainline_Support/Inkling-2-Mini-UD-Q4_K_XL.gguf_file`](#inkling-2-mini-ud-q4_k_xl) | Tier 2, maintained on report | Admitted with R4.48.6 on the owner's decision of 2026-11-22 to validate the community's exact file instead of building a converter: the fidelity anchor, the loader's gates and the smoke on linux-x86_64-cuda (CPU cell). | none recorded |
+| 2026-11-24 | [OLMo 2 0425 1B, `OLMo-2-0425-1B-F16.gguf`](#olmo-2-0425-1b-f16) | Tier 2, maintained on report | R4.50.6: publisher float32 admission bar passed on this exact file, with llama.cpp as the second read; backend smoke cells remain unrecorded until their scheduled runs. | none recorded |
+| 2026-11-24 | [OLMo 3 7B Think, `Olmo-3-7B-Think-Q8_0.gguf`](#olmo-3-7b-think-q8_0) | Tier 2, maintained on report | R4.50.6: publisher float32 admission bar passed on this exact file, with llama.cpp as the second read; backend smoke cells remain unrecorded until their scheduled runs. | none recorded |
 
 <!-- model-tiers:rows:end -->

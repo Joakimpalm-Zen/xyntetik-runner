@@ -119,9 +119,7 @@ static inline const arch_desc *arch_rows(size_t *n) {
                       "sigmoid routing with shared experts) is not checked yet" },
         { .name = "mistral3", .id = ARCH_MISTRAL3 },
         // OLMo 2 / OLMo 3 (R4.50): CPU (R4.50.1), Metal (R4.50.4) and CUDA (R4.50.5)
-        { .name = "olmo2", .id = ARCH_OLMO2, .rope_neox = true,
-          .pending = "its forward matches the publisher's equations on a generated file; the "
-                     "publisher's float32 reference on a real file is pending (R4.50.6)" },
+        { .name = "olmo2", .id = ARCH_OLMO2, .rope_neox = true },
         // CUDA runs both forms (R4.4.5 c1 naive, c2 absorbed)
         { .name = "inkling2_loop", .id = ARCH_INKLING2_LOOP,
           .cpu_only = "Inkling 2 Mini runs on its own serial float32 engine "

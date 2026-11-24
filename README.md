@@ -401,6 +401,10 @@ names, and the page records when each file last passed and with which Runner.
 
 [The validated files by family, what each row claims, every file's full envelope and how to run the check](docs/model-support.md#overview)
 
+OLMo 2 and OLMo 3 run on the CPU, Metal and CUDA, with LoRA training on the
+CPU. GPU training is refused; compact KV caches have a cross-backend limit.
+[The files and their measurements](docs/model-support.md#olmo-2-0425-1b-f16) · [Limits](MANUAL.md#olmo-2-and-olmo-3)
+
 <a id="more"></a>
 ## Also in the box
 
@@ -452,7 +456,7 @@ names, and the page records when each file last passed and with which Runner.
   a [Python client](python/README.md) and a
   [TypeScript client](clients/typescript/README.md).
   [Container](MANUAL.md#container-image)
-- **What loads.** 29 admitted architecture labels and 24 weight formats, verified on
+- **What loads.** 30 admitted architecture labels and 24 weight formats, verified on
   download with `-hf`. [Support matrix](MANUAL.md#support-matrix)
 - **How Runner compares.** Closer to the publisher's reference than
   llama.cpp on 20 of 23 measured rows, and level or ahead on the reference's

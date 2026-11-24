@@ -3118,6 +3118,34 @@
           ]
         }
       }
+    },
+    {
+      "id": "olmo-2-0425-1b-f16",
+      "architecture": "olmo2",
+      "family": "OLMo 2 / OLMo 3",
+      "file": "models/OLMo-2-0425-1B-F16.gguf",
+      "sha256": "452d42f1ac5a1d1d62a6a7c4e2c6adfe4ac279f6b4ff44c9e2ea452a0d9c6df2",
+      "upstream": "allenai/OLMo-2-0425-1B-GGUF",
+      "tokenizer_reference": "allenai/OLMo-2-0425-1B",
+      "tokenizer_reference_revision": "a1847dff35000b4271fa70afc5db10fd29fedbdf",
+      "checks": [
+        "load"
+      ],
+      "notes": "Publisher's reference: allenai/OLMo-2-0425-1B at a1847dff35000b4271fa70afc5db10fd29fedbdf, float32, transformers-main 046bdb8 (5.24.0.dev0), CPU. Runner mean KL 2.3159e-04 [1.5377e-04, 3.1844e-04], plain top-1 100%, margin-qualified 100%. Second read: llama.cpp 56eea9e4 on this same GGUF and positions, mean KL 2.2777e-04 [1.5055e-04, 3.1416e-04], plain top-1 100%, margin-qualified 100%. Default KV f16, gold-corpus-2k, 2000 scored positions at stride 2, context 4096. Admission requires 100% margin-qualified top-1 and no wholly worse separated KL interval than llama.cpp. Record: docs/compat-reports/olmo2-admission-2026-11-24/README.md. TODO-linux-x86_64-cuda: import final real-file tokenizer/backend records before adding corresponding compatibility checks."
+    },
+    {
+      "id": "olmo-3-7b-think-q8_0",
+      "architecture": "olmo2",
+      "family": "OLMo 2 / OLMo 3",
+      "file": "models/Olmo-3-7B-Think-Q8_0.gguf",
+      "sha256": "3a4d7dda5778c299fe30bac76f5300beb283b48c6cc12b01c36c71310cefcf08",
+      "upstream": "unsloth/Olmo-3-7B-Think-GGUF",
+      "tokenizer_reference": "allenai/Olmo-3-7B-Think",
+      "tokenizer_reference_revision": "d97e442d7cc678210054dbcc9b440894d62c89a4",
+      "checks": [
+        "load"
+      ],
+      "notes": "Publisher's reference: allenai/Olmo-3-7B-Think at d97e442d7cc678210054dbcc9b440894d62c89a4, BF16, upcast to float32 at use, transformers-main 046bdb8 (5.24.0.dev0), CPU. Runner mean KL 1.3671e-03 [1.1975e-03, 1.5472e-03], plain top-1 98.55%, margin-qualified 100%. Second read: llama.cpp 56eea9e4 on this same GGUF and positions, mean KL 9.1434e-02 [8.5543e-02, 9.8364e-02], plain top-1 85.25%, margin-qualified 95.77%. Default KV f16, gold-corpus-2k, 2000 scored positions at stride 2, context 4096. Admission requires 100% margin-qualified top-1 and no wholly worse separated KL interval than llama.cpp. Record: docs/compat-reports/olmo2-admission-2026-11-24/README.md. TODO-linux-x86_64-cuda: import final real-file tokenizer/backend records before adding corresponding compatibility checks."
     }
   ]
 }
