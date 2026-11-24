@@ -1536,6 +1536,9 @@ static int pfx_read_one(const engine *e, const char *path, int32_t **toks_out,
         !rd(f, &bytes, sizeof bytes) || n < 1 ||
         bytes == 0 || bytes > (uint64_t)1 << 40)
         goto out;
+    // Defensive for direct C callers (prefix_context_import / prefix_slot_import):
+    // kvsnap's chain-verified manifest check refuses snap_n >= e->m->n_ctx first,
+    // so this branch is unreachable through kvsnap.
     if (n >= e->m->n_ctx) {
         rc = (key == e->model_key || key == e->model_key_prior)
            ? PFX_CTX_MISMATCH : PFX_CTX_CORRUPT;

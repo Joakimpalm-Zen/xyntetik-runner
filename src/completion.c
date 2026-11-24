@@ -4395,7 +4395,7 @@ static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api
         else {
             char msg[128];
             snprintf(msg, sizeof msg,
-                     "prompt exceeds context window (%d tokens; the context holds %d)",
+                     "prompt does not fit the context window with room to generate (%d tokens; the context holds %d)",
                      n_prompt, m->n_ctx);
             send_error_detail(fd, 400, msg,
                               api == API_TEXT ? "prompt" :

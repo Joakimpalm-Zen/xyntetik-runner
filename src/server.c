@@ -1971,11 +1971,13 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
             free(toks);
             err_code = 400;
             if (n == 0) err_msg = "empty input";
-            else {
+            else if (n > m->n_ctx) {
                 snprintf(err_buf, sizeof err_buf,
                          "input exceeds context window (%d tokens; the context holds %d)",
                          n, m->n_ctx);
                 err_msg = err_buf;
+            } else {
+                err_msg = "input exceeds context window";
             }
             ok = false;
             break;

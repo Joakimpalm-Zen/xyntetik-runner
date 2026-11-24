@@ -445,6 +445,34 @@ def test_context_overflow_names_token_count_and_context(client, path, payload, p
     assert n_ctx == 1024 and n_tok > n_ctx, (n_tok, n_ctx, err)
 
 
+def test_context_equality_refusal_does_not_say_exceeds(client):
+    """R19.16.1: a prompt of exactly n_ctx tokens has no room to generate; the
+    400 names both equal counts without contradicting itself by saying 'exceeds'."""
+    def _count(text):
+        body = {"model": "test", "max_tokens": 1,
+                "messages": [{"role": "user", "content": text}]}
+        toks = client.count_tokens(body, name="count-eq").expect_status(200).json["input_tokens"]
+        return toks, body
+
+    lo, hi = 1, 1024
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if _count("a " * mid)[0] < 1024:
+            lo = mid + 1
+        else:
+            hi = mid
+    toks, body = _count("a " * lo)
+    if toks != 1024:
+        toks, body = _count("a " * (lo - 1) + "a")
+    assert toks == 1024, toks
+    r = client.raw("overflow-equality-messages", "POST", "/v1/messages", body)
+    r.expect_status(400)
+    err = r.expect_error_envelope("context")
+    assert err["param"] == "messages" and err["code"] == "context_length_exceeded"
+    assert "(1024 tokens; the context holds 1024)" in err["message"], err
+    assert "exceeds" not in err["message"], err
+
+
 # --------------------------------------------------- accepted-then-ignored
 #
 # The class this file exists for, found again by a full-tree sweep on
