@@ -1,4 +1,4 @@
-"""Named contexts on a recurrent model on the device: pinned on CUDA, still refused on Metal (R4.48.22).
+"""Named contexts on a recurrent model on the device, CUDA or Metal (R4.48.22, R4.48.22.2).
 
 A context pin (POST /v1/runner/contexts) and its import from a snapshot refused a recurrent model on a device
 (qwen35 and qwen4exp, granite hybrid and nemotron-H on CUDA) since 2026-10-02, when the shared prefix tier could not
@@ -6,19 +6,20 @@ fork a device-resident fold. Since R4.26.7 the automatic tier forks one: model_r
 layers' fold through the host buffers and model_recurrent_blob_load pushes it back, so a pin refused what the tier
 already served. No test held the automatic tier's device fork either; this one does.
 
-On CUDA the anchors, per family, every server on CUDA (its log says so, and RUNNER_GPU_FALLBACK=fail makes a fall to
-the CPU an error):
+The anchors, per family, every server on the device (its log says so, and RUNNER_GPU_FALLBACK=fail makes a fall to the
+CPU an error):
 - the automatic tier: a prompt P, then P + a question, forks P (prompt_reuse prefix_cache, P's tokens cached);
 - a pin of P and a request naming it gives the automatic fork's tokens and logprobs bit for bit (both load the same
   snapshot, KV rows and fold, and feed the same question), and the text of a cold prefill of the same prompt (its
   logprobs to 1e-5: the cold prompt runs the question at another batch width);
 - the pin exported to a snapshot file and imported into a new process gives the pin's bits again, every family
   (qwen4exp too since R4.48.22.1: a fold load rebuilds its PLE n-gram token history from the forked tokens).
-On the Metal backend a recurrent model's pin and import stay refused (409 context_unsupported, the message naming the
-Metal backend): measured on an arm64 Mac, the pin's own prefill rounds differently from a completion's there for
-nemotron-H (its pinned fork 4.7e-7 from the automatic fork) and lfm2 (3.5e-3 from a cold prefill), while the snapshot
-round trip itself is exact. The Metal case holds the automatic tier's device fork, the pin's refusal and an import's
-refusal (a snapshot pinned on the CPU, imported on Metal), for every recurrent family that runs on Metal.
+The pin prefills its prompt in the shape a completion's prefill builds every recurrent fold in, the prompt but its last
+token, then the last token alone (engine_feed_prompt, R4.48.22.2), so a pinned context is the automatic tier's state
+on every backend by construction. Before, the pin fed one batch: equal on the CPU and CUDA, but on the Metal backend
+prefill chunks of 4 or more take the tiled GEMM, a tolerance class against the decode matvec by design (src/metal.m
+enc_mv_n), and the pin answered differently from the automatic fork (nemotron-H 4.7e-7 in its logprobs, lfm2 more).
+The cold prefill runs the whole prompt as one batch, so on Metal it is held to that backend's measured class (COLD_TOL).
 Where a family runs is the backend's: lfm2's short convolution runs on the CPU under CUDA (arch.h cpu_only_nonmetal)
 but on the device under Metal, as its --wide fixture quantized to Q4_K (the shape the Apple GPU path takes, R3.42), so
 lfm2 is a case on Metal only; qwen4exp is not on the Metal backend yet (its load says so and runs it on the CPU), so
@@ -57,6 +58,17 @@ FAMILIES = [
 # short convolution is the CPU's (arch.h cpu_only_nonmetal)
 HOST_LINE = {("qwen4exp", "metal"): "(qwen4exp) is not on the metal backend yet"}
 HOST_SKIP = {("lfm2", "cuda"): "lfm2's short convolution runs on the CPU under CUDA (arch.h cpu_only_nonmetal)"}
+# a cold prefill's logprobs against the pinned fork's. On CUDA 1e-5 (the question at another batch width). On the
+# Metal backend the cold prompt's one batch takes the tiled prefill GEMM where the fork's last rows take the matvec, a
+# tolerance class by design (src/metal.m enc_mv_n). The house holds that class over teacher-forced logits
+# (tests/test_tc_tol.c:58-60: top-1 agreement with a near-tie escape, mean |dlogit| <= 0.005 of the mean logit range,
+# which reaches Metal's GEMM through gpu_tc_force), a quantity this test does not observe. So here its first gate is
+# held as the text (top-1 at every generated position, equal), and the logprobs by a stated rule: 2x the worst gap
+# measured over 5 repeated runs on an arm64 Mac, per weight type (every run gave the same values): F32 fixtures 6.67e-6
+# (nemotron-H; qwen35 1.9e-6, granite hybrid 0), lfm2's Q4_K 3.49045e-3 (its activation tile staged at half).
+METAL_COLD_WORST = {"f32": 6.67e-6, "q4_k": 3.49045e-3}
+COLD_TOL = {"cuda": 1e-5, "metal": 2 * METAL_COLD_WORST["f32"]}
+COLD_TOL_FAMILY = {("lfm2", "metal"): 2 * METAL_COLD_WORST["q4_k"]}
 
 
 def _backend(runner_bin):
@@ -110,10 +122,6 @@ def _serve(runner_bin, model, log, *extra):
                         extra_args=["--gpu", "99", "-t", "2", *extra])
 
 
-def _serve_cpu(runner_bin, model, log, *extra):
-    return RunnerServer(runner_bin, model, ctx=512, log_path=str(log), extra_args=["--gpu", "off", "-t", "2", *extra])
-
-
 def _complete(srv, prompt, **extra):
     st, b = _req(srv, "POST", "/v1/completions", {
         "prompt": prompt, "max_tokens": 6, "temperature": 0, "logprobs": 2, **extra})
@@ -136,34 +144,6 @@ def _on_device(log, backend):
         assert bad not in text, text[-1500:]
 
 
-def _metal_refuses(runner_bin, model, name, tmp_path):
-    """Metal: the automatic tier forks on the device; a pin and an import are refused with the Metal case named."""
-    prompt, logs = SYS + QUESTION, []
-    logs.append(tmp_path / "auto.log")
-    with _serve(runner_bin, model, logs[-1]) as srv:
-        _complete(srv, SYS)
-        auto = _complete(srv, prompt)
-        st, pin = _req(srv, "POST", "/v1/runner/contexts", {"id": "inv-sys", "prompt": SYS})
-    tel = auto["runner_telemetry"]
-    assert tel["prompt_reuse"] == "prefix_cache" and tel["prompt_cached_tokens"] > 16, (name, tel)
-    assert st == 409 and pin["error"]["code"] == "context_unsupported", (name, st, pin)
-    assert "Metal backend" in pin["error"]["message"] and "--gpu off" in pin["error"]["message"], (name, pin)
-    # a snapshot pinned on the CPU (where the pin is served), then imported on Metal: refused the same way
-    snaps = tmp_path / "snaps"
-    with _serve_cpu(runner_bin, model, tmp_path / "cpu.log", "--kv-snapshots", str(snaps)) as srv:
-        st, cp = _req(srv, "POST", "/v1/runner/contexts", {"id": "inv-sys", "prompt": SYS})
-        assert st == 200, (name, st, cp)
-        st, snap = _req(srv, "POST", "/v1/runner/contexts/inv-sys/snapshot", {})
-        assert st == 200, (name, st, snap)
-    logs.append(tmp_path / "import.log")
-    with _serve(runner_bin, model, logs[-1], "--kv-snapshots", str(snaps)) as srv:
-        st, loaded = _req(srv, "POST", "/v1/runner/contexts", {"id": "inv-sys2", "snapshot": "inv-sys"})
-    assert st == 409 and loaded["error"]["code"] == "context_unsupported", (name, st, loaded)
-    assert "Metal backend" in loaded["error"]["message"], (name, loaded)
-    for log in logs:
-        _on_device(log, "metal")
-
-
 @pytest.mark.parametrize("name", [f[0] for f in FAMILIES])
 def test_a_pinned_context_on_the_device_forks_as_the_automatic_tier_does(runner_bin, backend, models, name, tmp_path):
     model, prompt, logs = models[name], SYS + QUESTION, []
@@ -175,9 +155,6 @@ def test_a_pinned_context_on_the_device_forks_as_the_automatic_tier_does(runner_
             pass
         assert HOST_LINE[(name, backend)] in log.read_text(errors="replace"), log.read_text(errors="replace")[-1500:]
         pytest.skip(f"{name} runs on the CPU under {backend} (its load says so): not a device fold there")
-    if backend == "metal":
-        _metal_refuses(runner_bin, model, name, tmp_path)
-        return
     # the automatic tier: P is published whole after its prefill, then P + the question is an exact full-prefix hit
     logs.append(tmp_path / "auto.log")
     with _serve(runner_bin, model, logs[-1]) as srv:
@@ -210,7 +187,8 @@ def test_a_pinned_context_on_the_device_forks_as_the_automatic_tier_does(runner_
     assert tel["prompt_cached_tokens"] == n and tel["prompt_reuse"] == "prefix_cache", (name, tel)
     assert _ans(warm) == _ans(auto), (name, _ans(warm), _ans(auto))
     assert _ans(warm)[0] == _ans(cold)[0], (name, _ans(warm), _ans(cold))
-    assert _ans(warm)[1] == pytest.approx(_ans(cold)[1], abs=1e-5), (name, _ans(warm), _ans(cold))
+    tol = COLD_TOL_FAMILY.get((name, backend), COLD_TOL[backend])
+    assert _ans(warm)[1] == pytest.approx(_ans(cold)[1], abs=tol), (name, tol, _ans(warm), _ans(cold))
     # the snapshot imported into a new process, on the device
     logs.append(tmp_path / "import.log")
     with _serve(runner_bin, model, logs[-1], "--kv-snapshots", str(snaps)) as srv:

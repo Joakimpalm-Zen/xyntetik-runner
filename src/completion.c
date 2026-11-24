@@ -5271,9 +5271,6 @@ static float *turn_prefill(turn_result *t) {
     // Inside the device turn: on CUDA the mark reads device-resident state.
     // Attention-only models mark nothing and take the single feed.
     float *logits = NULL;
-    int last = prep->n_prompt - 1;
-    bool at_anchor = prep->anchor >= t->keep && prep->anchor < last;
-    int mark_at = at_anchor ? prep->anchor : last;
     if (score_prompt) {
         g->ptoks = malloc(sizeof(int32_t) * (size_t)prep->n_prompt);
         int top_n = q->plp > q->lp_n ? q->plp : q->lp_n;
@@ -5282,14 +5279,8 @@ static float *turn_prefill(turn_result *t) {
             logits = engine_score_prompt(e, prep->toks, prep->n_prompt, top_n, &g->ps);
         }
     } else if (q->cache_prompt && prep->n_prompt > 1 && model_has_recurrent(e->m)) {
-        bool ok = mark_at == t->keep ||   // resumed at the mark: nothing before it to feed
-                  engine_feed(e, prep->toks + t->keep, mark_at - t->keep) != NULL;
-        if (ok && at_anchor) engine_mark_anchor(e);
-        else if (ok) engine_mark_turn(e);
-        // the generation prompt, up to its last token
-        if (ok && mark_at < last)
-            ok = engine_feed(e, prep->toks + mark_at, last - mark_at) != NULL;
-        if (ok) logits = engine_feed(e, prep->toks + last, 1);
+        // the shape a pinned context's prefill takes too (engine_feed_prompt, R4.48.22.2)
+        logits = engine_feed_prompt(e, prep->toks, t->keep, prep->n_prompt, prep->anchor);
     } else {
         logits = engine_feed(e, prep->toks + t->keep, prep->n_prompt - t->keep);
     }

@@ -5185,8 +5185,8 @@ CUDA_GATED_TESTS = tests/test_apertus.py tests/test_gpu_declines.py tests/test_a
 # test_moe_limb_default.py holds moe-limb's selection as the default for
 # gemma-4's Q4_0 experts (R3.83): every case needs a CUDA device.
 # test_recurrent_device_contexts.py pins, forks and imports a recurrent
-# model's named context on CUDA, and holds the pin's and the import's refusal
-# on the Metal backend (R4.48.22): every case needs a CUDA or Metal device.
+# model's named context on CUDA and on the Metal backend (R4.48.22,
+# R4.48.22.2): every case needs a CUDA or Metal device.
 # test_phi3_rope.py serves a phi3 LongRoPE sequence across its original
 # context on the device (R4.40.2); its GPU case must not skip on a CUDA host.
 # test_qwen35_kv_rows.py holds every partial CUDA split of the hybrid fixtures

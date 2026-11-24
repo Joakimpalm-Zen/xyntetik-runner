@@ -534,6 +534,10 @@ bool   engine_mark_turn(engine *e);
 // the fold reset on every turn. The engine only remembers that the mark is
 // such an anchor, for the telemetry's word (REWIND_ANCHOR).
 bool   engine_mark_anchor(engine *e);
+// A recurrent model's prompt prefill, for a completion and a pinned context alike (R4.48.22.2): toks [keep, n) fed
+// as [keep, mark_at), the mark, [mark_at, n - 1), then the last token alone, mark_at the anchor when it lies in
+// [keep, n - 1) and n - 1 otherwise (anchor < 0: none). n >= 2, 0 <= keep < n. The last token's logits, or NULL.
+float *engine_feed_prompt(engine *e, const int32_t *toks, int keep, int n, int anchor);
 // The request's own stop ids (engine.req_stop_ids): up to 8, replaced whole;
 // n = 0 clears them.
 void   engine_set_request_stops(engine *e, const int *ids, int n);
@@ -742,10 +746,6 @@ bool prefix_context_name_ok(const char *name);
 // Pin the KV the slot holds for toks[0, n) (e->pos must be n, e->hist toks)
 // under `name`, replacing a context of that name. Returns n or a PFX_CTX_*.
 int  prefix_context_pin(engine *e, const char *name, const int32_t *toks, int n);
-// A recurrent model on the Metal backend: its pin and import are refused
-// (PFX_CTX_UNSUPPORTED; R4.48.22, why at the definition). For the refusal's
-// message.
-bool prefix_context_metal_recurrent(const model_t *m);
 // Does context `name` (for e's model) strictly prefix toks[0, n)? Returns its
 // token count, or PFX_CTX_UNKNOWN / PFX_CTX_MISMATCH (*at = the first token
 // that differs) / PFX_CTX_BADNAME.
