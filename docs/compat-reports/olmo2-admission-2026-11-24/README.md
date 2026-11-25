@@ -69,7 +69,7 @@ R4.50.10 (#1029) supplies the native `olmo2` chat template: 16 of 16 cases
 match the publisher and file in text and tokens. The two gates are separate:
 the raw forward's float32 bar does not certify chat rendering. Template
 conformance and the Instruct file's own bar both passed before this row
-replaced the base file. The class/backend outcomes are recorded below; the four Linux comparisons remain pending.
+replaced the base file. All eight class/backend comparisons passed; the roster shows the latest record per backend, as described below.
 
 ## Base 1B: separate numerical evidence
 
@@ -131,22 +131,24 @@ Both linux-x86_64-cuda pin and comparison commands use `taskset -c 0-15`.
 The smoke supplies no thread-count flag, so its default counts that same
 affinity mask on both runs. Other device classes record their own pins.
 
-## Pending backend recordings
+## Backend comparison record
 
-Each entry below needs a real `scripts/tier-smoke.py --pin`, followed by its
-comparison run with `--record`. Pinning alone records no gate. The pin's
-output SHA256 and each gate/adapter answer must come from those commands.
+Each passed entry below has its own pin and a real clean-rebuild
+`scripts/tier-smoke.py --record` comparison. Pinning alone wrote no gate.
+The roster keeps one latest cell per backend, replacing earlier class
+records; this table preserves all eight class/backend outcomes. Every
+class's pin remains in the manifest.
 
 | Row | Device class / backend | State |
 |---|---|---|
-| olmo-2-0425-1b-instruct-f16 | macos-arm64-metal / cpu | Pass: unchanged request after RAM was freed, own pin and clean-rebuild comparison |
+| olmo-2-0425-1b-instruct-f16 | macos-arm64-metal / cpu | Pass: unchanged request after RAM was freed; historical class run, superseded by latest Linux CPU cell |
 | olmo-2-0425-1b-instruct-f16 | macos-arm64-metal / metal | Pass: exact pin comparison, 2026-11-25, clean build d00dbcdd |
-| olmo-2-0425-1b-instruct-f16 | windows-x86_64-cuda / cuda | Pass: clean release-recipe ed21a886 comparison on an sm_120 GPU |
-| olmo-2-0425-1b-instruct-f16 | linux-x86_64-cuda / cpu | Release-recipe pin committed; --record comparison pending |
-| olmo-2-0425-1b-instruct-f16 | linux-x86_64-cuda / cuda | Release-recipe pin committed; --record comparison pending |
-| olmo-3-7b-think-q8_0 | linux-x86_64-cuda / cpu | Release-recipe pin committed; --record comparison pending |
-| olmo-3-7b-think-q8_0 | linux-x86_64-cuda / cuda | Release-recipe pin committed; --record comparison pending |
-| olmo-3-7b-think-q8_0 | windows-x86_64-cuda / cuda | Pass: clean release-recipe ed21a886 comparison on an sm_120 GPU |
+| olmo-2-0425-1b-instruct-f16 | windows-x86_64-cuda / cuda | Pass: clean release-recipe ed21a886 comparison on an sm_120 GPU; historical class run, superseded by latest Linux CUDA cell |
+| olmo-2-0425-1b-instruct-f16 | linux-x86_64-cuda / cpu | Pass: clean release-recipe 4020cee5 comparison; latest cpu cell |
+| olmo-2-0425-1b-instruct-f16 | linux-x86_64-cuda / cuda | Pass: clean release-recipe 4020cee5 comparison; latest cuda cell |
+| olmo-3-7b-think-q8_0 | linux-x86_64-cuda / cpu | Pass: clean release-recipe 4020cee5 comparison; latest cpu cell |
+| olmo-3-7b-think-q8_0 | linux-x86_64-cuda / cuda | Pass: clean release-recipe 4020cee5 comparison; latest cuda cell |
+| olmo-3-7b-think-q8_0 | windows-x86_64-cuda / cuda | Pass: clean release-recipe ed21a886 comparison on an sm_120 GPU; historical class run, superseded by latest Linux CUDA cell |
 | olmo-3-7b-think-q8_0 | macos-arm64-metal / metal | Limit: the file plus runtime state does not fit the owned 8 GB macos-arm64-metal device |
 
 ### macos-arm64-metal recording, 2026-11-25
@@ -180,7 +182,7 @@ and length rules. After committing that pin as `fb0be48b`, a clean
 STRICT build matched its bytes and the tool wrote the CPU pass. The earlier
 timeout remains disclosed; no Metal result was inherited.
 
-### Release-recipe x86 pins, comparisons pending
+### Release-recipe x86 pins and comparisons
 
 The six x86 pins were made from clean STRICT `0bbdda0a` builds using the
 release recipe, `PATH=$PWD/tools/release-make:$PATH make` (`-march=x86-64-v3`).
@@ -205,17 +207,18 @@ on all supplied backends. Think 7B's content is 1,173 bytes, finish stop at
 `89360cee1c4ce4b6c2bc9e077edc171c54dd175125535ff235e4aca967f383f7`.
 Its two-space Markdown line breaks are part of those bytes and are retained.
 
-These are pins only: no x86 comparison pass is inferred or entered. The
-six release-recipe `--record` runs follow a clean rebuild at the pin commit.
-The existing macos-arm64-metal CPU and Metal cells remain unchanged.
+The six release-recipe comparisons are now complete, each from a clean
+rebuild. No pass was inferred from pinning. The later Linux records replace
+the earlier CPU/CUDA cells; the earlier successful class runs and every pin
+are retained as evidence. The Metal cell remains the macos-arm64-metal run.
 
 ### Merged tensor-core default
 
 R4.50.9 (#1026) merged in `76be6540`: CUDA Q8_0 tensor-core prefill is now
 on by default; other olmo2 quant types stay scalar until measured. The six
 x86 pins retain their actual clean `0bbdda0a` build provenance, before that
-promotion. The upcoming CUDA Q8_0 comparisons use the merged default and
-report any byte mismatch; they do not force the prior scalar route. The
+promotion. The completed CUDA Q8_0 comparisons used the merged default and matched
+their pins; the prior scalar route was not forced. The
 measured promotion bar and its limits are in the
 [tensor-core evidence](../../tc-promotion-evidence.md#olmo2-q8_0-r4509-2026-11-24).
 
@@ -234,4 +237,25 @@ therefore does not establish that TC prefill ran or that its bytes match the
 scalar path. The prefill may have stayed below the route's column threshold;
 that explanation is plausible, not established by this smoke. The measured
 TC accuracy and speed gates remain separate. Four Linux comparisons are
-still pending.
+now complete.
+
+### Latest Linux release-recipe records
+
+All four linux-x86_64-cuda comparisons on clean STRICT `4020cee5`, binary
+SHA256 prefix `5b294f6c` (GCC 13.3.0), matched their own release-recipe pins.
+The runs retained `taskset -c 0-15` and the merged Q8_0 default, with no
+TC force-off. The Instruct 1B output is `5ede6527`, 1,476 bytes; Think 7B
+is `89360cee`, 1,173 content bytes. The tool recorded all four passes.
+
+The tool assigns one cell per backend. These runs therefore replace the
+Instruct CPU cell previously recorded on macos-arm64-metal and the two CUDA
+cells previously recorded on windows-x86_64-cuda, while filling Think 7B's
+previously empty CPU cell. The current CPU/CUDA marks name Linux, not those
+earlier classes. Metal is unchanged. The captured GPU-name fields remain
+exactly as the tool wrote them; our hardware description is an sm_120 GPU
+for the CUDA runs. Pins for all eight class/backend runs remain committed.
+
+The short-prompt smoke still supplies no route trace or TC dispatch counter;
+its matches are reply-reproducibility results, not TC-prefill byte-identity
+evidence. The separate measured TC promotion gates establish that route's
+declared tolerance and speed envelope.

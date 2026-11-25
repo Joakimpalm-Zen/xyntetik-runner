@@ -395,9 +395,9 @@ On the CPU with `-b 1` the sampler and the trainer agree bit for bit:
 ## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Actively validated models
 
 Runner keeps loading every model the [support matrix](MANUAL.md#support-matrix)
-admits; the files linked below are the ones it validates, each with one greedy
-prompt compared byte for byte against a pinned output on the device the file
-names, and the page records when each file last passed and with which Runner.
+admits; the validated files below compare a greedy reply byte for byte with
+its class-specific pin. Each backend's latest mark names the actual device
+class, date and Runner version; earlier class runs stay in the evidence.
 
 [The validated files by family, what each row claims, every file's full envelope and how to run the check](docs/model-support.md#overview)
 

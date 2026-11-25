@@ -10413,31 +10413,31 @@
         "evidence": [
           "docs/compat-reports/olmo2-admission-2026-11-24/README.md"
         ],
-        "missing": "TODO-linux-x86_64-cuda: linked raw reference/bootstrap records; The four linux-x86_64-cuda CPU/CUDA release-recipe comparisons and recorded cells remain pending. Task quality and live modern tool use are not claimed."
+        "missing": "TODO-linux-x86_64-cuda: linked raw reference/bootstrap archives. All scheduled class/backend smoke comparisons passed. Task quality and live modern tool use are not claimed."
       },
       "backends": {
         "cpu": {
           "kind": "gate",
           "runner_version": "1.21.0",
           "date": "2026-11-25",
-          "device_class": "macos-arm64-metal",
+          "device_class": "linux-x86_64-cuda",
           "result": "pass",
-          "commit": "fb0be48b3ae0ecb98ac4b3638d42e44b46874dd0",
+          "commit": "4020cee507f616c7015ba97fe40def05418f7a7f",
           "caps": {
             "version": "1.21.0",
-            "os": "macos",
-            "arch": "arm64",
-            "cpu_cores": 8,
-            "gpu_backend": "metal",
-            "gpu_name": "Apple M1"
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 16,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
           },
           "output_sha256": "5ede65273868fbf74071f9b8becf9af6c68c5bc4f08234db125fb8d7e820ae96",
           "ran": "runner -m OLMo-2-0425-1B-Instruct-F16.gguf --serve -c 4096 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=600 stream=false",
-          "evidence": "tests/compatibility/tier-smoke/olmo-2-0425-1b-instruct-f16.macos-arm64-metal.cpu.txt",
+          "evidence": "tests/compatibility/tier-smoke/olmo-2-0425-1b-instruct-f16.linux-x86_64-cuda.cpu.txt",
           "build": {
-            "binary_sha256": "66a17e6461b27ae4a86d8627ba1a7fbf0ef0a26178ad4bdc3e778a89dbe30edc",
-            "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
-            "commit": "fb0be48b3ae0ecb98ac4b3638d42e44b46874dd0",
+            "binary_sha256": "5b294f6c90d1ad3fdb757e1057abefcdea7d90f3987b2917bdc02141608515e6",
+            "compiler": "13.3.0",
+            "commit": "4020cee507f616c7015ba97fe40def05418f7a7f",
             "dirty": false
           }
         },
@@ -10445,24 +10445,24 @@
           "kind": "gate",
           "runner_version": "1.21.0",
           "date": "2026-11-25",
-          "device_class": "windows-x86_64-cuda",
+          "device_class": "linux-x86_64-cuda",
           "result": "pass",
-          "commit": "ed21a886220d6ba1a4c4e198408a3290870d1100",
+          "commit": "4020cee507f616c7015ba97fe40def05418f7a7f",
           "caps": {
             "version": "1.21.0",
-            "os": "windows",
+            "os": "linux",
             "arch": "x86_64",
             "cpu_cores": 16,
             "gpu_backend": "cuda",
-            "gpu_name": "NVIDIA GeForce RTX 5070"
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
           },
           "output_sha256": "5ede65273868fbf74071f9b8becf9af6c68c5bc4f08234db125fb8d7e820ae96",
           "ran": "runner -m OLMo-2-0425-1B-Instruct-F16.gguf --serve -c 4096 -b 64; POST /v1/chat/completions temperature=0 max_tokens=600 stream=false",
-          "evidence": "tests/compatibility/tier-smoke/olmo-2-0425-1b-instruct-f16.windows-x86_64-cuda.cuda.txt",
+          "evidence": "tests/compatibility/tier-smoke/olmo-2-0425-1b-instruct-f16.linux-x86_64-cuda.cuda.txt",
           "build": {
-            "binary_sha256": "40d68bbfae0fb0d5e87285452858f570ddee9553ae83e667cb7a72145989dbae",
-            "compiler": "16.2.0",
-            "commit": "ed21a886220d6ba1a4c4e198408a3290870d1100",
+            "binary_sha256": "5b294f6c90d1ad3fdb757e1057abefcdea7d90f3987b2917bdc02141608515e6",
+            "compiler": "13.3.0",
+            "commit": "4020cee507f616c7015ba97fe40def05418f7a7f",
             "dirty": false
           }
         },
@@ -10506,10 +10506,9 @@
       },
       "measurements": [
         "**CPU attempt (macos-arm64-metal, 2026-11-25):** the unchanged 1,800-second request timed out under paging after 324 generated tokens at 0.2 tok/s and 50,540,623 page-ins. The loader reported 3.0 GB of weights against 1.5 GB available RAM. No CPU pin, comparison or cell was produced; the Metal result is not inherited.",
-        "**Comparison pending (linux-x86_64-cuda/cpu):** the release-recipe pin is committed; the clean-rebuild --record comparison has not run. Pinning alone is not validation.",
-        "**Comparison pending (linux-x86_64-cuda/cuda):** the release-recipe pin is committed; the clean-rebuild --record comparison has not run. Pinning alone is not validation.",
         "**CPU retry (macos-arm64-metal):** after RAM was freed, the unchanged request passed its own pin and clean-rebuild byte comparison. Earlier timeout evidence remains separate. System-wide memory free percentage: 57% Free + inactive before the pin: 138399 pages of 16384 bytes.",
-        "**Windows comparison (windows-x86_64-cuda):** the clean release-recipe ed21a886 build on an sm_120 GPU reproduced this file's committed reply bytes, and the tool recorded pass. The smoke stores no route trace; this is not TC-prefill byte-identity evidence."
+        "**Earlier Windows comparison (windows-x86_64-cuda):** the clean release-recipe ed21a886 build on an sm_120 GPU reproduced this file's committed reply bytes, and the tool recorded pass. The smoke stores no route trace; this is not TC-prefill byte-identity evidence. The current CUDA cell is the later linux-x86_64-cuda record.",
+        "**Latest CPU/CUDA records (linux-x86_64-cuda):** both release-recipe comparisons on clean 4020cee5 matched their own pins under taskset -c 0-15, with no TC force-off. The roster stores one latest record per backend; earlier class pins remain in the manifest and their passed comparisons are listed in the evidence."
       ],
       "transitions": [
         {
@@ -10563,36 +10562,60 @@
         "evidence": [
           "docs/compat-reports/olmo2-admission-2026-11-24/README.md"
         ],
-        "missing": "TODO-linux-x86_64-cuda: linked raw reference/bootstrap records; The four linux-x86_64-cuda CPU/CUDA release-recipe comparisons and recorded cells remain pending. Task quality and live modern tool use are not claimed."
+        "missing": "TODO-linux-x86_64-cuda: linked raw reference/bootstrap archives. All scheduled class/backend smoke comparisons passed. Task quality and live modern tool use are not claimed."
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",
         "backend": "cpu"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.21.0",
+          "date": "2026-11-25",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "4020cee507f616c7015ba97fe40def05418f7a7f",
+          "caps": {
+            "version": "1.21.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 16,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "89360cee1c4ce4b6c2bc9e077edc171c54dd175125535ff235e4aca967f383f7",
+          "ran": "runner -m Olmo-3-7B-Think-Q8_0.gguf --serve -c 4096 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=3072 stream=false",
+          "evidence": "tests/compatibility/tier-smoke/olmo-3-7b-think-q8_0.linux-x86_64-cuda.cpu.txt",
+          "build": {
+            "binary_sha256": "5b294f6c90d1ad3fdb757e1057abefcdea7d90f3987b2917bdc02141608515e6",
+            "compiler": "13.3.0",
+            "commit": "4020cee507f616c7015ba97fe40def05418f7a7f",
+            "dirty": false
+          }
+        },
         "cuda": {
           "kind": "gate",
           "runner_version": "1.21.0",
           "date": "2026-11-25",
-          "device_class": "windows-x86_64-cuda",
+          "device_class": "linux-x86_64-cuda",
           "result": "pass",
-          "commit": "ed21a886220d6ba1a4c4e198408a3290870d1100",
+          "commit": "4020cee507f616c7015ba97fe40def05418f7a7f",
           "caps": {
             "version": "1.21.0",
-            "os": "windows",
+            "os": "linux",
             "arch": "x86_64",
             "cpu_cores": 16,
             "gpu_backend": "cuda",
-            "gpu_name": "NVIDIA GeForce RTX 5070"
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
           },
           "output_sha256": "89360cee1c4ce4b6c2bc9e077edc171c54dd175125535ff235e4aca967f383f7",
           "ran": "runner -m Olmo-3-7B-Think-Q8_0.gguf --serve -c 4096 -b 64; POST /v1/chat/completions temperature=0 max_tokens=3072 stream=false",
-          "evidence": "tests/compatibility/tier-smoke/olmo-3-7b-think-q8_0.windows-x86_64-cuda.cuda.txt",
+          "evidence": "tests/compatibility/tier-smoke/olmo-3-7b-think-q8_0.linux-x86_64-cuda.cuda.txt",
           "build": {
-            "binary_sha256": "40d68bbfae0fb0d5e87285452858f570ddee9553ae83e667cb7a72145989dbae",
-            "compiler": "16.2.0",
-            "commit": "ed21a886220d6ba1a4c4e198408a3290870d1100",
+            "binary_sha256": "5b294f6c90d1ad3fdb757e1057abefcdea7d90f3987b2917bdc02141608515e6",
+            "compiler": "13.3.0",
+            "commit": "4020cee507f616c7015ba97fe40def05418f7a7f",
             "dirty": false
           }
         },
@@ -10616,9 +10639,8 @@
       },
       "measurements": [
         "**Chat smoke request:** the initial 600-token linux-x86_64-cuda CPU/CUDA attempts reached the cap with empty content and wrote no pin. The fixed rerun uses max_tokens 3072, context 4096, the same greedy prompt and fact/length guards, and no ignored thinking flag. Pin and comparison on that class both use taskset -c 0-15; no per-backend request tuning.",
-        "**Comparison pending (linux-x86_64-cuda/cpu):** the release-recipe pin is committed; the clean-rebuild --record comparison has not run. Pinning alone is not validation.",
-        "**Comparison pending (linux-x86_64-cuda/cuda):** the release-recipe pin is committed; the clean-rebuild --record comparison has not run. Pinning alone is not validation.",
-        "**Windows comparison (windows-x86_64-cuda):** the clean release-recipe ed21a886 build on an sm_120 GPU reproduced this file's committed reply bytes, and the tool recorded pass. The smoke stores no route trace; this is not TC-prefill byte-identity evidence."
+        "**Earlier Windows comparison (windows-x86_64-cuda):** the clean release-recipe ed21a886 build on an sm_120 GPU reproduced this file's committed reply bytes, and the tool recorded pass. The smoke stores no route trace; this is not TC-prefill byte-identity evidence. The current CUDA cell is the later linux-x86_64-cuda record.",
+        "**Latest CPU/CUDA records (linux-x86_64-cuda):** both release-recipe comparisons on clean 4020cee5 matched their own pins under taskset -c 0-15, with no TC force-off. The roster stores one latest record per backend; earlier class pins remain in the manifest and their passed comparisons are listed in the evidence."
       ],
       "transitions": [
         {
