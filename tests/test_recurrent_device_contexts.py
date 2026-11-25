@@ -200,8 +200,10 @@ def _on_device(log, backend):
 def _on_the_declared_cpu(log, why):
     # the load took the CPU for the declared reason before any device work, and nothing fell back at run time. The
     # line is held whole, exactly as src/model.c prints it (fprintf "gpu: %s \u2014 using CPU\n": the dash is the
-    # runner's own output, quoted from the source), so a reason read short, cut mid-word, cannot pass as a prefix
-    text = pathlib.Path(log).read_text(errors="replace")
+    # runner's own output, quoted from the source), so a reason read short, cut mid-word, cannot pass as a prefix.
+    # The runner writes that dash as UTF-8 (the source's bytes), so the log is read as UTF-8: the locale's default (a
+    # Windows ANSI code page outside Python's UTF-8 mode) would decode it into three other characters
+    text = pathlib.Path(log).read_text(encoding="utf-8", errors="replace")
     want = f"gpu: {why} \u2014 using CPU"
     lines = [ln for ln in text.splitlines() if ln.rstrip() == want]
     assert len(lines) == 1, (want, text[-1500:])
