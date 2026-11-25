@@ -10418,12 +10418,47 @@
       "backends": {
         "cpu": null,
         "cuda": null,
-        "metal": null
+        "metal": {
+          "kind": "gate",
+          "runner_version": "1.21.0",
+          "date": "2026-11-25",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "d00dbcdd6c236077479d83ba61d24c1aef2c71f7",
+          "caps": {
+            "version": "1.21.0",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "5ede65273868fbf74071f9b8becf9af6c68c5bc4f08234db125fb8d7e820ae96",
+          "ran": "runner -m OLMo-2-0425-1B-Instruct-F16.gguf --serve -c 4096 -b 64; POST /v1/chat/completions temperature=0 max_tokens=600 stream=false",
+          "evidence": "tests/compatibility/tier-smoke/olmo-2-0425-1b-instruct-f16.macos-arm64-metal.metal.txt",
+          "build": {
+            "binary_sha256": "f8165e39b64c99b715772e14eb67dcb95312b728291f89614ce7c3708daef70e",
+            "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+            "commit": "d00dbcdd6c236077479d83ba61d24c1aef2c71f7",
+            "dirty": false
+          }
+        }
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.21.0",
+        "date": "2026-11-25"
+      },
       "measurements": [
+        "**CPU attempt (macos-arm64-metal, 2026-11-25):** the unchanged 1,800-second request timed out under paging after 324 generated tokens at 0.2 tok/s and 50,540,623 page-ins. The loader reported 3.0 GB of weights against 1.5 GB available RAM. No CPU pin, comparison or cell was produced; the Metal result is not inherited.",
         "**TODO-macos-arm64-metal:** macos-arm64-metal/cpu, output pin sha256 and --record result pending; no pass is inferred.",
-        "**TODO-macos-arm64-metal:** macos-arm64-metal/metal, output pin sha256 and --record result pending; no pass is inferred.",
         "**TODO-windows-x86_64-cuda:** windows-x86_64-cuda/cuda, output pin sha256 and --record result pending; no pass is inferred.",
         "**TODO-linux-x86_64-cuda:** linux-x86_64-cuda/cpu, output pin sha256 and --record result pending; no pass is inferred.",
         "**TODO-linux-x86_64-cuda:** linux-x86_64-cuda/cuda, output pin sha256 and --record result pending; no pass is inferred."

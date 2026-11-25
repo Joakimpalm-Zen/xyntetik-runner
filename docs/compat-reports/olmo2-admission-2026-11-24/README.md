@@ -138,8 +138,8 @@ output SHA256 and each gate/adapter answer must come from those commands.
 
 | Row | Device class / backend | State |
 |---|---|---|
-| olmo-2-0425-1b-instruct-f16 | macos-arm64-metal / cpu | TODO-macos-arm64-metal: disk space, pin and record |
-| olmo-2-0425-1b-instruct-f16 | macos-arm64-metal / metal | TODO-macos-arm64-metal: disk space, pin and record |
+| olmo-2-0425-1b-instruct-f16 | macos-arm64-metal / cpu | Unrecorded: 1,800-second attempt timed out under paging; no pin |
+| olmo-2-0425-1b-instruct-f16 | macos-arm64-metal / metal | Pass: exact pin comparison, 2026-11-25, clean build d00dbcdd |
 | olmo-2-0425-1b-instruct-f16 | windows-x86_64-cuda / cuda | TODO-windows-x86_64-cuda: pin and record |
 | olmo-2-0425-1b-instruct-f16 | linux-x86_64-cuda / cpu | TODO-linux-x86_64-cuda: pin and record |
 | olmo-2-0425-1b-instruct-f16 | linux-x86_64-cuda / cuda | TODO-linux-x86_64-cuda: pin and record |
@@ -147,3 +147,24 @@ output SHA256 and each gate/adapter answer must come from those commands.
 | olmo-3-7b-think-q8_0 | linux-x86_64-cuda / cuda | TODO-linux-x86_64-cuda: pin and record |
 | olmo-3-7b-think-q8_0 | windows-x86_64-cuda / cuda | TODO-windows-x86_64-cuda: pin and record |
 | olmo-3-7b-think-q8_0 | macos-arm64-metal / metal | Limit: the file plus runtime state does not fit the owned 8 GB macos-arm64-metal device |
+
+### macos-arm64-metal recording, 2026-11-25
+
+The exact Instruct F16 file was fetched by its pinned identity and verified
+at 2,973,652,128 bytes and the SHA256 above before use. The request stayed at
+600 tokens, context 4,096, batch 64, temperature zero, with no thinking flag.
+
+The CPU attempt on clean `1af81e9c` reached the existing 1,800-second timeout
+and returned no completed HTTP reply. Its final server log reports 324
+generated tokens at 0.2 tok/s and 50,540,623 page-ins, with 3.0 GB weights
+against 1.5 GB available RAM. It produced no pin or result JSON and was not
+retried. The CPU cell remains unrecorded, not a comparison failure or a pass.
+
+The Metal pin from clean `1af81e9c` passed the fact and length rules: 1,476
+bytes, 324 completion tokens, finish stop, output SHA256
+`5ede65273868fbf74071f9b8becf9af6c68c5bc4f08234db125fb8d7e820ae96`.
+After committing the generated pin as `d00dbcdd`, a fresh STRICT build made
+the identical request. `scripts/tier-smoke.py --record` matched those bytes
+and wrote the Metal pass and adapter answer. Its build commit, compiler,
+binary digest and class fingerprint are in the generated support row. This
+is a reproducibility check with a fact guard, not a task-quality benchmark.

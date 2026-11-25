@@ -573,12 +573,12 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>OLMo 2 / OLMo 3</b>, 2 models: CPU - · CUDA - · Metal - · Train -</summary>
+<summary><b>OLMo 2 / OLMo 3</b>, 2 models: CPU - · CUDA - · Metal 🟨 1 of 2 · Train 🟨 1 of 2</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td colspan="5"><b>OLMo 2 0425 1B Instruct</b></td></tr>
-<tr><td><a href="#olmo-2-0425-1b-instruct-f16"><code>OLMo-2-0425-1B-Instruct-F16.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td><a href="#olmo-2-0425-1b-instruct-f16"><code>OLMo-2-0425-1B-Instruct-F16.gguf</code></a></td><td></td><td></td><td nowrap>✅ 1.21.0<br>2026-11-25</td><td nowrap>✅ 1.21.0<br>2026-11-25</td></tr>
 <tr><td colspan="5"><b>OLMo 3 7B Think</b></td></tr>
 <tr><td><a href="#olmo-3-7b-think-q8_0"><code>Olmo-3-7B-Think-Q8_0.gguf</code></a></td><td></td><td></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td></td></tr>
 </tbody>
@@ -2285,12 +2285,14 @@ Against its own publisher float32 reference Runner reads 1.0642e-04 mean KL and 
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; no run recorded yet.
 - **CPU:** ☐ not run
 - **CUDA:** ☐ not run
-- **Metal:** ☐ not run
+- **Metal:** ✅ v1.21.0 2026-11-25 on macos-arm64-metal at commit `d00dbcdd6c23`, output sha256 `5ede65273868fbf7`, [pin](../tests/compatibility/tier-smoke/olmo-2-0425-1b-instruct-f16.macos-arm64-metal.metal.txt)
+- **CPU attempt (macos-arm64-metal, 2026-11-25):** the unchanged 1,800-second request timed out under paging after 324 generated tokens at 0.2 tok/s and 50,540,623 page-ins. The loader reported 3.0 GB of weights against 1.5 GB available RAM. No CPU pin, comparison or cell was produced; the Metal result is not inherited.
 - **TODO-macos-arm64-metal:** macos-arm64-metal/cpu, output pin sha256 and --record result pending; no pass is inferred.
-- **TODO-macos-arm64-metal:** macos-arm64-metal/metal, output pin sha256 and --record result pending; no pass is inferred.
 - **TODO-windows-x86_64-cuda:** windows-x86_64-cuda/cuda, output pin sha256 and --record result pending; no pass is inferred.
 - **TODO-linux-x86_64-cuda:** linux-x86_64-cuda/cpu, output pin sha256 and --record result pending; no pass is inferred.
 - **TODO-linux-x86_64-cuda:** linux-x86_64-cuda/cuda, output pin sha256 and --record result pending; no pass is inferred.
+- **LoRA training:** supported (runner 1.21.0, 2026-11-25).
+- **LoRA adapter serving:** supported (runner 1.21.0, 2026-11-25).
 
 #### OLMo 3 7B Think
 

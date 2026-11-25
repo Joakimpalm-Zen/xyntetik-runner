@@ -5418,11 +5418,6 @@
           "path": "tests/compatibility/tier-smoke/olmo-2-0425-1b-instruct-f16.macos-arm64-metal.cpu.txt",
           "record": "TODO-macos-arm64-metal"
         },
-        "macos-arm64-metal/metal": {
-          "sha256": "TODO-macos-arm64-metal",
-          "path": "tests/compatibility/tier-smoke/olmo-2-0425-1b-instruct-f16.macos-arm64-metal.metal.txt",
-          "record": "TODO-macos-arm64-metal"
-        },
         "windows-x86_64-cuda/cuda": {
           "sha256": "TODO-windows-x86_64-cuda",
           "path": "tests/compatibility/tier-smoke/olmo-2-0425-1b-instruct-f16.windows-x86_64-cuda.cuda.txt",
