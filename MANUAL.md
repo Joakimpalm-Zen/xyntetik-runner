@@ -236,7 +236,7 @@ A map of what the binary does, with the section that documents each part.
 - **Training and adapters.** LoRA training through quantized GGUF weights on
   CPU and CUDA, `--lora` serving on CPU, CUDA and Metal, `--merge-lora`,
   `--info adapter`. [Adaptation](#adaptation)
-- **Models and formats.** 29 admitted architectures, refused by name when
+- **Models and formats.** 30 admitted architectures, refused by name when
   unknown; 24 weight formats including the K-quants, all seven codebook
   i-quants, MXFP4 and NVFP4; KV caches in f16, q8, fp4 and split k8v4, with a
   ring for sliding-window layers; speculative decoding from a draft model, the
@@ -1731,6 +1731,7 @@ merely dense matvec/matmul support.
 | `nemotron_h` | NVIDIA Nemotron-H (Nemotron-Nano-9B-v2): a Mamba-2 selective-SSD recurrence interleaved with GQA attention and dense MLP blocks, where each block is EXACTLY ONE of three kinds (SSM \| attention \| MLP), typed per-layer off `attention.head_count_kv` (0) and `feed_forward_length` (0). NON-MoE and no muP scalars - unlike granitehybrid; the MLP is a gate-less squared-ReLU FFN (`down(relu(up(x))^2)`), attention is NoPE (`rope.scaling.finetuned=false`), and the SSM uses a GROUPED scan (`ssm.group_count=8`): B/C are shared across groups of heads and broadcast (group g covers heads [g·H/G, (g+1)·H/G)) - the same grouped scan `nemotron_h_moe` (Nemotron-3.5 Lightning) also uses - here first proven WITHOUT MoE, and admitted WITH MoE in the row below. CPU and **CUDA**: the Mamba-2 SSD scan, causal conv1d, gated RMS norm and squared-ReLU FFN all have device kernels, and full 56-layer offload is **greedy byte-identical to the CPU path** on the real Nano-9B-v2 Q8_0 (3 prompts x 48 decode steps plus an 88-token multi-tile prefill; re-verified independently post-merge at 32 tokens). Device prefill currently runs the per-token loop (correct, unoptimized). On Metal the whole model runs on the device (the scan, the conv, the grouped norm and the squared-ReLU MLP; logits within reduction-order rounding of the CPU's on the fixtures, `make test-metal-mamba2`); a model that does not fit whole or carries an adapter runs on the CPU there. Against NVIDIA's float32 reference (the golden pass of 2026-09-07 ([`docs/golden-pass-2026-09-07.md`](docs/golden-pass-2026-09-07.md)), 100 positions; the 2,000-position rerun did not finish) margin-qualified top-1 is 100% at bf16 and at Q8_0 for both engines, and the runner reads the lower mean KL at both (0.0027 and 0.0041 against llama.cpp's 0.0031 and 0.0054). Second column: verified against llama.cpp b10353 on the real Nemotron-Nano-9B-v2 at Q8_0 (same GGUF both engines, CPU): 5/6 greedy completions byte-identical (including both 256-token generations); the sole miss is a single-token near-tie where both engines share the same top-3 candidates and llama.cpp's own top-1/top-2 gap is ~0.075 nats (an FP-summation-order coin-flip), i.e. the quantisation noise floor, not wrong math. Chunked-scan prefill (the grouped scan tiled into chunks, parallel across heads within a chunk, SSD state + conv ring carried across chunk boundaries), bit-identical to the serial per-token sweep and pinned chunked == serial in `make test`; the recurrent-state cache seam is wired (fold snapshotted/restored on rewind, and stored beside the KV so an exact CPU prompt-prefix hit restores it in a memcpy). CPU speculative decode and grammar fast-forward use the per-round fold checkpoint; full GPU offload and partial splits with a CUDA-resident recurrent layer decline them. |
 | `nemotron_h_moe` | NVIDIA Nemotron-3.5-Lightning-30B-A3B: `nemotron_h` with the dense squared-ReLU MLP replaced by a gate-less squared-ReLU **MoE** (128 experts / 6 used, no gate branch) plus an always-on **gate-less shared expert**; the router is the publisher's sigmoid (`NemotronHTopkRouter`: a sigmoid over the router logits, selection biased by `e_score_correction_bias`, the selected weights normalized and scaled by `expert_weights_scale`, 2.5 in the published files), which the GGUFs do not declare (no `expert_gating_func` key; llama.cpp hardcodes it). **Until 2026-11-03 Runner routed it with a softmax, wrong on every file since Runner's 0.2.0 release**: on the real Q8_0 a perplexity of 18.31 where llama.cpp reads 11.73. Same three-way block typing, grouped scan (`n_group=8`), and NoPE attention as `nemotron_h`. Runs on CPU: the SSM scan has a device kernel, but this family's sigmoid router with a selection bias and its gate-less shared expert have no device path, so a GPU host serves it on the CPU. No publisher reference has been measured: the family's smallest member is 30B, too large for a float32 reference on the measurement box, so llama.cpp is this row's only anchor and the figures are agreement with another engine, not fidelity. Teacher-forced against llama.cpp `73a43d1`'s Q8_0 logits on positions 2000-3108 (both contexts identical; CPU): Runner's Q8_0 perplexity 11.83 against 11.73, top-1 agreement 95.8%, KL(llama.cpp top-20 to Runner) mean 0.010, p99 0.080; chunked scoring the same (11.84, 95.9%). Over the whole 8,102-position corpus Runner's Q8_0 reads 11.55 (19.72 before the fix) and the Q4_0 11.47. One tokenizer difference on that corpus: the text `[INST]` is the special token in Runner and the publisher's tokenizer and plain text in llama.cpp. The greedy comparison recorded before the fix (4 of 5 byte-identical) was taken under the softmax and is withdrawn. Chat template: its own `nemotron35` family (Granite 4.2's template with Qwen3-Coder's nested-XML tool declarations), conformant to the file's own template in 22 of 22 cases, text and tokens. Nemotron 3.5 Super and Bolt are LatentMoE: the routed experts run at `moe_latent_size`, between `ffn_latent_down` and `ffn_latent_up`, on the CPU only (CUDA and Metal refuse it by name, and `--info fit` says the load runs on the CPU). Bolt also varies its experts by block: each block's router gives its expert count, and `expert_feed_forward_length`, an array, its width. `expert_used_count` is an array there too, and a file whose blocks disagree on it is refused by name (none published does). |
 | `lfm2`, `lfm2moe` | Liquid LFM2 and LFM2.5: short-convolution layers interleaved with GQA attention, typed per layer off the `attention.head_count_kv` array (0 ⇒ convolution). A convolution layer is `in_proj` into B, C and x, B·x through a causal depthwise convolution over `shortconv.l_cache` taps (no bias), C gating the result, then `out_proj`; its recurrent state is the convolution ring alone, so the fold seam (snapshot, rewind, prefix-cache restore, the speculative round checkpoint) is the Mamba-2 hybrids' with no scan state beside it, pinned bit-identical to a cold decode in `make test`. Attention layers carry per-head QK RMS norms and NeoX rope; the final norm is `token_embd_norm` and the output is tied. `lfm2moe` replaces the FFN past `leading_dense_block_count` blocks with sigmoid-routed experts and a selection bias. Tokenizer pre `lfm2` is the Llama 3 split, BOS on (the publisher's tokenizer.json adds it); template family `lfm2` with its Python call list (`lfm2_python`). `lfm2` runs on the Apple GPU where its layer weights are mostly Q4_K by bytes, the shape measured there: LFM2.5-350M and 1.2B Q4_K_M on an Apple M1 prompt 2.73x to 3.00x and decode 1.59x to 2.61x faster than the CPU. On the Q8_0 files the Metal decode was only 1.17x to 1.23x faster: the CPU's Q8_0 dot runs near the memory bandwidth the GPU decode also runs at. So every other type stays on the CPU, and the route line says why. CUDA does not take `lfm2` yet, and `lfm2moe` is CPU only; both say so by name. Against LiquidAI's float32 parents: LFM2.5-1.2B-Instruct Q8_0 0.0042 mean KLD / 99.0% top-1, LFM2.5-350M Q8_0 0.0081 / 95.3%; the publisher's Q4_K_M files fail the bar in Runner and in llama.cpp alike (1.2B 0.115 and 0.119, 350M 0.874 and 0.924). `lfm2moe` against transformers on a converted random model: max \|Δlog p\| 5.2e-4 with the f16 KV cache. Record: `docs/compat-reports/lfm2.5-reference-2026-10-30/`. |
+| `olmo2` | OLMo 2 and OLMo 3: CPU yes, Metal yes, CUDA yes; CPU LoRA training yes, GPU training refused. Post-norm-only blocks and full-width QK RMS norms. [File evidence and limits](#olmo-2-and-olmo-3). |
 
 </details>
 
@@ -1770,6 +1771,57 @@ with shard or BLAKE serialization (reported as unsupported, never as
 verified); full GBNF; image/document inputs;
 hosted tools; response persistence; or parallel tool calls on the Responses and
 Messages surfaces (Chat Completions supports it, buffered and streaming).
+
+### OLMo 2 and OLMo 3
+
+`general.architecture = olmo2` covers OLMo 2 and OLMo 3. Both run on the CPU,
+Metal and CUDA, and serve LoRA adapters. LoRA training runs on the CPU;
+`--train-gpu` is refused because its gradient gate needs f32 KV rows, which
+the GPU trainer does not keep. These are architecture paths. On real files,
+CPU and CUDA are recorded for both, and Metal for the 1B OLMo 2 Instruct file.
+The 7B OLMo 3 file does not fit an 8 GB Mac, so OLMo 3's Metal path is checked
+on generated files only (`make test-metal-olmo2`). Each file's recorded backend
+results are in the
+[validated file rows](docs/model-support.md#olmo-2-0425-1b-instruct-f16).
+
+Since R4.50.9 (#1026), CUDA `olmo2` Q8_0 tensor-core prefill is on by
+default; other olmo2 quant types stay scalar until measured ([the row](docs/tc-promotion-evidence.md#olmo2-q8_0-r4509-2026-11-24)).
+
+| CPU forward | Metal forward | CUDA forward | CPU LoRA training | GPU training |
+|---|---|---|---|---|
+| Yes | Yes | Yes | Yes | Refused: its gradient gate needs f32 KV rows, which the GPU trainer does not keep. |
+
+The blocks have no attention or FFN pre-norm. Each branch reads the residual,
+then its output is RMS-normalized before the residual add. Q and K each have
+one RMS norm over the whole projection, before RoPE. OLMo 2 has full attention
+on every layer. OLMo 3 uses sliding attention on three of every four layers
+(the GGUF's per-layer bool pattern, or that default when it is absent), with
+unscaled RoPE at the global base. Only the full-attention layers use YaRN.
+
+A non-default YaRN `attn_factor` is refused by name: the publisher and GGUF
+conventions differ there. A file declaring experts is refused; OLMoE is a
+separate architecture, and the expert paths do not implement these blocks.
+
+Compact KV cache equality across backends has a limit. The generated-file
+CPU/Metal checks hold q8, k8v4 and fp4 at batches below 8 and in decode. At
+larger direct-model batches the CPU's f32 tile sums in another order, and fp4
+KV can turn those differences into whole quantization steps. The engine's
+CPU prompt prefill uses its batch product route at every width above one;
+this gate does not claim that compact KV gives the same bits across engines
+or backends. Use the default f16 KV cache for the published admission read.
+
+OLMo 3 Think uses the publisher's native chat template, including its
+`functions` and `function_calls` string fields, `environment` role and
+`<think>` generation prompt. Runner refuses modern OpenAI `tools`,
+`tool_calls` and `tool` messages by name rather than translating or silently
+dropping them. OLMo 2 1B Instruct uses its own native `olmo2` template (16/16 cases in text
+and tokens); modern OpenAI tool requests are refused. The base file has no
+claimed chat protocol, and its numerical evidence is disclosed separately.
+
+The publisher's float32 reference is the headline; llama.cpp on the same
+files and positions is the second read. The [admission record](docs/compat-reports/olmo2-admission-2026-11-24/README.md)
+names both configurations, the bar and the limits.
+
 
 ## Build and platforms
 

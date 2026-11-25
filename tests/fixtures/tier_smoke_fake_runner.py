@@ -7,7 +7,8 @@ and `-m FILE --serve --port P` (GET /health, POST /v1/chat/completions; the
 backend banner on stderr unless `--gpu off`; exit 0 on SIGTERM).
 
 The reply's content is FAKE_RUNNER_TEXT, or a default answer that names
-Mercury. With --lora the content is marked, as an adapter changes the text;
+Mercury. FAKE_RUNNER_REASONING adds a separate reasoning_content channel.
+With --lora the content is marked, as an adapter changes the text;
 --mtp-file changes nothing, as a draft head only proposes tokens.
 FAKE_RUNNER_FALLBACK=1 makes a GPU run decline the model and run on the
 CPU, as a Metal build does for a layout it has no kernel for.
@@ -120,10 +121,12 @@ if "--serve" in argv:
             text = os.environ.get("FAKE_RUNNER_TEXT", DEFAULT)
             if lora:
                 text += " (adapter applied)"
+            message = {"role": "assistant", "content": text}
+            if "FAKE_RUNNER_REASONING" in os.environ:
+                message["reasoning_content"] = os.environ["FAKE_RUNNER_REASONING"]
             self._send(200, {"object": "chat.completion",
                              "choices": [{"index": 0, "finish_reason": "length",
-                                          "message": {"role": "assistant",
-                                                      "content": text}}],
+                                          "message": message}],
                              "usage": {"prompt_tokens": 30,
                                        "completion_tokens": req.get("max_tokens")}})
 

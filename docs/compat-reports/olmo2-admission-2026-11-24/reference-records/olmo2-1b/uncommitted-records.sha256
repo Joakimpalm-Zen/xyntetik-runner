@@ -1,0 +1,18 @@
+001a0c84ffaee5d50499ed5d23b6d06e0d5aabc0dd00b8d71eaab38e160aa40a  f16-kvf32.score.json
+744175a7dd329fadd71d0c496e290b81b1f7af303b1a429d27a0a252a22384ed  f16-kvf32.score.stderr
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  f16-kvf32.score.stdout
+25bce00b576ad3f727aab1fb39d50bb98964a651fa5327dac522fff4f31836da  f16.score.json
+83cd2b9f59c77435f68921d6032f4238c54d5d5441e796bd4a1fb926aa5f0b5a  f16.score.stderr
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  f16.score.stdout
+0aa6f2ecacbb2ec2d8863fc0268d0bfc99d785608d495b98a6e4f2b9906c4b48  gold-kvf32.stderr
+9fa801cbc37e65e30814819e0130c90feab1af1eb1ba205a8d60af2a0b1bfeef  gold-llama-f16.json  (as written at the read, before the home-path scrub)
+8c6cf96604a435aa0e985f0f6f68eb11cfac0a6a02c36435b88858e72963c4a6  gold-llama-f16.stderr
+37ae4aea1c94b89bdf2cac4573d3e1b39d3f3fcde59fd1ba3d44dced11d400b9  gold-olmo2-1b-f16-kvf32.json  (as written at the read, before the home-path scrub)
+e583a32fa2a2be7963c03b48bdcda9fdc58b05f8e81c7c8691f5d8fcfe09b3ea  gold-olmo2-1b-f16.json  (as written at the read, before the home-path scrub)
+14de4e91913c703ad033d28cf3f774e3512cdaa721c7681053056db1ba4831ac  gold.stderr
+7241f2b27d1e6692095777f3ee78a23478f58b749f063ad8912014b0e5c7a2a7  llama-f16.server.log
+3dc581384d61b3366fc34a95d12c20e595014ea62352469c17c3e3a77f32882a  allenai_OLMo-2-0425-1B/config.json  (model file, from its directory's SHA256SUMS)
+c52e4ac8bf4867e698d908f9e8c2b84aa891b91dff066d46bf2a7cf453ad77fb  allenai_OLMo-2-0425-1B/model-00001-of-00002.safetensors  (model file, from its directory's SHA256SUMS)
+5f80762572fe28aca49b01b98895d96ca529b9792fc10925a977a161ad768d30  allenai_OLMo-2-0425-1B/model-00002-of-00002.safetensors  (model file, from its directory's SHA256SUMS)
+704e57695805a67b0c43220e60e31cf43948c387f39799b82b260bb4df8180e6  allenai_OLMo-2-0425-1B/model.safetensors.index.json  (model file, from its directory's SHA256SUMS)
+452d42f1ac5a1d1d62a6a7c4e2c6adfe4ac279f6b4ff44c9e2ea452a0d9c6df2  allenai_OLMo-2-0425-1B-GGUF/OLMo-2-0425-1B-F16.gguf  (model file, from its directory's SHA256SUMS)

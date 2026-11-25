@@ -201,6 +201,12 @@ def apply_dense_rule(kind, detail, moe, dense_strict):
     return kind
 
 
+# The run verdicts that PASS: all exact, or margin-qualified (near-ties in the band only; MoE 2026-08-20, dense
+# 2026-10-02). The one definition: this script's exit status, scripts/compat_matrix.py's completeness and
+# scripts/certify-envelope.py's gate all read it.
+PASSING = ("pass", "pass_margin_qualified")
+
+
 def run_result(near_tie, real, total):
     """Fold per-prompt kinds into the run verdict. Any real (non-near-tie)
     divergence fails (cond. 4); near-ties across more than NEAR_TIE_CAP of the
@@ -439,7 +445,7 @@ def main():
         Path(args.out).write_text(json.dumps(report, indent=1, allow_nan=False))
     print(f"\ncpu_cuda: {result} — {exact}/{total} exact, {near_tie} near-tie "
           f"tolerated ({report['routing']} routing)")
-    return 0 if result in ("pass", "pass_margin_qualified") else 1
+    return 0 if result in PASSING else 1
 
 
 if __name__ == "__main__":

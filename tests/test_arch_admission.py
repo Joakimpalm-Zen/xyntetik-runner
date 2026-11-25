@@ -118,11 +118,7 @@ ARCH_GATE_EXEMPTIONS = {
 # Architectures that LOAD before their admission (arch.h's pending column): --caps lists them apart, under
 # architectures_pending, and no count, support row or coverage disposition claims them. Each names the gate that
 # holds it meanwhile; its admission moves it out of here and into the manifest.
-ARCH_PENDING = {
-    # OLMo 2 / OLMo 3 (R4.50.1): the CPU forward against the publisher's equations on the tiny files
-    # scripts/make-test-olmo2.py writes; allenai/Olmo-3-7B-Think's float32 admission and pins are R4.50.6
-    "olmo2": "tests/test_olmo2_cpu.py until R4.50.6",
-}
+ARCH_PENDING = {}
 
 
 def _admitted_architectures(runner_bin):
@@ -132,6 +128,15 @@ def _admitted_architectures(runner_bin):
     p = subprocess.run([runner_bin, "--caps"], cwd=ROOT, capture_output=True, timeout=20)
     assert p.returncode == 0, p.stderr.decode(errors="replace")
     return json.loads(p.stdout)["architectures"]
+
+
+def test_olmo2_is_admitted_after_the_publisher_reference_gate(runner_bin):
+    import json
+    p = subprocess.run([runner_bin, "--caps"], cwd=ROOT, capture_output=True, timeout=20)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    caps = json.loads(p.stdout)
+    assert "olmo2" in caps["architectures"], caps["architectures"]
+    assert "olmo2" not in {a["name"] for a in caps["architectures_pending"]}
 
 
 def _manifest_architectures():

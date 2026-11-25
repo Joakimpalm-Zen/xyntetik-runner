@@ -413,7 +413,8 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
         if not found:
             raise SystemExit(f"{row['id']} {key}: the reply does not name {expect!r}, so "
                              f"it is not pinned (a pin always holds the fact). The "
-                             f"reply, finish_reason {finish}, {ctoks} tokens:\n{shown}")
+                             f"reply, finish_reason {finish}, {ctoks} tokens; "
+                             f"reasoning_content held {len(reasoning.encode('utf-8'))} UTF-8 bytes:\n{shown}")
         if len(out) < minimum:
             why = (f"; reasoning_content held {len(reasoning)} bytes" if reasoning else "")
             raise SystemExit(f"{row['id']} {key}: the reply is {len(out)} bytes, under "

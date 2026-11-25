@@ -476,6 +476,17 @@ def test_a_pin_without_the_fact_is_refused_and_shows_the_reply(world):
     assert "toy-q8_0" not in manifest_of(world)["rows"]
 
 
+def test_reasoning_only_reply_stays_unpinned_and_reports_the_channel_size(world):
+    reasoning = "Mercury " + "\u00e9" * 100
+    r = smoke(world, "--backend", "metal", "--pin",
+              env={"FAKE_RUNNER_TEXT": "", "FAKE_RUNNER_REASONING": reasoning})
+    assert r.returncode != 0
+    assert f"reasoning_content held {len(reasoning.encode('utf-8'))} UTF-8 bytes" in r.stdout
+    assert not (world["pins"] / "toy-q8_0.macos-arm64-metal.metal.txt").exists()
+    assert "toy-q8_0" not in manifest_of(world)["rows"]
+    assert not world["out"].exists()
+
+
 def test_the_manifest_entry_is_the_pinned_bytes_and_how_the_turn_ended(world):
     assert smoke(world, "--backend", "metal", "--pin").returncode == 0
     pin = manifest_of(world)["rows"]["toy-q8_0"]["pins"]["macos-arm64-metal/metal"]

@@ -1,0 +1,10 @@
+R4.50.6.1: allenai/OLMo-2-0425-1B-Instruct, Runner on the publisher's F16 GGUF vs llama.cpp on the same file, both against the publisher's float32 checkpoint (teacher-forced, matched by id)
+
+- Runner: wt-main-f3ff8e84/runner sha256 3428416e04f813be3422b45c01a4038e66b59a27f7c2201d2beead45d67fad70, built at main f3ff8e84e60f0d75ad5357a667a8ac1f338a694e (#1017, olmo2 CPU), clean tree; its --score 20 pass, -c 4096 -t 16 --gpu off, --score-tokens 4009 (KV f16 unless the file name says kvf32)
+- llama.cpp: llama-server sha256 72f3f67ac987e02e20c3b06cd3cc02fa229c740d95a6ce58a8487979b270fba7, commit 56eea9e4b0f5d125da16b75b551440b170aa8b1f (build-cpu-server)
+- reference: scripts/gold-logits.py at f3ff8e84 (sha256 dae238a1e680ff1a2b7458ced9db6b9f833b1c2cb6080ce3a7c3769205bea35f), float32, CPU, 16 threads, --max-positions 2000 --stride 2; transformers main 046bdb8cc2cee29d233964bb77fe6fd37cfe4aa3; torch 2.14.0+cpu, numpy 2.5.4
+- corpus: tests/fixtures/gold-corpus-2k.txt sha256 56e9fcba658f72ae029598926ccb84beadf71757c603cf59aaf587a70b78d066
+- bar (b): scripts/r4506_bar_b.py sha256 643421fb004cc246011fbb1d17ec6e82989273a6c2b3f04b20c528076771e2c2; each side's 95% interval a percentile bootstrap of the mean over its 2000 per-position KLs, 10,000 resamples, seed 4506 (the paired difference, information, seed 4507)
+- bar-b.txt regenerated here; it is compared with the bar.txt written at the read (equal text, or this script stops).
+- run scripts: scripts/run_r45061_olmo2_1b_instruct.sh, scripts/run_r4506_llama.sh (in this package's scripts/)
+- the big or raw files (score JSONs, stderr, server logs, the unscrubbed gold JSONs, the model files) are not committed; uncommitted-records.sha256 names each by sha256

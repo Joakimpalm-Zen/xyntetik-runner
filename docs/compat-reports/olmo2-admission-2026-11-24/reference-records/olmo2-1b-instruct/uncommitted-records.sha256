@@ -1,0 +1,11 @@
+bc6b722106be3bdcc3ddcdf78bf5eb05adca09fc3456d07c97c910f1b0c31c3d  f16.score.json
+dfaeec385fc3a2569447c7dee82cde0f6c9860a1e3deb419ca73699b04a1ad07  f16.score.stderr
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  f16.score.stdout
+e3e944b0b0ac4274c3119c49e99d47ddc0942989a62e6dd8766fb4699c6432e7  gold-llama-f16.json  (as written at the read, before the home-path scrub)
+f4ea24d12fa3864caf8c38a1e0737040031ff40eda273d6bddc232030ee5babb  gold-llama-f16.stderr
+ddf3c04a2b91c650deb2f4d35cd69517129520ef4b4a1698463c7fb768fd63c8  gold-olmo2-1b-instruct-f16.json  (as written at the read, before the home-path scrub)
+a960f63af1bf34933960a19c6a33a33ea9cc70b8a8ad7ec7ccb796af9d1f9316  gold.stderr
+6073d7f02d79fab2c8dcab2c99751a73084aeffad46979e0dda6864127317c9a  llama-f16.server.log
+0d15ebb6cb8d998513b46ef337214176a6fd59fe5f16b30387c70d5f87795a9c  allenai_OLMo-2-0425-1B-Instruct/config.json  (model file, from its directory's SHA256SUMS)
+36d044c73655bb904f822915e6294ba3dae8e6e1af5e703e9d452f2d6a3a294f  allenai_OLMo-2-0425-1B-Instruct/model.safetensors  (model file, from its directory's SHA256SUMS)
+376249dff02917a8cf5ea413d2bfdf2802f10f7d92973d95a6f28b2204ac4eab  allenai_OLMo-2-0425-1B-Instruct-GGUF/OLMo-2-0425-1B-Instruct-F16.gguf  (model file, from its directory's SHA256SUMS)

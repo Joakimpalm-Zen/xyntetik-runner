@@ -38,6 +38,7 @@ from pathlib import Path
 # path has not put the directory on sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from file_digest import sha256_file  # noqa: E402
+from cpu_cuda_check import PASSING  # noqa: E402
 
 
 def runner_caps(runner):
@@ -104,13 +105,13 @@ def summarize_checks(entry):
     'pass' only if every executed check passed and at least one ran.
 
     `pass_margin_qualified` (owner-ratified 2026-08-20) is a PASSING status: a
-    MoE cpu_cuda run whose only divergences are routing near-ties inside bar-v2's
-    tie band (dense models never reach it). It counts as pass for the gate, and
+    cpu_cuda run whose only divergences are near-ties inside bar-v2's tie band
+    (MoE routing since 2026-08-20, dense models since 2026-10-02, R4.25). The set
+    is cpu_cuda_check.PASSING. It counts as pass for the gate, and
     its exception detail is surfaced in `detail` so the certificate REPORTS it
     rather than presenting a clean 9/9 it did not measure."""
     if not entry:
         return None, {}, {}
-    PASSING = ("pass", "pass_margin_qualified")
     checks = {}
     detail = {}
     ran = passed = 0

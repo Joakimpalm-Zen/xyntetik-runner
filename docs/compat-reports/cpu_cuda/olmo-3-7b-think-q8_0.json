@@ -1,0 +1,96 @@
+{
+ "model": "models/Olmo-3-7B-Think-Q8_0.gguf",
+ "tokens": 128,
+ "context": 2048,
+ "routing": "eager",
+ "moe": false,
+ "dense_rule": "margin_qualified",
+ "extra_args": [],
+ "gpu_split": {
+  "layers_on_gpu": 32,
+  "layers_total": 32,
+  "output_weight_on_gpu": true,
+  "whole_graph": true
+ },
+ "cpu_cuda_identity": {
+  "result": "pass_margin_qualified",
+  "exact": "8/9",
+  "gpu_arm_on_cpu": false,
+  "near_tie_tolerated": 1,
+  "tie_band_nats": 0.5,
+  "over_cap": false
+ },
+ "identical": 8,
+ "total": 9,
+ "rows": [
+  {
+   "prompt": "The capital of France is",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " Paris. But the capital of the United States is Washington, D.C. The capital of China is Beijing. The capital of Japan is Tokyo. The capital of Germany is Berlin. The capital of Italy is Rome. The capital of Canada is Ottawa. The capital of Brazil is Bras\u00edlia. The capital of Australia is Canberra. The capital of India is New Delhi. The capital of South Africa is Pretoria. The capital of Spain is Madrid. The capital of the United Kingdom is London. The capital of Russia is Moscow. The capital of Argentina is Buenos Aires. The capital of Mexico is Mexico City. The capital of Kenya is Nairobi.",
+   "gpu": null
+  },
+  {
+   "prompt": "def fibonacci(n):",
+   "kind": "exact",
+   "detail": null,
+   "cpu": "  \n    # Initialize first two Fibonacci numbers  \n    a, b = 0, 1  \n    # Iterate n times  \n    for _ in range(n):  \n        yield a  \n        a, b = b, a + b  \n# Example usage:  \nfor num in fibonacci(10):  \n    print(num)  \n# Output: 0, 1, 1, 2, 3, 5, 8, 13, 21, 34  \n\nThe code defines a generator function `fibonacci(n)` that yields the first `n` Fibonacci numbers. The generator uses tuple unpacking to",
+   "gpu": null
+  },
+  {
+   "prompt": "1 2 3 4 5 6 7 8",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 36\n\nThe problem is to find the number of integers between 1 and 100 inclusive that are divisible by 3 or 5. This is a classic inclusion-exclusion principle problem.\n\nFirst, let's find the number of integers divisible by 3 between 1 and 100. The smallest multiple of 3 in this range",
+   "gpu": null
+  },
+  {
+   "prompt": "Once upon a time, in a land far away,",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " there was a magical tree that could grant wishes. The tree had a special rule: you could only make one wish, and it had to be for something that would benefit the entire kingdom. The kingdom was divided into three parts: the forest, the mountains, and the coast. Each part had its own problems: the forest was suffering from a severe drought, the mountains were buried under an endless snowfall, and the coast was being eroded by the sea.\n\nThe wise old tree suggested that the kingdom's leaders must come together and decide on a single wish that would address the needs of all three regions. They gathered in a grand council",
+   "gpu": null
+  },
+  {
+   "prompt": "Q: What is 17 * 23?\nA:",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 17 * 23 = 391\n\nQ: What is 5 * 7?\nA: 5 * 7 = 35\n\nQ: What is 8 * 9?\nA: 8 * 9 = 72\n\nQ: What is 12 * 15?\nA: 12 * 15 = 180\n\nQ: What is 20 * 25?\nA: 20 * 25 = 500\n\nQ: What is 30 * 40?\nA: 30 * 40 = 1200\n\nQ: What is 45 * 50?\nA: ",
+   "gpu": null
+  },
+  {
+   "prompt": "The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " The data shows that on days when the wind direction was from the north, the fog lifted at 8:00 AM. On days with south wind, it lifted at 9:00 AM. For west wind, it was 10:00 AM, and for east wind, it was 11:00 AM. Cloud cover also affects the fog lifting time: if there were 0 clouds, fog lifts at the earliest time; if 1 cloud, 30 minutes later; 2 clouds, 1 hour later; 3 clouds, 1.5 hours later; and 4 clouds, 2 hours later.",
+   "gpu": null
+  },
+  {
+   "prompt": "In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " was made in the 1930s, and the final version of the catalogue was published in 1934. The 1934 version contained 4211 objects, with 1, 2, or 3 designations. The 1934 version was the last major revision of the catalogue, and it remained in use until the 1960s, when the NED began to compile a new version of the catalogue. The 1960s version was published in 1968 and contained 4, 5, or 6 designations. The 1968 version was the last revision of the NED's catalogue",
+   "gpu": null
+  },
+  {
+   "prompt": "def parse_header(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise ValueError('not a gguf file')\n    return magic, version\n\n# The loader above rejects a truncated header before unpacking it, which",
+   "kind": "near_tie",
+   "detail": {
+    "pos": 3,
+    "cpu_token": " correct",
+    "gpu_token": " okay",
+    "cpu_margin_to_gpu_pick": 0.00011634999999987627,
+    "gpu_margin_to_cpu_pick": 0.0004348800000002484
+   },
+   "cpu": " is\n# correct because the header must be complete to determine the file type.\n# However, the loader does not check if the file has enough data to read the\n# header. This is a problem because if the file is truncated before the header,\n# the unpacking will fail with a struct.error.\n# We can fix this by checking the file size before attempting to read the header.\n# Alternatively, we can catch the struct.error and check if it's due to a truncated\n# file. But that might be error-prone.\n# Let's change the loader to first check the file size.\n# We'll add a check",
+   "gpu": " is\n# okay because the header is not required to be complete for the loader to\n# reject the file. However, the loader does not check for the presence of\n# the required fields in the header. For example, the version field is\n# required but not checked. This is a problem because the loader will load\n# a file with an invalid version and then crash when it tries to read the\n# metadata. To prevent this, we need to check the header fields for validity.\n# We can do this by checking the version against a list of valid versions.\n# We'll create a list of valid versions and check"
+  },
+  {
+   "prompt": "The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " hasn't seen the city's more organic upper neighborhoods.\nThe Lisbon earthquake was a pivotal moment in the history of earthquake-resistant architecture. It also highlighted the importance of building codes and urban planning that account for natural disasters. The city's recovery and the subsequent architectural innovations were not just about rebuilding but also about learning from the past to create safer, more resilient structures for the future.\nThe earthquake's impact extended beyond architecture into the broader cultural and social fabric of Portugal. It led to a reevaluation of how societies prepare for and respond to natural disasters, influencing policies and practices in disaster management worldwide. The memory of Lisbon's tragedy is a reminder of",
+   "gpu": null
+  }
+ ]
+}

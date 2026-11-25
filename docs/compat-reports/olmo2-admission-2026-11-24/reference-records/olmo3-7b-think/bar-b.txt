@@ -1,0 +1,7 @@
+r4506_bar_b.py gold-olmo3-7b-q8_0.json gold-llama-q8_0.json (seed 4506; paired 4507)
+positions 2000 (the same on both sides)
+Runner     mean KL 1.3671e-03  95% [1.1975e-03, 1.5472e-03]  top-1 98.5%  margin-qualified 100.0%
+llama.cpp  mean KL 9.1434e-02  95% [8.5543e-02, 9.8364e-02]  top-1 85.2%  margin-qualified 95.8%
+paired (information): Runner - llama.cpp mean -9.007e-02  95% [-9.678e-02, -8.422e-02]
+(a) margin-qualified top-1 100%: PASS
+(b) Runner's interval wholly above llama.cpp's: no -> PASS
