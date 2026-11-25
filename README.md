@@ -409,6 +409,11 @@ cross-backend limit, and the 7B OLMo 3 file does not fit an 8 GB Mac.
 - LoRA training runs on the CPU.
 [The files and their measurements](docs/model-support.md#olmo-2-0425-1b-instruct-f16) · [Limits](MANUAL.md#olmo-2-and-olmo-3)
 
+Inkling 2 Mini's fast text route runs on CUDA with `RUNNER_INKLING2_CUDA=1`;
+the default remains CPU. Eligible decode steps stay on the device between
+layers, with [placement and adapter limits](MANUAL.md#inkling-2-mini) beside
+the route.
+
 <a id="more"></a>
 ## Also in the box
 
