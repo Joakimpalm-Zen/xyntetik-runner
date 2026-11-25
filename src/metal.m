@@ -6216,6 +6216,11 @@ bool gpu_ink2_test_depth_attn(gpu_ink2 *h, const float *q, int nq, const float *
     (void)h; (void)q; (void)nq; (void)states; (void)n_kv; (void)H; (void)T; (void)scale; (void)out; (void)ois; (void)ots;
     return false;
 }
+bool gpu_ink2_test_depth_attn_ix(gpu_ink2 *h, const float *q, int nq, const float *states, int n_pool, const int *ix,
+                                 int n_kv, int H, float scale, float *out) {
+    (void)h; (void)q; (void)nq; (void)states; (void)n_pool; (void)ix; (void)n_kv; (void)H; (void)scale; (void)out;
+    return false;
+}
 bool gpu_ink2_test_short_conv(gpu_ink2 *h, const float *cw, int C, int K, int T, const float *lin, float *out,
                               int p0, float *hist, float div) {
     (void)h; (void)cw; (void)C; (void)K; (void)T; (void)lin; (void)out; (void)p0; (void)hist; (void)div; return false;

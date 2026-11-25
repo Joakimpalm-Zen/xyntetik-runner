@@ -13069,6 +13069,8 @@ static void ink2_scratch_free(CUdeviceptr *d, int n) {
 // a product reads carries INK2_XPAD columns of padding past its last (gpu_ink2_reserve*, the grows below).
 #define INK2_MVB_MIN 16
 #define INK2_XPAD 16
+// R4.48.9.3: the threads of k_ink2_rms_rows' and k_ink2_msg_norm's blocks, one block a norm (a launch is n norms wide)
+#define INK2_NORM_THREADS 256
 static bool ink2_mv_cols_xs(gpu_ink2 *h, int type, CUdeviceptr w, uint64_t w_off, int n_in, int n_out, int n,
                             CUdeviceptr x, int xs, CUdeviceptr y, float scale) {
     if (type == T_BF16 && n >= INK2_MVB_MIN && h->mvb_bf16 && !h->mv_ref) {
@@ -13454,7 +13456,7 @@ static bool ink2_msg_core(gpu_ink2 *h, int n_roles, int T, int H, int r, float e
     int nr = (int)rows, hh = H;
     float e = eps;
     void *pn[] = { &dx, &dm, &h->mgh, &nr, &hh, &e };
-    ok = ok && cu.LaunchKernel(h->f_msgnorm, (unsigned)((2 * rows + 63) / 64), 1, 1, 64, 1, 1, 0, NULL, pn, NULL) == 0;
+    ok = ok && cu.LaunchKernel(h->f_msgnorm, (unsigned)(2 * rows), 1, 1, INK2_NORM_THREADS, 1, 1, 0, NULL, pn, NULL) == 0;
     for (int k = 0; ok && k < n_roles; k++) {   // per role: d = wd gh, fa = wf d, ga = wg d (the products' own kernels)
         const gpu_ink2_msg_role *ro = &roles[k];
         CUdeviceptr gh = h->mgh + fb * (size_t)k * T * 2 * H, d = h->md + fb * (size_t)k * T * r;
@@ -13665,7 +13667,7 @@ bool gpu_ink2_test_rms_rows(gpu_ink2 *h, const float *x, const float *wt, float 
     CUdeviceptr dx = ok ? d1d_put(x, n) : 0, dw = ok && wt ? d1d_put(wt, (size_t)H) : 0, dy = ok ? d1d_put(NULL, n) : 0;
     ok = ok && dx && dy && (!wt || dw);
     void *p[] = { &dx, &dw, &dy, &n_rows, &H, &eps };
-    ok = ok && cu.LaunchKernel(h->f_rms, (unsigned)((n_rows + 63) / 64), 1, 1, 64, 1, 1, 0, NULL, p, NULL) == 0 &&
+    ok = ok && cu.LaunchKernel(h->f_rms, (unsigned)n_rows, 1, 1, INK2_NORM_THREADS, 1, 1, 0, NULL, p, NULL) == 0 &&
          cu.MemcpyDtoH(y, dy, sizeof(float) * n) == 0;
     if (dx) cu.MemFree(dx);
     if (dw) cu.MemFree(dw);
@@ -13688,7 +13690,7 @@ bool gpu_ink2_test_depth_attn(gpu_ink2 *h, const float *q, int nq, const float *
     ok = ok && dq && ds && dn && dout;
     void *pr[] = { &ds, &nul, &dn, &rows, &H, &eps };
     void *pa[] = { &dq, &dn, &dout, &nq, &n_kv, &H, &scale, &ois, &ots };
-    ok = ok && cu.LaunchKernel(h->f_rms, (unsigned)((rows + 63) / 64), 1, 1, 64, 1, 1, 0, NULL, pr, NULL) == 0 &&
+    ok = ok && cu.LaunchKernel(h->f_rms, (unsigned)rows, 1, 1, INK2_NORM_THREADS, 1, 1, 0, NULL, pr, NULL) == 0 &&
          cu.LaunchKernel(h->f_dattn, (unsigned)nq, (unsigned)T, 1, 256, 1, 1, (unsigned)(sizeof(float) * (size_t)n_kv),
                          NULL, pa, NULL) == 0 &&
          cu.MemcpyDtoH(out, dout, sizeof(float) * no) == 0;
@@ -14383,18 +14385,58 @@ static bool st_dtoh(gpu_ink2 *h, void *d, CUdeviceptr s, size_t b, bool in_app) 
 static bool st_rms(gpu_ink2 *h, CUdeviceptr x, CUdeviceptr wt, CUdeviceptr y, int H, float eps) {
     int one = 1;
     void *p[] = { &x, &wt, &y, &one, &H, &eps };
-    return cu.LaunchKernel(h->f_rms, 1, 1, 1, 64, 1, 1, 0, NULL, p, NULL) == 0;
+    return cu.LaunchKernel(h->f_rms, 1, 1, 1, INK2_NORM_THREADS, 1, 1, 0, NULL, p, NULL) == 0;
+}
+// R4.48.9.3: k_ink2_depth_attn_ix's tile for n_kv states: the largest multiple of 32 (at most 1024, at least 32) whose
+// shared memory (n_kv scores, a tile of q, n_kv padded tiles) stays within 12,000 floats, under the 48 KiB a launch
+// takes without opting in (n_kv at its most, INK2_MAX_APP_STEP + 1: 35,080 bytes at the floor of 32)
+static int ink2_dattn_tile(int nkv) {
+    int t = ((12000 - nkv) / (nkv + 1) - 1) / 32 * 32;
+    return t < 32 ? 32 : t > 1024 ? 1024 : t;
+}
+static size_t ink2_dattn_smem(int nkv, int tile) {
+    return sizeof(float) * ((size_t)nkv + (size_t)tile + (size_t)nkv * (size_t)(tile + 1));
 }
 // a depth read at one position: the partial normed into row PART, then the queries over the listed normed rows
 static bool st_read(gpu_ink2 *h, const struct ink2_step_prog *S, CUdeviceptr q, int nq, CUdeviceptr partial, int off,
                     int nkv, CUdeviceptr out) {
     const size_t fb = sizeof(float);
-    int H = S->P.H, ois = S->P.H;
+    int H = S->P.H, ois = S->P.H, tile = ink2_dattn_tile(nkv);
     CUdeviceptr nrm = S->normed, part = S->normed + fb * (size_t)(S->n_norm - 1) * H, lst = S->ix + sizeof(int) * (size_t)off;
     float sc = S->P.read_scale;
-    void *pa[] = { &q, &nrm, &lst, &out, &nq, &nkv, &H, &sc, &ois };
+    void *pa[] = { &q, &nrm, &lst, &out, &nq, &nkv, &H, &sc, &ois, &tile };
     return st_rms(h, partial, 0, part, H, 1e-6f) &&
-           cu.LaunchKernel(h->f_dattn_ix, (unsigned)nq, 1, 1, 256, 1, 1, (unsigned)(fb * (size_t)nkv), NULL, pa, NULL) == 0;
+           cu.LaunchKernel(h->f_dattn_ix, (unsigned)nq, 1, 1, 256, 1, 1, (unsigned)ink2_dattn_smem(nkv, tile), NULL, pa,
+                           NULL) == 0;
+}
+// R4.48.9.3 TEST-ONLY (gpu.h): the step's indexed depth read over host arrays: the n_pool states normed on the device
+// (k_ink2_rms_rows, unweighted, eps 1e-6, as the step norms each when written), then k_ink2_depth_attn_ix at its tile
+// (ink2_dattn_tile) for the nq queries over the n_kv rows the list ix names; out [nq][H]
+bool gpu_ink2_test_depth_attn_ix(gpu_ink2 *h, const float *q, int nq, const float *states, int n_pool, const int *ix,
+                                 int n_kv, int H, float scale, float *out) {
+    if (!h || !h->f_rms || !h->f_dattn_ix || nq <= 0 || n_pool <= 0 || n_kv <= 0 || n_kv > INK2_MAX_APP_STEP + 1 ||
+        H <= 0 || !q || !states || !ix || !out)
+        return false;
+    for (int j = 0; j < n_kv; j++) if (ix[j] < 0 || ix[j] >= n_pool) return false;
+    const size_t ns = (size_t)n_pool * H;
+    int rows = n_pool, tile = ink2_dattn_tile(n_kv), ois = H;
+    float eps = 1e-6f;
+    pthread_mutex_lock(&h->mu);
+    bool ok = cu.CtxSetCurrent(h->ctx) == 0;
+    CUdeviceptr dq = ok ? d1d_put(q, (size_t)nq * H) : 0, ds = ok ? d1d_put(states, ns) : 0, dn = ok ? d1d_put(NULL, ns) : 0,
+                dout = ok ? d1d_put(NULL, (size_t)nq * H) : 0, dix = 0, nul = 0;
+    ok = ok && dq && ds && dn && dout && cu.MemAlloc(&dix, sizeof(int) * (size_t)n_kv) == 0 &&
+         cu.MemcpyHtoD(dix, ix, sizeof(int) * (size_t)n_kv) == 0;
+    void *pr[] = { &ds, &nul, &dn, &rows, &H, &eps };
+    void *pa[] = { &dq, &dn, &dix, &dout, &nq, &n_kv, &H, &scale, &ois, &tile };
+    ok = ok && cu.LaunchKernel(h->f_rms, (unsigned)rows, 1, 1, INK2_NORM_THREADS, 1, 1, 0, NULL, pr, NULL) == 0 &&
+         cu.LaunchKernel(h->f_dattn_ix, (unsigned)nq, 1, 1, 256, 1, 1, (unsigned)ink2_dattn_smem(n_kv, tile), NULL, pa,
+                         NULL) == 0 &&
+         cu.MemcpyDtoH(out, dout, sizeof(float) * (size_t)nq * H) == 0;
+    CUdeviceptr fr[5] = { dq, ds, dn, dout, dix };
+    for (int k = 0; k < 5; k++) if (fr[k]) cu.MemFree(fr[k]);
+    pthread_mutex_unlock(&h->mu);
+    return ok;
 }
 // the post convolution k of application a at one position: y = conv(x) over its device history, then the store
 static bool st_conv(gpu_ink2 *h, gpu_ink2_kv *kv, const struct ink2_step_prog *S, int a, int k, int p0, CUdeviceptr x,

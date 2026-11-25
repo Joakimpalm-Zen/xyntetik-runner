@@ -809,6 +809,10 @@ bool       gpu_ink2_test_pexpf(gpu_ink2 *h, const float *x, float *y, int n);
 // out[i * ois + t * ots + h]), the short convolution with its history (hist [(K - 1)][C] in and out, NULL none) and its
 // store, the residual add and the softcap
 bool       gpu_ink2_test_rms_rows(gpu_ink2 *h, const float *x, const float *wt, float *y, int n_rows, int H, float eps);
+// R4.48.9.3 TEST-ONLY: the resident step's indexed depth read (its tiled scores) over host arrays: the n_pool states
+// normed on the device, then the nq queries over the n_kv rows the list ix names; out [nq][H]
+bool       gpu_ink2_test_depth_attn_ix(gpu_ink2 *h, const float *q, int nq, const float *states, int n_pool,
+                                       const int *ix, int n_kv, int H, float scale, float *out);
 bool       gpu_ink2_test_depth_attn(gpu_ink2 *h, const float *q, int nq, const float *states, int n_kv, int H, int T,
                                     float scale, float *out, int ois, int ots);
 bool       gpu_ink2_test_short_conv(gpu_ink2 *h, const float *cw, int C, int K, int T, const float *lin, float *out,

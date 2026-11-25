@@ -6114,19 +6114,41 @@ extern "C" __global__ void k_ink2_test_ptanh(const float *x, float *y, int n) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) y[i] = ink2_p_tanhf(x[i]);
 }
+// R4.48.9.3: the Inkling norms (k_ink2_msg_norm, k_ink2_rms_rows) take one BLOCK a norm. The row goes through shared
+// memory in tiles the whole block loads (coalesced), and thread 0 alone sums its squares serially in ascending order,
+// the host's order, from the same floats; the factor 1 / sqrt(ss / H + eps) is then shared and the element-independent
+// multiply spread over the block. Not one bit moves against the former one-thread-a-norm form: the sum's chain is the
+// same and each element's product is its own. (That form left a decode step's one row to one thread, whose serial H
+// loads cost about 43 ns an element on an sm_120 GPU.) Every thread of the block must reach it (the syncs): a caller
+// exits whole blocks only.
+#define INK2_NORM_TILE 1024
+static __device__ float ink2_block_norm_factor(const float *src, int H, float eps, float *tile, float *fac) {
+    float ss = 0.0f;   // thread 0's
+    for (int b0 = 0; b0 < H; b0 += INK2_NORM_TILE) {
+        const int n = H - b0 < INK2_NORM_TILE ? H - b0 : INK2_NORM_TILE;
+        for (int i = threadIdx.x; i < n; i += blockDim.x) tile[i] = src[b0 + i];
+        __syncthreads();
+        if (threadIdx.x == 0) for (int i = 0; i < n; i++) ss = __fadd_rn(ss, __fmul_rn(tile[i], tile[i]));
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) *fac = __fdiv_rn(1.0f, __fsqrt_rn(__fadd_rn(__fdiv_rn(ss, (float)H), eps)));
+    __syncthreads();
+    return *fac;
+}
 // the message step's norms, ink2_msg_norm_range: gh[row] = [norm(x[row]), norm(msg[row])], the unweighted RMS norm of
 // ink2_unweighted_norm (a serial sum of squares ascending, the mean, + eps, 1 / sqrt, one multiply an element). One
-// thread a norm: n_rows rows, each two norms (x and msg), x rows and msg rows H wide (contiguous), gh rows 2H.
+// block a norm (norm k = blockIdx.x): n_rows rows, each two norms (x and msg), x rows and msg rows H wide (contiguous),
+// gh rows 2H.
 extern "C" __global__ void k_ink2_msg_norm(const float *x, const float *msg, float *gh, int n_rows, int H, float eps) {
-    const int k = blockIdx.x * blockDim.x + threadIdx.x;
-    if (k >= 2 * n_rows) return;
+    __shared__ float tile[INK2_NORM_TILE];
+    __shared__ float fac;
+    const int k = blockIdx.x;
+    if (k >= 2 * n_rows) return;   // the whole block
     const int row = k >> 1, which = k & 1;
     const float *src = (which ? msg : x) + (ulong64)row * H;
     float *dst = gh + (ulong64)row * 2 * H + (which ? H : 0);
-    float ss = 0.0f;
-    for (int i = 0; i < H; i++) ss = __fadd_rn(ss, __fmul_rn(src[i], src[i]));
-    const float r = __fdiv_rn(1.0f, __fsqrt_rn(__fadd_rn(__fdiv_rn(ss, (float)H), eps)));
-    for (int i = 0; i < H; i++) dst[i] = __fmul_rn(src[i], r);
+    const float r = ink2_block_norm_factor(src, H, eps, tile, &fac);
+    for (int i = threadIdx.x; i < H; i += blockDim.x) dst[i] = __fmul_rn(src[i], r);
 }
 // R4.48.9 D1b: the router on the device, ink2_route_one operation for operation. Its sigmoid is 1 / (1 + p_expf(-l))
 // with pmath.h's p_expf, ported line for line as D1a's p_tanhf (the clamps, the double Horner chain with explicit
@@ -6315,17 +6337,17 @@ extern "C" __global__ void k_ink2_route_tables(const uchar *chosen, const float 
 }
 // ---- R4.48.9 D1d.1: the decode step's remaining host ops on the device, each the host function operation for
 // operation (serial sums in ascending order, explicit round-to-nearest, no contraction) ----
-// ink2_rms_norm / ink2_unweighted_norm over n_rows rows of H: one thread a row; y = x * (1 / sqrt(ss / H + eps)), then
-// (wt given) wt[i] * that, as the host's two loops
+// ink2_rms_norm / ink2_unweighted_norm over n_rows rows of H, one block a row (blockIdx.x; ink2_block_norm_factor):
+// y = x * (1 / sqrt(ss / H + eps)), then (wt given) wt[i] * that, as the host's two loops
 extern "C" __global__ void k_ink2_rms_rows(const float *x, const float *wt, float *y, int n_rows, int H, float eps) {
-    const int row = blockIdx.x * blockDim.x + threadIdx.x;
-    if (row >= n_rows) return;
+    __shared__ float tile[INK2_NORM_TILE];
+    __shared__ float fac;
+    const int row = blockIdx.x;
+    if (row >= n_rows) return;   // the whole block
     const float *src = x + (ulong64)row * H;
     float *dst = y + (ulong64)row * H;
-    float ss = 0.0f;
-    for (int i = 0; i < H; i++) ss = __fadd_rn(ss, __fmul_rn(src[i], src[i]));
-    const float r = __fdiv_rn(1.0f, __fsqrt_rn(__fadd_rn(__fdiv_rn(ss, (float)H), eps)));
-    for (int i = 0; i < H; i++) {
+    const float r = ink2_block_norm_factor(src, H, eps, tile, &fac);
+    for (int i = threadIdx.x; i < H; i += blockDim.x) {
         const float v = __fmul_rn(src[i], r);
         dst[i] = wt ? __fmul_rn(wt[i], v) : v;
     }
@@ -6365,18 +6387,37 @@ extern "C" __global__ void k_ink2_depth_attn(const float *q, const float *normed
 // D1d.3b: k_ink2_depth_attn at ONE position over states read through an index list: state j is the normed row
 // normed + ix[j] * H (the resident step's slabs, each normed once when written; the lists fixed by the forward's walk
 // and uploaded with the plan, so a read packs nothing). The arithmetic is k_ink2_depth_attn's, operation for operation.
+// R4.48.9.3: the scores through shared memory in tiles of `tile` elements (gpu side: ink2_dattn_tile): the block loads
+// a tile of q and of every listed state (coalesced; the states' rows padded by one so the per-state reads take
+// distinct banks), then thread j carries state j's dot on over the tile, ascending h, its running sum held in sc[j]
+// between tiles: the same chain as the one-pass form's, so not one bit moves. (The one-pass form read each state's row
+// one element at a time from one thread, about 21 ns an element at H = 4096 on an sm_120 GPU.) Shared memory: n_kv
+// scores, a tile of q, n_kv tiles of tile + 1.
 extern "C" __global__ void k_ink2_depth_attn_ix(const float *q, const float *normed, const int *ix, float *out, int nq,
-                                                int n_kv, int H, float scale, int ois) {
-    extern __shared__ float sc[];   // n_kv scores
+                                                int n_kv, int H, float scale, int ois, int tile) {
+    extern __shared__ float sm_dattn[];
+    float *sc = sm_dattn, *qs = sm_dattn + n_kv, *st = qs + tile;
     const int i = blockIdx.x;
-    if (i >= nq) return;
+    if (i >= nq) return;   // the whole block
     const float *qi = q + (ulong64)i * H;
-    for (int j = threadIdx.x; j < n_kv; j += blockDim.x) {
-        const float *nj = normed + (ulong64)ix[j] * H;
-        float d = 0.0f;
-        for (int h = 0; h < H; h++) d = __fadd_rn(d, __fmul_rn(qi[h], nj[h]));
-        sc[j] = __fmul_rn(d, scale);
+    for (int j = threadIdx.x; j < n_kv; j += blockDim.x) sc[j] = 0.0f;
+    for (int b0 = 0; b0 < H; b0 += tile) {
+        const int n = H - b0 < tile ? H - b0 : tile;
+        for (int t = threadIdx.x; t < n; t += blockDim.x) qs[t] = qi[b0 + t];
+        for (int e = threadIdx.x; e < n_kv * n; e += blockDim.x) {
+            const int j = e / n, t = e - j * n;
+            st[j * (tile + 1) + t] = normed[(ulong64)ix[j] * H + b0 + t];
+        }
+        __syncthreads();
+        for (int j = threadIdx.x; j < n_kv; j += blockDim.x) {
+            const float *sj = st + j * (tile + 1);
+            float d = sc[j];
+            for (int t = 0; t < n; t++) d = __fadd_rn(d, __fmul_rn(qs[t], sj[t]));
+            sc[j] = d;
+        }
+        __syncthreads();
     }
+    for (int j = threadIdx.x; j < n_kv; j += blockDim.x) sc[j] = __fmul_rn(sc[j], scale);
     __syncthreads();
     if (threadIdx.x == 0) {
         float mx = -__int_as_float(0x7f800000);

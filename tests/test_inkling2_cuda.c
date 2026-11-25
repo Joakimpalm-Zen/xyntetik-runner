@@ -1808,9 +1808,11 @@ int main(int argc, char **argv) {
 #define FTZ_OFF() ((void)0)
 #define FTZ_BACK() ((void)0)
 #endif
-        // the norm rows
-        for (int H = 64; H <= 2304; H += 2240) {
-            const int R = 6;
+        // the norm rows (R4.48.9.3: one block a row, the row staged in tiles of INK2_NORM_TILE = 1024 by a block of
+        // 256 threads: the lengths around one block's width and around the tile, beside the real width 2304)
+        static const int nh[] = { 64, 255, 256, 257, 1023, 1024, 1025, 2304 };
+        for (size_t hk = 0; hk < sizeof nh / sizeof *nh; hk++) {
+            const int H = nh[hk], R = 6;
             float *x = malloc(sizeof(float) * (size_t)R * H), *wt = malloc(sizeof(float) * (size_t)H);
             float *yd = malloc(sizeof(float) * (size_t)R * H), *yh = malloc(sizeof(float) * (size_t)R * H);
             for (int i = 0; i < R * H; i++) x[i] = RNDF();
@@ -1878,6 +1880,54 @@ int main(int argc, char **argv) {
                   lay ? "[T][nq][H]" : "[nq][T][H]", spread, dc[k].qs < 1.0f ? "" : " (want > 104: weights underflow)", nd,
                   nq * T * H);
             free(q); free(st); free(od); free(oh);
+        }
+        // (am) R4.48.9.3: the resident step's INDEXED depth read (k_ink2_depth_attn_ix, its scores through shared memory
+        // in tiles sized by the state count) against the host's depth attention over the same states in the list's
+        // order, bit for bit: one tile, a tile and a one-element tail, several tiles with a tail, the floor tile of 32
+        // (257 states), a list that skips and repeats pool rows, a zero state, and the spread whose weights underflow
+        static const struct { int nq, n_kv, n_pool, H; float qs; } ic[] = {
+            { 1, 1, 3, 1025, 0.1f }, { 1, 5, 5, 1024, 0.1f }, { 3, 12, 12, 1023, 0.1f }, { 3, 7, 9, 2304, 0.1f },
+            { 4, 26, 30, 2304, 0.1f }, { 4, 40, 41, 4096, 0.1f }, { 1, 257, 260, 64, 0.1f }, { 4, 26, 30, 2304, 60.0f } };
+        for (size_t k = 0; k < sizeof ic / sizeof *ic; k++) {
+            const int nq = ic[k].nq, nkv = ic[k].n_kv, np = ic[k].n_pool, H = ic[k].H;
+            float *q = malloc(sizeof(float) * (size_t)nq * H), *pool = malloc(sizeof(float) * (size_t)np * H);
+            float *sg = malloc(sizeof(float) * (size_t)nkv * H), *od = malloc(sizeof(float) * (size_t)nq * H);
+            float *oh = malloc(sizeof(float) * (size_t)nq * H);
+            int *ix = malloc(sizeof(int) * (size_t)nkv);
+            for (int i = 0; i < nq * H; i++) q[i] = ic[k].qs * RNDF();
+            for (int i = 0; i < np * H; i++) pool[i] = RNDF();
+            memset(pool, 0, sizeof(float) * (size_t)H);   // pool row 0: a zero state
+            for (int j = 0; j < nkv; j++) ix[j] = (int)(((size_t)j * 7 + (size_t)(np - 1)) % (size_t)np);   // skips, wraps
+            if (nkv > 2) ix[nkv - 1] = ix[0];   // a repeated row
+            for (int j = 0; j < nkv; j++) memcpy(sg + (size_t)j * H, pool + (size_t)ix[j] * H, sizeof(float) * H);
+            bool zero = false;
+            for (int j = 0; j < nkv; j++) zero |= ix[j] == 0;
+            const float scale = ink2_inv_sqrt(H);
+            double spread = 0;
+            for (int i = 0; i < nq; i++) {
+                double lo = 1e300, hi = -1e300;
+                for (int j = 0; j < nkv; j++) {
+                    const float *sj = sg + (size_t)j * H;
+                    double ss = 0, d = 0;
+                    for (int u = 0; u < H; u++) { ss += (double)sj[u] * sj[u]; d += (double)q[(size_t)i * H + u] * sj[u]; }
+                    const double s_ = scale * d / sqrt(ss / H + 1e-6);
+                    if (s_ < lo) lo = s_;
+                    if (s_ > hi) hi = s_;
+                }
+                if (hi - lo > spread) spread = hi - lo;
+            }
+            const bool ran = h && gpu_ink2_test_depth_attn_ix(h, q, nq, pool, np, ix, nkv, H, scale, od);
+            FTZ_OFF();
+            const int hb = ink2_test_depth_attn(q, nq, sg, nkv, H, oh);
+            FTZ_BACK();
+            long nd = 0;
+            for (int i = 0; ran && !hb && i < nq * H; i++) nd += !same_f(od[i], oh[i]);
+            const bool spread_ok = ic[k].qs < 1.0f || spread > 104.0;
+            CHECK(ran && !hb && nd == 0 && spread_ok && (nkv < 3 || zero), "(am) the step's indexed depth read (%d queries, "
+                  "%d of %d pool states%s, H %d, scores spread %.1f%s): %ld of %d differ from the host's (want 0)", nq, nkv,
+                  np, zero ? " with the zero state" : "", H, spread, ic[k].qs < 1.0f ? "" : " (want > 104: weights underflow)",
+                  nd, nq * H);
+            free(q); free(pool); free(sg); free(od); free(oh); free(ix);
         }
         // the short convolution with its history: one sequence through chunks (a prefill, a chunk, decode steps
         // around the ring), the device's history carried between calls as the host's is
