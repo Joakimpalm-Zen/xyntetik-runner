@@ -46,7 +46,10 @@ Each directory holds:
 read `<lab>/`. After packaging, five files' wording was changed to remove
 internal names, and their `FILES.sha256` entries were updated. Those files are
 the three `uncommitted-records.sha256` annotations and two run-script comments.
-No figure changed.
+In the gold JSONs, the `hf` and `corpus` fields named the run's local copies.
+They now name the publisher checkpoint at the revision above, and the corpus at
+its repository path; their `FILES.sha256` entries were updated too. No figure
+changed: each `bar-b` output reproduces from the edited files.
 
 On the 7B, llama.cpp was also read on a copy of the Q8_0 file with only
 `olmo2.rope.scaling.attn_factor` set to 1.0 (SHA256

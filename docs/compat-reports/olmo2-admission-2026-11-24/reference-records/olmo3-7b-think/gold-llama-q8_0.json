@@ -2,8 +2,8 @@
   "schema_version": "xyntetik.runner.gold-logits.v4",
   "summary": {
     "positions": 2000,
-    "hf": "<lab>/files/olmo/allenai_Olmo-3-7B-Think",
-    "corpus": "<lab>/wt-main-f3ff8e84/tests/fixtures/gold-corpus-2k.txt",
+    "hf": "allenai/Olmo-3-7B-Think@d97e442d7cc678210054dbcc9b440894d62c89a4",
+    "corpus": "tests/fixtures/gold-corpus-2k.txt",
     "reference_class": "Olmo3ForCausalLM",
     "reference_logits": "scored rows only",
     "special_prefix_tokens": 0,
