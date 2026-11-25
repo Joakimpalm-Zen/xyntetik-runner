@@ -323,7 +323,9 @@ typedef struct ink2_share {
     int n_views;     // the views in the copy (the small tensors are device tensors n_views..)
     int step_base;   // D1d.3b: the resident step's small tensors are device tensors step_base.. (-1: none up)
     int refs;
-    char why[200];   // 'C': the sentence each instance says
+    // 'C': the sentence each instance says. Sized for the longest: share_place's do-not-fit sentence, 182 fixed bytes
+    // with a device name of up to 159 (cuda_bind's dev[160]) and its numbers, at most 363 bytes with the NUL
+    char why[512];
     struct ink2_share *next;
 } ink2_share;
 static pthread_mutex_t g_share_mu = PTHREAD_MUTEX_INITIALIZER;
