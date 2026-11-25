@@ -5801,7 +5801,7 @@ extern "C" __global__ void k_ink2_swiglu_n(float *act, int F, int cs, float gc, 
         }                                                                                                           \
     }
 // a dense product: tile blockIdx.y = columns 16 y .. (a.batch in all; a.xs / a.ys the column strides)
-extern "C" __global__ void k_mv_nvfp4_b(MV_PARAMS, float scale) {
+extern "C" __global__ void k_ink2_mv_nvfp4_b(MV_PARAMS, float scale) {
     const int c0 = (int)blockIdx.y * 16, cnt = a.batch - c0 < 16 ? a.batch - c0 : 16;
     const float *xt = x + (ulong64)c0 * a.xs;
     float *yt = y + (ulong64)c0 * a.ys;

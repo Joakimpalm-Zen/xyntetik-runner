@@ -12989,7 +12989,7 @@ gpu_ink2 *gpu_ink2_bind(void) {
         if (cu.ModuleGetFunction(&h->mvseg[ms[k].type], h->mod, ms[k].name) != 0) h->mvseg[ms[k].type] = NULL;
     if (cu.ModuleGetFunction(&h->f_scatter_pos, h->mod, "k_moe_scatter_pos") != 0) h->f_scatter_pos = NULL;
     if (cu.ModuleGetFunction(&h->mvb_bf16, h->mod, "k_mv_bf16_b") != 0) h->mvb_bf16 = NULL;
-    if (cu.ModuleGetFunction(&h->mvb_nvfp4, h->mod, "k_mv_nvfp4_b") != 0) h->mvb_nvfp4 = NULL;
+    if (cu.ModuleGetFunction(&h->mvb_nvfp4, h->mod, "k_ink2_mv_nvfp4_b") != 0) h->mvb_nvfp4 = NULL;
     if (cu.ModuleGetFunction(&h->mvsegb_nvfp4, h->mod, "k_mvsegb_nvfp4") != 0) h->mvsegb_nvfp4 = NULL;
     if (cu.ModuleGetFunction(&h->f_msgnorm, h->mod, "k_ink2_msg_norm") != 0) h->f_msgnorm = NULL;
     if (cu.ModuleGetFunction(&h->f_msgcomb, h->mod, "k_ink2_msg_comb") != 0) h->f_msgcomb = NULL;
@@ -13089,7 +13089,7 @@ static bool ink2_mv_cols_xs(gpu_ink2 *h, int type, CUdeviceptr w, uint64_t w_off
         (void)scale;   // BF16 takes no factor (gpu_ink2_lin refuses one)
         return ok;
     }
-    // P1b: the same for NVFP4 (k_mv_nvfp4_b, 8 rows a 256-thread block, the factor its trailing parameter)
+    // P1b: the same for NVFP4 (k_ink2_mv_nvfp4_b, 8 rows a 256-thread block, the factor its trailing parameter)
     if (type == T_NVFP4 && n >= INK2_MVB_MIN && h->mvb_nvfp4 && !h->mv_ref) {
         mv_args a = { n_in, n_out, w_off, 0, n, xs, n_out };
         void *p[] = { &w, &x, &y, &a, &x, &scale };

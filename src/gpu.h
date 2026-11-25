@@ -819,7 +819,7 @@ bool       gpu_ink2_test_short_conv(gpu_ink2 *h, const float *cw, int C, int K, 
                                     int p0, float *hist, float div);
 bool       gpu_ink2_test_add_softcap(gpu_ink2 *h, const float *a, const float *b, float *sum, float *v, int n, float cap);
 // TEST-ONLY (P1a): on (1), every product runs as one batch-1 launch per column (the reference); off (0), a BF16
-// or NVFP4 product of at least 16 columns runs batched (k_mv_bf16_b, k_mv_nvfp4_b; the expert body's NVFP4 tiles,
+// or NVFP4 product of at least 16 columns runs batched (k_mv_bf16_b, k_ink2_mv_nvfp4_b; the expert body's NVFP4 tiles,
 // k_mvsegb_nvfp4; BF16 experts stay per column), the same bits
 void       gpu_ink2_test_mv_ref(gpu_ink2 *h, int on);
 // TEST-ONLY: the products run batched so far (each batched dense product and each tiled expert product counts once),

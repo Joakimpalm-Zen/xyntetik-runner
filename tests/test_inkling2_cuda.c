@@ -450,7 +450,7 @@ done:
     return diff;
 }
 
-// P1a/P1b (i2): a BF16 or NVFP4 product through gpu_ink2_lin at T columns, batched (k_mv_bf16_b / k_mv_nvfp4_b from 16
+// P1a/P1b (i2): a BF16 or NVFP4 product through gpu_ink2_lin at T columns, batched (k_mv_bf16_b / k_ink2_mv_nvfp4_b from 16
 // columns) against every column its own batch-1 launch (TEST-ONLY gpu_ink2_test_mv_ref), bit for bit; random weights
 // (BF16: exponents kept sane; NVFP4: random codes, scale bytes in a sane range, the factor 0.75) and dense random x.
 // *nval the values compared; returns the values whose bits differ, -1 if a call did not run.
