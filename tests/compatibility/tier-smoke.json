@@ -5382,7 +5382,36 @@
     "olmo-2-0425-1b-instruct-f16": {
       "ctx": 4096,
       "n_predict": 600,
-      "pins": {},
+      "pins": {
+        "macos-arm64-metal/metal": {
+          "path": "tests/compatibility/tier-smoke/olmo-2-0425-1b-instruct-f16.macos-arm64-metal.metal.txt",
+          "sha256": "5ede65273868fbf74071f9b8becf9af6c68c5bc4f08234db125fb8d7e820ae96",
+          "bytes": 1476,
+          "finish_reason": "stop",
+          "completion_tokens": 324,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 600,
+            "ctx": 4096,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {}
+          },
+          "pinned": {
+            "date": "2026-11-25",
+            "runner_version": "1.21.0",
+            "commit": "1af81e9c3ae12437b70b7a80bcabd9d2c52bb726",
+            "build": {
+              "binary_sha256": "a88614d342ee22c3c94f7c00f41d11696ad7472c7215d56c9f96b06eedf4fc9c",
+              "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+              "commit": "1af81e9c3ae12437b70b7a80bcabd9d2c52bb726",
+              "dirty": false
+            }
+          }
+        }
+      },
       "pending_pins": {
         "macos-arm64-metal/cpu": {
           "sha256": "TODO-macos-arm64-metal",
