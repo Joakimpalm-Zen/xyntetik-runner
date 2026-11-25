@@ -667,12 +667,12 @@ static int dev_step(void *dev, int p0, const float *emb_row, float *logits) {
     return 0;
 }
 static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
-    // until the whole CUDA forward is built (R4.48.9 G2b) the route is opt-in: G2a runs only the products on the
-    // device, so a default GPU load keeps the CPU
+    // The fast CUDA route remains opt-in, including a resident decode step when placement permits;
+    // a default GPU-allowed load still uses the CPU.
     const char *on = getenv("RUNNER_INKLING2_CUDA");
     if (!on || strcmp(on, "1")) {
-        fprintf(stderr, "note: inkling2_loop runs on the CPU (its CUDA route is not complete; RUNNER_INKLING2_CUDA=1 "
-                        "runs its products on the device, the rest of the forward on the CPU)\n");
+        fprintf(stderr, "note: inkling2_loop runs on the CPU by default; RUNNER_INKLING2_CUDA=1 opts the fast route "
+                        "into CUDA, including a resident decode step when placement permits\n");
         return 0;
     }
     if (r->route != 'F') {
@@ -841,9 +841,9 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
         r->step_fail_at = sf && *sf ? atol(sf) : -1;
     }
     fprintf(stderr, "inkling2_loop: the weights on CUDA (%s): %d tensors, %.3f GB, their stored rows%s; their products "
-                    "on the device%s, the rest of the forward on the CPU (R4.48.9 G2b)%s%s\n", dev, r->n_dev,
+                    "on the device%s; attention blocks and resident decode when enabled%s%s\n", dev, r->n_dev,
             gpu_ink2_bytes(r->gpu) / 1e9, made ? "" : ", shared with this file's other instances",
-            sh->exp_dev ? " and each layer's expert body whole (the router on the host)" : "",
+            sh->exp_dev ? " and each layer's expert body whole" : "",
             sh->placed == 'M' ? "; the expert stacks on the host" : "", r->no_factor ? "; TEST-ONLY: the expert factor left out" : "");
     return 1;
 }
