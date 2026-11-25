@@ -293,8 +293,10 @@ LayerNorm), so they have no device route to promote.
 
 **Limits first:** only Q8_0 is promoted. Other olmo2 weight types keep the
 scalar default until their own rows are measured. These are tolerance
-measurements, not bit identity. The prefill speed row at 512 and 2,048 tokens
-on the sm_120 Windows CUDA host is still pending; no speedup is claimed here.
+measurements, not bit identity. The speed evidence covers one system with
+an sm_120 GPU; the 1B decode spread is wider with TC on. At 512 tokens,
+TC-on prefill is still 0.27x (1B) and 0.29x (7B) llama.cpp `b12640`'s
+throughput; that comparison is context, not part of the promotion bar.
 `RUNNER_CUDA_TC=0` keeps the scalar route; `=1` forces a candidate on.
 
 The file is `unsloth/Olmo-3-7B-Think-GGUF` at
@@ -330,6 +332,32 @@ on margin-qualified top-1 finding it worse at p < 0.05. The measured ratio is
 0.9933; Wilcoxon z 1.630, p 0.103; McNemar 0 / 0 discordant, p 1.0. Pass.
 Plain top-1 is disclosed beside the margin-qualified count, not substituted
 for that bar. No claim of statistically significant improvement is made.
+
+
+#### Speed gate (2026-11-25)
+
+A clean STRICT build of `db58bb2b`, one binary, on an sm_120 GPU: TC on
+(the default) against `RUNNER_CUDA_TC=0`, five interleaved rounds. The table
+reports medians and observed [min-max] ranges, in tokens per second. Every
+route line matched its arm: `tc=taken` for the default, `tc=off` for the
+opt-out. The files are OLMo-2-0425-1B-Instruct Q8_0 and the exact
+Olmo-3-7B-Think Q8_0 file identified above (`3a4d7dda`).
+
+| File | Workload | TC on, median [min-max] tok/s | TC off, median [min-max] tok/s | On / off |
+|---|---|---|---|---|
+| OLMo-2-0425-1B-Instruct Q8_0 | Prefill 512 | 7,238.5 [7,075.7-7,342.3] | 990.5 [985.1-1,003.5] | 7.31x |
+| OLMo-2-0425-1B-Instruct Q8_0 | Prefill 2048 | 4,929.9 [4,882.1-4,969.6] | 931.0 [930.2-935.0] | 5.30x |
+| OLMo-2-0425-1B-Instruct Q8_0 | Decode 128 after 512 | 290.9 [283.1-293.6] | 292.1 [291.4-293.1] | 0.996x |
+| Olmo-3-7B-Think Q8_0 | Prefill 512 | 1,700.5 [1,675.3-1,712.1] | 187.4 [187.3-187.7] | 9.07x |
+| Olmo-3-7B-Think Q8_0 | Prefill 2048 | 1,210.4 [1,203.3-1,212.4] | 178.0 [177.2-178.1] | 6.80x |
+| Olmo-3-7B-Think Q8_0 | Decode 128 after 512 | 65.6 [65.4-65.6] | 65.5 [65.5-65.6] | 1.001x |
+
+The speed bar was set before measuring: the median prefill rate must be
+faster at both 512 and 2048 on both files, and median decode at least 0.98x
+the opt-out. All six comparisons pass. The wider 1B TC-on decode range is
+disclosed; the bar is on medians, not a claim about every individual round.
+The llama.cpp `b12640` context above is separate from these on/off gates and
+from the earlier float32-reference comparison against `56eea9e4`.
 
 `tests/test_tc_olmo2_promotion.py` compiles the real CUDA policy functions on
 a host without a device, proving Q8_0 alone is promoted and non-matrix tensors

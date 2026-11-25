@@ -4728,8 +4728,8 @@ static bool tc_promoted(const model_t *m, int type) {
         if (strcmp(m->arch, archs[i]) == 0) return true;
     // Promoted for exactly the types its row's file exercised. Float32-reference
     // and speed rows: spark2_5 Q4_K/Q6_K, clef Q8_0/Q4_K. olmo2 Q8_0 joins on
-    // test_tc_tol and its float32-reference row (R4.50.9); its speed row is
-    // pending. Evidence: docs/tc-promotion-evidence.md. k2-horizon and stablelm run on the CPU
+    // test_tc_tol, float32-reference and measured speed rows (R4.50.9).
+    // Evidence: docs/tc-promotion-evidence.md. k2-horizon and stablelm run on the CPU
     // on a CUDA build (grouped RMSNorm, LayerNorm), so they have no route here.
     static const struct { const char *arch; int types[3]; } scoped[] = {
         { "spark2_5", { T_Q4_K, T_Q6_K, -1 } },
