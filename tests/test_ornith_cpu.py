@@ -16,10 +16,11 @@ sys.path.insert(0, str(ROOT / "tests" / "conformance"))
 
 from harness import KeptProcessLog, scaled_timeout  # noqa: E402
 
-# R6.127: the fake servers' interpreter. In a Windows virtual environment sys.executable is a launcher that runs the
-# real interpreter as its own child, so kill() and wait() reach the launcher while the interpreter still holds the
-# server log's handle, and unlinking the log fails (WinError 32). The base interpreter is the process itself; the fake
-# servers import only sys and time, so they need nothing from the environment. Outside a venv this is sys.executable.
+# R6.127: the interpreter of the children these tests kill and whose log they then delete (the fake servers and the
+# timeout case's sleepers). In a Windows virtual environment sys.executable is a launcher that runs the real interpreter
+# as its own child, so kill() and wait() reach the launcher while the interpreter still holds the log's handle, and
+# deleting the log fails (WinError 32), at once or after a race. The base interpreter is the process itself; these
+# children import only sys and time, so they need nothing from the environment. Outside a venv this is sys.executable.
 _SERVER_PY = getattr(sys, "_base_executable", sys.executable)
 
 
@@ -349,7 +350,7 @@ def test_ornith_timeout_scales_and_keeps_child_output(monkeypatch):
     """R6.117: timeouts scale via RUNNER_TEST_TIMEOUT_SCALE and keep child logs."""
     monkeypatch.setenv("RUNNER_TEST_TIMEOUT_SCALE", "6")
     rc, out, _ = _run_runner(
-        [sys.executable, "-c",
+        [_SERVER_PY, "-c",
          "import sys, time; time.sleep(0.25); sys.stdout.write('ok\\n')"],
         timeout_s=0.1,
     )
@@ -358,7 +359,7 @@ def test_ornith_timeout_scales_and_keeps_child_output(monkeypatch):
     monkeypatch.setenv("RUNNER_TEST_TIMEOUT_SCALE", "1")
     with pytest.raises(pytest.fail.Exception) as excinfo:
         _run_runner(
-            [sys.executable, "-c",
+            [_SERVER_PY, "-c",
              "import sys, time; "
              "sys.stdout.write('partial-out\\n'); sys.stdout.flush(); "
              "sys.stderr.write('partial-err\\n'); sys.stderr.flush(); "
