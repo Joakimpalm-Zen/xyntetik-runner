@@ -20,6 +20,7 @@ import time
 # path has not put the directory on sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from file_digest import sha256_file  # noqa: E402
+from cpu_cuda_check import PASSING  # noqa: E402  (the passing check statuses: pass, pass_margin_qualified)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -713,7 +714,8 @@ def main(argv=None):
         # Never let a declared check be silently absent from the report — an
         # omitted check reads as "fine". Every check the manifest declares but
         # this run did not execute is recorded explicitly as not_executed, and
-        # the model is "complete" only when all of them ran and passed.
+        # the model is "complete" only when all of them ran and passed: a status cpu_cuda_check.PASSING names
+        # (pass, or cpu_cuda's margin-qualified pass), never only the strict one (R4.50.6.1).
         declared = entry.get("checks", [])
         for name in declared:
             reason = (path_reason if path is None else
@@ -723,7 +725,7 @@ def main(argv=None):
             item["checks"].setdefault(
                 name, {"status": "not_executed", "reason": reason})
         item["complete"] = bool(declared) and all(
-            item["checks"][name].get("status") == "pass" for name in declared)
+            item["checks"][name].get("status") in PASSING for name in declared)
         report["models"].append(item)
 
     report["complete"] = bool(report["models"]) and all(

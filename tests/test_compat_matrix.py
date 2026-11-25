@@ -1177,3 +1177,33 @@ def test_no_two_manifest_paths_are_one_file_on_a_case_insensitive_file_system():
     Qwen2.5-1.5B-Instruct-Q8_0.gguf were the first such pair (R4.39.2)."""
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     assert casefold_collisions([m["file"] for m in manifest["models"]]) == []
+
+
+@pytest.mark.parametrize("status,complete", [("pass_margin_qualified", True), ("fail", False)])
+def test_completeness_counts_the_passing_statuses_cpu_cuda_check_defines(monkeypatch, tmp_path, status, complete):
+    """A model is complete when every declared check passed, and `pass_margin_qualified` is a passing status:
+    cpu_cuda_check.py exits 0 on it and certify-envelope.py gates it as a pass (owner-ratified 2026-08-20;
+    dense models since 2026-10-02). The matrix counted only "pass", so a run whose every check passed read
+    incomplete (R4.50.6.1, the 7B Think row: 8 of 9 exact and one near tie in the band). A failing check
+    still leaves it incomplete."""
+    module = load_module()
+    monkeypatch.setattr(module, "run_cpu_cuda",
+                        lambda runner, model, params, timeout, report_dir=None, model_id=None: {"status": status})
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"fixture model")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({
+        "schema_version": "xyntetik.runner.model-compat.v2",
+        "models": [{
+            "id": "m", "architecture": "llama", "file": str(model),
+            "sha256": hashlib.sha256(model.read_bytes()).hexdigest(),
+            "checks": ["cpu_cuda"],
+            "check_params": {"cpu_cuda": {"tokens": 128, "pins": {"X": "1"}, "min_prompt_tokens": 24}},
+        }],
+    }), encoding="utf-8")
+    out = tmp_path / "report.json"
+    rc = module.main(["--manifest", str(manifest), "--models-root", str(tmp_path), "--runner", str(tmp_path / "runner"),
+                      "--verify-files", "--execute-checks", "--require-complete", "--out", str(out)])
+    report = json.loads(out.read_text(encoding="utf-8"))
+    assert report["models"][0]["checks"]["cpu_cuda"]["status"] == status
+    assert (report["models"][0]["complete"], report["complete"], rc == 0) == (complete, complete, complete), (rc, report)
