@@ -7,6 +7,7 @@ the GPU trainer does not keep. fp4 KV can amplify different product sums
 across backends at wide direct-model batches; the compact-cache CPU/Metal
 identity gate covers batches below 8 and decode. The 7B Q8_0 file cannot fit
 with runtime state on the owned 8 GB macos-arm64-metal device.
+The smoke stores no route trace, so its byte match does not establish TC-prefill byte identity.
 
 ## Reference and bar
 
@@ -68,7 +69,7 @@ R4.50.10 (#1029) supplies the native `olmo2` chat template: 16 of 16 cases
 match the publisher and file in text and tokens. The two gates are separate:
 the raw forward's float32 bar does not certify chat rendering. Template
 conformance and the Instruct file's own bar both passed before this row
-replaced the base file. The backend smoke cells are still unrecorded.
+replaced the base file. The class/backend outcomes are recorded below; the four Linux comparisons remain pending.
 
 ## Base 1B: separate numerical evidence
 
@@ -140,12 +141,12 @@ output SHA256 and each gate/adapter answer must come from those commands.
 |---|---|---|
 | olmo-2-0425-1b-instruct-f16 | macos-arm64-metal / cpu | Pass: unchanged request after RAM was freed, own pin and clean-rebuild comparison |
 | olmo-2-0425-1b-instruct-f16 | macos-arm64-metal / metal | Pass: exact pin comparison, 2026-11-25, clean build d00dbcdd |
-| olmo-2-0425-1b-instruct-f16 | windows-x86_64-cuda / cuda | Release-recipe pin committed; --record comparison pending |
+| olmo-2-0425-1b-instruct-f16 | windows-x86_64-cuda / cuda | Pass: clean release-recipe ed21a886 comparison on an sm_120 GPU |
 | olmo-2-0425-1b-instruct-f16 | linux-x86_64-cuda / cpu | Release-recipe pin committed; --record comparison pending |
 | olmo-2-0425-1b-instruct-f16 | linux-x86_64-cuda / cuda | Release-recipe pin committed; --record comparison pending |
 | olmo-3-7b-think-q8_0 | linux-x86_64-cuda / cpu | Release-recipe pin committed; --record comparison pending |
 | olmo-3-7b-think-q8_0 | linux-x86_64-cuda / cuda | Release-recipe pin committed; --record comparison pending |
-| olmo-3-7b-think-q8_0 | windows-x86_64-cuda / cuda | Release-recipe pin committed; --record comparison pending |
+| olmo-3-7b-think-q8_0 | windows-x86_64-cuda / cuda | Pass: clean release-recipe ed21a886 comparison on an sm_120 GPU |
 | olmo-3-7b-think-q8_0 | macos-arm64-metal / metal | Limit: the file plus runtime state does not fit the owned 8 GB macos-arm64-metal device |
 
 ### macos-arm64-metal recording, 2026-11-25
@@ -217,3 +218,20 @@ promotion. The upcoming CUDA Q8_0 comparisons use the merged default and
 report any byte mismatch; they do not force the prior scalar route. The
 measured promotion bar and its limits are in the
 [tensor-core evidence](../../tc-promotion-evidence.md#olmo2-q8_0-r4509-2026-11-24).
+
+### Windows release-recipe comparisons
+
+The clean STRICT release-recipe `ed21a886` build, binary SHA256 prefix
+`40d68bbf`, reproduced both Windows CUDA pins and the tool recorded both
+passes. These runs used an sm_120 GPU; the class checks OS, architecture and
+backend rather than the descriptive hardware text. The generated cells,
+including their captured GPU-name fields, are retained exactly as written.
+The 7B adapter answer is the file's own `--adapt-info` result, not a claim
+that GPU training is admitted.
+
+The short-prompt match has no retained route line or dispatch counter and
+therefore does not establish that TC prefill ran or that its bytes match the
+scalar path. The prefill may have stayed below the route's column threshold;
+that explanation is plausible, not established by this smoke. The measured
+TC accuracy and speed gates remain separate. Four Linux comparisons are
+still pending.

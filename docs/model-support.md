@@ -573,14 +573,14 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>OLMo 2 / OLMo 3</b>, 2 models: CPU 🟨 1 of 2 · CUDA - · Metal 🟨 1 of 2 · Train 🟨 1 of 2</summary>
+<summary><b>OLMo 2 / OLMo 3</b>, 2 models: CPU 🟨 1 of 2 · CUDA ✅ · Metal 🟨 1 of 2 · Train ✅</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td colspan="5"><b>OLMo 2 0425 1B Instruct</b></td></tr>
-<tr><td><a href="#olmo-2-0425-1b-instruct-f16"><code>OLMo-2-0425-1B-Instruct-F16.gguf</code></a></td><td nowrap>✅ 1.21.0<br>2026-11-25</td><td></td><td nowrap>✅ 1.21.0<br>2026-11-25</td><td nowrap>✅ 1.21.0<br>2026-11-25</td></tr>
+<tr><td><a href="#olmo-2-0425-1b-instruct-f16"><code>OLMo-2-0425-1B-Instruct-F16.gguf</code></a></td><td nowrap>✅ 1.21.0<br>2026-11-25</td><td nowrap>✅ 1.21.0<br>2026-11-25</td><td nowrap>✅ 1.21.0<br>2026-11-25</td><td nowrap>✅ 1.21.0<br>2026-11-25</td></tr>
 <tr><td colspan="5"><b>OLMo 3 7B Think</b></td></tr>
-<tr><td><a href="#olmo-3-7b-think-q8_0"><code>Olmo-3-7B-Think-Q8_0.gguf</code></a></td><td></td><td></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td></td></tr>
+<tr><td><a href="#olmo-3-7b-think-q8_0"><code>Olmo-3-7B-Think-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.21.0<br>2026-11-25</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.21.0<br>2026-11-25</td></tr>
 </tbody>
 </table>
 </details>
@@ -2280,17 +2280,17 @@ Against its own publisher float32 reference Runner reads 1.0642e-04 mean KL and 
 - **Numerical anchor (a publisher float32 comparison exists):** Publisher's reference: allenai/OLMo-2-0425-1B-Instruct at 48d788eca847d4d7548f375ad03d3c9312f6139e, float32 checkpoint loaded in float32 (no tensors cast), transformers-main 046bdb8 (5.24.0.dev0), torch 2.14.0+cpu, CPU with 16 threads. Runner f3ff8e84 CPU, default f16 KV: mean KL 1.0642e-04 [6.1904e-05, 1.5615e-04], plain top-1 100%, margin-qualified 100%. Second read: llama.cpp 56eea9e4 on this exact Instruct F16 file, mean KL 1.1261e-04 [6.6509e-05, 1.6433e-04], plain top-1 100%, margin-qualified 100%. Both read 2000 gold-corpus-2k positions at stride 2, context 4096. The 95% intervals overlap, satisfying the predeclared bar. The llama.cpp read matches 2000/2000 positions by token id, with 10 spelling mismatches and no dropped mass. OLMo 2 Instruct template conformance: 16/16 cases in text and tokens (R4.50.10). Record: docs/compat-reports/olmo2-admission-2026-11-24/README.md#olmo-2-instruct.
 - **Context tested:** 4096.
 - **Known limitations:** LoRA training runs on the CPU only; --train-gpu is refused because the gradient gate needs f32 KV rows, which the GPU trainer does not keep. Compact KV CPU/Metal identity is gated below batch 8 and in decode; at wider direct-model batches fp4 KV can amplify different product sums across backends. This is not a task-quality claim. OLMo 3 refuses a non-default YaRN attn_factor and either model refuses experts. Its native template offers no OpenAI tool protocol; those requests are refused by name.
-- **Still missing:** TODO-linux-x86_64-cuda: linked raw reference/bootstrap records; linux-x86_64-cuda CPU/CUDA and windows-x86_64-cuda CUDA release-recipe comparisons and recorded cells remain pending. Task quality and live modern tool use are not claimed.
+- **Still missing:** TODO-linux-x86_64-cuda: linked raw reference/bootstrap records; The four linux-x86_64-cuda CPU/CUDA release-recipe comparisons and recorded cells remain pending. Task quality and live modern tool use are not claimed.
 - **Evidence:** [docs/compat-reports/olmo2-admission-2026-11-24/README.md](compat-reports/olmo2-admission-2026-11-24/README.md).
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.21.0 on 2026-11-25.
 - **CPU:** ✅ v1.21.0 2026-11-25 on macos-arm64-metal at commit `fb0be48b3ae0`, output sha256 `5ede65273868fbf7`, [pin](../tests/compatibility/tier-smoke/olmo-2-0425-1b-instruct-f16.macos-arm64-metal.cpu.txt)
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.21.0 2026-11-25 on windows-x86_64-cuda at commit `ed21a886220d`, output sha256 `5ede65273868fbf7`, [pin](../tests/compatibility/tier-smoke/olmo-2-0425-1b-instruct-f16.windows-x86_64-cuda.cuda.txt)
 - **Metal:** ✅ v1.21.0 2026-11-25 on macos-arm64-metal at commit `d00dbcdd6c23`, output sha256 `5ede65273868fbf7`, [pin](../tests/compatibility/tier-smoke/olmo-2-0425-1b-instruct-f16.macos-arm64-metal.metal.txt)
 - **CPU attempt (macos-arm64-metal, 2026-11-25):** the unchanged 1,800-second request timed out under paging after 324 generated tokens at 0.2 tok/s and 50,540,623 page-ins. The loader reported 3.0 GB of weights against 1.5 GB available RAM. No CPU pin, comparison or cell was produced; the Metal result is not inherited.
-- **Comparison pending (windows-x86_64-cuda/cuda):** the release-recipe pin is committed; the clean-rebuild --record comparison has not run. Pinning alone is not validation.
 - **Comparison pending (linux-x86_64-cuda/cpu):** the release-recipe pin is committed; the clean-rebuild --record comparison has not run. Pinning alone is not validation.
 - **Comparison pending (linux-x86_64-cuda/cuda):** the release-recipe pin is committed; the clean-rebuild --record comparison has not run. Pinning alone is not validation.
 - **CPU retry (macos-arm64-metal):** after RAM was freed, the unchanged request passed its own pin and clean-rebuild byte comparison. Earlier timeout evidence remains separate. System-wide memory free percentage: 57% Free + inactive before the pin: 138399 pages of 16384 bytes.
+- **Windows comparison (windows-x86_64-cuda):** the clean release-recipe ed21a886 build on an sm_120 GPU reproduced this file's committed reply bytes, and the tool recorded pass. The smoke stores no route trace; this is not TC-prefill byte-identity evidence.
 - **LoRA training:** supported (runner 1.21.0, 2026-11-25).
 - **LoRA adapter serving:** supported (runner 1.21.0, 2026-11-25).
 
@@ -2308,17 +2308,19 @@ The 7B file exceeds the owned 8 GB macos-arm64-metal device; Metal is a declared
 - **Features claimed:** text, adapters, reasoning. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Publisher's reference: allenai/Olmo-3-7B-Think at d97e442d7cc678210054dbcc9b440894d62c89a4, BF16, upcast to float32 at use, transformers-main 046bdb8 (5.24.0.dev0), CPU. Runner mean KL 1.3671e-03 [1.1975e-03, 1.5472e-03], plain top-1 98.55%, margin-qualified 100%. Second read: llama.cpp 56eea9e4 on this same GGUF and positions, mean KL 9.1434e-02 [8.5543e-02, 9.8364e-02], plain top-1 85.25%, margin-qualified 95.77%. Default KV f16, gold-corpus-2k, 2000 scored positions at stride 2, context 4096. Admission requires 100% margin-qualified top-1 and no wholly worse separated KL interval than llama.cpp. Record: docs/compat-reports/olmo2-admission-2026-11-24/README.md.
 - **Context tested:** 4096.
-- **Known limitations:** LoRA training runs on the CPU only; --train-gpu is refused because the gradient gate needs f32 KV rows, which the GPU trainer does not keep. Compact KV CPU/Metal identity is gated below batch 8 and in decode; at wider direct-model batches fp4 KV can amplify different product sums across backends. This is not a task-quality claim. OLMo 3 refuses a non-default YaRN attn_factor and either model refuses experts. Modern OpenAI tools, tool_calls and tool-role messages are refused by name; its native template fields are rendered without translating them into a tool protocol.
-- **Still missing:** TODO-linux-x86_64-cuda: linked raw reference/bootstrap records; linux-x86_64-cuda CPU/CUDA and windows-x86_64-cuda CUDA release-recipe comparisons and recorded cells remain pending. Task quality and live modern tool use are not claimed.
+- **Known limitations:** LoRA training runs on the CPU only; --train-gpu is refused because the gradient gate needs f32 KV rows, which the GPU trainer does not keep. Compact KV CPU/Metal identity is gated below batch 8 and in decode; at wider direct-model batches fp4 KV can amplify different product sums across backends. This is not a task-quality claim. OLMo 3 refuses a non-default YaRN attn_factor and either model refuses experts. Modern OpenAI tools, tool_calls and tool-role messages are refused by name; its native template fields are rendered without translating them into a tool protocol. The short-prompt smoke stores no route trace, so matching reply bytes do not establish TC-prefill byte identity.
+- **Still missing:** TODO-linux-x86_64-cuda: linked raw reference/bootstrap records; The four linux-x86_64-cuda CPU/CUDA release-recipe comparisons and recorded cells remain pending. Task quality and live modern tool use are not claimed.
 - **Evidence:** [docs/compat-reports/olmo2-admission-2026-11-24/README.md](compat-reports/olmo2-admission-2026-11-24/README.md).
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; no run recorded yet.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.21.0 2026-11-25 on windows-x86_64-cuda at commit `ed21a886220d`, output sha256 `89360cee1c4ce4b6`, [pin](../tests/compatibility/tier-smoke/olmo-3-7b-think-q8_0.windows-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): The measured Q8_0 file is 7.76 GB; it cannot fit with its runtime state on the owned 8 GB macos-arm64-metal device. No larger owned Metal class is recorded. This is a file/hardware limit, not a missing olmo2 Metal implementation.
 - **Chat smoke request:** the initial 600-token linux-x86_64-cuda CPU/CUDA attempts reached the cap with empty content and wrote no pin. The fixed rerun uses max_tokens 3072, context 4096, the same greedy prompt and fact/length guards, and no ignored thinking flag. Pin and comparison on that class both use taskset -c 0-15; no per-backend request tuning.
 - **Comparison pending (linux-x86_64-cuda/cpu):** the release-recipe pin is committed; the clean-rebuild --record comparison has not run. Pinning alone is not validation.
 - **Comparison pending (linux-x86_64-cuda/cuda):** the release-recipe pin is committed; the clean-rebuild --record comparison has not run. Pinning alone is not validation.
-- **Comparison pending (windows-x86_64-cuda/cuda):** the release-recipe pin is committed; the clean-rebuild --record comparison has not run. Pinning alone is not validation.
+- **Windows comparison (windows-x86_64-cuda):** the clean release-recipe ed21a886 build on an sm_120 GPU reproduced this file's committed reply bytes, and the tool recorded pass. The smoke stores no route trace; this is not TC-prefill byte-identity evidence.
+- **LoRA training:** supported (runner 1.21.0, 2026-11-25).
+- **LoRA adapter serving:** supported (runner 1.21.0, 2026-11-25).
 
 ### Ornith 1.5
 
