@@ -12,10 +12,12 @@ and additive protocol support, with the 1.x interface promises unchanged.
 candidate unpublished; its final published banner and the release date
 remain for the actual cut.
 
-`python3 scripts/changelog-entries.py fold --write` assembled 42 entries:
-41 pending entries from the cut plus a new R4.48.24 result entry. Only the
+`python3 scripts/changelog-entries.py fold --write` assembled 43 entries:
+41 pending entries from the cut plus R4.48.24 and release Claim 1 result
+entries. The Claim 1 correction preserves the pre-registered result first
+and labels erratum 3 as decided after the verdicts. Only the
 release heading and fresh empty Unreleased heading were added outside the
-fold. The folded body was compared with all 42 source texts in the tool's
+fold. The folded body was compared with all 43 corrected source texts in the tool's
 order. `changes/README.md` remains; no pending entry is left behind.
 
 ## Dry-run status

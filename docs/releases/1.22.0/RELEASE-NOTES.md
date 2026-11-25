@@ -1,8 +1,11 @@
 # 1.22.0 release notes (draft, not published)
 
-**Limits first:** Inkling's measured CPU prefill remains 0.70x llama.cpp's,
-and Claim 1 follows the publisher's greedy sequence on 99/100 prompts,
-not all 100. Inkling CUDA is opt-in, with its speed result scoped to one
+**Limits first:** Claim 1 measures complete greedy-sequence identity, not
+task quality. Its pre-registered result is Runner 40/100 versus llama.cpp
+20/100, including 58 incomplete Runner records. Erratum 3, decided after
+the verdicts, reports 94/100 versus 20/100 after completing the omitted
+stop-token positions; it is reported beside, not instead of, that result.
+Inkling's measured CPU prefill remains 0.70x llama.cpp's. Inkling CUDA is opt-in, with its speed result scoped to one
 Q8_K_XL file and an aligned build; the available Windows device's 12 GB
 cannot hold either admitted Inkling file. OLMo GPU training is refused,
 compact KV has a cross-backend limit, and the 7B file does not fit the 8 GB
@@ -43,17 +46,57 @@ and the 100 answers' deterministic fields; decode was 12.05 against
 12.217 tok/s (0.986x). These are not faster-than-llama.cpp claims.
 [File identity, reference configuration, intervals and the full limits](../../inkling2-cpu-default.md).
 
-### Claim 1: greedy identity, not task quality
+### Claim 1: Runner versus llama.cpp
 
-Fast followed the publisher's greedy sequence on 99/100 primary prompts;
-reference followed 98/100. Teacher-forced verifier v2 checks every token,
-including the stop token, under the engine's generated prefix. The paired
-table is 98 both, one fast-only, zero reference-only and one neither.
-The difference is +1 percentage point, Newcombe 95% [-3.18, +5.78]
-percentage points; exact McNemar p = 1.0: a statistical tie. The fast miss is
-c1_090 at token 88. No encoding discrepancy, incomplete sequence, exact-tie
-position or head-shape flag was reported. This is neither a 100% identity
-claim nor an assessment that 99 answers are correct.
+**Limits:** this is complete greedy-sequence identity to the publisher's
+float32 reference on 100 pre-registered prompts, not task quality. The
+original Runner measurement and its post-verdict correction are distinct;
+neither is R4.48.24's newer fast-versus-reference-route comparison.
+The exact UD-Q8_K_XL file was run greedily, at most 256 tokens, with
+`reasoning_effort=low`, and verified by teacher-forced reference forwards.
+
+| Analysis, in reporting order | Runner identical / 100 [95% Wilson] | llama.cpp identical / 100 [95% Wilson] |
+|---|---|---|
+| Pre-registered result, unchanged | 40/100 [0.309, 0.498] | 20/100 [0.133, 0.289] |
+| Erratum 3, decided after the verdicts | 94/100 [0.875, 0.972] | 20/100 [0.133, 0.289] |
+
+**Pre-registered paired result:** +0.200, Newcombe Method 10 95% interval
+[+0.049, +0.339], exact McNemar p = 0.0135, outcome **higher**. The paired
+table is zero both, 40 Runner-only, 20 llama.cpp-only and 40 neither.
+Runner had 58 incomplete records; llama.cpp had no incomplete record and
+one encoding discrepancy. These are the result and counting rule as
+pre-registered, reported first and unchanged.
+
+**Erratum 3 disclosure, decided after the verdicts:** Runner's v1 client
+stored the receipt's generated IDs without the stop token even though the
+response separately recorded `stop_token_id`. Its 58 early-stopped answers
+therefore failed the completeness rule. The erratum read that field from
+the original records and appended the omitted stop token; no prompt,
+engine answer, setting, metric or llama.cpp record was changed. Of the
+58 completed sequences, 40 were teacher-forced afresh and 18 reused verified
+rows for token-identical llama.cpp sequences, including the final stop.
+The other 42 Runner sequences and all llama.cpp sequences were unchanged.
+
+The resulting 94/100 versus 20/100 is the adjacent erratum figure, not a
+replacement pre-registered verdict. Its paired difference is +0.740,
+Newcombe 95% [+0.626, +0.816], exact McNemar p = 2.039e-20; the paired table
+is 18 both, 76 Runner-only, two llama.cpp-only and four neither. Future
+cells use the v2 client, which retains the stop token. These figures refer
+to the original Claim 1 records; they are not a new measurement of the
+candidate fast route.
+
+### Shipped fast route: separate R4.48.24 rule (3) result
+
+R4.48.24 used the prompt set to check the proposed fast CPU default against
+Runner's reference-route baseline. Each route was scored against the
+publisher's greedy reference: fast 99/100, Runner reference 98/100. This is
+the CPU-default gate, not release Claim 1's Runner-versus-llama.cpp result.
+The paired table is 98 both, one fast-only, zero reference-only and one
+neither; difference +1 percentage point, Newcombe 95% [-3.18, +5.78]
+percentage points, exact McNemar p = 1.0: a statistical tie. It does not
+show fast is better. The fast miss is c1_090 at token 88. No encoding
+discrepancy, incomplete sequence, exact-tie position or head-shape flag was
+reported in that separate run.
 
 ### Inkling's opt-in CUDA route
 

@@ -7,11 +7,14 @@ Prepares 1.22.0 from `83da2dc3`: a compatible minor release for Inkling 2
 Mini and OLMo 2/3 support and new execution paths. Version pins are a separate
 commit (`0ea15c6e`); README calls the candidate unpublished and keeps 1.21.0
 identified as the last published release. The house fold tool assembled
-all 41 pending entries plus the run-3 result entry, without hand-merging
+all 41 pending entries plus the run-3 and release Claim 1 result entries, without hand-merging
 bodies. The provisional date is to be confirmed at the actual cut.
 
 The [notes draft](RELEASE-NOTES.md) leads with limits and includes the
-Inkling fast CPU default's run-3 verdict/figures and Claim 1 result, the
+Inkling fast CPU default's run-3 verdict/figures, separately from release
+Claim 1's Runner-versus-llama.cpp comparison (pre-registered 40/100 versus
+20/100 first; erratum 3's 94/100 versus 20/100 beside it, decided after the
+verdicts), the
 scoped opt-in CUDA measurement, OLMo backend/CPU-training admission and the
 7B bar, Q8_0 tensor-core prefill, and Windows gate test fixes. The
 [site-copy draft](SITE-DRAFT.md) leads with the feature claim and keeps its

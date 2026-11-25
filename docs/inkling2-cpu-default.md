@@ -2,8 +2,9 @@
 
 **Limits first:** on the measured 16-thread CPU path, prefill at 512 tokens
 is 52.7 tok/s against llama.cpp's 75.5 (0.70x); decode is 11.77 against
-12.154 tok/s (0.968x). The fast route follows the publisher's greedy sequence
-on 99 of 100 Claim 1 prompts, not all 100. These are dated measurements on
+12.154 tok/s (0.968x). The separate R4.48.24 route gate
+records fast 99/100 versus Runner reference 98/100 against the publisher,
+not release Claim 1's Runner-versus-llama.cpp result. These are dated measurements on
 one file and build, not task-quality scores or measurements of a future
 release artifact. The CUDA route is a separate [opt-in](inkling2-cuda.md).
 
@@ -58,7 +59,11 @@ The live 8-bit activation control failed both: chat mean KL 1.556592e-02,
 was reported. The fast chat rows were byte-identical at 1, 4 and 16 threads;
 observed pool counters were serial at 1 and split over the requested 4/16.
 
-## Claim 1: greedy sequence identity
+## Shipped fast route: R4.48.24 rule (3), not release Claim 1
+
+This is the CPU-default comparison with Runner's reference-route baseline.
+Release Claim 1 instead compares Runner with llama.cpp and reports its
+pre-registered result before the separately labelled post-verdict erratum.
 
 Teacher-forced verification v2 checks every generated token, including the
 stop token, against the publisher's greedy next token under that exact
@@ -89,7 +94,7 @@ not decide the 16-thread decode rule. The speed comparator was llama.cpp
 not a faster-than-llama.cpp claim.
 
 On the final rebased source at `1fb25712`, four fast row captures and the
-100 Claim 1 answers' deterministic fields reproduced run 3. The 16-thread
+100 run-3 answer captures' deterministic fields reproduced run 3. The 16-thread
 decode reproduction was 12.05 against 12.217 tok/s (0.986x). Wall time and
 signed receipts were excluded from the answer comparison. This rebase
 check used the same native recipe; release-artifact gates remain separate.
