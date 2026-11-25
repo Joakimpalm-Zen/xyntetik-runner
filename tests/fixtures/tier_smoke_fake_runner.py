@@ -74,6 +74,12 @@ if "--serve" in argv:
         if os.environ.get("FAKE_RUNNER_FALLBACK"):
             print("gpu: this model's MoE router has no Metal kernel - using CPU",
                   file=sys.stderr, flush=True)
+        elif os.environ.get("FAKE_RUNNER_INKLING2"):
+            if os.environ.get("RUNNER_INKLING2_CUDA") == "1":
+                print("inkling2_loop: the weights on CUDA (Fake CUDA): 12 tensors, 0.001 GB, their stored rows; "
+                      "their products on the device", file=sys.stderr, flush=True)
+            else:
+                print("note: inkling2_loop runs on the CPU", file=sys.stderr, flush=True)
         else:
             print("gpu: Metal backend on Fake M (zero-copy weights)",
                   file=sys.stderr, flush=True)

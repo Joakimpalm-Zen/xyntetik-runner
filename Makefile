@@ -389,6 +389,8 @@ TEST_INK2_POOL_BENCH_BIN = $(TEST_BATCH:test-batch%=test-ink2-pool-bench-bin%)
 TEST_NVFP4_DOT = $(TEST_BATCH:test-batch%=test-nvfp4-dot%)
 TEST_INKLING2_VMATH = $(TEST_BATCH:test-batch%=test-inkling2-vmath%)
 TEST_SEND_ERROR = $(TEST_BATCH:test-batch%=test-send-error%)
+TEST_INKLING2_CUDA = test-inkling2-cuda-bin
+BENCH_INKLING2_CUDA_CORE = bench-inkling2-cuda-core-bin
 TEST_SLOW_NOTE = $(TEST_BATCH:test-batch%=test-slow-note%)
 
 # Every module header, so a change to any of them rebuilds. runner.h was one
@@ -2174,6 +2176,42 @@ $(TEST_INK2_POOL_BENCH_BIN): $(TEST_INK2_POOL_BENCH_SRC) $(HDR)
 .PHONY: test-ink2-pool-bench
 test-ink2-pool-bench: $(TEST_INK2_POOL_BENCH_BIN)
 	./$(TEST_INK2_POOL_BENCH_BIN)
+
+# R4.48.9: Inkling 2 Mini on CUDA, G1 (the weights on the device) and G2 (the forward against the CPU engine) on the
+# tiny file with each dense type (tests/inkling2_tiny.py). A device target, as the other test-cuda-* ones: not in
+# make test; exit 77 without the CUDA backend or a CUDA device. On a CUDA build RUNNER_GPU_LOCK names the lock file held
+# with flock for the run (the lab box's protocol: one CUDA process at a time), and the cgroup's memory.current is
+# logged first; another backend's build says SKIP (CUDA-only backend) and exits 0 without running the binary or
+# flock (stock macOS has none), as the house's other backend-only targets do.
+TEST_INKLING2_CUDA_SRC = tests/test_inkling2_cuda.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                         $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
+INKLING2_TINY_CUDA = $(INKLING2_TINY_DENSE) test-inkling2-tiny-f16.gguf test-inkling2-tiny-lora.gguf
+# the tiny model's LoRA adapter (an explicit rule: it is not a --dense variant)
+test-inkling2-tiny-lora.gguf: tests/inkling2_tiny.py
+	$(PYTHON) tests/inkling2_tiny.py $@ --lora
+$(TEST_INKLING2_CUDA): $(TEST_INKLING2_CUDA_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_INKLING2_CUDA_SRC) -o $@ $(LDFLAGS)
+.PHONY: test-inkling2-cuda
+test-inkling2-cuda: $(TEST_INKLING2_CUDA) $(INKLING2_TINY_CUDA)
+	@awk '{printf "memory.current %.2f GiB\n", $$1 / 1073741824}' /sys/fs/cgroup/memory.current 2>/dev/null || true
+ifeq ($(GPU_BACKEND_DEF),-DRUNNER_GPU_CUDA)
+	flock $${RUNNER_GPU_LOCK:-/tmp/runner-gpu.lock} ./$(TEST_INKLING2_CUDA) $(INKLING2_TINY_CUDA)
+else
+	@echo "inkling2 cuda: SKIP (CUDA-only backend)"
+endif
+# R4.48.9: a BENCH, not a test (not in make test): the device attention core at a decode step on Inkling 2 Mini's
+# attention shape, the production pair against the TEST-ONLY reference kernel (tests/bench_inkling2_cuda_core.c)
+BENCH_INKLING2_CUDA_CORE_SRC = tests/bench_inkling2_cuda_core.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                               $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
+$(BENCH_INKLING2_CUDA_CORE): $(BENCH_INKLING2_CUDA_CORE_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(BENCH_INKLING2_CUDA_CORE_SRC) -o $@ $(LDFLAGS)
+.PHONY: bench-inkling2-cuda-core
+bench-inkling2-cuda-core: $(BENCH_INKLING2_CUDA_CORE)
+ifeq ($(GPU_BACKEND_DEF),-DRUNNER_GPU_CUDA)
+	flock $${RUNNER_GPU_LOCK:-/tmp/runner-gpu.lock} ./$(BENCH_INKLING2_CUDA_CORE)
+else
+	@echo "inkling2 cuda core bench: SKIP (CUDA-only backend)"
+endif
 
 TEST_MODEL_LOAD_FAILURE_SRC = tests/test_model_load_failure.c $(OBJDIR)/gguf.o \
                               $(OBJDIR)/compat.o $(QUANTS_OBJ) $(OBJDIR)/model.o $(INKLING2_OBJS) \
@@ -5222,7 +5260,7 @@ clean:
 	      $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_TOOLS) $(DIFFTOK) \
 	      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
 	      $(TEST_QUANTIZE) $(TEST_KVSNAP_REPLACE) $(TEST_PARTIAL_FDOPEN) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
-	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_INKLING2_THREADS) test-inkling2-threads.out $(TEST_INKLING2_FAST) test-inkling2-fast.out $(TEST_INKLING2_VMATH) test-inkling2-vmath.out $(INKLING2_TINY_DENSE) $(TEST_INK2_POOL_BENCH_BIN) $(TEST_NVFP4_DOT) test-nvfp4-dot.out $(TEST_INKLING2) $(TEST_INKLING2_PROVIDER) $(TEST_INKLING2_GGUF) $(INKLING2_READ) $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) \
+	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_INKLING2_THREADS) test-inkling2-threads.out $(TEST_INKLING2_FAST) test-inkling2-fast.out $(TEST_INKLING2_VMATH) test-inkling2-vmath.out $(INKLING2_TINY_DENSE) $(TEST_INK2_POOL_BENCH_BIN) test-inkling2-tiny-f16.gguf test-inkling2-tiny-lora.gguf $(TEST_INKLING2_CUDA) $(BENCH_INKLING2_CUDA_CORE) $(TEST_NVFP4_DOT) test-nvfp4-dot.out $(TEST_INKLING2) $(TEST_INKLING2_PROVIDER) $(TEST_INKLING2_GGUF) $(INKLING2_READ) $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) \
 	      $(TEST_FILE_ID) test-file-identity.tmp \
 	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_LONGROPE) $(TEST_PREFILL_BATCH) $(TEST_CUDA_LONGROPE) $(TEST_CUDA_BATCH_COLS) $(TEST_CUDA_BATCH_Q35) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
 	      $(TMPL_CONF_RENDER) \

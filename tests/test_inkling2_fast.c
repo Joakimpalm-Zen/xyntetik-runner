@@ -105,6 +105,45 @@ static ink2_status long_rows(const char *path, int fast, int threads, float *row
     return st;
 }
 
+// (n)'s run: application app's attention (ink2_attention, the file's own weights) into a fresh cache over PO_T1
+// positions from 0 under the TEST-ONLY relative probe (eps != 0), with its buffer failed when oom
+// (RUNNER_TEST_INK2_ALLOC_FAIL=rel_probe); then PO_T2 more positions, the probe off. The two statuses, n_past after
+// the first call, whether the first call left its output untouched, and the second call's rows into out2.
+enum { PO_T1 = 8, PO_T2 = 4 };
+static void probe_oom_run(const ink2_shape *s, const ink2_weights *w, int app, int oom, ink2_status st[2], int *n_past1,
+                          int *out1_kept, float *out2) {
+    const int H = s->hidden, T = PO_T1 + PO_T2;
+    const size_t TH = (size_t)T * H;
+    float *x = malloc(sizeof(float) * TH * 3), *o1 = malloc(sizeof(float) * (size_t)PO_T1 * H),
+          *d = malloc(sizeof(float) * (size_t)PO_T1 * H);
+    ink2_cache c;
+    st[0] = st[1] = INK2_BAD_INPUT;
+    *n_past1 = -1;
+    *out1_kept = 0;
+    if (!x || !o1 || !d || ink2_cache_init(&c, s, 64) != 0) { free(x); free(o1); free(d); return; }
+    uint32_t r = 777u + (uint32_t)app;
+    for (size_t i = 0; i < TH * 3; i++) { r = r * 1103515245u + 12345u; x[i] = (float)((r >> 9) & 0xffffu) / 65536.0f - 0.5f; }
+    for (size_t i = 0; i < (size_t)PO_T1 * H; i++) { d[i] = (i & 1) ? 1.0f : -1.0f; o1[i] = 1234.5f; }
+    const float *xq = x, *xk = x + TH, *xv = x + 2 * TH;
+    int pos[PO_T1 + PO_T2];
+    for (int t = 0; t < T; t++) pos[t] = t;
+    ink2_rel_probe rp = { .app = app, .eps = 1e-3f, .d = d, .xq_in = NULL, .g_rel = NULL };
+    ink2_set_rel_probe(&rp);
+    plat_setenv("RUNNER_TEST_INK2_REL_PROBE", "1");
+    plat_setenv("RUNNER_TEST_INK2_ALLOC_FAIL", oom ? "rel_probe" : "");
+    st[0] = ink2_attention(s, w, &c, app, PO_T1, pos, xq, xk, xv, o1, NULL);
+    plat_setenv("RUNNER_TEST_INK2_ALLOC_FAIL", "");
+    plat_setenv("RUNNER_TEST_INK2_REL_PROBE", "");
+    ink2_set_rel_probe(NULL);
+    *n_past1 = c.n_past[app];
+    *out1_kept = 1;
+    for (size_t i = 0; i < (size_t)PO_T1 * H; i++) if (o1[i] != 1234.5f) { *out1_kept = 0; break; }
+    const size_t o = (size_t)PO_T1 * H;
+    st[1] = ink2_attention(s, w, &c, app, PO_T2, pos + PO_T1, xq + o, xk + o, xv + o, out2, NULL);
+    ink2_cache_free(&c);
+    free(x); free(o1); free(d);
+}
+
 int main(int argc, char **argv) {
     if (argc < 4) { fprintf(stderr, "usage: %s TINY_F32.gguf TINY_BF16.gguf TINY_Q8_0.gguf\n", argv[0]); return 2; }
     plat_setenv("INK2_PAR_MIN", "1");
@@ -408,6 +447,46 @@ int main(int argc, char **argv) {
             free(r1);
             free(r4);
         }
+    // (n) R4.48.9 (the rebase's second read): when the TEST-ONLY relative probe's buffer cannot be allocated
+    // (RUNNER_TEST_INK2_ALLOC_FAIL=rel_probe), the attention call fails AFTER the slot has taken the chunk, in main's
+    // order: its K/V rows are written and n_past = p0 + T, the output untouched. The next chunk then continues (it is
+    // not a rewind) and its rows equal the same run's without the failure byte for byte. (The CUDA route's shared tail
+    // had moved the slot's update past the probe: n_past stayed at p0 behind convolution histories that had taken the
+    // chunk.) On the F32 file, both routes, the first application and the first full one.
+    for (int fast = 1; fast >= 0; fast--) {
+        ink2_shape s;
+        char why[256];
+        ink2g *g = ink2g_open(argv[1], &s, why, sizeof why);
+        if (!g) { CHECK(0, "(n) the F32 file opens: %s", why); continue; }
+        ink2g_set_route(g, fast, 0);
+        ink2_weights w;
+        ink2g_weights(g, &w);
+        int apps[2] = { 0, -1 };
+        for (int a = 1; a < s.n_app && apps[1] < 0; a++) if (s.block_global[s.app_block[a]]) apps[1] = a;
+        for (int k = 0; k < 2; k++) {
+            if (apps[k] < 0) continue;
+            const int a = apps[k];
+            float *rr = malloc(sizeof(float) * (size_t)PO_T2 * s.hidden), *ro = malloc(sizeof(float) * (size_t)PO_T2 * s.hidden);
+            if (!rr || !ro) { CHECK(0, "(n) the rows allocate"); free(rr); free(ro); continue; }
+            ink2_status sr[2], so[2];
+            int npr, npo, keptr, kepto;
+            probe_oom_run(&s, &w, a, 0, sr, &npr, &keptr, rr);
+            probe_oom_run(&s, &w, a, 1, so, &npo, &kepto, ro);
+            CHECK(sr[0] == INK2_OK && sr[1] == INK2_OK && npr == PO_T1,
+                  "(n) %s route, application %d: without the failure both chunks run (status %d / %d, n_past %d)",
+                  fast ? "fast" : "reference", a, (int)sr[0], (int)sr[1], npr);
+            CHECK(so[0] == INK2_BAD_INPUT && kepto && npo == PO_T1,
+                  "(n) %s route, application %d: the probe's buffer failed, the call fails with the slot advanced "
+                  "(status %d, n_past %d, want %d; output untouched %d)",
+                  fast ? "fast" : "reference", a, (int)so[0], npo, PO_T1, kepto);
+            CHECK(so[1] == INK2_OK && sr[1] == INK2_OK && !memcmp(ro, rr, sizeof(float) * (size_t)PO_T2 * s.hidden),
+                  "(n) %s route, application %d: the next chunk continues (status %d) with rows byte-identical to the "
+                  "run without the failure", fast ? "fast" : "reference", a, (int)so[1]);
+            free(rr);
+            free(ro);
+        }
+        ink2g_close(g);
+    }
     ink2_set_threads(1);
     printf(fails ? "FAIL %d\n" : "PASS\n", fails);
     return fails ? 1 : 0;

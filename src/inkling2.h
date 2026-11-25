@@ -84,7 +84,134 @@ void ink2_set_test_par_hook(void (*fn)(void *ctx), void *ctx);
 typedef struct {
     const char *name; const float *data; int n_dims; int64_t ne[4];
     int qtype; const void *q; size_t q_row_bytes; const float *q_scale; int q_act8;
+    void *dev; int dev_i;   // R4.48.9: the view's device copy (the binder's handle, its index), or NULL
 } ink2_tensor;
+// R4.48.9: the device functions are the INSTANCE's, never process-wide: ink2_tensor.dev and ink2_cache.dev point at
+// the binder's instance, which begins with an ink2_dev_hdr whose ops (read-only, set before any view is marked) the
+// engine calls. A bind in one instance therefore writes nothing another instance's forward reads (the second read of
+// G2b 2a: process-wide hook pointers were written by each bind while other instances' forwards read them).
+// The device product: a view with dev set runs its linear operation through ops->lin (the same arguments as the
+// engine's ink2_lin, x and y with their strides); nonzero is a device failure, and the output is then NaN so no row
+// passes for the device's. A view without dev: the CPU.
+typedef int (*ink2_dev_lin_fn)(const ink2_tensor *W, int64_t row0, int n_out, int n_in, int T, const float *x,
+                               size_t x_stride, float *y, size_t y_stride, float scale);
+// R4.48.9 G2b step 1: the device expert body. On the fast route, when both of a layer's expert stacks (t13 gate_up
+// [E][2F][H], t2 down [E][H][F]) have dev set, ink2_experts_fast hands the whole body to ops->experts: x [T][H], the
+// router's chosen [T][E] (0/1) and wt [T][E], out [T][H] (it writes it whole). The host router stays the CPU route's
+// code. It returns 0 (done), 1 (this instance keeps the CPU body) or below 0 (a device failure: out is then NaN, as
+// for a failed product). NULL ops->experts: the CPU body.
+typedef int (*ink2_dev_experts_fn)(const ink2_shape *s, const ink2_tensor *t13, const ink2_tensor *t2, int T,
+                                   const float *x, const unsigned char *chosen, const float *wt, float *out);
+// R4.48.9 G2b step 2a: the device attention core. For a cache whose dev is set (its binder's instance), the engine
+// computes Q [T][Q], the new K and V [T][C], the relative bias bank [T][nh][ext] and the sinks [T][nh] on the host as
+// before and hands the core to ops->attn with that instance: its device ring takes the K and V, and it writes att
+// [T][Q]; 0 (done; the host K/V ring is not written), 1 (this instance keeps the host core and its host ring) or
+// below 0 (a device failure: att is then NaN). NULL, or a cache without dev: the host core.
+typedef struct { int nh, nkv, hd, C, Q, window, global, ext; float scale; } ink2_attn_dims;
+typedef int (*ink2_dev_attn_fn)(void *dev, int app, const ink2_attn_dims *d, int T, const int *pos,
+                                const float *q, const float *k, const float *v, const float *rl, const float *sk,
+                                float *att);
+// R4.48.9 G2b step 2b: the whole attention block on the device. For a cache whose dev is set, before any host work,
+// the engine offers ops->block one application's block: its inputs xq, xk, xv [T][H] (a sliding layer's are the same
+// pointer), its sizes and factors, its views by role (q, k, v, the full layer's dynamic taps kd and vd or NULL, the
+// bank's linear r, the sinks s, the gate g, the output o) and its small F32 tensors (q scale, k and v taps, the
+// bank's scale and proj), and whether a LoRA adapter is active. It returns 0 (done: out [T][H] written, the device
+// rings and histories hold the chunk), 1 (the engine runs its own path: 2a's), below 0 (a device failure: out is NaN;
+// -2: refused with a sentence, the forward refuses).
+typedef struct {
+    int app, T; const int *pos; const float *xq, *xk, *xv; float *out; int lora;
+    int H, nh, nkv, hd, K, dr, ext, window, global;
+    float scale, qk_clip, rel_clip, eps, log_alpha, log_floor;
+    const ink2_tensor *v[9];    // q, k, v, kd, vd, r, s, g, o
+    const ink2_tensor *f[5];    // q scale, k taps, v taps, bank scale, bank proj
+} ink2_block_call;
+// R4.48.9 D1d.3b: the decode step's plan, every tensor one application of the forward reads, resolved ONCE by the
+// engine's own binds (ink2_attn_bind, ink2_moe_bind, the forward's names), so a resident step reads exactly what
+// ink2_decoder_layer_lora does. The block call's views and dimensions are filled; its T, positions, rows are not.
+typedef struct {
+    int block, global, loop, boundary;   // the application's block; a full layer; a loop class; a block boundary
+    int n_read;                          // attention_input's queries: 1 sliding, 3 full (layer 0 reads none: x itself)
+    const ink2_tensor *read_q;           // model.layers.b.attention_input.query (NULL at layer 0)
+    const ink2_tensor *norm[3];          // q / k / v input norms (sliding: input_layernorm in [0], [1] and [2] NULL)
+    const ink2_tensor *mlp_q;            // mlp_input.query
+    const ink2_tensor *post_norm;        // post_attention_layernorm
+    const ink2_tensor *gate[4][3];       // a loop layer's q, k, v, mlp message gates: down, forget, message (else NULL)
+    const ink2_tensor *conv[2];          // post_attention_convolution / post_mlp_convolution conv1d weights
+    ink2_block_call blk;                 // the attention block (the views, the dimensions)
+    const ink2_tensor *router, *t13, *t2;   // the expert layer: the router's view, the stacks (the fast route's views)
+    const float *br;                     // the router's bias
+} ink2_step_app;
+typedef struct {
+    const ink2_tensor *embed, *embed_norm, *final_q, *norm, *msg_q, *head;
+    ink2_step_app *app;                  // [n_app], the caller's
+    int n_app;
+} ink2_step_plan;
+// (ink2_step_plan_build and ink2_cache_post_hist: declared after ink2_weights and ink2_cache, below)
+typedef int (*ink2_dev_block_fn)(void *dev, const ink2_block_call *b);
+// TEST-ONLY: how many times the host ran an attention block's q/k/v/bank work in this process (step 2b's check)
+long ink2_attn_host_glue_calls(void);
+// R4.48.9 D1a: one message step of the loop's message gates (ink2_message_steps_c's fast path) offered to the device
+// when its weights' views are a device instance's: per role (n_roles <= 3) the down, forget and message gate views,
+// x rows [T][H], message rows at stride msg_stride, out [T][H] (host memory). The op returns 0 (done), 1 (the host
+// path), below 0 (a device failure: the outputs are NaN).
+typedef struct {
+    int n_roles, T, H, r;
+    float eps;
+    const ink2_tensor *wd[3], *wf[3], *wg[3];
+    const float *const *xs, *const *msgs;
+    size_t msg_stride;
+    float *const *outs;
+} ink2_msg_call;
+typedef int (*ink2_dev_msg_fn)(void *dev, const ink2_msg_call *m);
+// R4.48.9 D1b: one application's expert layer offered whole (the router, then the expert body) when its views are a
+// device instance's: the router's F32 rows wr [E][H] and bias br [E], the stacks, the layer's input x [T][H] (normed)
+// and out [T][H]; chosen [T][E] and margin [T] non-NULL when the selection observer wants them. The op returns 0
+// (done), 1 (the host path: the router on the host, then the experts op), below 0 (a device failure: out is NaN).
+typedef struct {
+    const ink2_shape *s;
+    const ink2_tensor *wr, *t13, *t2;
+    const float *br;
+    int T;
+    const float *x;
+    float *out;
+    unsigned char *chosen;
+    float *margin;
+} ink2_moe_call;
+typedef int (*ink2_dev_moe_fn)(void *dev, const ink2_moe_call *m);
+// TEST-ONLY: how many times the host router ran (D1b's check that it did not on the CUDA route)
+long ink2_route_host_calls(void);
+// TEST-ONLY: how many times the host ran a message step's fast path in this process (D1a's check that it did not);
+// and the engine's p_tanhf as compiled in inkling2.c (the reference of the device port)
+long ink2_msg_host_calls(void);
+float ink2_test_p_tanhf(float x);
+float ink2_test_p_expf(float x);
+// TEST-ONLY (D1d.1): the decode step's remaining ops as the forward runs them (the device ports' reference): the RMS
+// norm of one row (wt NULL: unweighted); the depth attention of one position (states [n_kv][H] -> out [nq][H], 0 or
+// -1); the short convolution over T positions with its history and the history store (hist NULL: none); the softcap
+void ink2_test_rms_norm(const float *x, int n, float eps, const float *wt, float *y);
+int ink2_test_depth_attn(const float *q, int nq, const float *states, int n_kv, int H, float *out);
+void ink2_test_short_conv(const float *cw, int C, int K, int T, const float *lin, float *out, int p0, float *hist);
+float ink2_test_softcap(float v, float cap);
+// R4.48.9 D1d.3b: the whole forward of ONE position on the device (the resident decode step): emb_row [hidden] is the
+// token's embedding row as the forward dequantizes it, logits [vocab_used] the softcapped row out. 0 done (every
+// application's slot then holds p0 + 1), 1 not taken (the forward runs as before), -1 a device failure. p0 -1 (and
+// NULL rows): no step, the forward is about to run on the host's state; the binder brings what it keeps on the device
+// there first (1, or -1 on a failure).
+typedef int (*ink2_dev_step_fn)(void *dev, int p0, const float *emb_row, float *logits);
+typedef struct ink2_dev_ops { ink2_dev_lin_fn lin; ink2_dev_experts_fn experts; ink2_dev_attn_fn attn;
+                              ink2_dev_block_fn block; ink2_dev_msg_fn msg; ink2_dev_moe_fn moe;
+                              ink2_dev_step_fn step; } ink2_dev_ops;
+typedef struct { const ink2_dev_ops *ops; } ink2_dev_hdr;   // the first member of every binder's instance
+// TEST-ONLY: how many times the host attention core ran in this process (G2b step 2a's check that it did not)
+long ink2_attn_host_core_calls(void);
+// TEST-ONLY: how many host product ranges ran over a view a device instance holds (0 on the CUDA route: every such
+// product goes to the device, fused decode or not)
+long ink2_host_dev_products(void);
+// TEST-ONLY: the router's selections as the fast route made them, for the selection-agreement observable: per call,
+// the layer (block), T positions, chosen [T][E] and margin [T] (the k-th chosen score + bias minus the best unchosen
+// one: how near the selection was to flipping). NULL (the default): nothing is computed.
+typedef void (*ink2_sel_obs_fn)(void *ctx, int block, int T, int E, const unsigned char *chosen, const float *margin);
+void ink2_set_sel_observer(ink2_sel_obs_fn fn, void *ctx);
 typedef const ink2_tensor *(*ink2_lookup_fn)(void *ctx, const char *name);
 // OPTIONAL: one expert of an expert stack (`model.layers.<b>.mlp.experts.gate_up_proj` [E][2F][H] or `.down_proj`
 // [E][H][F]), as a 2-D tensor (ne[0] the stack's ne[0], ne[1] its ne[1]): the same float32 values as row e of the
@@ -93,6 +220,16 @@ typedef const ink2_tensor *(*ink2_lookup_fn)(void *ctx, const char *name);
 // The pieces hold at most two expert results at a time (the expert's gate_up_proj, then its down_proj).
 typedef const ink2_tensor *(*ink2_expert_fn)(void *ctx, const char *stack_name, int e);
 typedef struct { ink2_lookup_fn get; void *ctx; ink2_expert_fn get_expert; } ink2_weights;
+// TEST-ONLY (D1b): the host router itself (ink2_route_one) at T positions of x [T][H], router rows wr [E][H] and bias
+// br [E] (the shape's n_expert, n_used, route_scale): scores sc [T][E], choices chosen [T][E], weights wt [T][E]; B1's
+// reference
+void ink2_test_route(const ink2_shape *s, const float *wr, const float *br, int T, const float *x, float *sc,
+                     unsigned char *chosen, float *wt);
+// TEST-ONLY (D1a): the host message step itself (ink2_message_steps_c) on the given weights, the device op bypassed:
+// the reference the device message step is held to bit for bit
+ink2_status ink2_test_message_steps(const ink2_shape *s, const ink2_weights *w, int block, const char *const *roles,
+                                    int n_roles, int T, const float *const *xs, const float *const *msgs,
+                                    size_t msg_stride, float *const *outs);
 
 // The cache, indexed by APPLICATION. Each application owns its K and V rows and its convolution histories; two
 // passes over one physical layer never share a slot.
@@ -126,6 +263,8 @@ typedef struct {
     size_t work_fwd_cap, work_dl_cap, work_op_cap;
     float *work_route;       // the MoE layer's routing tables over T positions (R4.48.20.4); as work_op
     size_t work_route_cap;
+    void *dev;               // R4.48.9 G2b step 2a: the device binder's instance whose rings hold this cache's K/V
+                             // (its ink2_dev_hdr's ops get it), or NULL: the host rings above
 } ink2_cache;
 int  ink2_cache_init(ink2_cache *c, const ink2_shape *s, int n_ctx);
 // The same with each SLIDING application's K and V held for the window only: window - 1 + max_chunk rows that slide
@@ -248,6 +387,12 @@ ink2_status ink2_forward_chunk(const ink2_shape *s, const ink2_weights *w, ink2_
                                const int *ids, float *logits, int flags, float *app_states);
 // Same forward with an optional LoRA adapter (`lora` may be NULL) and optional expert selection output.
 // `logits` may be NULL to skip the final norm and lm_head pass (when caller recomputes head downstream).
+// R4.48.9 D1d.3b: the decode step's plan (ink2_step_plan above). p->app must hold s->n_app entries; INK2_NO_TENSOR
+// names nothing (the caller then declines the resident step)
+ink2_status ink2_step_plan_build(const ink2_shape *s, const ink2_weights *w, ink2_step_plan *p);
+// the post convolutions' host histories of application app (k 0: post_attention, 1: post_mlp): conv_k - 1 rows of
+// hidden floats, position u's row at u % (conv_k - 1); NULL without one
+float *ink2_cache_post_hist(const ink2_shape *s, ink2_cache *c, int app, int k);
 ink2_status ink2_forward_chunk_lora(const ink2_shape *s, const ink2_weights *w, const ink2_lora *lora, ink2_cache *c,
                                     int p0, int T, const int *ids, float *logits, int flags, float *app_states,
                                     int *app_sel);

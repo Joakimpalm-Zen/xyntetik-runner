@@ -63,4 +63,10 @@ char ink2g_expert_kind(const ink2g *g, int b);
 void ink2g_set_route(ink2g *g, int fast, int act8);
 // the float32 bytes of decoded matrices (the projections, the head, the embedding): 0 on the fast route
 size_t ink2g_matrix_bytes(const ink2g *g);
+// R4.48.9: on the fast route, every view (the matrices and both expert stacks of every layer), each once, to fn; the
+// stacks are served first if not yet; then (D1b) each layer's router, in layer order, as its decoded float32 rows
+// (t.data, no q: the floats the host router reads). 0, -1 (a stack or router missing, or fn's nonzero).
+int ink2g_each_view(ink2g *g, int (*fn)(void *c, const ink2_tensor *t), void *c);
+// R4.48.9: mark view t (one ink2g_get served) as held on the device (ink2_tensor.dev, dev_i); dev NULL unmarks. 0, -1.
+int ink2g_set_dev(ink2g *g, const ink2_tensor *t, void *dev, int dev_i);
 #endif

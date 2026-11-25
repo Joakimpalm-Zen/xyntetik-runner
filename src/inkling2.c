@@ -176,6 +176,12 @@ static float *ink2_conv_hist(const ink2_shape *s, ink2_cache *c, int app, int id
     if (!c || s->conv_k <= 1 || !c->conv[app]) return NULL;
     return c->conv[app] + (size_t)idx * (size_t)(s->conv_k - 1) * (size_t)ink2_conv_width(s, app);
 }
+// R4.48.9 D1d.3b (inkling2.h): the post convolutions' histories (k 0: post_attention, 1: post_mlp; conv_k - 1 rows of
+// hidden), the ones a resident decode step keeps a device copy of
+float *ink2_cache_post_hist(const ink2_shape *s, ink2_cache *c, int app, int k) {
+    if (!s || !c || app < 0 || app >= c->n_app || k < 0 || k > 1) return NULL;
+    return ink2_conv_hist(s, c, app, 2 + k);
+}
 // After a call over positions p0..p0+T-1 has read its history: the last conv_k - 1 input rows (x [T][C]) into it
 static void ink2_conv_hist_store(float *hist, int K, int C, int p0, int T, const float *x) {
     if (!hist) return;
@@ -539,7 +545,7 @@ static inline float ink2_sigmoid(float x) { return 1.0f / (1.0f + p_expf(-x)); }
 // With the weights' get_expert (ink2_weights), the stacks are not looked up: each chosen expert is, when it runs.
 // t13 / t2: the stacks as views (the fast route), the experts' rows run in place with their factors after the dot
 typedef struct { const float *wr, *br, *w13, *w2; const ink2_weights *ew; char n13[160], n2[160];
-                 const ink2_tensor *t13, *t2; } ink2_moe_w;
+                 const ink2_tensor *t13, *t2, *tr; } ink2_moe_w;   // tr: the router's tensor (D1b: its device view)
 static ink2_status ink2_moe_bind(const ink2_shape *s, const ink2_weights *w, int block, ink2_moe_w *M) {
     char n1[160], n2[160];
     snprintf(n1, sizeof n1, "model.layers.%d.mlp.gate.weight", block);
@@ -549,7 +555,7 @@ static ink2_status ink2_moe_bind(const ink2_shape *s, const ink2_weights *w, int
     const ink2_tensor *wr = w->get(w->ctx, n1), *br = w->get(w->ctx, n2);
     int H = s->hidden, E = s->n_expert, K = s->n_used, F = s->ff;
     if (!wr || !br || wr->ne[0] != H || wr->ne[1] != E || br->ne[0] != E || K < 1 || K > E) return INK2_NO_TENSOR;
-    M->wr = wr->data; M->br = br->data; M->w13 = M->w2 = NULL; M->ew = NULL; M->t13 = M->t2 = NULL;
+    M->wr = wr->data; M->br = br->data; M->w13 = M->w2 = NULL; M->ew = NULL; M->t13 = M->t2 = NULL; M->tr = wr;
     if (!M->wr || !M->br) return INK2_NO_TENSOR;
     if (w->get_expert) { M->ew = w; return INK2_OK; }
     const ink2_tensor *w13 = w->get(w->ctx, M->n13), *w2 = w->get(w->ctx, M->n2);
@@ -604,6 +610,17 @@ static void ink2_route_one(const ink2_shape *s, const ink2_moe_w *M, const float
     float den = sum + 1e-20f;
     for (int e = 0; e < E; e++) wt[e] = chosen[e] ? sc[e] / den * s->route_scale : 0.0f;
 }
+static long ink2_route_host_n;   // TEST-ONLY: the host router's runs over an expert layer (ink2_route_host_calls)
+long ink2_route_host_calls(void) { return __atomic_load_n(&ink2_route_host_n, __ATOMIC_RELAXED); }
+void ink2_test_route(const ink2_shape *s, const float *wr, const float *br, int T, const float *x, float *sc,
+                     unsigned char *chosen, float *wt) {
+    ink2_moe_w M;
+    memset(&M, 0, sizeof M);
+    M.wr = wr; M.br = br;
+    const size_t E = (size_t)s->n_expert, H = (size_t)s->hidden;
+    for (int t = 0; t < T; t++)
+        ink2_route_one(s, &M, x + (size_t)t * H, NULL, sc + (size_t)t * E, chosen + (size_t)t * E, wt + (size_t)t * E);
+}
 // SoftcappedSwiGLU: softcap(gate, gate cap) * sigmoid(gate) * softcap(up, up cap)
 static inline float ink2_swiglu(const ink2_shape *s, float g, float u) {
     return ink2_softcap(g, s->gate_cap) * ink2_sigmoid(g) * ink2_softcap(u, s->up_cap);
@@ -630,9 +647,30 @@ static void ink2_swiglu_range(void *c, int64_t b0, int64_t b1) {
 // columns), the SwiGLU, its down rows, and each position's out += down * wt in position order. A position's output is
 // the sum over its chosen experts in ascending index, as the per-position loop adds it, and each column's dot is the
 // single-column kernel's, so the rows do not depend on which other positions share the call.
+// a device binder's instance's own functions (ink2_dev_hdr, its first member), or NULL
+static inline const ink2_dev_ops *ink2_ops_of(const void *dev) {
+    return dev ? ((const ink2_dev_hdr *)dev)->ops : NULL;
+}
+static long ink2_host_glue_n;   // TEST-ONLY: host q/k/v/bank work for an attention block (ink2_attn_host_glue_calls)
+long ink2_attn_host_glue_calls(void) { return __atomic_load_n(&ink2_host_glue_n, __ATOMIC_RELAXED); }
+static long ink2_host_core_n;   // TEST-ONLY: ink2_attn_core runs (ink2_attn_host_core_calls)
+long ink2_attn_host_core_calls(void) { return __atomic_load_n(&ink2_host_core_n, __ATOMIC_RELAXED); }
+static long ink2_host_dev_lin_n;   // TEST-ONLY: host product ranges over a device-held view (ink2_host_dev_products)
+long ink2_host_dev_products(void) { return __atomic_load_n(&ink2_host_dev_lin_n, __ATOMIC_RELAXED); }
+static ink2_sel_obs_fn ink2_sel_obs;
+static void *ink2_sel_obs_ctx;
+void ink2_set_sel_observer(ink2_sel_obs_fn fn, void *ctx) { ink2_sel_obs = fn; ink2_sel_obs_ctx = ctx; }
 static ink2_status ink2_experts_fast_c(const ink2_shape *s, const ink2_moe_w *M, int T, const float *x,
                                        const unsigned char *chosen, const float *wt, float *out, ink2_cache *c) {
     const int H = s->hidden, E = s->n_expert, F = s->ff;
+    const ink2_dev_ops *eo = M->t2->dev ? ink2_ops_of(M->t13->dev) : NULL;
+    if (eo && eo->experts) {   // R4.48.9 G2b step 1: the whole body on the device
+        const int rc = eo->experts(s, M->t13, M->t2, T, x, chosen, wt, out);
+        if (rc < 0)
+            for (size_t i = 0; i < (size_t)T * H; i++) out[i] = NAN;
+        if (rc <= 0) return INK2_OK;
+        // rc 1: this instance keeps the body below (its products still reach the device through ink2_lin)
+    }
     for (size_t i = 0; i < (size_t)T * H; i++) out[i] = 0.0f;
     if (T == 1 && ink2_decode_fuse_enabled() && M->t13 && M->t2 && !M->t13->q_act8 && !M->t2->q_act8) {
         int n_sel = 0;
@@ -729,10 +767,36 @@ static ink2_status ink2_expert_layer_c(const ink2_shape *s, const ink2_weights *
     if (st != INK2_OK) return st;
     int H = s->hidden, E = s->n_expert, F = s->ff;
     if (M.t13) {   // the fast route: every position's routing, then the experts grouped
+        // R4.48.9 D1b: the whole layer (the router, then the body) on the device when its views are a device
+        // instance's; the selection observer gets the device's choices and margins
+        const ink2_dev_ops *mo = M.tr && M.tr->dev ? ink2_ops_of(M.tr->dev) : NULL;
+        if (mo && mo->moe) {
+            unsigned char *mch = ink2_sel_obs ? malloc((size_t)T * E) : NULL;
+            float *mmg = ink2_sel_obs ? malloc(sizeof(float) * (size_t)T) : NULL;
+            ink2_moe_call mc = { s, M.tr, M.t13, M.t2, M.br, T, x, out, mch, mmg };
+            const int rc = ink2_sel_obs && (!mch || !mmg) ? 1 : mo->moe(M.tr->dev, &mc);
+            if (rc <= 0) {
+                if (rc < 0) for (size_t i = 0; i < (size_t)T * H; i++) out[i] = NAN;
+                else if (ink2_sel_obs) ink2_sel_obs(ink2_sel_obs_ctx, block, T, E, mch, mmg);
+                free(mch); free(mmg);
+                return INK2_OK;
+            }
+            free(mch); free(mmg);
+        }
+        __atomic_add_fetch(&ink2_route_host_n, 1, __ATOMIC_RELAXED);
         if (T == 1 && E <= 256) {
             float sc[256], wt[256];
             unsigned char chosen[256];
             ink2_route_one(s, &M, x, NULL, sc, chosen, wt);
+            if (ink2_sel_obs) {   // TEST-ONLY observer: this position's margin, as the T > 1 loop computes it
+                float lo = INFINITY, hi = -INFINITY;
+                for (int e = 0; e < E; e++) {
+                    const float v = sc[e] + M.br[e];
+                    if (chosen[e]) { if (v < lo) lo = v; } else if (v > hi) hi = v;
+                }
+                const float mg1 = lo - hi;
+                ink2_sel_obs(ink2_sel_obs_ctx, block, 1, E, chosen, &mg1);
+            }
             return ink2_experts_fast_c(s, &M, 1, x, chosen, wt, out, c);
         }
         // R4.48.20.4: a position's scores on the stack (E <= 256, as above), the T positions' tables (wts [T][E]
@@ -749,11 +813,22 @@ static ink2_status ink2_expert_layer_c(const ink2_shape *s, const ink2_weights *
         unsigned char *ch = wts ? (unsigned char *)(wts + tw) : NULL;
         if (!sc || !chosen || !wts) st = INK2_BAD_INPUT;
         float *wt = sc ? sc + E : NULL;
+        float *mg = ink2_sel_obs ? malloc(sizeof(float) * (size_t)T) : NULL;   // TEST-ONLY observer's margins
         for (int t = 0; t < T && st == INK2_OK; t++) {
             ink2_route_one(s, &M, x + (size_t)t * H, NULL, sc, chosen, wt);
             memcpy(ch + (size_t)t * E, chosen, (size_t)E);
             memcpy(wts + (size_t)t * E, wt, sizeof(float) * (size_t)E);
+            if (mg) {   // the k-th chosen score + bias minus the best unchosen one (sc still holds this position's)
+                float lo = INFINITY, hi = -INFINITY;
+                for (int e = 0; e < E; e++) {
+                    const float v = sc[e] + M.br[e];
+                    if (chosen[e]) { if (v < lo) lo = v; } else if (v > hi) hi = v;
+                }
+                mg[t] = lo - hi;
+            }
         }
+        if (mg && st == INK2_OK) ink2_sel_obs(ink2_sel_obs_ctx, block, T, E, ch, mg);
+        free(mg);
         if (st == INK2_OK) st = ink2_experts_fast_c(s, &M, T, x, ch, wts, out, c);
         ink2_op_free(wts, owned);
         if (!small) { free(sc); free(chosen); }
@@ -817,6 +892,7 @@ static void ink2_matvec(const float *W, int n_out, int n_in, const float *x, flo
 // dot, as llama.cpp's graph applies it.
 static void ink2_lin_range(void *c, int64_t o0, int64_t o1) {
     const ink2_lin_ctx *L = c;
+    if (L->W->dev) __atomic_add_fetch(&ink2_host_dev_lin_n, 1, __ATOMIC_RELAXED);   // a device view on the host
     const unsigned char *base = (const unsigned char *)L->W->q;
     const int type = L->W->qtype, n_in = L->n_in;
     if (L->T >= VEC_DOT_EXACT_TILE_MIN && vec_dot_exact_tile_ok(type, n_in)) {
@@ -842,7 +918,15 @@ static void ink2_lin_range(void *c, int64_t o0, int64_t o1) {
 }
 static void ink2_lin(const ink2_tensor *W, int64_t row0, int n_out, int n_in, int T, const float *x, size_t x_stride,
                      float *y, size_t y_stride, float scale) {
+    const ink2_dev_ops *lo = ink2_ops_of(W->dev);
+    if (lo && lo->lin) {
+        if (lo->lin(W, row0, n_out, n_in, T, x, x_stride, y, y_stride, scale))
+            for (int t = 0; t < T; t++)
+                for (int o = 0; o < n_out; o++) y[(size_t)t * y_stride + (size_t)o] = NAN;
+        return;
+    }
     if (!W->q) {
+        if (W->dev) __atomic_add_fetch(&ink2_host_dev_lin_n, 1, __ATOMIC_RELAXED);   // a device view on the host
         for (int t = 0; t < T; t++) ink2_matvec(W->data + (size_t)row0 * n_in, n_out, n_in, x + (size_t)t * x_stride, y + (size_t)t * y_stride);
         return;
     }
@@ -880,11 +964,14 @@ static void ink2_lin_parts_range(void *c, int64_t i0, int64_t i1) {
     }
 }
 // Dispatch np independent fast linear projections in one ink2_par barrier (bits match calling ink2_lin per part).
+// A part whose weight a device instance holds (R4.48.9: its ops' lin) is never fused: each part then goes through
+// ink2_lin, which hands it to the device, so the fusion never computes a device view's product on the host.
 static void ink2_lin_parts(const ink2_lin_ctx *parts, int np, int64_t work) {
     if (np <= 0) return;
     int can_fuse = (np > 1) && (np <= INK2_LIN_PARTS_MAX) && ink2_decode_fuse_enabled();
     for (int s = 0; s < np && can_fuse; s++) {
-        if (!parts[s].W->q || parts[s].W->q_act8) can_fuse = 0;
+        const ink2_dev_ops *lo = ink2_ops_of(parts[s].W->dev);
+        if (!parts[s].W->q || parts[s].W->q_act8 || (lo && lo->lin)) can_fuse = 0;
     }
     if (!can_fuse) {
         for (int s = 0; s < np; s++) {
@@ -1332,6 +1419,7 @@ static void ink2_attn_core_fast_range(void *cv, int64_t r0, int64_t r1) {
 static ink2_status ink2_attn_core(const ink2_shape *s, const ink2_attn_layer *L, int fast, int T, const int *pos, const float *q,
                            const float *k, const float *v, int nk, int kp0, const float *rl, const float *sk, float *lg,
                            int lg_rows, float *att, float *probs) {
+    __atomic_add_fetch(&ink2_host_core_n, 1, __ATOMIC_RELAXED);
     _Atomic int bad = 0;
     ink2_core_ctx c = { s, L, T, pos, q, k, v, nk, kp0, rl, sk, lg, att, probs, lg_rows, &bad };
     if (fast) ink2_par((int64_t)T * L->nh, (int64_t)nk * 2 * L->hd, ink2_attn_core_fast_range, &c);
@@ -1404,15 +1492,24 @@ static ink2_status ink2_attention_lora(const ink2_shape *s, const ink2_weights *
     int kp0 = (!c->max_chunk || L.g) ? 0 : (p0 - s->window + 1 > 0 ? p0 - s->window + 1 : 0);
     if (c->max_chunk && !L.g && c->test_drop_key && kp0 > 0) kp0++;   // the control: one admitted key lost
     int nk = p0 + T - kp0;
-    if (p0 == 0) c->k0[app] = 0;
-    if (p0 + T - c->k0[app] > c->rows[app]) {   // slide: keep kp0..p0-1 at the buffer's start
-        if (kp0 < c->k0[app]) return INK2_BAD_INPUT;
-        const size_t keep = (size_t)(p0 - kp0) * L.C, from = (size_t)(kp0 - c->k0[app]) * L.C;
-        memmove(c->k[app], c->k[app] + from, sizeof(float) * keep);
-        memmove(c->v[app], c->v[app] + from, sizeof(float) * keep);
-        c->k0[app] = kp0;
-        if (p0 + T - kp0 > c->rows[app]) return INK2_BAD_INPUT;
+    if (p0 + T - kp0 > c->rows[app]) return INK2_BAD_INPUT;   // the ring holds rows[app] (the device's too)
+    // R4.48.9 G2b step 2b: the whole block on the device when the instance takes it
+    const ink2_dev_ops *bo = ink2_ops_of(c->dev);
+    if (bo && bo->block && !probs) {
+        ink2_block_call bc = { app, T, pos, xq, xk, xv, out, lora != NULL, s->hidden, L.nh, L.nkv, L.hd, L.K, L.dr,
+                               L.ext, s->window, L.g ? 1 : 0, ink2_inv_sqrt(L.hd), s->qk_clip, s->rel_clip, s->eps,
+                               s->log_alpha, (float)s->log_floor,
+                               { L.tt[WQ], L.tt[WK], L.tt[WV], L.tt[WKD], L.tt[WVD], L.tt[WR], L.tt[WS], L.tt[WG], L.tt[WO] },
+                               { L.tt[WQS], L.tt[WKC], L.tt[WVC], L.tt[WRS], L.tt[WRP] } };
+        const int rc = bo->block(c->dev, &bc);
+        if (rc <= 0) {
+            // the slot holds the chunk only when the block ran: a refusal or a failure leaves n_past where it was
+            if (rc < 0) for (size_t i = 0; i < (size_t)T * s->hidden; i++) out[i] = NAN;
+            else c->n_past[app] = p0 + T;
+            return rc == -2 ? INK2_BAD_INPUT : INK2_OK;
+        }
     }
+    __atomic_add_fetch(&ink2_host_glue_n, 1, __ATOMIC_RELAXED);
     int buf_owned = 0;
     int lg_rows = 0;
     float *p[NSCR], *buf = ink2_attn_scratch_c(c, &L, T, nk, p, &buf_owned, &lg_rows);
@@ -1443,38 +1540,25 @@ static ink2_status ink2_attention_lora(const ink2_shape *s, const ink2_weights *
         ink2_kv_conv_finish(s, &L, 1, T, p[SLINV], p[SDYNV], p[SV], p0, hv);
         ink2_kv_norm(s, &L, 1, T, p[SV]);
         ink2_conv_hist_store(hv, L.K, L.C, p0, T, p[SLINV]);
-        for (int t = 0; t < T; t++) {
-            memcpy(c->k[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SK] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
-            memcpy(c->v[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SV] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
-        }
-        c->n_past[app] = p0 + T;
         ink2_attn_rel_finish(s, &L, T, pos, p[SRS], p[SRL]);
-        const size_t koff = (size_t)(kp0 - c->k0[app]) * L.C;
-        st = ink2_attn_core(s, &L, fast, T, pos, p[SQ], c->k[app] + koff, c->v[app] + koff, nk, kp0, p[SRL], p[SSK],
-                            p[SLG], lg_rows, p[SATT], probs);
-        if (st == INK2_OK) st = ink2_attn_out_finish(s, &L, NULL, block, T, p[SATT], p[SGA], out);
-        ink2_op_free(buf, buf_owned);
-        return st;
+        goto kv_tail;   // the K/V ring and the core: the shared tail (the device's when this cache has one)
     }
     st = ink2_attn_q_lora(s, &L, lora, block, T, pos, xq, p[SQ]);
     if (st == INK2_OK) st = ink2_attn_kv_lora(s, &L, lora, block, 0, T, xk, p[SLIN], p[SDYN], p[SK], p0, ink2_conv_hist(s, c, app, 0));
     if (st == INK2_OK) st = ink2_attn_kv_lora(s, &L, lora, block, 1, T, xv, p[SLIN], p[SDYN], p[SV], p0, ink2_conv_hist(s, c, app, 1));
     if (st != INK2_OK) { ink2_op_free(buf, buf_owned); return st; }
-    for (int t = 0; t < T; t++) {
-        memcpy(c->k[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SK] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
-        memcpy(c->v[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SV] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
-    }
-    c->n_past[app] = p0 + T;   // what the slot now holds consistently: rows and histories of 0..p0+T-1
     if (rp && app == rp->app) {
         size_t n_el = (size_t)T * (size_t)s->hidden;
         rp->T = T; rp->H = s->hidden;
         if (rp->xq_in) memcpy(rp->xq_in, xq, sizeof(float) * n_el);
         if (rp->eps != 0.0f && rp->d) {
-            float *xq_rel = malloc(sizeof(float) * n_el);
+            float *xq_rel = ink2_alloc_fail("rel_probe") ? NULL : malloc(sizeof(float) * n_el);
             if (!xq_rel) {
                 fprintf(stderr, "error: inkling2_loop ink2_attention_lora: out of memory allocating rel_probe buffer\n");
-                ink2_op_free(buf, buf_owned);
-                return INK2_BAD_INPUT;
+                // main's order: the slot takes the chunk before this fails, so the shared tail still writes the K/V
+                // rows and advances n_past (the K and V histories already hold the chunk); no core, no output
+                st = INK2_BAD_INPUT;
+                goto kv_tail;
             }
             for (size_t i = 0; i < n_el; i++) xq_rel[i] = xq[i] + rp->eps * rp->d[i];
             ink2_attn_rel(s, &L, T, pos, xq_rel, p[SRS], p[SRL]);
@@ -1486,10 +1570,42 @@ static ink2_status ink2_attention_lora(const ink2_shape *s, const ink2_weights *
         ink2_attn_rel(s, &L, T, pos, xq, p[SRS], p[SRL]);
     }
     ink2_lin_rows(L.tt[WS], L.nh, s->hidden, T, xq, p[SSK]);
-    const size_t koff = (size_t)(kp0 - c->k0[app]) * L.C;
-    st = ink2_attn_core(s, &L, fast, T, pos, p[SQ], c->k[app] + koff, c->v[app] + koff, nk, kp0, p[SRL], p[SSK], p[SLG],
-                        lg_rows, p[SATT], probs);
-    if (st == INK2_OK) st = ink2_attn_out_lora(s, &L, lora, block, T, xq, p[SATT], p[SGA], out);
+kv_tail:;   // the fused decode branch joins here with its projections, histories and relative bias done
+    // R4.48.9 G2b step 2a: the core on the device when the instance's views are there (its ring takes this chunk's K
+    // and V); dv 1: the host core and ring, as before. st is INK2_OK here unless the relative probe failed: then only
+    // the host ring and n_past, as main (a device instance keeps no host ring and refuses below, its n_past unmoved)
+    int dv = 1;
+    const ink2_dev_ops *ao = ink2_ops_of(c->dev);
+    if (st == INK2_OK && ao && ao->attn && !probs) {
+        const ink2_attn_dims d = { L.nh, L.nkv, L.hd, L.C, L.Q, s->window, L.g ? 1 : 0, L.ext, ink2_inv_sqrt(L.hd) };
+        dv = ao->attn(c->dev, app, &d, T, pos, p[SQ], p[SK], p[SV], p[SRL], p[SSK], p[SATT]);
+        if (dv < 0)
+            for (size_t i = 0; i < (size_t)T * L.Q; i++) p[SATT][i] = NAN;
+    }
+    if (dv > 0) {
+        if (!c->k[app] || !c->v[app]) { ink2_op_free(buf, buf_owned); return INK2_BAD_INPUT; }   // a device instance keeps no host ring
+        if (p0 == 0) c->k0[app] = 0;
+        if (p0 + T - c->k0[app] > c->rows[app]) {   // slide: keep kp0..p0-1 at the buffer's start
+            if (kp0 < c->k0[app]) { ink2_op_free(buf, buf_owned); return INK2_BAD_INPUT; }
+            const size_t keep = (size_t)(p0 - kp0) * L.C, from = (size_t)(kp0 - c->k0[app]) * L.C;
+            memmove(c->k[app], c->k[app] + from, sizeof(float) * keep);
+            memmove(c->v[app], c->v[app] + from, sizeof(float) * keep);
+            c->k0[app] = kp0;
+        }
+        for (int t = 0; t < T; t++) {
+            memcpy(c->k[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SK] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
+            memcpy(c->v[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SV] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
+        }
+        const size_t koff = (size_t)(kp0 - c->k0[app]) * L.C;
+        // the host core (R4.48.25.1: its logit rows sized by the caller, a status instead of an abort)
+        if (st == INK2_OK)
+            st = ink2_attn_core(s, &L, fast, T, pos, p[SQ], c->k[app] + koff, c->v[app] + koff, nk, kp0, p[SRL],
+                                p[SSK], p[SLG], lg_rows, p[SATT], probs);
+    }
+    c->n_past[app] = p0 + T;   // what the slot now holds consistently: rows and histories of 0..p0+T-1
+    if (st == INK2_OK)
+        st = use_fused ? ink2_attn_out_finish(s, &L, NULL, block, T, p[SATT], p[SGA], out)   // the gate is computed
+                       : ink2_attn_out_lora(s, &L, lora, block, T, xq, p[SATT], p[SGA], out);
     ink2_op_free(buf, buf_owned);
     return st;
 }
@@ -1691,6 +1807,13 @@ static void ink2_msg_comb_multi_range(void *c, int64_t i0, int64_t i1) {
             m->out[k] = (1.0f - p_tanhf(m->fa[k])) * m->x[k] + p_tanhf(m->ga[k]) * m->msg[k];
     }
 }
+// TEST-ONLY (D1a): the engine's own p_tanhf, compiled with this file's flags (-fno-fast-math -ffp-contract=off): the
+// reference of the device port (a test file built with -ffast-math must not inline its own copy)
+float ink2_test_p_tanhf(float x) { return p_tanhf(x); }
+float ink2_test_p_expf(float x) { return p_expf(x); }   // TEST-ONLY (D1b): the same for p_expf
+static long ink2_msg_host_n;            // TEST-ONLY: the host message step's runs (ink2_msg_host_calls)
+long ink2_msg_host_calls(void) { return __atomic_load_n(&ink2_msg_host_n, __ATOMIC_RELAXED); }
+static __thread int ink2_msg_no_dev;    // TEST-ONLY: ink2_test_message_steps keeps the step on the host
 static ink2_status ink2_message_steps_c(const ink2_shape *s, const ink2_weights *w, int block, const char *const *roles,
                                         int n_roles, int T, const float *const *xs, const float *const *msgs,
                                         size_t msg_stride, float *const *outs, ink2_cache *c) {
@@ -1712,6 +1835,21 @@ static ink2_status ink2_message_steps_c(const ink2_shape *s, const ink2_weights 
             has_act8 = 1;
         }
     }
+    // R4.48.9 D1a: the whole step on the device when its views are a device instance's (the fast path's arithmetic,
+    // there operation for operation); 1 back: the host path below. TEST-ONLY ink2_test_message_steps bypasses it.
+    const ink2_dev_ops *mo = fast && !has_act8 && !ink2_msg_no_dev ? ink2_ops_of(wd[0]->dev) : NULL;
+    if (mo && mo->msg) {
+        ink2_msg_call mc = { n_roles, T, H, r, s->eps, { 0 }, { 0 }, { 0 }, xs, msgs, msg_stride, outs };
+        for (int r_i = 0; r_i < n_roles; r_i++) { mc.wd[r_i] = wd[r_i]; mc.wf[r_i] = wf[r_i]; mc.wg[r_i] = wg[r_i]; }
+        const int rc = mo->msg(wd[0]->dev, &mc);
+        if (rc <= 0) {
+            if (rc < 0)
+                for (int r_i = 0; r_i < n_roles; r_i++)
+                    for (size_t i = 0; i < (size_t)T * H; i++) outs[r_i][i] = NAN;
+            return INK2_OK;
+        }
+    }
+    __atomic_add_fetch(&ink2_msg_host_n, 1, __ATOMIC_RELAXED);
     const size_t TH = (size_t)T * H;
     if (fast && !has_act8 && (n_roles == 1 || ink2_decode_fuse_enabled())) {
         const int need_unpack = (T > 1 && msg_stride != (size_t)H);
@@ -1810,6 +1948,14 @@ static ink2_status ink2_message_steps_c(const ink2_shape *s, const ink2_weights 
     ink2_op_free(gh, owned);
     return INK2_OK;
 }
+ink2_status ink2_test_message_steps(const ink2_shape *s, const ink2_weights *w, int block, const char *const *roles,
+                                    int n_roles, int T, const float *const *xs, const float *const *msgs,
+                                    size_t msg_stride, float *const *outs) {
+    ink2_msg_no_dev = 1;
+    const ink2_status st = ink2_message_steps_c(s, w, block, roles, n_roles, T, xs, msgs, msg_stride, outs, NULL);
+    ink2_msg_no_dev = 0;
+    return st;
+}
 ink2_status ink2_message_step(const ink2_shape *s, const ink2_weights *w, int block, const char *role, int T,
                               const float *x, const float *message, float *out) {
     return ink2_message_steps_c(s, w, block, &role, 1, T, &x, &message, (size_t)s->hidden, &out, NULL);
@@ -1829,6 +1975,22 @@ static ink2_status ink2_norm_rows(const ink2_shape *s, const ink2_weights *w, co
     for (int i = 0; i < T; i++) ink2_rms_norm(x + (size_t)i * s->hidden, s->hidden, s->eps, t->data, y + (size_t)i * s->hidden);
     return INK2_OK;
 }
+// TEST-ONLY (D1d.1, inkling2.h): the step's ops as the forward runs them, the device ports' reference
+void ink2_test_rms_norm(const float *x, int n, float eps, const float *wt, float *y) {
+    if (wt) ink2_rms_norm(x, n, eps, wt, y); else ink2_unweighted_norm(x, n, eps, y);
+}
+int ink2_test_depth_attn(const float *q, int nq, const float *states, int n_kv, int H, float *out) {
+    float *nrm = malloc(sizeof(float) * (size_t)n_kv * H), *sc = malloc(sizeof(float) * (size_t)n_kv);
+    if (!nrm || !sc) { free(nrm); free(sc); return -1; }
+    ink2_depth_attn(q, nq, states, n_kv, H, nrm, sc, out);
+    free(nrm); free(sc);
+    return 0;
+}
+void ink2_test_short_conv(const float *cw, int C, int K, int T, const float *lin, float *out, int p0, float *hist) {
+    ink2_short_conv(cw, C, K, T, lin, out, p0, hist);
+    ink2_conv_hist_store(hist, K, C, p0, T, lin);
+}
+float ink2_test_softcap(float v, float cap) { return ink2_softcap(v, cap); }
 // post_attention_convolution / post_mlp_convolution (conv_idx 2 / 3) of block b at application app, with its history
 static ink2_status ink2_post_conv(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int app, int idx, int T,
                                   int p0, const float *x, float *y) {
@@ -1947,6 +2109,95 @@ static ink2_status ink2_decoder_layer_lora(const ink2_shape *s, const ink2_weigh
 done:
     return st;
 }
+
+// R4.48.9 D1d.3b (inkling2.h): the decode step's plan. Each lookup is the forward's own, the same name built the same
+// way (ink2_decoder_layer_lora, ink2_attention_lora, ink2_expert_layer_c, ink2_message_steps_c, ink2_post_conv,
+// ink2_forward_chunk_lora), checked with the same shapes; a missing or misshapen tensor is INK2_NO_TENSOR.
+ink2_status ink2_step_plan_build(const ink2_shape *s, const ink2_weights *w, ink2_step_plan *p) {
+    if (!s || !w || !p || !p->app || s->n_app <= 0) return INK2_BAD_INPUT;
+    const int H = s->hidden;
+    char name[160];
+#define GET(n_) w->get(w->ctx, (n_))
+    p->n_app = s->n_app;
+    p->embed = GET("model.embed_tokens.weight");
+    p->embed_norm = GET("model.embed_tokens.embed_norm.weight");
+    p->final_q = GET("model.final_input.query");
+    p->norm = GET("model.norm.weight");
+    p->msg_q = s->loop_end > s->loop_start ? GET("model.message_input.query") : NULL;
+    p->head = GET("lm_head.weight");
+    if (!p->embed || p->embed->ne[0] != H || !p->embed_norm || p->embed_norm->ne[0] != H || !p->final_q ||
+        p->final_q->ne[0] != H || (p->final_q->n_dims != 1 && p->final_q->ne[1] != 1) || !p->norm ||
+        p->norm->ne[0] != H || !p->head || p->head->ne[0] != H || p->head->ne[1] < s->vocab_used ||
+        (s->loop_end > s->loop_start && (!p->msg_q || p->msg_q->ne[0] != H || p->msg_q->ne[1] != 4 ||
+                                         p->msg_q->ne[2] != s->loop_end - s->loop_start)))
+        return INK2_NO_TENSOR;
+    static const char *const role[4] = { "q", "k", "v", "mlp" };
+    for (int a = 0; a < s->n_app; a++) {
+        ink2_step_app *A = &p->app[a];
+        memset(A, 0, sizeof *A);
+        const int b = s->app_block[a], g = s->block_global[b];
+        A->block = b; A->global = g;
+        A->loop = b >= s->loop_start && b < s->loop_end;
+        A->boundary = ink2_block_boundary(s, b);
+        A->n_read = g ? 3 : 1;
+        if (b > 0) {
+            snprintf(name, sizeof name, "model.layers.%d.attention_input.query", b);
+            A->read_q = GET(name);
+            const int nq = !A->read_q ? 0 : A->read_q->n_dims == 1 ? 1 : (int)A->read_q->ne[1];
+            if (!A->read_q || A->read_q->ne[0] != H || nq != A->n_read) return INK2_NO_TENSOR;
+        }
+        for (int r = 0; r < (g ? 3 : 1); r++) {
+            if (g) snprintf(name, sizeof name, "model.layers.%d.%s_input_layernorm.weight", b, role[r]);
+            else snprintf(name, sizeof name, "model.layers.%d.input_layernorm.weight", b);
+            A->norm[r] = GET(name);
+            if (!A->norm[r] || A->norm[r]->ne[0] != H || A->norm[r]->n_dims != 1) return INK2_NO_TENSOR;
+        }
+        snprintf(name, sizeof name, "model.layers.%d.mlp_input.query", b);
+        A->mlp_q = GET(name);
+        if (!A->mlp_q || A->mlp_q->ne[0] != H || (A->mlp_q->n_dims != 1 && A->mlp_q->ne[1] != 1)) return INK2_NO_TENSOR;
+        snprintf(name, sizeof name, "model.layers.%d.post_attention_layernorm.weight", b);
+        A->post_norm = GET(name);
+        if (!A->post_norm || A->post_norm->ne[0] != H || A->post_norm->n_dims != 1) return INK2_NO_TENSOR;
+        if (A->loop) {
+            const int rk = s->loop_gate_rank;
+            for (int r = 0; r < 4; r++) {
+                static const char *const part[3] = { "down_proj", "forget_gate_proj", "message_gate_proj" };
+                for (int k = 0; k < 3; k++) {
+                    snprintf(name, sizeof name, "model.layers.%d.%s_message_gate.%s.weight", b, role[r], part[k]);
+                    A->gate[r][k] = GET(name);
+                    if (!A->gate[r][k]) return INK2_NO_TENSOR;
+                }
+                if (A->gate[r][0]->ne[0] != 2 * H || A->gate[r][0]->ne[1] != rk || A->gate[r][1]->ne[0] != rk ||
+                    A->gate[r][1]->ne[1] != H || A->gate[r][2]->ne[0] != rk || A->gate[r][2]->ne[1] != H)
+                    return INK2_NO_TENSOR;
+            }
+        }
+        for (int k = 0; k < 2; k++) {
+            snprintf(name, sizeof name, "model.layers.%d.%s.conv1d.weight", b,
+                     k == 0 ? "post_attention_convolution" : "post_mlp_convolution");
+            A->conv[k] = GET(name);
+            const ink2_tensor *t = A->conv[k];
+            if (!t || t->ne[0] != s->conv_k || t->ne[0] * t->ne[1] * t->ne[2] * t->ne[3] != (int64_t)H * s->conv_k)
+                return INK2_NO_TENSOR;
+        }
+        ink2_attn_layer L;
+        ink2_status st = ink2_attn_bind(s, w, a, &L);
+        if (st != INK2_OK) return st;
+        ink2_block_call bc = { a, 0, NULL, NULL, NULL, NULL, NULL, 0, H, L.nh, L.nkv, L.hd, L.K, L.dr,
+                               L.ext, s->window, L.g ? 1 : 0, ink2_inv_sqrt(L.hd), s->qk_clip, s->rel_clip, s->eps,
+                               s->log_alpha, (float)s->log_floor,
+                               { L.tt[WQ], L.tt[WK], L.tt[WV], L.tt[WKD], L.tt[WVD], L.tt[WR], L.tt[WS], L.tt[WG], L.tt[WO] },
+                               { L.tt[WQS], L.tt[WKC], L.tt[WVC], L.tt[WRS], L.tt[WRP] } };
+        A->blk = bc;
+        ink2_moe_w M;
+        st = ink2_moe_bind(s, w, b, &M);
+        if (st != INK2_OK) return st;
+        A->router = M.tr; A->t13 = M.t13; A->t2 = M.t2; A->br = M.br;
+        if (!A->router || !A->t13 || !A->t2 || !A->br) return INK2_NO_TENSOR;   // the fast route's views only
+    }
+#undef GET
+    return INK2_OK;
+}
 ink2_status ink2_decoder_layer_sel(const ink2_shape *s, const ink2_weights *w, ink2_cache *c, int app, int T,
                                    const int *pos, const float *x, const float *block_states, int n_blocks,
                                    const float *messages, float *out, int *sel) {
@@ -1979,6 +2230,31 @@ ink2_status ink2_forward_chunk_lora(const ink2_shape *s, const ink2_weights *w, 
     const ink2_tensor *emb = w->get(w->ctx, "model.embed_tokens.weight");
     if (!emb || emb->ne[0] != H) return INK2_NO_TENSOR;
     for (int t = 0; t < T; t++) if (ids[t] < 0 || ids[t] >= emb->ne[1]) return INK2_BAD_INPUT;
+    // R4.48.9 D1d.3b: ONE position whole on the device when the cache's binder offers the resident step; only the plain
+    // forward (no adapter, no test flag but INK2_LOGITS_LAST, no per-application outputs, no selection observer, no
+    // test bump), which the step reproduces bit for bit; anything else, or a binder that declines, runs below
+    {
+        const ink2_dev_ops *so = ink2_ops_of(c->dev);
+        if (so && so->step && T == 1 && !lora && (flags & ~INK2_LOGITS_LAST) == 0 && !app_states && !app_sel && logits &&
+            !ink2_sel_obs && !atomic_load_explicit(&ink2_test_chunk_bump_bits, memory_order_relaxed)) {
+            float *er = malloc(sizeof(float) * (size_t)H);
+            if (!er) return INK2_BAD_INPUT;
+            if (emb->q) dequant_row(emb->qtype, (const unsigned char *)emb->q + (size_t)ids[0] * emb->q_row_bytes, er, H);
+            else memcpy(er, emb->data + (size_t)ids[0] * H, sizeof(float) * H);
+            const int rc = so->step(c->dev, p0, er, logits);
+            free(er);
+            if (rc <= 0) {
+                if (rc < 0) for (int i = 0; i < s->vocab_used; i++) logits[i] = NAN;
+                else for (int a = 0; a < s->n_app; a++) c->n_past[a] = p0 + 1;
+                return INK2_OK;
+            }
+        }
+        // the forward below runs on the host's state: the binder brings its copies there first (p0 -1: prepare only)
+        if (so && so->step && so->step(c->dev, -1, NULL, NULL) < 0) {
+            if (logits) for (size_t i = 0; i < (size_t)((flags & INK2_LOGITS_LAST) ? 1 : T) * s->vocab_used; i++) logits[i] = NAN;
+            return INK2_OK;
+        }
+    }
     // slabs [T][H]: every appended block state gets its own (a pass's states outlive its restart, for the messages),
     // plus the hidden state ping-pong, the pre-loop state, the pre-pre-loop state (control 1) and the previous pass's
     // final state. At most one append per application, plus the embedding.

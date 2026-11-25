@@ -41,6 +41,47 @@ char   model_inkling2_route(const model_t *m);
 // --info fit on an inkling2_loop header (no weights read): what a load at n_ctx and n_batch would hold, by the same
 // parts, against the RAM available now. Prints the report; returns the exit code (0 fits, 1 does not).
 int    model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, int n_batch);
+// R4.48.9: whether this instance's forward runs on CUDA (false: the CPU engine).
+bool   model_inkling2_cuda(const model_t *m);
+// R4.48.9, TEST-ONLY (G1): read every device-resident matrix and expert stack back and compare it with the host
+// decode bit for bit; *n_tensors read, *n_differ differing, the first one's name in first. false: no device copy.
+bool   model_inkling2_cuda_readback(model_t *m, int *n_tensors, int *n_differ, char *first, size_t first_cap);
+// R4.48.9, TEST-ONLY: whether this instance holds the tensor named (its view's name) on the device.
+bool   model_inkling2_cuda_holds(const model_t *m, const char *name);
+// R4.48.9, TEST-ONLY: the device calls this instance ran since its load: single products (gpu_ink2_lin) and G2b
+// step 1's expert bodies (gpu_ink2_experts, one per application per forward).
+void   model_inkling2_cuda_calls(const model_t *m, long *n_products, long *n_expert_bodies);
+// R4.48.9, TEST-ONLY: the bind's placement ('W' whole, 'M' expert stacks on the host, 'C' the CPU, 0 none asked), the
+// weights' device bytes its fit counted, and the device handle (instances of one file and placement share it).
+// True when the instance holds weights on the device.
+bool   model_inkling2_cuda_placement(const model_t *m, char *placed, size_t *need, const void **handle);
+// R4.48.9, TEST-ONLY (G2b step 2a): the device attention-core calls this instance ran since its load (one per
+// application per forward), -1 when its core runs on the host; *kv_bytes its K/V rings' device bytes.
+long   model_inkling2_cuda_attn_calls(const model_t *m, size_t *kv_bytes);
+// R4.48.9, TEST-ONLY: the free device memory the fit that decided this instance's placement read (the last
+// placement it tried), 0 when none ran
+size_t model_inkling2_cuda_fit_free(const model_t *m);
+// R4.48.9, TEST-ONLY (G2b step 2b): the device attention-block calls this instance ran since its load, -1 when its
+// blocks run 2a's path
+long   model_inkling2_cuda_block_calls(const model_t *m);
+// R4.48.9, TEST-ONLY (D1a): the device message steps this instance ran since its load, -1 when they run on the host
+long   model_inkling2_cuda_msg_calls(const model_t *m);
+// R4.48.9, TEST-ONLY (D1b): the device router calls this instance ran since its load, -1 when the router runs on the host
+long   model_inkling2_cuda_route_calls(const model_t *m);
+// R4.48.9, TEST-ONLY (D1d.3b): the resident decode steps this instance ran since its load, -1 when it has no step
+long   model_inkling2_cuda_step_calls(const model_t *m);
+// R4.48.9, TEST-ONLY (the stage-3 read's F1): the resident step's bytes as the fit counted them against what was
+// allocated, each term by the driver's rounding: out[0] the copy's step part as counted, out[1] as allocated (its small
+// tensors + the program's allocations), out[2] one slot's post copies as counted, out[3] as allocated; out[4] 1 when
+// every program allocation equals the fit's term in order (the index list: at most its bound). False: no step
+bool   model_inkling2_cuda_step_bytes(const model_t *m, size_t out[5]);
+// R4.48.9, TEST-ONLY: the device products' output buffer's bytes now (the fit's reservation unless a product grew it),
+// 0 off the device
+size_t model_inkling2_cuda_lin_out_bytes(const model_t *m);
+// R4.48.9, TEST-ONLY: the bytes the fit counted for one slot (its K/V rings and, on the block path, its convolution
+// histories, as the driver allocates them), and the attention block's buffers' bytes now; 0 off the device
+size_t model_inkling2_cuda_slot_fit_bytes(const model_t *m);
+size_t model_inkling2_cuda_block_buf_bytes(const model_t *m);
 // LoRA adapter geometry and backward (R4.48.10): attention-only adapters on blk.N.attn_{q,k,v,output}.
 int    model_inkling2_n_block(const model_t *m);
 bool   model_inkling2_slot_dims(const model_t *m, int layer, int slot, int *n_in, int *n_out, char *name, size_t cap);

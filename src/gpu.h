@@ -731,4 +731,201 @@ void       gpu_batch_release_orphaned(gpu_batch *b);
 // weight product? A policy switch alone is not evidence that a tile ran.
 bool       gpu_batch_tiles_used(const gpu_batch *b);
 
+// R4.48.9: Inkling 2 Mini's weights on the device: each tensor its rows as the file stores them (the type and row
+// stride of the fast route's views; an expert stack's per-expert factors beside its rows, never folded in). A handle
+// owns its device buffers. gpu_ink2_put copies one tensor up: its index, or -1 (no device, or no device memory).
+// gpu_ink2_get copies tensor i back (rows: the bytes put; scale: the factors put, or NULL). The test-only readback
+// (model_inkling2_cuda_readback) decodes both sides with dequant_row and compares them bit for bit.
+typedef struct gpu_ink2 gpu_ink2;
+gpu_ink2  *gpu_ink2_bind(void);
+int        gpu_ink2_put(gpu_ink2 *h, const void *rows, size_t bytes, const float *scale, int n_scale);
+bool       gpu_ink2_get(gpu_ink2 *h, int i, void *rows, size_t bytes, float *scale, int n_scale);
+size_t     gpu_ink2_bytes(const gpu_ink2 *h);   // the device bytes held
+int        gpu_ink2_count(const gpu_ink2 *h);   // the tensors put
+// whether the handle's products (gpu_ink2_lin) take tensors of this ggml type: its module has the type's kernel
+bool       gpu_ink2_runs(const gpu_ink2 *h, int type);
+// the products' activation and output buffers allocated now at these sizes, so a fit check made after it counts them;
+// gpu_ink2_lin then runs a wider product's columns in groups these buffers hold (at least one column, the one case
+// that grows them). False: no device memory.
+bool       gpu_ink2_reserve(gpu_ink2 *h, size_t x_bytes, size_t y_bytes);
+// TEST-ONLY: the products' output buffer's bytes now (gpu_ink2_reserve's, unless a product grew it)
+size_t     gpu_ink2_lin_out_bytes(gpu_ink2 *h);
+// G2a: y[t][o] = scale * dot(row row0 + o of tensor i, x[t]) for t < T, o < n_out, on the device: the activations up,
+// one batch-1 matvec launch per column (each column's sums in that kernel's fixed order whatever T is), the rows back.
+// x is T rows n_in apart, y T rows n_out apart (contiguous; the caller gathers). type: the tensor's ggml type,
+// row_bytes its row stride. scale other than 1 only for NVFP4 (the kernel's own factor). False: a device failure.
+bool       gpu_ink2_lin(gpu_ink2 *h, int i, int type, size_t row_bytes, int64_t row0, int n_out, int n_in, int T,
+                        const float *x, float *y, float scale);
+// G2b step 1: one application's expert body on the device, the router's choice given (chosen [T][E] 0/1, wt [T][E]):
+// for each used expert in ascending index, its positions' x gathered, gate_up (tensor i13, rows e*2F.., type13,
+// rb13 a row) a column at a time with factor s13[e] (NULL: 1), Inkling's SwiGLU (gate and up capped by gate_cap and
+// up_cap, times the gate's sigmoid), down (i2) with s2[e], and out[t] += wt[t][e] * down in ascending expert index.
+// x and out [T][H]. Factors only on NVFP4. False: a device failure, or the kernels are not in the module
+// (gpu_ink2_experts_ok). Since the gap note's D2 the body runs FUSED: one gather, one segmented gate_up, one SwiGLU,
+// one segmented down over every (expert, position) column, and one per-position weighted sum in ascending expert
+// order, the same bits as the former per-expert launches (TEST-ONLY gpu_ink2_test_experts_ref(h, 1) runs those).
+// gpu_ink2_reserve_experts allocates its buffers for T positions x U used experts now (for the fit check).
+bool       gpu_ink2_experts(gpu_ink2 *h, int i13, int i2, int type13, int type2, size_t rb13, size_t rb2, int H, int F,
+                            int E, int T, const float *x, const unsigned char *chosen, const float *wt,
+                            const float *s13, const float *s2, float gate_cap, float up_cap, float *out);
+bool       gpu_ink2_experts_ok(const gpu_ink2 *h);
+bool       gpu_ink2_reserve_experts(gpu_ink2 *h, int T, int H, int F, int E, int U);
+void       gpu_ink2_test_experts_ref(gpu_ink2 *h, int on);
+// D1a: one message step of the loop's message gates on the device, ink2_message_steps_c's fast path operation for
+// operation: per role k (n_roles <= 3) and position t: gh = [norm(x_k[t]), norm(m_k[t])] (the unweighted RMS norm,
+// eps), d = wd_k gh (r rows of 2H), fa = wf_k d and ga = wg_k d (H rows of r), out_k[t] = (1 - tanh fa) x_k[t] +
+// tanh(ga) m_k[t] with the host's p_tanhf (pmath.h) ported to the device line for line. x_k and out_k [T][H] (host
+// memory), m_k rows of H at stride ms_stride. The views by device index, ggml type and factor (1: none). One upload of
+// the x and message rows, one download of the outputs. False: a device failure, or the kernels are not in the module.
+typedef struct { int i_d, i_f, i_g, t_d, t_f, t_g; float s_d, s_f, s_g; } gpu_ink2_msg_role;
+bool       gpu_ink2_msg_steps(gpu_ink2 *h, int n_roles, int T, int H, int r, float eps, const gpu_ink2_msg_role *roles,
+                              const float *const *xs, const float *const *ms, size_t ms_stride, float *const *outs);
+bool       gpu_ink2_msg_ok(const gpu_ink2 *h);
+// TEST-ONLY: y[i] = the device's port of pmath.h's p_tanhf(x[i]), for i < n
+bool       gpu_ink2_test_ptanh(gpu_ink2 *h, const float *x, float *y, int n);
+// TEST-ONLY (R4.48.9.2): the expert body's SwiGLU in place over cols columns of act ([cols][2F]: the F gates, then
+// the F ups; the result replaces the gates), through k_ink2_swiglu (bounded 0) or k_ink2_swiglu_n (1), as
+// gpu_ink2_experts launches them. False: no device, or the kernel is not in the module.
+bool       gpu_ink2_test_swiglu(gpu_ink2 *h, float *act, int F, int cols, float gate_cap, float up_cap, int bounded);
+// D1b: the router on the device, then the expert body from its choices, in one call: for each of T positions of x
+// [T][H] (host memory), the router's logits over the F32 router rows of device tensor ir ([E][H]: a serial dot
+// ascending), the scores sigmoid(l) with pmath.h's p_expf ported, the top K by score + br[e] (br host [E]; strict >,
+// the lowest index wins a tie), the weights score / (the chosen scores' sum + 1e-20) * scale: ink2_route_one
+// operation for operation; then the expert body (gpu_ink2_experts' arguments) on those choices, its tables built on
+// the device in ink2_experts_fused's order. chosen_out [T][E] and margin_out [T] (the selection observer's), when
+// given, receive the choices and the margins. False: a device failure, or the kernels are not in the module.
+bool       gpu_ink2_route_experts(gpu_ink2 *h, int ir, const float *br, float scale, int K, int i13, int i2, int type13,
+                                  int type2, size_t rb13, size_t rb2, int H, int F, int E, int T, const float *x,
+                                  const float *s13, const float *s2, float gate_cap, float up_cap, float *out,
+                                  unsigned char *chosen_out, float *margin_out);
+bool       gpu_ink2_route_ok(const gpu_ink2 *h);
+// TEST-ONLY (D1b): the device router alone (scores [T][E], choices [T][E], weights [T][E]); and the bare p_expf port
+bool       gpu_ink2_test_route(gpu_ink2 *h, int ir, const float *br, float scale, int K, int E, int H, int T,
+                               const float *x, float *sc, unsigned char *chosen, float *wt);
+bool       gpu_ink2_test_pexpf(gpu_ink2 *h, const float *x, float *y, int n);
+// R4.48.9 D1d.1, TEST-ONLY: the decode step's remaining ops on the device, on host arrays (each the host function's
+// operations in order; tests/test_inkling2_cuda.c holds them to the host's bit for bit): the RMS norm rows (wt NULL:
+// unweighted), the depth attention of the block reads and the message input (the states normed with eps 1e-6 first;
+// out[i * ois + t * ots + h]), the short convolution with its history (hist [(K - 1)][C] in and out, NULL none) and its
+// store, the residual add and the softcap
+bool       gpu_ink2_test_rms_rows(gpu_ink2 *h, const float *x, const float *wt, float *y, int n_rows, int H, float eps);
+// R4.48.9.3 TEST-ONLY: the resident step's indexed depth read (its tiled scores) over host arrays: the n_pool states
+// normed on the device, then the nq queries over the n_kv rows the list ix names; out [nq][H]
+bool       gpu_ink2_test_depth_attn_ix(gpu_ink2 *h, const float *q, int nq, const float *states, int n_pool,
+                                       const int *ix, int n_kv, int H, float scale, float *out);
+bool       gpu_ink2_test_depth_attn(gpu_ink2 *h, const float *q, int nq, const float *states, int n_kv, int H, int T,
+                                    float scale, float *out, int ois, int ots);
+bool       gpu_ink2_test_short_conv(gpu_ink2 *h, const float *cw, int C, int K, int T, const float *lin, float *out,
+                                    int p0, float *hist, float div);
+bool       gpu_ink2_test_add_softcap(gpu_ink2 *h, const float *a, const float *b, float *sum, float *v, int n, float cap);
+// TEST-ONLY (P1a): on (1), every product runs as one batch-1 launch per column (the reference); off (0), a BF16
+// or NVFP4 product of at least 16 columns runs batched (k_mv_bf16_b, k_ink2_mv_nvfp4_b; the expert body's NVFP4 tiles,
+// k_mvsegb_nvfp4; BF16 experts stay per column), the same bits
+void       gpu_ink2_test_mv_ref(gpu_ink2 *h, int on);
+// TEST-ONLY: the products run batched so far (each batched dense product and each tiled expert product counts once),
+// and caps[0..4] = byte capacities: the padded inputs (the products' x, the attention output, the expert body's
+// gathered x and its activations) and the attention's stored logits; -1 without a handle
+long       gpu_ink2_test_stats(gpu_ink2 *h, size_t caps[5]);
+// TEST-ONLY (D1d.2b): RUNNER_INKLING2_CUDA_TEST_DEVFORM=1 at bind makes the attention block's, the device-routed expert
+// body's and the message steps' host forms upload into private device scratch and call their device-pointer cores
+// with it; =2 / 3 / 4 also show the block's / the body's / the message steps' core a short buffer, which it must
+// refuse. Returns the level (0 off, -1 no handle); calls[0..2] the seam's calls so far (block, body, message steps).
+int        gpu_ink2_test_devform(gpu_ink2 *h, long calls[3]);
+// TEST-ONLY (D1d.3a): put gpu_ink2_route_experts' body on its BOUNDED launches (on: every launch sized by its bound,
+// the live counts read on the device, no count back to the host) or the sized ones (off, the default); and the sized
+// body's count readbacks so far (-1 no handle)
+void       gpu_ink2_test_bounded(gpu_ink2 *h, int on);
+long       gpu_ink2_test_body_readbacks(gpu_ink2 *h);
+// TEST-ONLY (D1d.3a): poison the expert body's scratch (its float buffers NaN, its int tables 1) between two calls, so
+// the second cannot reuse the first's values
+bool       gpu_ink2_test_poison_body(gpu_ink2 *h);
+void       gpu_ink2_release_experts(gpu_ink2 *h);   // those buffers freed (a fit retried without the expert body)
+// G2b step 2a: an instance's K/V on the device, one ring per application (row j % rows[a] holds position j's C
+// values), owned by the instance (the weights' handle may be shared); and the attention core over it: the chunk's
+// K and V (T consecutive positions from pos[0], [T][C]) written into application app's ring, then for every query
+// and head, over the keys its mask admits (0 <= d = pos - key, d < window unless global), softmax with the sink
+// (sk [T][nh]) of (q . k) * scale + rl[t][h][d] (d < ext), att [T][nh hd] = sum p v. q [T][nh hd], rl [T][nh][ext].
+// Head h reads K/V head h / (nh / nkv). False: a device failure or arguments it does not take.
+typedef struct gpu_ink2_kv gpu_ink2_kv;
+gpu_ink2_kv *gpu_ink2_kv_new(gpu_ink2 *h, int n_app, const int *rows, const int *C, int hist_rows);
+size_t     gpu_ink2_kv_bytes(const gpu_ink2_kv *kv);
+void       gpu_ink2_kv_free(gpu_ink2_kv *kv);
+// R4.48.9 D1d.3b: the post convolutions' device copies of one instance, [n_app][2][hist_rows][H] floats in the host's
+// order (ink2_cache_post_hist: k 0 post_attention, 1 post_mlp), zeroed at init; sync moves all of them at once, up
+// (host -> device, up 1) or down. A resident decode step updates the device copy; the model keeps the newer side.
+bool       gpu_ink2_kv_post_init(gpu_ink2_kv *kv, int H, int hist_rows);
+bool       gpu_ink2_kv_post_sync(gpu_ink2_kv *kv, float *host, int up);
+size_t     gpu_ink2_kv_post_bytes(const gpu_ink2_kv *kv);
+bool       gpu_ink2_attn_ok(const gpu_ink2 *h);
+// (nk_max: the most keys a query admits, -c: the stored logits' buffer, at most 16 MiB, is reserved with the rest)
+bool       gpu_ink2_reserve_attn(gpu_ink2 *h, int T, int Q, int nh, int ext, int nk_max);
+// TEST-ONLY: on (1), the core runs the former single kernel k_ink2_attn_ref, the reference the production pair must
+// equal byte for byte; off (0) the production pair
+void       gpu_ink2_test_attn_ref(gpu_ink2 *h, int on);
+// step 2b: gpu_ink2_attn_block's ten buffers allocated now for a chunk of T (H the hidden width, C a layer's K/V row
+// width, R its dynamic taps nkv x K, nhdr its relative states nh x dr, Q its query width: each the largest layer's),
+// so the fit made after it counts them. False: no device memory. TEST-ONLY gpu_ink2_block_bytes: their bytes now.
+bool       gpu_ink2_reserve_block(gpu_ink2 *h, int T, int H, int C, int R, int nhdr, int Q);
+size_t     gpu_ink2_block_bytes(gpu_ink2 *h);
+bool       gpu_ink2_attn(gpu_ink2 *h, gpu_ink2_kv *kv, int app, int T, const int *pos, const float *q, const float *k,
+                         const float *v, const float *rl, const float *sk, float *att, int nh, int nkv, int hd,
+                         int window, int global, int ext, float scale);
+// G2b step 2b: one application's whole attention block on the device, as src/inkling2.c's ink2_attention_lora runs
+// it: Q = q_proj(xq) with its scaled clip (tau on a full layer); K, V = linear, convolution over the history ring
+// (read only when pos[0] > 0; the chunk's last hist_rows linear rows stored after), norm; the bank; the sinks; the
+// core over the ring (2a); out [T][H] = o_proj(att * sigmoid(gate_proj(xq))). xq, xk, xv [T][H] (a sliding layer
+// passes the same input three times: uploaded once). The views by role (gpu_ink2_put indices, types, row bytes:
+// q, k, v, the full layers' dynamic taps kd and vd (-1 on a sliding one), the bank's linear r, the sinks s, the gate
+// g, the output o) and the small F32 tensors (q scale qs, k and v taps kc and vc, the bank's scale rs and proj rp).
+enum { GI2_Q, GI2_K, GI2_V, GI2_KD, GI2_VD, GI2_R, GI2_S, GI2_G, GI2_O, GI2_NV };
+enum { GI2_QS, GI2_KC, GI2_VC, GI2_RS, GI2_RP, GI2_NF };
+typedef struct {
+    int H, nh, nkv, hd, K, dr, ext, window, global;
+    float scale, qk_clip, rel_clip, eps, log_alpha, log_floor;
+    int vi[GI2_NV], vtype[GI2_NV];
+    size_t vrb[GI2_NV];
+    int fi[GI2_NF];
+} gpu_ink2_block;
+bool       gpu_ink2_block_ok(const gpu_ink2 *h);
+bool       gpu_ink2_attn_block(gpu_ink2 *h, gpu_ink2_kv *kv, int app, const gpu_ink2_block *b, int T, const int *pos,
+                               const float *xq, const float *xk, const float *xv, float *out);
+// R4.48.9 D1d.3b: the resident decode step's plan, by device tensor index (gpu_ink2_put's; the small F32 tensors the
+// step reads follow the copy's views), built once by inkling2_model.c from the engine's ink2_step_plan.
+typedef struct {
+    int block, global, loop, pass, boundary, n_read;   // the application, as the engine's forward walks it
+    int i_read_q, i_norm[3], i_mlp_q, i_post_norm, i_conv[2];   // small F32 tensors (-1: none; sliding: i_norm[0] only)
+    gpu_ink2_msg_role gate[4];                          // a loop layer's q, k, v, mlp message gates
+    gpu_ink2_block blk;                                 // the attention block
+    int ir, i_br, i13, i2, t13, t2;                     // the router's F32 view, its bias, the stacks (index, type)
+    size_t rb13, rb2;
+    int f13, f2;                                        // the stacks carry their NVFP4 factors on the device (1) or not
+} gpu_ink2_step_app;
+typedef struct {
+    int n_app, H, V, E, K, F, conv_k, loop_start, loop_end, rank;   // loop_start / end: blocks; rank: the gates'
+    float eps, route_scale, gate_cap, up_cap, final_cap;
+    float read_scale;                                   // the depth reads' scale: the engine's ink2_inv_sqrt(H)
+    int i_embed_norm, i_final_q, i_norm, i_msg_q;       // small F32 tensors (i_msg_q -1 without a loop)
+    int i_head, t_head;                                 // lm_head's view and type
+    size_t rb_head;
+    const gpu_ink2_step_app *app;                       // [n_app]
+} gpu_ink2_step_plan;
+// the handle's step program from a plan (once a handle: a second call with the same shape is a yes): the walk's
+// state lists and the step's scratch, every core's scratch reserved at one position. False: a kernel the module
+// lacks, a device failure, or a walk past its lists.
+bool       gpu_ink2_step_set(gpu_ink2 *h, const gpu_ink2_step_plan *plan);
+bool       gpu_ink2_step_ready(const gpu_ink2 *h);
+// the program's 16 device allocations at this shape, in gpu_ink2_step_set's order (the fit rounds each); returns 16
+int        gpu_ink2_step_sizes(int n_app, int H, int V, size_t out[16]);
+// TEST-ONLY: the program's allocations as made (count, sizes), and one device tensor's bytes (rows + factors)
+int        gpu_ink2_test_step_allocs(gpu_ink2 *h, size_t out[16]);
+size_t     gpu_ink2_test_tensor_bytes(gpu_ink2 *h, int i);
+// ONE decode step at position p0 on the device, the handle's lock held throughout (F1): emb_row [H] (the token's
+// embedding row, dequantized on the host as the engine does) up, the position up, the logits row [V] down; nothing
+// moves to or from the host inside the applications' loop. kv: the instance's rings and histories (its post
+// convolutions' copies initialized, gpu_ink2_kv_post_init).
+bool       gpu_ink2_step(gpu_ink2 *h, gpu_ink2_kv *kv, int p0, const float *emb_row, float *logits);
+// TEST-ONLY: out[0] the steps run, out[1] their host transfers, out[2] those inside the applications' loop (the bar: 0)
+void       gpu_ink2_test_step_stats(gpu_ink2 *h, long out[3]);
+void       gpu_ink2_free(gpu_ink2 *h);
+
 #endif // RUNNER_GPU_H

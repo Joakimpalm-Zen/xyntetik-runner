@@ -5552,6 +5552,931 @@ extern "C" __global__ void k_moe_scatter_add(float *out, const float *src,
         w[blockIdx.y] * src[(ulong64)blockIdx.y * ss + i];
 }
 
+// R4.48.9 G2b step 1: Inkling 2 Mini's SoftcappedSwiGLU over gate_up's columns in place, 1:1 with ink2_swiglu in
+// src/inkling2.c: softcap(g, gc) * sigmoid(g) * softcap(u, uc), softcap(v, c) = tanh(v / c) * c (a true division),
+// sigmoid(g) = 1 / (1 + exp(-g)). Column c holds the gates at act + c*cs and the ups F further; the result replaces
+// the gates. grid.y = column. CUDA's own tanhf/expf (the PTX is built without fast math), not the CPU fast route's
+// vector polynomials, so the two agree to rounding, not bit for bit.
+extern "C" __global__ void k_ink2_swiglu(float *act, int F, int cs, float gc, float uc) {
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j >= F) return;
+    float *a = act + (ulong64)blockIdx.y * cs;
+    const float g = a[j], u = a[F + j];
+    const float sg = tanhf(g / gc) * gc;
+    const float sig = 1.0f / (1.0f + expf(-g));
+    const float su = tanhf(u / uc) * uc;
+    a[j] = sg * sig * su;
+}
+
+// R4.48.9 (the gap note's D2): the expert body in five launches an application instead of five an expert. Its products
+// run SEGMENTED: one launch over every gathered (expert, position) column of the call (expert-major), column j = j0 +
+// blockIdx.y with its expert ex[j]: the weights at a.w_off + ex[j] * w_es bytes, its x at x + j * xcs, its y at
+// y + j * ycs, and on NVFP4 the expert's factor esc[ex[j]] (or 1). Each kernel's row arithmetic is a VERBATIM COPY of
+// its batch-1 k_mv_* (left untouched, so their PTX does not move); tests/test_inkling2_cuda.c holds the whole body to
+// the former per-expert launches byte for byte.
+#define MVSEG_PARAMS const uchar *wb, const float *x, float *y, mv_args a, const float *bias, const int *ex, \
+                     ka_u64 w_es, int xcs, int ycs, int j0
+#define MVSEG_HEAD \
+    { const int j_ = j0 + (int)blockIdx.y; a.w_off += (ka_u64)ex[j_] * w_es; x += (ulong64)j_ * xcs; \
+      y += (ulong64)j_ * ycs; }
+extern "C" __global__ void k_mvseg_f32(MVSEG_PARAMS) {
+    MVSEG_HEAD;
+    MV_HEAD;
+    const float *rw = (const float *)(wb + a.w_off) + (ulong64)row * a.n_in;
+    float s = 0;
+    for (int i = lane; i < a.n_in; i += 32) s += rw[i] * x[i];
+    MV_TAIL;
+}
+extern "C" __global__ void k_mvseg_bf16(MVSEG_PARAMS) {
+    MVSEG_HEAD;
+    MV_HEAD;
+    const unsigned short *rw =
+        (const unsigned short *)(wb + a.w_off) + (ulong64)row * a.n_in;
+    float s = 0;
+    for (int i = lane; i < a.n_in; i += 32) s += bf16f(rw[i]) * x[i];
+    MV_TAIL;
+}
+// (P1a's batched BF16 expert tile, k_mvsegb_bf16, was removed: measured 1.06x the per-column segmented launch on the
+// expert body at T = 512; the BF16 experts run per column, the dense BF16 products stay batched)
+extern "C" __global__ void k_mvseg_q8_0(MVSEG_PARAMS) {
+    MVSEG_HEAD;
+    MV_HEAD;
+    int nb = a.n_in / 32;
+    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 34;
+    float s = 0;
+    for (int b = lane; b < nb; b += 32) {
+        const uchar *blk = rw + (ulong64)b * 34;
+        float d = f16f(blk);
+        const signed char *q = (const signed char *)(blk + 2);
+        const float *xp = x + b * 32;
+        float t = 0;
+        for (int j = 0; j < 32; j++) t += (float)q[j] * xp[j];
+        s += d * t;
+    }
+    MV_TAIL;
+}
+extern "C" __global__ void k_mvseg_iq3_xxs(MVSEG_PARAMS) {
+    MVSEG_HEAD;
+    IQ_LANE_MV1(iq3xxs_lane_n, 98)
+}
+extern "C" __global__ void k_mvseg_nvfp4(MVSEG_PARAMS, const float *esc) {
+    MVSEG_HEAD;
+    const float scale = esc ? esc[ex[j0 + (int)blockIdx.y]] : 1.0f;
+    __shared__ float kv[16];
+    if (threadIdx.x < 16) kv[threadIdx.x] = kv_mxfp4[threadIdx.x];
+    LANE_DENSE_HEAD(64)
+    int nb = a.n_in / 64;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 36;
+    float s = 0;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 64)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (64 + 1);
+            const uchar *blk = rw + (ulong64)b * 36;
+            for (int sub = 0; sub < 4; sub++) {
+                float d = ue4m3f(blk[sub]);
+                const uchar *q = blk + 4 + sub * 8;
+                const float *xp = xs_ + sub * 16;
+                float t = 0;
+                for (int j = 0; j < 8; j++) {
+                    t += kv[q[j] & 0xF] * xp[j];
+                    t += kv[q[j] >> 4]  * xp[j + 8];
+                }
+                s += d * t;
+            }
+        }
+        __syncthreads();
+    }
+    if (live) {
+        s = warp_sum(s) * scale;
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
+}
+// R4.48.9 D1d.3a, the expert body's BOUNDED launches (the resident step's: no count read back to the host). Each
+// kernel below is its sized twin above, VERBATIM after its first lines, which read the launch's live range from device
+// memory and exit past it: a launch is sized by the bound (NC = T x K columns, the tile bound), the router's tables
+// kernel writes the live counts (nall, ntile, nbig) to device memory, and a block past them returns before any
+// read or write (whole blocks, before any __syncthreads). jsd: the first column (the tiled columns' count nbig, or NULL
+// for 0), jed: one past the last (nall). The sized kernels are left untouched, so their PTX does not move.
+extern "C" __global__ void k_mvseg_bf16_n(MVSEG_PARAMS, const int *jsd, const int *jed) {
+    j0 += jsd ? jsd[0] : 0;
+    if (j0 + (int)blockIdx.y >= jed[0]) return;
+    MVSEG_HEAD;
+    MV_HEAD;
+    const unsigned short *rw =
+        (const unsigned short *)(wb + a.w_off) + (ulong64)row * a.n_in;
+    float s = 0;
+    for (int i = lane; i < a.n_in; i += 32) s += bf16f(rw[i]) * x[i];
+    MV_TAIL;
+}
+extern "C" __global__ void k_mvseg_nvfp4_n(MVSEG_PARAMS, const float *esc, const int *jsd, const int *jed) {
+    j0 += jsd ? jsd[0] : 0;
+    if (j0 + (int)blockIdx.y >= jed[0]) return;
+    MVSEG_HEAD;
+    const float scale = esc ? esc[ex[j0 + (int)blockIdx.y]] : 1.0f;
+    __shared__ float kv[16];
+    if (threadIdx.x < 16) kv[threadIdx.x] = kv_mxfp4[threadIdx.x];
+    LANE_DENSE_HEAD(64)
+    int nb = a.n_in / 64;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 36;
+    float s = 0;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 64)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (64 + 1);
+            const uchar *blk = rw + (ulong64)b * 36;
+            for (int sub = 0; sub < 4; sub++) {
+                float d = ue4m3f(blk[sub]);
+                const uchar *q = blk + 4 + sub * 8;
+                const float *xp = xs_ + sub * 16;
+                float t = 0;
+                for (int j = 0; j < 8; j++) {
+                    t += kv[q[j] & 0xF] * xp[j];
+                    t += kv[q[j] >> 4]  * xp[j + 8];
+                }
+                s += d * t;
+            }
+        }
+        __syncthreads();
+    }
+    if (live) {
+        s = warp_sum(s) * scale;
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
+}
+// k_moe_gather / k_ink2_swiglu bounded the same way: column j0 + blockIdx.y, live while below jed[0] (nall)
+extern "C" __global__ void k_ink2_gather_n(float *dst, const float *src, const int *idx, int n, int ss, int ds, int j0,
+                                           const int *jed) {
+    if (j0 + (int)blockIdx.y >= jed[0]) return;
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    dst[(ulong64)blockIdx.y * ds + i] = src[(ulong64)idx[blockIdx.y] * ss + i];
+}
+extern "C" __global__ void k_ink2_swiglu_n(float *act, int F, int cs, float gc, float uc, int j0, const int *jed) {
+    if (j0 + (int)blockIdx.y >= jed[0]) return;
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j >= F) return;
+    float *a = act + (ulong64)blockIdx.y * cs;
+    const float g = a[j], u = a[F + j];
+    const float sg = tanhf(g / gc) * gc;
+    const float sig = 1.0f / (1.0f + expf(-g));
+    const float su = tanhf(u / uc) * uc;
+    a[j] = sg * sig * su;
+}
+// P1b: the NVFP4 product BATCHED: each decoded weight applied to the tile's 16 columns. k_mv_nvfp4 (left untouched)
+// gives each lane whole 64-element blocks b = lane, lane + 32, ... (rounds of 32 blocks, x staged in shared memory a
+// round at a time, rows of 65 floats) and per block its four 16-element sub-blocks in order: t = sum over j of
+// kv[lo] * x[j], kv[hi] * x[j + 8] (j ascending, lo then hi), s += d * t; then the warp tree and the factor. These
+// kernels keep that per-column order exactly. Per round each lane decodes its block's 64 weights once into registers,
+// then the tile's columns are staged NVFP4_B_CG at a time in k_mv_nvfp4's own layout (the block's 8 rows share each
+// staged copy, as there) and the lane applies its weights to each staged column. Like k_mv_bf16_b they compute all 16
+// columns of a tile (x carries 16 columns of padding past its last) and store the tile's own. 8 rows a 256-thread
+// block, a warp a row, as k_mv_nvfp4. (The first version read every column's x from global per row, 8 times the x
+// traffic and uncoalesced: 2.3x SLOWER than per-column launches; this staging is the fix.)
+#define NVFP4_B_CG 4
+#define NVFP4_B_BODY(x_, xs_, cnt_, y_, ys_, scale_)                                                                \
+    __shared__ float kv[16];                                                                                        \
+    __shared__ float xsm[NVFP4_B_CG * 32 * 65];                                                                     \
+    if (threadIdx.x < 16) kv[threadIdx.x] = kv_mxfp4[threadIdx.x];                                                  \
+    __syncthreads();                                                                                                \
+    const unsigned row = blockIdx.x * (blockDim.x / 32) + (threadIdx.x >> 5), lane = threadIdx.x & 31;              \
+    const bool live = row < (unsigned)a.n_out;                                                                      \
+    const int nb = a.n_in / 64;                                                                                     \
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 36;                                           \
+    float s[16];                                                                                                    \
+    _Pragma("unroll")                                                                                               \
+    for (int c = 0; c < 16; c++) s[c] = 0;                                                                          \
+    for (int b0 = 0; b0 < nb; b0 += 32) {                                                                           \
+        const int nblk = nb - b0 < 32 ? nb - b0 : 32;                                                               \
+        const bool mine = live && (int)lane < nblk;                                                                 \
+        float d[4], w[64];                                                                                          \
+        if (mine) {                                                                                                 \
+            const uchar *blk = rw + (ulong64)(b0 + (int)lane) * 36;                                                 \
+            _Pragma("unroll")                                                                                       \
+            for (int sub = 0; sub < 4; sub++) {                                                                     \
+                d[sub] = ue4m3f(blk[sub]);                                                                          \
+                const uchar *q = blk + 4 + sub * 8;                                                                 \
+                _Pragma("unroll")                                                                                   \
+                for (int j = 0; j < 8; j++) { w[sub * 16 + j] = kv[q[j] & 0xF]; w[sub * 16 + 8 + j] = kv[q[j] >> 4]; }\
+            }                                                                                                       \
+        }                                                                                                           \
+        _Pragma("unroll")                                                                                           \
+        for (int cg = 0; cg < 16; cg += NVFP4_B_CG) {                                                               \
+            __syncthreads();                                                                                        \
+            for (int i_ = threadIdx.x; i_ < NVFP4_B_CG * nblk * 64; i_ += blockDim.x) {                             \
+                const int c_ = i_ / (nblk * 64), r_ = i_ % (nblk * 64);                                             \
+                xsm[c_ * 32 * 65 + (r_ / 64) * 65 + (r_ % 64)] = (x_)[(ulong64)(cg + c_) * (xs_) + (ulong64)b0 * 64 + r_];\
+            }                                                                                                       \
+            __syncthreads();                                                                                        \
+            if (mine) {                                                                                             \
+                _Pragma("unroll")                                                                                   \
+                for (int c = 0; c < NVFP4_B_CG; c++) {                                                              \
+                    const float *xs_l = xsm + c * 32 * 65 + lane * 65;                                              \
+                    _Pragma("unroll")                                                                               \
+                    for (int sub = 0; sub < 4; sub++) {                                                             \
+                        const float *xp = xs_l + sub * 16;                                                          \
+                        float t = 0;                                                                                \
+                        _Pragma("unroll")                                                                           \
+                        for (int j = 0; j < 8; j++) {                                                               \
+                            t += w[sub * 16 + j] * xp[j];                                                           \
+                            t += w[sub * 16 + 8 + j] * xp[j + 8];                                                   \
+                        }                                                                                           \
+                        s[cg + c] += d[sub] * t;                                                                    \
+                    }                                                                                               \
+                }                                                                                                   \
+            }                                                                                                       \
+        }                                                                                                           \
+    }                                                                                                               \
+    if (live) {                                                                                                     \
+        _Pragma("unroll")                                                                                           \
+        for (int c = 0; c < 16; c++) {                                                                              \
+            const float v = warp_sum(s[c]) * (scale_);                                                              \
+            if (lane == 0 && c < (cnt_)) (y_)[(ulong64)c * (ys_) + row] = a.has_bias ? v + bias[row] : v;           \
+        }                                                                                                           \
+    }
+// a dense product: tile blockIdx.y = columns 16 y .. (a.batch in all; a.xs / a.ys the column strides)
+extern "C" __global__ void k_ink2_mv_nvfp4_b(MV_PARAMS, float scale) {
+    const int c0 = (int)blockIdx.y * 16, cnt = a.batch - c0 < 16 ? a.batch - c0 : 16;
+    const float *xt = x + (ulong64)c0 * a.xs;
+    float *yt = y + (ulong64)c0 * a.ys;
+    NVFP4_B_BODY(xt, a.xs, cnt, yt, a.ys, scale)
+}
+// the expert body's segmented twin: tile k = k0 + blockIdx.y of tiles[3 k..] = {first column, count, expert}
+extern "C" __global__ void k_mvsegb_nvfp4(const uchar *wb, const float *x, float *y, mv_args a, const float *bias,
+                                          const int *tiles, ka_u64 w_es, int xcs, int ycs, int k0, const float *esc) {
+    const int *tl = tiles + 3 * (k0 + (int)blockIdx.y);
+    a.w_off += (ka_u64)tl[2] * w_es;
+    const float *xt = x + (ulong64)tl[0] * xcs;
+    float *yt = y + (ulong64)tl[0] * ycs;
+    const int cnt = tl[1];
+    const float scale = esc ? esc[tl[2]] : 1.0f;
+    NVFP4_B_BODY(xt, xcs, cnt, yt, ycs, scale)
+}
+// D1d.3a: the same, BOUNDED: launched over the tile bound, tile k0 + blockIdx.y live while below knd[0] (ntile)
+extern "C" __global__ void k_mvsegb_nvfp4_n(const uchar *wb, const float *x, float *y, mv_args a, const float *bias,
+                                            const int *tiles, ka_u64 w_es, int xcs, int ycs, int k0, const float *esc,
+                                            const int *knd) {
+    if (k0 + (int)blockIdx.y >= knd[0]) return;
+    const int *tl = tiles + 3 * (k0 + (int)blockIdx.y);
+    a.w_off += (ka_u64)tl[2] * w_es;
+    const float *xt = x + (ulong64)tl[0] * xcs;
+    float *yt = y + (ulong64)tl[0] * ycs;
+    const int cnt = tl[1];
+    const float scale = esc ? esc[tl[2]] : 1.0f;
+    NVFP4_B_BODY(xt, xcs, cnt, yt, ycs, scale)
+}
+
+// The weighted sum per position, one thread a (position t = blockIdx.y, element i): out[t][i] = the sum over the
+// position's columns pl[po[t]..po[t+1]) in ascending expert order of w[j] * src[j][i], accumulated as the former
+// per-expert k_moe_scatter_add launches did (a zeroed accumulator, then += w * src, expert after expert), so the same
+// bits; no two threads write one element, so no ordering between launches is needed.
+extern "C" __global__ void k_moe_scatter_pos(float *out, const float *src, const int *po, const int *pl,
+                                             const float *w, int n, int os, int ss) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float *o = out + (ulong64)blockIdx.y * os + i;
+    for (int k = po[blockIdx.y]; k < po[blockIdx.y + 1]; k++) {
+        const int j = pl[k];
+        *o += w[j] * src[(ulong64)j * ss + i];
+    }
+}
+
+// R4.48.9 G2b step 2a: Inkling 2 Mini's attention core over the application's device K/V ring, one warp per (query i
+// = blockIdx.x, head h = blockIdx.y), as ink2_attn_core computes it: logits (q . k) * scale + the relative bias of
+// distance d (< ext; 0 beyond), over the keys the mask admits (0 <= d, and d < window on a sliding layer), the sink as
+// one more logit with a zero value; softmax; att = sum_j p_j v_j. Head h reads K/V head h / (nh / nkv). Key position
+// j lives in ring row j % R. The ORDER, fixed: pass 1 the max (exact, starting from the sink); pass 2 the keys in
+// chunks of 32 ascending, a lane each: e = exp(logit - max), the chunk's sum by the warp's fixed tree, the chunks'
+// sums added in ascending order, and sum_j e_j v_j with the lanes over the head's dimensions (lane + 32 k), keys
+// ascending; then one division by (sum + exp(sink - max)). A query reads only its own keys, so its result does not
+// depend on the chunk's other queries. CUDA's expf (no fast math): equal to the CPU's to rounding, not bit for bit.
+typedef struct { int nh, nkv, hd, C, Q, R, window, global, ext; float scale; } ink2_attn_args;
+// TEST-ONLY since the decode fix: this kernel is the REFERENCE the production pair below (k_ink2_attn_logits, then
+// k_ink2_attn) must equal byte for byte (tests/test_inkling2_cuda.c (n)); it ships in the same PTX module, unused by
+// the route. At T = 1 its grid is nh warps, each lane a key's whole dot product twice: 0.554 ms an application on the
+// slice (results of the decode diagnosis), which the pair replaces.
+extern "C" __global__ void k_ink2_attn_ref(const float *q, const float *kr, const float *vr, const float *rl,
+                                           const float *sk, const int *pos, float *att, ink2_attn_args a) {
+    const int i = blockIdx.x, h = blockIdx.y, lane = threadIdx.x;
+    const int kh = h / (a.nh / a.nkv), pi = pos[i];
+    const int lo = a.global ? 0 : (pi - a.window + 1 > 0 ? pi - a.window + 1 : 0);
+    __shared__ float qs[256];
+    __shared__ float es[32];
+    const float *qi = q + (ulong64)i * a.Q + (ulong64)h * a.hd;
+    for (int e = lane; e < a.hd; e += 32) qs[e] = qi[e];
+    __syncwarp();
+    const float *bias = rl + ((ulong64)i * a.nh + h) * a.ext;
+    const float sink = sk[(ulong64)i * a.nh + h];
+    // pass 1: the max over the admitted keys and the sink
+    float mx = sink;
+    for (int j0 = lo; j0 <= pi; j0 += 32) {
+        const int j = j0 + lane;
+        if (j <= pi) {
+            const float *kj = kr + (ulong64)(j % a.R) * a.C + (ulong64)kh * a.hd;
+            float s = 0.0f;
+            for (int e = 0; e < a.hd; e++) s = fmaf(qs[e], kj[e], s);
+            const int d = pi - j;
+            const float l = s * a.scale + (d < a.ext ? bias[d] : 0.0f);
+            mx = fmaxf(mx, l);
+        }
+    }
+    for (int o = 16; o > 0; o >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, o));
+    // pass 2: the exponentials, their sum and the weighted values
+    float acc[8];
+    for (int k = 0; k < 8; k++) acc[k] = 0.0f;
+    float sum = 0.0f;
+    for (int j0 = lo; j0 <= pi; j0 += 32) {
+        const int j = j0 + lane;
+        float ev = 0.0f;
+        if (j <= pi) {
+            const float *kj = kr + (ulong64)(j % a.R) * a.C + (ulong64)kh * a.hd;
+            float s = 0.0f;
+            for (int e = 0; e < a.hd; e++) s = fmaf(qs[e], kj[e], s);
+            const int d = pi - j;
+            ev = expf(s * a.scale + (d < a.ext ? bias[d] : 0.0f) - mx);
+        }
+        es[lane] = ev;
+        float cs = ev;
+        for (int o = 16; o > 0; o >>= 1) cs += __shfl_down_sync(0xffffffffu, cs, o);
+        sum += __shfl_sync(0xffffffffu, cs, 0);
+        __syncwarp();
+        const int nj = pi - j0 + 1 < 32 ? pi - j0 + 1 : 32;
+        for (int jj = 0; jj < nj; jj++) {
+            const float p = es[jj];
+            const float *vj = vr + (ulong64)((j0 + jj) % a.R) * a.C + (ulong64)kh * a.hd;
+            for (int k = 0, e = lane; e < a.hd; k++, e += 32) acc[k] = fmaf(p, vj[e], acc[k]);
+        }
+        __syncwarp();
+    }
+    const float total = sum + expf(sink - mx);
+    float *ai = att + (ulong64)i * a.Q + (ulong64)h * a.hd;
+    for (int k = 0, e = lane; e < a.hd; k++, e += 32) ai[e] = acc[k] / total;
+}
+
+// The production core, in two kernels that give k_ink2_attn_ref's bits (the decode fix: at T = 1 the reference runs
+// nh warps). First every admitted key's logit ONCE, one thread a (key, head, query): the reference's own expression
+// (its serial fmaf dot over e ascending, times the scale, plus the bias of distance d < ext), into lg[i][h][j - lo]
+// (nks columns a row: the most keys a query of the call admits). Grid ((nks + 127) / 128, nh, queries), block 128.
+extern "C" __global__ void k_ink2_attn_logits(const float *q, const float *kr, const float *rl, const int *pos,
+                                              float *lg, int nks, ink2_attn_args a) {
+    const int i = blockIdx.z, h = blockIdx.y, jr = blockIdx.x * blockDim.x + threadIdx.x;
+    const int kh = h / (a.nh / a.nkv), pi = pos[i];
+    const int lo = a.global ? 0 : (pi - a.window + 1 > 0 ? pi - a.window + 1 : 0);
+    const int j = lo + jr;
+    if (jr >= nks || j > pi) return;
+    const float *qi = q + (ulong64)i * a.Q + (ulong64)h * a.hd;
+    const float *kj = kr + (ulong64)(j % a.R) * a.C + (ulong64)kh * a.hd;
+    float s = 0.0f;
+    for (int e = 0; e < a.hd; e++) s = fmaf(qi[e], kj[e], s);
+    const int d = pi - j;
+    const float *bias = rl + ((ulong64)i * a.nh + h) * a.ext;
+    lg[((ulong64)i * a.nh + h) * nks + jr] = s * a.scale + (d < a.ext ? bias[d] : 0.0f);
+}
+// Then the core per (query i = blockIdx.x, head h = blockIdx.y) over the stored logits, hd threads (rounded up to a
+// warp; hd <= 256): the max over the keys and the sink (exact in any order); e = expf(logit - max) per key, in place;
+// warp 0 sums the keys in chunks of 32 by the reference's tree (__shfl_down from 16) and adds the chunks' sums in
+// ascending order; each thread one dimension's fmaf chain over the keys ascending (the reference's lane held the
+// dimensions lane + 32 k, each its own chain: spreading them changes no bit); one division by (sum + exp(sink - max)).
+extern "C" __global__ void k_ink2_attn(const float *vr, const float *sk, const int *pos, float *lg, float *att,
+                                       int nks, ink2_attn_args a) {
+    const int i = blockIdx.x, h = blockIdx.y, tid = threadIdx.x, nt = blockDim.x;
+    const int kh = h / (a.nh / a.nkv), pi = pos[i];
+    const int lo = a.global ? 0 : (pi - a.window + 1 > 0 ? pi - a.window + 1 : 0);
+    const int nk = pi - lo + 1;
+    float *li = lg + ((ulong64)i * a.nh + h) * nks;
+    const float sink = sk[(ulong64)i * a.nh + h];
+    __shared__ float red[8];
+    __shared__ float s_mx, s_sum;
+    float mx = sink;
+    for (int r = tid; r < nk; r += nt) mx = fmaxf(mx, li[r]);
+    for (int o = 16; o > 0; o >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, o));
+    if ((tid & 31) == 0) red[tid >> 5] = mx;
+    __syncthreads();
+    if (tid == 0) {
+        float m = red[0];
+        for (int w = 1; w < nt / 32; w++) m = fmaxf(m, red[w]);
+        s_mx = m;
+    }
+    __syncthreads();
+    mx = s_mx;
+    for (int r = tid; r < nk; r += nt) li[r] = expf(li[r] - mx);
+    __syncthreads();
+    if (tid < 32) {
+        float sum = 0.0f;
+        for (int r0 = 0; r0 < nk; r0 += 32) {
+            float cs = r0 + tid < nk ? li[r0 + tid] : 0.0f;
+            for (int o = 16; o > 0; o >>= 1) cs += __shfl_down_sync(0xffffffffu, cs, o);
+            sum += __shfl_sync(0xffffffffu, cs, 0);
+        }
+        if (tid == 0) s_sum = sum;
+    }
+    float acc = 0.0f;
+    if (tid < a.hd)
+        for (int r = 0; r < nk; r++) {
+            const float *vj = vr + (ulong64)((lo + r) % a.R) * a.C + (ulong64)kh * a.hd;
+            acc = fmaf(li[r], vj[tid], acc);
+        }
+    __syncthreads();
+    const float total = s_sum + expf(sink - mx);
+    if (tid < a.hd) att[(ulong64)i * a.Q + (ulong64)h * a.hd + tid] = acc / total;
+}
+
+// R4.48.9 G2b step 2b: the attention block's glue, each kernel 1:1 with src/inkling2.c's host code, its small sums
+// serial and ascending with separate multiplies and adds (__fmul_rn / __fadd_rn: the host builds that file with
+// -ffp-contract=off), so given the same inputs they give the host's bits; CUDA's sqrtf and division are IEEE-rounded
+// (no fast math). Only tau's logf and the gate's expf differ from the host's p_logf / p_expf, to rounding.
+// ink2_scaled_clip on [T][n][d] rows (stride rs): times scale[n][d], the L2 clip at thr, on a full layer times
+// tau(pos) = 1 + alpha log(max((pos + 1) / floor, 1)). One thread per (position = blockIdx.y, head).
+extern "C" __global__ void k_ink2_scaled_clip(float *y, const float *scale, int n, int d, int rs, float thr,
+                                              int full, float alpha, float floor_, const int *pos) {
+    const int h = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;
+    if (h >= n) return;
+    float *yh = y + (ulong64)t * rs + (ulong64)h * d;
+    const float *sc = scale + (ulong64)h * d;
+    float ss = 0.0f;
+    for (int i = 0; i < d; i++) { yh[i] = __fmul_rn(yh[i], sc[i]); ss = __fadd_rn(ss, __fmul_rn(yh[i], yh[i])); }
+    float f = __fmul_rn(__fdiv_rn(1.0f, __fadd_rn(sqrtf(ss), 1e-6f)), thr);
+    if (f > 1.0f) f = 1.0f;
+    float tau = 1.0f;
+    if (full) {
+        float a = __fdiv_rn((float)(pos[t] + 1), floor_);
+        if (a < 1.0f) a = 1.0f;
+        tau = __fadd_rn(1.0f, __fmul_rn(alpha, logf(a)));
+    }
+    for (int i = 0; i < d; i++) { yh[i] = __fmul_rn(yh[i], f); if (full) yh[i] = __fmul_rn(yh[i], tau); }
+}
+// ink2_kv_conv over T positions from p0 (lin [T][C], out [T][C]): sliding taps w[c][j] (conv1d [C][K]) or full
+// dynamic taps static[lag][c] + dyn[t][c / hd][lag] (dyn [T][nkv K]); the inputs before the chunk from the history
+// ring hist (row u % (K-1)) only when p0 > 0; (conv + lin) / div. One thread per (position = blockIdx.y, channel).
+extern "C" __global__ void k_ink2_kv_conv(const float *lin, const float *hist, const float *dyn, const float *w,
+                                          float *out, int C, int K, int hd, int nkv, int p0, int full, float div) {
+    const int ch = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;
+    if (ch >= C) return;
+    const int R = nkv * K;
+    float a = 0.0f;
+    if (!full) {
+        for (int j = 0; j < K; j++) {
+            const int u = t - (K - 1) + j;
+            if (p0 + u < 0) continue;
+            const float in = u >= 0 ? lin[(ulong64)u * C + ch] : hist[(ulong64)((p0 + u) % (K - 1)) * C + ch];
+            a = __fadd_rn(a, __fmul_rn(w[(ulong64)ch * K + j], in));
+        }
+    } else {
+        for (int l = 0; l < K && p0 + t - l >= 0; l++) {
+            const int u = t - l;
+            const float in = u >= 0 ? lin[(ulong64)u * C + ch] : hist[(ulong64)((p0 + u) % (K - 1)) * C + ch];
+            const float tap = __fadd_rn(w[(ulong64)l * C + ch], dyn[(ulong64)t * R + (ulong64)(ch / hd) * K + l]);
+            a = __fadd_rn(a, __fmul_rn(in, tap));
+        }
+    }
+    out[(ulong64)t * C + ch] = __fdiv_rn(__fadd_rn(a, lin[(ulong64)t * C + ch]), div);
+}
+// ink2_kv_norm per (position = blockIdx.y, K/V head): kind 0 the L2 clip at thr (k_proj), kind 1 the unweighted RMS
+// norm x / sqrt(mean(x^2) + eps) (v_proj)
+extern "C" __global__ void k_ink2_kv_norm(float *z, int nkv, int hd, int C, float thr, float eps, int kind) {
+    const int h = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;
+    if (h >= nkv) return;
+    float *zh = z + (ulong64)t * C + (ulong64)h * hd;
+    float ss = 0.0f;
+    for (int i = 0; i < hd; i++) ss = __fadd_rn(ss, __fmul_rn(zh[i], zh[i]));
+    float f;
+    if (kind) f = __fdiv_rn(1.0f, sqrtf(__fadd_rn(__fdiv_rn(ss, (float)hd), eps)));
+    else { f = __fmul_rn(__fdiv_rn(1.0f, __fadd_rn(sqrtf(ss), 1e-6f)), thr); if (f > 1.0f) f = 1.0f; }
+    for (int i = 0; i < hd; i++) zh[i] = __fmul_rn(zh[i], f);
+}
+// the relative bank: rl[t][h][e] = sum_r rs[t][h][r] proj[r][e], r ascending. One thread per (t = blockIdx.y, h e).
+extern "C" __global__ void k_ink2_bank(const float *rs, const float *proj, float *rl, int nh, int dr, int ext) {
+    const int he = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;
+    if (he >= nh * ext) return;
+    const int h = he / ext, e = he % ext;
+    const float *rt = rs + ((ulong64)t * nh + h) * dr;
+    float a = 0.0f;
+    for (int r = 0; r < dr; r++) a = __fadd_rn(a, __fmul_rn(rt[r], proj[(ulong64)r * ext + e]));
+    rl[((ulong64)t * nh + h) * ext + e] = a;
+}
+// o_proj's gate: att *= sigmoid(ga), sigmoid = 1 / (1 + exp(-ga)), over n values
+extern "C" __global__ void k_ink2_gate(float *att, const float *ga, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    att[i] = __fmul_rn(att[i], __fdiv_rn(1.0f, __fadd_rn(1.0f, expf(-ga[i]))));
+}
+
+// R4.48.9 D1a: the loop's message gates on the device. The host's tanh there is pmath.h's p_tanhf (double precision
+// over pm_exp_d), ported LINE FOR LINE: every double operation an explicit round-to-nearest intrinsic (no contraction:
+// the host builds it with -ffp-contract=off), the constants the hex of the host's folded divisions
+// (scripts/pm_exp_consts.py), the int conversion a truncation as C's cast; so the same bits for every float.
+static __device__ double ink2_pm_ldexp2(double x, int k) {
+    while (k > 1000) { x = __dmul_rn(x, 0x1p1000); k -= 1000; }
+    while (k < -1000) { x = __dmul_rn(x, 0x1p-1000); k += 1000; }
+    return __dmul_rn(x, __longlong_as_double((long long)(k + 1023) << 52));
+}
+static __device__ double ink2_pm_exp_d(double x) {
+    if (x != x) return x;
+    if (x > 709.0) return __longlong_as_double(0x7ff0000000000000LL);   // 1.0 / 0.0
+    if (x < -745.0) return 0.0;
+    const double ln2_hi = 0x1.62e42fee00000p-1, ln2_lo = 0x1.a39ef35793c76p-33, inv_ln2 = 0x1.71547652b82fep+0;
+    const double kd = __dmul_rn(x, inv_ln2);
+    const int k = (int)(kd >= 0 ? __dadd_rn(kd, 0.5) : __dsub_rn(kd, 0.5));
+    const double r = __dsub_rn(__dsub_rn(x, __dmul_rn((double)k, ln2_hi)), __dmul_rn((double)k, ln2_lo));
+    double p = 0x1.6124613a86d09p-33;                 // 1 / 13!
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.1eed8eff8d898p-29);   // 1 / 12!
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.ae64567f544e4p-26);   // 1 / 11!
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.27e4fb7789f5cp-22);   // 1 / 10!
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.71de3a556c734p-19);   // 1 / 9!
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.a01a01a01a01ap-16);   // 1 / 8!
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.a01a01a01a01ap-13);   // 1 / 7!
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.6c16c16c16c17p-10);   // 1 / 6!
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.1111111111111p-7);    // 1 / 5!
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.5555555555555p-5);    // 1 / 4!
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.5555555555555p-3);    // 1 / 3!
+    p = __dadd_rn(__dmul_rn(p, r), 0.5);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0);
+    return ink2_pm_ldexp2(p, k);
+}
+static __device__ float ink2_p_tanhf(float x) {
+    const double xd = (double)x;
+    if (xd > 20.0) return 1.0f;
+    if (xd < -20.0) return -1.0f;
+    if (xd < 1e-4 && xd > -1e-4)
+        return __double2float_rn(__dmul_rn(xd, __dsub_rn(1.0, __dmul_rn(__dmul_rn(xd, xd), 0x1.5555555555555p-2))));
+    const double e = ink2_pm_exp_d(__dmul_rn(2.0, xd));
+    return __double2float_rn(__ddiv_rn(__dsub_rn(e, 1.0), __dadd_rn(e, 1.0)));
+}
+// TEST-ONLY: y[i] = the ported p_tanhf(x[i]) (tests/test_inkling2_cuda.c holds it to pmath.h's for every branch)
+extern "C" __global__ void k_ink2_test_ptanh(const float *x, float *y, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) y[i] = ink2_p_tanhf(x[i]);
+}
+// R4.48.9.3: the Inkling norms (k_ink2_msg_norm, k_ink2_rms_rows) take one BLOCK a norm. The row goes through shared
+// memory in tiles the whole block loads (coalesced), and thread 0 alone sums its squares serially in ascending order,
+// the host's order, from the same floats; the factor 1 / sqrt(ss / H + eps) is then shared and the element-independent
+// multiply spread over the block. Not one bit moves against the former one-thread-a-norm form: the sum's chain is the
+// same and each element's product is its own. (That form left a decode step's one row to one thread, whose serial H
+// loads cost about 43 ns an element on an sm_120 GPU.) Every thread of the block must reach it (the syncs): a caller
+// exits whole blocks only.
+#define INK2_NORM_TILE 1024
+static __device__ float ink2_block_norm_factor(const float *src, int H, float eps, float *tile, float *fac) {
+    float ss = 0.0f;   // thread 0's
+    for (int b0 = 0; b0 < H; b0 += INK2_NORM_TILE) {
+        const int n = H - b0 < INK2_NORM_TILE ? H - b0 : INK2_NORM_TILE;
+        for (int i = threadIdx.x; i < n; i += blockDim.x) tile[i] = src[b0 + i];
+        __syncthreads();
+        if (threadIdx.x == 0) for (int i = 0; i < n; i++) ss = __fadd_rn(ss, __fmul_rn(tile[i], tile[i]));
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) *fac = __fdiv_rn(1.0f, __fsqrt_rn(__fadd_rn(__fdiv_rn(ss, (float)H), eps)));
+    __syncthreads();
+    return *fac;
+}
+// the message step's norms, ink2_msg_norm_range: gh[row] = [norm(x[row]), norm(msg[row])], the unweighted RMS norm of
+// ink2_unweighted_norm (a serial sum of squares ascending, the mean, + eps, 1 / sqrt, one multiply an element). One
+// block a norm (norm k = blockIdx.x): n_rows rows, each two norms (x and msg), x rows and msg rows H wide (contiguous),
+// gh rows 2H.
+extern "C" __global__ void k_ink2_msg_norm(const float *x, const float *msg, float *gh, int n_rows, int H, float eps) {
+    __shared__ float tile[INK2_NORM_TILE];
+    __shared__ float fac;
+    const int k = blockIdx.x;
+    if (k >= 2 * n_rows) return;   // the whole block
+    const int row = k >> 1, which = k & 1;
+    const float *src = (which ? msg : x) + (ulong64)row * H;
+    float *dst = gh + (ulong64)row * 2 * H + (which ? H : 0);
+    const float r = ink2_block_norm_factor(src, H, eps, tile, &fac);
+    for (int i = threadIdx.x; i < H; i += blockDim.x) dst[i] = __fmul_rn(src[i], r);
+}
+// R4.48.9 D1b: the router on the device, ink2_route_one operation for operation. Its sigmoid is 1 / (1 + p_expf(-l))
+// with pmath.h's p_expf, ported line for line as D1a's p_tanhf (the clamps, the double Horner chain with explicit
+// round-to-nearest, the exponent-field scaling, the float conversion, the quieted-NaN select by bits).
+static __device__ float ink2_p_expf(float x) {
+    const double ln2_hi = 0x1.62e42fee00000p-1, ln2_lo = 0x1.a39ef35793c76p-33, inv_ln2 = 0x1.71547652b82fep+0;
+    const double xd = (double)x;
+    double xc = xd < 89.0 ? xd : 89.0;   // a NaN too (the select below restores it)
+    xc = xc > -104.0 ? xc : -104.0;
+    const double kd = __dmul_rn(xc, inv_ln2);
+    const int k = (int)__dadd_rn(kd, kd >= 0 ? 0.5 : -0.5);
+    const double r = __dsub_rn(__dsub_rn(xc, __dmul_rn((double)k, ln2_hi)), __dmul_rn((double)k, ln2_lo));
+    double p = 0x1.6124613a86d09p-33;
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.1eed8eff8d898p-29);
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.ae64567f544e4p-26);
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.27e4fb7789f5cp-22);
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.71de3a556c734p-19);
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.a01a01a01a01ap-16);
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.a01a01a01a01ap-13);
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.6c16c16c16c17p-10);
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.1111111111111p-7);
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.5555555555555p-5);
+    p = __dadd_rn(__dmul_rn(p, r), 0x1.5555555555555p-3);
+    p = __dadd_rn(__dmul_rn(p, r), 0.5);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0);
+    p = __dadd_rn(__dmul_rn(p, r), 1.0);
+    const double e = __dmul_rn(p, __longlong_as_double((long long)(k + 1023) << 52));
+    const unsigned xb = __float_as_uint(x), qb = xb | 0x00400000u;
+    const unsigned eb = __float_as_uint(__double2float_rn(e));
+    const unsigned is_nan = 0u - (unsigned)((xb & 0x7fffffffu) > 0x7f800000u);
+    return __uint_as_float((qb & is_nan) | (eb & ~is_nan));
+}
+// ink2_sigmoid: 1 / (1 + p_expf(-x))
+static __device__ float ink2_sigmoid_d(float x) { return __fdiv_rn(1.0f, __fadd_rn(1.0f, ink2_p_expf(-x))); }
+// TEST-ONLY: y[i] = the ported p_expf(x[i])
+extern "C" __global__ void k_ink2_test_pexpf(const float *x, float *y, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) y[i] = ink2_p_expf(x[i]);
+}
+// the router's logits and scores, ink2_route_range: (position t, expert e): l = the serial dot of router row e with x[t]
+// over h ascending (l += row[h] * x[h], no contraction), sc[t][e] = sigmoid(l); lg if given.
+// D1b.1: a block of 256 threads takes RS_E = 32 experts x RS_T = 8 positions (warp w = position t0 + w, lane = expert
+// e0 + lane); the router rows and x come through shared memory a tile of RS_H = 128 columns at a time, loaded coalesced
+// (a warp reads one row's 128 consecutive floats), so each row is read once a block, not once a thread. Each thread's dot
+// is still ONE serial chain in ascending h: only where the operands are read from changes, no sum. The grid is 1-D
+// (blockIdx.x = position block x expert blocks + expert block), so T is bounded by grid.x, not grid.y's 65535.
+#define RS_E 32
+#define RS_T 8
+#define RS_H 128
+extern "C" __global__ void __launch_bounds__(256) k_ink2_route_scores(const float *wr, const float *x, float *sc, float *lg,
+                                                                      int E, int H, int T) {
+    __shared__ float rw[RS_E][RS_H + 1], xs[RS_T][RS_H];   // +1: lanes reading rw[lane][h] fall in distinct banks
+    const int neb = (E + RS_E - 1) / RS_E;
+    const int e0 = (int)(blockIdx.x % (unsigned)neb) * RS_E, t0 = (int)(blockIdx.x / (unsigned)neb) * RS_T;
+    const int lane = threadIdx.x & 31, w = threadIdx.x >> 5;
+    const int e = e0 + lane, t = t0 + w;
+    float l = 0.0f;
+    for (int h0 = 0; h0 < H; h0 += RS_H) {
+        const int nh = H - h0 < RS_H ? H - h0 : RS_H;
+        __syncthreads();
+        for (int r = w; r < RS_E; r += 8)   // warp w loads rows w, w + 8, ...: 128 consecutive floats each
+            for (int c = lane; c < nh; c += 32) rw[r][c] = e0 + r < E ? wr[(ulong64)(e0 + r) * H + h0 + c] : 0.0f;
+        for (int c = lane; c < nh; c += 32) xs[w][c] = t < T ? x[(ulong64)t * H + h0 + c] : 0.0f;
+        __syncthreads();
+        if (e < E && t < T)
+            for (int c = 0; c < nh; c++) l = __fadd_rn(l, __fmul_rn(rw[lane][c], xs[w][c]));
+    }
+    if (e >= E || t >= T) return;
+    if (lg) lg[(ulong64)t * E + e] = l;
+    sc[(ulong64)t * E + e] = ink2_sigmoid_d(l);
+}
+// the top-k and the weights, ink2_route_one's loops: K times the unchosen e with the largest sc + br; wt[e] = sc[e] /
+// (the chosen scores' sum ascending + 1e-20) * scale; pc[t] the position's chosen count; mg[t] (when given) the
+// selection observer's margin: the smallest chosen sc + br minus the largest unchosen one, as ink2_expert_layer_c
+// computes it.
+// D1b.1: a WARP a position (4 a block). Each pass reproduces the host's serial scan `best < 0 || v > bv` exactly: its
+// FIRST unchosen slot f starts as best, so when v[f] is NaN nothing compares greater and f is chosen; otherwise the
+// chosen is the largest non-NaN v, the LOWEST index among equal ones (+0 and -0 compare equal: the lower index), since
+// a NaN anywhere but the first slot never compares greater. The warp finds f by a min and the best by a reduction on
+// (v larger, then index smaller): a max of floats rounds nothing, so the choice is the serial scan's (fmaxf is NOT
+// this rule: it drops a first-slot NaN). The weights' sum stays one serial ascending chain (lane 0), as the margin.
+#define RT_NONE 0x7fffffff
+extern "C" __global__ void k_ink2_route_topk(const float *sc, const float *br, uchar *chosen, float *wt, int *pc,
+                                             float *mg, int E, int K, float scale, int T) {
+    const unsigned FULL = 0xffffffffu;
+    const int lane = threadIdx.x & 31, t = (int)(blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5));
+    if (t >= T) return;   // the whole warp: t is the warp's
+    const float *s = sc + (ulong64)t * E;
+    uchar *ch = chosen + (ulong64)t * E;
+    float *w = wt + (ulong64)t * E;
+    for (int e = lane; e < E; e += 32) ch[e] = 0;
+    __syncwarp();
+    int n = 0;
+    for (int k = 0; k < K; k++) {
+        int f = RT_NONE, bi = RT_NONE;
+        float bv = 0.0f;
+        for (int e = lane; e < E; e += 32) {   // the lane's experts ascending
+            if (ch[e]) continue;
+            if (f == RT_NONE) f = e;
+            const float v = __fadd_rn(s[e], br[e]);
+            if (v != v) continue;              // a NaN wins only as the pass's first slot (below)
+            if (bi == RT_NONE || v > bv) { bi = e; bv = v; }   // strict >: the lane's lowest index on a tie
+        }
+        for (int o = 16; o > 0; o >>= 1) {
+            const int f2 = __shfl_xor_sync(FULL, f, o), bi2 = __shfl_xor_sync(FULL, bi, o);
+            const float bv2 = __shfl_xor_sync(FULL, bv, o);
+            f = f2 < f ? f2 : f;
+            if (bi2 != RT_NONE && (bi == RT_NONE || bv2 > bv || (bv2 == bv && bi2 < bi))) { bi = bi2; bv = bv2; }
+        }
+        if (f == RT_NONE) break;               // nothing unchosen (the same on every lane)
+        const float vf = __fadd_rn(s[f], br[f]);
+        const int best = vf != vf ? f : bi;    // v[f] not NaN: f is among bi's candidates, so bi is set
+        if (lane == 0) ch[best] = 1;
+        __syncwarp();
+        n++;
+    }
+    float den = 0.0f;
+    if (lane == 0) {
+        float sum = 0.0f;
+        for (int e = 0; e < E; e++) if (ch[e]) sum = __fadd_rn(sum, s[e]);
+        den = __fadd_rn(sum, 1e-20f);
+        pc[t] = n;
+    }
+    den = __shfl_sync(FULL, den, 0);
+    for (int e = lane; e < E; e += 32) w[e] = ch[e] ? __fmul_rn(__fdiv_rn(s[e], den), scale) : 0.0f;
+    if (mg && lane == 0) {
+        float lo = __int_as_float(0x7f800000), hi = -__int_as_float(0x7f800000);
+        for (int e = 0; e < E; e++) {
+            const float v = __fadd_rn(s[e], br[e]);
+            if (ch[e]) { if (v < lo) lo = v; } else if (v > hi) hi = v;
+        }
+        mg[t] = __fsub_rn(lo, hi);
+    }
+}
+// the expert body's tables from the device's choices, ink2_experts_fused's host loops in their order (one block):
+// cnt[e] the expert's positions; the columns numbered expert-major, the experts with at least mvb_min columns FIRST
+// when tiled (P1b's renumbering), the rest after; idx/ex/wv per column (positions ascending within an expert); po/pl
+// each position's columns in ascending expert order; the tiles {first column, count <= 16, expert} of the first
+// group. Layout at fixed bounds NC = T * K: idx [NC], ex [NC], po [T + 1], pl [NC], tiles [3 (NC / 16 + E)]; hdr =
+// {nall, ntile, nbig}. cnt and off are scratch [E] each.
+// D1b.1 (the second read's F2): col [T][E] (scratch) holds each chosen (position, expert)'s column number, written in
+// the per-expert pass, so each position's list reads it instead of recounting the earlier positions (O(T E), not
+// O(T^2 E)); the numbers, and so every table, are the same.
+extern "C" __global__ void k_ink2_route_tables(const uchar *chosen, const float *wt, const int *pc, int *tab, float *wv,
+                                               int *cnt, int *off, int *toff, int *hdr, int *col, int E, int T, int K,
+                                               int tiled, int mvb_min) {
+    const int NC = T * K;
+    int *idx = tab, *ex = tab + NC, *po = tab + 2 * NC, *pl = po + T + 1, *tl = pl + NC;
+    for (int e = threadIdx.x; e < E; e += blockDim.x) {
+        int c = 0;
+        for (int t = 0; t < T; t++) c += chosen[(ulong64)t * E + e];
+        cnt[e] = c;
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        int nbig = 0, ntile = 0, nall = 0;
+        for (int e = 0; e < E; e++) { nall += cnt[e]; if (tiled && cnt[e] >= mvb_min) { nbig += cnt[e]; } }
+        for (int e = 0, jb = 0, js = nbig; e < E; e++) {
+            const int big = tiled && cnt[e] >= mvb_min;
+            off[e] = big ? jb : js;
+            toff[e] = ntile;
+            if (big) { jb += cnt[e]; ntile += (cnt[e] + 15) / 16; } else js += cnt[e];
+        }
+        po[0] = 0;
+        for (int t = 0; t < T; t++) po[t + 1] = po[t] + pc[t];
+        hdr[0] = nall; hdr[1] = ntile; hdr[2] = nbig;
+    }
+    __syncthreads();
+    for (int e = threadIdx.x; e < E; e += blockDim.x) {
+        int j = off[e];
+        for (int t = 0; t < T; t++)
+            if (chosen[(ulong64)t * E + e]) {
+                idx[j] = t; ex[j] = e; wv[j] = wt[(ulong64)t * E + e]; col[(ulong64)t * E + e] = j; j++;
+            }
+        if (tiled && cnt[e] >= mvb_min)
+            for (int c = 0, k = toff[e]; c < cnt[e]; c += 16, k++) {
+                tl[3 * k] = off[e] + c; tl[3 * k + 1] = cnt[e] - c < 16 ? cnt[e] - c : 16; tl[3 * k + 2] = e;
+            }
+    }
+    __syncthreads();   // every column number written before any position's list reads it
+    for (int t = threadIdx.x; t < T; t += blockDim.x) {   // each position's columns, experts ascending
+        int k = po[t];
+        for (int e = 0; e < E; e++)
+            if (chosen[(ulong64)t * E + e]) pl[k++] = col[(ulong64)t * E + e];
+    }
+}
+// ---- R4.48.9 D1d.1: the decode step's remaining host ops on the device, each the host function operation for
+// operation (serial sums in ascending order, explicit round-to-nearest, no contraction) ----
+// ink2_rms_norm / ink2_unweighted_norm over n_rows rows of H, one block a row (blockIdx.x; ink2_block_norm_factor):
+// y = x * (1 / sqrt(ss / H + eps)), then (wt given) wt[i] * that, as the host's two loops
+extern "C" __global__ void k_ink2_rms_rows(const float *x, const float *wt, float *y, int n_rows, int H, float eps) {
+    __shared__ float tile[INK2_NORM_TILE];
+    __shared__ float fac;
+    const int row = blockIdx.x;
+    if (row >= n_rows) return;   // the whole block
+    const float *src = x + (ulong64)row * H;
+    float *dst = y + (ulong64)row * H;
+    const float r = ink2_block_norm_factor(src, H, eps, tile, &fac);
+    for (int i = threadIdx.x; i < H; i += blockDim.x) {
+        const float v = __fmul_rn(src[i], r);
+        dst[i] = wt ? __fmul_rn(wt[i], v) : v;
+    }
+}
+// ink2_depth_attn at T positions: normed [T][n_kv][H] (the states, already normed by k_ink2_rms_rows, eps 1e-6), the
+// nq queries q [nq][H]; one block a (query i = blockIdx.x, position t = blockIdx.y): thread j < n_kv its score (the
+// serial dot ascending h, times scale), thread 0 the max (ascending j, from -inf), the p_expf, the sum (ascending j)
+// and the divisions; then each thread h its output, the serial weighted sum ascending j. out[i * ois + t * ots + h].
+extern "C" __global__ void k_ink2_depth_attn(const float *q, const float *normed, float *out, int nq, int n_kv, int H,
+                                             float scale, int ois, int ots) {
+    extern __shared__ float sc[];   // n_kv scores
+    const int i = blockIdx.x, t = blockIdx.y;
+    if (i >= nq) return;
+    const float *qi = q + (ulong64)i * H, *nt = normed + (ulong64)t * n_kv * H;
+    for (int j = threadIdx.x; j < n_kv; j += blockDim.x) {
+        const float *nj = nt + (ulong64)j * H;
+        float d = 0.0f;
+        for (int h = 0; h < H; h++) d = __fadd_rn(d, __fmul_rn(qi[h], nj[h]));
+        sc[j] = __fmul_rn(d, scale);
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        float mx = -__int_as_float(0x7f800000);
+        for (int j = 0; j < n_kv; j++) if (sc[j] > mx) mx = sc[j];
+        float sum = 0.0f;
+        for (int j = 0; j < n_kv; j++) { sc[j] = ink2_p_expf(__fsub_rn(sc[j], mx)); sum = __fadd_rn(sum, sc[j]); }
+        for (int j = 0; j < n_kv; j++) sc[j] = __fdiv_rn(sc[j], sum);
+    }
+    __syncthreads();
+    float *oi = out + (ulong64)i * ois + (ulong64)t * ots;
+    for (int h = threadIdx.x; h < H; h += blockDim.x) {
+        float a = 0.0f;
+        for (int j = 0; j < n_kv; j++) a = __fadd_rn(a, __fmul_rn(sc[j], nt[(ulong64)j * H + h]));
+        oi[h] = a;
+    }
+}
+// D1d.3b: k_ink2_depth_attn at ONE position over states read through an index list: state j is the normed row
+// normed + ix[j] * H (the resident step's slabs, each normed once when written; the lists fixed by the forward's walk
+// and uploaded with the plan, so a read packs nothing). The arithmetic is k_ink2_depth_attn's, operation for operation.
+// R4.48.9.3: the scores through shared memory in tiles of `tile` elements (gpu side: ink2_dattn_tile): the block loads
+// a tile of q and of every listed state (coalesced; the states' rows padded by one so the per-state reads take
+// distinct banks), then thread j carries state j's dot on over the tile, ascending h, its running sum held in sc[j]
+// between tiles: the same chain as the one-pass form's, so not one bit moves. (The one-pass form read each state's row
+// one element at a time from one thread, about 21 ns an element at H = 4096 on an sm_120 GPU.) Shared memory: n_kv
+// scores, a tile of q, n_kv tiles of tile + 1.
+extern "C" __global__ void k_ink2_depth_attn_ix(const float *q, const float *normed, const int *ix, float *out, int nq,
+                                                int n_kv, int H, float scale, int ois, int tile) {
+    extern __shared__ float sm_dattn[];
+    float *sc = sm_dattn, *qs = sm_dattn + n_kv, *st = qs + tile;
+    const int i = blockIdx.x;
+    if (i >= nq) return;   // the whole block
+    const float *qi = q + (ulong64)i * H;
+    for (int j = threadIdx.x; j < n_kv; j += blockDim.x) sc[j] = 0.0f;
+    for (int b0 = 0; b0 < H; b0 += tile) {
+        const int n = H - b0 < tile ? H - b0 : tile;
+        for (int t = threadIdx.x; t < n; t += blockDim.x) qs[t] = qi[b0 + t];
+        for (int e = threadIdx.x; e < n_kv * n; e += blockDim.x) {
+            const int j = e / n, t = e - j * n;
+            st[j * (tile + 1) + t] = normed[(ulong64)ix[j] * H + b0 + t];
+        }
+        __syncthreads();
+        for (int j = threadIdx.x; j < n_kv; j += blockDim.x) {
+            const float *sj = st + j * (tile + 1);
+            float d = sc[j];
+            for (int t = 0; t < n; t++) d = __fadd_rn(d, __fmul_rn(qs[t], sj[t]));
+            sc[j] = d;
+        }
+        __syncthreads();
+    }
+    for (int j = threadIdx.x; j < n_kv; j += blockDim.x) sc[j] = __fmul_rn(sc[j], scale);
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        float mx = -__int_as_float(0x7f800000);
+        for (int j = 0; j < n_kv; j++) if (sc[j] > mx) mx = sc[j];
+        float sum = 0.0f;
+        for (int j = 0; j < n_kv; j++) { sc[j] = ink2_p_expf(__fsub_rn(sc[j], mx)); sum = __fadd_rn(sum, sc[j]); }
+        for (int j = 0; j < n_kv; j++) sc[j] = __fdiv_rn(sc[j], sum);
+    }
+    __syncthreads();
+    float *oi = out + (ulong64)i * ois;
+    for (int h = threadIdx.x; h < H; h += blockDim.x) {
+        float a = 0.0f;
+        for (int j = 0; j < n_kv; j++) a = __fadd_rn(a, __fmul_rn(sc[j], normed[(ulong64)ix[j] * H + h]));
+        oi[h] = a;
+    }
+}
+// ink2_short_conv with its history (ink2_conv_hist: row u % (K - 1) holds position u's input row, C wide): thread
+// (position t = blockIdx.y, channel ch): the serial sum over the taps ascending j, the input row's own value, / div
+// (the host's (float)sqrt((double)(K + 1)), passed). hist NULL: p0 taken as 0 and no history (a prefill).
+extern "C" __global__ void k_ink2_short_conv(const float *cw, const float *lin, float *out, const float *hist, int C,
+                                             int K, int T, int p0, float div) {
+    const int ch = blockIdx.x * blockDim.x + threadIdx.x, t = blockIdx.y;
+    if (ch >= C || t >= T) return;
+    if (!hist) p0 = 0;
+    float a = 0.0f;
+    for (int j = 0; j < K; j++) {
+        const int u = t - (K - 1) + j;
+        if (p0 + u >= 0) {
+            const float in = u >= 0 ? lin[(ulong64)u * C + ch] : hist[(ulong64)((p0 + u) % (K - 1)) * C + ch];
+            a = __fadd_rn(a, __fmul_rn(cw[(ulong64)ch * K + j], in));
+        }
+    }
+    out[(ulong64)t * C + ch] = __fdiv_rn(__fadd_rn(a, lin[(ulong64)t * C + ch]), div);
+}
+// ink2_conv_hist_store after the call: the last K - 1 input rows of lin [T][C] into the history
+extern "C" __global__ void k_ink2_conv_store(float *hist, const float *lin, int C, int K, int T, int p0) {
+    const int ch = blockIdx.x * blockDim.x + threadIdx.x, k = blockIdx.y;   // k: the k-th of the rows stored
+    const int u0 = T - (K - 1) < 0 ? 0 : T - (K - 1), u = u0 + k;
+    if (ch >= C || u >= T) return;
+    hist[(ulong64)((p0 + u) % (K - 1)) * C + ch] = lin[(ulong64)u * C + ch];
+}
+// out = a + b over n values (the residual: the host's x[i] + res[i])
+extern "C" __global__ void k_ink2_add(const float *a, const float *b, float *out, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = __fadd_rn(a[i], b[i]);
+}
+// ink2_softcap over n values in place: p_tanhf(v / cap) * cap (the head's logit softcap)
+extern "C" __global__ void k_ink2_softcap(float *v, int n, float cap) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) v[i] = __fmul_rn(ink2_p_tanhf(__fdiv_rn(v[i], cap)), cap);
+}
+// the combination, ink2_msg_comb_multi_range: out = (1 - tanh(fa)) * x + tanh(ga) * msg, over n values
+extern "C" __global__ void k_ink2_msg_comb(const float *fa, const float *ga, const float *x, const float *msg,
+                                           float *out, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    out[i] = __fadd_rn(__fmul_rn(__fsub_rn(1.0f, ink2_p_tanhf(fa[i])), x[i]), __fmul_rn(ink2_p_tanhf(ga[i]), msg[i]));
+}
+
 // Gated activation over per-column gate/up at arbitrary column strides,
 // with NO weight fold (the grouped path applies selw in the scatter, like
 // the CPU grouping). Same per-element arithmetic as k_silu_mul/k_gelu_mul.

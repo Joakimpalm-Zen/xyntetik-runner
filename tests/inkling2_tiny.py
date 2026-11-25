@@ -2,14 +2,15 @@
 
 4 layers, a loop of 3 passes over layers 1 and 2, NVFP4 expert stacks with their per-expert .scale, a byte-level
 vocabulary so the tokenizer loads. The dense projections are F32, BF16 or Q8_0 (--dense), so every weight type a real
-file carries reaches the engine. No pytest here: the Makefile writes the variants with any Python.
+file carries reaches the engine; F16 too, a type the CUDA route's products do not take (its device test keeps such
+projections on the host). No pytest here: the Makefile writes the variants with any Python.
 
-  python tests/inkling2_tiny.py OUT.gguf [--dense f32|bf16|q8_0]
+  python tests/inkling2_tiny.py OUT.gguf [--dense f32|bf16|q8_0|f16]
 """
 
 import struct
 
-T_F32, T_Q8_0, T_BF16, T_NVFP4 = 0, 8, 30, 40
+T_F32, T_F16, T_Q8_0, T_BF16, T_NVFP4 = 0, 1, 8, 30, 40
 U32, I32, F32, BOOL, STR, ARR = 4, 5, 6, 7, 8, 9
 
 H, NH, NKV, HD, E, USED, FF, VOCAB, VUSED, K, WIN, DREL, EXT, RANK = 64, 2, 1, 32, 4, 2, 64, 264, 260, 4, 8, 4, 8, 4
@@ -102,7 +103,7 @@ def _q8_0(data):
 
 def _tensors(no_scale_layer=None, scale_len=E, dense_nvfp4=False, dense="f32"):
     """(name, ggml dims, type, bytes) for every tensor of the tiny model. dense: the type of the 2-D projections whose
-    rows hold a whole number of 32-value blocks ("f32", "bf16" or "q8_0"); norms, vectors and short rows stay F32, as
+    rows hold a whole number of 32-value blocks ("f32", "bf16", "q8_0" or "f16"); norms, vectors and short rows stay F32, as
     a converter leaves them."""
     t = []
     seed = [0]
@@ -114,7 +115,11 @@ def _tensors(no_scale_layer=None, scale_len=E, dense_nvfp4=False, dense="f32"):
             n *= d
         data = struct.pack(f"<{n}f", *([value] * n)) if value is not None else _f32(n, scale, seed[0])
         if dense != "f32" and value is None and len(dims) == 2 and dims[0] % 32 == 0 and dims[1] > 1:
-            t.append((name, dims, T_BF16, _bf16(data)) if dense == "bf16" else (name, dims, T_Q8_0, _q8_0(data)))
+            if dense == "f16":
+                xs = [v for (v,) in struct.iter_unpack("<f", data)]
+                t.append((name, dims, T_F16, struct.pack(f"<{n}e", *xs)))
+            else:
+                t.append((name, dims, T_BF16, _bf16(data)) if dense == "bf16" else (name, dims, T_Q8_0, _q8_0(data)))
             return
         t.append((name, dims, T_F32, data))
 
@@ -220,11 +225,32 @@ def _write(path, kvs, tensors, cut=0):
     return path
 
 
+def _lora(rank=4, alpha=8.0):
+    """A LoRA adapter for the tiny model (src/model.c model_lora_load's format): every layer's attn_q, attn_k, attn_v
+    and attn_output, F32 lora_a [n_in, rank] and lora_b [rank, n_out] (ggml dims), small random values."""
+    kvs = [("general.architecture", STR, "inkling2_loop"), ("general.type", STR, "adapter"),
+           ("adapter.type", STR, "lora"), ("adapter.lora.alpha", F32, alpha)]
+    dims = {"attn_q": (H, NH * HD), "attn_k": (H, NKV * HD), "attn_v": (H, NKV * HD), "attn_output": (NH * HD, H)}
+    t, seed = [], 900
+    for b in range(N_BLOCK):
+        for name, (n_in, n_out) in dims.items():
+            seed += 1
+            t.append((f"blk.{b}.{name}.weight.lora_a", [n_in, rank], T_F32, _f32(n_in * rank, 0.3, seed)))
+            seed += 1
+            t.append((f"blk.{b}.{name}.weight.lora_b", [rank, n_out], T_F32, _f32(rank * n_out, 0.3, seed)))
+    return kvs, t
+
+
 if __name__ == "__main__":
     import argparse
     import pathlib
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
-    ap.add_argument("--dense", choices=("f32", "bf16", "q8_0"), default="f32")
+    ap.add_argument("--dense", choices=("f32", "bf16", "q8_0", "f16"), default="f32")
+    ap.add_argument("--lora", action="store_true", help="write the tiny model's LoRA adapter instead of the model")
     a = ap.parse_args()
-    _write(pathlib.Path(a.out), _kvs(), _tensors(dense=a.dense))
+    if a.lora:
+        kv, ts = _lora()
+        _write(pathlib.Path(a.out), kv, ts)
+    else:
+        _write(pathlib.Path(a.out), _kvs(), _tensors(dense=a.dense))

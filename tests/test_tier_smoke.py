@@ -140,6 +140,85 @@ def test_the_first_run_pins_and_the_second_compares(world, tmp_path):
     assert res["adapt_info"]["training"]["supported"] is True
 
 
+def inkling_cuda(world, opt_in="1", architecture="inkling2_loop"):
+    """The real Inkling bind banner, not the generic CUDA loader's banner."""
+    roster = mt.load(world["roster"])
+    roster["rows"][0]["architecture"] = architecture
+    roster["rows"][0]["smoke"] = {"device_class": "linux-x86_64-cuda", "backend": "cuda"}
+    mt.save(roster, world["roster"])
+    world["devices"].write_text(json.dumps({
+        "classes": [{"id": "linux-x86_64-cuda",
+                     "expect": {"os": "linux", "arch": "x86_64", "gpu_backend": "cuda"}}]}))
+    caps = world["out"].with_name("caps.json")
+    caps.write_text(json.dumps({"version": "9.8.7", "os": "linux", "arch": "x86_64",
+                               "gpu": {"backend": "cuda", "name": "Fake CUDA"}}))
+    man = json.loads(world["manifest"].read_text())
+    man["rows"]["toy-q8_0"] = ({"backend_env": {"cuda": {"RUNNER_INKLING2_CUDA": opt_in}}}
+                                if opt_in is not None else {})
+    world["manifest"].write_text(json.dumps(man))
+    return {"FAKE_RUNNER_CAPS": str(caps), "FAKE_RUNNER_INKLING2": "1",
+            "RUNNER_INKLING2_CUDA": None}
+
+
+def test_inkling_cuda_opt_in_reaches_the_server_and_the_pin_and_record(world):
+    env = inkling_cuda(world)
+    r = smoke(world, "--backend", "cuda", "--pin", env=env)
+    assert r.returncode == 0, r.stdout
+    man = json.loads(world["manifest"].read_text())
+    pinned = man["rows"]["toy-q8_0"]["pins"]["linux-x86_64-cuda/cuda"]
+    assert pinned["spec"].get("backend_env") == {"RUNNER_INKLING2_CUDA": "1"}
+    r = smoke(world, "--backend", "cuda", "--record", env=env)
+    assert r.returncode == 0, r.stdout
+    cell = mt.load(world["roster"])["rows"][0]["backends"]["cuda"]
+    assert cell["result"] == "pass"
+    assert cell["ran"].startswith("env RUNNER_INKLING2_CUDA=1 runner ")
+    assert result(world)["banner"].startswith("inkling2_loop: the weights on CUDA (")
+    # Changing only the backend environment changes the pin's contract.
+    man["rows"]["toy-q8_0"]["backend_env"]["cuda"]["RUNNER_INKLING2_CUDA"] = "0"
+    world["manifest"].write_text(json.dumps(man))
+    r = smoke(world, "--backend", "cuda", "--record", env=env)
+    assert r.returncode != 0 and "different settings" in r.stdout
+
+
+def test_the_successful_inkling_bind_banner_can_record_the_opted_in_row(world):
+    env = inkling_cuda(world)
+    # Even with the caller also opting in, the old generic-only banner
+    # check refused the successful bind. This isolates that second red.
+    env["RUNNER_INKLING2_CUDA"] = "1"
+    assert smoke(world, "--backend", "cuda", "--pin", env=env).returncode == 0
+    r = smoke(world, "--backend", "cuda", "--record", env=env)
+    assert r.returncode == 0, r.stdout
+    assert mt.load(world["roster"])["rows"][0]["backends"]["cuda"]["result"] == "pass"
+
+
+@pytest.mark.parametrize("opt_in,architecture,fallback,ambient", [
+    (None, "inkling2_loop", False, None),  # the default CPU path
+    (None, "inkling2_loop", False, "1"),   # an undeclared ambient opt-in
+    ("0", "inkling2_loop", False, "1"),   # the row must override the caller
+    ("1", "llama", False, None),          # another architecture's line is not evidence
+    ("1", "inkling2_loop", True, None),   # an opted-in request that fell back
+])
+def test_inkling_cuda_is_never_recorded_from_a_default_or_fallback(
+        world, opt_in, architecture, fallback, ambient):
+    env = inkling_cuda(world, opt_in, architecture)
+    env.update(RUNNER_INKLING2_CUDA=ambient, FAKE_RUNNER_FALLBACK="1" if fallback else None)
+    assert smoke(world, "--backend", "cuda", "--pin", env=env).returncode == 0
+    r = smoke(world, "--backend", "cuda", "--record", env=env)
+    assert r.returncode != 0 and "banner" in r.stdout, r.stdout
+    assert mt.load(world["roster"])["rows"][0]["backends"]["cuda"] is None
+
+
+def test_cuda_environment_is_not_applied_to_the_cpu_backend(world):
+    env = inkling_cuda(world)
+    r = smoke(world, "--backend", "cpu", "--pin", env=env)
+    assert r.returncode == 0, r.stdout
+    man = json.loads(world["manifest"].read_text())
+    pinned = man["rows"]["toy-q8_0"]["pins"]["linux-x86_64-cuda/cpu"]
+    assert "backend_env" not in pinned["spec"]
+    assert result(world)["ran"].startswith("runner ")
+    assert smoke(world, "--backend", "cpu", "--record", env=env).returncode == 0
+
+
 def test_record_writes_the_cell_and_the_lora_answer(world):
     assert smoke(world, "--backend", "metal", "--pin").returncode == 0
     r = smoke(world, "--backend", "metal", "--record")
@@ -575,6 +654,9 @@ def test_every_committed_pin_spec_carries_its_rows_backend_args():
             want = list(rowargs.get(backend) or [])
             got = list(pin["spec"].get("backend_args") or [])
             assert got == want, f"{row} {cell}: pin spec backend_args {got}, row {want}"
+            want_env = (body.get("backend_env", defaults.get("backend_env")) or {}).get(backend) or {}
+            got_env = pin["spec"].get("backend_env") or {}
+            assert got_env == want_env, f"{row} {cell}: pin spec backend_env {got_env}, row {want_env}"
 
 
 # R6.67: a pin's commit is the commit the serving binary was built from, as

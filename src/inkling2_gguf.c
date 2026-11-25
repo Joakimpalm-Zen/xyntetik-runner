@@ -703,3 +703,34 @@ size_t ink2g_matrix_bytes(const ink2g *g) {
     }
     return n;
 }
+
+int ink2g_each_view(ink2g *g, int (*fn)(void *c, const ink2_tensor *t), void *c) {
+    if (!g->fast) return -1;
+    char nm[96];
+    for (int b = 0; b < g->s.n_block; b++)
+        for (int k = 0; k < 2; k++) {
+            snprintf(nm, sizeof nm, "model.layers.%d.mlp.experts.%s", b, k ? "down_proj" : "gate_up_proj");
+            if (!ink2g_get(g, nm)) return -1;
+        }
+    for (int i = 0; i < g->n_slots; i++)
+        if (g->slots[i]->t.q && fn(c, &g->slots[i]->t)) return -1;
+    // R4.48.9 D1b: then each layer's router (mlp.gate.weight), as its decoded float32 rows (t.data; no q): the device
+    // router reads the very floats the host router does, whatever the file stores (F32, BF16, Q8_0)
+    for (int b = 0; b < g->s.n_block; b++) {
+        snprintf(nm, sizeof nm, "model.layers.%d.mlp.gate.weight", b);
+        const ink2_tensor *t = ink2g_get(g, nm);
+        if (!t || t->q || !t->data) return -1;
+        if (fn(c, t)) return -1;
+    }
+    return 0;
+}
+
+int ink2g_set_dev(ink2g *g, const ink2_tensor *t, void *dev, int dev_i) {
+    for (int i = 0; i < g->n_slots; i++)
+        if (&g->slots[i]->t == t) {
+            g->slots[i]->t.dev = dev;
+            g->slots[i]->t.dev_i = dev_i;
+            return 0;
+        }
+    return -1;
+}

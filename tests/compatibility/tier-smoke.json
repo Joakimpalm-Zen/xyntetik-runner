@@ -5312,6 +5312,45 @@
               "dirty": false
             }
           }
+        },
+        "linux-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/inkling-2-mini-ud-q8_k_xl.linux-x86_64-cuda.cuda.txt",
+          "sha256": "45c2a9751c8cce5332b4dd1664173349c8af384d86a56983e3144181a93d7c1e",
+          "bytes": 791,
+          "finish_reason": "stop",
+          "completion_tokens": 490,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 600,
+            "ctx": 1024,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false,
+              "reasoning_effort": "none"
+            },
+            "backend_env": {
+              "RUNNER_INKLING2_CUDA": "1"
+            }
+          },
+          "pinned": {
+            "date": "2026-11-25",
+            "runner_version": "1.21.0",
+            "commit": "948646b4bdabe57c61739083f8efeeee3113f242",
+            "build": {
+              "binary_sha256": "1aa500656c02c18fe3c451c5fd0c8744633cf03473aa936c4a9b50b9693c28fb",
+              "compiler": "13.3.0",
+              "commit": "948646b4bdabe57c61739083f8efeeee3113f242",
+              "dirty": false
+            }
+          }
+        }
+      },
+      "backend_env": {
+        "cuda": {
+          "RUNNER_INKLING2_CUDA": "1"
         }
       }
     },
@@ -5353,6 +5392,45 @@
               "dirty": false
             }
           }
+        },
+        "linux-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/inkling-2-mini-ud-q4_k_xl.linux-x86_64-cuda.cuda.txt",
+          "sha256": "c713db472dde292f68e1a0cf1b143d7a5d34b1048571abe3fa1d9aa2b1393744",
+          "bytes": 799,
+          "finish_reason": "stop",
+          "completion_tokens": 491,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 600,
+            "ctx": 1024,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false,
+              "reasoning_effort": "none"
+            },
+            "backend_env": {
+              "RUNNER_INKLING2_CUDA": "1"
+            }
+          },
+          "pinned": {
+            "date": "2026-11-25",
+            "runner_version": "1.21.0",
+            "commit": "948646b4bdabe57c61739083f8efeeee3113f242",
+            "build": {
+              "binary_sha256": "1aa500656c02c18fe3c451c5fd0c8744633cf03473aa936c4a9b50b9693c28fb",
+              "compiler": "13.3.0",
+              "commit": "948646b4bdabe57c61739083f8efeeee3113f242",
+              "dirty": false
+            }
+          }
+        }
+      },
+      "backend_env": {
+        "cuda": {
+          "RUNNER_INKLING2_CUDA": "1"
         }
       }
     },

@@ -1,0 +1,17 @@
+Mercury  
+Venus  
+Earth  
+Mars  
+Jupiter  
+Saturn  
+Uranus  
+Neptune  
+
+Mercury is a small, rocky, cratered planet with extreme temperature swings.  
+Venus is a hot, thick-atmosphere world with a crushing CO₂ blanket and no significant plate tectonics.  
+Earth is the only known world with life, liquid surface water, and a breathable oxygen-rich atmosphere.  
+Mars is a cold, reddish, thin-atmosphere planet with polar ice caps and towering volcanoes.  
+Jupiter is the largest planet, a gas giant with a Great Red Spot and many moons.  
+Saturn is a gas giant famous for its extensive ring system and low average density.  
+Uranus is an ice giant with a strongly tilted axis and a pale blue-green appearance.  
+Neptune is a deep-blue ice giant with powerful winds and a dynamic atmosphere.
