@@ -198,11 +198,13 @@ def _on_device(log, backend):
 
 
 def _on_the_declared_cpu(log, why):
-    # the load took the CPU for the declared reason before any device work (src/model.c: "gpu: <why> ... using CPU"),
-    # and nothing fell back at run time
+    # the load took the CPU for the declared reason before any device work, and nothing fell back at run time. The
+    # line is held whole, exactly as src/model.c prints it (fprintf "gpu: %s \u2014 using CPU\n": the dash is the
+    # runner's own output, quoted from the source), so a reason read short, cut mid-word, cannot pass as a prefix
     text = pathlib.Path(log).read_text(errors="replace")
-    lines = [ln for ln in text.splitlines() if ln.startswith("gpu: " + why)]
-    assert len(lines) == 1 and lines[0].rstrip().endswith("using CPU"), (why, text[-1500:])
+    want = f"gpu: {why} \u2014 using CPU"
+    lines = [ln for ln in text.splitlines() if ln.rstrip() == want]
+    assert len(lines) == 1, (want, text[-1500:])
     for bad in ("continuing on the CPU", "forward failed at runtime"):
         assert bad not in text, text[-1500:]
 
