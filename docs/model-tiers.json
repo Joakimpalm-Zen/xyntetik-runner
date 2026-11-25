@@ -10413,7 +10413,7 @@
         "evidence": [
           "docs/compat-reports/olmo2-admission-2026-11-24/README.md"
         ],
-        "missing": "TODO-linux-x86_64-cuda: linked raw reference/bootstrap archives. All scheduled class/backend smoke comparisons passed. Task quality and live modern tool use are not claimed."
+        "missing": "The real-file compatibility matrix run of the declared tokenizer, cpu_cuda and chat checks. Task quality and live modern tool use are not claimed."
       },
       "backends": {
         "cpu": {
@@ -10562,7 +10562,7 @@
         "evidence": [
           "docs/compat-reports/olmo2-admission-2026-11-24/README.md"
         ],
-        "missing": "TODO-linux-x86_64-cuda: linked raw reference/bootstrap archives. All scheduled class/backend smoke comparisons passed. Task quality and live modern tool use are not claimed."
+        "missing": "The real-file compatibility matrix run of the declared tokenizer, cpu_cuda and chat checks. Task quality and live modern tool use are not claimed."
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",

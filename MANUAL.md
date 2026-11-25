@@ -1777,8 +1777,11 @@ Messages surfaces (Chat Completions supports it, buffered and streaming).
 `general.architecture = olmo2` covers OLMo 2 and OLMo 3. Both run on the CPU,
 Metal and CUDA, and serve LoRA adapters. LoRA training runs on the CPU;
 `--train-gpu` is refused because its gradient gate needs f32 KV rows, which
-the GPU trainer does not keep. These are architecture paths: each file's
-recorded backend results and memory limits are in the
+the GPU trainer does not keep. These are architecture paths. On real files,
+CPU and CUDA are recorded for both, and Metal for the 1B OLMo 2 Instruct file.
+The 7B OLMo 3 file does not fit an 8 GB Mac, so OLMo 3's Metal path is checked
+on generated files only (`make test-metal-olmo2`). Each file's recorded backend
+results are in the
 [validated file rows](docs/model-support.md#olmo-2-0425-1b-instruct-f16).
 
 Since R4.50.9 (#1026), CUDA `olmo2` Q8_0 tensor-core prefill is on by

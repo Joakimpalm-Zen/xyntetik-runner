@@ -30,9 +30,34 @@ with a fixed seed; paired differences are information, not another bar.
 | OLMo-2-0425-1B-Instruct-F16 | 1.0642e-04 [6.1904e-05, 1.5615e-04] | 100% / 100% | 1.1261e-04 [6.6509e-05, 1.6433e-04] | 100% / 100% | Pass: intervals overlap |
 | Olmo-3-7B-Think-Q8_0 | 1.3671e-03 [1.1975e-03, 1.5472e-03] | 98.55% / 100% | 9.1434e-02 [8.5543e-02, 9.8364e-02] | 85.25% / 95.77% | Pass: separated in Runner's favour |
 
-TODO-linux-x86_64-cuda: commit the raw gold-logits and bootstrap result files for both
-reads and record their paths here. The aggregate figures above are the
-R4.50.6 read; no claim about why llama.cpp differs is made without tracing.
+The figures above are each read's own record, committed in
+[reference-records/](reference-records/), one directory a file:
+`olmo2-1b-instruct/`, `olmo3-7b-think/`, and `olmo2-1b/` for the base file below.
+Each directory holds:
+- the per-position gold JSON of each engine, against the publisher's float32 rows;
+- the bar's output, `bar-b.txt` (10,000 percentile-bootstrap resamples, seed
+  4506; the paired difference, information only, seed 4507);
+- `PROVENANCE.txt`: the binaries, scripts, reference configuration and corpus,
+  by SHA256;
+- `FILES.sha256`, and `uncommitted-records.sha256`, which names each raw file
+  not committed (score JSONs, logs, the model files).
+
+`scripts/` holds the run scripts and the bar script. The records' home paths
+read `<lab>/`. After packaging, five files' wording was changed to remove
+internal names, and their `FILES.sha256` entries were updated. Those files are
+the three `uncommitted-records.sha256` annotations and two run-script comments.
+No figure changed.
+
+On the 7B, llama.cpp was also read on a copy of the Q8_0 file with only
+`olmo2.rope.scaling.attn_factor` set to 1.0 (SHA256
+`c3774832f0dfd1878ae316e27e1fa48db598ae9853891e2050fe51d66ad9154b`).
+- llama.cpp reads 2.4031e-03 [2.1933e-03, 2.6266e-03], 38 times lower than on
+  the file as published.
+- Runner, on the file as published, stays closer at 1.3671e-03. The paired
+  difference is -1.036e-03 [-1.210e-03, -8.638e-04], information only.
+- The bar uses the file as published.
+- The records: [gold-llama-q8_0-af1.json](reference-records/olmo3-7b-think/gold-llama-q8_0-af1.json)
+  and [bar-b-af1.txt](reference-records/olmo3-7b-think/bar-b-af1.txt).
 
 ## Exact artifacts
 
@@ -62,7 +87,7 @@ Attention implementation was not recorded: the loader passed no
 
 The llama.cpp read matches 2,000 of 2,000 positions by token ID, with zero
 dropped mass and 10 token-spelling mismatches (informational; the ID-keyed
-read is the comparison). Its maximum KL is 0.01889. Intervals use 10,000
+read is the comparison). Its maximum KL is 0.01889; Runner's is 0.01890. Intervals use 10,000
 percentile-bootstrap resamples, seed 4506.
 
 R4.50.10 (#1029) supplies the native `olmo2` chat template: 16 of 16 cases

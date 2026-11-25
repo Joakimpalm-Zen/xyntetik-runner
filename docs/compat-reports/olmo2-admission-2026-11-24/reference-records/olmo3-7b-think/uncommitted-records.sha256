@@ -1,0 +1,17 @@
+48346dd7a771b10c135522caf44b74303898eeb3039f3386170ac8e425e9d377  gold-llama-q8_0-af1.json  (as written at the read, before the home-path scrub)
+d00ec48d72e49832dc41d6ede7375747a74b667f8464c3aef0f644528ac56c94  gold-llama-q8_0-af1.stderr
+cd9b631abebff1ff5c29ef743989e5c616e58216cad127bfac20cdfe555c84cf  gold-llama-q8_0.json  (as written at the read, before the home-path scrub)
+fbc048fcb178859acc7b3f8606698dd7b4e3f967bfd6450996fc16fb76da0f35  gold-llama-q8_0.stderr
+5f7871f312be39b1b8aae217f642f5f221368efd608e6424c2ed49b4f1cc4567  gold-olmo3-7b-q8_0.json  (as written at the read, before the home-path scrub)
+58f4c79d8ce68326251b2850f7be7a43f72a899d27c61625669cbdd5661628e0  gold.stderr
+3167ee0ed9c4c911c2dd2e73d5b2fdbcb2bac4deb6356735135bbef7bd1a939a  llama-q8_0-af1.server.log
+b9d20514e9d057dc2659297baa47395e702616c56be1be37284ebe69e1ba2428  llama-q8_0.server.log
+1226e621fa66a22095ef9c8f179de6554569016863bf5560e6b590fb30328e51  q8_0.score.json
+06327f53f0f2901ad380b34c949788991ea02da68f76d85f497c9a690fddc1c1  q8_0.score.stderr
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  q8_0.score.stdout
+c395e580e9e181b271048bbef57d0316ea7f2aea17761340c7cc6ccec6241119  allenai_Olmo-3-7B-Think/config.json  (model file, from its directory's SHA256SUMS)
+611c266f99a1e0575ba9f595e2f44e103aaa03a0c83b244725d6598aee934a7d  allenai_Olmo-3-7B-Think/model-00001-of-00003.safetensors  (model file, from its directory's SHA256SUMS)
+a032a27f1768184ad0d955752e3564c14b7d1c673d1630f0df7429a439da4f41  allenai_Olmo-3-7B-Think/model-00002-of-00003.safetensors  (model file, from its directory's SHA256SUMS)
+50ba91f88796c1ed04cacdb9271fa02d213722734dffe05d399eb27bcff7129b  allenai_Olmo-3-7B-Think/model-00003-of-00003.safetensors  (model file, from its directory's SHA256SUMS)
+47a8266860f2a5f95c021fb4d7d3a469a95ee8b445742becbb6b19632cfc6e95  allenai_Olmo-3-7B-Think/model.safetensors.index.json  (model file, from its directory's SHA256SUMS)
+3a4d7dda5778c299fe30bac76f5300beb283b48c6cc12b01c36c71310cefcf08  unsloth_Olmo-3-7B-Think-GGUF/Olmo-3-7B-Think-Q8_0.gguf  (model file, from its directory's SHA256SUMS)

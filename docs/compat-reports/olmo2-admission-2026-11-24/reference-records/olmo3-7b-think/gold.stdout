@@ -1,0 +1,41 @@
+{
+  "positions": 2000,
+  "hf": "<lab>/files/olmo/allenai_Olmo-3-7B-Think",
+  "corpus": "<lab>/wt-main-f3ff8e84/tests/fixtures/gold-corpus-2k.txt",
+  "reference_class": "Olmo3ForCausalLM",
+  "reference_logits": "scored rows only",
+  "special_prefix_tokens": 0,
+  "endpoint_input": "prefix text",
+  "special_prefix_forced": false,
+  "token_spelling": "in-sentence (anchored decode)",
+  "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+  "positions_skipped_no_logprobs": 0,
+  "positions_skipped_prefix": 0,
+  "fresh_prompt": false,
+  "reference_dtype": "float32 arithmetic on weights stored at torch.bfloat16, cast at use per decoder block (32 blocks, config num_hidden_layers 32; 35 units hooked)",
+  "reference_device": "cpu",
+  "sides": {
+    "a": {
+      "endpoint": "<lab>/results/r4506/olmo3-7b-think/q8_0.score.json",
+      "model": "score file",
+      "mean_kld_vs_gold": 0.0013671489400762754,
+      "max_kld_vs_gold": 0.05038636677840942,
+      "top1_agreement_pct": 98.55,
+      "margin_qualified_top1_pct": 100.0,
+      "matched_by_id_positions": 2000,
+      "positions_with_dropped_mass": 0,
+      "max_dropped_gold_mass": 0.0,
+      "id_spelling_mismatches": 0,
+      "engine": {
+        "name": "runner",
+        "version": null,
+        "from": "score file"
+      },
+      "file": {
+        "repo": "unsloth/Olmo-3-7B-Think-GGUF@1dcda0d5",
+        "name": "Olmo-3-7B-Think-Q8_0.gguf",
+        "sha256": "3a4d7dda5778c299fe30bac76f5300beb283b48c6cc12b01c36c71310cefcf08"
+      }
+    }
+  }
+}

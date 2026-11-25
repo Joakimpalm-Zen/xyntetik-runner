@@ -1,0 +1,41 @@
+{
+  "positions": 2000,
+  "hf": "<lab>/files/olmo/allenai_OLMo-2-0425-1B",
+  "corpus": "<lab>/wt-main-f3ff8e84/tests/fixtures/gold-corpus-2k.txt",
+  "reference_class": "Olmo2ForCausalLM",
+  "reference_logits": "scored rows only",
+  "special_prefix_tokens": 0,
+  "endpoint_input": "prefix text",
+  "special_prefix_forced": false,
+  "token_spelling": "in-sentence (anchored decode)",
+  "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+  "positions_skipped_no_logprobs": 0,
+  "positions_skipped_prefix": 0,
+  "fresh_prompt": false,
+  "reference_dtype": "float32",
+  "reference_device": "cpu",
+  "sides": {
+    "a": {
+      "endpoint": "http://127.0.0.1:58641",
+      "model": "OLMo-2-0425-1B-F16.gguf",
+      "mean_kld_vs_gold": 0.0002277729886563699,
+      "max_kld_vs_gold": 0.03094363495557362,
+      "top1_agreement_pct": 100.0,
+      "margin_qualified_top1_pct": 100.0,
+      "matched_by_id_positions": 2000,
+      "positions_with_dropped_mass": 0,
+      "max_dropped_gold_mass": 0.0,
+      "id_spelling_mismatches": 0,
+      "engine": {
+        "name": "llama.cpp",
+        "version": "b1-56eea9e",
+        "from": "/props"
+      },
+      "file": {
+        "repo": "allenai/OLMo-2-0425-1B-GGUF@d4cd762e",
+        "name": "OLMo-2-0425-1B-F16.gguf",
+        "sha256": "452d42f1ac5a1d1d62a6a7c4e2c6adfe4ac279f6b4ff44c9e2ea452a0d9c6df2"
+      }
+    }
+  }
+}

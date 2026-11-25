@@ -401,8 +401,12 @@ class, date and Runner version; earlier class runs stay in the evidence.
 
 [The validated files by family, what each row claims, every file's full envelope and how to run the check](docs/model-support.md#overview)
 
-OLMo 2 and OLMo 3 run on the CPU, Metal and CUDA, with LoRA training on the
-CPU. GPU training is refused; compact KV caches have a cross-backend limit.
+OLMo 2 and OLMo 3: GPU training is refused, compact KV caches have a
+cross-backend limit, and the 7B OLMo 3 file does not fit an 8 GB Mac.
+- Measured on real files: both run on the CPU and CUDA, and the 1B OLMo 2
+  Instruct file on Metal.
+- OLMo 3's Metal path is checked on generated files only.
+- LoRA training runs on the CPU.
 [The files and their measurements](docs/model-support.md#olmo-2-0425-1b-instruct-f16) · [Limits](MANUAL.md#olmo-2-and-olmo-3)
 
 <a id="more"></a>
