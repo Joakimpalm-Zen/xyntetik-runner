@@ -10413,10 +10413,34 @@
         "evidence": [
           "docs/compat-reports/olmo2-admission-2026-11-24/README.md"
         ],
-        "missing": "TODO-linux-x86_64-cuda: linked raw Instruct reference/bootstrap records; TODO-linux-x86_64-cuda / TODO-windows-x86_64-cuda / TODO-macos-arm64-metal: scheduled Instruct smoke pins and real recorded backend cells. The base file's numerical evidence is separate and no base chat result is inherited."
+        "missing": "TODO-linux-x86_64-cuda: linked raw Instruct reference/bootstrap records; TODO-linux-x86_64-cuda / TODO-windows-x86_64-cuda: scheduled Instruct smoke pins and real recorded backend cells. The base file's numerical evidence is separate and no base chat result is inherited."
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.21.0",
+          "date": "2026-11-25",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "fb0be48b3ae0ecb98ac4b3638d42e44b46874dd0",
+          "caps": {
+            "version": "1.21.0",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "5ede65273868fbf74071f9b8becf9af6c68c5bc4f08234db125fb8d7e820ae96",
+          "ran": "runner -m OLMo-2-0425-1B-Instruct-F16.gguf --serve -c 4096 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=600 stream=false",
+          "evidence": "tests/compatibility/tier-smoke/olmo-2-0425-1b-instruct-f16.macos-arm64-metal.cpu.txt",
+          "build": {
+            "binary_sha256": "66a17e6461b27ae4a86d8627ba1a7fbf0ef0a26178ad4bdc3e778a89dbe30edc",
+            "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+            "commit": "fb0be48b3ae0ecb98ac4b3638d42e44b46874dd0",
+            "dirty": false
+          }
+        },
         "cuda": null,
         "metal": {
           "kind": "gate",
@@ -10458,10 +10482,10 @@
       },
       "measurements": [
         "**CPU attempt (macos-arm64-metal, 2026-11-25):** the unchanged 1,800-second request timed out under paging after 324 generated tokens at 0.2 tok/s and 50,540,623 page-ins. The loader reported 3.0 GB of weights against 1.5 GB available RAM. No CPU pin, comparison or cell was produced; the Metal result is not inherited.",
-        "**TODO-macos-arm64-metal:** macos-arm64-metal/cpu, output pin sha256 and --record result pending; no pass is inferred.",
         "**TODO-windows-x86_64-cuda:** windows-x86_64-cuda/cuda, output pin sha256 and --record result pending; no pass is inferred.",
         "**TODO-linux-x86_64-cuda:** linux-x86_64-cuda/cpu, output pin sha256 and --record result pending; no pass is inferred.",
-        "**TODO-linux-x86_64-cuda:** linux-x86_64-cuda/cuda, output pin sha256 and --record result pending; no pass is inferred."
+        "**TODO-linux-x86_64-cuda:** linux-x86_64-cuda/cuda, output pin sha256 and --record result pending; no pass is inferred.",
+        "**CPU retry (macos-arm64-metal):** after RAM was freed, the unchanged request passed its own pin and clean-rebuild byte comparison. Earlier timeout evidence remains separate. System-wide memory free percentage: 57% Free + inactive before the pin: 138399 pages of 16384 bytes."
       ],
       "transitions": [
         {

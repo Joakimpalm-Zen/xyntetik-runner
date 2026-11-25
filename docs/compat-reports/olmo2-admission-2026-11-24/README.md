@@ -138,7 +138,7 @@ output SHA256 and each gate/adapter answer must come from those commands.
 
 | Row | Device class / backend | State |
 |---|---|---|
-| olmo-2-0425-1b-instruct-f16 | macos-arm64-metal / cpu | Unrecorded: 1,800-second attempt timed out under paging; no pin |
+| olmo-2-0425-1b-instruct-f16 | macos-arm64-metal / cpu | Pass: unchanged request after RAM was freed, own pin and clean-rebuild comparison |
 | olmo-2-0425-1b-instruct-f16 | macos-arm64-metal / metal | Pass: exact pin comparison, 2026-11-25, clean build d00dbcdd |
 | olmo-2-0425-1b-instruct-f16 | windows-x86_64-cuda / cuda | TODO-windows-x86_64-cuda: pin and record |
 | olmo-2-0425-1b-instruct-f16 | linux-x86_64-cuda / cpu | TODO-linux-x86_64-cuda: pin and record |
@@ -157,8 +157,8 @@ at 2,973,652,128 bytes and the SHA256 above before use. The request stayed at
 The CPU attempt on clean `1af81e9c` reached the existing 1,800-second timeout
 and returned no completed HTTP reply. Its final server log reports 324
 generated tokens at 0.2 tok/s and 50,540,623 page-ins, with 3.0 GB weights
-against 1.5 GB available RAM. It produced no pin or result JSON and was not
-retried. The CPU cell remains unrecorded, not a comparison failure or a pass.
+against 1.5 GB available RAM. It produced no pin or result JSON. The later RAM-freed retry is
+reported separately below. That first attempt produced no comparison result. The separate retry below supplies the later CPU validation.
 
 The Metal pin from clean `1af81e9c` passed the fact and length rules: 1,476
 bytes, 324 completion tokens, finish stop, output SHA256
@@ -168,3 +168,13 @@ the identical request. `scripts/tier-smoke.py --record` matched those bytes
 and wrote the Metal pass and adapter answer. Its build commit, compiler,
 binary digest and class fingerprint are in the generated support row. This
 is a reproducibility check with a fact guard, not a task-quality benchmark.
+
+### CPU retry after RAM was freed
+
+The same 600-token request, context 4,096, batch 64, temperature zero and
+1,800-second timeout was run once more after RAM was freed. System-wide memory free percentage: 57%
+The pre-pin vm_stat snapshot reported 4387 free and 134012
+inactive pages of 16384 bytes each. Its own CPU pin passed the fact
+and length rules. After committing that pin as `fb0be48b`, a clean
+STRICT build matched its bytes and the tool wrote the CPU pass. The earlier
+timeout remains disclosed; no Metal result was inherited.
