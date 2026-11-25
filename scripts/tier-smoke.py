@@ -46,6 +46,10 @@ A pin belongs to one device class and one backend. CPU and Metal kernels
 differ in summation order, so neither inherits the other's pin; a backend
 with no pin of its own has not been run.
 
+A row's backend_env maps a backend to environment strings for its served
+process. These overrides are part of the pin's settings and the recorded
+command; changing them requires a new pin. Other backends are unchanged.
+
 A pin holds the fact and is long enough to catch a change: a reply that does
 not name the fact, or is shorter than the manifest's min_generated_bytes,
 is not pinned (the reply is printed), and an existing pin under the minimum
@@ -91,6 +95,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from file_digest import sha256_file  # noqa: E402
 
 BANNER_RE = re.compile(r"^gpu: (Metal|CUDA) backend on .*$", re.M)
+# Inkling has its own loader. This is its successful bind, not the note
+# that an unrequested or refused opt-in stayed on the CPU.
+INKLING_CUDA_BANNER_RE = re.compile(
+    r"^inkling2_loop: the weights on CUDA \([^\r\n]+\): [1-9][0-9]* tensors, .*$", re.M)
 THREADS_RE = re.compile(r"^loaded .*\| (\d+) threads\b", re.M)
 
 
@@ -348,6 +356,14 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
     # larger than the card: {"cuda": ["--gpu", "30"]}
     backend_args = list((spec.get("backend_args") or {}).get(backend) or [])
     extra += backend_args
+    envs = spec.get("backend_env") or {}
+    if not isinstance(envs, dict):
+        raise SystemExit(f"{row['id']}: backend_env must map backends to environment objects")
+    backend_env = envs.get(backend) or {}
+    if not isinstance(backend_env, dict) or any(
+            not isinstance(k, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k)
+            or not isinstance(v, str) or "\0" in v for k, v in backend_env.items()):
+        raise SystemExit(f"{row['id']}: backend_env[{backend}] needs environment names and string values")
     body = {"messages": [{"role": "user", "content": spec["prompt"]}],
             "temperature": 0, "max_tokens": spec["n_predict"], "stream": False}
     body.update(spec.get("request") or {})
@@ -360,7 +376,8 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
         t0 = time.monotonic()
         try:
             with RunnerServer(runner, model, extra_args=extra, ctx=spec["ctx"],
-                              start_timeout=timeout, log_path=log) as srv:
+                              start_timeout=timeout, log_path=log,
+                              env=dict(os.environ, **backend_env) if backend_env else None) as srv:
                 out, finish, ctoks, reasoning = chat(srv.port, body, timeout)
                 build = build_of(srv.port, timeout)
         except SystemExit:
@@ -377,6 +394,9 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
     # the backend's own statement that it took the model; a fallback line
     # means it did not, whatever printed before it
     m = BANNER_RE.search(server_log)
+    if (not m and backend == "cuda" and row.get("architecture") == "inkling2_loop"
+            and backend_env.get("RUNNER_INKLING2_CUDA") == "1"):
+        m = INKLING_CUDA_BANNER_RE.search(server_log)
     banner = m.group(0) if m and "using CPU" not in server_log else None
     t = THREADS_RE.search(server_log)
 
@@ -396,6 +416,8 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
                  "request": dict(spec.get("request") or {})}
     if backend_args:
         made_with["backend_args"] = backend_args
+    if backend_env:
+        made_with["backend_env"] = backend_env
     if pin:
         if os.path.exists(pin_path) or key in entry:
             raise SystemExit(f"{row['id']} {key} is already pinned ({rel(pin_path)}); "
@@ -460,7 +482,9 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
     shown_args = ["-m", os.path.basename(model)] + \
         [os.path.basename(a) if a in companion[1:] else a for a in companion] + \
         ["--serve", "-c", str(spec["ctx"])] + extra[len(companion):]
-    ran = (" ".join(shlex.quote(a) for a in ["runner"] + shown_args)
+    prefix = (["env"] + [f"{k}={v}" for k, v in sorted(backend_env.items())]
+              if backend_env else [])
+    ran = (" ".join(shlex.quote(a) for a in prefix + ["runner"] + shown_args)
            + "; POST /v1/chat/completions "
            + " ".join(f"{k}={json.dumps(v)}" for k, v in body.items() if k != "messages"))
     return {

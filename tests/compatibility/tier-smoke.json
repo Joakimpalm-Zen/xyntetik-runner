@@ -5313,6 +5313,11 @@
             }
           }
         }
+      },
+      "backend_env": {
+        "cuda": {
+          "RUNNER_INKLING2_CUDA": "1"
+        }
       }
     },
     "inkling-2-mini-ud-q4_k_xl": {
@@ -5353,6 +5358,11 @@
               "dirty": false
             }
           }
+        }
+      },
+      "backend_env": {
+        "cuda": {
+          "RUNNER_INKLING2_CUDA": "1"
         }
       }
     },
