@@ -10238,11 +10238,7 @@
             "dirty": false
           }
         },
-        "cuda": {
-          "kind": "limit",
-          "reason": "inkling2_loop runs on its own serial float32 CPU engine, which has no CUDA path; CUDA runs it on the CPU.",
-          "matrix": "MANUAL.md#support-matrix"
-        },
+        "cuda": null,
         "metal": {
           "kind": "limit",
           "reason": "inkling2_loop runs on its own serial float32 CPU engine, which has no Metal path; Metal runs it on the CPU.",
@@ -10343,11 +10339,7 @@
             "dirty": false
           }
         },
-        "cuda": {
-          "kind": "limit",
-          "reason": "inkling2_loop runs on its own serial float32 CPU engine, which has no CUDA path; CUDA runs it on the CPU.",
-          "matrix": "MANUAL.md#support-matrix"
-        },
+        "cuda": null,
         "metal": {
           "kind": "limit",
           "reason": "inkling2_loop runs on its own serial float32 CPU engine, which has no Metal path; Metal runs it on the CPU.",

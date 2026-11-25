@@ -400,13 +400,13 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Inkling 2</b>, 1 model: CPU ✅ · CUDA n/a · Metal n/a · Train n/a</summary>
+<summary><b>Inkling 2</b>, 1 model: CPU ✅ · CUDA - · Metal n/a · Train n/a</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td colspan="5"><b>Inkling 2 Mini (Thinking Machines Lab)</b>, text path only</td></tr>
-<tr><td><a href="#inkling-2-mini-ud-q4_k_xl"><code>Mainline_Support/Inkling-2-Mini-UD-Q4_K_XL.gguf_file</code></a></td><td nowrap>✅ 1.21.0<sup>b</sup><br>2026-11-23</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: the LoRA backward does not admit inkling2_loop yet: its engine (src/inkling2.c) is a forward only</td></tr>
-<tr><td><a href="#inkling-2-mini-ud-q8_k_xl"><code>Mainline_Support/Inkling-2-Mini-UD-Q8_K_XL.gguf_file</code></a></td><td nowrap>✅ 1.21.0<sup>b</sup><br>2026-11-23</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: the LoRA backward does not admit inkling2_loop yet: its engine (src/inkling2.c) is a forward only</td></tr>
+<tr><td><a href="#inkling-2-mini-ud-q4_k_xl"><code>Mainline_Support/Inkling-2-Mini-UD-Q4_K_XL.gguf_file</code></a></td><td nowrap>✅ 1.21.0<sup>b</sup><br>2026-11-23</td><td></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: the LoRA backward does not admit inkling2_loop yet: its engine (src/inkling2.c) is a forward only</td></tr>
+<tr><td><a href="#inkling-2-mini-ud-q8_k_xl"><code>Mainline_Support/Inkling-2-Mini-UD-Q8_K_XL.gguf_file</code></a></td><td nowrap>✅ 1.21.0<sup>b</sup><br>2026-11-23</td><td></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: the LoRA backward does not admit inkling2_loop yet: its engine (src/inkling2.c) is a forward only</td></tr>
 </tbody>
 </table>
 </details>
@@ -1516,7 +1516,7 @@ Text path only. Inkling 2 Mini with the publisher's NVFP4 experts and Q8_0 elsew
 - **Evidence:** [docs/compat-reports/inkling2-mini-reference-2026-11-22/README.md](compat-reports/inkling2-mini-reference-2026-11-22/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json), [docs/cross-family-remedy-evidence/tool-protocol-inkling2-mini-ud-q4_k_xl-lab-slice.json](cross-family-remedy-evidence/tool-protocol-inkling2-mini-ud-q4_k_xl-lab-slice.json).
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.21.0 on 2026-11-23.
 - **CPU:** ✅ v1.21.0 2026-11-23 on linux-x86_64-cuda (borrowed hardware) at commit `20f2eb87c7d7`, output sha256 `c713db472dde292f`, [pin](../tests/compatibility/tier-smoke/inkling-2-mini-ud-q4_k_xl.linux-x86_64-cuda.cpu.txt)
-- **CUDA:** [n/a](../MANUAL.md#support-matrix): inkling2_loop runs on its own serial float32 CPU engine, which has no CUDA path; CUDA runs it on the CPU.
+- **CUDA:** ☐ not run
 - **Metal:** [n/a](../MANUAL.md#support-matrix): inkling2_loop runs on its own serial float32 CPU engine, which has no Metal path; Metal runs it on the CPU.
 - **LoRA training:** no: the LoRA backward does not admit inkling2_loop yet: its engine (src/inkling2.c) is a forward only (runner 1.21.0, 2026-11-23).
 - **LoRA adapter serving:** no: --lora does not cover inkling2_loop yet: its engine (src/inkling2.c) has no adapter hooks (runner 1.21.0, 2026-11-23).
@@ -1538,7 +1538,7 @@ Text path only. The publisher's Inkling 2 Mini checkpoint bit for bit in llama.c
 - **Evidence:** [docs/compat-reports/inkling2-mini-reference-2026-11-22/README.md](compat-reports/inkling2-mini-reference-2026-11-22/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json), [docs/cross-family-remedy-evidence/tool-protocol-inkling2-mini-ud-q8_k_xl-lab-slice.json](cross-family-remedy-evidence/tool-protocol-inkling2-mini-ud-q8_k_xl-lab-slice.json).
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.21.0 on 2026-11-23.
 - **CPU:** ✅ v1.21.0 2026-11-23 on linux-x86_64-cuda (borrowed hardware) at commit `20f2eb87c7d7`, output sha256 `45c2a9751c8cce53`, [pin](../tests/compatibility/tier-smoke/inkling-2-mini-ud-q8_k_xl.linux-x86_64-cuda.cpu.txt)
-- **CUDA:** [n/a](../MANUAL.md#support-matrix): inkling2_loop runs on its own serial float32 CPU engine, which has no CUDA path; CUDA runs it on the CPU.
+- **CUDA:** ☐ not run
 - **Metal:** [n/a](../MANUAL.md#support-matrix): inkling2_loop runs on its own serial float32 CPU engine, which has no Metal path; Metal runs it on the CPU.
 - **LoRA training:** no: the LoRA backward does not admit inkling2_loop yet: its engine (src/inkling2.c) is a forward only (runner 1.21.0, 2026-11-23).
 - **LoRA adapter serving:** no: --lora does not cover inkling2_loop yet: its engine (src/inkling2.c) has no adapter hooks (runner 1.21.0, 2026-11-23).
