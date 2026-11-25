@@ -5410,6 +5410,34 @@
               "dirty": false
             }
           }
+        },
+        "macos-arm64-metal/cpu": {
+          "path": "tests/compatibility/tier-smoke/olmo-2-0425-1b-instruct-f16.macos-arm64-metal.cpu.txt",
+          "sha256": "5ede65273868fbf74071f9b8becf9af6c68c5bc4f08234db125fb8d7e820ae96",
+          "bytes": 1476,
+          "finish_reason": "stop",
+          "completion_tokens": 324,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 600,
+            "ctx": 4096,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {}
+          },
+          "pinned": {
+            "date": "2026-11-25",
+            "runner_version": "1.21.0",
+            "commit": "470d1b30aa00964a763948ce64bb966699dda599",
+            "build": {
+              "binary_sha256": "caedefc5f99a04c8b4fe597b19e0157d5bd04aab038d4e3db280ceab310dee68",
+              "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+              "commit": "470d1b30aa00964a763948ce64bb966699dda599",
+              "dirty": false
+            }
+          }
         }
       },
       "pending_pins": {
