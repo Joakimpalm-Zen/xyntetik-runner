@@ -1695,7 +1695,7 @@
     "cuda": "NOT RUN",
     "metal": "NOT RUN"
    },
-   "note": "R4.50.6.1: Instruct 1B F16 and Think 7B Q8_0 each pass their own publisher float32 bar, with llama.cpp as a separate read. The base-file evidence is kept separately. Native template conformance: OLMo 2 16/16 (R4.50.10), OLMo 3 48/48 (R4.50.2). TODO-linux-x86_64-cuda / TODO-windows-x86_64-cuda / TODO-macos-arm64-metal: real file/backend smoke records."
+   "note": "R4.50.6.1: Instruct 1B F16 and Think 7B Q8_0 each pass their own publisher float32 bar, with llama.cpp as a separate read. The base-file evidence is kept separately. Native template conformance: OLMo 2 16/16 (R4.50.10), OLMo 3 48/48 (R4.50.2). Tier smoke: all eight class/backend comparisons are recorded (docs/model-tiers.json). The reference reads' records are in docs/compat-reports/olmo2-admission-2026-11-24/reference-records/."
   }
  }
 }
