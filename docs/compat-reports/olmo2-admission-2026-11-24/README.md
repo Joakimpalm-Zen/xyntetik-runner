@@ -179,6 +179,27 @@ class's pin remains in the manifest.
 | olmo-3-7b-think-q8_0 | windows-x86_64-cuda / cuda | Pass: clean release-recipe ed21a886 comparison on an sm_120 GPU; historical class run, superseded by latest Linux CUDA cell |
 | olmo-3-7b-think-q8_0 | macos-arm64-metal / metal | Limit: the file plus runtime state does not fit the owned 8 GB macos-arm64-metal device |
 
+### Compatibility matrix, 2026-11-25
+
+The real-file compatibility matrix (`scripts/compat_matrix.py`) ran both rows' declared checks
+on linux-x86_64-cuda with the release-recipe runner 1.21.0. Its records are
+[the ledger](../1.21.0-2026-11-25-linux-x86_64-olmo2.json) and the per-row CPU/CUDA reports,
+[1B Instruct](../cpu_cuda/olmo-2-0425-1b-instruct-f16.json) and
+[7B Think](../cpu_cuda/olmo-3-7b-think-q8_0.json).
+
+| Row | load | tokenizer | cpu_cuda (128 tokens, TC off, reference route) | chat |
+|---|---|---|---|---|
+| olmo-2-0425-1b-instruct-f16 | pass | 0 of 721 strings, 0 of 99,474 vocabulary entries | 9 of 9 exact | pass: "2 + 2 equals 4." |
+| olmo-3-7b-think-q8_0 | pass | 0 of 721 strings, 0 of 99,474 vocabulary entries | margin-qualified pass: 8 of 9 exact, one near tie | pass, with thinking |
+
+The 7B's near tie is on the `parse_header` prompt at position 3: CPU " correct" against GPU
+" okay", with margins of 1.16e-04 and 4.35e-04 nats. That is inside the band dense models get
+since R4.25.
+
+The ledger reads `complete: false`, because the matrix then counted only a strict pass as
+complete. It now counts the passing statuses `scripts/cpu_cuda_check.py` defines. Only the
+completeness rule changed, so no check was rerun.
+
 ### macos-arm64-metal recording, 2026-11-25
 
 The exact Instruct F16 file was fetched by its pinned identity and verified

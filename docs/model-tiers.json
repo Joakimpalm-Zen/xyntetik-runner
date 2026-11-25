@@ -10411,9 +10411,10 @@
         "context": 4096,
         "limitations": "LoRA training runs on the CPU only; --train-gpu is refused because the gradient gate needs f32 KV rows, which the GPU trainer does not keep. Compact KV CPU/Metal identity is gated below batch 8 and in decode; at wider direct-model batches fp4 KV can amplify different product sums across backends. This is not a task-quality claim. OLMo 3 refuses a non-default YaRN attn_factor and either model refuses experts. Its native template offers no OpenAI tool protocol; those requests are refused by name.",
         "evidence": [
+          "docs/compat-reports/1.21.0-2026-11-25-linux-x86_64-olmo2.json",
           "docs/compat-reports/olmo2-admission-2026-11-24/README.md"
         ],
-        "missing": "The real-file compatibility matrix run of the declared tokenizer, cpu_cuda and chat checks. Task quality and live modern tool use are not claimed."
+        "missing": "Task quality and live modern tool use are not claimed."
       },
       "backends": {
         "cpu": {
@@ -10558,11 +10559,12 @@
         "fp32_reference": "measured",
         "anchor": "Publisher's reference: allenai/Olmo-3-7B-Think at d97e442d7cc678210054dbcc9b440894d62c89a4, BF16, upcast to float32 at use, transformers-main 046bdb8 (5.24.0.dev0), CPU. Runner mean KL 1.3671e-03 [1.1975e-03, 1.5472e-03], plain top-1 98.55%, margin-qualified 100%. Second read: llama.cpp 56eea9e4 on this same GGUF and positions, mean KL 9.1434e-02 [8.5543e-02, 9.8364e-02], plain top-1 85.25%, margin-qualified 95.77%. Default KV f16, gold-corpus-2k, 2000 scored positions at stride 2, context 4096. Admission requires 100% margin-qualified top-1 and no wholly worse separated KL interval than llama.cpp. Record: docs/compat-reports/olmo2-admission-2026-11-24/README.md.",
         "context": 4096,
-        "limitations": "LoRA training runs on the CPU only; --train-gpu is refused because the gradient gate needs f32 KV rows, which the GPU trainer does not keep. Compact KV CPU/Metal identity is gated below batch 8 and in decode; at wider direct-model batches fp4 KV can amplify different product sums across backends. This is not a task-quality claim. OLMo 3 refuses a non-default YaRN attn_factor and either model refuses experts. Modern OpenAI tools, tool_calls and tool-role messages are refused by name; its native template fields are rendered without translating them into a tool protocol. The short-prompt smoke stores no route trace, so matching reply bytes do not establish TC-prefill byte identity.",
+        "limitations": "LoRA training runs on the CPU only; --train-gpu is refused because the gradient gate needs f32 KV rows, which the GPU trainer does not keep. Compact KV CPU/Metal identity is gated below batch 8 and in decode; at wider direct-model batches fp4 KV can amplify different product sums across backends. This is not a task-quality claim. OLMo 3 refuses a non-default YaRN attn_factor and either model refuses experts. Modern OpenAI tools, tool_calls and tool-role messages are refused by name; its native template fields are rendered without translating them into a tool protocol. The short-prompt smoke stores no route trace, so matching reply bytes do not establish TC-prefill byte identity. CPU/CUDA identity on this file is a margin-qualified pass: 8 of 9 prompts exact at 128 tokens, and one near tie inside the dense band (R4.25).",
         "evidence": [
+          "docs/compat-reports/1.21.0-2026-11-25-linux-x86_64-olmo2.json",
           "docs/compat-reports/olmo2-admission-2026-11-24/README.md"
         ],
-        "missing": "The real-file compatibility matrix run of the declared tokenizer, cpu_cuda and chat checks. Task quality and live modern tool use are not claimed."
+        "missing": "Task quality and live modern tool use are not claimed."
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",
