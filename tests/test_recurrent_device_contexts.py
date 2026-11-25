@@ -21,16 +21,20 @@ but not under a T3 build on CUDA (qwen4exp 4.8e-7 in its logprobs) nor on the Me
 or more take the tiled GEMM, a tolerance class against the decode matvec by design (src/metal.m enc_mv_n), and the pin
 answered differently from the automatic fork (nemotron-H 4.7e-7 in its logprobs, lfm2 more).
 The cold prefill runs the whole prompt as one batch, so on Metal it is held to that backend's measured class (COLD_TOL).
-Where a family runs is the backend's: lfm2's short convolution runs on the CPU under CUDA (arch.h cpu_only_nonmetal)
-but on the device under Metal, as its --wide fixture quantized to Q4_K (the shape the Apple GPU path takes, R3.42), so
-lfm2 is a case on Metal only; qwen4exp is not on the Metal backend yet (its load says so and runs it on the CPU), so
-on Metal the test holds that load line and skips it.
+Where a family runs is the backend's: lfm2's short convolution runs on the device under Metal, as its --wide fixture
+quantized to Q4_K (the shape the Apple GPU path takes, R3.42), but on the CPU under CUDA, where src/arch.h DECLARES the
+CPU for it (cpu_only_nonmetal). A family the table declares the CPU's on a backend is no device fold there, and its
+case holds what the declaration promises instead of skipping (R6.128): the load prints the declaration and takes the
+CPU, and the pin forks as the CPU tier does, its logprobs equal to a --gpu off server's cold prefill bit for bit.
+qwen4exp is not on the Metal backend yet, a runtime decline the table does not declare (its load says so and runs it
+on the CPU), so on Metal the test holds that load line and skips it.
 The "messages" entry point is held the same way (a chat prefix pinned by messages forks as the automatic tier does),
 on the device and on the CPU. The device cases skip without a CUDA or Metal device; the CPU case runs everywhere.
 """
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -55,11 +59,58 @@ FAMILIES = [
     ("nemotron_h", "make-test-nemotron.py", [], {}),
     ("lfm2", "make-test-lfm2.py", ["--wide"], {}),
 ]
-# a family the backend runs on the host is no device fold there. On Metal its load line is held and the case skips
-# (when Metal takes the family the line is gone and the case fails: move it into the device cases); under CUDA lfm2's
-# short convolution is the CPU's (arch.h cpu_only_nonmetal)
+# a family the backend declines at run time (no row of src/arch.h says so) is no device fold there. On Metal its load
+# line is held and the case skips (when Metal takes the family the line is gone and the case fails: move it into the
+# device cases)
 HOST_LINE = {("qwen4exp", "metal"): "(qwen4exp) is not on the metal backend yet"}
-HOST_SKIP = {("lfm2", "cuda"): "lfm2's short convolution runs on the CPU under CUDA (arch.h cpu_only_nonmetal)"}
+
+
+# The CPU declarations of src/arch.h's table, read from the table itself (never a copy of it here): {(row name, field):
+# the reason}, the fields model_gpu_cpu_only_why (src/model.c) reads, each a load's line "gpu: <reason> ... using CPU":
+# cpu_only on every GPU backend, cpu_only_noncuda off CUDA, cpu_only_nonmetal off Metal.
+CPU_FIELDS = {"cpu_only": lambda b: True, "cpu_only_noncuda": lambda b: b != "cuda",
+              "cpu_only_nonmetal": lambda b: b != "metal"}
+
+
+def _arch_table():
+    src = (ROOT / "src" / "arch.h").read_text(encoding="utf-8")
+    start = src.index("arch_table[] = {")
+    return src[start:src.index("};", start)]
+
+
+def _arch_cpu_declarations():
+    table = _arch_table()
+    rows, out = set(), {}
+    for m in re.finditer(r'\{\s*\.name\s*=\s*"([^"]+)"(.*?)\}', table, re.S):
+        rows.add(m.group(1))
+        for field in CPU_FIELDS:
+            f = re.search(r"\." + field + r'\s*=\s*((?:"(?:[^"\\]|\\.)*"\s*)+)', m.group(2))
+            if f:
+                lits = re.findall(r'"((?:[^"\\]|\\.)*)"', f.group(1))
+                out[(m.group(1), field)] = "".join(lits).replace('\\"', '"').replace("\\\\", "\\")
+    return rows, out
+
+
+ARCH_ROWS, ARCH_CPU = _arch_cpu_declarations()
+
+
+def _declared_cpu(arch, backend):
+    """The reason src/arch.h's table gives for running arch on the CPU under backend, or None."""
+    for field, applies in CPU_FIELDS.items():
+        if (arch, field) in ARCH_CPU and applies(backend):
+            return ARCH_CPU[(arch, field)]
+    return None
+
+
+def test_the_cpu_declarations_are_read_whole_from_the_table():
+    # the parse holds, naming no declaration (the table decides which there are): every family here is a row of it,
+    # every CPU field it assigns was read, and each reason is whole (the table spells one over several literals, each
+    # but the last ending in a space). The device cases then hold each reason against the load's own line.
+    assert {f[0] for f in FAMILIES} <= ARCH_ROWS, sorted({f[0] for f in FAMILIES} - ARCH_ROWS)
+    assigned = len(re.findall(r"\.(?:" + "|".join(CPU_FIELDS) + r")\s*=", _arch_table()))
+    assert assigned > 0 and len(ARCH_CPU) == assigned, (assigned, sorted(ARCH_CPU))
+    for key, why in ARCH_CPU.items():
+        assert why and why == why.strip() and '"' not in why, (key, why)
 # a cold prefill's logprobs against the pinned fork's. On CUDA 1e-5 (the question at another batch width). On the
 # Metal backend the cold prompt's one batch takes the tiled prefill GEMM where the fork's last rows take the matvec, a
 # tolerance class by design (src/metal.m enc_mv_n). The house holds that class over teacher-forced logits
@@ -146,21 +197,45 @@ def _on_device(log, backend):
         assert bad not in text, text[-1500:]
 
 
-def _skip_off_device(runner_bin, model, name, backend, tmp_path):
-    if (name, backend) in HOST_SKIP:
-        pytest.skip(HOST_SKIP[(name, backend)] + ": not a device fold there")
+def _on_the_declared_cpu(log, why):
+    # the load took the CPU for the declared reason before any device work (src/model.c: "gpu: <why> ... using CPU"),
+    # and nothing fell back at run time
+    text = pathlib.Path(log).read_text(errors="replace")
+    lines = [ln for ln in text.splitlines() if ln.startswith("gpu: " + why)]
+    assert len(lines) == 1 and lines[0].rstrip().endswith("using CPU"), (why, text[-1500:])
+    for bad in ("continuing on the CPU", "forward failed at runtime"):
+        assert bad not in text, text[-1500:]
+
+
+def _placement(runner_bin, model, name, backend, tmp_path):
+    """None for a device case; the reason src/arch.h declares for a CPU one (the case holds it); a runtime decline
+    skips once its load line is held."""
+    why = _declared_cpu(name, backend)
+    if why:
+        return why
     if (name, backend) in HOST_LINE:
         log = tmp_path / "host.log"
         with _serve(runner_bin, model, log):
             pass
         assert HOST_LINE[(name, backend)] in log.read_text(errors="replace"), log.read_text(errors="replace")[-1500:]
         pytest.skip(f"{name} runs on the CPU under {backend} (its load says so): not a device fold there")
+    return None
+
+
+def _check_logs(logs, backend, why):
+    for log in logs:
+        if why:
+            _on_the_declared_cpu(log, why)
+        else:
+            _on_device(log, backend)
 
 
 @pytest.mark.parametrize("name", [f[0] for f in FAMILIES])
 def test_a_pinned_context_on_the_device_forks_as_the_automatic_tier_does(runner_bin, backend, models, name, tmp_path):
     model, prompt, logs = models[name], SYS + QUESTION, []
-    _skip_off_device(runner_bin, model, name, backend, tmp_path)
+    # a family the table declares the CPU's here: every server below is still asked for the device (--gpu 99, a fall
+    # to the CPU an error), the cold prefill is the CPU tier itself (--gpu off), held bit for bit
+    why = _placement(runner_bin, model, name, backend, tmp_path)
     # the automatic tier: P is published whole after its prefill, then P + the question is an exact full-prefix hit
     logs.append(tmp_path / "auto.log")
     with _serve(runner_bin, model, logs[-1]) as srv:
@@ -171,8 +246,10 @@ def test_a_pinned_context_on_the_device_forks_as_the_automatic_tier_does(runner_
     n_auto = tel["prompt_cached_tokens"]
     assert n_auto > 16, (name, tel)
     # cold: no tier at all
-    logs.append(tmp_path / "cold.log")
-    with _serve(runner_bin, model, logs[-1]) as srv:
+    cold_log = tmp_path / "cold.log"
+    if not why:
+        logs.append(cold_log)
+    with (_serve_cpu(runner_bin, model, cold_log) if why else _serve(runner_bin, model, cold_log)) as srv:
         cold = _complete(srv, prompt, cache_prompt=False)
     assert cold["runner_telemetry"]["prompt_cached_tokens"] == 0, (name, cold["runner_telemetry"])
     # the pin, a request naming it, and its snapshot
@@ -193,8 +270,11 @@ def test_a_pinned_context_on_the_device_forks_as_the_automatic_tier_does(runner_
     assert tel["prompt_cached_tokens"] == n and tel["prompt_reuse"] == "prefix_cache", (name, tel)
     assert _ans(warm) == _ans(auto), (name, _ans(warm), _ans(auto))
     assert _ans(warm)[0] == _ans(cold)[0], (name, _ans(warm), _ans(cold))
-    tol = COLD_TOL_FAMILY.get((name, backend), COLD_TOL[backend])
-    assert _ans(warm)[1] == pytest.approx(_ans(cold)[1], abs=tol), (name, tol, _ans(warm), _ans(cold))
+    if why:   # the CPU tier, which the house holds batch-invariant: bit for bit
+        assert _ans(warm)[1] == _ans(cold)[1], (name, _ans(warm), _ans(cold))
+    else:
+        tol = COLD_TOL_FAMILY.get((name, backend), COLD_TOL[backend])
+        assert _ans(warm)[1] == pytest.approx(_ans(cold)[1], abs=tol), (name, tol, _ans(warm), _ans(cold))
     # the snapshot imported into a new process, on the device
     logs.append(tmp_path / "import.log")
     with _serve(runner_bin, model, logs[-1], "--kv-snapshots", str(snaps)) as srv:
@@ -204,8 +284,7 @@ def test_a_pinned_context_on_the_device_forks_as_the_automatic_tier_does(runner_
     tel = imp["runner_telemetry"]
     assert tel["prompt_cached_tokens"] == n and tel["prompt_reuse"] == "prefix_cache", (name, tel)
     assert _ans(imp) == _ans(warm), (name, _ans(imp), _ans(warm))
-    for log in logs:
-        _on_device(log, backend)
+    _check_logs(logs, backend, why)
 
 
 
@@ -238,7 +317,8 @@ def _serve_cpu(runner_bin, model, log, *extra):
     return RunnerServer(runner_bin, model, ctx=512, log_path=str(log), extra_args=["--gpu", "off", "-t", "2", *extra])
 
 
-def _messages_pin_forks_as_the_tier(serve, name, tmp_path, cold_tol):
+def _messages_pin_forks_as_the_tier(serve, name, tmp_path, cold_tol, cold_serve=None):
+    # cold_serve: the server the cold prefill runs on, when not serve's (its log is not among those returned)
     logs = []
     logs.append(tmp_path / "chat-auto.log")
     with serve(logs[-1]) as srv:
@@ -247,8 +327,10 @@ def _messages_pin_forks_as_the_tier(serve, name, tmp_path, cold_tol):
     tel = auto["runner_telemetry"]
     assert tel["prompt_reuse"] == "prefix_cache" and tel["prompt_cached_tokens"] > 16, (name, tel)
     n_auto = tel["prompt_cached_tokens"]
-    logs.append(tmp_path / "chat-cold.log")
-    with serve(logs[-1]) as srv:
+    cold_log = tmp_path / "chat-cold.log"
+    if cold_serve is None:
+        logs.append(cold_log)
+    with (cold_serve or serve)(cold_log) as srv:
         cold = _chat(srv, cache_prompt=False)
     assert cold["runner_telemetry"]["prompt_cached_tokens"] == 0, (name, cold["runner_telemetry"])
     logs.append(tmp_path / "chat-pin.log")
@@ -271,12 +353,13 @@ def _messages_pin_forks_as_the_tier(serve, name, tmp_path, cold_tol):
 @pytest.mark.parametrize("name", [f[0] for f in FAMILIES])
 def test_a_messages_pin_on_the_device_forks_as_the_automatic_tier_does(runner_bin, backend, models, name, tmp_path):
     model = models[name]
-    _skip_off_device(runner_bin, model, name, backend, tmp_path)
-    tol = COLD_TOL_FAMILY.get((name, backend), COLD_TOL[backend])
+    # a family the table declares the CPU's here: as the pinned case above, the cold prefill on --gpu off, bit for bit
+    why = _placement(runner_bin, model, name, backend, tmp_path)
+    tol = 0.0 if why else COLD_TOL_FAMILY.get((name, backend), COLD_TOL[backend])
+    cpu = (lambda log: _serve_cpu(runner_bin, model, log, "--chat-template", "chatml")) if why else None
     logs = _messages_pin_forks_as_the_tier(lambda log: _serve(runner_bin, model, log, "--chat-template", "chatml"),
-                                           name, tmp_path, tol)
-    for log in logs:
-        _on_device(log, backend)
+                                           name, tmp_path, tol, cold_serve=cpu)
+    _check_logs(logs, backend, why)
 
 
 # On the CPU, which the house holds batch-invariant, the cold prefill's logprobs are the pin's bit for bit too.
