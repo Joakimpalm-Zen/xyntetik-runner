@@ -1552,11 +1552,13 @@ static ink2_status ink2_attention_lora(const ink2_shape *s, const ink2_weights *
         rp->T = T; rp->H = s->hidden;
         if (rp->xq_in) memcpy(rp->xq_in, xq, sizeof(float) * n_el);
         if (rp->eps != 0.0f && rp->d) {
-            float *xq_rel = malloc(sizeof(float) * n_el);
+            float *xq_rel = ink2_alloc_fail("rel_probe") ? NULL : malloc(sizeof(float) * n_el);
             if (!xq_rel) {
                 fprintf(stderr, "error: inkling2_loop ink2_attention_lora: out of memory allocating rel_probe buffer\n");
-                ink2_op_free(buf, buf_owned);
-                return INK2_BAD_INPUT;
+                // main's order: the slot takes the chunk before this fails, so the shared tail still writes the K/V
+                // rows and advances n_past (the K and V histories already hold the chunk); no core, no output
+                st = INK2_BAD_INPUT;
+                goto kv_tail;
             }
             for (size_t i = 0; i < n_el; i++) xq_rel[i] = xq[i] + rp->eps * rp->d[i];
             ink2_attn_rel(s, &L, T, pos, xq_rel, p[SRS], p[SRL]);
@@ -1570,10 +1572,11 @@ static ink2_status ink2_attention_lora(const ink2_shape *s, const ink2_weights *
     ink2_lin_rows(L.tt[WS], L.nh, s->hidden, T, xq, p[SSK]);
 kv_tail:;   // the fused decode branch joins here with its projections, histories and relative bias done
     // R4.48.9 G2b step 2a: the core on the device when the instance's views are there (its ring takes this chunk's K
-    // and V); dv 1: the host core and ring, as before
+    // and V); dv 1: the host core and ring, as before. st is INK2_OK here unless the relative probe failed: then only
+    // the host ring and n_past, as main (a device instance keeps no host ring and refuses below, its n_past unmoved)
     int dv = 1;
     const ink2_dev_ops *ao = ink2_ops_of(c->dev);
-    if (ao && ao->attn && !probs) {
+    if (st == INK2_OK && ao && ao->attn && !probs) {
         const ink2_attn_dims d = { L.nh, L.nkv, L.hd, L.C, L.Q, s->window, L.g ? 1 : 0, L.ext, ink2_inv_sqrt(L.hd) };
         dv = ao->attn(c->dev, app, &d, T, pos, p[SQ], p[SK], p[SV], p[SRL], p[SSK], p[SATT]);
         if (dv < 0)
@@ -1595,8 +1598,9 @@ kv_tail:;   // the fused decode branch joins here with its projections, historie
         }
         const size_t koff = (size_t)(kp0 - c->k0[app]) * L.C;
         // the host core (R4.48.25.1: its logit rows sized by the caller, a status instead of an abort)
-        st = ink2_attn_core(s, &L, fast, T, pos, p[SQ], c->k[app] + koff, c->v[app] + koff, nk, kp0, p[SRL], p[SSK],
-                            p[SLG], lg_rows, p[SATT], probs);
+        if (st == INK2_OK)
+            st = ink2_attn_core(s, &L, fast, T, pos, p[SQ], c->k[app] + koff, c->v[app] + koff, nk, kp0, p[SRL],
+                                p[SSK], p[SLG], lg_rows, p[SATT], probs);
     }
     c->n_past[app] = p0 + T;   // what the slot now holds consistently: rows and histories of 0..p0+T-1
     if (st == INK2_OK)
