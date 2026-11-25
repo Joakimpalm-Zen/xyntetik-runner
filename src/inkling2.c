@@ -1568,7 +1568,7 @@ static ink2_status ink2_attention_lora(const ink2_shape *s, const ink2_weights *
         ink2_attn_rel(s, &L, T, pos, xq, p[SRS], p[SRL]);
     }
     ink2_lin_rows(L.tt[WS], L.nh, s->hidden, T, xq, p[SSK]);
-kv_tail:   // the fused decode branch joins here with its projections, histories and relative bias done
+kv_tail:;   // the fused decode branch joins here with its projections, histories and relative bias done
     // R4.48.9 G2b step 2a: the core on the device when the instance's views are there (its ring takes this chunk's K
     // and V); dv 1: the host core and ring, as before
     int dv = 1;

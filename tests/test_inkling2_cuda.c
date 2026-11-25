@@ -1884,10 +1884,13 @@ int main(int argc, char **argv) {
         // (am) R4.48.9.3: the resident step's INDEXED depth read (k_ink2_depth_attn_ix, its scores through shared memory
         // in tiles sized by the state count) against the host's depth attention over the same states in the list's
         // order, bit for bit: one tile, a tile and a one-element tail, several tiles with a tail, the floor tile of 32
-        // (257 states), a list that skips and repeats pool rows, a zero state, and the spread whose weights underflow
+        // (257 states), a list that skips and repeats pool rows, a zero state, and the spread whose weights underflow.
+        // A lone state's weight is 1 and 0.1-scaled queries leave too little spread for a score's last bits to reach the
+        // output, so the one-element tail and the single tile also run with several states at qs 0.9 (R4.48.9.3 F1)
         static const struct { int nq, n_kv, n_pool, H; float qs; } ic[] = {
             { 1, 1, 3, 1025, 0.1f }, { 1, 5, 5, 1024, 0.1f }, { 3, 12, 12, 1023, 0.1f }, { 3, 7, 9, 2304, 0.1f },
-            { 4, 26, 30, 2304, 0.1f }, { 4, 40, 41, 4096, 0.1f }, { 1, 257, 260, 64, 0.1f }, { 4, 26, 30, 2304, 60.0f } };
+            { 4, 26, 30, 2304, 0.1f }, { 4, 40, 41, 4096, 0.1f }, { 1, 257, 260, 64, 0.1f }, { 4, 26, 30, 2304, 60.0f },
+            { 1, 3, 4, 1025, 0.9f }, { 1, 5, 5, 1024, 0.9f } };
         for (size_t k = 0; k < sizeof ic / sizeof *ic; k++) {
             const int nq = ic[k].nq, nkv = ic[k].n_kv, np = ic[k].n_pool, H = ic[k].H;
             float *q = malloc(sizeof(float) * (size_t)nq * H), *pool = malloc(sizeof(float) * (size_t)np * H);
@@ -1923,7 +1926,8 @@ int main(int argc, char **argv) {
             long nd = 0;
             for (int i = 0; ran && !hb && i < nq * H; i++) nd += !same_f(od[i], oh[i]);
             const bool spread_ok = ic[k].qs < 1.0f || spread > 104.0;
-            CHECK(ran && !hb && nd == 0 && spread_ok && (nkv < 3 || zero), "(am) the step's indexed depth read (%d queries, "
+            const bool zero_ok = nkv < 3 || zero || ic[k].qs > 0.5f;   // the qs 0.9 cases are the score path's, not the zero state's
+            CHECK(ran && !hb && nd == 0 && spread_ok && zero_ok, "(am) the step's indexed depth read (%d queries, "
                   "%d of %d pool states%s, H %d, scores spread %.1f%s): %ld of %d differ from the host's (want 0)", nq, nkv,
                   np, zero ? " with the zero state" : "", H, spread, ic[k].qs < 1.0f ? "" : " (want > 104: weights underflow)",
                   nd, nq * H);
