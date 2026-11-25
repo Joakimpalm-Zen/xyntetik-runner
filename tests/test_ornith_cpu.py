@@ -16,6 +16,13 @@ sys.path.insert(0, str(ROOT / "tests" / "conformance"))
 
 from harness import KeptProcessLog, scaled_timeout  # noqa: E402
 
+# R6.127: the interpreter of the children these tests kill and whose log they then delete (the fake servers and the
+# timeout case's sleepers). In a Windows virtual environment sys.executable is a launcher that runs the real interpreter
+# as its own child, so kill() and wait() reach the launcher while the interpreter still holds the log's handle, and
+# deleting the log fails (WinError 32), at once or after a race. The base interpreter is the process itself; these
+# children import only sys and time, so they need nothing from the environment. Outside a venv this is sys.executable.
+_SERVER_PY = getattr(sys, "_base_executable", sys.executable)
+
 
 def _run_runner(cmd, timeout_s=60, env=None):
     """Run a child command under scaled_timeout and keep its output on timeout."""
@@ -343,7 +350,7 @@ def test_ornith_timeout_scales_and_keeps_child_output(monkeypatch):
     """R6.117: timeouts scale via RUNNER_TEST_TIMEOUT_SCALE and keep child logs."""
     monkeypatch.setenv("RUNNER_TEST_TIMEOUT_SCALE", "6")
     rc, out, _ = _run_runner(
-        [sys.executable, "-c",
+        [_SERVER_PY, "-c",
          "import sys, time; time.sleep(0.25); sys.stdout.write('ok\\n')"],
         timeout_s=0.1,
     )
@@ -352,7 +359,7 @@ def test_ornith_timeout_scales_and_keeps_child_output(monkeypatch):
     monkeypatch.setenv("RUNNER_TEST_TIMEOUT_SCALE", "1")
     with pytest.raises(pytest.fail.Exception) as excinfo:
         _run_runner(
-            [sys.executable, "-c",
+            [_SERVER_PY, "-c",
              "import sys, time; "
              "sys.stdout.write('partial-out\\n'); sys.stdout.flush(); "
              "sys.stderr.write('partial-err\\n'); sys.stderr.flush(); "
@@ -382,7 +389,7 @@ def test_ornith_server_health_wait_fails_with_log_on_deadline(monkeypatch):
         dead_port = so.getsockname()[1]
     log = KeptProcessLog(prefix="runner-ornith-srv-")
     srv = subprocess.Popen(
-        [sys.executable, "-c",
+        [_SERVER_PY, "-c",
          "import sys, time; sys.stderr.write('booting server\\n'); "
          "sys.stderr.flush(); time.sleep(10)"],
         stdout=subprocess.DEVNULL, stderr=log.file,
@@ -402,7 +409,7 @@ def test_ornith_server_health_wait_fails_with_log_on_deadline(monkeypatch):
 
     dead_log = KeptProcessLog(prefix="runner-ornith-srv-")
     dead = subprocess.Popen(
-        [sys.executable, "-c",
+        [_SERVER_PY, "-c",
          "import sys; sys.stderr.write('fatal startup\\n'); sys.stderr.flush(); sys.exit(2)"],
         stdout=subprocess.DEVNULL, stderr=dead_log.file,
     )
