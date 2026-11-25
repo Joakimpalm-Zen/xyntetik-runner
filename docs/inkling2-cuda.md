@@ -15,6 +15,14 @@ tries the device, then expert stacks on the host, then CPU with a reason.
 types also keep their products on the host. Check the load's placement note;
 setting the switch does not guarantee a file fits.
 
+The Q8_K_XL and Q4_K_XL files each passed the pinned CUDA chat smoke on
+`linux-x86_64-cuda` at `299cba11` (2026-11-25), on an sm_120 GPU (a 24 GB MIG
+slice). The release-recipe build ran under `taskset -c 0-15`; each recorded
+command retains the manifest's CUDA opt-in. The available
+`windows-x86_64-cuda` recording device has 12 GB of device memory and cannot
+hold either file. Its generated-fixture CUDA gate passes, but these two
+real-file marks apply to Linux only.
+
 On the non-resident path, CUDA runs the supported products, attention blocks
 and their K/V rings, expert bodies and loop message gates. The router runs
 on the device for multiple positions, on the host for one. The host gathers

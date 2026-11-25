@@ -10170,7 +10170,7 @@
       "model": "Inkling 2 Mini (Thinking Machines Lab)",
       "family": "Inkling 2",
       "tier": "tier2",
-      "claim": "Text path only. The publisher's Inkling 2 Mini checkpoint bit for bit in llama.cpp's inkling2_loop layout, on Runner's float32 CPU engine: against the publisher's float32 implementation 1.3e-06 mean KL and 100% top-1 on chat, 0.0013 and 99.4% on raw text (gold-logits, 1991 positions each), where llama.cpp on the same file reads 0.0037 and 0.0078.",
+      "claim": "Text path only. The publisher's Inkling 2 Mini checkpoint bit for bit in llama.cpp's inkling2_loop layout, measured on Runner's float32 reference CPU route: against the publisher's float32 implementation 1.3e-06 mean KL and 100% top-1 on chat, 0.0013 and 99.4% on raw text (gold-logits, 1991 positions each), where llama.cpp on the same file reads 0.0037 and 0.0078.",
       "architecture": "inkling2_loop",
       "upstream": {
         "checkpoint": "thinkingmachines/Inkling-2-Mini",
@@ -10200,7 +10200,7 @@
         "fp32_reference": "measured",
         "anchor": "The publisher's implementation in float32 (transformers pull request 51050 at 6173a2f6, the merged model code, eager attention, through the R4.48 dequantizing store, computed alone on the CPU), gold-logits.py over 1991 positions of each corpus, token-id keyed: raw (gold-corpus-2k) 0.0013 mean KL / 99.40% top-1 / 100% margin-qualified, chat (the R4.48 read's 2000 chat ids) 1.3e-06 / 100% / 100%; llama.cpp 56eea9e4 on the same file 0.0078 / 96.89% / 99.67% and 0.0037 / 98.64% / 99.94%. The file is the publisher's checkpoint bit for bit (R4.48.5 gate (a), 744 tensors), and Runner's forward on it equals the step-1 forward on the publisher's safetensors bit for bit. Tokenizer equal to the publisher's on the whole of gold-corpus-2k (8543 ids); template conformance as R4.48.13 records it. Record: docs/compat-reports/inkling2-mini-reference-2026-11-22/README.md.",
         "context": 4096,
-        "limitations": "CPU only: Inkling 2 Mini runs on its own serial float32 engine (src/inkling2.c), which has no GPU path; a GPU request runs on the CPU. About 0.34 s a token to prefill and 1.1 s a token to decode on 16 threads of the measuring host. No speculative decoding, shared prefix cache or LoRA on this architecture; a rewind re-prefills from the start. The vision tower is not loaded.",
+        "limitations": "Text only. CPU is the default; RUNNER_INKLING2_CUDA=1 opts the fast route into CUDA. This file passed its CUDA smoke on linux-x86_64-cuda, on an sm_120 GPU (a 24 GB MIG slice). The available windows-x86_64-cuda recording device has 12 GB of device memory and cannot hold either Inkling file; Windows CUDA is checked on generated fixtures, not these real files. Fit may keep expert stacks on the host or select CPU. Metal, speculative decoding and the shared prefix cache are not supported; a rewind re-prefills. LoRA attention terms run on the host, and training takes the CPU reference route; this switch does not enable GPU training. The vision tower is not loaded. The publisher fidelity figures are CPU reference measurements, not CUDA measurements. See MANUAL.md#inkling-2-mini and docs/inkling2-cuda.md.",
         "evidence": [
           "docs/compat-reports/inkling2-mini-reference-2026-11-22/README.md",
           "tests/compatibility/coverage.json",
@@ -10238,24 +10238,48 @@
             "dirty": false
           }
         },
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.21.0",
+          "date": "2026-11-25",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "299cba112822c8e36a23f8ae16ee84a798ed2f80",
+          "caps": {
+            "version": "1.21.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 16,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "45c2a9751c8cce5332b4dd1664173349c8af384d86a56983e3144181a93d7c1e",
+          "ran": "env RUNNER_INKLING2_CUDA=1 runner -m Inkling-2-Mini-UD-Q8_K_XL.gguf_file --serve -c 1024 -b 64; POST /v1/chat/completions temperature=0 max_tokens=600 stream=false enable_thinking=false reasoning_effort=\"none\"",
+          "evidence": "tests/compatibility/tier-smoke/inkling-2-mini-ud-q8_k_xl.linux-x86_64-cuda.cuda.txt",
+          "build": {
+            "binary_sha256": "e6bbdd89ed6af23f7acc27bd1a67ac17d7be8f3bedeb79502868309fc91908f5",
+            "compiler": "13.3.0",
+            "commit": "299cba112822c8e36a23f8ae16ee84a798ed2f80",
+            "dirty": false
+          }
+        },
         "metal": {
           "kind": "limit",
-          "reason": "inkling2_loop runs on its own serial float32 CPU engine, which has no Metal path; Metal runs it on the CPU.",
+          "reason": "inkling2_loop has no Metal implementation; Metal builds run its CPU route.",
           "matrix": "MANUAL.md#support-matrix"
         }
       },
       "lora": {
         "training": {
-          "supported": false,
-          "reason": "the LoRA backward does not admit inkling2_loop yet: its engine (src/inkling2.c) is a forward only"
+          "supported": true,
+          "reason": null
         },
         "adapter_serving": {
-          "supported": false,
-          "reason": "--lora does not cover inkling2_loop yet: its engine (src/inkling2.c) has no adapter hooks"
+          "supported": true,
+          "reason": null
         },
         "runner_version": "1.21.0",
-        "date": "2026-11-23"
+        "date": "2026-11-25"
       },
       "transitions": [
         {
@@ -10271,7 +10295,7 @@
       "model": "Inkling 2 Mini (Thinking Machines Lab)",
       "family": "Inkling 2",
       "tier": "tier2",
-      "claim": "Text path only. Inkling 2 Mini with the publisher's NVFP4 experts and Q8_0 elsewhere, on Runner's float32 CPU engine: against the publisher's float32 implementation 0.0042 mean KL on chat and 0.0055 on raw text (full rows, 2000 positions), first light 64 of 64; on this quantized file its own loss dominates and llama.cpp reads about the same.",
+      "claim": "Text path only. Inkling 2 Mini with the publisher's NVFP4 experts and Q8_0 elsewhere, measured on Runner's float32 reference CPU route: against the publisher's float32 implementation 0.0042 mean KL on chat and 0.0055 on raw text (full rows, 2000 positions), first light 64 of 64; on this quantized file its own loss dominates and llama.cpp reads about the same.",
       "architecture": "inkling2_loop",
       "upstream": {
         "checkpoint": "thinkingmachines/Inkling-2-Mini",
@@ -10301,7 +10325,7 @@
         "fp32_reference": "measured",
         "anchor": "Against the same float32 reference (the R4.48 read's full rows, KL over all 200058 ids, 2000 positions): chat 0.0042 mean KL / 98.45% top-1 / 99.94% margin-qualified, raw 0.0055 / 96.80% / 99.87%, first light 64/64; llama.cpp 56eea9e4 on the same file 0.0042 / 98.40% and 0.0073 / 96.85%, first light 63/64. The 40 NVFP4 expert tensors are the publisher's (as in the exact file); the Q8_0 tensors decode through Runner's dequantizer, bit-equal to ggml's on 643074 sampled blocks. Its rows are the reference order on dequantized weights. Record: docs/compat-reports/inkling2-mini-reference-2026-11-22/README.md.",
         "context": 4096,
-        "limitations": "CPU only: Inkling 2 Mini runs on its own serial float32 engine (src/inkling2.c), which has no GPU path; a GPU request runs on the CPU. About 0.34 s a token to prefill and 1.1 s a token to decode on 16 threads of the measuring host. No speculative decoding, shared prefix cache or LoRA on this architecture; a rewind re-prefills from the start. The vision tower is not loaded.",
+        "limitations": "Text only. CPU is the default; RUNNER_INKLING2_CUDA=1 opts the fast route into CUDA. This file passed its CUDA smoke on linux-x86_64-cuda, on an sm_120 GPU (a 24 GB MIG slice). The available windows-x86_64-cuda recording device has 12 GB of device memory and cannot hold either Inkling file; Windows CUDA is checked on generated fixtures, not these real files. Fit may keep expert stacks on the host or select CPU. Metal, speculative decoding and the shared prefix cache are not supported; a rewind re-prefills. LoRA attention terms run on the host, and training takes the CPU reference route; this switch does not enable GPU training. The vision tower is not loaded. The publisher fidelity figures are CPU reference measurements, not CUDA measurements. See MANUAL.md#inkling-2-mini and docs/inkling2-cuda.md.",
         "evidence": [
           "docs/compat-reports/inkling2-mini-reference-2026-11-22/README.md",
           "tests/compatibility/coverage.json",
@@ -10339,24 +10363,48 @@
             "dirty": false
           }
         },
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.21.0",
+          "date": "2026-11-25",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "299cba112822c8e36a23f8ae16ee84a798ed2f80",
+          "caps": {
+            "version": "1.21.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 16,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "c713db472dde292f68e1a0cf1b143d7a5d34b1048571abe3fa1d9aa2b1393744",
+          "ran": "env RUNNER_INKLING2_CUDA=1 runner -m Inkling-2-Mini-UD-Q4_K_XL.gguf_file --serve -c 1024 -b 64; POST /v1/chat/completions temperature=0 max_tokens=600 stream=false enable_thinking=false reasoning_effort=\"none\"",
+          "evidence": "tests/compatibility/tier-smoke/inkling-2-mini-ud-q4_k_xl.linux-x86_64-cuda.cuda.txt",
+          "build": {
+            "binary_sha256": "e6bbdd89ed6af23f7acc27bd1a67ac17d7be8f3bedeb79502868309fc91908f5",
+            "compiler": "13.3.0",
+            "commit": "299cba112822c8e36a23f8ae16ee84a798ed2f80",
+            "dirty": false
+          }
+        },
         "metal": {
           "kind": "limit",
-          "reason": "inkling2_loop runs on its own serial float32 CPU engine, which has no Metal path; Metal runs it on the CPU.",
+          "reason": "inkling2_loop has no Metal implementation; Metal builds run its CPU route.",
           "matrix": "MANUAL.md#support-matrix"
         }
       },
       "lora": {
         "training": {
-          "supported": false,
-          "reason": "the LoRA backward does not admit inkling2_loop yet: its engine (src/inkling2.c) is a forward only"
+          "supported": true,
+          "reason": null
         },
         "adapter_serving": {
-          "supported": false,
-          "reason": "--lora does not cover inkling2_loop yet: its engine (src/inkling2.c) has no adapter hooks"
+          "supported": true,
+          "reason": null
         },
         "runner_version": "1.21.0",
-        "date": "2026-11-23"
+        "date": "2026-11-25"
       },
       "transitions": [
         {

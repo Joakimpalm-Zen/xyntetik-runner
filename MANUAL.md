@@ -1834,6 +1834,12 @@ a reason. An eligible plain single-position decode step stays on the device
 between layers; adapters and diagnostic outputs use the non-resident path,
 and LoRA attention terms run on the host.
 
+The Q8_K_XL and Q4_K_XL files passed their CUDA smoke on 2026-11-25 on
+`linux-x86_64-cuda`, on an sm_120 GPU (a 24 GB MIG slice). The available
+`windows-x86_64-cuda` recording device has 12 GB of device memory and cannot
+hold either file. Windows CUDA passed the generated-fixture gate; these
+real-file marks describe the Linux device class only.
+
 This switch enables inference, not GPU training. Metal, speculative decoding
 and the shared prefix/named-context cache are not supported; a rewind
 re-prefills. CUDA and CPU logits are not claimed byte-identical. The CPU fast
