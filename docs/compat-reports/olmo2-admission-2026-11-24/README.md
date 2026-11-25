@@ -140,12 +140,12 @@ output SHA256 and each gate/adapter answer must come from those commands.
 |---|---|---|
 | olmo-2-0425-1b-instruct-f16 | macos-arm64-metal / cpu | Pass: unchanged request after RAM was freed, own pin and clean-rebuild comparison |
 | olmo-2-0425-1b-instruct-f16 | macos-arm64-metal / metal | Pass: exact pin comparison, 2026-11-25, clean build d00dbcdd |
-| olmo-2-0425-1b-instruct-f16 | windows-x86_64-cuda / cuda | TODO-windows-x86_64-cuda: pin and record |
-| olmo-2-0425-1b-instruct-f16 | linux-x86_64-cuda / cpu | TODO-linux-x86_64-cuda: pin and record |
-| olmo-2-0425-1b-instruct-f16 | linux-x86_64-cuda / cuda | TODO-linux-x86_64-cuda: pin and record |
-| olmo-3-7b-think-q8_0 | linux-x86_64-cuda / cpu | TODO-linux-x86_64-cuda: pin and record |
-| olmo-3-7b-think-q8_0 | linux-x86_64-cuda / cuda | TODO-linux-x86_64-cuda: pin and record |
-| olmo-3-7b-think-q8_0 | windows-x86_64-cuda / cuda | TODO-windows-x86_64-cuda: pin and record |
+| olmo-2-0425-1b-instruct-f16 | windows-x86_64-cuda / cuda | Release-recipe pin committed; --record comparison pending |
+| olmo-2-0425-1b-instruct-f16 | linux-x86_64-cuda / cpu | Release-recipe pin committed; --record comparison pending |
+| olmo-2-0425-1b-instruct-f16 | linux-x86_64-cuda / cuda | Release-recipe pin committed; --record comparison pending |
+| olmo-3-7b-think-q8_0 | linux-x86_64-cuda / cpu | Release-recipe pin committed; --record comparison pending |
+| olmo-3-7b-think-q8_0 | linux-x86_64-cuda / cuda | Release-recipe pin committed; --record comparison pending |
+| olmo-3-7b-think-q8_0 | windows-x86_64-cuda / cuda | Release-recipe pin committed; --record comparison pending |
 | olmo-3-7b-think-q8_0 | macos-arm64-metal / metal | Limit: the file plus runtime state does not fit the owned 8 GB macos-arm64-metal device |
 
 ### macos-arm64-metal recording, 2026-11-25
@@ -178,3 +178,42 @@ inactive pages of 16384 bytes each. Its own CPU pin passed the fact
 and length rules. After committing that pin as `fb0be48b`, a clean
 STRICT build matched its bytes and the tool wrote the CPU pass. The earlier
 timeout remains disclosed; no Metal result was inherited.
+
+### Release-recipe x86 pins, comparisons pending
+
+The six x86 pins were made from clean STRICT `0bbdda0a` builds using the
+release recipe, `PATH=$PWD/tools/release-make:$PATH make` (`-march=x86-64-v3`).
+The comparison builds must use that same recipe. Earlier native-build
+artifacts remain private and are not the committed pins, even though their
+reply bytes happen to match.
+
+| Device class | Backends pinned | Release binary SHA256 prefix |
+|---|---|---|
+| linux-x86_64-cuda | CPU, CUDA, both files | c024d9b4 (GCC 13.3.0) |
+| windows-x86_64-cuda | CUDA, both files | 0ac151ef |
+
+Both Linux pin and comparison commands use `taskset -c 0-15`. Windows uses
+the default affinity. The Windows pinning runs used an sm_120 GPU; that
+class is matched by OS, architecture and backend. Its descriptive hardware
+text is not the hardware claim for these two runs.
+
+The Instruct 1B payload is 1,476 bytes, 324 completion tokens, finish stop,
+SHA256 `5ede65273868fbf74071f9b8becf9af6c68c5bc4f08234db125fb8d7e820ae96`,
+on all supplied backends. Think 7B's content is 1,173 bytes, finish stop at
+2,129 completion tokens within the fixed 3,072 cap, SHA256
+`89360cee1c4ce4b6c2bc9e077edc171c54dd175125535ff235e4aca967f383f7`.
+Its two-space Markdown line breaks are part of those bytes and are retained.
+
+These are pins only: no x86 comparison pass is inferred or entered. The
+six release-recipe `--record` runs follow a clean rebuild at the pin commit.
+The existing macos-arm64-metal CPU and Metal cells remain unchanged.
+
+### Merged tensor-core default
+
+R4.50.9 (#1026) merged in `76be6540`: CUDA Q8_0 tensor-core prefill is now
+on by default; other olmo2 quant types stay scalar until measured. The six
+x86 pins retain their actual clean `0bbdda0a` build provenance, before that
+promotion. The upcoming CUDA Q8_0 comparisons use the merged default and
+report any byte mismatch; they do not force the prior scalar route. The
+measured promotion bar and its limits are in the
+[tensor-core evidence](../../tc-promotion-evidence.md#olmo2-q8_0-r4509-2026-11-24).

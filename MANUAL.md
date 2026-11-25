@@ -1781,8 +1781,8 @@ the GPU trainer does not keep. These are architecture paths: each file's
 recorded backend results and memory limits are in the
 [validated file rows](docs/model-support.md#olmo-2-0425-1b-instruct-f16).
 
-On CUDA, `olmo2` is scoped to Q8_0 only for tensor-core prefill; other quant
-types stay scalar until measured ([the row](docs/tc-promotion-evidence.md#olmo2-q8_0-r4509-2026-11-24)).
+Since R4.50.9 (#1026), CUDA `olmo2` Q8_0 tensor-core prefill is on by
+default; other olmo2 quant types stay scalar until measured ([the row](docs/tc-promotion-evidence.md#olmo2-q8_0-r4509-2026-11-24)).
 
 | CPU forward | Metal forward | CUDA forward | CPU LoRA training | GPU training |
 |---|---|---|---|---|

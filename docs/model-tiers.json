@@ -10413,7 +10413,7 @@
         "evidence": [
           "docs/compat-reports/olmo2-admission-2026-11-24/README.md"
         ],
-        "missing": "TODO-linux-x86_64-cuda: linked raw Instruct reference/bootstrap records; TODO-linux-x86_64-cuda / TODO-windows-x86_64-cuda: scheduled Instruct smoke pins and real recorded backend cells. The base file's numerical evidence is separate and no base chat result is inherited."
+        "missing": "TODO-linux-x86_64-cuda: linked raw reference/bootstrap records; linux-x86_64-cuda CPU/CUDA and windows-x86_64-cuda CUDA release-recipe comparisons and recorded cells remain pending. Task quality and live modern tool use are not claimed."
       },
       "backends": {
         "cpu": {
@@ -10482,9 +10482,9 @@
       },
       "measurements": [
         "**CPU attempt (macos-arm64-metal, 2026-11-25):** the unchanged 1,800-second request timed out under paging after 324 generated tokens at 0.2 tok/s and 50,540,623 page-ins. The loader reported 3.0 GB of weights against 1.5 GB available RAM. No CPU pin, comparison or cell was produced; the Metal result is not inherited.",
-        "**TODO-windows-x86_64-cuda:** windows-x86_64-cuda/cuda, output pin sha256 and --record result pending; no pass is inferred.",
-        "**TODO-linux-x86_64-cuda:** linux-x86_64-cuda/cpu, output pin sha256 and --record result pending; no pass is inferred.",
-        "**TODO-linux-x86_64-cuda:** linux-x86_64-cuda/cuda, output pin sha256 and --record result pending; no pass is inferred.",
+        "**Comparison pending (windows-x86_64-cuda/cuda):** the release-recipe pin is committed; the clean-rebuild --record comparison has not run. Pinning alone is not validation.",
+        "**Comparison pending (linux-x86_64-cuda/cpu):** the release-recipe pin is committed; the clean-rebuild --record comparison has not run. Pinning alone is not validation.",
+        "**Comparison pending (linux-x86_64-cuda/cuda):** the release-recipe pin is committed; the clean-rebuild --record comparison has not run. Pinning alone is not validation.",
         "**CPU retry (macos-arm64-metal):** after RAM was freed, the unchanged request passed its own pin and clean-rebuild byte comparison. Earlier timeout evidence remains separate. System-wide memory free percentage: 57% Free + inactive before the pin: 138399 pages of 16384 bytes."
       ],
       "transitions": [
@@ -10539,7 +10539,7 @@
         "evidence": [
           "docs/compat-reports/olmo2-admission-2026-11-24/README.md"
         ],
-        "missing": "TODO-linux-x86_64-cuda: linked raw reference/bootstrap records; TODO-linux-x86_64-cuda / TODO-windows-x86_64-cuda / TODO-macos-arm64-metal: scheduled smoke pins and recorded backend cells. Task quality and live modern tool use are not claimed."
+        "missing": "TODO-linux-x86_64-cuda: linked raw reference/bootstrap records; linux-x86_64-cuda CPU/CUDA and windows-x86_64-cuda CUDA release-recipe comparisons and recorded cells remain pending. Task quality and live modern tool use are not claimed."
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",
@@ -10557,9 +10557,9 @@
       "lora": null,
       "measurements": [
         "**Chat smoke request:** the initial 600-token linux-x86_64-cuda CPU/CUDA attempts reached the cap with empty content and wrote no pin. The fixed rerun uses max_tokens 3072, context 4096, the same greedy prompt and fact/length guards, and no ignored thinking flag. Pin and comparison on that class both use taskset -c 0-15; no per-backend request tuning.",
-        "**TODO-linux-x86_64-cuda:** linux-x86_64-cuda/cpu, output pin sha256 and --record result pending; no pass is inferred.",
-        "**TODO-linux-x86_64-cuda:** linux-x86_64-cuda/cuda, output pin sha256 and --record result pending; no pass is inferred.",
-        "**TODO-windows-x86_64-cuda:** windows-x86_64-cuda/cuda, output pin sha256 and --record result pending; no pass is inferred."
+        "**Comparison pending (linux-x86_64-cuda/cpu):** the release-recipe pin is committed; the clean-rebuild --record comparison has not run. Pinning alone is not validation.",
+        "**Comparison pending (linux-x86_64-cuda/cuda):** the release-recipe pin is committed; the clean-rebuild --record comparison has not run. Pinning alone is not validation.",
+        "**Comparison pending (windows-x86_64-cuda/cuda):** the release-recipe pin is committed; the clean-rebuild --record comparison has not run. Pinning alone is not validation."
       ],
       "transitions": [
         {

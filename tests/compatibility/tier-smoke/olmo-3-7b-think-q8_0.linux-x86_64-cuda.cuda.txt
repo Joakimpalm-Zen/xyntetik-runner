@@ -1,0 +1,19 @@
+
+
+Mercury  
+Venus  
+Earth  
+Mars  
+Jupiter  
+Saturn  
+Uranus  
+Neptune  
+
+Mercury is the smallest and innermost planet, with a heavily cratered surface and extreme temperature variations due to its thin atmosphere.  
+Venus is the second planet from the Sun, known for its thick, toxic atmosphere and extreme greenhouse effect causing surface temperatures hot enough to melt lead.  
+Earth is the third planet from the Sun, the only known planet with liquid water and conditions supporting life.  
+Mars is the fourth planet from the Sun, characterized by its reddish appearance due to iron-rich dust and features like the largest volcano, Olympus Mons.  
+Jupiter is the fifth planet from the Sun, a gas giant with the largest storm (Great Red Spot) and no solid surface.  
+Saturn is the sixth planet from the Sun, renowned for its extensive ring system composed of ice and rock particles.  
+Uranus is the seventh planet from the Sun, an ice giant with a blue-green hue caused by methane in its atmosphere and a unique axial tilt.  
+Neptune is the eighth and farthest planet from the Sun, a blue ice giant with the fastest winds in the Solar System and a turbulent atmosphere.
