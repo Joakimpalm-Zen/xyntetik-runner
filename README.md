@@ -74,9 +74,9 @@ It takes about a minute to try: [quick start](#quick-start).
   <a href="docs/community-results.md">Community results</a>
 </p>
 
-> **Published release: 1.21.0.** The [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) is for prompt speed on a mixture-of-experts model on CUDA, for training on the GPU, and for the same reply on every Windows host. Gemma-4-26B-A4B's QAT Q4_0 file takes a new route for its expert products by default on CUDA: measured on one CUDA device class under Linux, its prompt runs 2.81x faster at 512 tokens and 2.41x at 2,048, with no difference shown in its distance from the publisher's float32 model (a paired ratio of 1.0018, 95% interval 0.9979 to 1.0069), and its decode is 0.6% slower. `--train-gpu` runs the whole training step on the device, 2.67x faster a step than 1.20.0 on an RTX 5070 host. A training record says how its run can be replayed, and `runner attest` checks it: a replay, an unlearning, a lineage, a segment or a random sample of segments. Concurrent requests on a dense Qwen3.5-family model (qwen35, such as Qwen3.8-27B) share one decode step on CUDA, 3.00x the total at 8 streams with every request's bytes unchanged. A Windows build takes the portable math by default, so one `runner.exe` gives the same reply on every Windows host, and the rope position table is computed the same way in every build. Output bits change once for many users, and a reply can change with them: on Windows, on the CPU's prompt path, for a model with rotary positions on any build that is not strict, and for that Gemma 4 file on CUDA; the pinned replies that moved are recorded again. The new route and the shared decode step were each measured on one CUDA device class, the training claim of one adapter across builds is for the measured model (Qwen3-4B) and the builds measured, and does not hold on Phi-3.5 mini, and no speed claim is made for the release as a whole.
+> **Draft release: 1.22.0, not published.** Inkling 2 Mini uses its fast CPU route by default after the pre-registered run 3 passed; its CUDA route is opt-in with `RUNNER_INKLING2_CUDA=1`. OLMo 2 and OLMo 3 are admitted on CPU, Metal and CUDA, with CPU LoRA training and Q8_0 CUDA tensor-core prefill. Limits stay beside those claims: Inkling's measured CPU prefill remains below llama.cpp's, its CUDA speed window covers one Q8_K_XL file and an aligned build, the available Windows device cannot hold either Inkling file, and the OLMo 3 7B file does not fit the 8 GB Metal device. Claims 2 and 3, OLMo CPU speed rows and the release gates remain pending; this branch makes no final result claim for them. The [latest published release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) remains 1.21.0.
 
-> **Version `1.21.0`.** The command line, the HTTP API, the record formats and
+> **Version `1.22.0`.** The command line, the HTTP API, the record formats and
 > the model files that load stay compatible across 1.x
 > ([versioning policy](docs/versioning.md)). This page is the short version;
 > every flag, endpoint, limit and measurement is in the [manual](MANUAL.md).
@@ -526,7 +526,7 @@ passing evaluation made for those exact bytes.
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 1.21.0
+./runner --version   # -> runner 1.22.0
 ```
 
 Linux, macOS and Windows. NVIDIA GPUs need a driver with CUDA 13.0 support
