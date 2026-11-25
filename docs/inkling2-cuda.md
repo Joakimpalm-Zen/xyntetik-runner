@@ -86,6 +86,12 @@ suite, not skips at this head. The gate covers the stored types and expert
 factors, float64 product anchors, CPU/CUDA tolerances, resident/non-resident
 identity, transfer counts, slot ownership and injected failure refusals.
 
+On the rebased head `1fb25712`, a CUDA build reading the CPU fast route
+reproduces R4.48.24 run 3's read: the four fast rows are byte-identical, the
+100 Claim 1 answers are equal on their deterministic fields (wall time and
+the signed receipt excluded), and the 16-thread decode reads 0.986x
+llama.cpp `56eea9e4`'s (12.05 against 12.217 tok/s), against the 0.5x bar.
+
 Compute Sanitizer at the same head was filtered to `k_ink2_rms_rows`,
 `k_ink2_msg_norm` and `k_ink2_depth_attn_ix`. A positive control first proved
 the filters/instrument. Racecheck found zero hazards, errors and warnings;
