@@ -4726,13 +4726,15 @@ static bool tc_promoted(const model_t *m, int type) {
                                    "apertus", "nemotron_h", "granitehybrid" };
     for (size_t i = 0; i < sizeof(archs) / sizeof(*archs); i++)
         if (strcmp(m->arch, archs[i]) == 0) return true;
-    // Promoted for exactly the types its row's file exercised, each on a
-    // float32-reference row and a speed row (docs/tc-promotion-evidence.md):
-    // spark2_5 Q4_K/Q6_K, clef Q8_0/Q4_K. k2-horizon and stablelm run on the CPU
+    // Promoted for exactly the types its row's file exercised. Float32-reference
+    // and speed rows: spark2_5 Q4_K/Q6_K, clef Q8_0/Q4_K. olmo2 Q8_0 joins on
+    // test_tc_tol, float32-reference and measured speed rows (R4.50.9).
+    // Evidence: docs/tc-promotion-evidence.md. k2-horizon and stablelm run on the CPU
     // on a CUDA build (grouped RMSNorm, LayerNorm), so they have no route here.
     static const struct { const char *arch; int types[3]; } scoped[] = {
         { "spark2_5", { T_Q4_K, T_Q6_K, -1 } },
         { "clef",     { T_Q4_K, T_Q8_0, -1 } },
+        { "olmo2",    { T_Q8_0, -1 } },
     };
     for (size_t i = 0; i < sizeof(scoped) / sizeof(*scoped); i++) {
         if (strcmp(m->arch, scoped[i].arch) != 0) continue;

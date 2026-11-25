@@ -288,6 +288,88 @@ k2-horizon and stablelm run on the CPU on a CUDA build (grouped RMSNorm,
 LayerNorm), so they have no device route to promote.
 ```
 
+
+### olmo2 Q8_0 (R4.50.9, 2026-11-24)
+
+**Limits first:** only Q8_0 is promoted. Other olmo2 weight types keep the
+scalar default until their own rows are measured. These are tolerance
+measurements, not bit identity. The speed evidence covers one system with
+an sm_120 GPU; the 1B decode spread is wider with TC on. At 512 tokens,
+TC-on prefill is still 0.27x (1B) and 0.29x (7B) llama.cpp `b12640`'s
+throughput; that comparison is context, not part of the promotion bar.
+`RUNNER_CUDA_TC=0` keeps the scalar route; `=1` forces a candidate on.
+
+The file is `unsloth/Olmo-3-7B-Think-GGUF` at
+`1dcda0d5e447e9da698330014e38a9080616f2df`,
+`Olmo-3-7B-Think-Q8_0.gguf` (SHA256
+`3a4d7dda5778c299fe30bac76f5300beb283b48c6cc12b01c36c71310cefcf08`).
+Both rows below were measured at `badd9c32`, the pre-rebase #1023, whose
+`src/cuda.c` and `src/model.c` are identical to `62c48427`'s. The clean STRICT
+build ran on an sm_120 GPU (a 24 GB MIG slice), full CUDA offload (32 of 32
+layers). The candidate was forced with `RUNNER_CUDA_TC=1`; these runs were
+untimed.
+
+| Real-file tolerance gate | Measurement | Bar |
+|---|---|---|
+| `test-tc-tol`, 64 teacher-forced positions | mean absolute logit difference 0.004% of mean range 23.93; 0 / 64 top-1 flips; float32 reassociation floor 0; 448 Q8_0 TC dispatches, TC2 | at most 0.5% of range and zero flips: pass |
+
+The second row is against R4.50.6's publisher float32 reference:
+`allenai/Olmo-3-7B-Think` at `d97e442d7cc678210054dbcc9b440894d62c89a4`,
+its BF16 checkpoint upcast to float32 at use, transformers-main `046bdb8`
+(`5.24.0.dev0`), CPU. Both CUDA routes score the same 2,000 positions of
+`gold-corpus-2k`, score top 20, stride 2, context 4,096, default f16 KV.
+`RUNNER_SCORE_CHUNKED=1` makes the batched prefill products run: the forced
+candidate counted 56,250 Q8_0 GEMMs, against none with TC off.
+
+| CUDA route vs publisher float32 | Mean KL | Plain top-1 | Margin-qualified top-1 |
+|---|---|---|---|
+| TC off (`RUNNER_CUDA_TC=0`) | 1.3717e-03 | 98.55% | 100% |
+| TC forced (`RUNNER_CUDA_TC=1`) | 1.3625e-03 | 98.50% | 100% |
+
+The bar was written before measuring: candidate mean KL at most 1.01x the
+current route's, and neither paired Wilcoxon on per-position KL nor McNemar
+on margin-qualified top-1 finding it worse at p < 0.05. The measured ratio is
+0.9933; Wilcoxon z 1.630, p 0.103; McNemar 0 / 0 discordant, p 1.0. Pass.
+Plain top-1 is disclosed beside the margin-qualified count, not substituted
+for that bar. No claim of statistically significant improvement is made.
+
+
+#### Speed gate (2026-11-25)
+
+A clean STRICT build of `db58bb2b`, one binary, on an sm_120 GPU: TC on
+(the default) against `RUNNER_CUDA_TC=0`, five interleaved rounds. The table
+reports medians and observed [min-max] ranges, in tokens per second. Every
+route line matched its arm: `tc=taken` for the default, `tc=off` for the
+opt-out. The files are OLMo-2-0425-1B-Instruct Q8_0 and the exact
+Olmo-3-7B-Think Q8_0 file identified above (`3a4d7dda`).
+
+| File | Workload | TC on, median [min-max] tok/s | TC off, median [min-max] tok/s | On / off |
+|---|---|---|---|---|
+| OLMo-2-0425-1B-Instruct Q8_0 | Prefill 512 | 7,238.5 [7,075.7-7,342.3] | 990.5 [985.1-1,003.5] | 7.31x |
+| OLMo-2-0425-1B-Instruct Q8_0 | Prefill 2048 | 4,929.9 [4,882.1-4,969.6] | 931.0 [930.2-935.0] | 5.30x |
+| OLMo-2-0425-1B-Instruct Q8_0 | Decode 128 after 512 | 290.9 [283.1-293.6] | 292.1 [291.4-293.1] | 0.996x |
+| Olmo-3-7B-Think Q8_0 | Prefill 512 | 1,700.5 [1,675.3-1,712.1] | 187.4 [187.3-187.7] | 9.07x |
+| Olmo-3-7B-Think Q8_0 | Prefill 2048 | 1,210.4 [1,203.3-1,212.4] | 178.0 [177.2-178.1] | 6.80x |
+| Olmo-3-7B-Think Q8_0 | Decode 128 after 512 | 65.6 [65.4-65.6] | 65.5 [65.5-65.6] | 1.001x |
+
+The speed bar was set before measuring: the median prefill rate must be
+faster at both 512 and 2048 on both files, and median decode at least 0.98x
+the opt-out. All six comparisons pass. The wider 1B TC-on decode range is
+disclosed; the bar is on medians, not a claim about every individual round.
+The llama.cpp `b12640` context above is separate from these on/off gates and
+from the earlier float32-reference comparison against `56eea9e4`.
+
+`tests/test_tc_olmo2_promotion.py` compiles the real CUDA policy functions on
+a host without a device, proving Q8_0 alone is promoted and non-matrix tensors
+do not advertise a TC prefill. Its CUDA arms check the generated Q8_0 file's
+default route label `tc=taken` and positive Q8_0 GEMM counter, the opt-out,
+and an unmeasured Q4_0 file's `tc=off` and empty counter. A control forces
+that same Q4_0 file with `RUNNER_CUDA_TC=1`, requiring `tc=forced` and a
+positive Q4_0 counter: the default's empty counter then means policy, not a
+shape the kernel declined. This control is not promotion evidence. The arms
+join `make test-cuda-gated`. A forced route alone cannot prove a default
+promotion.
+
 ## Tiled prefill attention
 
 The comment above `attn_tile512_on`.
