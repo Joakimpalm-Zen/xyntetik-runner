@@ -1151,16 +1151,15 @@ static void usage_to(FILE *f, const char *prog) {
         "  --rewrite OUT  write a rewritten model to OUT.gguf and exit, with a\n"
         "                 provenance record beside it. Without a trigger below\n"
         "                 this is a requantization (see --quant)\n"
-        "  --quant T      quantize target: q8_0 | q4_0 | q5_1 | q3_k | q4_k |\n"
-        "                 q5_k | q6_k | iq4_nl | mxfp4 | f16 | bf16 | keep\n"
+        "  --quant T      quantize target:\n"
+        "                 " QUANT_TYPE_NAMES "\n"
         "                 (default q4_0, or keep when --prune-experts,\n"
         "                 --remove-sublayer or --merge-lora is the reason to\n"
         "                 rewrite)\n"
         "  --type-plan PLAN.json  per-tensor precision while rewriting:\n"
         "                 {\"default\":\"keep\",\"rules\":[{\"match\":\"_exps.weight\",\n"
-        "                 \"type\":\"q4_0\"}]}. First matching rule wins; types are\n"
-        "                 keep|q8_0|q4_0|q5_1|q3_k|q4_k|q5_k|q6_k|iq4_nl|\n"
-        "                 mxfp4|f16|bf16.\n"
+        "                 \"type\":\"q4_0\"}]}. First matching rule wins; types are:\n"
+        "                 " QUANT_TYPE_NAMES ".\n"
         "                 Per-tensor is the finest GGUF can express: experts are stored\n"
         "                 stacked, one tensor per layer, so per-EXPERT\n"
         "                 precision is not representable\n"
@@ -1168,10 +1167,10 @@ static void usage_to(FILE *f, const char *prog) {
         "                 any rule would be declined or fall back, instead of\n"
         "                 reporting it and writing the file\n"
         "  --imatrix FILE  importance matrix (llama.cpp's GGUF or legacy .dat\n"
-        "                 imatrix) weighting q3_k, q4_0, q4_k, q5_k, q6_k,\n"
-        "                 q5_1 and iq4_nl toward input columns a calibration text\n"
-        "                 drives hardest; other types are written as without\n"
-        "                 it. Named by sha256 in the provenance record\n"
+        "                 imatrix) weighting %s\n"
+        "                 toward input columns a calibration text drives hardest;\n"
+        "                 other types are written as without it. Named by sha256\n"
+        "                 in the provenance record\n"
         "  --quant-error OUT.jsonl  write no model: per tensor a rewrite would\n"
         "                 quantize, the bytes and weighted squared round-trip\n"
         "                 error of each --quant type (a comma list, e.g.\n"
@@ -1458,7 +1457,7 @@ static void usage_to(FILE *f, const char *prog) {
         "family (runner train); --keygen, --sign-record, --check-record, --lineage,\n"
         "--export-bundle, --check-bundle, --export-pack, --check-pack, --sign-model,\n"
         "--watermark-keygen, --detect-watermark (runner attest).\n",
-        prog);
+        prog, quantize_imatrix_type_names());
 }
 
 // The verbs' part of `runner attest --help`, also cut per verb for `runner

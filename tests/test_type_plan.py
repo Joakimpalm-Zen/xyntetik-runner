@@ -396,6 +396,46 @@ def test_a_type_name_it_cannot_write_lists_the_ones_it_can(runner_bin, tmp_path)
         assert q.returncode == 0, (name, q.stderr)
 
 
+def test_help_lists_every_quant_type_and_imatrix_weighted_type(runner_bin):
+    """--help derives its --quant, --type-plan, and --imatrix type lists from
+    the code's own tables (QUANT_TYPE_NAMES and imatrix_weighted_type), so no
+    new quant or imatrix writer can silently drop out of --help."""
+    import re
+    header = (ROOT / "src/quants.h").read_text(encoding="utf-8")
+    m = re.search(r'#define\s+QUANT_TYPE_NAMES\s+"([^"]+)"', header)
+    assert m, "QUANT_TYPE_NAMES not found in src/quants.h"
+    quant_names = m.group(1).split("|")
+    assert "iq3_xxs" in quant_names and "nvfp4" in quant_names, quant_names
+
+    qsrc = (ROOT / "src/quantize.c").read_text(encoding="utf-8")
+    im = re.search(r"static bool imatrix_weighted_type\(int type\)\s*\{([^}]+)\}", qsrc)
+    assert im, "imatrix_weighted_type not found in src/quantize.c"
+    imatrix_names = [t.lower() for t in re.findall(r"T_([A-Z0-9_]+)", im.group(1))]
+    assert "iq3_xxs" in imatrix_names, imatrix_names
+
+    p = subprocess.run([runner_bin, "--help"], cwd=ROOT, capture_output=True, text=True, timeout=60)
+    assert p.returncode == 0, p.stderr
+    help_text = p.stdout
+
+    def flag_block(flag):
+        bm = re.search(rf"(?m)^  {re.escape(flag)}\b.*?(?=^  --|\n\n|\Z)", help_text, re.DOTALL)
+        assert bm, f"{flag} block not found in --help"
+        return bm.group(0)
+
+    quant_blk = flag_block("--quant")
+    plan_blk = flag_block("--type-plan")
+    imatrix_blk = flag_block("--imatrix")
+
+    for name in quant_names:
+        assert re.search(rf"\b{re.escape(name)}\b", quant_blk), (name, quant_blk)
+        assert re.search(rf"\b{re.escape(name)}\b", plan_blk), (name, plan_blk)
+
+    for name in imatrix_names:
+        assert re.search(rf"\b{re.escape(name)}\b", imatrix_blk), (name, imatrix_blk)
+    for unw in ("q8_0", "mxfp4", "nvfp4", "f16", "bf16"):
+        assert not re.search(rf"\b{re.escape(unw)}\b", imatrix_blk), (unw, imatrix_blk)
+
+
 def test_q5_k_q5_1_and_iq4_nl_are_written_as_asked_and_score(runner_bin, tmp_path):
     """R4.33: q5_k, q5_1 and iq4_nl are writable from --quant and --type-plan.
     Each writes its own type (ggml ids 13, 7 and 20) on a 256-divisible
