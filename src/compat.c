@@ -2887,8 +2887,20 @@ struct plat_slow_note {
 static void *slow_note_watch(void *arg) {
     plat_slow_note *n = arg;
     pthread_mutex_lock(&n->mu);
-    while (!n->done)
+    while (!n->done) {
+#if defined(__APPLE__) && defined(CLOCK_MONOTONIC)
+        struct timespec now, rem;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        long long rem_ns = ((long long)n->at.tv_sec - (long long)now.tv_sec) * 1000000000LL +
+                           ((long long)n->at.tv_nsec - (long long)now.tv_nsec);
+        if (rem_ns <= 0) break;
+        rem.tv_sec = (time_t)(rem_ns / 1000000000LL);
+        rem.tv_nsec = (long)(rem_ns % 1000000000LL);
+        if (pthread_cond_timedwait_relative_np(&n->cv, &n->mu, &rem) == ETIMEDOUT) break;
+#else
         if (pthread_cond_timedwait(&n->cv, &n->mu, &n->at) == ETIMEDOUT) break;
+#endif
+    }
     if (!n->done) {
         fprintf(n->out, "%s\n", n->line);
         fflush(n->out);
@@ -2902,13 +2914,34 @@ plat_slow_note *plat_slow_note_begin(FILE *out, const char *line, double after_s
     if (!n) return NULL;
     n->out = out;
     snprintf(n->line, sizeof n->line, "%s", line);
-    clock_gettime(CLOCK_REALTIME, &n->at);
     if (after_s < 0) after_s = 0;
+    if (pthread_mutex_init(&n->mu, NULL) != 0) { free(n); return NULL; }
+    clockid_t clk = CLOCK_REALTIME;
+    int cv_rc = -1;
+#if defined(__APPLE__) && defined(CLOCK_MONOTONIC)
+    clk = CLOCK_MONOTONIC;
+    cv_rc = pthread_cond_init(&n->cv, NULL);
+#elif defined(CLOCK_MONOTONIC)
+    pthread_condattr_t attr;
+    if (pthread_condattr_init(&attr) == 0) {
+        if (pthread_condattr_setclock(&attr, CLOCK_MONOTONIC) == 0) {
+            clk = CLOCK_MONOTONIC;
+            cv_rc = pthread_cond_init(&n->cv, &attr);
+        }
+        pthread_condattr_destroy(&attr);
+    }
+    if (cv_rc != 0) {
+        clk = CLOCK_REALTIME;
+        cv_rc = pthread_cond_init(&n->cv, NULL);
+    }
+#else
+    cv_rc = pthread_cond_init(&n->cv, NULL);
+#endif
+    if (cv_rc != 0) { pthread_mutex_destroy(&n->mu); free(n); return NULL; }
+    clock_gettime(clk, &n->at);
     long long ns = (long long)n->at.tv_nsec + (long long)((after_s - (long long)after_s) * 1e9);
     n->at.tv_sec += (time_t)after_s + (time_t)(ns / 1000000000LL);
     n->at.tv_nsec = (long)(ns % 1000000000LL);
-    if (pthread_mutex_init(&n->mu, NULL) != 0) { free(n); return NULL; }
-    if (pthread_cond_init(&n->cv, NULL) != 0) { pthread_mutex_destroy(&n->mu); free(n); return NULL; }
     if (pthread_create(&n->thread, NULL, slow_note_watch, n) != 0) {
         pthread_cond_destroy(&n->cv);
         pthread_mutex_destroy(&n->mu);
