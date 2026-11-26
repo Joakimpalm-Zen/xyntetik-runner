@@ -60,9 +60,15 @@ const char *session_key_mismatch(const session_meta *sm, const engine *e,
     if (sm->n_ctx != m->n_ctx)
         snprintf(buf, cap, "context %d in the image, %d here: resume with -c %d",
                  sm->n_ctx, m->n_ctx, sm->n_ctx);
-    else if (strcmp(sm->kv_type, kv_type_of(m)))
-        snprintf(buf, cap, "KV type %s in the image, %s here: resume with --kv %s",
-                 sm->kv_type, kv_type_of(m), sm->kv_type);
+    else if (strcmp(sm->kv_type, kv_type_of(m))) {
+        if (m->ink2 && strcmp(sm->kv_type, "f32") && strcmp(sm->kv_type, "q8"))
+            snprintf(buf, cap, "KV type %s in the image, %s here: inkling2_loop only supports f32 and q8 "
+                     "(images from <= 1.22.0 recorded f16 for its f32 cache and cannot be resumed on this build)",
+                     sm->kv_type, kv_type_of(m));
+        else
+            snprintf(buf, cap, "KV type %s in the image, %s here: resume with --kv %s",
+                     sm->kv_type, kv_type_of(m), sm->kv_type);
+    }
     else if (sm->model_key == e->model_key_prior)   // R3.44
         snprintf(buf, cap, "an earlier runner wrote it, under the 1.15.0 recurrent layout "
                  "(state and KV rows for every layer); resume it with "

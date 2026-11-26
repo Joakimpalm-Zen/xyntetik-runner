@@ -1077,6 +1077,14 @@ bool model_inkling2_runtime(model_t *m, const model_params *p) {
         return false;
     }
     r->cache_ok = true;
+    // R4.48.32: reflect the cache format this runtime actually initialized onto
+    // model_t so route_collect, model_kv_name, receipts, --verify, --doctor,
+    // /v1/runner/provenance, and engine model keys all read the real K/V type
+    // (f32 or q8) instead of model_t's zero-initialized f16 default.
+    m->kv_q8 = (r->c.kv == INK2_KV_Q8);
+    m->kv_f32 = (r->c.kv != INK2_KV_Q8);
+    m->kv_fp4 = false;
+    m->kv_split = false;
     r->rows_cap = m->n_batch;
     // r->rows [n_batch][n_vocab] is allocated lazily on the first keep_all or RUNNER_INKLING2_ROWS forward; normal
     // prefill/decode asks only for the last row via m->logits (INK2_LOGITS_LAST).

@@ -7529,6 +7529,31 @@ static float *replay_micro_fwd(void *ud, model_t *m, int32_t tok, int pos) {
     return model_batch_decode(r->mb, idx, btok, bpos, w, out) ? out[0] : NULL;
 }
 
+// R4.48.32: strict MAJOR.MINOR.PATCH <= (1, 22, 0). Every released Inkling 2
+// build through 1.22.0 ran f32 K/V only and stamped profile.kv as "f16"
+// (model_t's zero-initialized default). Unparseable or post-1.22.0 versions
+// return false so --verify stays strict.
+static bool runner_ver_le_1_22_0(const char *s) {
+    if (!s || !*s) return false;
+    unsigned long v[3] = { 0, 0, 0 };
+    const char *p = s;
+    for (int i = 0; i < 3; i++) {
+        if (*p < '0' || *p > '9') return false;
+        char *end = NULL;
+        v[i] = strtoul(p, &end, 10);
+        if (end == p || v[i] > 999999ul) return false;
+        if (i < 2) {
+            if (*end != '.') return false;
+            p = end + 1;
+        } else if (*end != '\0') {
+            return false;
+        }
+    }
+    if (v[0] != 1) return v[0] < 1;
+    if (v[1] != 22) return v[1] < 22;
+    return v[2] == 0;
+}
+
 static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const char *load_path) {
     jv *vm = jv_get(vr->rec, "model"), *va = jv_get(vr->rec, "adapter");
     jv *vprof = jv_get(vr->rec, "profile");
@@ -7540,6 +7565,11 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     bool expected_fp4 = strcmp(jv_str(jv_get(vprof, "kv"), ""), "fp4") == 0;
     bool expected_split = strcmp(jv_str(jv_get(vprof, "kv"), ""), "k8v4") == 0;
     bool expected_f32 = strcmp(jv_str(jv_get(vprof, "kv"), ""), "f32") == 0;
+    // R4.48.32: accept legacy profile.kv="f16" as Inkling 2's f32 cache only
+    // when the receipt's runner version is <= 1.22.0.
+    if (rt->m.ink2 && !expected_q8 && !expected_fp4 && !expected_split &&
+        !expected_f32 && runner_ver_le_1_22_0(jv_str(jv_get(vr->rec, "runner"), NULL)))
+        expected_f32 = true;
     jv *expected_layers_v = jv_get(vprof, "gpu_layers");
     int expected_layers = (int)jv_num(expected_layers_v, -1);
     // a CUDA replay must run at the record's prompt window (64 for a record
