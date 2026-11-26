@@ -1,0 +1,3 @@
+- **The evidence behind 1.22.0's three Inkling 2 Mini claims is public** (R4.48.12).
+  - [`docs/inkling2-claims-evidence/`](docs/inkling2-claims-evidence/README.md) holds the pre-registration with its errata, addenda and interpretation files, the prompts, every statistics output the release notes quote, and the scripts.
+  - Every per-prompt record (each engine's answers, the teacher-forced verdicts, the Claim 2 cells, the Claim 3 arms) is the release attachment `inkling2-claims-records-1.22.0.tar.gz`, sha256 `8aa2cfb600fb63cd...`. Only the measurement host's paths and name are redacted, and a manifest maps each original file's sha256 to its published one.

@@ -1,0 +1,68 @@
+Claim 2 (t16) host load per cell: load1 from samples.log (10 s), host-wide (other tenants included)
+start load = the run log's load1 at the cell's start; share = samples above it / samples in the cell
+resident = the share of the model file's pages in the page cache (results/tools/resident, mincore), per sample;
+res<0.99 = samples with resident below 0.99 / samples with a resident reading
+cell                              start   share>      peak   median   res min res<.99    secs   jsonl sha256      check1
+runner-t16-alone                  56.51    20.6%     60.50    49.87  0.963599   32.4%     361   a2b44632f07a15d7  PASS
+runner-t16-batched                59.17    40.1%    158.32    56.31  0.962821   92.4%    2882   1152c41876e77372  PASS
+llama-t16-alone-faon-ub512        53.76    44.7%     80.02    51.84  1.000000    0.0%     389   fc36290b65aad9e8  PASS
+llama-t16-alone-faon-ub1          27.19    62.7%     44.14    32.18  1.000000    0.0%     534   54b74b6279ba73f4  PASS
+llama-t16-alone-faoff-ub512       38.26    51.4%     66.20    38.56  1.000000    0.0%     370   1c2d0b3e99131557  PASS
+llama-t16-alone-faoff-ub1         26.26     0.0%     25.90    24.48  1.000000    0.0%     524   e59d0002ea5127b5  PASS
+llama-t16-batched-faon-ub512      21.08    91.2%    195.27    29.80  0.999989    0.0%    1756   959b4607d24893a5  PASS
+llama-t16-batched-faon-ub1        45.67    44.8%   1356.19    41.16  1.000000    0.0%    3385   e090aad2ac546770  PASS
+llama-t16-batched-faoff-ub512     37.41    79.3%    337.58    58.40  1.000000    0.0%    1860   bd3d2a5b536d9a79  PASS
+llama-t16-batched-faoff-ub1       56.37    25.8%    115.22    45.20  0.999461    0.0%    3629   8a18d3ea6759224a  PASS
+
+--- runner-t16-alone
+span 2026-11-25T18:02:42Z .. 2026-11-25T18:08:41Z, 34 samples; peak at 2026-11-25T18:03:21Z
+  above start: 2026-11-25T18:02:49Z .. 2026-11-25T18:03:52Z (below at 2026-11-25T18:04:02Z), peak 60.50 at 2026-11-25T18:03:21Z, pgsteal 37.02 GB, rounds c2_00,c2_01,c2_02,c2_03
+--- runner-t16-batched
+span 2026-11-25T18:08:46Z .. 2026-11-25T18:56:44Z, 277 samples; peak at 2026-11-25T18:53:24Z
+  above start: 2026-11-25T18:08:53Z .. 2026-11-25T18:11:41Z (below at 2026-11-25T18:11:51Z), peak 79.55 at 2026-11-25T18:10:17Z, pgsteal 7.33 GB, rounds c2_00,c2_01
+  above start: 2026-11-25T18:17:13Z .. 2026-11-25T18:17:24Z (below at 2026-11-25T18:17:34Z), peak 62.69 at 2026-11-25T18:17:24Z, pgsteal 1.85 GB, rounds c2_03
+  above start: 2026-11-25T18:18:05Z .. 2026-11-25T18:18:15Z (below at 2026-11-25T18:18:26Z), peak 60.71 at 2026-11-25T18:18:05Z, pgsteal 0.00 GB, rounds c2_03
+  above start: 2026-11-25T18:19:07Z .. 2026-11-25T18:22:26Z (below at 2026-11-25T18:22:36Z), peak 74.62 at 2026-11-25T18:21:03Z, pgsteal 50.48 GB, rounds c2_04,c2_05
+  above start: 2026-11-25T18:24:51Z .. 2026-11-25T18:26:35Z (below at 2026-11-25T18:26:46Z), peak 67.70 at 2026-11-25T18:25:44Z, pgsteal 0.00 GB, rounds c2_06,c2_07
+  above start: 2026-11-25T18:27:06Z .. 2026-11-25T18:27:06Z (below at 2026-11-25T18:27:17Z), peak 61.12 at 2026-11-25T18:27:06Z, pgsteal 0.00 GB, rounds c2_07
+  above start: 2026-11-25T18:32:39Z .. 2026-11-25T18:36:06Z (below at 2026-11-25T18:36:17Z), peak 141.35 at 2026-11-25T18:34:12Z, pgsteal 0.00 GB, rounds c2_09,c2_10,c2_11
+  above start: 2026-11-25T18:37:40Z .. 2026-11-25T18:38:00Z (below at 2026-11-25T18:38:11Z), peak 68.90 at 2026-11-25T18:37:40Z, pgsteal 0.00 GB, rounds c2_11,c2_12
+  above start: 2026-11-25T18:38:42Z .. 2026-11-25T18:38:52Z (below at 2026-11-25T18:39:03Z), peak 61.07 at 2026-11-25T18:38:52Z, pgsteal 0.00 GB, rounds c2_12
+  above start: 2026-11-25T18:47:31Z .. 2026-11-25T18:47:52Z (below at 2026-11-25T18:48:02Z), peak 61.37 at 2026-11-25T18:47:41Z, pgsteal 0.00 GB, rounds c2_16
+  above start: 2026-11-25T18:51:40Z .. 2026-11-25T18:56:31Z (below at 2026-11-25T18:56:42Z), peak 158.32 at 2026-11-25T18:53:24Z, pgsteal 19.70 GB, rounds c2_17,c2_18,c2_19
+--- llama-t16-alone-faon-ub512
+span 2026-11-25T18:56:52Z .. 2026-11-25T19:03:19Z, 38 samples; peak at 2026-11-25T18:59:41Z
+  above start: 2026-11-25T18:57:44Z .. 2026-11-25T19:00:33Z (below at 2026-11-25T19:00:43Z), peak 80.02 at 2026-11-25T18:59:41Z, pgsteal 1.83 GB, rounds c2_02,c2_03,c2_04,c2_05,c2_06,c2_07,c2_08,c2_09
+--- llama-t16-alone-faon-ub1
+span 2026-11-25T19:03:23Z .. 2026-11-25T19:12:14Z, 51 samples; peak at 2026-11-25T19:09:00Z
+  above start: 2026-11-25T19:06:45Z .. 2026-11-25T19:12:07Z (below at none in the cell), peak 44.14 at 2026-11-25T19:09:00Z, pgsteal 25.86 GB, rounds c2_07,c2_08,c2_09,c2_10,c2_11,c2_12,c2_13,c2_14,c2_15,c2_16,c2_17,c2_18,c2_19
+--- llama-t16-alone-faoff-ub512
+span 2026-11-25T19:12:18Z .. 2026-11-25T19:18:26Z, 35 samples; peak at 2026-11-25T19:14:23Z
+  above start: 2026-11-25T19:12:27Z .. 2026-11-25T19:15:25Z (below at 2026-11-25T19:15:35Z), peak 66.20 at 2026-11-25T19:14:23Z, pgsteal 0.00 GB, rounds c2_00,c2_01,c2_02,c2_03,c2_04,c2_05,c2_06,c2_07,c2_08
+--- llama-t16-alone-faoff-ub1
+span 2026-11-25T19:18:30Z .. 2026-11-25T19:27:12Z, 51 samples; peak at 2026-11-25T19:25:35Z
+--- llama-t16-batched-faon-ub512
+span 2026-11-25T19:27:16Z .. 2026-11-25T19:56:29Z, 170 samples; peak at 2026-11-25T19:53:02Z
+  above start: 2026-11-25T19:28:10Z .. 2026-11-25T19:28:51Z (below at 2026-11-25T19:29:02Z), peak 23.24 at 2026-11-25T19:28:20Z, pgsteal 1.84 GB, rounds c2_00,c2_01
+  above start: 2026-11-25T19:29:12Z .. 2026-11-25T19:40:37Z (below at 2026-11-25T19:40:48Z), peak 63.91 at 2026-11-25T19:32:41Z, pgsteal 3.06 GB, rounds c2_01,c2_02,c2_03,c2_04,c2_05,c2_06,c2_07,c2_08,c2_09
+  above start: 2026-11-25T19:41:19Z .. 2026-11-25T19:42:00Z (below at 2026-11-25T19:42:10Z), peak 21.67 at 2026-11-25T19:41:19Z, pgsteal 0.00 GB, rounds c2_09,c2_10
+  above start: 2026-11-25T19:43:12Z .. 2026-11-25T19:56:29Z (below at none in the cell), peak 195.27 at 2026-11-25T19:53:02Z, pgsteal 93.42 GB, rounds c2_11,c2_12,c2_13,c2_14,c2_15,c2_16,c2_17,c2_18,c2_19
+--- llama-t16-batched-faon-ub1
+span 2026-11-25T19:56:34Z .. 2026-11-25T20:52:57Z, 326 samples; peak at 2026-11-25T20:42:32Z
+  above start: 2026-11-25T19:57:11Z .. 2026-11-25T20:01:24Z (below at 2026-11-25T20:01:34Z), peak 102.93 at 2026-11-25T19:59:50Z, pgsteal 0.00 GB, rounds c2_00,c2_01
+  above start: 2026-11-25T20:02:05Z .. 2026-11-25T20:02:36Z (below at 2026-11-25T20:02:47Z), peak 47.44 at 2026-11-25T20:02:26Z, pgsteal 0.00 GB, rounds c2_01,c2_02
+  above start: 2026-11-25T20:03:49Z .. 2026-11-25T20:10:14Z (below at 2026-11-25T20:10:24Z), peak 239.38 at 2026-11-25T20:04:00Z, pgsteal 0.00 GB, rounds c2_02,c2_03,c2_04
+  above start: 2026-11-25T20:34:34Z .. 2026-11-25T20:47:43Z (below at 2026-11-25T20:47:53Z), peak 1356.19 at 2026-11-25T20:42:32Z, pgsteal 88.01 GB, rounds c2_13,c2_14,c2_15,c2_16,c2_17,c2_18
+  above start: 2026-11-25T20:51:31Z .. 2026-11-25T20:51:41Z (below at 2026-11-25T20:51:51Z), peak 55.12 at 2026-11-25T20:51:31Z, pgsteal 0.00 GB, rounds c2_19
+--- llama-t16-batched-faoff-ub512
+span 2026-11-25T20:53:01Z .. 2026-11-25T21:23:58Z, 179 samples; peak at 2026-11-25T21:13:21Z
+  above start: 2026-11-25T20:55:50Z .. 2026-11-25T21:01:02Z (below at 2026-11-25T21:01:12Z), peak 68.19 at 2026-11-25T20:57:55Z, pgsteal 1.25 GB, rounds c2_02,c2_03,c2_04,c2_05
+  above start: 2026-11-25T21:01:23Z .. 2026-11-25T21:08:31Z (below at 2026-11-25T21:08:41Z), peak 130.19 at 2026-11-25T21:02:35Z, pgsteal 0.12 GB, rounds c2_05,c2_06,c2_07,c2_08,c2_09,c2_10
+  above start: 2026-11-25T21:12:08Z .. 2026-11-25T21:23:56Z (below at none in the cell), peak 337.58 at 2026-11-25T21:13:21Z, pgsteal 61.58 GB, rounds c2_12,c2_13,c2_14,c2_15,c2_16,c2_17,c2_18,c2_19
+--- llama-t16-batched-faoff-ub1
+span 2026-11-25T21:24:03Z .. 2026-11-25T22:24:30Z, 349 samples; peak at 2026-11-25T22:01:58Z
+  above start: 2026-11-25T21:36:03Z .. 2026-11-25T21:38:39Z (below at 2026-11-25T21:38:50Z), peak 80.58 at 2026-11-25T21:37:27Z, pgsteal 10.93 GB, rounds c2_04
+  above start: 2026-11-25T21:43:20Z .. 2026-11-25T21:45:05Z (below at 2026-11-25T21:45:15Z), peak 69.31 at 2026-11-25T21:44:23Z, pgsteal 0.00 GB, rounds c2_06,c2_07
+  above start: 2026-11-25T21:54:26Z .. 2026-11-25T21:56:12Z (below at 2026-11-25T21:56:22Z), peak 71.83 at 2026-11-25T21:55:29Z, pgsteal 1.83 GB, rounds c2_10
+  above start: 2026-11-25T21:59:50Z .. 2026-11-25T22:04:45Z (below at 2026-11-25T22:04:56Z), peak 115.22 at 2026-11-25T22:01:58Z, pgsteal 97.24 GB, rounds c2_11,c2_12,c2_13
+  above start: 2026-11-25T22:08:03Z .. 2026-11-25T22:11:51Z (below at 2026-11-25T22:12:02Z), peak 71.37 at 2026-11-25T22:08:45Z, pgsteal 83.69 GB, rounds c2_14,c2_15

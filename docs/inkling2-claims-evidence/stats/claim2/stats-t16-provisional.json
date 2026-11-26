@@ -1,0 +1,980 @@
+{
+ "script": "claim2_stats.py",
+ "status": "sixteen-thread half, provisional; t=1 pending (cells present: Runner 2/4, llama.cpp 8/16)",
+ "inputs_sha256": {
+  "runner-t16-alone": "a2b44632f07a15d741a7c16f95f1fac326cbdcd179adbf9d84e9be27fad82344",
+  "runner-t16-batched": "1152c41876e77372d7469e2b643c0bea1c046d92df77d045c8c8080fa76b86fc",
+  "llama-t16-alone-faon-ub512": "fc36290b65aad9e82723dd70dbc16494096cd1ec10740d9233b2ac17385ea49c",
+  "llama-t16-alone-faon-ub1": "54b74b6279ba73f40911ae21587221729b0d62a0ff6f22fa3aabca86c43af280",
+  "llama-t16-alone-faoff-ub512": "1c2d0b3e991315579946db922e188d467e285cbb604fbff6865ee32b855121c5",
+  "llama-t16-alone-faoff-ub1": "e59d0002ea5127b55ad012b92ada84c140b73719a858eb9794bfc909bc90f306",
+  "llama-t16-batched-faon-ub512": "959b4607d24893a54d35a45042a8f92b8c9c9e75604475489cf893d1a738d1fd",
+  "llama-t16-batched-faon-ub1": "e090aad2ac5467708a084b3d45889b237e3950b43e3bf02f4aa0d72c51900856",
+  "llama-t16-batched-faoff-ub512": "bd3d2a5b536d9a79906380876bfc65edf0de2880600e48ce35dbdb17a9ef566d",
+  "llama-t16-batched-faoff-ub1": "8a18d3ea6759224a93cb84ff3ccf441710565527632534c5fca69d80411a387d",
+  "unsloth-t16-alone-faon-ub512": "80bea38a474c70284fea73f870e9cc4842e3ce1e3c831b823fc4aa94c6768024",
+  "unsloth-t16-alone-faon-ub1": "428bc2eee244836da0a8f8cc52c5190f758b4a5c123566e8a4f05e49a17d56c3",
+  "unsloth-t16-alone-faoff-ub512": "b79a081b2d90a65676c3c84afac6a3b0c7010f5ca9760e2424f5b98c10070a8c",
+  "unsloth-t16-alone-faoff-ub1": "71df43e82dc7202398522c55b7f9330b86372c7f4906cf5f43a4db9988c5872a",
+  "unsloth-t16-batched-faon-ub512": "706172c00274c88c9bf589d13a5b8d945b5fdbf3ec51c919646f182c25196ce5",
+  "unsloth-t16-batched-faon-ub1": "e2a50d34d0ffd45d0513dc0dc7d2bdd95f3f8a948b93f28f7b1fd09f17ac72fc",
+  "unsloth-t16-batched-faoff-ub512": "3d9682860922abe321e93b3f3e32ecf48538b049701aec2d7b3d9565c20cd70d",
+  "unsloth-t16-batched-faoff-ub1": "7df865221d7809806dba0597617056efb7ba9a14ae1fe756adf3a2a119e089a5"
+ },
+ "checks": {
+  "runner-t16-alone": {
+   "lines": 20,
+   "incomplete": 0,
+   "torn": 0
+  },
+  "runner-t16-batched": {
+   "lines": 20,
+   "incomplete": 0,
+   "torn": 0
+  },
+  "llama-t16-alone-faon-ub512": {
+   "lines": 20,
+   "incomplete": 0,
+   "torn": 0
+  },
+  "llama-t16-alone-faon-ub1": {
+   "lines": 20,
+   "incomplete": 0,
+   "torn": 0
+  },
+  "llama-t16-alone-faoff-ub512": {
+   "lines": 20,
+   "incomplete": 0,
+   "torn": 0
+  },
+  "llama-t16-alone-faoff-ub1": {
+   "lines": 20,
+   "incomplete": 0,
+   "torn": 0
+  },
+  "llama-t16-batched-faon-ub512": {
+   "lines": 20,
+   "incomplete": 0,
+   "torn": 0
+  },
+  "llama-t16-batched-faon-ub1": {
+   "lines": 20,
+   "incomplete": 0,
+   "torn": 0
+  },
+  "llama-t16-batched-faoff-ub512": {
+   "lines": 20,
+   "incomplete": 0,
+   "torn": 0
+  },
+  "llama-t16-batched-faoff-ub1": {
+   "lines": 20,
+   "incomplete": 0,
+   "torn": 0
+  },
+  "unsloth-t16-alone-faon-ub512": {
+   "lines": 20,
+   "incomplete": 0,
+   "torn": 0
+  },
+  "unsloth-t16-alone-faon-ub1": {
+   "lines": 20,
+   "incomplete": 0,
+   "torn": 0
+  },
+  "unsloth-t16-alone-faoff-ub512": {
+   "lines": 20,
+   "incomplete": 0,
+   "torn": 0
+  },
+  "unsloth-t16-alone-faoff-ub1": {
+   "lines": 20,
+   "incomplete": 0,
+   "torn": 0
+  },
+  "unsloth-t16-batched-faon-ub512": {
+   "lines": 20,
+   "incomplete": 0,
+   "torn": 0
+  },
+  "unsloth-t16-batched-faon-ub1": {
+   "lines": 20,
+   "incomplete": 0,
+   "torn": 0
+  },
+  "unsloth-t16-batched-faoff-ub512": {
+   "lines": 20,
+   "incomplete": 0,
+   "torn": 0
+  },
+  "unsloth-t16-batched-faoff-ub1": {
+   "lines": 20,
+   "incomplete": 0,
+   "torn": 0
+  }
+ },
+ "interpretations": [
+  "Cell set: the stats use every cell present. The pre-registered matrix is Runner 4 (t in {1, 16} x alone / batched) and llama.cpp 16 (x fa x ub); the t=1 cells run after the release (ruled), so until then K counts identity across the t=16 cells only (Runner 2, llama.cpp 8, Unsloth 8), factors that need t=1 are 'pending', and the 2.4 wording's 'all 4 settings' / '16 settings' text would overstate the measured cells. RULED (CLAIM2-INTERPRETATIONS-2026-11-26-stats.md 1): the 2.4 wordings are NOT used until the t=1 cells run; before then the figures are 'the sixteen-thread half, provisional, t=1 pending', and the branch the t=16 counts point to is shown as provisional only.",
+  "Byte identity: 'the raw generated UTF-8 byte string (and generated token ID sequence up to EOS or 256 tokens)' is read as the target request's gen_ids AND the bytes decode(gen_ids) gives with the file's vocabulary (byte-level tokens through the inverse bytes_to_unicode, special tokens as their text). Equal ids give equal bytes, so the bytes add nothing but are checked. Runner's gen_ids carry the client-appended 200006 on stopped turns (stop_token_appended; its receipt lacks it); this is the same in every Runner cell, so identity is unaffected.",
+  "Records: the last COMPLETE line per target id (the client's resume rule); incomplete or torn lines are counted and reported. Per cell: 20 targets; prompt_ids equal across all of an engine's cells (checked).",
+  "Throughput: agg_tok_s per batched round = sum over its 9 requests of len(gen_ids) / T_batch_wall_s (barrier release to the 9th response, the client's T_batch_wall_s = the last end_offset_s); alone tok/s per round = len(gen_ids) / T_batch_wall_s of its one request (prefill included, as the wall is). len(gen_ids) is the generated id count (Claim 3's ruled interpretation 7); the client's agg_tok_s (usage counts) is shown beside where it differs (Runner's appended stop token). Median and IQR by claim1_stats.quartiles_iqr. The quoted R_* / L_* / U_* cells are the builds' resolved defaults (fa on, ub 512; the supervisor's ruling and the defaults probes); Runner has no fa / ub. Each figure carries its load-table row (median / peak load1, resident min, share of samples with resident < 0.99) and the ruled sentence on Runner's page loss.",
+  "llama.cpp co-batching (CB_L): /metrics was off (PREREG 1.2's flag line has no --metrics: status 501) and the per-decode batch lines are below the server's default verbosity, so 'active sequences per decode batch' is not logged. Read instead: every generating slot's token enters ONE shared batch per update_slots iteration (tools/server/server-context.cpp:3726, batch.add at :4430 / :4562), and llama_decode splits it into micro-batches of n_ubatch (src/llama-context.cpp:2254). So CB = true for a cell when >= 2 slots generated at once AND n_ubatch > 1; with -ub 1 each micro-batch holds one token, i.e. the sequences decode one at a time inside one call (CB = false at the kernel level). Concurrency = slots between 'launch_slot_' and 'release' in the server's stderr: time-weighted mean while >= 1 is active, max, and the share of that time with >= 2. RULED (5): stated as 'inferred from the source and the slot log'.",
+  "Runner co-batching: co_batched = false is PREREG 2's architectural statement (MANUAL.md:2685; sequential MoE decode). Its evidence: /metrics runner_batch_steps_total and runner_batch_sequences_total per round (after - before; mean sequences per step = the scheduler's slot count per step, not shared matmuls). The RUNNER_DEBUG_ROUTE=1 'path=' lines PREREG names CANNOT appear for this model at 7bf8b64d: model_forward_batch returns through model_inkling2_forward before route_ran() (src/model.c:17497); the env was set (run_claim2_t16.sh:75). Disclosed, not a run problem (risk-note 12). RULED (6), with a source check, CONFIRMED at 7bf8b64d: the server's one decode thread calls model_batch_decode once per step over the gathered slots (src/scheduler.c:197-214) and counts steps += 1, sequences += nb (:222-223), so the counters' mean is the slots GATHERED per step; with no device (--gpu off: model.c:6511, the load log's '0 layers'; no backend: gpu_none.c:448-451) model_batch_decode skips gpu_batch_decode (model.c:18197-18199) and runs the sequential fallback, model_forward per sequence in turn (:18271-18275), each a one-row forward (:18112-18114, n = 1) through model_inkling2_forward (:17497). One sequence at a time; no multi-sequence matrix product.",
+  "Factor attribution (2.3 2): each count is the number of the 20 targets whose output differs between the reference cell (alone, t=16, fa on, ub 512; Runner: alone, t=16) and the cell that changes ONLY that factor: alone vs batched at t=16 (and at t=1, from the t=1 alone cell), t=16 vs t=1 alone and batched, fa on vs off, ub 512 vs 1. The 2.4 branch 3 '<failing factor>' lists Runner's factors with a non-zero count.",
+  "Companions (information, not a PREREG metric): each of the 8 fixed companions runs once per batched round, 20 times per batched cell; reported: distinct outputs per companion within each cell, and whether its output is the same across all of the engine's batched cells.",
+  "Unsloth's column (ADDENDUM-2026-11-24-unsloth.md, 'an additional column in the same tables'): K_U / 20 with its Wilson interval, factor counts, CB_U, U_batched / U_alone, the companions. PREREG 0.2 defines paired comparisons for Claims 1 and 3 only and Claim 2 has no outcome rule between engines, so there is no Claim 2 'pair' to compute and no combined label (as ruled for Claim 3). The 2.4 outcome and wording use Runner and mainline only. RULED (9): confirmed, no pairs."
+ ],
+ "engines": {
+  "runner": {
+   "cells_present": [
+    "runner-t16-alone",
+    "runner-t16-batched"
+   ],
+   "cells_preregistered": 4,
+   "prompt_ids_equal_across_cells": true,
+   "identical": {
+    "c2_00": true,
+    "c2_01": true,
+    "c2_02": true,
+    "c2_03": true,
+    "c2_04": true,
+    "c2_05": true,
+    "c2_06": true,
+    "c2_07": true,
+    "c2_08": true,
+    "c2_09": true,
+    "c2_10": true,
+    "c2_11": true,
+    "c2_12": true,
+    "c2_13": true,
+    "c2_14": true,
+    "c2_15": true,
+    "c2_16": true,
+    "c2_17": true,
+    "c2_18": true,
+    "c2_19": true
+   },
+   "K": {
+    "k": 20,
+    "n": 20,
+    "wilson_95": [
+     0.8388748419471806,
+     1.0
+    ]
+   },
+   "not_identical": [],
+   "factors": [
+    {
+     "factor": "alone vs batched (t=16)",
+     "cells": [
+      "runner-t16-alone",
+      "runner-t16-batched"
+     ],
+     "count": 0,
+     "ids": []
+    },
+    {
+     "factor": "alone vs batched (t=1)",
+     "cells": [
+      null,
+      null
+     ],
+     "count": null,
+     "ids": null
+    },
+    {
+     "factor": "t=16 vs t=1 (alone)",
+     "cells": [
+      "runner-t16-alone",
+      null
+     ],
+     "count": null,
+     "ids": null
+    },
+    {
+     "factor": "t=16 vs t=1 (batched)",
+     "cells": [
+      "runner-t16-batched",
+      null
+     ],
+     "count": null,
+     "ids": null
+    }
+   ],
+   "throughput_quoted": {
+    "alone": {
+     "median": 11.182625775121263,
+     "p25": 10.688247882045772,
+     "p75": 12.488454516211426,
+     "iqr": 1.8002066341656544,
+     "n": 20,
+     "client_agg_tok_s_median": 11.182649999999999,
+     "rounds_differing_from_client": 10,
+     "cell": "runner-t16-alone",
+     "load": {
+      "start": 56.51,
+      "share_above": 20.6,
+      "peak": 60.5,
+      "median": 49.87,
+      "res_min": 0.963599,
+      "res_below_099": 32.4,
+      "secs": 361
+     }
+    },
+    "batched": {
+     "median": 11.797722508573582,
+     "p25": 11.435636508034818,
+     "p75": 12.067592728132619,
+     "iqr": 0.6319562200978002,
+     "n": 20,
+     "client_agg_tok_s_median": 11.764,
+     "rounds_differing_from_client": 20,
+     "cell": "runner-t16-batched",
+     "load": {
+      "start": 59.17,
+      "share_above": 40.1,
+      "peak": 158.32,
+      "median": 56.31,
+      "res_min": 0.962821,
+      "res_below_099": 92.4,
+      "secs": 2882
+     }
+    }
+   },
+   "co_batching": {
+    "runner-t16-batched": {
+     "co_batched": false,
+     "basis": "PREREG 2 (MANUAL.md:2685); interpretation 6",
+     "batch_steps_total": 5361,
+     "batch_sequences_total": 33807,
+     "mean_sequences_per_step": 6.306099608282037,
+     "rounds_with_counters": 20
+    }
+   },
+   "companions": {
+    "c2_batch_00": {
+     "distinct_outputs_per_cell": {
+      "runner-t16-batched": 1
+     },
+     "same_across_batched_cells": true
+    },
+    "c2_batch_01": {
+     "distinct_outputs_per_cell": {
+      "runner-t16-batched": 1
+     },
+     "same_across_batched_cells": true
+    },
+    "c2_batch_02": {
+     "distinct_outputs_per_cell": {
+      "runner-t16-batched": 1
+     },
+     "same_across_batched_cells": true
+    },
+    "c2_batch_03": {
+     "distinct_outputs_per_cell": {
+      "runner-t16-batched": 1
+     },
+     "same_across_batched_cells": true
+    },
+    "c2_batch_04": {
+     "distinct_outputs_per_cell": {
+      "runner-t16-batched": 1
+     },
+     "same_across_batched_cells": true
+    },
+    "c2_batch_05": {
+     "distinct_outputs_per_cell": {
+      "runner-t16-batched": 1
+     },
+     "same_across_batched_cells": true
+    },
+    "c2_batch_06": {
+     "distinct_outputs_per_cell": {
+      "runner-t16-batched": 1
+     },
+     "same_across_batched_cells": true
+    },
+    "c2_batch_07": {
+     "distinct_outputs_per_cell": {
+      "runner-t16-batched": 1
+     },
+     "same_across_batched_cells": true
+    }
+   }
+  },
+  "llama": {
+   "cells_present": [
+    "llama-t16-alone-faon-ub512",
+    "llama-t16-alone-faon-ub1",
+    "llama-t16-alone-faoff-ub512",
+    "llama-t16-alone-faoff-ub1",
+    "llama-t16-batched-faon-ub512",
+    "llama-t16-batched-faon-ub1",
+    "llama-t16-batched-faoff-ub512",
+    "llama-t16-batched-faoff-ub1"
+   ],
+   "cells_preregistered": 16,
+   "prompt_ids_equal_across_cells": true,
+   "identical": {
+    "c2_00": false,
+    "c2_01": false,
+    "c2_02": false,
+    "c2_03": false,
+    "c2_04": false,
+    "c2_05": false,
+    "c2_06": false,
+    "c2_07": false,
+    "c2_08": false,
+    "c2_09": false,
+    "c2_10": false,
+    "c2_11": true,
+    "c2_12": false,
+    "c2_13": false,
+    "c2_14": false,
+    "c2_15": false,
+    "c2_16": true,
+    "c2_17": false,
+    "c2_18": false,
+    "c2_19": false
+   },
+   "K": {
+    "k": 2,
+    "n": 20,
+    "wilson_95": [
+     0.027866481213768224,
+     0.3010336452284873
+    ]
+   },
+   "not_identical": [
+    "c2_00",
+    "c2_01",
+    "c2_02",
+    "c2_03",
+    "c2_04",
+    "c2_05",
+    "c2_06",
+    "c2_07",
+    "c2_08",
+    "c2_09",
+    "c2_10",
+    "c2_12",
+    "c2_13",
+    "c2_14",
+    "c2_15",
+    "c2_17",
+    "c2_18",
+    "c2_19"
+   ],
+   "factors": [
+    {
+     "factor": "alone vs batched (t=16)",
+     "cells": [
+      "llama-t16-alone-faon-ub512",
+      "llama-t16-batched-faon-ub512"
+     ],
+     "count": 15,
+     "ids": [
+      "c2_00",
+      "c2_01",
+      "c2_02",
+      "c2_03",
+      "c2_04",
+      "c2_05",
+      "c2_06",
+      "c2_07",
+      "c2_08",
+      "c2_09",
+      "c2_13",
+      "c2_14",
+      "c2_17",
+      "c2_18",
+      "c2_19"
+     ]
+    },
+    {
+     "factor": "alone vs batched (t=1)",
+     "cells": [
+      null,
+      null
+     ],
+     "count": null,
+     "ids": null
+    },
+    {
+     "factor": "t=16 vs t=1 (alone)",
+     "cells": [
+      "llama-t16-alone-faon-ub512",
+      null
+     ],
+     "count": null,
+     "ids": null
+    },
+    {
+     "factor": "t=16 vs t=1 (batched)",
+     "cells": [
+      "llama-t16-batched-faon-ub512",
+      null
+     ],
+     "count": null,
+     "ids": null
+    },
+    {
+     "factor": "fa on vs off",
+     "cells": [
+      "llama-t16-alone-faon-ub512",
+      "llama-t16-alone-faoff-ub512"
+     ],
+     "count": 18,
+     "ids": [
+      "c2_00",
+      "c2_01",
+      "c2_02",
+      "c2_03",
+      "c2_04",
+      "c2_05",
+      "c2_06",
+      "c2_07",
+      "c2_08",
+      "c2_09",
+      "c2_10",
+      "c2_12",
+      "c2_13",
+      "c2_14",
+      "c2_15",
+      "c2_17",
+      "c2_18",
+      "c2_19"
+     ]
+    },
+    {
+     "factor": "ub 512 vs 1",
+     "cells": [
+      "llama-t16-alone-faon-ub512",
+      "llama-t16-alone-faon-ub1"
+     ],
+     "count": 17,
+     "ids": [
+      "c2_00",
+      "c2_01",
+      "c2_02",
+      "c2_03",
+      "c2_04",
+      "c2_05",
+      "c2_06",
+      "c2_07",
+      "c2_08",
+      "c2_09",
+      "c2_10",
+      "c2_12",
+      "c2_13",
+      "c2_14",
+      "c2_17",
+      "c2_18",
+      "c2_19"
+     ]
+    }
+   ],
+   "throughput_quoted": {
+    "alone": {
+     "median": 10.49364614794365,
+     "p25": 9.64841853665618,
+     "p75": 11.113450154209678,
+     "iqr": 1.4650316175534979,
+     "n": 20,
+     "client_agg_tok_s_median": 10.493649999999999,
+     "rounds_differing_from_client": 0,
+     "cell": "llama-t16-alone-faon-ub512",
+     "load": {
+      "start": 53.76,
+      "share_above": 44.7,
+      "peak": 80.02,
+      "median": 51.84,
+      "res_min": 1.0,
+      "res_below_099": 0.0,
+      "secs": 389
+     }
+    },
+    "batched": {
+     "median": 18.546633333870815,
+     "p25": 17.98133658760161,
+     "p75": 20.95323214144908,
+     "iqr": 2.971895553847471,
+     "n": 20,
+     "client_agg_tok_s_median": 18.54665,
+     "rounds_differing_from_client": 0,
+     "cell": "llama-t16-batched-faon-ub512",
+     "load": {
+      "start": 21.08,
+      "share_above": 91.2,
+      "peak": 195.27,
+      "median": 29.8,
+      "res_min": 0.999989,
+      "res_below_099": 0.0,
+      "secs": 1756
+     }
+    }
+   },
+   "co_batching": {
+    "llama-t16-batched-faon-ub512": {
+     "max_active": 9,
+     "mean_active": 7.073764523422425,
+     "share_ge2": 0.9997925347928808,
+     "busy_s": 1752.771007,
+     "n_events": 360,
+     "n_ubatch": 512,
+     "co_batched": true,
+     "basis": "interpretation 5"
+    },
+    "llama-t16-batched-faon-ub1": {
+     "max_active": 9,
+     "mean_active": 7.747980523243107,
+     "share_ge2": 0.9998656325290664,
+     "busy_s": 3382.4183550000007,
+     "n_events": 360,
+     "n_ubatch": 1,
+     "co_batched": false,
+     "basis": "interpretation 5"
+    },
+    "llama-t16-batched-faoff-ub512": {
+     "max_active": 9,
+     "mean_active": 6.89763102241068,
+     "share_ge2": 0.9996078582725667,
+     "busy_s": 1856.481851,
+     "n_events": 360,
+     "n_ubatch": 512,
+     "co_batched": true,
+     "basis": "interpretation 5"
+    },
+    "llama-t16-batched-faoff-ub1": {
+     "max_active": 9,
+     "mean_active": 7.797783532952937,
+     "share_ge2": 0.9995945307814817,
+     "busy_s": 3626.0064460000012,
+     "n_events": 360,
+     "n_ubatch": 1,
+     "co_batched": false,
+     "basis": "interpretation 5"
+    }
+   },
+   "companions": {
+    "c2_batch_00": {
+     "distinct_outputs_per_cell": {
+      "llama-t16-batched-faon-ub512": 3,
+      "llama-t16-batched-faon-ub1": 14,
+      "llama-t16-batched-faoff-ub512": 7,
+      "llama-t16-batched-faoff-ub1": 7
+     },
+     "same_across_batched_cells": false
+    },
+    "c2_batch_01": {
+     "distinct_outputs_per_cell": {
+      "llama-t16-batched-faon-ub512": 2,
+      "llama-t16-batched-faon-ub1": 2,
+      "llama-t16-batched-faoff-ub512": 3,
+      "llama-t16-batched-faoff-ub1": 3
+     },
+     "same_across_batched_cells": false
+    },
+    "c2_batch_02": {
+     "distinct_outputs_per_cell": {
+      "llama-t16-batched-faon-ub512": 2,
+      "llama-t16-batched-faon-ub1": 5,
+      "llama-t16-batched-faoff-ub512": 5,
+      "llama-t16-batched-faoff-ub1": 14
+     },
+     "same_across_batched_cells": false
+    },
+    "c2_batch_03": {
+     "distinct_outputs_per_cell": {
+      "llama-t16-batched-faon-ub512": 5,
+      "llama-t16-batched-faon-ub1": 9,
+      "llama-t16-batched-faoff-ub512": 2,
+      "llama-t16-batched-faoff-ub1": 5
+     },
+     "same_across_batched_cells": false
+    },
+    "c2_batch_04": {
+     "distinct_outputs_per_cell": {
+      "llama-t16-batched-faon-ub512": 1,
+      "llama-t16-batched-faon-ub1": 3,
+      "llama-t16-batched-faoff-ub512": 2,
+      "llama-t16-batched-faoff-ub1": 2
+     },
+     "same_across_batched_cells": false
+    },
+    "c2_batch_05": {
+     "distinct_outputs_per_cell": {
+      "llama-t16-batched-faon-ub512": 1,
+      "llama-t16-batched-faon-ub1": 2,
+      "llama-t16-batched-faoff-ub512": 1,
+      "llama-t16-batched-faoff-ub1": 3
+     },
+     "same_across_batched_cells": false
+    },
+    "c2_batch_06": {
+     "distinct_outputs_per_cell": {
+      "llama-t16-batched-faon-ub512": 1,
+      "llama-t16-batched-faon-ub1": 2,
+      "llama-t16-batched-faoff-ub512": 1,
+      "llama-t16-batched-faoff-ub1": 2
+     },
+     "same_across_batched_cells": false
+    },
+    "c2_batch_07": {
+     "distinct_outputs_per_cell": {
+      "llama-t16-batched-faon-ub512": 1,
+      "llama-t16-batched-faon-ub1": 3,
+      "llama-t16-batched-faoff-ub512": 1,
+      "llama-t16-batched-faoff-ub1": 4
+     },
+     "same_across_batched_cells": false
+    }
+   }
+  },
+  "unsloth": {
+   "cells_present": [
+    "unsloth-t16-alone-faon-ub512",
+    "unsloth-t16-alone-faon-ub1",
+    "unsloth-t16-alone-faoff-ub512",
+    "unsloth-t16-alone-faoff-ub1",
+    "unsloth-t16-batched-faon-ub512",
+    "unsloth-t16-batched-faon-ub1",
+    "unsloth-t16-batched-faoff-ub512",
+    "unsloth-t16-batched-faoff-ub1"
+   ],
+   "cells_preregistered": 16,
+   "prompt_ids_equal_across_cells": true,
+   "identical": {
+    "c2_00": false,
+    "c2_01": false,
+    "c2_02": false,
+    "c2_03": false,
+    "c2_04": false,
+    "c2_05": false,
+    "c2_06": false,
+    "c2_07": false,
+    "c2_08": false,
+    "c2_09": false,
+    "c2_10": false,
+    "c2_11": true,
+    "c2_12": false,
+    "c2_13": false,
+    "c2_14": false,
+    "c2_15": false,
+    "c2_16": true,
+    "c2_17": false,
+    "c2_18": false,
+    "c2_19": false
+   },
+   "K": {
+    "k": 2,
+    "n": 20,
+    "wilson_95": [
+     0.027866481213768224,
+     0.3010336452284873
+    ]
+   },
+   "not_identical": [
+    "c2_00",
+    "c2_01",
+    "c2_02",
+    "c2_03",
+    "c2_04",
+    "c2_05",
+    "c2_06",
+    "c2_07",
+    "c2_08",
+    "c2_09",
+    "c2_10",
+    "c2_12",
+    "c2_13",
+    "c2_14",
+    "c2_15",
+    "c2_17",
+    "c2_18",
+    "c2_19"
+   ],
+   "factors": [
+    {
+     "factor": "alone vs batched (t=16)",
+     "cells": [
+      "unsloth-t16-alone-faon-ub512",
+      "unsloth-t16-batched-faon-ub512"
+     ],
+     "count": 15,
+     "ids": [
+      "c2_00",
+      "c2_01",
+      "c2_02",
+      "c2_03",
+      "c2_04",
+      "c2_05",
+      "c2_06",
+      "c2_07",
+      "c2_08",
+      "c2_10",
+      "c2_12",
+      "c2_13",
+      "c2_14",
+      "c2_17",
+      "c2_18"
+     ]
+    },
+    {
+     "factor": "alone vs batched (t=1)",
+     "cells": [
+      null,
+      null
+     ],
+     "count": null,
+     "ids": null
+    },
+    {
+     "factor": "t=16 vs t=1 (alone)",
+     "cells": [
+      "unsloth-t16-alone-faon-ub512",
+      null
+     ],
+     "count": null,
+     "ids": null
+    },
+    {
+     "factor": "t=16 vs t=1 (batched)",
+     "cells": [
+      "unsloth-t16-batched-faon-ub512",
+      null
+     ],
+     "count": null,
+     "ids": null
+    },
+    {
+     "factor": "fa on vs off",
+     "cells": [
+      "unsloth-t16-alone-faon-ub512",
+      "unsloth-t16-alone-faoff-ub512"
+     ],
+     "count": 15,
+     "ids": [
+      "c2_00",
+      "c2_01",
+      "c2_02",
+      "c2_03",
+      "c2_04",
+      "c2_05",
+      "c2_06",
+      "c2_07",
+      "c2_08",
+      "c2_09",
+      "c2_10",
+      "c2_12",
+      "c2_14",
+      "c2_15",
+      "c2_18"
+     ]
+    },
+    {
+     "factor": "ub 512 vs 1",
+     "cells": [
+      "unsloth-t16-alone-faon-ub512",
+      "unsloth-t16-alone-faon-ub1"
+     ],
+     "count": 16,
+     "ids": [
+      "c2_00",
+      "c2_01",
+      "c2_02",
+      "c2_03",
+      "c2_04",
+      "c2_05",
+      "c2_06",
+      "c2_07",
+      "c2_08",
+      "c2_09",
+      "c2_12",
+      "c2_13",
+      "c2_14",
+      "c2_17",
+      "c2_18",
+      "c2_19"
+     ]
+    }
+   ],
+   "throughput_quoted": {
+    "alone": {
+     "median": 10.859913738943243,
+     "p25": 10.287423903037652,
+     "p75": 11.216899009231753,
+     "iqr": 0.9294751061941007,
+     "n": 20,
+     "client_agg_tok_s_median": 10.859950000000001,
+     "rounds_differing_from_client": 0,
+     "cell": "unsloth-t16-alone-faon-ub512",
+     "load": {
+      "start": 57.62,
+      "share_above": 25.0,
+      "peak": 69.35,
+      "median": 36.46,
+      "res_min": 1.0,
+      "res_below_099": 0.0,
+      "secs": 372
+     }
+    },
+    "batched": {
+     "median": 18.49688900379177,
+     "p25": 17.79441256301185,
+     "p75": 19.465673802502817,
+     "iqr": 1.671261239490967,
+     "n": 20,
+     "client_agg_tok_s_median": 18.4969,
+     "rounds_differing_from_client": 0,
+     "cell": "unsloth-t16-batched-faon-ub512",
+     "load": {
+      "start": 36.99,
+      "share_above": 86.5,
+      "peak": 102.02,
+      "median": 50.23,
+      "res_min": 1.0,
+      "res_below_099": 0.0,
+      "secs": 1779
+     }
+    }
+   },
+   "co_batching": {
+    "unsloth-t16-batched-faon-ub512": {
+     "max_active": 9,
+     "mean_active": 6.979648052837445,
+     "share_ge2": 0.999667334684786,
+     "busy_s": 1776.0072149999999,
+     "n_events": 360,
+     "n_ubatch": 512,
+     "co_batched": true,
+     "basis": "interpretation 5"
+    },
+    "unsloth-t16-batched-faon-ub1": {
+     "max_active": 9,
+     "mean_active": 7.8404896925382195,
+     "share_ge2": 0.9995763981507382,
+     "busy_s": 3275.734047,
+     "n_events": 360,
+     "n_ubatch": 1,
+     "co_batched": false,
+     "basis": "interpretation 5"
+    },
+    "unsloth-t16-batched-faoff-ub512": {
+     "max_active": 9,
+     "mean_active": 6.951537977297985,
+     "share_ge2": 0.9995885760763098,
+     "busy_s": 1789.203198,
+     "n_events": 360,
+     "n_ubatch": 512,
+     "co_batched": true,
+     "basis": "interpretation 5"
+    },
+    "unsloth-t16-batched-faoff-ub1": {
+     "max_active": 9,
+     "mean_active": 7.871561620195586,
+     "share_ge2": 0.9998465824940443,
+     "busy_s": 3510.2187109999995,
+     "n_events": 360,
+     "n_ubatch": 1,
+     "co_batched": false,
+     "basis": "interpretation 5"
+    }
+   },
+   "companions": {
+    "c2_batch_00": {
+     "distinct_outputs_per_cell": {
+      "unsloth-t16-batched-faon-ub512": 4,
+      "unsloth-t16-batched-faon-ub1": 2,
+      "unsloth-t16-batched-faoff-ub512": 4,
+      "unsloth-t16-batched-faoff-ub1": 2
+     },
+     "same_across_batched_cells": false
+    },
+    "c2_batch_01": {
+     "distinct_outputs_per_cell": {
+      "unsloth-t16-batched-faon-ub512": 4,
+      "unsloth-t16-batched-faon-ub1": 5,
+      "unsloth-t16-batched-faoff-ub512": 3,
+      "unsloth-t16-batched-faoff-ub1": 8
+     },
+     "same_across_batched_cells": false
+    },
+    "c2_batch_02": {
+     "distinct_outputs_per_cell": {
+      "unsloth-t16-batched-faon-ub512": 4,
+      "unsloth-t16-batched-faon-ub1": 9,
+      "unsloth-t16-batched-faoff-ub512": 4,
+      "unsloth-t16-batched-faoff-ub1": 3
+     },
+     "same_across_batched_cells": false
+    },
+    "c2_batch_03": {
+     "distinct_outputs_per_cell": {
+      "unsloth-t16-batched-faon-ub512": 3,
+      "unsloth-t16-batched-faon-ub1": 10,
+      "unsloth-t16-batched-faoff-ub512": 3,
+      "unsloth-t16-batched-faoff-ub1": 8
+     },
+     "same_across_batched_cells": false
+    },
+    "c2_batch_04": {
+     "distinct_outputs_per_cell": {
+      "unsloth-t16-batched-faon-ub512": 1,
+      "unsloth-t16-batched-faon-ub1": 1,
+      "unsloth-t16-batched-faoff-ub512": 2,
+      "unsloth-t16-batched-faoff-ub1": 2
+     },
+     "same_across_batched_cells": false
+    },
+    "c2_batch_05": {
+     "distinct_outputs_per_cell": {
+      "unsloth-t16-batched-faon-ub512": 1,
+      "unsloth-t16-batched-faon-ub1": 1,
+      "unsloth-t16-batched-faoff-ub512": 1,
+      "unsloth-t16-batched-faoff-ub1": 2
+     },
+     "same_across_batched_cells": false
+    },
+    "c2_batch_06": {
+     "distinct_outputs_per_cell": {
+      "unsloth-t16-batched-faon-ub512": 2,
+      "unsloth-t16-batched-faon-ub1": 2,
+      "unsloth-t16-batched-faoff-ub512": 1,
+      "unsloth-t16-batched-faoff-ub1": 2
+     },
+     "same_across_batched_cells": false
+    },
+    "c2_batch_07": {
+     "distinct_outputs_per_cell": {
+      "unsloth-t16-batched-faon-ub512": 1,
+      "unsloth-t16-batched-faon-ub1": 3,
+      "unsloth-t16-batched-faoff-ub512": 1,
+      "unsloth-t16-batched-faoff-ub1": 1
+     },
+     "same_across_batched_cells": false
+    }
+   }
+  }
+ },
+ "outcome_branch": 1,
+ "outcome_branch_status": "provisional (t=16 counts only; t=1 pending)",
+ "wording": null,
+ "wording_cells_measured": {
+  "runner": 2,
+  "llama": 8
+ },
+ "page_sentence": "Runner's two cells lost up to 3.7% of the file's pages to host reclaim while llama.cpp's stayed resident, so the times are information, not a speed comparison.",
+ "resident_min": {
+  "runner": 0.962821,
+  "llama": 0.999461
+ },
+ "runner_defect": {
+  "rule": "PREREG 2.3 5",
+  "runner_not_identical": [],
+  "logged_as_runner_defect": false
+ },
+ "unsloth_column": {
+  "basis": "Unsloth's column (ADDENDUM-2026-11-24-unsloth.md, 'an additional column in the same tables'): K_U / 20 with its Wilson interval, factor counts, CB_U, U_batched / U_alone, the companions. PREREG 0.2 defines paired comparisons for Claims 1 and 3 only and Claim 2 has no outcome rule between engines, so there is no Claim 2 'pair' to compute and no combined label (as ruled for Claim 3). The 2.4 outcome and wording use Runner and mainline only. RULED (9): confirmed, no pairs."
+ }
+}
