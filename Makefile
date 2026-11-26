@@ -4767,6 +4767,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_deltanet_autograd.py \
     tests/test_depth_slice.py \
     tests/test_derive.py \
+    tests/test_derive_ref_logits.py \
     tests/test_device_evidence.py \
     tests/test_difftok.py \
     tests/test_doc_counts.py \
