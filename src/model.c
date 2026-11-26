@@ -1739,7 +1739,12 @@ bool model_paging_note_wanted(uint64_t faults, int tokens) {
 // between the card and system memory included. A unified-memory backend's
 // device weights are the file mapping itself (Metal), so it never counts.
 bool model_weights_on_device(const model_t *m) {
-    if (!m || !m->gpu || m->gpu_layers < m->n_layer) return false;
+    if (!m) return false;
+    if (m->ink2) {
+        char placed = 0;
+        return model_inkling2_cuda_placement(m, &placed, NULL, NULL) && placed == 'W';
+    }
+    if (!m->gpu || m->gpu_layers < m->n_layer) return false;
     if (m->cpu_moe && m->moe_host)
         for (int l = 0; l < m->n_layer; l++)
             if (m->moe_host[l]) return false;
@@ -2247,6 +2252,381 @@ static int weights_lock(model_t *m, uint64_t *hot, uint64_t *cold) {
     return rc;
 }
 
+// ---- R18.13: Linux post-bind PTE population (MADV_POPULATE_READ) -----------
+//
+// Linux's folio_check_references() reclaims unmapped clean file folios
+// (referenced_ptes == 0) on the first inactive_file pass even with
+// PG_referenced set. Faulting the host-used weight ranges into process page
+// tables once at load keeps them tracked alongside llama.cpp's MAP_POPULATE,
+// without faulting header-only opens, device-uploaded weights, or models that
+// exceed the tighter of host MemAvailable and the cgroup memory limit.
+
+typedef void (*pop_range_fn)(const void *addr, size_t len, void *ctx);
+
+static void pop_emit(pop_range_fn fn, void *ctx, const void *addr, size_t len) {
+    if (fn && addr && len) fn(addr, len, ctx);
+}
+
+static void pop_emit_tensor(pop_range_fn fn, void *ctx, const gguf_tensor *t) {
+    if (t && t->data && t->nbytes > 0) pop_emit(fn, ctx, t->data, (size_t)t->nbytes);
+}
+
+static void pop_layer_mixer(pop_range_fn fn, void *ctx, const layer_t *ly) {
+    const gpu_mixer_desc *rows = gpu_mixer_rows();
+    for (int i = 0; i < GT_N_MIXER; i++) {
+        const gguf_tensor *t = *(gguf_tensor *const *)((const char *)ly + rows[i].field);
+        pop_emit_tensor(fn, ctx, t);
+    }
+}
+
+static void pop_layer_ffn(pop_range_fn fn, void *ctx, const model_t *m,
+                          const layer_t *ly, int l, bool skip_hot_vram) {
+    if (!ly->is_moe) {
+        pop_emit_tensor(fn, ctx, ly->w_gate);
+        pop_emit_tensor(fn, ctx, ly->w_up);
+        pop_emit_tensor(fn, ctx, ly->w_down);
+        return;
+    }
+    pop_emit_tensor(fn, ctx, ly->ffn_gate_inp);
+    pop_emit_tensor(fn, ctx, ly->ffn_gate_up_exps);
+    bool hot_active = skip_hot_vram && m->moe_hot_n && l >= 0 && l < m->n_layer &&
+                      m->moe_hot_n[l] > 0 && m->moe_hot_slot &&
+                      ly->ffn_gate_exps && ly->ffn_gate_exps->data &&
+                      ly->ffn_up_exps && ly->ffn_up_exps->data &&
+                      ly->ffn_down_exps && ly->ffn_down_exps->data &&
+                      ly->n_expert > 0;
+    if (hot_active) {
+        int nff = ly->n_ff_exp > 0 ? ly->n_ff_exp : m->n_ff_exp;
+        size_t gs = (size_t)nff * ggml_row_size(ly->ffn_gate_exps->type, m->n_embd);
+        size_t us = (size_t)nff * ggml_row_size(ly->ffn_up_exps->type, m->n_embd);
+        size_t ds = (size_t)m->n_embd * ggml_row_size(ly->ffn_down_exps->type, nff);
+        const int *slot = m->moe_hot_slot + (size_t)l * (size_t)m->n_expert;
+        const uint8_t *g = ly->ffn_gate_exps->data;
+        const uint8_t *u = ly->ffn_up_exps->data;
+        const uint8_t *dn = ly->ffn_down_exps->data;
+        for (int e = 0; e < ly->n_expert; e++) {
+            if (slot[e] >= 0) continue;   // resident in VRAM hot bank
+            if ((uint64_t)(e + 1) * gs <= ly->ffn_gate_exps->nbytes)
+                pop_emit(fn, ctx, g + (size_t)e * gs, gs);
+            if ((uint64_t)(e + 1) * us <= ly->ffn_up_exps->nbytes)
+                pop_emit(fn, ctx, u + (size_t)e * us, us);
+            if ((uint64_t)(e + 1) * ds <= ly->ffn_down_exps->nbytes)
+                pop_emit(fn, ctx, dn + (size_t)e * ds, ds);
+        }
+    } else {
+        pop_emit_tensor(fn, ctx, ly->ffn_gate_exps);
+        pop_emit_tensor(fn, ctx, ly->ffn_up_exps);
+        pop_emit_tensor(fn, ctx, ly->ffn_down_exps);
+    }
+    pop_emit_tensor(fn, ctx, ly->w_gate_shexp);
+    pop_emit_tensor(fn, ctx, ly->w_up_shexp);
+    pop_emit_tensor(fn, ctx, ly->w_down_shexp);
+    pop_emit_tensor(fn, ctx, ly->ffn_gate_inp_shexp);
+    if (ly->moe_split) {
+        for (int e = 0; e < ly->n_expert; e++) {
+            if (ly->moe_g) pop_emit_tensor(fn, ctx, ly->moe_g[e]);
+            if (ly->moe_u) pop_emit_tensor(fn, ctx, ly->moe_u[e]);
+            if (ly->moe_d) pop_emit_tensor(fn, ctx, ly->moe_d[e]);
+        }
+    }
+    if (ly->moe_gemma) {
+        pop_emit_tensor(fn, ctx, ly->w_gate);
+        pop_emit_tensor(fn, ctx, ly->w_up);
+        pop_emit_tensor(fn, ctx, ly->w_down);
+    }
+}
+
+static void pop_each_range(const model_t *m, pop_range_fn fn, void *ctx) {
+    if (!m || !fn || m->gf.header_only || !gguf_mapped_size(&m->gf)) return;
+    if (m->ink2) {
+        model_inkling2_each_host_range(m, fn, ctx);
+        return;
+    }
+    if (!m->gpu) {
+        // Pure CPU: populate every GGUF mapping part past its header prefix.
+        uint32_t np = gguf_map_count(&m->gf);
+        for (uint32_t i = 0; i < np; i++) {
+            size_t sz = 0;
+            const uint8_t *mp = gguf_map_part(&m->gf, i, &sz);
+            size_t off = gguf_map_data_offset(&m->gf, i);
+            if (mp && sz > off) pop_emit(fn, ctx, mp + off, sz - off);
+        }
+        return;
+    }
+    // Unified-memory GPU (Metal): device-resident, populate nothing on host.
+    if (gpu_unified_memory()) return;
+
+    // Discrete GPU (CUDA): complement of cuda_release_host_weights().
+    // Full offload with no host experts yields 0 ranges; partial splits and
+    // --cpu-moe populate only the tensors the host actually computes with.
+    int gl = m->gpu_layers;
+    if (gl < 0) gl = 0;
+    if (gl > m->n_layer) gl = m->n_layer;
+    for (int l = 0; m->layers && l < gl; l++) {
+        const layer_t *ly = &m->layers[l];
+        if (ly->is_moe && m->cpu_moe && m->moe_host && m->moe_host[l])
+            pop_layer_ffn(fn, ctx, m, ly, l, true);
+    }
+    for (int l = gl; m->layers && l < m->n_layer; l++) {
+        const layer_t *ly = &m->layers[l];
+        pop_layer_mixer(fn, ctx, ly);
+        pop_layer_ffn(fn, ctx, m, ly, l, false);
+    }
+    if (gl < m->n_layer) {
+        pop_emit_tensor(fn, ctx, m->output);
+        if (gl == 0) pop_emit_tensor(fn, ctx, m->tok_embd);
+        if (m->mtp_ready && m->layers) {
+            const layer_t *mtp = &m->layers[m->n_layer];
+            pop_layer_mixer(fn, ctx, mtp);
+            pop_layer_ffn(fn, ctx, m, mtp, m->n_layer, false);
+        }
+    }
+}
+
+typedef struct {
+    model_mem_range *out;
+    size_t           max;
+    size_t           n;
+    uint64_t         total;
+} pop_walk;
+
+static void pop_collect_cb(const void *addr, size_t len, void *ctx) {
+    pop_walk *w = ctx;
+    if (w->out && w->n < w->max) w->out[w->n] = (model_mem_range){ addr, len };
+    w->n++;
+    w->total += (uint64_t)len;
+}
+
+bool model_populate_wanted(uint64_t host_bytes, uint64_t available,
+                           bool locked, bool moe_prefetch, bool opt_out) {
+    if (opt_out) return false;       // RUNNER_POPULATE=0 / off
+    if (locked) return false;        // --mlock already faults and pins
+    if (moe_prefetch) return false;  // oversubscribed MoE: expert path owns paging
+    if (!host_bytes || !available) return false;
+    return host_bytes <= available;
+}
+
+size_t model_populate_ranges(const model_t *m, model_mem_range *out,
+                             size_t max, uint64_t *total_bytes) {
+    if (total_bytes) *total_bytes = 0;
+    pop_walk w = { out, max, 0, 0 };
+    pop_each_range(m, pop_collect_cb, &w);
+    if (total_bytes) *total_bytes = w.total;
+    return w.n;
+}
+
+// Fixed-size active populated-file registry for non-shared models (such as
+// inkling2_loop under --parallel N), protected by g_weights_mu. Zero heap
+// allocations so populate never fails or leaks under OOM sweeps.
+typedef struct {
+    bool           in_use;
+    const model_t *owner;
+    uint64_t       fsize, fino;
+    int64_t        fmtime, fctime;
+} pop_file_entry;
+
+enum { POP_FILE_CAP = 64 };
+static pop_file_entry g_pop_files[POP_FILE_CAP];
+
+static bool pop_file_exists_locked(const model_t *m) {
+    if (!m->file_id_ok) return false;
+    for (int i = 0; i < POP_FILE_CAP; i++) {
+        if (!g_pop_files[i].in_use) continue;
+        if (g_pop_files[i].fsize == m->file_size && g_pop_files[i].fino == m->file_ino &&
+            g_pop_files[i].fmtime == m->file_mtime_ns && g_pop_files[i].fctime == m->file_ctime_ns)
+            return true;
+    }
+    return false;
+}
+
+static bool pop_file_register_locked(const model_t *m) {
+    if (!m->file_id_ok) return false;
+    for (int i = 0; i < POP_FILE_CAP; i++) {
+        if (!g_pop_files[i].in_use) {
+            g_pop_files[i].in_use = true;
+            g_pop_files[i].owner  = m;
+            g_pop_files[i].fsize  = m->file_size;
+            g_pop_files[i].fino   = m->file_ino;
+            g_pop_files[i].fmtime = m->file_mtime_ns;
+            g_pop_files[i].fctime = m->file_ctime_ns;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void pop_file_unregister(model_t *m) {
+    if (!m || !m->pop_registered) return;
+    pthread_mutex_lock(&g_weights_mu);
+    for (int i = 0; i < POP_FILE_CAP; i++) {
+        if (g_pop_files[i].in_use && g_pop_files[i].owner == m) {
+            g_pop_files[i].in_use = false;
+            g_pop_files[i].owner  = NULL;
+            break;
+        }
+    }
+    m->pop_registered = false;
+    pthread_mutex_unlock(&g_weights_mu);
+}
+
+typedef struct {
+    model_pop_mode mode;
+    uint64_t       mapped;
+    uint64_t       lazy;
+} pop_exec_ctx;
+
+static void pop_exec_cb(const void *addr, size_t len, void *ctx) {
+    pop_exec_ctx *e = ctx;
+    if (e->mode == MODEL_POP_CACHED) {
+        uint64_t mb = 0, lb = 0;
+        if (plat_populate_cached_ro(addr, len, &mb, &lb)) {
+            e->mapped += mb;
+            e->lazy += lb;
+        } else {
+            e->lazy += (uint64_t)len;
+        }
+    } else {
+        if (plat_populate_ro(addr, len))
+            e->mapped += (uint64_t)len;
+        else
+            e->lazy += (uint64_t)len;
+    }
+}
+
+model_pop_mode model_populate_mode_parse(const char *env) {
+    if (!env || !*env) return MODEL_POP_CACHED;
+    if (!strcmp(env, "0") || !strcmp(env, "off") || !strcmp(env, "false"))
+        return MODEL_POP_OFF;
+    if (!strcmp(env, "full"))
+        return MODEL_POP_FULL;
+    return MODEL_POP_CACHED;
+}
+
+static const char *pop_mode_name(model_pop_mode mode) {
+    switch (mode) {
+    case MODEL_POP_OFF:    return "off";
+    case MODEL_POP_FULL:   return "full";
+    case MODEL_POP_CACHED:
+    default:               return "cached";
+    }
+}
+
+static void fmt_pop_bytes(uint64_t b, char *out, size_t cap) {
+    if (b == 0)
+        snprintf(out, cap, "0 B");
+    else if (b >= 1000000000ull)
+        snprintf(out, cap, "%.2f GB", (double)b / 1e9);
+    else if (b >= 1000000ull)
+        snprintf(out, cap, "%.2f MB", (double)b / 1e6);
+    else if (b >= 1000ull)
+        snprintf(out, cap, "%.1f KB", (double)b / 1e3);
+    else
+        snprintf(out, cap, "%llu B", (unsigned long long)b);
+}
+
+size_t model_populate_format_line(char *buf, size_t cap,
+                                  const model_populate_result *res) {
+    if (!buf || !cap || !res) return 0;
+    char mb[32], lb[32], lru[32];
+    fmt_pop_bytes(res->mapped_bytes, mb, sizeof mb);
+    fmt_pop_bytes(res->lazy_bytes, lb, sizeof lb);
+    if (res->lru_mode && res->lru_mode[0])
+        snprintf(lru, sizeof lru, " [%s]", res->lru_mode);
+    else
+        lru[0] = '\0';
+    int w;
+    if (res->skip_reason && res->skip_reason[0])
+        w = snprintf(buf, cap, "populate: %s%s (%s), %s mapped, %s lazy (%.3f s)",
+                     pop_mode_name(res->mode), lru, res->skip_reason, mb, lb, res->seconds);
+    else
+        w = snprintf(buf, cap, "populate: %s%s, %s mapped, %s lazy (%.3f s)",
+                     pop_mode_name(res->mode), lru, mb, lb, res->seconds);
+    if (w < 0) { buf[0] = '\0'; return 0; }
+    return (size_t)w >= cap ? cap - 1 : (size_t)w;
+}
+
+static void emit_pop_line(const model_populate_result *res) {
+    char line[256];
+    if (model_populate_format_line(line, sizeof line, res) > 0)
+        fprintf(stderr, "%s\n", line);
+}
+
+uint64_t model_populated_bytes(const model_t *m) {
+    return m ? m->weights_populated_bytes : 0;
+}
+
+uint64_t model_populated_lazy_bytes(const model_t *m) {
+    return m ? m->weights_lazy_bytes : 0;
+}
+
+uint64_t model_populate_weights(model_t *m, bool locked) {
+    if (!m) return 0;
+    m->weights_populated_bytes = 0;
+    m->weights_lazy_bytes = 0;
+    if (!plat_populate_available()) return 0;
+    uint64_t total = 0;
+    size_t n = model_populate_ranges(m, NULL, 0, &total);
+    if (!n || locked || m->moe_prefetch) return 0;
+
+    const char *lru = plat_linux_lru_mode();
+    model_pop_mode mode = model_populate_mode_parse(getenv("RUNNER_POPULATE"));
+    if (mode == MODEL_POP_OFF) {
+        m->weights_lazy_bytes = total;
+        model_populate_result res = { mode, 0, total, 0.0, NULL, lru };
+        emit_pop_line(&res);
+        return 0;
+    }
+    if (!model_populate_wanted(total, plat_ram_available_bytes(),
+                               false, false, false)) {
+        m->weights_lazy_bytes = total;
+        model_populate_result res = {
+            mode, 0, total, 0.0, "skipped: over RAM/cgroup budget", lru
+        };
+        emit_pop_line(&res);
+        return 0;
+    }
+    if (mode == MODEL_POP_CACHED && !m->gf.mincore_safe) {
+        // Kernel 134fca9063ad (can_do_mincore): never turn cached into a
+        // silent full blocking read on a non-owned read-only file.
+        m->weights_lazy_bytes = total;
+        model_populate_result res = {
+            mode, 0, total, 0.0,
+            "skipped: file not owned or writable; mincore untrusted", lru
+        };
+        emit_pop_line(&res);
+        return 0;
+    }
+
+    // Claim populate-once ownership across --parallel N slots (zero malloc).
+    pthread_mutex_lock(&g_weights_mu);
+    if (m->W) {
+        if (m->W->proto.weights_populated) {
+            pthread_mutex_unlock(&g_weights_mu);
+            return 0;
+        }
+        m->W->proto.weights_populated = true;
+    } else {
+        if (m->weights_populated || pop_file_exists_locked(m)) {
+            pthread_mutex_unlock(&g_weights_mu);
+            return 0;
+        }
+        m->pop_registered = pop_file_register_locked(m);
+        m->weights_populated = true;
+    }
+    pthread_mutex_unlock(&g_weights_mu);
+
+    // Zero-allocation range walk: never calls malloc/free during load.
+    double t0 = plat_now();
+    pop_exec_ctx exec = { mode, 0, 0 };
+    pop_each_range(m, pop_exec_cb, &exec);
+    double dt = plat_now() - t0;
+    m->weights_populated_bytes = exec.mapped;
+    m->weights_lazy_bytes = exec.lazy;
+    model_populate_result res = { mode, exec.mapped, exec.lazy, dt, NULL, lru };
+    emit_pop_line(&res);
+    return exec.mapped;
+}
+
 // ---------------------------------------------------- what a model owns
 //
 // R6.68.30: the buffers model.c allocates for a model and frees with a plain
@@ -2356,6 +2736,10 @@ static void model_free_weights(model_t *m) {
     // locked: with shared weights several model_t alias one map, and only the
     // record's proto (freed by the last holder) or an unshared model reaches
     // here.
+    pop_file_unregister(m);
+    m->weights_populated = false;
+    m->weights_populated_bytes = 0;
+    m->weights_lazy_bytes = 0;
     weights_unlock(&m->gf, m->lock_spans, m->n_lock_spans);
     free(m->lock_spans);
     m->lock_spans = NULL;
@@ -2648,6 +3032,12 @@ bool model_load(model_t *m, const char *path, const model_params *p) {
     if (m->moe_prefetch)
         fprintf(stderr, "moe: prefetching routed experts as whole blocks "
                 "(--moe-prefetch off disables)\n");
+    // R18.13: on Linux, prefault host-used weight ranges into process PTEs
+    // (MADV_POPULATE_READ) so the kernel's LRU tracks them as mapped rather
+    // than evicting them on the first inactive_file reclaim pass. Skips
+    // header-only opens, device-uploaded weights, oversubscribed/cgroup-tight
+    // loads, and repeat --parallel slots. Opt out with RUNNER_POPULATE=0.
+    (void)model_populate_weights(m, locked);
     // Whole-mapping WILLNEED sweep for a model that FITS — OPT-IN
     // (RUNNER_PREFETCH=1), and the measurement that made it opt-in is the
     // point: on the 128 GB Apple Silicon Mac the sweep made the cold 63 GB gpt-oss-120b load

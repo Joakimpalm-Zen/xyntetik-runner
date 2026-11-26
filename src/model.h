@@ -281,6 +281,14 @@ typedef struct {
     bool      weights_locked;
     struct model_lock_span *lock_spans;
     uint32_t  n_lock_spans;
+    // R18.13: Linux post-bind PTE population (MADV_POPULATE_READ).
+    // weights_populated lives on the shared owner when m->W is set, so
+    // --parallel N populates once; pop_registered tracks non-shared instances
+    // (such as inkling2_loop) in model.c's active-file table.
+    bool      weights_populated;
+    bool      pop_registered;
+    uint64_t  weights_populated_bytes;
+    uint64_t  weights_lazy_bytes;
     char     *path;          // owned copy of the load path (shared-weight key)
     bool      file_id_ok;    // stat-backed identity below is valid
     uint64_t  file_size, file_ino;
@@ -1909,6 +1917,41 @@ bool     model_residency_warning(uint64_t need, uint64_t hot, uint64_t have,
 typedef struct { size_t off, len; } model_lock_range;
 size_t   model_lock_plan(size_t size, size_t page, const model_lock_range *cold,
                          size_t n_cold, model_lock_range *out, size_t max);
+// R18.13: host-used weight byte ranges to prefault into Linux page tables
+// after bind (MADV_POPULATE_READ). Excludes the GGUF header prefix and any
+// weights uploaded to a device; under --cpu-moe returns only the host-computed
+// expert stacks (and any CPU-side layers). Writes at most `max` ranges, sums
+// their bytes into *total_bytes (if non-NULL), and returns the total count.
+typedef struct { const void *addr; size_t len; } model_mem_range;
+typedef enum {
+    MODEL_POP_OFF    = 0,
+    MODEL_POP_CACHED = 1, // default (C): mincore first, MADV_POPULATE_READ cached runs only
+    MODEL_POP_FULL   = 2, // opt-in (A): RUNNER_POPULATE=full, blocking MADV_POPULATE_READ
+} model_pop_mode;
+typedef struct {
+    model_pop_mode mode;
+    uint64_t       mapped_bytes;
+    uint64_t       lazy_bytes;
+    double         seconds;
+    const char    *skip_reason; // NULL when populate ran; short reason when skipped
+    const char    *lru_mode;    // "mglru" or "classic" on Linux, NULL off Linux
+} model_populate_result;
+model_pop_mode model_populate_mode_parse(const char *env);
+size_t   model_populate_format_line(char *buf, size_t cap,
+                                    const model_populate_result *res);
+bool     model_populate_wanted(uint64_t host_bytes, uint64_t available,
+                               bool locked, bool moe_prefetch, bool opt_out);
+size_t   model_populate_ranges(const model_t *m, model_mem_range *out,
+                               size_t max, uint64_t *total_bytes);
+// Bytes populated / left lazy by this load instance (0 when skipped, opted
+// out, off-Linux, device-resident, or already populated by an earlier
+// --parallel slot).
+uint64_t model_populated_bytes(const model_t *m);
+uint64_t model_populated_lazy_bytes(const model_t *m);
+// Run the post-bind populate pass on an already-bound model_t (exposed so
+// tests can verify cached / full / mincore-trap / device-resident / cgroup
+// refusal directly).
+uint64_t model_populate_weights(model_t *m, bool locked);
 // Advisory prefetch of the experts a router just selected. Fed by whichever
 // router ran, so it is architecture-agnostic; cannot change output.
 void     model_moe_prefetch(const model_t *m, const layer_t *ly,
