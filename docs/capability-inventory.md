@@ -6,20 +6,20 @@ Every public surface of Runner and the one component that owns it. The component
 
 | surface | Runtime | Execution | Model substrate | Model production | Proof | Shadow | Desktop | total |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Command line | 55 | 15 | 5 | 13 | 28 | 1 | 1 | 118 |
+| Command line | 56 | 15 | 5 | 13 | 28 | 1 | 1 | 119 |
 | HTTP routes | 22 |  |  |  | 1 |  |  | 23 |
 | `RUNNER_*` switches | 27 | 133 | 11 | 21 |  |  | 7 | 199 |
-| Record formats | 8 |  |  | 6 | 13 |  |  | 27 |
+| Record formats | 8 |  |  | 8 | 13 |  |  | 29 |
 | Python client | 14 |  |  |  |  | 25 |  | 39 |
 | TypeScript client | 18 |  |  |  | 7 |  |  | 25 |
 
-## Command line (118)
+## Command line (119)
 
 Every option `runner --help` declares, the subcommands, and the `runner attest` verbs.
 
 | owner | count | surfaces |
 |---|---:|---|
-| Runtime | 55 | `--bare-recipients`, `--chat-template`, `--decide`, `--doctor-include-text`, `--fork-seed`, `--help`, `--ignore-eos`, `--info`, `--json`, `--kv-snapshots`, `--kv-snapshots-auto`, `--loop-guard`, `--memory`, `--min-p`, `--parallel`, `--parent-pid`, `--port`, `--pull`, `--ram-share`, `--reasoning-budget`, `--reasoning-budget-message`, `--reasoning-temp`, `--repeat-penalty`, `--reserve`, `--resume`, `--roster`, `--score`, `--score-out`, `--score-tokens`, `--serve`, `--session-out`, `--sessions`, `--sizes-only`, `--suspend-after`, `--system`, `--systemone`, `--temp`, `--think`, `--top-k`, `--top-p`, `--ttl`, `--version`, `--vram-priority`, `--wait-for-vram`, `--yield-on-request`, `-f`, `-h`, `-hf`, `-i`, `-n`, `-p`, `-s`, `-v`, `runner cached`, `runner recommend` |
+| Runtime | 56 | `--bare-recipients`, `--chat-template`, `--decide`, `--doctor-include-text`, `--fork-seed`, `--help`, `--ignore-eos`, `--info`, `--json`, `--kv-snapshots`, `--kv-snapshots-auto`, `--loop-guard`, `--memory`, `--min-p`, `--parallel`, `--parent-pid`, `--port`, `--pull`, `--ram-share`, `--reasoning-budget`, `--reasoning-budget-message`, `--reasoning-temp`, `--repeat-penalty`, `--reserve`, `--resume`, `--roster`, `--score`, `--score-out`, `--score-ref`, `--score-tokens`, `--serve`, `--session-out`, `--sessions`, `--sizes-only`, `--suspend-after`, `--system`, `--systemone`, `--temp`, `--think`, `--top-k`, `--top-p`, `--ttl`, `--version`, `--vram-priority`, `--wait-for-vram`, `--yield-on-request`, `-f`, `-h`, `-hf`, `-i`, `-n`, `-p`, `-s`, `-v`, `runner cached`, `runner recommend` |
 | Execution | 15 | `--bench-json`, `--cpu-moe`, `--draft`, `--draft-k`, `--draft-required`, `--gpu`, `--gpu-route`, `--kv`, `--kv-ring`, `--mlock`, `--moe-prefetch`, `--rope`, `-b`, `-c`, `-t` |
 | Model substrate | 5 | `--adapter`, `--lora`, `--lora-scale`, `--no-bos`, `-m` |
 | Model production | 13 | `--context-surgery`, `--imatrix`, `--merge-allow-erased`, `--merge-lora`, `--prune-experts`, `--quant`, `--quant-error`, `--remove-sublayer`, `--rewrite`, `--type-plan`, `--type-plan-strict`, `runner derive`, `runner train` |
@@ -48,14 +48,14 @@ Every switch read through `getenv` or an environment helper, without the `RUNNER
 | Model production | 21 | `FORCE_REQUANT`, `GOLD_LOGITS`, `GOLD_PYTHON`, `LORA_ADAM_ALLOC_FAIL`, `QUANTIZE_INSTALL_FAIL`, `REQUANT_ONLY`, `TEST_BUILD_DIRTY`, `TEST_DERIVE_INTERVAL_FAIL`, `TEST_TRAIN_OPT_PULL_FAIL`, `TEST_TRAIN_RES_NAN`, `TRAIN_DEVICE_STEP`, `TRAIN_FULL_DUMP`, `TRAIN_FULL_DUMP_TENSORS`, `TRAIN_GPU`, `TRAIN_MM_KERNEL`, `TRAIN_MVT_KERNEL`, `TRAIN_PROF`, `TRAIN_RESIDENT`, `TRAIN_RES_ADAM`, `TRAIN_RES_HEAD`, `TRAIN_ROWS` |
 | Desktop | 7 | `TEST_INSTANCE_SWEEP_DELAY_MS`, `TEST_INSTANCE_SWEEP_MARKER`, `TEST_REGISTRY_READONLY`, `TEST_TRAY_CONFIG_INSTALL_FAIL`, `TEST_TRAY_OPENER`, `TEST_TRAY_SEND_CHUNK`, `UNVERIFIED_LEASE_TTL` |
 
-## Record formats (27)
+## Record formats (29)
 
 Every `xyntetik.runner.*` schema identifier, without the prefix.
 
 | owner | count | surfaces |
 |---|---:|---|
 | Runtime | 8 | `cached.v1`, `decision.v1`, `doctor.v1`, `kv_snapshot.v1`, `model-tiers.v1`, `score.v1`, `session.v1`, `session.v2` |
-| Model production | 6 | `context-surgery.v1`, `derive.v1`, `eval.v1`, `merge.v1`, `quant.v1`, `train.v1` |
+| Model production | 8 | `context-surgery.v1`, `derive.v1`, `eval.v1`, `gold-logits.v4`, `merge.v1`, `quant.v1`, `ref-logits.v1`, `train.v1` |
 | Proof | 13 | `bundle.v1`, `envelope.v1`, `evidence-pack.v1`, `sample.v1`, `signkey.v1`, `train.chain.v1`, `train.sample.v1`, `transcript.v1`, `transcript.v2`, `verify.v1`, `watermark.key_id.v1`, `watermark_detect.v1`, `watermark_key.v1` |
 
 ## Python client (39)
@@ -76,7 +76,7 @@ Every name `clients/typescript/src` exports.
 | Runtime | 18 | `ChoiceLogprob`, `NamedContext`, `RepeatedToolCall`, `RerankResponse`, `RerankResult`, `RunnerAPIError`, `RunnerClient`, `RunnerClientOptions`, `RunnerErrorBody`, `RunnerProtocolError`, `RunnerTelemetry`, `SamplingTelemetry`, `SpeculationTelemetry`, `TimingTelemetry`, `ToolProtocolTelemetry`, `choiceLogprobs`, `finishDetail`, `runnerTelemetry` |
 | Proof | 7 | `ChainCheck`, `EnvelopeState`, `ModelSignature`, `Provenance`, `ReceiptFile`, `TranscriptRecord`, `verifyTranscriptChain` |
 
-## Source files (145)
+## Source files (147)
 
 Every file under `src/` except the generated kernel headers. `Shared` is the files that serve more than one component.
 
@@ -85,7 +85,7 @@ Every file under `src/` except the generated kernel headers. `Shared` is the fil
 | Runtime | 37 | `src/api.h`, `src/api_anthropic.c`, `src/api_responses.c`, `src/clef.c`, `src/clef.h`, `src/decide.c`, `src/decide.h`, `src/hfhub.c`, `src/hfhub.h`, `src/http.c`, `src/http.h`, `src/jsonmode.c`, `src/jsonmode.h`, `src/jsre.c`, `src/jsre.h`, `src/kvsnap.c`, `src/kvsnap.h`, `src/model_roster.h`, `src/registry.c`, `src/respstore.c`, `src/respstore.h`, `src/sample.c`, `src/sample.h`, `src/schema.c`, `src/schema.h`, `src/schema_int.h`, `src/schema_tools.c`, `src/server.c`, `src/server.h`, `src/server_int.h`, `src/session.c`, `src/session.h`, `src/template.c`, `src/template.h`, `src/template_inkling.h`, `src/vramreg.c`, `src/vramreg.h` |
 | Execution | 49 | `src/act.h`, `src/cuda.c`, `src/dn_eps.h`, `src/engine.c`, `src/engine.h`, `src/fp16.h`, `src/fpclass.h`, `src/fpenv.h`, `src/gpu.h`, `src/gpu_none.c`, `src/gpu_tables.h`, `src/inkling2.c`, `src/inkling2.h`, `src/inkling2_bwd.c`, `src/inkling2_ecache.c`, `src/inkling2_ecache.h`, `src/inkling2_gguf.c`, `src/inkling2_gguf.h`, `src/inkling2_model.c`, `src/inkling2_model.h`, `src/iq_decode.h`, `src/kernel_args.h`, `src/kernels.cu`, `src/kernels.metal`, `src/kernels_i8.cuh`, `src/kernels_iq4_table.cuh`, `src/kernels_iq_grids.cuh`, `src/kernels_iq_stage.cuh`, `src/kernels_kq_stage.cuh`, `src/kernels_sm80.cu`, `src/kernels_tc2.cuh`, `src/kernels_tc2_iq.cuh`, `src/kernels_tc2_kq.cuh`, `src/kernels_tensor.metal`, `src/kernels_train.cuh`, `src/kq_stage.h`, `src/metal.m`, `src/metal_admission.h`, `src/pm_order.h`, `src/pmath.h`, `src/quants.c`, `src/quants.h`, `src/quants_iq_grids.h`, `src/scheduler.c`, `src/scheduler.h`, `src/softmax.h`, `src/tpool.h`, `src/train_args.h`, `src/upload_report.h` |
 | Model substrate | 14 | `src/arch.h`, `src/compat.c`, `src/compat.h`, `src/gguf.c`, `src/gguf.h`, `src/json.c`, `src/json.h`, `src/npy.c`, `src/npy.h`, `src/pe_buildid.h`, `src/tokenizer.c`, `src/tokenizer.h`, `src/unicode_classes.h`, `src/unicode_nfc.h` |
-| Model production | 8 | `src/derive.c`, `src/derive.h`, `src/dpo.c`, `src/dpo.h`, `src/quantize.c`, `src/tdn_args.h`, `src/train_lr.c`, `src/train_lr.h` |
+| Model production | 10 | `src/derive.c`, `src/derive.h`, `src/dpo.c`, `src/dpo.h`, `src/quantize.c`, `src/ref_logits.c`, `src/ref_logits.h`, `src/tdn_args.h`, `src/train_lr.c`, `src/train_lr.h` |
 | Proof | 24 | `src/build_arch.h`, `src/bundle.c`, `src/bundle.h`, `src/ecdsa.c`, `src/ecdsa.h`, `src/ed25519.c`, `src/ed25519.h`, `src/envelope.c`, `src/envelope.h`, `src/lineage.c`, `src/lineage.h`, `src/micro_sched.h`, `src/mldsa.c`, `src/mldsa.h`, `src/oms.c`, `src/oms.h`, `src/provenance.c`, `src/provenance.h`, `src/receipts.c`, `src/receipts.h`, `src/train_record.c`, `src/train_record.h`, `src/watermark.c`, `src/watermark.h` |
 | Desktop | 7 | `src/instances.c`, `src/instances.h`, `src/tray.c`, `src/tray.h`, `src/tray_macos.m`, `src/tray_stub.c`, `src/tray_win.c` |
 | Shared | 6 | `src/completion.c`, `src/completion.h`, `src/main.c`, `src/model.c`, `src/model.h`, `src/runner.h` |

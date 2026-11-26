@@ -27,6 +27,7 @@
 #include "session.h"
 #include "build_arch.h"
 #include "npy.h"
+#include "ref_logits.h"
 // for render_prompt_alloc: chat mode renders the same prompts the chat route
 // does, so it uses the same measured-size renderer rather than a second one
 #include "api.h"
@@ -1128,6 +1129,9 @@ static void usage_to(FILE *f, const char *prog) {
         "                 also prints each position's N most likely tokens\n"
         "  --score-out F  with --score: write the JSON to F, not stdout\n"
         "  --score-tokens N  with --score: score the text's first N tokens only\n"
+        "  --score-ref F  with --score: stream pre-computed reference logits from\n"
+        "                 pinned manifest F (xyntetik.runner.ref-logits.v1) for\n"
+        "                 exact full-vocabulary float64 KL\n"
         "  --decide FILE  typed decisions: one /v1/decide request per line of\n"
         "                 FILE (state, questions[{question, options}]), one\n"
         "                 response per line on stdout; options scored verbatim\n"
@@ -2448,6 +2452,7 @@ typedef struct {
     int  score_top;   // --score-top: each scored position's N most likely tokens
     const char *score_out;   // --score-out: the score JSON to this file, not stdout
     int  score_tokens;       // --score-tokens: score the text's first N tokens only
+    const char *score_ref;   // --score-ref: pinned ref-logits manifest for streaming f64 KL
     bool adapt_info;    // --adapt-info: adapter eligibility as JSON
     bool doctor;        // --doctor: one diagnostic report, then exit
     bool doctor_text;   // --doctor-include-text: keep the probe's text
@@ -2779,6 +2784,7 @@ static const cli_opt CLI_OPTS[] = {
     { "--score-top", NULL, OPT_INT, false, OPT_AT(int, score_top), OPT_NONE, 1, 256 },
     { "--score-out", NULL, OPT_STR, false, OPT_AT(const char *, score_out), OPT_NONE, 0, 0 },
     { "--score-tokens", NULL, OPT_INT, false, OPT_AT(int, score_tokens), OPT_NONE, 2, INT_MAX },
+    { "--score-ref", NULL, OPT_STR, false, OPT_AT(const char *, score_ref), OPT_NONE, 0, 0 },
     { "--decide", NULL, OPT_STR, false, OPT_AT(const char *, decide_path), OPT_NONE, 0, 0 },
     { "--systemone", NULL, OPT_STR, false, OPT_AT(const char *, systemone_path), OPT_NONE, 0, 0 },
     { "--lora", NULL, OPT_STR, false, OPT_AT(const char *, lora_path), OPT_NONE, 0, 0 },
@@ -3304,9 +3310,9 @@ static bool cli_resolve_shape(cli_opts *o) {
         fprintf(stderr, "error: --port is the server's port and needs --serve\n");
         return false;
     }
-    if ((o->score_out || o->score_tokens) && !o->score) {
+    if ((o->score_out || o->score_tokens || o->score_ref) && !o->score) {
         fprintf(stderr, "error: %s shapes --score's output and needs --score\n",
-                o->score_out ? "--score-out" : "--score-tokens");
+                o->score_out ? "--score-out" : o->score_tokens ? "--score-tokens" : "--score-ref");
         return false;
     }
     if (o->ttl_given && !o->serve) {
@@ -8094,6 +8100,41 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
             return 1;
         }
     }
+    // n_special (additive): 1 when the tokenizer prepended BOS, so a reader
+    // can line positions of the text up across files (runner derive,
+    // --score-ref, and gold-logits.py's own special-prefix rule)
+    int n_special = !o->no_bos && rt->tok.add_bos && rt->tok.bos_id >= 0 &&
+                    n_prompt > 0 && rt->toks[0] == rt->tok.bos_id;
+    ref_logits_reader ref_r;
+    memset(&ref_r, 0, sizeof ref_r);
+    bool ref_on = false;
+    ref_logits_row_result *ref_rows = NULL;
+    int n_ref_rows = 0;
+    char ref_why[512] = "";
+    if (o->score_ref) {
+        if (!ref_logits_open(o->score_ref, rt->m.n_vocab, n_special,
+                             rt->toks, n_prompt, &ref_r, ref_why, sizeof ref_why)) {
+            if (micro) {
+                model_batch_free(mb);
+                for (int i = 0; i < micro - 1; i++) model_free(&mx[i]);
+                free(mx);
+            }
+            fprintf(stderr, "error: --score-ref: %s\n", ref_why);
+            return 1;
+        }
+        ref_rows = malloc(sizeof *ref_rows * (size_t)(n_prompt - 1));
+        if (!ref_rows) {
+            ref_logits_close(&ref_r);
+            if (micro) {
+                model_batch_free(mb);
+                for (int i = 0; i < micro - 1; i++) model_free(&mx[i]);
+                free(mx);
+            }
+            fprintf(stderr, "error: out of memory for --score-ref\n");
+            return 1;
+        }
+        ref_on = true;
+    }
     printf("{\"schema_version\":\"xyntetik.runner.score.v1\","
            "\"n_tokens\":%d,\"n_scored\":%d,\"tokens\":[", n_prompt,
            n_prompt - 1);
@@ -8108,7 +8149,15 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
     int nonfinite = -1;
     char nb[32];
     int32_t *argmaxes = malloc(sizeof(int32_t) * (size_t)n_prompt);
-    if (!argmaxes) return 1;
+    if (!argmaxes) {
+        if (ref_on) { ref_logits_close(&ref_r); free(ref_rows); }
+        if (micro) {
+            model_batch_free(mb);
+            for (int i = 0; i < micro - 1; i++) model_free(&mx[i]);
+            free(mx);
+        }
+        return 1;
+    }
     // --score-top: each position's distribution head, for a comparison at the
     // distribution level (KL against a reference) in one pass of the text
     int ntop = o->score_top < rt->m.n_vocab ? o->score_top : rt->m.n_vocab;
@@ -8119,6 +8168,12 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
         top_lp = malloc(sizeof(float) * (size_t)ntop * (size_t)n_prompt);
         if (!top_id || !top_lp) {
             free(top_id); free(top_lp); free(argmaxes);
+            if (ref_on) { ref_logits_close(&ref_r); free(ref_rows); }
+            if (micro) {
+                model_batch_free(mb);
+                for (int i = 0; i < micro - 1; i++) model_free(&mx[i]);
+                free(mx);
+            }
             fprintf(stderr, "error: out of memory for --score-top\n");
             return 1;
         }
@@ -8145,6 +8200,18 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
                     score_top_fill(lg, rt->m.n_vocab, lse, ntop,
                                    top_id + (size_t)emitted * ntop,
                                    top_lp + (size_t)emitted * ntop);
+                if (ref_on) {
+                    int64_t frow = 0;
+                    if (ref_logits_want_pos(&ref_r, emitted, &frow)) {
+                        if (!ref_logits_score_row(&ref_r, emitted, frow, lg,
+                                                  &ref_rows[n_ref_rows],
+                                                  ref_why, sizeof ref_why)) {
+                            fail = 2;
+                            break;
+                        }
+                        n_ref_rows++;
+                    }
+                }
                 argmaxes[emitted] = arg;
                 if (nonfinite < 0 && !fp_finite_f64(lp)) nonfinite = pos + b + 1;
                 printf("%s%s", emitted++ ? "," : "", json_numg(nb, 9, lp));
@@ -8176,6 +8243,18 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
                 score_top_fill(lg, rt->m.n_vocab, lse, ntop,
                                top_id + (size_t)emitted * ntop,
                                top_lp + (size_t)emitted * ntop);
+            if (ref_on) {
+                int64_t frow = 0;
+                if (ref_logits_want_pos(&ref_r, emitted, &frow)) {
+                    if (!ref_logits_score_row(&ref_r, emitted, frow, lg,
+                                              &ref_rows[n_ref_rows],
+                                              ref_why, sizeof ref_why)) {
+                        fail = 2;
+                        break;
+                    }
+                    n_ref_rows++;
+                }
+            }
             argmaxes[emitted] = arg;
             if (nonfinite < 0 && !fp_finite_f64(lp)) nonfinite = pos + 1;
             printf("%s%s", emitted++ ? "," : "", json_numg(nb, 9, lp));
@@ -8191,8 +8270,12 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
     }
     if (fail) {
         free(argmaxes); free(top_id); free(top_lp);
+        if (ref_on) { ref_logits_close(&ref_r); free(ref_rows); }
         printf("]}\n");
-        fprintf(stderr, "error: forward pass failed at position %d\n", pos);
+        if (fail == 2)
+            fprintf(stderr, "error: --score-ref: %s\n", ref_why);
+        else
+            fprintf(stderr, "error: forward pass failed at position %d\n", pos);
         return 1;
     }
     // top1 is the self-check anchor: NLL alone cannot tell a working
@@ -8241,19 +8324,31 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
     snprintf(mjson, sizeof mjson, "{\"file\":\"%s\",\"bytes\":%lld}", mesc, mbytes);
     char sroute[1800];
     model_score_route_json(&rt->m, mjson, sroute, sizeof sroute);
-    // n_special (additive): 1 when the tokenizer prepended BOS, so a reader
-    // can line positions of the text up across files (runner derive, and
-    // gold-logits.py's own special-prefix rule)
-    int n_special = !o->no_bos && rt->tok.add_bos && rt->tok.bos_id >= 0 &&
-                    n_prompt > 0 && rt->toks[0] == rt->tok.bos_id;
     // nll and its mean are null after a non-finite log-probability, and the
     // perplexity also when it overflows alone (a mean past 709 nats)
     char nt[32], nm[32], np[32];
     printf("],\"n_vocab\":%d,\"top1\":%d,\"top1_rate\":%.9g,"
-           "\"nll_total\":%s,\"nll_mean\":%s,\"ppl\":%s,\"n_special\":%d,\"score_route\":%s}\n",
+           "\"nll_total\":%s,\"nll_mean\":%s,\"ppl\":%s,\"n_special\":%d,\"score_route\":%s",
            rt->m.n_vocab, top1, (double)top1 / (n_prompt - 1),
            json_numg(nt, 9, nll), json_numg(nm, 9, mean), json_numg(np, 9, exp(mean)),
            n_special, sroute);
+    if (ref_on) {
+        printf(",\"ref_manifest_sha256\":\"%s\",\"ref_logits_sha256\":\"%s\","
+               "\"ref_kl_method\":\"full-vocab-f64\",\"ref_rows\":[",
+               ref_r.m.manifest_sha256, ref_r.m.logits_sha256);
+        for (int i = 0; i < n_ref_rows; i++) {
+            const ref_logits_row_result *rr = &ref_rows[i];
+            printf("%s{\"pos\":%d,\"kld\":%.17g,\"gold_margin\":%.17g,"
+                   "\"gold_top1\":%d,\"cand_top1\":%d,\"agree\":%s,\"max_abs\":%.17g}",
+                   i ? "," : "", (int)rr->pos, rr->kld, rr->gold_margin,
+                   (int)rr->gold_top1, (int)rr->cand_top1,
+                   rr->agree ? "true" : "false", rr->max_abs);
+        }
+        printf("]");
+        ref_logits_close(&ref_r);
+        free(ref_rows);
+    }
+    printf("}\n");
     // the paths and kernels the forwards took, on stderr: the kernel counters
     // show a route's kernels ran
     char route[4096];
