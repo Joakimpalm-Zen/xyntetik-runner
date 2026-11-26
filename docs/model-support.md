@@ -405,8 +405,8 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td colspan="5"><b>Inkling 2 Mini (Thinking Machines Lab)</b>, text path only</td></tr>
-<tr><td><a href="#inkling-2-mini-ud-q4_k_xl"><code>Mainline_Support/Inkling-2-Mini-UD-Q4_K_XL.gguf_file</code></a></td><td nowrap>✅ 1.21.0<sup>b</sup><br>2026-11-23</td><td nowrap>✅ 1.21.0<sup>b</sup><br>2026-11-25</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.21.0<br>2026-11-25</td></tr>
-<tr><td><a href="#inkling-2-mini-ud-q8_k_xl"><code>Mainline_Support/Inkling-2-Mini-UD-Q8_K_XL.gguf_file</code></a></td><td nowrap>✅ 1.21.0<sup>b</sup><br>2026-11-23</td><td nowrap>✅ 1.21.0<sup>b</sup><br>2026-11-25</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.21.0<br>2026-11-25</td></tr>
+<tr><td><a href="#inkling-2-mini-ud-q4_k_xl"><code>Mainline_Support/Inkling-2-Mini-UD-Q4_K_XL.gguf_file</code></a></td><td nowrap>✅ 1.22.0<sup>b</sup><br>2026-11-26</td><td nowrap>✅ 1.22.0<sup>b</sup><br>2026-11-26</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.22.0<br>2026-11-26</td></tr>
+<tr><td><a href="#inkling-2-mini-ud-q8_k_xl"><code>Mainline_Support/Inkling-2-Mini-UD-Q8_K_XL.gguf_file</code></a></td><td nowrap>✅ 1.22.0<sup>b</sup><br>2026-11-26</td><td nowrap>✅ 1.22.0<sup>b</sup><br>2026-11-26</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.22.0<br>2026-11-26</td></tr>
 </tbody>
 </table>
 </details>
@@ -1514,12 +1514,12 @@ Text path only. Inkling 2 Mini with the publisher's NVFP4 experts and Q8_0 elsew
 - **Known limitations:** Text only. CPU is the default; RUNNER_INKLING2_CUDA=1 opts the fast route into CUDA. This file passed its CUDA smoke on linux-x86_64-cuda, on an sm_120 GPU (a 24 GB MIG slice). The available windows-x86_64-cuda recording device has 12 GB of device memory and cannot hold either Inkling file; Windows CUDA is checked on generated fixtures, not these real files. Fit may keep expert stacks on the host or select CPU. Metal, speculative decoding and the shared prefix cache are not supported; a rewind re-prefills. LoRA attention terms run on the host, and training takes the CPU reference route; this switch does not enable GPU training. The vision tower is not loaded. The publisher fidelity figures are CPU reference measurements, not CUDA measurements. See MANUAL.md#inkling-2-mini and docs/inkling2-cuda.md.
 - **Still missing:** A GPU path; the reasoning channel on the real weights beyond the tool gate's turns (R4.48.13's transitions pass on fixtures; the live measurements are R4.48.12's); task quality.
 - **Evidence:** [docs/compat-reports/inkling2-mini-reference-2026-11-22/README.md](compat-reports/inkling2-mini-reference-2026-11-22/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json), [docs/cross-family-remedy-evidence/tool-protocol-inkling2-mini-ud-q4_k_xl-lab-slice.json](cross-family-remedy-evidence/tool-protocol-inkling2-mini-ud-q4_k_xl-lab-slice.json).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.21.0 on 2026-11-23.
-- **CPU:** ✅ v1.21.0 2026-11-23 on linux-x86_64-cuda (borrowed hardware) at commit `20f2eb87c7d7`, output sha256 `c713db472dde292f`, [pin](../tests/compatibility/tier-smoke/inkling-2-mini-ud-q4_k_xl.linux-x86_64-cuda.cpu.txt)
-- **CUDA:** ✅ v1.21.0 2026-11-25 on linux-x86_64-cuda (borrowed hardware) at commit `299cba112822`, output sha256 `c713db472dde292f`, [pin](../tests/compatibility/tier-smoke/inkling-2-mini-ud-q4_k_xl.linux-x86_64-cuda.cuda.txt)
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.22.0 on 2026-11-26.
+- **CPU:** ✅ v1.22.0 2026-11-26 on linux-x86_64-cuda (borrowed hardware) at commit `a616bb8ecbea`, output sha256 `c713db472dde292f`, [pin](../tests/compatibility/tier-smoke/inkling-2-mini-ud-q4_k_xl.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.22.0 2026-11-26 on linux-x86_64-cuda (borrowed hardware) at commit `a616bb8ecbea`, output sha256 `c713db472dde292f`, [pin](../tests/compatibility/tier-smoke/inkling-2-mini-ud-q4_k_xl.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): inkling2_loop has no Metal implementation; Metal builds run its CPU route.
-- **LoRA training:** supported (runner 1.21.0, 2026-11-25).
-- **LoRA adapter serving:** supported (runner 1.21.0, 2026-11-25).
+- **LoRA training:** supported (runner 1.22.0, 2026-11-26).
+- **LoRA adapter serving:** supported (runner 1.22.0, 2026-11-26).
 
 <a id="inkling-2-mini-ud-q8_k_xl"></a>
 ##### `Mainline_Support/Inkling-2-Mini-UD-Q8_K_XL.gguf_file`
@@ -1536,12 +1536,12 @@ Text path only. The publisher's Inkling 2 Mini checkpoint bit for bit in llama.c
 - **Known limitations:** Text only. CPU is the default; RUNNER_INKLING2_CUDA=1 opts the fast route into CUDA. This file passed its CUDA smoke on linux-x86_64-cuda, on an sm_120 GPU (a 24 GB MIG slice). The available windows-x86_64-cuda recording device has 12 GB of device memory and cannot hold either Inkling file; Windows CUDA is checked on generated fixtures, not these real files. Fit may keep expert stacks on the host or select CPU. Metal, speculative decoding and the shared prefix cache are not supported; a rewind re-prefills. LoRA attention terms run on the host, and training takes the CPU reference route; this switch does not enable GPU training. The vision tower is not loaded. The publisher fidelity figures are CPU reference measurements, not CUDA measurements. See MANUAL.md#inkling-2-mini and docs/inkling2-cuda.md.
 - **Still missing:** A GPU path; the reasoning channel on the real weights beyond the tool gate's turns (R4.48.13's transitions pass on fixtures; the live measurements are R4.48.12's); task quality.
 - **Evidence:** [docs/compat-reports/inkling2-mini-reference-2026-11-22/README.md](compat-reports/inkling2-mini-reference-2026-11-22/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json), [docs/cross-family-remedy-evidence/tool-protocol-inkling2-mini-ud-q8_k_xl-lab-slice.json](cross-family-remedy-evidence/tool-protocol-inkling2-mini-ud-q8_k_xl-lab-slice.json).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.21.0 on 2026-11-23.
-- **CPU:** ✅ v1.21.0 2026-11-23 on linux-x86_64-cuda (borrowed hardware) at commit `20f2eb87c7d7`, output sha256 `45c2a9751c8cce53`, [pin](../tests/compatibility/tier-smoke/inkling-2-mini-ud-q8_k_xl.linux-x86_64-cuda.cpu.txt)
-- **CUDA:** ✅ v1.21.0 2026-11-25 on linux-x86_64-cuda (borrowed hardware) at commit `299cba112822`, output sha256 `45c2a9751c8cce53`, [pin](../tests/compatibility/tier-smoke/inkling-2-mini-ud-q8_k_xl.linux-x86_64-cuda.cuda.txt)
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.22.0 on 2026-11-26.
+- **CPU:** ✅ v1.22.0 2026-11-26 on linux-x86_64-cuda (borrowed hardware) at commit `a616bb8ecbea`, output sha256 `45c2a9751c8cce53`, [pin](../tests/compatibility/tier-smoke/inkling-2-mini-ud-q8_k_xl.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.22.0 2026-11-26 on linux-x86_64-cuda (borrowed hardware) at commit `a616bb8ecbea`, output sha256 `45c2a9751c8cce53`, [pin](../tests/compatibility/tier-smoke/inkling-2-mini-ud-q8_k_xl.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): inkling2_loop has no Metal implementation; Metal builds run its CPU route.
-- **LoRA training:** supported (runner 1.21.0, 2026-11-25).
-- **LoRA adapter serving:** supported (runner 1.21.0, 2026-11-25).
+- **LoRA training:** supported (runner 1.22.0, 2026-11-26).
+- **LoRA adapter serving:** supported (runner 1.22.0, 2026-11-26).
 
 ### K2-Horizon
 

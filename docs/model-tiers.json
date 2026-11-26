@@ -10551,16 +10551,16 @@
       "backends": {
         "cpu": {
           "kind": "gate",
-          "runner_version": "1.21.0",
-          "date": "2026-11-23",
+          "runner_version": "1.22.0",
+          "date": "2026-11-26",
           "device_class": "linux-x86_64-cuda",
           "result": "pass",
-          "commit": "20f2eb87c7d7234e9be9a66562a73c4f9bb00095",
+          "commit": "a616bb8ecbea049491d4b2e48dc73912dd8c0ed6",
           "caps": {
-            "version": "1.21.0",
+            "version": "1.22.0",
             "os": "linux",
             "arch": "x86_64",
-            "cpu_cores": 26,
+            "cpu_cores": 16,
             "gpu_backend": "cuda",
             "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
           },
@@ -10568,21 +10568,21 @@
           "ran": "runner -m Inkling-2-Mini-UD-Q8_K_XL.gguf_file --serve -c 1024 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=600 stream=false enable_thinking=false reasoning_effort=\"none\"",
           "evidence": "tests/compatibility/tier-smoke/inkling-2-mini-ud-q8_k_xl.linux-x86_64-cuda.cpu.txt",
           "build": {
-            "binary_sha256": "81880d33bb59794aa457afb52e9f4d97d4c60661c519c4525f7ae52e99e6c221",
+            "binary_sha256": "2037892229499dd3344dbc1067054a1fa0dd5041bc377c2011d919ac67ba5f29",
             "compiler": "13.3.0",
-            "commit": "20f2eb87c7d7234e9be9a66562a73c4f9bb00095",
+            "commit": "a616bb8ecbea049491d4b2e48dc73912dd8c0ed6",
             "dirty": false
           }
         },
         "cuda": {
           "kind": "gate",
-          "runner_version": "1.21.0",
-          "date": "2026-11-25",
+          "runner_version": "1.22.0",
+          "date": "2026-11-26",
           "device_class": "linux-x86_64-cuda",
           "result": "pass",
-          "commit": "299cba112822c8e36a23f8ae16ee84a798ed2f80",
+          "commit": "a616bb8ecbea049491d4b2e48dc73912dd8c0ed6",
           "caps": {
-            "version": "1.21.0",
+            "version": "1.22.0",
             "os": "linux",
             "arch": "x86_64",
             "cpu_cores": 16,
@@ -10593,9 +10593,9 @@
           "ran": "env RUNNER_INKLING2_CUDA=1 runner -m Inkling-2-Mini-UD-Q8_K_XL.gguf_file --serve -c 1024 -b 64; POST /v1/chat/completions temperature=0 max_tokens=600 stream=false enable_thinking=false reasoning_effort=\"none\"",
           "evidence": "tests/compatibility/tier-smoke/inkling-2-mini-ud-q8_k_xl.linux-x86_64-cuda.cuda.txt",
           "build": {
-            "binary_sha256": "e6bbdd89ed6af23f7acc27bd1a67ac17d7be8f3bedeb79502868309fc91908f5",
+            "binary_sha256": "2037892229499dd3344dbc1067054a1fa0dd5041bc377c2011d919ac67ba5f29",
             "compiler": "13.3.0",
-            "commit": "299cba112822c8e36a23f8ae16ee84a798ed2f80",
+            "commit": "a616bb8ecbea049491d4b2e48dc73912dd8c0ed6",
             "dirty": false
           }
         },
@@ -10614,8 +10614,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.21.0",
-        "date": "2026-11-25"
+        "runner_version": "1.22.0",
+        "date": "2026-11-26"
       },
       "transitions": [
         {
@@ -10676,16 +10676,16 @@
       "backends": {
         "cpu": {
           "kind": "gate",
-          "runner_version": "1.21.0",
-          "date": "2026-11-23",
+          "runner_version": "1.22.0",
+          "date": "2026-11-26",
           "device_class": "linux-x86_64-cuda",
           "result": "pass",
-          "commit": "20f2eb87c7d7234e9be9a66562a73c4f9bb00095",
+          "commit": "a616bb8ecbea049491d4b2e48dc73912dd8c0ed6",
           "caps": {
-            "version": "1.21.0",
+            "version": "1.22.0",
             "os": "linux",
             "arch": "x86_64",
-            "cpu_cores": 26,
+            "cpu_cores": 16,
             "gpu_backend": "cuda",
             "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
           },
@@ -10693,21 +10693,21 @@
           "ran": "runner -m Inkling-2-Mini-UD-Q4_K_XL.gguf_file --serve -c 1024 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=600 stream=false enable_thinking=false reasoning_effort=\"none\"",
           "evidence": "tests/compatibility/tier-smoke/inkling-2-mini-ud-q4_k_xl.linux-x86_64-cuda.cpu.txt",
           "build": {
-            "binary_sha256": "81880d33bb59794aa457afb52e9f4d97d4c60661c519c4525f7ae52e99e6c221",
+            "binary_sha256": "2037892229499dd3344dbc1067054a1fa0dd5041bc377c2011d919ac67ba5f29",
             "compiler": "13.3.0",
-            "commit": "20f2eb87c7d7234e9be9a66562a73c4f9bb00095",
+            "commit": "a616bb8ecbea049491d4b2e48dc73912dd8c0ed6",
             "dirty": false
           }
         },
         "cuda": {
           "kind": "gate",
-          "runner_version": "1.21.0",
-          "date": "2026-11-25",
+          "runner_version": "1.22.0",
+          "date": "2026-11-26",
           "device_class": "linux-x86_64-cuda",
           "result": "pass",
-          "commit": "299cba112822c8e36a23f8ae16ee84a798ed2f80",
+          "commit": "a616bb8ecbea049491d4b2e48dc73912dd8c0ed6",
           "caps": {
-            "version": "1.21.0",
+            "version": "1.22.0",
             "os": "linux",
             "arch": "x86_64",
             "cpu_cores": 16,
@@ -10718,9 +10718,9 @@
           "ran": "env RUNNER_INKLING2_CUDA=1 runner -m Inkling-2-Mini-UD-Q4_K_XL.gguf_file --serve -c 1024 -b 64; POST /v1/chat/completions temperature=0 max_tokens=600 stream=false enable_thinking=false reasoning_effort=\"none\"",
           "evidence": "tests/compatibility/tier-smoke/inkling-2-mini-ud-q4_k_xl.linux-x86_64-cuda.cuda.txt",
           "build": {
-            "binary_sha256": "e6bbdd89ed6af23f7acc27bd1a67ac17d7be8f3bedeb79502868309fc91908f5",
+            "binary_sha256": "2037892229499dd3344dbc1067054a1fa0dd5041bc377c2011d919ac67ba5f29",
             "compiler": "13.3.0",
-            "commit": "299cba112822c8e36a23f8ae16ee84a798ed2f80",
+            "commit": "a616bb8ecbea049491d4b2e48dc73912dd8c0ed6",
             "dirty": false
           }
         },
@@ -10739,8 +10739,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.21.0",
-        "date": "2026-11-25"
+        "runner_version": "1.22.0",
+        "date": "2026-11-26"
       },
       "transitions": [
         {
