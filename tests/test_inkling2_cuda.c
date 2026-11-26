@@ -2211,18 +2211,29 @@ int main(int argc, char **argv) {
     }
     // R4.48.8.5 gate (c): the model on the device with q8 rings against the CPU's q8 cache, teacher-forced, in
     // test_kv_tol.c's tolerance class (never token identity): impl = mean |q8_cuda - q8_cpu| over every logit of every
-    // position, at most REASSOC_SLACK 3 times the CPU's own floor, mean |q8_cpu(-b 1) - q8_cpu(-b 8)| (FLOOR_EPS 1e-5
-    // when the CPU agrees with itself); a top-1 disagreement only at a near-tie (TIE_FRAC: within 2% of the CPU row's
-    // logit range), at most DISAGREE_MAX 5% of the positions. Both device forms: -b 8 (the block path; the sliding rings
-    // of 8 - 1 + 8 rows wrap within the 24 positions) and -b 1 (the resident step). The q8 rings must engage: the
-    // device's rows differ from its float32 cache's.
+    // position, at most REASSOC_SLACK 3 times the CPU's own floor; a top-1 disagreement only at a near-tie (TIE_FRAC:
+    // within 2% of the CPU row's logit range), at most DISAGREE_MAX 5% of the positions.
+    // The floor is mean |q8 fast - q8 reference|, the CPU's two routes at q8: a reassociation passed through the same
+    // quantizer, test_kv_tol's b = 1 against b = 64 in kind. That one is no floor here: the fast route is
+    // batch-invariant (tests/test_inkling2_kv.py), so -b 1 against -b 8 is exactly 0 (printed, for the record).
+    // FLOOR_EPS 1e-5 stays under it. The device's own float32 gap (its f32 cache against the CPU's f32, same -b) is
+    // printed as context.
+    // Both device forms: -b 8 (the block path; the sliding rings of 8 - 1 + 8 rows wrap within the 24 positions) and
+    // -b 1 (the resident step). The q8 rings must engage: the device's rows differ from its float32 cache's.
     {
         plat_setenv("RUNNER_INKLING2_CUDA_TEST_KVQ8", "1");
         kv_q8_on = true;
         model_t *c1 = load_route(argv[1], false, false, 1, "fast"), *c8 = load_route(argv[1], false, false, 8, "fast");
-        float *r1 = c1 ? rows_p(c1, PROMPT) : NULL, *r8 = c8 ? rows_p(c8, PROMPT) : NULL;
+        model_t *cr = load_route(argv[1], false, false, 8, "reference");
+        float *r1 = c1 ? rows_p(c1, PROMPT) : NULL, *r8 = c8 ? rows_p(c8, PROMPT) : NULL, *rr = cr ? rows_p(cr, PROMPT) : NULL;
         const size_t nv = c8 ? (size_t)c8->n_vocab : 0, n = (size_t)N_TOK * nv;
-        const double floor_ = r1 && r8 ? mean_abs(r1, r8, n) : -1, fl = floor_ > 1e-5 ? floor_ : 1e-5;
+        const double floor_ = r8 && rr ? mean_abs(r8, rr, n) : -1, fl = floor_ > 1e-5 ? floor_ : 1e-5;
+        const double batch_floor = r1 && r8 ? mean_abs(r1, r8, n) : -1;
+        kv_q8_on = false;   // the CPU's float32 cache, for the device's own f32 gap (context)
+        model_t *f1 = load_route(argv[1], false, false, 1, "fast"), *f8 = load_route(argv[1], false, false, 8, "fast");
+        float *rf1 = f1 ? rows_p(f1, PROMPT) : NULL, *rf8 = f8 ? rows_p(f8, PROMPT) : NULL;
+        printf("(c) the CPU's floors at q8: fast against reference %.3e (the gate's); -b 1 against -b 8 %.3e (want 0: the "
+               "fast route is batch-invariant)\n", floor_, batch_floor);
         for (int bi = 0; bi < 2; bi++) {
             const int b = bi ? 1 : 8;
             if (b == 1) plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_STEP", "");   // the resident step for single positions
@@ -2249,16 +2260,20 @@ int main(int argc, char **argv) {
                     if (ia != ic) { dis++; decisive += c[ic] - c[ia] > 0.02f * (hi - lo); }
                 }
             }
+            const float *rcf = b == 1 ? rf1 : rf8;
+            printf("(c) context at -b %d: the device's own float32 gap, mean |f32_cuda - f32_cpu| %.3e\n", b,
+                   rf && rcf ? mean_abs(rf, rcf, n) : -1.0);
             CHECK(rg && rc && impl <= 3.0 * fl && decisive == 0 && dis <= (int)(0.05 * N_TOK),
                   "(c) the device's q8 rings at -b %d against the CPU's q8 cache: mean |dlogit| %.3e, at most 3 x the "
-                  "CPU's floor %.3e (floored at 1e-5); %d top-1 disagreements, %d of them decisive (want 0, and at most "
-                  "5%% of %d positions)", b, impl, floor_, dis, decisive, N_TOK);
+                  "CPU's floor %.3e (its fast route against its reference route at q8, floored at 1e-5); %d top-1 "
+                  "disagreements, %d of them decisive (want 0, and at most 5%% of %d positions)", b, impl, floor_, dis,
+                  decisive, N_TOK);
             CHECK(rg && rf && memcmp(rg, rf, sizeof(float) * n) != 0, "(c) the device's q8 rings engaged at -b %d (its rows "
                   "are not its float32 cache's)", b);
             plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_STEP", "1");
             free(rg); free(rf); drop(g); drop(gf);
         }
-        free(r1); free(r8); drop(c1); drop(c8);
+        free(r1); free(r8); free(rr); free(rf1); free(rf8); drop(c1); drop(c8); drop(cr); drop(f1); drop(f8);
         kv_q8_on = false;
         plat_setenv("RUNNER_INKLING2_CUDA_TEST_KVQ8", "");
     }
