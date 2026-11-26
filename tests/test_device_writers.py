@@ -643,3 +643,114 @@ def test_fidelity_smoke_nvfp4_and_iq3_xxs(runner_bin, mixed_ink):
     d_iq = mean_logprob_l1(scores["iq3_xxs"])
     assert math.isfinite(d_nv) and math.isfinite(d_iq)
     assert d_nv < d_iq, f"expected NVFP4 ({d_nv:.6f}) closer to BF16 parent than IQ3_XXS ({d_iq:.6f})"
+
+
+def test_verify_llama_harness_contract(runner_bin, tmp_path):
+    """scripts/verify-device-writers-llama.py satisfies llama-quantize's real CLI/metadata contract:
+    (1) passes --imatrix and --pure for IQ3_XXS (no separate unweighted leg, since llama-quantize refuses
+        IQ3_XXS without --imatrix; token_embd.weight and output.weight have no imatrix entry and verify the
+        unweighted path);
+    (2) writes imatrix.datasets, imatrix.chunk_count, and imatrix.chunk_size metadata keys;
+    (3) asserts every expected IQ3_XXS tensor is compared (9 total: 7 weighted + 2 unweighted);
+    (4) surfaces subprocess stderr on failure."""
+    mock_py = tmp_path / "mock_llama_quantize.py"
+    mock_py.write_text(
+        f"""#!{sys.executable}
+import struct, subprocess, sys
+from pathlib import Path
+
+def read_kv(path):
+    b = Path(path).read_bytes()
+    o = [4]
+    def take(fmt):
+        v = struct.unpack_from("<" + fmt, b, o[0]); o[0] += struct.calcsize("<" + fmt); return v[0]
+    def text():
+        n = take("Q"); o[0] += n; return b[o[0] - n:o[0]].decode("utf-8")
+    sc = {{0: "B", 1: "b", 2: "H", 3: "h", 4: "I", 5: "i", 6: "f", 7: "?", 10: "Q", 11: "q", 12: "d"}}
+    def val(t):
+        if t == 8: return text()
+        if t == 9: et, n = take("I"), take("Q"); return [val(et) for _ in range(n)]
+        return take(sc[t])
+    take("I"); _nt, nkv = take("Q"), take("Q")
+    kv = {{}}
+    for _ in range(nkv):
+        k = text(); kv[k] = val(take("I"))
+    return kv
+
+args = sys.argv[1:]
+pure = False
+imx = None
+pos = []
+i = 0
+while i < len(args):
+    if args[i] == "--pure":
+        pure = True; i += 1
+    elif args[i] == "--imatrix":
+        imx = args[i + 1]; i += 2
+    else:
+        pos.append(args[i]); i += 1
+src, dst, ftype = pos[0], pos[1], pos[2]
+if ftype == "IQ3_XXS" and imx is None:
+    sys.stderr.write("error: IQ3_XXS requires --imatrix\\n")
+    sys.exit(1)
+if imx is not None:
+    kv = read_kv(imx)
+    for req in ("imatrix.datasets", "imatrix.chunk_count", "imatrix.chunk_size"):
+        if req not in kv:
+            sys.stderr.write(f"load_imatrix: missing imatrix metadata ({{req}})\\n")
+            sys.exit(1)
+    if not isinstance(kv["imatrix.datasets"], list) or not kv["imatrix.datasets"]:
+        sys.stderr.write("load_imatrix: imatrix.datasets must be non-empty string array\\n")
+        sys.exit(1)
+if not pure:
+    # Mimic llama-quantize without --pure: only 4 tensors get IQ3_XXS
+    plan = Path(dst).with_suffix(".mix.json")
+    plan.write_text('{{"default":"keep","rules":[{{"match":"attn_q","type":"iq3_xxs"}},{{"match":"attn_k","type":"iq3_xxs"}},{{"match":"attn_output","type":"iq3_xxs"}},{{"match":"ffn_up","type":"iq3_xxs"}}]}}')
+    cmd = [{str(runner_bin)!r}, "-m", src, "--quantize", dst, "--type-plan", str(plan), "--imatrix", imx]
+else:
+    cmd = [{str(runner_bin)!r}, "-m", src, "--quantize", dst, "--quant", "iq3_xxs", "--imatrix", imx]
+r = subprocess.run(cmd, capture_output=True, text=True)
+sys.stderr.write(r.stderr)
+sys.exit(r.returncode)
+""",
+        encoding="utf-8",
+    )
+    if sys.platform == "win32":
+        mock_exe = tmp_path / "mock_llama_quantize.bat"
+        mock_exe.write_text(f'@"{sys.executable}" "{mock_py}" %*\r\n', encoding="utf-8")
+    else:
+        mock_py.chmod(0o755)
+        mock_exe = mock_py
+
+    script = ROOT / "scripts" / "verify-device-writers-llama.py"
+    r = subprocess.run(
+        [sys.executable, str(script), "--runner", str(runner_bin), "--llama-quantize", str(mock_exe)],
+        capture_output=True, text=True, timeout=180,
+    )
+    assert r.returncode == 0, f"harness failed:\nstdout={r.stdout}\nstderr={r.stderr}"
+    data = json.loads(r.stdout)
+    iq = data["iq3_xxs_vs_llama_quantize"]
+    assert iq["total_tensors"] == 9
+    assert iq["weighted_tensors"] == 7
+    assert iq["unweighted_tensors"] == 2
+    assert iq["diff_bytes"] == 0
+
+    # Verify stderr is printed when a subprocess fails.
+    bad_py = tmp_path / "bad_llama_quantize.py"
+    bad_py.write_text(
+        f"#!{sys.executable}\nimport sys\nsys.stderr.write('SENTINEL_LLAMA_ERR\\n')\nsys.exit(2)\n",
+        encoding="utf-8",
+    )
+    if sys.platform == "win32":
+        bad_exe = tmp_path / "bad_llama_quantize.bat"
+        bad_exe.write_text(f'@"{sys.executable}" "{bad_py}" %*\r\n', encoding="utf-8")
+    else:
+        bad_py.chmod(0o755)
+        bad_exe = bad_py
+
+    rb = subprocess.run(
+        [sys.executable, str(script), "--runner", str(runner_bin), "--llama-quantize", str(bad_exe)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert rb.returncode != 0
+    assert "SENTINEL_LLAMA_ERR" in rb.stderr, f"stderr not surfaced:\n{rb.stderr}"

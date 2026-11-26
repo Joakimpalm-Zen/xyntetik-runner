@@ -8,10 +8,14 @@ Usage on a host with llama-quantize:
         [--llama-cpp-py /path/to/llama.cpp/gguf-py]
 
 What it verifies:
-  1. IQ3_XXS bit-for-bit: generates a tiny valid Llama F32 GGUF (256-wide rows) and
-     a GGUF imatrix, runs both `runner --quantize ... --quant iq3_xxs` and
-     `llama-quantize ... IQ3_XXS` (both unweighted and with --imatrix), and asserts
-     0 differing bytes on every tensor written as IQ3_XXS by both tools.
+  1. IQ3_XXS bit-for-bit: generates a tiny valid Llama F32 GGUF (256-wide rows; 9 quantizable
+     tensors: 7 blk.0.* weights + token_embd.weight + output.weight) and a GGUF imatrix
+     (including imatrix.datasets, imatrix.chunk_count, imatrix.chunk_size metadata) with entries
+     for the 7 blk.0.* tensors only. Runs `runner --quantize ... --quant iq3_xxs --imatrix` and
+     `llama-quantize --pure --imatrix ... IQ3_XXS` (llama-quantize requires --imatrix for IQ3_XXS,
+     while token_embd.weight and output.weight have no imatrix entry and verify the unweighted
+     path in the same run). Asserts all 9 tensors are written as IQ3_XXS by both tools with 0
+     differing bytes.
   2. NVFP4 127-code & interop: runs `runner --quantize ... --quant nvfp4` on a fixture
      covering all 127 finite UE4M3 codes (0x00..0x7E, never 0x7F) and on an Inkling-shaped
      N(0, 0.03^2) BF16 matrix; decodes via gguf-py (when --llama-cpp-py is given) and the
@@ -196,54 +200,95 @@ def make_llama_fixture(path: Path, imx_path: Path):
     write_gguf(path, kvs, tensors)
 
     imx_tensors = []
+    weighted_names = []
+    unweighted_names = []
     for name, dims, _, _ in tensors:
-        if not name.startswith("blk.0.") or "norm" in name:
+        if len(dims) < 2:
             continue
+        if not name.startswith("blk.0.") or "norm" in name:
+            unweighted_names.append(name)
+            continue
+        weighted_names.append(name)
         cols = dims[0]
         w = [0.5 + 10.0 * rng.random() for _ in range(cols)]
         imx_tensors.append((f"{name}.in_sum2", [cols], T_F32, struct.pack(f"<{cols}f", *w)))
         imx_tensors.append((f"{name}.counts", [1], T_F32, struct.pack("<f", 4.0)))
-    write_gguf(imx_path, [("general.architecture", STR, "imatrix"), ("general.alignment", U32, 32)], imx_tensors)
+    imx_kvs = [
+        ("general.architecture", STR, "imatrix"),
+        ("general.alignment", U32, 32),
+        ("imatrix.datasets", ARR, (STR, ["crosscheck"])),
+        ("imatrix.chunk_count", U32, 4),
+        ("imatrix.chunk_size", U32, 512),
+    ]
+    write_gguf(imx_path, imx_kvs, imx_tensors)
+    return sorted(weighted_names), sorted(unweighted_names)
+
+
+def _run_checked(cmd):
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.stderr.write(f"command failed (exit {r.returncode}): {' '.join(cmd)}\n")
+        if r.stderr:
+            sys.stderr.write(r.stderr)
+            if not r.stderr.endswith("\n"):
+                sys.stderr.write("\n")
+        if r.stdout:
+            sys.stderr.write(r.stdout)
+            if not r.stdout.endswith("\n"):
+                sys.stderr.write("\n")
+        raise RuntimeError(f"subprocess failed with exit {r.returncode}: {cmd[0]}")
+    return r
 
 
 def check_iq3_xxs(runner: Path, llama_quantize: Path, tmp: Path):
     src = tmp / "llama-f32.gguf"
     imx = tmp / "llama-imx.gguf"
-    make_llama_fixture(src, imx)
-    summary = {}
-    for label, use_imx in (("unweighted", False), ("imatrix", True)):
-        r_out = tmp / f"runner-{label}.gguf"
-        l_out = tmp / f"llama-{label}.gguf"
-        r_cmd = [str(runner), "-m", str(src), "--quantize", str(r_out), "--quant", "iq3_xxs"]
-        l_cmd = [str(llama_quantize)]
-        if use_imx:
-            r_cmd += ["--imatrix", str(imx)]
-            l_cmd += ["--imatrix", str(imx)]
-        l_cmd += [str(src), str(l_out), "IQ3_XXS"]
-        subprocess.run(r_cmd, check=True, capture_output=True)
-        subprocess.run(l_cmd, check=True, capture_output=True)
+    weighted_names, unweighted_names = make_llama_fixture(src, imx)
+    expected_all = sorted(weighted_names + unweighted_names)
+    assert len(weighted_names) == 7 and len(unweighted_names) == 2 and len(expected_all) == 9
 
-        _, rt = read_gguf_tensors(r_out)
-        _, lt = read_gguf_tensors(l_out)
-        compared, total_bytes, diff_bytes = 0, 0, 0
-        for name in sorted(lt):
-            if lt[name][1] == T_IQ3_XXS and rt[name][1] == T_IQ3_XXS:
-                rb, lb = rt[name][2], lt[name][2]
-                assert len(rb) == len(lb), (name, len(rb), len(lb))
-                diffs = sum(a != b for a, b in zip(rb, lb))
-                compared += 1
-                total_bytes += len(rb)
-                diff_bytes += diffs
-                if diffs:
-                    first = next(i for i, (a, b) in enumerate(zip(rb, lb)) if a != b)
-                    raise AssertionError(
-                        f"{label} {name}: {diffs}/{len(rb)} bytes differ "
-                        f"(first at block {first // 98} byte {first % 98}: "
-                        f"runner=0x{rb[first]:02x} llama=0x{lb[first]:02x})"
-                    )
-        assert compared > 0, "no shared IQ3_XXS tensors compared"
-        summary[label] = {"tensors": compared, "bytes": total_bytes, "diff_bytes": diff_bytes}
-    return summary
+    # llama-quantize requires --imatrix for IQ3_XXS (token_embd and output are exempt and have
+    # no imatrix entry here, so they exercise the unweighted IQ3_XXS path in the same --pure run).
+    r_out = tmp / "runner-iq3_xxs.gguf"
+    l_out = tmp / "llama-iq3_xxs.gguf"
+    _run_checked([str(runner), "-m", str(src), "--quantize", str(r_out),
+                  "--quant", "iq3_xxs", "--imatrix", str(imx)])
+    _run_checked([str(llama_quantize), "--pure", "--imatrix", str(imx),
+                  str(src), str(l_out), "IQ3_XXS"])
+
+    _, rt = read_gguf_tensors(r_out)
+    _, lt = read_gguf_tensors(l_out)
+    r_iq3 = sorted(k for k, info in rt.items() if info[1] == T_IQ3_XXS)
+    l_iq3 = sorted(k for k, info in lt.items() if info[1] == T_IQ3_XXS)
+    assert r_iq3 == expected_all, f"runner IQ3_XXS tensor set mismatch: got {r_iq3}, expected {expected_all}"
+    assert l_iq3 == expected_all, f"llama-quantize IQ3_XXS tensor set mismatch: got {l_iq3}, expected {expected_all}"
+
+    weighted_bytes, unweighted_bytes, diff_bytes = 0, 0, 0
+    for name in expected_all:
+        rb, lb = rt[name][2], lt[name][2]
+        assert len(rb) == len(lb), (name, len(rb), len(lb))
+        diffs = sum(a != b for a, b in zip(rb, lb))
+        if name in weighted_names:
+            weighted_bytes += len(rb)
+        else:
+            unweighted_bytes += len(rb)
+        diff_bytes += diffs
+        if diffs:
+            first = next(i for i, (a, b) in enumerate(zip(rb, lb)) if a != b)
+            raise AssertionError(
+                f"{name}: {diffs}/{len(rb)} bytes differ "
+                f"(first at block {first // 98} byte {first % 98}: "
+                f"runner=0x{rb[first]:02x} llama=0x{lb[first]:02x})"
+            )
+    return {
+        "total_tensors": len(expected_all),
+        "weighted_tensors": len(weighted_names),
+        "unweighted_tensors": len(unweighted_names),
+        "weighted_bytes": weighted_bytes,
+        "unweighted_bytes": unweighted_bytes,
+        "bytes": weighted_bytes + unweighted_bytes,
+        "diff_bytes": diff_bytes,
+    }
 
 
 def check_nvfp4(runner: Path, llama_cpp_py: Path | None, tmp: Path):
@@ -264,8 +309,7 @@ def check_nvfp4(runner: Path, llama_cpp_py: Path | None, tmp: Path):
          ("blk.0.ffn_gate.weight", [cols, rows], T_F32, struct.pack(f"<{cols * rows}f", *vals127))],
     )
     out127 = tmp / "nv127-out.gguf"
-    subprocess.run([str(runner), "-m", str(src127), "--quantize", str(out127), "--quant", "nvfp4"],
-                   check=True, capture_output=True)
+    _run_checked([str(runner), "-m", str(src127), "--quantize", str(out127), "--quant", "nvfp4"])
     _, got127 = read_gguf_tensors(out127)
     raw127 = got127["blk.0.ffn_gate.weight"][2]
     (f_got,) = struct.unpack("<f", got127["blk.0.ffn_gate.scale"][2])
@@ -301,8 +345,7 @@ def check_nvfp4(runner: Path, llama_cpp_py: Path | None, tmp: Path):
          ("blk.0.ffn_gate.weight", [256, 512], T_BF16, bytes(bf16_raw))],
     )
     out_bf = tmp / "ink-nvfp4.gguf"
-    subprocess.run([str(runner), "-m", str(src_bf), "--quantize", str(out_bf), "--quant", "nvfp4"],
-                   check=True, capture_output=True)
+    _run_checked([str(runner), "-m", str(src_bf), "--quantize", str(out_bf), "--quant", "nvfp4"])
     _, got_bf = read_gguf_tensors(out_bf)
     (f_bf,) = struct.unpack("<f", got_bf["blk.0.ffn_gate.scale"][2])
     dec_bf = decode_nvfp4_ref(got_bf["blk.0.ffn_gate.weight"][2], n_el)
