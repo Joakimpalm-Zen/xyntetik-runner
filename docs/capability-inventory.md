@@ -6,14 +6,14 @@ Every public surface of Runner and the one component that owns it. The component
 
 | surface | Runtime | Execution | Model substrate | Model production | Proof | Shadow | Desktop | total |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Command line | 56 | 15 | 5 | 13 | 28 | 1 | 1 | 119 |
+| Command line | 56 | 15 | 5 | 14 | 28 | 1 | 1 | 120 |
 | HTTP routes | 22 |  |  |  | 1 |  |  | 23 |
 | `RUNNER_*` switches | 27 | 133 | 11 | 21 |  |  | 7 | 199 |
 | Record formats | 8 |  |  | 8 | 13 |  |  | 29 |
 | Python client | 14 |  |  |  |  | 25 |  | 39 |
 | TypeScript client | 18 |  |  |  | 7 |  |  | 25 |
 
-## Command line (119)
+## Command line (120)
 
 Every option `runner --help` declares, the subcommands, and the `runner attest` verbs.
 
@@ -22,7 +22,7 @@ Every option `runner --help` declares, the subcommands, and the `runner attest` 
 | Runtime | 56 | `--bare-recipients`, `--chat-template`, `--decide`, `--doctor-include-text`, `--fork-seed`, `--help`, `--ignore-eos`, `--info`, `--json`, `--kv-snapshots`, `--kv-snapshots-auto`, `--loop-guard`, `--memory`, `--min-p`, `--parallel`, `--parent-pid`, `--port`, `--pull`, `--ram-share`, `--reasoning-budget`, `--reasoning-budget-message`, `--reasoning-temp`, `--repeat-penalty`, `--reserve`, `--resume`, `--roster`, `--score`, `--score-out`, `--score-ref`, `--score-tokens`, `--serve`, `--session-out`, `--sessions`, `--sizes-only`, `--suspend-after`, `--system`, `--systemone`, `--temp`, `--think`, `--top-k`, `--top-p`, `--ttl`, `--version`, `--vram-priority`, `--wait-for-vram`, `--yield-on-request`, `-f`, `-h`, `-hf`, `-i`, `-n`, `-p`, `-s`, `-v`, `runner cached`, `runner recommend` |
 | Execution | 15 | `--bench-json`, `--cpu-moe`, `--draft`, `--draft-k`, `--draft-required`, `--gpu`, `--gpu-route`, `--kv`, `--kv-ring`, `--mlock`, `--moe-prefetch`, `--rope`, `-b`, `-c`, `-t` |
 | Model substrate | 5 | `--adapter`, `--lora`, `--lora-scale`, `--no-bos`, `-m` |
-| Model production | 13 | `--context-surgery`, `--imatrix`, `--merge-allow-erased`, `--merge-lora`, `--prune-experts`, `--quant`, `--quant-error`, `--remove-sublayer`, `--rewrite`, `--type-plan`, `--type-plan-strict`, `runner derive`, `runner train` |
+| Model production | 14 | `--context-surgery`, `--imatrix`, `--merge-allow-erased`, `--merge-lora`, `--prune-experts`, `--quant`, `--quant-error`, `--remove-sublayer`, `--rewrite`, `--type-plan`, `--type-plan-show`, `--type-plan-strict`, `runner derive`, `runner train` |
 | Proof | 28 | `--force-uncertified`, `--lora-sig`, `--model-pubkey`, `--model-sig`, `--record`, `--record-keep`, `--record-prev`, `--require-eval`, `--require-signed`, `--require-signed-model`, `--sign-key`, `--trust-key`, `--verify`, `--watermark`, `runner attest`, `runner attest bundle`, `runner attest check`, `runner attest check-bundle`, `runner attest check-pack`, `runner attest detect`, `runner attest keygen`, `runner attest lineage`, `runner attest pack`, `runner attest replay`, `runner attest sign`, `runner attest sign-model`, `runner attest unlearn`, `runner attest watermark-keygen` |
 | Shadow | 1 | `--shadow-mode` |
 | Desktop | 1 | `--tray` |

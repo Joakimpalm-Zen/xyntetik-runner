@@ -83,7 +83,7 @@ CLI_RULES = {
     },
     "substrate": {"-m", "--lora", "--lora-scale", "--adapter", "--no-bos"},
     "production": {
-        "--rewrite", "--quant", "--type-plan", "--type-plan-strict", "--imatrix",
+        "--rewrite", "--quant", "--type-plan", "--type-plan-strict", "--type-plan-show", "--imatrix",
         "--prune-experts", "--remove-sublayer", "--merge-lora", "--merge-allow-erased",
         "--context-surgery", "--quant-error", "runner train", "runner derive",
     },
