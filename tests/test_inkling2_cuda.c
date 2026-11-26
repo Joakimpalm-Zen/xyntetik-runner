@@ -2220,7 +2220,6 @@ int main(int argc, char **argv) {
     // Both device forms: -b 8 (the block path; the sliding rings of 8 - 1 + 8 rows wrap within the 24 positions) and
     // -b 1 (the resident step). The q8 rings must engage: the device's rows differ from its float32 cache's.
     {
-        plat_setenv("RUNNER_INKLING2_CUDA_TEST_KVQ8", "1");
         kv_q8_on = true;
         model_t *c1 = load_route(argv[1], false, false, 1, "fast"), *c8 = load_route(argv[1], false, false, 8, "fast");
         model_t *cr = load_route(argv[1], false, false, 8, "reference");
@@ -2274,7 +2273,6 @@ int main(int argc, char **argv) {
         }
         free(r1); free(r8); free(rr); free(rf1); free(rf8); drop(c1); drop(c8); drop(cr); drop(f1); drop(f8);
         kv_q8_on = false;
-        plat_setenv("RUNNER_INKLING2_CUDA_TEST_KVQ8", "");
     }
     // (ae) the second read's P2 3 (and 2): the 16-column threshold observed, not only its bits: a dense product runs
     // batched from 16 columns and per column below (one batched dispatch a product), an NVFP4 expert body tiles only
@@ -2404,11 +2402,9 @@ int main(int argc, char **argv) {
               "rings and convolution histories: %zu bytes, want %zu", slot, want);
         {   // the q8 shape: the fit's count and the allocation itself (the bytes asked of the driver) are the layout's,
             // and the layout differs from each ring rounded alone (the case the shape exists for)
-            plat_setenv("RUNNER_INKLING2_CUDA_TEST_KVQ8", "1");
             kv_q8_on = true;
             model_t *g8 = load(argv[2], true, false, 64);
             kv_q8_on = false;
-            plat_setenv("RUNNER_INKLING2_CUDA_TEST_KVQ8", "");
             size_t kv8 = 0, alone = 0;
             if (g8) model_inkling2_cuda_attn_calls(g8, &kv8);
             for (int ap = 0; xs && ap < xs->n_app; ap++) {   // each ring (and history) rounded as its own allocation

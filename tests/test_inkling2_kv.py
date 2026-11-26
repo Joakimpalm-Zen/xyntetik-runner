@@ -129,10 +129,10 @@ def test_the_fit_says_what_another_format_and_the_ring_switch_do(runner_bin, tin
 
 def test_the_cuda_fit_places_the_file_as_its_load_does(runner_bin, tiny):
     """On a CUDA host: --info fit's device section is the load's own placement run dry, so its placement is the load's
-    (every weight on the device, or the expert stacks on the host, or the CPU), at --kv q8 with the device's q8 rings
-    let through (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_KVQ8=1), and its non-weight line carries exact bytes."""
+    (every weight on the device, or the expert stacks on the host, or the CPU), at --kv q8, and its non-weight line
+    carries exact bytes."""
     import os
-    env = dict(os.environ, RUNNER_INKLING2_CUDA="1", RUNNER_INKLING2_CUDA_TEST_KVQ8="1")
+    env = dict(os.environ, RUNNER_INKLING2_CUDA="1")
     env.pop("RUNNER_INKLING2_ROUTE", None)
     common = [str(runner_bin), "-m", str(tiny), "--gpu", "auto", "-c", str(CTX), "-b", "8", "--kv", "q8"]
     fit = subprocess.run(common + ["--info", "fit"], capture_output=True, encoding="utf-8", errors="replace", env=env,
@@ -157,8 +157,7 @@ def test_q8_engages_on_the_device(runner_bin, tiny):
     tests/test_inkling2_cuda.c holds those rings to the CPU's q8 cache."""
     import os
     env = dict(os.environ, RUNNER_INKLING2_CUDA="1")
-    for k in ("RUNNER_INKLING2_ROUTE", "RUNNER_INKLING2_CUDA_TEST_KVQ8"):
-        env.pop(k, None)
+    env.pop("RUNNER_INKLING2_ROUTE", None)
     common = [str(runner_bin), "-m", str(tiny), "--gpu", "auto", "-c", str(CTX), "-b", "8", "--kv", "q8"]
     fit = subprocess.run(common + ["--info", "fit"], capture_output=True, encoding="utf-8", errors="replace", env=env,
                          timeout=600)

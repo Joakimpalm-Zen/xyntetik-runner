@@ -21,10 +21,12 @@ uploads nothing. It prints the weights, buffers, small tensors, every slot's
 K/V rings and histories, the 512 MiB kept, and a `non-weight` line in exact
 bytes. The verdict is `FITS`, `FITS WITH --kv q8` or `DOES NOT FIT`.
 
-`--kv q8` keeps f32 on this route for now, with a note. The device's q8
-rings (`k_ink2_attn_q8`, `k_ink2_attn_logits_q8`, `k_ink2_kv_store_q8`)
-are in the module but held back until their device gates pass. Each slot's
-sliding rings share one allocation per side.
+`--kv q8` stores q8 rings on the device too (`k_ink2_attn_q8`,
+`k_ink2_attn_logits_q8`, `k_ink2_kv_store_q8`), written with the host's own
+quantizer arithmetic and read back exactly. `make test-inkling2-cuda` holds
+them to the CPU's q8 cache, teacher-forced, within three times the CPU's own
+reassociation floor; token identity is never claimed. Each slot's sliding
+rings share one allocation per side.
 
 The Q8_K_XL and Q4_K_XL files each passed the pinned CUDA chat smoke on
 `linux-x86_64-cuda` at `299cba11` (2026-11-25), on an sm_120 GPU (a 24 GB MIG
@@ -133,7 +135,6 @@ prove that a missing factor, declined path or device failure is detected.
 |---|---|
 | `RUNNER_INKLING2_CUDA_TEST_NO_FACTOR=1` | Omit the expert factors, the fidelity control. |
 | `RUNNER_INKLING2_CUDA_TEST_FREE` | Cap the fit's reported free device memory in bytes. |
-| `RUNNER_INKLING2_CUDA_TEST_KVQ8=1` | Let `--kv q8` store q8 rings on the device, for its device gates. |
 | `RUNNER_INKLING2_TEST_KV_RT=1` | CPU routes: float32 rows holding each row's q8 round trip, the q8 cache's bit-for-bit reference. |
 | `RUNNER_INKLING2_CUDA_TEST_PUT_FAIL` | Fail the indexed upload; check rollback and CPU fallback. |
 | `RUNNER_INKLING2_CUDA_TEST_LIN_FAIL` | Fail the indexed device product; check forward refusal. |

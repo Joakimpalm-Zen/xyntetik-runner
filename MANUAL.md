@@ -2448,7 +2448,8 @@ Vulkan is not implemented; AMD and Intel GPUs use the CPU path.
   - `--kv q8` stores q8_0 rows on its CPU routes, read back exactly, so the
     logits are the f32 cache's over the same rounded values.
   - About 1.17 GiB of K/V at 64K on the real file, against 4.40 GiB at f32.
-  - The CUDA route keeps f32 under `--kv q8` until its device gates pass.
+  - The CUDA route stores q8 rings too, held to the CPU's q8 cache within
+    three times the CPU's own reassociation floor (never token identity).
   - `--kv f16`, `k8v4` and `fp4` keep f32 with a note.
   - `--info fit` counts the asked format, every `--parallel` slot, and on the
     CUDA route the load's own placement ([details](docs/inkling2-cuda.md)).
