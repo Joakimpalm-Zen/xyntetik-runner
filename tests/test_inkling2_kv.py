@@ -149,3 +149,24 @@ def test_the_cuda_fit_places_the_file_as_its_load_does(runner_bin, tiny):
     assert load.returncode == 0, load.stderr[-2000:]
     on_device = "inkling2_loop: the weights on CUDA" in load.stderr
     assert m.group(1).startswith("every weight on the device") == on_device, (fit.stdout, load.stderr[-2000:])
+
+
+def test_q8_engages_on_the_device(runner_bin, tiny):
+    """On a CUDA host: --kv q8 under RUNNER_INKLING2_CUDA=1 stores q8 rings on the device, with no test switch: the load
+    line says K/V q8, no note keeps f32, and the weights are on CUDA (the bind banner). Gate (c) in
+    tests/test_inkling2_cuda.c holds those rings to the CPU's q8 cache."""
+    import os
+    env = dict(os.environ, RUNNER_INKLING2_CUDA="1")
+    for k in ("RUNNER_INKLING2_ROUTE", "RUNNER_INKLING2_CUDA_TEST_KVQ8"):
+        env.pop(k, None)
+    common = [str(runner_bin), "-m", str(tiny), "--gpu", "auto", "-c", str(CTX), "-b", "8", "--kv", "q8"]
+    fit = subprocess.run(common + ["--info", "fit"], capture_output=True, encoding="utf-8", errors="replace", env=env,
+                         timeout=600)
+    if "CUDA route:" not in fit.stdout:
+        pytest.skip("no CUDA device here: the device rings are a CUDA host's")
+    load = subprocess.run(common + ["-t", "2", "-p", "hi", "-n", "1", "--temp", "0"], capture_output=True,
+                          encoding="utf-8", errors="replace", env=env, timeout=600)
+    assert load.returncode == 0, load.stderr[-2000:]
+    assert "K/V q8" in load.stderr and "keeps f32" not in load.stderr, load.stderr[-2000:]
+    assert "inkling2_loop: the weights on CUDA" in load.stderr, load.stderr[-2000:]
+    assert "slots' K/V rings in q8" in fit.stdout, fit.stdout
