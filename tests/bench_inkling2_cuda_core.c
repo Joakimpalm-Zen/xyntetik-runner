@@ -38,7 +38,7 @@ int main(void) {
     const int rows[1] = { R }, cw[1] = { C };
     for (int global = 1; global >= 0; global--)
         for (int ref = 1; ref >= 0; ref--) {
-            gpu_ink2_kv *kv = gpu_ink2_kv_new(h, 1, rows, cw, 0);
+            gpu_ink2_kv *kv = gpu_ink2_kv_new(h, 1, rows, cw, 0, 0, NULL);
             gpu_ink2_test_attn_ref(h, ref);
             bool ok = kv && gpu_ink2_attn(h, kv, 0, P, pos, q, k, v, rl, sk, att, NH, NKV, HD, 1024, global, EXT, scale);
             double best = 1e30, sum = 0;

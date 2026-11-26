@@ -244,9 +244,17 @@ ink2_status ink2_test_message_steps(const ink2_shape *s, const ink2_weights *w, 
 // positions p0-K+1..p0-1 (the K and V convolutions' inputs are their linear outputs, so the K/V projection inputs of
 // those positions, or the linear outputs themselves, kept per position; the post convolutions' inputs are the
 // attention output and the expert output of those positions).
+// R4.48.8.5: the K/V rows' storage. F32 as always; Q8 is the house's q8_0 row (quants.c q8_quant_row: C/32 blocks of an
+// fp16 scale and 32 int8 values, 34 bytes each), read at attention as (float)q * d, exact in float32; RT (TEST-ONLY)
+// float32 rows holding each row's q8 round trip, the reference a Q8 cache must equal bit for bit
+// (tests/test_inkling2_kvq8.c). Q8 needs every application's head_dim to be a multiple of 32.
+enum { INK2_KV_F32 = 0, INK2_KV_Q8 = 1, INK2_KV_RT = 2 };
 typedef struct {
     int n_app, n_ctx;
-    float **k, **v;          // [n_app] -> [n_ctx][n_kv * head_dim] (that application's layer type's sizes)
+    int kv;                  // INK2_KV_F32, INK2_KV_Q8 or INK2_KV_RT
+    unsigned char **k, **v;  // [n_app] -> rows[a] rows of rb[a] bytes: [n_kv * head_dim] values in the kind's storage
+    size_t *rb;              // [n_app] the bytes of one K (or V) row (ink2_kv_row_bytes)
+    unsigned char *rt_tmp;   // INK2_KV_RT: one q8 row, the round trip's scratch
     float **conv;            // [n_app] -> the layer's four short-convolution histories, by the reference's conv_idx
                              // (0 k_proj.sconv, 1 v_proj.sconv, 2 post_attention_convolution, 3 post_mlp_convolution):
                              // each a ring of conv_k - 1 input rows, position u in row u % (conv_k - 1), rows as wide
@@ -272,6 +280,18 @@ int  ink2_cache_init(ink2_cache *c, const ink2_shape *s, int n_ctx);
 // 2.5 GiB at 8K). The keys a call reads are the ones its mask admits, in the same order, so the outputs are the
 // full-size cache's bit for bit. A call wider than max_chunk is refused (INK2_BAD_INPUT).
 int  ink2_cache_init_window(ink2_cache *c, const ink2_shape *s, int n_ctx, int max_chunk);
+// R4.48.8.5: either of the above (max_chunk 0: full-size buffers) with the K/V rows in storage kind (INK2_KV_*); -1
+// when the kind does not fit the shape (Q8 or RT with a head_dim not a multiple of 32) or memory runs out
+int  ink2_cache_init_kind(ink2_cache *c, const ink2_shape *s, int n_ctx, int max_chunk, int kind);
+// R4.48.8.5: the sizes every cache count shares (the host cache, the device rings, --info fit), so none can disagree:
+// application a's K (or V) row width in values (n_kv * head_dim of its layer type), its row bytes in a kind, the rows
+// its buffer holds (n_ctx, or for a sliding one under a chunk window - 1 + max_chunk when smaller), whether a kind
+// fits the shape, and the host cache's K/V and convolution bytes for one slot
+int      ink2_app_kv_width(const ink2_shape *s, int a);
+size_t   ink2_kv_row_bytes(int C, int kind);
+int      ink2_kv_app_rows(const ink2_shape *s, int a, int n_ctx, int max_chunk);
+int      ink2_kv_kind_ok(const ink2_shape *s, int kind);
+uint64_t ink2_cache_plan_bytes(const ink2_shape *s, int n_ctx, int max_chunk, int kind);
 // the bytes of K/V, convolution and bookkeeping the cache holds
 size_t ink2_cache_bytes(const ink2_cache *c, const ink2_shape *s);
 void ink2_cache_free(ink2_cache *c);

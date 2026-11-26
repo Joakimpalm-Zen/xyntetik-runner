@@ -11,6 +11,7 @@
 #ifndef RUNNER_INKLING2_MODEL_H
 #define RUNNER_INKLING2_MODEL_H
 #include "model.h"
+#include "inkling2.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -40,7 +41,15 @@ bool   model_inkling2_fit(model_t *m, inkling2_fit *f);
 char   model_inkling2_route(const model_t *m);
 // --info fit on an inkling2_loop header (no weights read): what a load at n_ctx and n_batch would hold, by the same
 // parts, against the RAM available now. Prints the report; returns the exit code (0 fits, 1 does not).
-int    model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, int n_batch);
+int    model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, const model_params *mp, int n_seq);
+// R4.48.8.5: one slot's device bytes (its K/V rings in kind INK2_KV_*, the sliding ones packed, its convolution
+// histories when hist_rows > 0 and, with the step, its post convolutions' copies), each allocation as the driver rounds
+// it: what the CUDA load's fit counts per slot and --info fit prints
+uint64_t model_inkling2_dev_slot_bytes(const ink2_shape *s, int n_ctx, int max_chunk, int kind, bool attn_dev,
+                                       int hist_rows, bool step);
+// The same layout's bytes as asked of the driver, before its rounding: what the slot's own count holds (gpu_ink2_kv_bytes)
+uint64_t model_inkling2_dev_slot_alloc_bytes(const ink2_shape *s, int n_ctx, int max_chunk, int kind, bool attn_dev,
+                                             int hist_rows, bool step);
 // R4.48.9: whether this instance's forward runs on CUDA (false: the CPU engine).
 bool   model_inkling2_cuda(const model_t *m);
 // R4.48.9, TEST-ONLY (G1): read every device-resident matrix and expert stack back and compare it with the host

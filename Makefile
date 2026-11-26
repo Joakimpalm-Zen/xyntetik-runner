@@ -386,6 +386,7 @@ TEST_THREAD_DEFAULT = $(TEST_BATCH:test-batch%=test-thread-default%)
 TEST_INKLING2_THREADS = $(TEST_BATCH:test-batch%=test-inkling2-threads%)
 TEST_INKLING2_FAST = $(TEST_BATCH:test-batch%=test-inkling2-fast%)
 TEST_INKLING2_REQUANT = $(TEST_BATCH:test-batch%=test-inkling2-requant%)
+TEST_INKLING2_KVQ8 = $(TEST_BATCH:test-batch%=test-inkling2-kvq8%)
 TEST_INK2_POOL_BENCH_BIN = $(TEST_BATCH:test-batch%=test-ink2-pool-bench-bin%)
 TEST_NVFP4_DOT = $(TEST_BATCH:test-batch%=test-nvfp4-dot%)
 TEST_INKLING2_VMATH = $(TEST_BATCH:test-batch%=test-inkling2-vmath%)
@@ -2168,6 +2169,10 @@ TEST_INKLING2_REQUANT_SRC = tests/test_inkling2_requant.c $(OBJDIR)/gguf.o $(OBJ
                             $(OBJDIR)/json.o $(OBJDIR)/inkling2_gguf.o $(OBJDIR)/inkling2.o
 $(TEST_INKLING2_REQUANT): $(TEST_INKLING2_REQUANT_SRC) src/quantize.c $(HDR)
 	$(CC) $(QUANTIZE_CFLAGS) -I src $(TEST_INKLING2_REQUANT_SRC) -o $@ $(LDFLAGS)
+# R4.48.8.5 gate (a): the q8 K/V cache gives the float32 cache's logits over the round-tripped rows, bit for bit, on
+# both CPU routes and across the sliding buffers' slide (tests/test_inkling2_kvq8.c)
+$(TEST_INKLING2_KVQ8): $(TEST_INKLING2_FAST_SRC:tests/test_inkling2_fast.c=tests/test_inkling2_kvq8.c) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_INKLING2_FAST_SRC:tests/test_inkling2_fast.c=tests/test_inkling2_kvq8.c) -o $@ $(LDFLAGS)
 # R4.48.25: the fast route's own vector kernels (exp, tanh, the SwiGLU block, the attention core) each against
 # pmath's double forms, to a bound a few roundings wide (tests/test_inkling2_vmath.c states each rule)
 TEST_INKLING2_VMATH_SRC = tests/test_inkling2_vmath.c $(OBJDIR)/inkling2.o $(OBJDIR)/inkling2_ecache.o \
@@ -4193,7 +4198,7 @@ test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SC
       $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_TRAY_MAC_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) $(TEST_LINEAGE_OOM) $(TEST_DERIVE_OOM) test-lora.full.gguf \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_SHA256) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_PMATH_EXPF) $(TEST_PMATH_EXPF_DEFAULT) $(TEST_PMATH_SOFTMAX) $(TEST_FPCLASS) $(TEST_ACT) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
-      $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_INKLING2_THREADS) $(TEST_INKLING2_FAST) $(INKLING2_TINY_DENSE) $(TEST_INKLING2_REQUANT) $(INKLING2_TINY_VARIED) $(TEST_NVFP4_DOT) $(TEST_INKLING2_VMATH) $(TEST_SEND_ERROR) \
+      $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_INKLING2_THREADS) $(TEST_INKLING2_FAST) $(INKLING2_TINY_DENSE) $(TEST_INKLING2_REQUANT) $(INKLING2_TINY_VARIED) $(TEST_INKLING2_KVQ8) $(TEST_NVFP4_DOT) $(TEST_INKLING2_VMATH) $(TEST_SEND_ERROR) \
       $(TEST_INKLING2) $(TEST_INKLING2_PROVIDER) $(TEST_INKLING2_GGUF) $(INKLING2_READ) \
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) $(TEST_RESTART) $(TEST_PFX_PERSIST) $(TEST_KVSNAP_REPLACE) $(TEST_PARTIAL_FDOPEN) \
       $(TEST_SCHED_TURN) $(TEST_STREAM_OUT) $(TEST_RESIDENCY) $(TEST_CAPACITY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
@@ -4584,6 +4589,7 @@ test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SC
 	./$(TEST_INKLING2_VMATH) > test-inkling2-vmath.out 2>&1 || { cat test-inkling2-vmath.out; exit 1; }
 	./$(TEST_INKLING2_FAST) $(INKLING2_TINY_DENSE) > test-inkling2-fast.out 2>&1 || { cat test-inkling2-fast.out; exit 1; }
 	./$(TEST_INKLING2_REQUANT) $(INKLING2_TINY_VARIED) > test-inkling2-requant.out 2>&1 || { cat test-inkling2-requant.out; exit 1; }
+	./$(TEST_INKLING2_KVQ8) test-inkling2-tiny-f32.gguf > test-inkling2-kvq8.out 2>&1 || { cat test-inkling2-kvq8.out; exit 1; }
 	./$(TEST_MODEL_LOAD_FAILURE)
 	@# a model load with each of its allocations failed in turn, alone and
 	@# beside an instance holding the shared weights, over one fixture per
@@ -4819,6 +4825,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_ignore_eos_request.py \
     tests/test_inkling2_fast.py \
     tests/test_inkling2_hardening.py \
+    tests/test_inkling2_kv.py \
     tests/test_inkling2_protocol.py \
     tests/test_inkling2_rewrite.py \
     tests/test_inkling2_train.py \
@@ -5275,7 +5282,7 @@ clean:
 	      $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_TOOLS) $(DIFFTOK) \
 	      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
 	      $(TEST_QUANTIZE) $(TEST_KVSNAP_REPLACE) $(TEST_PARTIAL_FDOPEN) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
-	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_INKLING2_THREADS) test-inkling2-threads.out $(TEST_INKLING2_FAST) test-inkling2-fast.out $(TEST_INKLING2_REQUANT) test-inkling2-requant.out $(TEST_INKLING2_VMATH) test-inkling2-vmath.out $(INKLING2_TINY_DENSE) $(TEST_INK2_POOL_BENCH_BIN) test-inkling2-tiny-f16.gguf test-inkling2-tiny-lora.gguf $(TEST_INKLING2_CUDA) $(BENCH_INKLING2_CUDA_CORE) $(TEST_NVFP4_DOT) test-nvfp4-dot.out $(TEST_INKLING2) $(TEST_INKLING2_PROVIDER) $(TEST_INKLING2_GGUF) $(INKLING2_READ) $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) \
+	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_INKLING2_THREADS) test-inkling2-threads.out $(TEST_INKLING2_FAST) test-inkling2-fast.out $(TEST_INKLING2_REQUANT) test-inkling2-requant.out $(TEST_INKLING2_KVQ8) test-inkling2-kvq8.out $(TEST_INKLING2_VMATH) test-inkling2-vmath.out $(INKLING2_TINY_DENSE) $(TEST_INK2_POOL_BENCH_BIN) test-inkling2-tiny-f16.gguf test-inkling2-tiny-lora.gguf $(TEST_INKLING2_CUDA) $(BENCH_INKLING2_CUDA_CORE) $(TEST_NVFP4_DOT) test-nvfp4-dot.out $(TEST_INKLING2) $(TEST_INKLING2_PROVIDER) $(TEST_INKLING2_GGUF) $(INKLING2_READ) $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) \
 	      $(TEST_FILE_ID) test-file-identity.tmp \
 	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_LONGROPE) $(TEST_PREFILL_BATCH) $(TEST_CUDA_LONGROPE) $(TEST_CUDA_BATCH_COLS) $(TEST_CUDA_BATCH_Q35) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
 	      $(TMPL_CONF_RENDER) \

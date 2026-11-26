@@ -68,6 +68,7 @@
 #include "inkling2.h"
 #include "compat.h"
 #include "quants.h"
+#include "fp16.h"
 #include "pmath.h"   // (sw): pm_exp_d, the SwiGLU's double reference
 #include <float.h>
 #include <math.h>
@@ -88,6 +89,7 @@ static int fails;
 static bool cpu_moe;   // the next loads' --cpu-moe
 static int n_seq;      // the next loads' slot count (model_params.n_seq: a server's --parallel)
 static int ctx_len;    // the next loads' -c (0: 64)
+static bool kv_q8_on;  // R4.48.8.5: the next loads' --kv q8
 static float *rows(model_t *m);
 // (p): forwards on two instances at once, each on its own thread, over one shared device copy
 typedef struct { model_t *m; float *out[4]; } par_job;
@@ -127,6 +129,7 @@ static model_t *load_route(const char *path, bool gpu, bool no_factor, int n_bat
     p.n_batch = n_batch;
     p.cpu_moe = cpu_moe;
     p.n_seq = n_seq;
+    p.kv_q8 = kv_q8_on;
     model_t *m = calloc(1, sizeof *m);
     if (!m || !model_load(m, path, &p)) { free(m); return NULL; }
     return m;
@@ -205,6 +208,82 @@ static struct {
     size_t alg_max, aatt_min;
 } g_obs;
 
+// R4.48.8.5 (n8): the device core over a q8 ring against the same core over a float32 ring holding the q8 round trip
+// of every K and V row (quants.c q8_quant_row, then (float)q * d), through the given chunks: the q8 twins read each
+// value exactly, so every output bit must be the float32 kernels' (*nd_prod the production pair's differing values,
+// *nd_ref the reference kernels'). The q8 ring is application 1 of two packed into one allocation (its ring at an
+// offset), the float32 one its own. *cmp the values compared; false if the device did not run.
+static void q8_round_trip(const float *x, float *y, int n_rows, int C) {
+    unsigned char *b = malloc((size_t)(C / 32) * 34);
+    for (int r = 0; b && r < n_rows; r++) {
+        q8_quant_row(x + (size_t)r * C, b, C);
+        for (int k = 0; k < C / 32; k++) {
+            uint16_t d;
+            memcpy(&d, b + (size_t)k * 34, 2);
+            const float df = f16_to_f32(d);
+            for (int j = 0; j < 32; j++) y[(size_t)r * C + 32 * k + j] = (float)(int8_t)b[(size_t)k * 34 + 2 + j] * df;
+        }
+    }
+    free(b);
+}
+static bool core_case_q8(int hd, int global, int window, int R, const int *chunks, int n_chunks, long *nd_prod,
+                         long *nd_ref, long *cmp) {
+    enum { NH = 4, NKV = 2, EXT = 16 };
+    const int C = NKV * hd, Q = NH * hd;
+    int NP = 0, Tmax = 0;
+    for (int c = 0; c < n_chunks; c++) { NP += chunks[c]; if (chunks[c] > Tmax) Tmax = chunks[c]; }
+    const float scale = 1.0f / sqrtf((float)hd);
+    uint32_t seed = 9191u + (uint32_t)hd;
+#define RND() ((float)((int)((seed = seed * 1664525u + 1013904223u) >> 9) % 2001 - 1000) / 1000.0f)
+    float *q = malloc(sizeof(float) * (size_t)NP * Q), *k = malloc(sizeof(float) * (size_t)NP * C);
+    float *v = malloc(sizeof(float) * (size_t)NP * C), *kq = malloc(sizeof(float) * (size_t)NP * C);
+    float *vq = malloc(sizeof(float) * (size_t)NP * C), *rl = malloc(sizeof(float) * (size_t)NP * NH * EXT);
+    float *sk = malloc(sizeof(float) * (size_t)NP * NH), *a8 = malloc(sizeof(float) * (size_t)Tmax * Q);
+    float *af = malloc(sizeof(float) * (size_t)Tmax * Q);
+    int *pos = malloc(sizeof(int) * (size_t)NP);
+    bool ran = q && k && v && kq && vq && rl && sk && a8 && af && pos;
+    for (int i = 0; ran && i < NP * Q; i++) q[i] = RND();
+    for (int i = 0; ran && i < NP * C; i++) { k[i] = RND(); v[i] = RND(); }
+    for (int i = 0; ran && i < NP * NH * EXT; i++) rl[i] = 2.0f * RND();
+    for (int i = 0; ran && i < NP * NH; i++) sk[i] = i % 7 == 0 ? -20.0f : i % 11 == 0 ? 5.0f : RND();
+    for (int i = 0; ran && i < NP; i++) pos[i] = i;
+#undef RND
+    if (ran) { q8_round_trip(k, kq, NP, C); q8_round_trip(v, vq, NP, C); }
+    gpu_ink2 *h = ran ? gpu_ink2_bind() : NULL;
+    const int rows2[2] = { R / 2 + 1, R }, cw2[2] = { C, C }, rows1[1] = { R }, cw1[1] = { C };
+    static const unsigned char pk[2] = { 1, 1 };
+    gpu_ink2_kv *k8 = h ? gpu_ink2_kv_new(h, 2, rows2, cw2, 0, 1, pk) : NULL, *kf = h ? gpu_ink2_kv_new(h, 1, rows1, cw1, 0, 0, NULL) : NULL;
+    gpu_ink2_kv *k8r = h ? gpu_ink2_kv_new(h, 2, rows2, cw2, 0, 1, pk) : NULL, *kfr = h ? gpu_ink2_kv_new(h, 1, rows1, cw1, 0, 0, NULL) : NULL;
+    ran = ran && k8 && kf && k8r && kfr && gpu_ink2_reserve_attn(h, Tmax, Q, NH, EXT, NP);
+    for (int c = 0, p0 = 0; ran && c < n_chunks; p0 += chunks[c], c++) {
+        const int T = chunks[c];
+        for (int ref = 0; ran && ref < 2; ref++) {
+            gpu_ink2_test_attn_ref(h, ref);
+            ran = gpu_ink2_attn(h, ref ? k8r : k8, 1, T, pos + p0, q + (size_t)p0 * Q, k + (size_t)p0 * C, v + (size_t)p0 * C,
+                                rl + (size_t)p0 * NH * EXT, sk + (size_t)p0 * NH, a8, NH, NKV, hd, window, global, EXT, scale) &&
+                  gpu_ink2_attn(h, ref ? kfr : kf, 0, T, pos + p0, q + (size_t)p0 * Q, kq + (size_t)p0 * C, vq + (size_t)p0 * C,
+                                rl + (size_t)p0 * NH * EXT, sk + (size_t)p0 * NH, af, NH, NKV, hd, window, global, EXT, scale);
+            gpu_ink2_test_attn_ref(h, 0);
+            for (size_t x = 0; ran && x < (size_t)T * Q; x++) {
+                uint32_t ua, ub;
+                memcpy(&ua, a8 + x, sizeof ua);
+                memcpy(&ub, af + x, sizeof ub);
+                *(ref ? nd_ref : nd_prod) += ua != ub;
+                if (!ref) (*cmp)++;
+            }
+        }
+    }
+    gpu_ink2_kv_free(k8); gpu_ink2_kv_free(kf); gpu_ink2_kv_free(k8r); gpu_ink2_kv_free(kfr);
+    if (h) gpu_ink2_free(h);
+    free(q); free(k); free(v); free(kq); free(vq); free(rl); free(sk); free(a8); free(af); free(pos);
+    return ran;
+}
+// mean |a - b| over n values (gate (c)'s distance, test_kv_tol.c's)
+static double mean_abs(const float *a, const float *b, size_t n) {
+    double s = 0;
+    for (size_t i = 0; i < n; i++) s += fabs((double)a[i] - (double)b[i]);
+    return n ? s / (double)n : 0;
+}
 static double core_case(int hd, int global, int window, int R, const int *chunks, int n_chunks, size_t *nf, long *cmp,
                         long *ndiff) {
     enum { NH = 4, NKV = 2, EXT = 16 };
@@ -228,7 +307,7 @@ static double core_case(int hd, int global, int window, int R, const int *chunks
 #undef RND
     gpu_ink2 *h = gpu_ink2_bind();
     const int rows[1] = { R }, cw[1] = { C };
-    gpu_ink2_kv *kv = h ? gpu_ink2_kv_new(h, 1, rows, cw, 0) : NULL, *kvr = h ? gpu_ink2_kv_new(h, 1, rows, cw, 0) : NULL;
+    gpu_ink2_kv *kv = h ? gpu_ink2_kv_new(h, 1, rows, cw, 0, 0, NULL) : NULL, *kvr = h ? gpu_ink2_kv_new(h, 1, rows, cw, 0, 0, NULL) : NULL;
     double worst = 0, top = 0;
     // reserved as the fit does (the stored logits at most 16 MiB): 1040 queries x 4 heads x 1040 keys then run as two
     // groups of queries, so the grouping is under the byte identity too
@@ -1015,14 +1094,13 @@ int main(int argc, char **argv) {
             ink2_set_test_chunk_bump(0.0f);
             CHECK(k0 && k64 && memcmp(k0, k64, sizeof(float) * nl), "(w) %s: control: a bump at each chunk's start moves "
                   "-b 256's rows away from -b 64's (the boundaries are live)", kind[f]);
-            // the sliding rings: window - 1 + 256 rows; a full layer's -c; plus each layer's two histories (conv_k - 1)
-            size_t want_kv = 0, kvb = 0;
-            for (int ap = 0; ws && ap < ws->n_app; ap++) {
-                const int gl = ink2_app_global(ws, ap);
-                const size_t C = (size_t)(gl ? ws->n_kv * ws->head_dim : ws->swa_n_kv * ws->swa_head_dim);
-                const size_t rws = gl || ws->window - 1 + 256 >= CL ? (size_t)CL : (size_t)(ws->window - 1 + 256);
-                want_kv += 2 * sizeof(float) * C * (rws + (size_t)(ws->conv_k - 1));
-            }
+            // the sliding rings: window - 1 + 256 rows; a full layer's -c; plus each layer's two histories (conv_k - 1).
+            // R4.48.8.5: the want is the slot layout's own rule (model_inkling2_dev_slot_alloc_bytes: full rings alone,
+            // the sliding ones packed at 256-byte offsets per side, histories alone; the bytes asked of the driver),
+            // not a sum re-derived here: a sum of unpadded rings went stale when the sliding rings were packed
+            size_t kvb = 0;
+            const size_t want_kv = ws ? (size_t)model_inkling2_dev_slot_alloc_bytes(ws, CL, 256, INK2_KV_F32, true,
+                                                                                    ws->conv_k - 1, false) : 0;
             if (w0) model_inkling2_cuda_attn_calls(w0, &kvb);
             CHECK(ws && kvb == want_kv && want_kv > 0, "(w) %s: the device K/V rings and histories at -b 256: %zu bytes, want "
                   "%zu (each sliding ring window %d - 1 + 256 rows)", kind[f], kvb, want_kv, ws ? ws->window : -1);
@@ -2088,6 +2166,116 @@ int main(int argc, char **argv) {
                   "kernel's (the core before the decode fix; want 0)", cs[k].what, nd, cmp);
         }
     }
+    // R4.48.8.5 (n8): the q8 rings' cores against the float32 ones over the round-tripped rows, bit for bit, on the
+    // full and sliding cases above (the ring's wraps included), the production pair and the reference kernels both
+    {
+        static const int c_slide8[] = { 64, 8, 8, 8, 8, 8, 8, 8, 8, 64, 1, 1, 1, 1 }, c_full8[] = { 70, 8, 8, 1, 1 };
+        static const struct { const char *what; int hd, global, window, R; const int *ch; int nch; } c8[] = {
+            { "a sliding layer (window 40, ring 103) across the ring's wraps (head_dim 128)", 128, 0, 40, 103, c_slide8,
+              (int)(sizeof c_slide8 / sizeof *c_slide8) },
+            { "a full layer, head_dim 32", 32, 1, 40, 200, c_full8, (int)(sizeof c_full8 / sizeof *c_full8) },
+            { "a full layer, head_dim 256", 256, 1, 40, 200, c_full8, (int)(sizeof c_full8 / sizeof *c_full8) },
+        };
+        for (size_t k = 0; k < sizeof c8 / sizeof *c8; k++) {
+            long np = 0, nr = 0, cmp = 0;
+            const bool ran = core_case_q8(c8[k].hd, c8[k].global, c8[k].window, c8[k].R, c8[k].ch, c8[k].nch, &np, &nr, &cmp);
+            CHECK(ran && cmp > 0 && np == 0 && nr == 0, "(n8) the q8 ring's cores, %s: %ld (production) and %ld (reference) "
+                  "of %ld values differ in their bits from the float32 kernels' over the round-tripped rows (want 0)",
+                  c8[k].what, np, nr, cmp);
+        }
+    }
+    // R4.48.8.5 (n9): the device store (k_ink2_kv_store_q8, the block path's and the resident step's) writes the host's
+    // q8_quant_row bytes, row t at ring row (s0 + t) % R, across the ring's wrap; the rows it does not reach stay zero
+    {
+        enum { T9 = 7, C9 = 256, R9 = 12, S9 = 9 };
+        float x[T9 * C9];
+        uint32_t sd = 777u;
+        for (int i = 0; i < T9 * C9; i++) x[i] = (float)((int)((sd = sd * 1664525u + 1013904223u) >> 9) % 4001 - 2000) / 300.0f;
+        x[5] = 0.0f; x[C9 + 3] = -0.0f;   // zeros and an all-zero block's neighbours
+        for (int j = 0; j < 32; j++) x[2 * C9 + 64 + j] = 0.0f;   // one all-zero block: scale 0
+        const size_t rb = (size_t)(C9 / 32) * 34;
+        unsigned char *ring = calloc(R9, rb), *want = calloc(1, rb), *zero = calloc(1, rb);
+        gpu_ink2 *h = gpu_ink2_bind();
+        const bool ran = h && ring && want && zero && gpu_ink2_test_kv_store_q8(h, x, T9, C9, R9, S9, ring);
+        long bad = 0;
+        for (int r = 0; ran && r < R9; r++) {
+            const int t = (r - S9 + R9) % R9;   // the chunk row this ring row holds, when t < T9
+            if (t < T9) q8_quant_row(x + (size_t)t * C9, want, C9);
+            bad += memcmp(ring + (size_t)r * rb, t < T9 ? want : zero, rb) != 0;
+        }
+        CHECK(ran && bad == 0, "(n9) the device store: %ld of %d ring rows differ from the host's q8_quant_row bytes (or "
+              "from zero where no row was written), from ring row %d of %d across the wrap (want 0)", bad, R9, S9, R9);
+        if (h) gpu_ink2_free(h);
+        free(ring); free(want); free(zero);
+    }
+    // R4.48.8.5 gate (c): the model on the device with q8 rings against the CPU's q8 cache, teacher-forced, in
+    // test_kv_tol.c's tolerance class (never token identity): impl = mean |q8_cuda - q8_cpu| over every logit of every
+    // position, at most REASSOC_SLACK 3 times the CPU's own floor; a top-1 disagreement only at a near-tie (TIE_FRAC:
+    // within 2% of the CPU row's logit range), at most DISAGREE_MAX 5% of the positions.
+    // The floor is mean |q8 fast - q8 reference|, the CPU's two routes at q8: a reassociation passed through the same
+    // quantizer, test_kv_tol's b = 1 against b = 64 in kind. That one is no floor here: the fast route is
+    // batch-invariant (tests/test_inkling2_kv.py), so -b 1 against -b 8 is exactly 0 (printed, for the record).
+    // FLOOR_EPS 1e-5 stays under it. The device's own float32 gap (its f32 cache against the CPU's f32, same -b) is
+    // printed as context.
+    // Both device forms: -b 8 (the block path; the sliding rings of 8 - 1 + 8 rows wrap within the 24 positions) and
+    // -b 1 (the resident step). The q8 rings must engage: the device's rows differ from its float32 cache's.
+    {
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_KVQ8", "1");
+        kv_q8_on = true;
+        model_t *c1 = load_route(argv[1], false, false, 1, "fast"), *c8 = load_route(argv[1], false, false, 8, "fast");
+        model_t *cr = load_route(argv[1], false, false, 8, "reference");
+        float *r1 = c1 ? rows_p(c1, PROMPT) : NULL, *r8 = c8 ? rows_p(c8, PROMPT) : NULL, *rr = cr ? rows_p(cr, PROMPT) : NULL;
+        const size_t nv = c8 ? (size_t)c8->n_vocab : 0, n = (size_t)N_TOK * nv;
+        const double floor_ = r8 && rr ? mean_abs(r8, rr, n) : -1, fl = floor_ > 1e-5 ? floor_ : 1e-5;
+        const double batch_floor = r1 && r8 ? mean_abs(r1, r8, n) : -1;
+        kv_q8_on = false;   // the CPU's float32 cache, for the device's own f32 gap (context)
+        model_t *f1 = load_route(argv[1], false, false, 1, "fast"), *f8 = load_route(argv[1], false, false, 8, "fast");
+        float *rf1 = f1 ? rows_p(f1, PROMPT) : NULL, *rf8 = f8 ? rows_p(f8, PROMPT) : NULL;
+        printf("(c) the CPU's floors at q8: fast against reference %.3e (the gate's); -b 1 against -b 8 %.3e (want 0: the "
+               "fast route is batch-invariant)\n", floor_, batch_floor);
+        for (int bi = 0; bi < 2; bi++) {
+            const int b = bi ? 1 : 8;
+            if (b == 1) plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_STEP", "");   // the resident step for single positions
+            kv_q8_on = true;
+            model_t *g = load_route(argv[1], true, false, b, "");
+            kv_q8_on = false;
+            model_t *gf = load_route(argv[1], true, false, b, "");
+            float *rg = g ? rows_p(g, PROMPT) : NULL, *rf = gf ? rows_p(gf, PROMPT) : NULL;
+            const float *rc = b == 1 ? r1 : r8;
+            int dis = 0, decisive = 0;
+            double impl = -1;
+            if (rg && rc) {
+                impl = mean_abs(rg, rc, n);
+                for (int t = 0; t < N_TOK; t++) {
+                    const float *a = rg + (size_t)t * nv, *c = rc + (size_t)t * nv;
+                    size_t ia = 0, ic = 0;
+                    float lo = c[0], hi = c[0];
+                    for (size_t i = 1; i < nv; i++) {
+                        if (a[i] > a[ia]) ia = i;
+                        if (c[i] > c[ic]) ic = i;
+                        if (c[i] < lo) lo = c[i];
+                        if (c[i] > hi) hi = c[i];
+                    }
+                    if (ia != ic) { dis++; decisive += c[ic] - c[ia] > 0.02f * (hi - lo); }
+                }
+            }
+            const float *rcf = b == 1 ? rf1 : rf8;
+            printf("(c) context at -b %d: the device's own float32 gap, mean |f32_cuda - f32_cpu| %.3e\n", b,
+                   rf && rcf ? mean_abs(rf, rcf, n) : -1.0);
+            CHECK(rg && rc && impl <= 3.0 * fl && decisive == 0 && dis <= (int)(0.05 * N_TOK),
+                  "(c) the device's q8 rings at -b %d against the CPU's q8 cache: mean |dlogit| %.3e, at most 3 x the "
+                  "CPU's floor %.3e (its fast route against its reference route at q8, floored at 1e-5); %d top-1 "
+                  "disagreements, %d of them decisive (want 0, and at most 5%% of %d positions)", b, impl, floor_, dis,
+                  decisive, N_TOK);
+            CHECK(rg && rf && memcmp(rg, rf, sizeof(float) * n) != 0, "(c) the device's q8 rings engaged at -b %d (its rows "
+                  "are not its float32 cache's)", b);
+            plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_STEP", "1");
+            free(rg); free(rf); drop(g); drop(gf);
+        }
+        free(r1); free(r8); free(rr); free(rf1); free(rf8); drop(c1); drop(c8); drop(cr); drop(f1); drop(f8);
+        kv_q8_on = false;
+        plat_setenv("RUNNER_INKLING2_CUDA_TEST_KVQ8", "");
+    }
     // (ae) the second read's P2 3 (and 2): the 16-column threshold observed, not only its bits: a dense product runs
     // batched from 16 columns and per column below (one batched dispatch a product), an NVFP4 expert body tiles only
     // an expert of 16+ columns (one tiled dispatch each for gate_up and down); the padded buffers hold INK2_XPAD
@@ -2204,23 +2392,42 @@ int main(int argc, char **argv) {
         const void *xsp = NULL;
         if (g) model_inkling2_parts(g, &xsp, NULL);
         const ink2_shape *xs = xsp;
-        // one slot by hand (the driver's rounding: 512 bytes under 1 MiB, 2 MiB pages from it): per application its
-        // K and V rings (rows: -c 64, a sliding ring's window - 1 + 64 = 71 capped there) and its two histories
-        // (conv_k - 1 = 3 rows); every row 32 floats on the tiny file
-        size_t want = 0;
-        for (int ap = 0; xs && ap < xs->n_app; ap++) {
-            const int gl = ink2_app_global(xs, ap);
-            const size_t C = (size_t)(gl ? xs->n_kv * xs->head_dim : xs->swa_n_kv * xs->swa_head_dim);
-            const size_t rws = gl || xs->window - 1 + 64 >= 64 ? 64 : (size_t)(xs->window - 1 + 64);
-            const size_t b[2] = { sizeof(float) * rws * C, sizeof(float) * (size_t)(xs->conv_k - 1) * C };
-            for (int k = 0; k < 2; k++) {
-                const size_t gr = b[k] >= ((size_t)1 << 20) ? (size_t)2 << 20 : 512;
-                want += 2 * ((b[k] + gr - 1) / gr * gr);
-            }
-        }
+        // one slot (rows: -c 64, a sliding ring's window - 1 + 64 = 71 capped there; histories of conv_k - 1 = 3 rows;
+        // every row 32 values on the tiny file). R4.48.8.5: the want is the slot layout's own rule,
+        // model_inkling2_dev_slot_bytes (full rings alone, the sliding ones packed at 256-byte offsets per side,
+        // histories alone, the driver's rounding once per allocation), not each ring rounded as its own allocation.
+        // That hand sum agreed only while every ring was a multiple of 512 bytes (a float32 ring of 64 rows, 8,192);
+        // the q8 shape below is not (2,176 bytes a ring).
+        const size_t want = xs ? (size_t)model_inkling2_dev_slot_bytes(xs, 64, 64, INK2_KV_F32, true, xs->conv_k - 1, false) : 0;
         const size_t slot = model_inkling2_cuda_slot_fit_bytes(g);
         CHECK(g && model_inkling2_cuda_block_calls(g) >= 0 && slot == want && want > 0, "(x) the fit counts one slot's K/V "
               "rings and convolution histories: %zu bytes, want %zu", slot, want);
+        {   // the q8 shape: the fit's count and the allocation itself (the bytes asked of the driver) are the layout's,
+            // and the layout differs from each ring rounded alone (the case the shape exists for)
+            plat_setenv("RUNNER_INKLING2_CUDA_TEST_KVQ8", "1");
+            kv_q8_on = true;
+            model_t *g8 = load(argv[2], true, false, 64);
+            kv_q8_on = false;
+            plat_setenv("RUNNER_INKLING2_CUDA_TEST_KVQ8", "");
+            size_t kv8 = 0, alone = 0;
+            if (g8) model_inkling2_cuda_attn_calls(g8, &kv8);
+            for (int ap = 0; xs && ap < xs->n_app; ap++) {   // each ring (and history) rounded as its own allocation
+                const size_t C = (size_t)ink2_app_kv_width(xs, ap);
+                const size_t b2[2] = { ink2_kv_row_bytes((int)C, INK2_KV_Q8) * (size_t)ink2_kv_app_rows(xs, ap, 64, 64),
+                                       sizeof(float) * (size_t)(xs->conv_k - 1) * C };
+                for (int k = 0; k < 2; k++) {
+                    const size_t gr = b2[k] >= ((size_t)1 << 20) ? (size_t)2 << 20 : 512;
+                    alone += 2 * ((b2[k] + gr - 1) / gr * gr);
+                }
+            }
+            const size_t w8 = xs ? (size_t)model_inkling2_dev_slot_bytes(xs, 64, 64, INK2_KV_Q8, true, xs->conv_k - 1, false) : 0;
+            const size_t a8 = xs ? (size_t)model_inkling2_dev_slot_alloc_bytes(xs, 64, 64, INK2_KV_Q8, true, xs->conv_k - 1, false) : 0;
+            const size_t s8 = model_inkling2_cuda_slot_fit_bytes(g8);
+            CHECK(g8 && s8 == w8 && kv8 == a8 && w8 > 0 && w8 != alone, "(x) the q8 shape: the fit counts %zu bytes (want %zu, "
+                  "the layout's), the slot allocated %zu (want %zu); each ring rounded alone would be %zu (want it to differ, "
+                  "or the shape tests nothing)", s8, w8, kv8, a8, alone);
+            drop(g8);
+        }
         // the block's ten buffers reserved before the fit read the free memory: their bytes before any forward are
         // T = 64 x (4 H + 3 C + nkv K + nh dr + Q) floats, and a forward does not grow them
         const size_t bb0 = model_inkling2_cuda_block_buf_bytes(g);
