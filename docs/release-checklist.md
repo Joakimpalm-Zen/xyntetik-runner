@@ -348,7 +348,10 @@ Commit the reports to the release branch, or to main if they arrive after the cu
 7. Update the Homebrew tap (`Joakimpalm-Zen/homebrew-xyntetik`), after the release
    is published so its `SHA256SUMS` exists: `tools/update-formula.py X.Y.Z` there
    writes the formula with the checksums read from the release, then commit and
-   push. Check it as a user would: `brew install joakimpalm-zen/xyntetik/xyntetik-runner`,
+   push. Check it as a user would: `brew trust --formula joakimpalm-zen/xyntetik/xyntetik-runner`
+   (Homebrew 7.0.16 refuses an untrusted tap's formula; with `XDG_CONFIG_HOME` set to a
+   temporary directory the trust lands there, not in the host's `~/.homebrew/trust.json`),
+   then `brew install joakimpalm-zen/xyntetik/xyntetik-runner`,
    `runner --version` prints `runner X.Y.Z`, and the installed binary's sha256 is
    the release asset's. Uninstall with `HOMEBREW_NO_AUTOREMOVE=1` on a machine
    whose other formulae matter. The tap began with 1.18.0.

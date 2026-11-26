@@ -106,8 +106,12 @@ same released binary as `runner` on your PATH; drop the `./` in the commands
 below:
 
 ```sh
+brew trust --formula joakimpalm-zen/xyntetik/xyntetik-runner
 brew install joakimpalm-zen/xyntetik/xyntetik-runner
 ```
+
+Recent Homebrew versions load a formula from a tap outside Homebrew's own only
+after you trust it; the first line trusts this one formula.
 
 **2. Start a model.** Runner downloads it, checks it against the Hub's
 SHA-256 record and serves it on `http://127.0.0.1:8080`:

@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.9.0.schema.json
 
 PackageIdentifier: Xyntetik.Runner
-PackageVersion: 1.21.0
+PackageVersion: 1.22.0
 PackageLocale: en-US
 Publisher: Xyntetik
 PublisherUrl: https://xyntetik.com
@@ -10,7 +10,7 @@ PackageUrl: https://github.com/Joakimpalm-Zen/xyntetik-runner
 License: Apache-2.0
 LicenseUrl: https://github.com/Joakimpalm-Zen/xyntetik-runner/blob/main/LICENSE
 ShortDescription: Local LLM inference engine for GGUF models, with signed, replayable records of what ran.
-ReleaseNotesUrl: https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/tag/v1.21.0
+ReleaseNotesUrl: https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/tag/v1.22.0
 Tags:
 - gguf
 - inference

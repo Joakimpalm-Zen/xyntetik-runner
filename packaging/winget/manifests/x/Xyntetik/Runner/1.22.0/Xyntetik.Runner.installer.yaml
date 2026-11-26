@@ -1,14 +1,14 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.9.0.schema.json
 
 PackageIdentifier: Xyntetik.Runner
-PackageVersion: 1.21.0
+PackageVersion: 1.22.0
 InstallerType: portable
 Commands:
 - runner
-ReleaseDate: 2026-11-21
+ReleaseDate: 2026-11-26
 Installers:
 - Architecture: x64
-  InstallerUrl: https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/download/v1.21.0/runner-windows-x86_64.exe
-  InstallerSha256: 489A9FAD230E36FCC8414D4ABB9C3C529F3B71C0FEFAE4E0625A701C3F038758
+  InstallerUrl: https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/download/v1.22.0/runner-windows-x86_64.exe
+  InstallerSha256: 5596516495B652CF321D7DFC7F172C1618F06B2D7EE6C69BC4AADA6E7DFCFB6B
 ManifestType: installer
 ManifestVersion: 1.9.0
