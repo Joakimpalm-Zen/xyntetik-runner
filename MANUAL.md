@@ -1424,6 +1424,18 @@ experts and their routing on the host, because its selection bias (`exp_probs_b`
 device kernel.
 `scripts/moe-prune-plan.py` can build a plan from calibration data.
 
+**Inkling 2 Mini (`inkling2_loop`) files.** Each expert stack has a per-expert factor
+(`blk.N.ffn_gate_up_exps.scale`, `blk.N.ffn_down_exps.scale`) that the loader applies after the
+decode.
+- A prune slices both factor tensors with their stacks. It must leave every layer the same number
+  of experts, since this loader reads one `expert_count`; any other plan is refused before writing.
+- A rewrite that keeps a stack's type keeps the stack and its factors bit for bit.
+- A rewrite that re-quantizes a stack folds each expert's factor into the weights in the loader's
+  order, `(code * block_scale) * factor`, and does not write that `.scale` tensor.
+- `--quant-error` costs those same folded rows. It counts a block inside the loop
+  (`loop.start` to `loop.end`) `loop.count` times, because the block runs that many times per
+  token; the bytes stay those of its one stored copy.
+
 **A non-uniform prune describes itself with a per-layer key, and an artifact
 built that way still has to say where it runs.** GGUF defines ONE
 `<arch>.expert_count` for the whole model. Every prune plan now also writes
