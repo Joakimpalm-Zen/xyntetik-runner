@@ -484,8 +484,9 @@ typedef struct {
     int    spec_want_all;    // >0: the NEXT forward emits logits for every
                              // column (speculative verify), not just the last
     // RUNNER_DEBUG_ROUTE: why this instance runs on the CPU when a GPU was
-    // asked for ("" while it is not), and the last route line printed
-    char     route_fallback[256];
+    // asked for ("" while it is not), and the last route line printed.
+    // Sized to hold ink2_share.why (up to 363 bytes with a 159-byte device name).
+    char     route_fallback[512];
     uint64_t route_last;
     // the draft source the engine runs (model_route_draft), "" for none
     char     route_draft[24];

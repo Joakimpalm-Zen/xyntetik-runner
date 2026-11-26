@@ -8531,7 +8531,7 @@ void model_route_note(model_t *m, int rows, const char *path) {
     if (!route_enabled()) return;
     route_facts r;
     route_collect(m, &r);
-    char line[1536];
+    char line[2560];
     snprintf(line, sizeof line,
              "route: backend=%s device=\"%s\" split=%d/%d experts_on_host=%d/%d "
              "moe_hot=%d rows=%d path=%s%s%s kv=%s weights=\"%s\" cpu_act=%s%s%s fallback=\"%s\" "
@@ -8713,7 +8713,7 @@ void model_route_receipt_json(const model_t *m, char *out, int cap) {
 void model_route_json(const model_t *m, char *out, int cap) {
     route_facts r;
     route_collect(m, &r);
-    char dev[260], why[520], wts[200], tun[1100], cc[200], kern[1024], paths[400];
+    char dev[260], why[2 * sizeof m->route_fallback + 8], wts[200], tun[1100], cc[200], kern[1024], paths[400];
     route_escape(r.device, dev, sizeof dev);
     route_escape(m->route_fallback, why, sizeof why);
     route_escape(r.weights, wts, sizeof wts);
