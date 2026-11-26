@@ -309,11 +309,13 @@ Commit the reports to the release branch, or to main if they arrive after the cu
 ## 5. The PR (worker)
 
 - Open the PR from `release/X.Y.Z` to main as non-draft. The body lists the
-  commits and the gates, limits first.
-- First comment: the release notes. The first sentence says what the release is for
-  and what it is not; then What changed, Behaviour changes, Limits and Gates, in that
-  order. Release notes lead with what changed, and every limit is still stated
-  (owner, 2026-11-10; 1.16.0's notes were reordered after publishing). Scan the text before posting: no em dashes, no
+  commits and the gates.
+- First comment: the release notes. The first sentence says what the release is for;
+  then What changed, Behaviour changes, Gates, and Known limits LAST, in that order.
+  Release notes lead with the features and collect every limit in the final Known
+  limits section, each still stated plainly (owner, 2026-11-26, replacing 2026-11-10's
+  order; 1.16.0's notes were reordered after publishing). The CHANGELOG section for
+  the version, which becomes the draft release body, takes the same order. Scan the text before posting: no em dashes, no
   machine or host names, no host paths, and the chip as "Apple M1", never the bare
   model number.
 - Second comment: the gate record (swap figures, the scan proof lines, anything
