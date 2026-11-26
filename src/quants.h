@@ -74,10 +74,13 @@ int   quantize_gguf_plan(const char *in_path, const char *out_path, int target,
 // and reported, and that stays the default behaviour.
 void  quantize_set_type_plan_strict(bool on);
 // R4.7.2: an importance matrix (llama.cpp's GGUF or legacy .dat imatrix)
-// for the next rewrite's q3_k, q4_0, q4_k, q5_k, q6_k, q5_1 and iq4_nl
-// rows; NULL clears it. False, with
-// the reason on stderr, when the file cannot be read as one.
+// for the next rewrite's q3_k, q4_0, q4_k, q5_k, q6_k, q5_1, iq3_xxs and
+// iq4_nl rows; NULL clears it. False, with the reason on stderr, when the
+// file cannot be read as one.
 bool  quantize_set_imatrix(const char *path);
+// Read-only view of one loaded imatrix entry's float32 values (valid until
+// the next quantize_set_imatrix call), or NULL if not present.
+const float *quantize_imatrix_entry(const char *name, int64_t *n_per_row, int64_t *n_mat);
 // What the last quantize_gguf_plan wrote, for its provenance record: the
 // tensors converted and kept, RUNNER_REQUANT_ONLY's substring when it scoped
 // the conversion (NULL otherwise), and whether RUNNER_FORCE_REQUANT was set.
