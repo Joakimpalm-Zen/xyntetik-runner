@@ -1847,7 +1847,7 @@ static bool is_expert_tensor_suffix(const char *suffix) {
         "ffn_up_exps.weight", "ffn_up_exps.bias",
         "ffn_down_exps.weight", "ffn_down_exps.bias",
         "ffn_gate_up_exps.weight",
-        "ffn_down_exps.scale",
+        "ffn_gate_up_exps.scale", "ffn_down_exps.scale",   // per-expert factors (gemma-4's down; inkling2_loop's both)
         // Both on-disk spellings of the selection bias: model.c reads
         // `exp_probs_b.weight` OR `exp_probs_b.bias` with the layer's expert
         // count, and nemotron_h_moe ships the `.bias` one. Slicing only
@@ -1870,6 +1870,36 @@ static bool parse_blk_name(const char *name, int *layer, const char **suffix) {
     *layer = (int)v;
     *suffix = end + 1;
     return true;
+}
+
+// R4.48.8.1: Inkling 2 Mini's two-level NVFP4. An inkling2_loop expert stack (blk.N.ffn_gate_up_exps.weight,
+// blk.N.ffn_down_exps.weight) has a companion blk.N.ffn_*_exps.scale, F32 with one factor per expert, that the loader
+// applies after the decode, whatever the stack's type (src/inkling2_gguf.c). Expert e's weight is therefore
+// (code * block_scale) * f[e]. gguf.c binds only a one-value companion (gguf_tensor.scale); this is the per-expert
+// one. NULL when t has none; *idx, if given, is the companion's tensor index.
+static const float *expert_factors(gguf_file *g, const gguf_tensor *t, uint64_t *idx) {
+    static const char W[] = "_exps.weight";
+    const size_t n = strlen(t->name), nw = sizeof W - 1;
+    if (t->n_dims != 3 || n < nw || strcmp(t->name + n - nw, W) ||
+        strcmp(gguf_get_str(g, "general.architecture", ""), "inkling2_loop"))
+        return NULL;
+    char sn[sizeof t->name + 8];
+    snprintf(sn, sizeof sn, "%.*s.scale", (int)(n - strlen(".weight")), t->name);
+    const gguf_tensor *s = gguf_find_tensor(g, sn);
+    if (!s || s->type != T_F32 || s->n_dims != 1 || s->ne[0] != t->ne[2]) return NULL;
+    if (idx) *idx = (uint64_t)(s - g->tensors);
+    return (const float *)s->data;
+}
+
+// Row r of t as float32, the decode then, with fac, x f[e] for the row's expert (ne[1] rows each): the loader's two
+// roundings in the loader's order (tests/test_inkling2_requant.c holds it to the reference route). What --quant-error
+// costs and what a re-quantization writes from, so the report costs exactly the file.
+static void expert_row_dequant(const gguf_tensor *t, const float *fac, uint64_t r, float *dst) {
+    const int n0 = (int)t->ne[0];
+    dequant_row(t->type, (const uint8_t *)t->data + r * ggml_row_size(t->type, t->ne[0]), dst, n0);
+    if (!fac) return;
+    const float f = fac[r / t->ne[1]];
+    for (int c = 0; c < n0; c++) dst[c] = dst[c] * f;
 }
 
 // Per-expert tensors store expert e as one contiguous block of `rows` rows
@@ -2380,6 +2410,7 @@ typedef struct {
     writer w;
     int *out_type;
     uint64_t *out_off;
+    const float **fac;        // per tensor: the per-expert factors its re-quantization folds in (NULL: none)
     int64_t (*eff_ne)[4];
     float *rowf, *basef, *deqm, *deqb;
     uint8_t *rowq, *rowqb;
@@ -2393,6 +2424,7 @@ static void quantize_job_close_source(quantize_job *J) {
     free(J->basef); free(J->deqm); free(J->deqb); free(J->rowqb);
     free(J->rowf); free(J->rowq);
     free(J->out_type); free(J->out_off); free(J->eff_ne);
+    free(J->fac); J->fac = NULL;
     J->basef = J->deqm = J->deqb = J->rowf = NULL;
     J->rowqb = J->rowq = NULL;
     J->out_type = NULL; J->out_off = NULL; J->eff_ne = NULL;
@@ -2756,7 +2788,47 @@ static bool quantize_job_check_prune(quantize_job *J, const char *in_path) {
         J->uniform_prune = true;
         J->uniform_count = first_count;
     }
+    if (any_pruned && !J->uniform_prune && !strcmp(parch, "inkling2_loop")) {
+        // its loader reads one expert_count and holds every stack to it (src/inkling2_gguf.c): a per-layer count is
+        // a file it refuses. Name two layers that differ.
+        uint64_t a = 0, b = 0;
+        while (a < J->n_blocks && !J->layer_counts[a]) a++;
+        for (b = a + 1; b < J->n_blocks && J->layer_counts[b] == J->layer_counts[a]; b++) {}
+        if (b < J->n_blocks)
+            fprintf(stderr, "error: --prune-experts on inkling2_loop must leave every layer the same number of "
+                    "experts, since its loader reads one expert_count; this plan leaves blk.%llu with %u and blk.%llu "
+                    "with %u\n", (unsigned long long)a, J->layer_counts[a], (unsigned long long)b, J->layer_counts[b]);
+        else
+            fprintf(stderr, "error: --prune-experts on inkling2_loop must leave every layer the same number of "
+                    "experts, since its loader reads one expert_count\n");
+        return false;
+    }
     return true;
+}
+
+// R4.48.8.1: a stack re-quantized with its per-expert factors folded in (expert_row_dequant) has no factor left to
+// apply, so its .scale is dropped; the loader would otherwise apply it a second time. A stack written in its own type
+// keeps its .scale, both bit for bit. A failed allocation clears J->w.ok, as the stage before it does.
+static void quantize_job_fold_factors(quantize_job *J) {
+    uint64_t n_fold = 0;
+    for (uint64_t i = 0; J->w.ok && i < J->g.n_tensors; i++) {
+        gguf_tensor *t = &J->g.tensors[i];
+        uint64_t c = 0;
+        if ((J->drop && J->drop[i]) || (uint32_t)J->out_type[i] == t->type) continue;
+        const float *fac = expert_factors(&J->g, t, &c);
+        if (!fac) continue;
+        if ((!J->fac && !(J->fac = calloc(J->g.n_tensors, sizeof *J->fac))) ||
+            (!J->drop && !(J->drop = calloc(J->g.n_tensors, sizeof(bool))))) {
+            J->w.ok = false;
+            return;
+        }
+        J->fac[i] = fac;
+        if (!J->drop[c]) { J->drop[c] = true; J->n_dropped++; }
+        n_fold++;
+    }
+    if (J->w.ok && n_fold)
+        fprintf(stderr, "quantize: %llu expert stack(s) re-quantized with their per-expert factors folded in; "
+                "their .scale tensors are not written\n", (unsigned long long)n_fold);
 }
 
 // The output's data alignment decided and its partial file open.
@@ -3167,8 +3239,8 @@ static void quantize_job_write_pruned(quantize_job *J, uint64_t i,
     for (int j = 0; J->w.ok && j < pl->n_ids; j++) {
         for (int64_t r = 0; J->w.ok && r < exp_rows; r++) {
             int64_t src_row = (int64_t)pl->ids[j] * exp_rows + r;
-            dequant_row(t->type, (const uint8_t *)t->data +
-                        (size_t)src_row * in_row, J->rowf, (int)row_len);
+            // the source expert's factor: src_row / ne[1] is ids[j]
+            expert_row_dequant(t, J->fac ? J->fac[i] : NULL, (uint64_t)src_row, J->rowf);
             // the source expert's weights: the imatrix was made on the
             // unpruned model
             const float *qw = imatrix_row_checked(J, t, ie, (uint64_t)src_row);
@@ -3186,6 +3258,7 @@ static void quantize_job_write_pruned(quantize_job *J, uint64_t i,
 // the file is byte for byte the one-thread file.
 typedef struct {
     const gguf_tensor *t;
+    const float *fac;        // the per-expert factors folded into each row, or NULL
     const imatrix_entry *ie;
     int out_type, n0;
     size_t in_rs, out_rs, max_row;
@@ -3209,7 +3282,7 @@ static void wrow_rows(void *ctx, int i0, int i1) {
     const gguf_tensor *t = j->t;
     for (int b = i0; b < i1; b++) {
         uint64_t r = j->r0 + (uint64_t)b;
-        dequant_row(t->type, (const uint8_t *)t->data + r * j->in_rs, rowf, j->n0);
+        expert_row_dequant(t, j->fac, r, rowf);
         bool bad = false;
         const float *w = j->ie ? imatrix_row(j->ie, (int64_t)t->ne[0], r, j->per, j->mats, &bad) : NULL;
         if (bad) { atomic_store(&j->bad, 1); break; }
@@ -3238,7 +3311,8 @@ static bool quantize_job_write_rows_pool(quantize_job *J, uint64_t i, tpool *tp,
     unsigned char *weighted = malloc((size_t)batch);
     if (!out || !weighted) { free(out); free(weighted); return false; }
     uint64_t mats = t->n_dims > 2 && t->ne[2] > 1 ? t->ne[2] : 1;
-    wrow_job job = { .t = t, .ie = imatrix_for_tensor(t, J->out_type[i]), .out_type = J->out_type[i],
+    wrow_job job = { .t = t, .fac = J->fac ? J->fac[i] : NULL, .ie = imatrix_for_tensor(t, J->out_type[i]),
+                     .out_type = J->out_type[i],
                      .n0 = (int)t->ne[0], .in_rs = ggml_row_size(t->type, t->ne[0]), .out_rs = out_rs,
                      .max_row = max_row, .per = mats > 1 ? t->ne[1] : rows, .mats = mats,
                      .out = out, .weighted = weighted };
@@ -3306,7 +3380,7 @@ static void quantize_job_write_rows(quantize_job *J, uint64_t i, merge_set_t *ms
     int n0 = (int)t->ne[0];
     const imatrix_entry *ie = imatrix_for_tensor(t, J->out_type[i]);
     for (uint64_t r = 0; J->w.ok && r < rows; r++) {
-        dequant_row(t->type, (uint8_t *)t->data + r * in_rs, J->rowf, n0);
+        expert_row_dequant(t, J->fac ? J->fac[i] : NULL, r, J->rowf);
         if (mp) {
             memcpy(J->basef, J->rowf, sizeof(float) * (size_t)n0);
             merge_row(mp, r, J->rowf, n0);
@@ -3559,6 +3633,7 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     if (!quantize_job_open_output(J, out_path)) goto done;
     if (J->uniform_prune) quantize_job_uniform_expert_count(J);
     if (!quantize_job_decide_types(J, target, type_plan_path, ms)) goto done;
+    quantize_job_fold_factors(J);
     // a failed write clears J->w.ok, and the finish refuses the file
     quantize_job_write_header(J);
     quantize_job_write_layout(J);
@@ -3617,6 +3692,7 @@ bool quantize_floor_bytes(const char *in_path, int top, int bottom, const char *
 // caller sums the cells in row order, so the report is the one-thread report byte for byte.
 typedef struct {
     const gguf_tensor *t;
+    const float *fac;      // the per-expert factors folded into each row (expert_factors), or NULL
     const imatrix_entry *ie;
     const int *types;
     int n_types, n0;
@@ -3642,7 +3718,7 @@ static void qerr_rows(void *ctx, int i0, int i1) {
     const gguf_tensor *t = j->t;
     int n0 = j->n0;
     for (int r = i0; r < i1; r++) {
-        dequant_row(t->type, (const uint8_t *)t->data + (uint64_t)r * j->in_rs, rowf, n0);
+        expert_row_dequant(t, j->fac, (uint64_t)r, rowf);
         bool bad = false;
         const float *w = j->ie ? imatrix_row(j->ie, n0, (uint64_t)r, j->per, j->mats, &bad) : NULL;
         if (bad) { atomic_store(&j->bad, 1); break; }
@@ -3698,6 +3774,14 @@ int quantize_error_report_threads(const char *in_path, const int *types, int n_t
         fprintf(stderr, "error: a tensor of %s has more rows than this report can cost\n", in_path);
     uint64_t reported = 0;
     double t_last = plat_now();
+    // R4.48.8.1: an inkling2_loop block in [loop.start, loop.end) runs loop.count times a token, so its error is that
+    // many applications of its one stored copy (the bytes stay the copy's)
+    uint32_t lp_start = 0, lp_end = 0, lp_count = 1;
+    if (!strcmp(gguf_get_str(&g, "general.architecture", ""), "inkling2_loop")) {
+        lp_start = gguf_get_u32(&g, "inkling2_loop.loop.start", 0);
+        lp_end = gguf_get_u32(&g, "inkling2_loop.loop.end", 0);
+        lp_count = gguf_get_u32(&g, "inkling2_loop.loop.count", 1);
+    }
     for (uint64_t i = 0; rc == 0 && i < g.n_tensors; i++) {
         gguf_tensor *t = &g.tensors[i];
         if (!should_quantize(t) || keep_source_type(t)) continue;
@@ -3710,7 +3794,8 @@ int quantize_error_report_threads(const char *in_path, const int *types, int n_t
         int n0 = (int)t->ne[0];
         uint64_t rows = t->ne[1] * t->ne[2] * t->ne[3];
         uint64_t mats = t->n_dims > 2 && t->ne[2] > 1 ? t->ne[2] : 1;
-        qerr_job job = { .t = t, .ie = g_imx.n ? imatrix_find(t->name) : NULL, .types = types,
+        qerr_job job = { .t = t, .fac = expert_factors(&g, t, NULL), .ie = g_imx.n ? imatrix_find(t->name) : NULL,
+                         .types = types,
                          .n_types = n_types, .n0 = n0, .per = mats > 1 ? t->ne[1] : rows, .mats = mats,
                          .in_rs = ggml_row_size(t->type, t->ne[0]), .max_row = max_row,
                          .cost = cost, .wrow = wrow };
@@ -3735,6 +3820,11 @@ int quantize_error_report_threads(const char *in_path, const int *types, int n_t
             for (int k = 0; k < n_types; k++) err[k] += cost[r * (uint64_t)n_types + (uint64_t)k];
         }
         double sc2 = (double)t->scale * t->scale;
+        int layer;
+        const char *suffix;
+        if (lp_count > 1 && parse_blk_name(t->name, &layer, &suffix) && (uint32_t)layer >= lp_start &&
+            (uint32_t)layer < lp_end)
+            sc2 *= lp_count;
         // the name is the file's own string: escaped, or a quote in it makes
         // the line one the planner cannot read (R6.68.85)
         char tname[sizeof t->name * 6 + 8];
