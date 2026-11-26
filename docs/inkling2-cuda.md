@@ -15,6 +15,17 @@ tries the device, then expert stacks on the host, then CPU with a reason.
 types also keep their products on the host. Check the load's placement note;
 setting the switch does not guarantee a file fits.
 
+`--info fit` with `RUNNER_INKLING2_CUDA=1` places the file as its load would.
+It binds the device, reserves the buffers and reads the free memory, and
+uploads nothing. It prints the weights, buffers, small tensors, every slot's
+K/V rings and histories, the 512 MiB kept, and a `non-weight` line in exact
+bytes. The verdict is `FITS`, `FITS WITH --kv q8` or `DOES NOT FIT`.
+
+`--kv q8` keeps f32 on this route for now, with a note. The device's q8
+rings (`k_ink2_attn_q8`, `k_ink2_attn_logits_q8`, `k_ink2_kv_store_q8`)
+are in the module but held back until their device gates pass. Each slot's
+sliding rings share one allocation per side.
+
 The Q8_K_XL and Q4_K_XL files each passed the pinned CUDA chat smoke on
 `linux-x86_64-cuda` at `299cba11` (2026-11-25), on an sm_120 GPU (a 24 GB MIG
 slice). The release-recipe build ran under `taskset -c 0-15`; each recorded
@@ -122,6 +133,8 @@ prove that a missing factor, declined path or device failure is detected.
 |---|---|
 | `RUNNER_INKLING2_CUDA_TEST_NO_FACTOR=1` | Omit the expert factors, the fidelity control. |
 | `RUNNER_INKLING2_CUDA_TEST_FREE` | Cap the fit's reported free device memory in bytes. |
+| `RUNNER_INKLING2_CUDA_TEST_KVQ8=1` | Let `--kv q8` store q8 rings on the device, for its device gates. |
+| `RUNNER_INKLING2_TEST_KV_RT=1` | CPU routes: float32 rows holding each row's q8 round trip, the q8 cache's bit-for-bit reference. |
 | `RUNNER_INKLING2_CUDA_TEST_PUT_FAIL` | Fail the indexed upload; check rollback and CPU fallback. |
 | `RUNNER_INKLING2_CUDA_TEST_LIN_FAIL` | Fail the indexed device product; check forward refusal. |
 | `RUNNER_INKLING2_CUDA_TEST_EXP_FAIL` | Fail the indexed expert-body call. |

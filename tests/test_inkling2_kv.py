@@ -125,3 +125,24 @@ def test_the_fit_says_what_another_format_and_the_ring_switch_do(runner_bin, tin
     out = _fit(runner_bin, tiny, "--kv", "fp4", "--kv-ring", "off", "-b", 8)
     assert "keeps f32" in out and "always keep a window ring" in out, out
     assert _bytes(out, "fit") == _expected("f32", 8)
+
+
+def test_the_cuda_fit_places_the_file_as_its_load_does(runner_bin, tiny):
+    """On a CUDA host: --info fit's device section is the load's own placement run dry, so its placement is the load's
+    (every weight on the device, or the expert stacks on the host, or the CPU), at --kv q8 with the device's q8 rings
+    let through (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_KVQ8=1), and its non-weight line carries exact bytes."""
+    import os
+    env = dict(os.environ, RUNNER_INKLING2_CUDA="1", RUNNER_INKLING2_CUDA_TEST_KVQ8="1")
+    env.pop("RUNNER_INKLING2_ROUTE", None)
+    common = [str(runner_bin), "-m", str(tiny), "--gpu", "auto", "-c", str(CTX), "-b", "8", "--kv", "q8"]
+    fit = subprocess.run(common + ["--info", "fit"], capture_output=True, encoding="utf-8", errors="replace", env=env,
+                         timeout=600)
+    m = re.search(r"device\s+CUDA route: (.*)", fit.stdout)
+    if not m:
+        pytest.skip("no CUDA device here: the device fit is a CUDA host's (" + fit.stdout.strip().splitlines()[-1] + ")")
+    assert re.search(r"non-weight\s+[0-9.]+ GiB \(\d+ bytes", fit.stdout), fit.stdout
+    load = subprocess.run(common + ["-t", "2", "-p", "hi", "-n", "1", "--temp", "0"], capture_output=True,
+                          encoding="utf-8", errors="replace", env=env, timeout=600)
+    assert load.returncode == 0, load.stderr[-2000:]
+    on_device = "inkling2_loop: the weights on CUDA" in load.stderr
+    assert m.group(1).startswith("every weight on the device") == on_device, (fit.stdout, load.stderr[-2000:])
