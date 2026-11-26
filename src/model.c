@@ -2443,25 +2443,104 @@ static void pop_file_unregister(model_t *m) {
     pthread_mutex_unlock(&g_weights_mu);
 }
 
-static bool populate_env_disabled(void) {
-    const char *e = getenv("RUNNER_POPULATE");
-    return e && (!strcmp(e, "0") || !strcmp(e, "off") || !strcmp(e, "false"));
+model_pop_mode model_populate_mode_parse(const char *env) {
+    if (!env || !*env) return MODEL_POP_CACHED;
+    if (!strcmp(env, "0") || !strcmp(env, "off") || !strcmp(env, "false"))
+        return MODEL_POP_OFF;
+    if (!strcmp(env, "full"))
+        return MODEL_POP_FULL;
+    return MODEL_POP_CACHED;
+}
+
+static const char *pop_mode_name(model_pop_mode mode) {
+    switch (mode) {
+    case MODEL_POP_OFF:    return "off";
+    case MODEL_POP_FULL:   return "full";
+    case MODEL_POP_CACHED:
+    default:               return "cached";
+    }
+}
+
+static void fmt_pop_bytes(uint64_t b, char *out, size_t cap) {
+    if (b == 0)
+        snprintf(out, cap, "0 B");
+    else if (b >= 1000000000ull)
+        snprintf(out, cap, "%.2f GB", (double)b / 1e9);
+    else if (b >= 1000000ull)
+        snprintf(out, cap, "%.2f MB", (double)b / 1e6);
+    else if (b >= 1000ull)
+        snprintf(out, cap, "%.1f KB", (double)b / 1e3);
+    else
+        snprintf(out, cap, "%llu B", (unsigned long long)b);
+}
+
+size_t model_populate_format_line(char *buf, size_t cap,
+                                  const model_populate_result *res) {
+    if (!buf || !cap || !res) return 0;
+    char mb[32], lb[32];
+    fmt_pop_bytes(res->mapped_bytes, mb, sizeof mb);
+    fmt_pop_bytes(res->lazy_bytes, lb, sizeof lb);
+    int w;
+    if (res->skip_reason && res->skip_reason[0])
+        w = snprintf(buf, cap, "populate: %s (%s), %s mapped, %s lazy (%.3f s)",
+                     pop_mode_name(res->mode), res->skip_reason, mb, lb, res->seconds);
+    else
+        w = snprintf(buf, cap, "populate: %s, %s mapped, %s lazy (%.3f s)",
+                     pop_mode_name(res->mode), mb, lb, res->seconds);
+    if (w < 0) { buf[0] = '\0'; return 0; }
+    return (size_t)w >= cap ? cap - 1 : (size_t)w;
+}
+
+static void emit_pop_line(const model_populate_result *res) {
+    char line[256];
+    if (model_populate_format_line(line, sizeof line, res) > 0)
+        fprintf(stderr, "%s\n", line);
 }
 
 uint64_t model_populated_bytes(const model_t *m) {
     return m ? m->weights_populated_bytes : 0;
 }
 
+uint64_t model_populated_lazy_bytes(const model_t *m) {
+    return m ? m->weights_lazy_bytes : 0;
+}
+
 uint64_t model_populate_weights(model_t *m, bool locked) {
     if (!m) return 0;
     m->weights_populated_bytes = 0;
+    m->weights_lazy_bytes = 0;
     if (!plat_populate_available()) return 0;
     uint64_t total = 0;
     size_t n = model_populate_ranges(m, NULL, 0, &total);
-    if (!n || !model_populate_wanted(total, plat_ram_available_bytes(),
-                                     locked, m->moe_prefetch,
-                                     populate_env_disabled()))
+    if (!n || locked || m->moe_prefetch) return 0;
+
+    model_pop_mode mode = model_populate_mode_parse(getenv("RUNNER_POPULATE"));
+    if (mode == MODEL_POP_OFF) {
+        m->weights_lazy_bytes = total;
+        model_populate_result res = { mode, 0, total, 0.0, NULL };
+        emit_pop_line(&res);
         return 0;
+    }
+    if (!model_populate_wanted(total, plat_ram_available_bytes(),
+                               false, false, false)) {
+        m->weights_lazy_bytes = total;
+        model_populate_result res = {
+            mode, 0, total, 0.0, "skipped: over RAM/cgroup budget"
+        };
+        emit_pop_line(&res);
+        return 0;
+    }
+    if (mode == MODEL_POP_CACHED && !m->gf.mincore_safe) {
+        // Kernel 134fca9063ad (can_do_mincore): never turn cached into a
+        // silent full blocking read on a non-owned read-only file.
+        m->weights_lazy_bytes = total;
+        model_populate_result res = {
+            mode, 0, total, 0.0,
+            "skipped: file not owned or writable; mincore untrusted"
+        };
+        emit_pop_line(&res);
+        return 0;
+    }
 
     // Claim populate-once ownership across --parallel N slots.
     pthread_mutex_lock(&g_weights_mu);
@@ -2494,17 +2573,37 @@ uint64_t model_populate_weights(model_t *m, bool locked) {
     pthread_mutex_unlock(&g_weights_mu);
 
     model_mem_range *ranges = malloc(n * sizeof *ranges);
-    if (!ranges) return 0;
+    if (!ranges) {
+        m->weights_lazy_bytes = total;
+        return 0;
+    }
     size_t got = model_populate_ranges(m, ranges, n, NULL);
     if (got > n) got = n;
-    uint64_t done = 0;
+    double t0 = plat_now();
+    uint64_t mapped = 0, lazy = 0;
     for (size_t i = 0; i < got; i++) {
-        if (plat_populate_ro(ranges[i].addr, ranges[i].len))
-            done += (uint64_t)ranges[i].len;
+        if (mode == MODEL_POP_CACHED) {
+            uint64_t mb = 0, lb = 0;
+            if (plat_populate_cached_ro(ranges[i].addr, ranges[i].len, &mb, &lb)) {
+                mapped += mb;
+                lazy += lb;
+            } else {
+                lazy += (uint64_t)ranges[i].len;
+            }
+        } else {
+            if (plat_populate_ro(ranges[i].addr, ranges[i].len))
+                mapped += (uint64_t)ranges[i].len;
+            else
+                lazy += (uint64_t)ranges[i].len;
+        }
     }
+    double dt = plat_now() - t0;
     free(ranges);
-    m->weights_populated_bytes = done;
-    return done;
+    m->weights_populated_bytes = mapped;
+    m->weights_lazy_bytes = lazy;
+    model_populate_result res = { mode, mapped, lazy, dt, NULL };
+    emit_pop_line(&res);
+    return mapped;
 }
 
 // ---------------------------------------------------- what a model owns
@@ -2619,6 +2718,7 @@ static void model_free_weights(model_t *m) {
     pop_file_unregister(m);
     m->weights_populated = false;
     m->weights_populated_bytes = 0;
+    m->weights_lazy_bytes = 0;
     weights_unlock(&m->gf, m->lock_spans, m->n_lock_spans);
     free(m->lock_spans);
     m->lock_spans = NULL;

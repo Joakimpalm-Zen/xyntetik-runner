@@ -59,9 +59,24 @@ bool   plat_willneed_available(void);
 // Prefault a range of a READ-ONLY file mapping into process page tables on
 // Linux so the kernel's LRU tracks the folios as mapped (referenced_ptes >= 1)
 // rather than reclaiming them on the first inactive_file pass (R18.13).
+// - plat_populate_cached_ro: default mode (C), mincore first and populate only
+//   runs already resident in the page cache (zero new disk I/O, no
+//   MADV_SEQUENTIAL toggle). Never falls back to full.
+// - plat_populate_ro: opt-in full mode (A), MADV_SEQUENTIAL +
+//   MADV_POPULATE_READ (with EINVAL touch-loop fallback) + MADV_NORMAL.
 // Advisory and best-effort: never modifies bytes, no-op off Linux.
 bool   plat_populate_available(void);
 bool   plat_populate_ro(const void *addr, size_t len);
+bool   plat_populate_cached_ro(const void *addr, size_t len,
+                               uint64_t *mapped_bytes, uint64_t *lazy_bytes);
+// Linux kernel 134fca9063ad (can_do_mincore): mincore only reports true
+// page-cache residency when the caller owns the file or can write to it.
+// Outside that condition, mincore cannot be trusted to gate cached-only
+// populate (a root-owned read-only file would turn cached into a silent full
+// read). Pure helper exposed for unit testing.
+bool   plat_mincore_trustworthy_ids(uint32_t file_uid, uint32_t euid,
+                                    bool writable);
+bool   plat_file_mincore_safe(const char *path);
 // Hand the pages of a range of a READ-ONLY file mapping back to the OS: they
 // leave this process's resident set, and a later read faults them back in
 // from the file (normally the page cache) with the same bytes. Only whole

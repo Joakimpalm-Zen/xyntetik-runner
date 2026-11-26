@@ -120,6 +120,23 @@ bool plat_populate_ro(const void *addr, size_t len) {
     return false;
 }
 
+bool plat_populate_cached_ro(const void *addr, size_t len,
+                             uint64_t *mapped_bytes, uint64_t *lazy_bytes) {
+    (void)addr;
+    if (mapped_bytes) *mapped_bytes = 0;
+    if (lazy_bytes) *lazy_bytes = (uint64_t)len;
+    return false;
+}
+
+bool plat_mincore_trustworthy_ids(uint32_t file_uid, uint32_t euid, bool writable) {
+    return file_uid == euid || writable;
+}
+
+bool plat_file_mincore_safe(const char *path) {
+    (void)path;
+    return false;
+}
+
 static int machine_cpu_count(void) {
     // the process affinity mask first (a job object or `start /affinity`
     // narrows it), the machine's count as the fallback; see the POSIX twin
@@ -659,6 +676,18 @@ void plat_willneed(const void *addr, size_t len) {
 
 bool plat_willneed_available(void) { return true; }   // madvise is always there
 
+bool plat_mincore_trustworthy_ids(uint32_t file_uid, uint32_t euid, bool writable) {
+    return file_uid == euid || writable;
+}
+
+bool plat_file_mincore_safe(const char *path) {
+    if (!path || !*path) return false;
+    struct stat st;
+    if (stat(path, &st) != 0) return false;
+    return plat_mincore_trustworthy_ids((uint32_t)st.st_uid, (uint32_t)geteuid(),
+                                        access(path, W_OK) == 0);
+}
+
 #ifdef __linux__
 #ifndef MADV_POPULATE_READ
 #if defined(__x86_64__) || defined(__aarch64__) || defined(__i386__) || \
@@ -675,15 +704,9 @@ static void populate_touch_loop(const uint8_t *lo, size_t len, size_t ps) {
     (void)sink;
 }
 
-bool plat_populate_available(void) { return true; }
-
-// Prefault a read-only file mapping into process PTEs (R18.13).
-// On Linux 5.14+, MADV_POPULATE_READ invokes faultin_page_range() directly
-// (identical to MAP_POPULATE, without faulting header-only or device-uploaded
-// ranges at mmap time). On older kernels (EINVAL), fall back to reading one
-// byte per page. Bracket with MADV_SEQUENTIAL / MADV_NORMAL so cold files
-// stream in with full readahead while later sparse reads stay normal.
-bool plat_populate_ro(const void *addr, size_t len) {
+static bool populate_align_range(const void *addr, size_t len,
+                                 uintptr_t *lo_out, size_t *alen_out,
+                                 size_t *ps_out) {
     if (!addr || !len) return false;
     long ps_raw = sysconf(_SC_PAGESIZE);
     if (ps_raw <= 0) return false;
@@ -695,9 +718,13 @@ bool plat_populate_ro(const void *addr, size_t len) {
     if (end > UINTPTR_MAX - (ps - 1)) return false;
     uintptr_t hi = (end + (uintptr_t)(ps - 1)) & ~(uintptr_t)(ps - 1);
     if (hi <= lo) return false;
-    size_t alen = (size_t)(hi - lo);
+    *lo_out = lo;
+    *alen_out = (size_t)(hi - lo);
+    *ps_out = ps;
+    return true;
+}
 
-    (void)madvise((void *)lo, alen, MADV_SEQUENTIAL);
+static bool populate_pages_noadvise(uintptr_t lo, size_t alen, size_t ps) {
     int rc = -1;
 #ifdef MADV_POPULATE_READ
     do {
@@ -712,14 +739,84 @@ bool plat_populate_ro(const void *addr, size_t len) {
     populate_touch_loop((const uint8_t *)lo, alen, ps);
     rc = 0;
 #endif
-    (void)madvise((void *)lo, alen, MADV_NORMAL);
     return rc == 0;
+}
+
+bool plat_populate_available(void) { return true; }
+
+// Opt-in full mode (A): prefault the entire range with MADV_SEQUENTIAL
+// readahead, then restore MADV_NORMAL so later sparse reads stay normal.
+bool plat_populate_ro(const void *addr, size_t len) {
+    uintptr_t lo = 0;
+    size_t alen = 0, ps = 0;
+    if (!populate_align_range(addr, len, &lo, &alen, &ps)) return false;
+    (void)madvise((void *)lo, alen, MADV_SEQUENTIAL);
+    bool ok = populate_pages_noadvise(lo, alen, ps);
+    (void)madvise((void *)lo, alen, MADV_NORMAL);
+    return ok;
+}
+
+// Default cached-only mode (C): mincore first, then MADV_POPULATE_READ over
+// contiguous runs already resident in the page cache. Zero new disk I/O, no
+// MADV_SEQUENTIAL toggle, and never falls back to a full blocking read if
+// mincore fails. Caller must gate with gguf_file.mincore_safe (kernel
+// 134fca9063ad).
+bool plat_populate_cached_ro(const void *addr, size_t len,
+                             uint64_t *mapped_bytes, uint64_t *lazy_bytes) {
+    if (mapped_bytes) *mapped_bytes = 0;
+    if (lazy_bytes) *lazy_bytes = 0;
+    uintptr_t lo = 0;
+    size_t alen = 0, ps = 0;
+    if (!populate_align_range(addr, len, &lo, &alen, &ps)) return false;
+
+    enum { CHUNK_PAGES = 16384 }; // 16 KiB stack buffer -> 64 MiB per chunk on 4 KiB pages
+    unsigned char vec[CHUNK_PAGES];
+    uint64_t mapped = 0, lazy = 0;
+    size_t pos = 0;
+    while (pos < alen) {
+        size_t rem_pages = (alen - pos) / ps;
+        size_t chunk_pages = rem_pages > CHUNK_PAGES ? CHUNK_PAGES : rem_pages;
+        size_t chunk_len = chunk_pages * ps;
+        if (mincore((void *)(lo + pos), chunk_len, vec) != 0) {
+            // Never fall back to full populate on mincore failure.
+            lazy += (uint64_t)chunk_len;
+            pos += chunk_len;
+            continue;
+        }
+        size_t i = 0;
+        while (i < chunk_pages) {
+            size_t z0 = i;
+            while (i < chunk_pages && !(vec[i] & 1)) i++;
+            if (i > z0) lazy += (uint64_t)(i - z0) * (uint64_t)ps;
+            size_t r0 = i;
+            while (i < chunk_pages && (vec[i] & 1)) i++;
+            if (i > r0) {
+                size_t rlen = (i - r0) * ps;
+                if (populate_pages_noadvise(lo + pos + r0 * ps, rlen, ps))
+                    mapped += (uint64_t)rlen;
+                else
+                    lazy += (uint64_t)rlen;
+            }
+        }
+        pos += chunk_len;
+    }
+    if (mapped_bytes) *mapped_bytes = mapped;
+    if (lazy_bytes) *lazy_bytes = lazy;
+    return true;
 }
 #else
 bool plat_populate_available(void) { return false; }
 
 bool plat_populate_ro(const void *addr, size_t len) {
     (void)addr; (void)len;
+    return false;
+}
+
+bool plat_populate_cached_ro(const void *addr, size_t len,
+                             uint64_t *mapped_bytes, uint64_t *lazy_bytes) {
+    (void)addr;
+    if (mapped_bytes) *mapped_bytes = 0;
+    if (lazy_bytes) *lazy_bytes = (uint64_t)len;
     return false;
 }
 #endif

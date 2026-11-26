@@ -62,6 +62,7 @@ typedef struct {
     // contents through such a handle -- the NULL is deliberate, so a mistake
     // faults instead of reading whatever the mapping happens to hold.
     bool        header_only;
+    bool        mincore_safe; // every mapped part is owned or writable (kernel 134fca9063ad)
     uint64_t    data_bytes;
 } gguf_file;
 

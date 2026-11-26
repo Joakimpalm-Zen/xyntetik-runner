@@ -287,6 +287,7 @@ static bool gguf_open_one_x(gguf_file *g, const char *path, bool header_only) {
     // DATA section, below.)
     if (data_start > g->map_size) goto invalid;
     g->data_offset = (size_t)data_start;
+    g->mincore_safe = plat_file_mincore_safe(path);
 
     for (uint64_t i = 0; i < g->n_tensors; i++) {
         gguf_tensor *t = &g->tensors[i];
@@ -756,6 +757,7 @@ static bool gguf_open_set(gguf_file *g, const char *path, bool header_only) {
         return false;
     }
     uint64_t at = 0;
+    bool all_mincore_safe = true;
     for (uint32_t i = 0; i < count; i++) {
         memcpy(merged + at, parts[i].tensors,
                (size_t)parts[i].n_tensors * sizeof(*merged));
@@ -763,6 +765,7 @@ static bool gguf_open_set(gguf_file *g, const char *path, bool header_only) {
         maps[i] = parts[i].map;
         sizes[i] = parts[i].map_size;
         doffs[i] = parts[i].data_offset;
+        all_mincore_safe = all_mincore_safe && parts[i].mincore_safe;
         parts[i].map = NULL;
         parts[i].map_size = 0;
     }
@@ -779,6 +782,7 @@ static bool gguf_open_set(gguf_file *g, const char *path, bool header_only) {
     g->map = maps[0];
     g->map_size = sizes[0];
     g->data_offset = doffs[0];
+    g->mincore_safe = all_mincore_safe;
     for (uint32_t i = 1; i < count; i++) gguf_close(&parts[i]);
     free(parts);
 
@@ -824,6 +828,7 @@ bool gguf_attach(gguf_file *g, gguf_file *extra) {
     g->maps = maps; g->map_sizes = sizes; g->map_data_offsets = doffs; g->n_maps = n_old + n_new;
     g->map = maps[0]; g->map_size = sizes[0]; g->data_offset = doffs[0];
     g->mapped_size += extra->mapped_size;
+    g->mincore_safe = g->mincore_safe && extra->mincore_safe;
     // the mappings now belong to g; drop extra's bookkeeping without unmapping
     free(extra->maps); free(extra->map_sizes); free(extra->map_data_offsets);
     extra->maps = NULL; extra->map_sizes = NULL; extra->map_data_offsets = NULL; extra->n_maps = 0;
