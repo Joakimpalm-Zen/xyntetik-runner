@@ -1307,12 +1307,14 @@ int main(void) {
         printf("ok: mxfp4 writer: grid values round-trip exactly, others take the nearest level\n");
     }
 
-    // R4.7.2: --imatrix. A skewed importance matrix moves the rounding
+    // R4.7.2 / R4.53: --imatrix. A skewed importance matrix moves the rounding
     // toward the heavy columns (lower weighted error than the reference
-    // writer), the GGUF and legacy .dat formats and any rescaling of one
-    // matrix give the same bytes (only the ratios inside a matrix matter),
-    // a matrix with no calibration data writes the reference bytes, and an
-    // entry that does not fit its tensor fails the rewrite.
+    // writer). Identical quantized bytes hold by construction for power-of-two
+    // rescalings (exponent-only shift in float32); non-power-of-two rescalings
+    // can flip near-ties in the weighted candidate-scale float searches (ggml
+    // shares this), while the .dat and GGUF readers return the same matrix up
+    // to the factor. A matrix with no calibration data writes the reference
+    // bytes, and an entry that does not fit its tensor fails the rewrite.
     {
         enum { NC = 256, NR = 8 };
         static float x[NC * NR], imx[NC], zero[NC], s2[NC], cnt[1];
@@ -1324,7 +1326,7 @@ int main(void) {
         for (int c = 0; c < NC; c++) imx[c] = c % 16 < 3 ? 50.0f : 1.0f;
         const char *imx_in = "q_imx_in.gguf", *ref = "q_imx_ref.gguf", *w1 = "q_imx_w1.gguf",
                    *w2 = "q_imx_w2.gguf", *w3 = "q_imx_w3.gguf", *z = "q_imx_z.gguf",
-                   *dat = "q_imx.dat", *dat7 = "q_imx7.dat", *gg = "q_imx.gguf",
+                   *dat = "q_imx.dat", *dat4 = "q_imx4.dat", *gg = "q_imx.gguf",
                    *zdat = "q_imx_zero.dat", *bad = "q_imx_bad.dat", *bo = "q_imx_bo.gguf";
         const char *tn = "blk.0.attn_q.weight";
         tdesc ts[1] = { { tn, {NC, NR}, 2, x, NC * NR, T_F32 } };
@@ -1342,12 +1344,14 @@ int main(void) {
             size_t n1, n2, n3, nr;
             unsigned char *b1 = slurp_tensor(w1, tn, &n1), *br = slurp_tensor(ref, tn, &nr);
             assert(n1 == nr && memcmp(b1, br, n1) != 0);
-            // a rescaled .dat and a GGUF imatrix (in_sum2 / counts) agree
-            write_imatrix_dat(dat7, tn, imx, NC, 7.0f);
-            assert(quantize_set_imatrix(dat7));
+            // Power-of-two rescaling (x4) in .dat and exact power-of-two GGUF
+            // normalisation (in_sum2 = 4*imx, counts = 4) give identical bytes
+            // by construction in IEEE-754 float32.
+            write_imatrix_dat(dat4, tn, imx, NC, 4.0f);
+            assert(quantize_set_imatrix(dat4));
             assert(quantize_gguf(imx_in, w2, type, NULL) == 0);
-            for (int c = 0; c < NC; c++) s2[c] = 3.0f * imx[c];
-            cnt[0] = 3.0f;
+            for (int c = 0; c < NC; c++) s2[c] = 4.0f * imx[c];
+            cnt[0] = 4.0f;
             tdesc its[2] = {
                 { "blk.0.attn_q.weight.in_sum2", {NC, 1}, 2, s2, NC, T_F32 },
                 { "blk.0.attn_q.weight.counts", {1, 1}, 2, cnt, 1, T_F32 },
@@ -1368,12 +1372,99 @@ int main(void) {
             assert(quantize_set_imatrix(bad));
             assert(quantize_gguf(imx_in, bo, type, NULL) != 0);
             free(b1); free(b2); free(b3); free(br); free(bz);
-            printf("ok: --imatrix %s: weighted error %.4g -> %.4g, formats and scale "
-                   "agree, no-data rows unweighted, misfit refused\n",
+            printf("ok: --imatrix %s: weighted error %.4g -> %.4g, power-of-two scale "
+                   "and GGUF/dat agree, no-data rows unweighted, misfit refused\n",
                    q ? "q4_0" : "q3_k", er, ew);
         }
+
+        // R4.53: reader value-level check (.dat vs GGUF up to a non-power-of-two
+        // factor) AND 256x256 fixture asserting x4 (power-of-two) byte equality
+        // while reporting x7 byte diffs without asserting them (whether a
+        // near-tie flips depends on float summation order / FMA contraction).
+        {
+            enum { NT_NR = 256 };
+            static float ntx[NC * NT_NR], ntimx[NC], nts2[NC];
+            uint32_t st2 = 12345u;
+            for (int i = 0; i < NC * NT_NR; i++) {
+                st2 = st2 * 1664525u + 1013904223u;
+                ntx[i] = ((float)(st2 >> 8) / 16777216.0f - 0.5f) * (i % 7 == 0 ? 3.0f : 1.0f);
+            }
+            for (int c = 0; c < NC; c++)
+                ntimx[c] = 0.7f + (float)((c * 13 + 5) % 19) * 0.37f;
+
+            const char *nt_in = "q_imx_nt_in.gguf", *nt_d1 = "q_imx_nt1.dat",
+                       *nt_d4 = "q_imx_nt4.dat", *nt_d7 = "q_imx_nt7.dat",
+                       *nt_gg = "q_imx_nt.gguf", *nt_o1 = "q_imx_nt_o1.gguf",
+                       *nt_o4 = "q_imx_nt_o4.gguf", *nt_o7 = "q_imx_nt_o7.gguf";
+            tdesc ntts[1] = { { tn, {NC, NT_NR}, 2, ntx, NC * NT_NR, T_F32 } };
+            write_gguf(nt_in, ntts, 1, 0);
+            write_imatrix_dat(nt_d1, tn, ntimx, NC, 1.0f);
+            write_imatrix_dat(nt_d4, tn, ntimx, NC, 4.0f);
+            write_imatrix_dat(nt_d7, tn, ntimx, NC, 7.0f);
+            for (int c = 0; c < NC; c++) nts2[c] = 3.0f * ntimx[c];
+            cnt[0] = 3.0f;
+            tdesc ntits[2] = {
+                { "blk.0.attn_q.weight.in_sum2", {NC, 1}, 2, nts2, NC, T_F32 },
+                { "blk.0.attn_q.weight.counts", {1, 1}, 2, cnt, 1, T_F32 },
+            };
+            write_gguf(nt_gg, ntits, 2, 0);
+
+            // Reader value check: .dat (x1, x4, x7) and GGUF (3*w / 3) return
+            // the same matrix up to the scale factor.
+            int64_t npr = 0, nmat = 0;
+            float v_dat1[NC], v_dat7[NC];
+            assert(quantize_set_imatrix(nt_d1));
+            const float *p = quantize_imatrix_entry(tn, &npr, &nmat);
+            assert(p && npr == NC && nmat == 1);
+            memcpy(v_dat1, p, sizeof v_dat1);
+            assert(quantize_set_imatrix(nt_d7));
+            p = quantize_imatrix_entry(tn, &npr, &nmat);
+            assert(p && npr == NC && nmat == 1);
+            memcpy(v_dat7, p, sizeof v_dat7);
+            assert(quantize_set_imatrix(nt_gg));
+            p = quantize_imatrix_entry(tn, &npr, &nmat);
+            assert(p && npr == NC && nmat == 1);
+            for (int c = 0; c < NC; c++) {
+                assert(v_dat1[c] == ntimx[c]);
+                assert(v_dat7[c] == 7.0f * ntimx[c]);
+                assert(fabsf(p[c] - v_dat1[c]) <= 1e-6f * fabsf(v_dat1[c]));
+            }
+
+            // Byte check: x4 (power of two) must give 0 differing bytes in any
+            // IEEE-754 arithmetic; x7 byte diffs are reported, not asserted.
+            const int nt_types[] = { T_Q4_0, T_Q4_K, T_IQ4_NL, T_IQ3_XXS };
+            const char *nt_names[] = { "q4_0", "q4_k", "iq4_nl", "iq3_xxs" };
+            size_t nt_diff7[4] = { 0, 0, 0, 0 };
+            for (size_t k = 0; k < sizeof nt_types / sizeof *nt_types; k++) {
+                assert(quantize_set_imatrix(nt_d1));
+                assert(quantize_gguf(nt_in, nt_o1, nt_types[k], NULL) == 0);
+                assert(quantize_set_imatrix(nt_d4));
+                assert(quantize_gguf(nt_in, nt_o4, nt_types[k], NULL) == 0);
+                assert(quantize_set_imatrix(nt_d7));
+                assert(quantize_gguf(nt_in, nt_o7, nt_types[k], NULL) == 0);
+                size_t l1, l4, l7;
+                unsigned char *m1 = slurp_tensor(nt_o1, tn, &l1);
+                unsigned char *m4 = slurp_tensor(nt_o4, tn, &l4);
+                unsigned char *m7 = slurp_tensor(nt_o7, tn, &l7);
+                assert(l1 == l4 && l1 == l7);
+                assert(memcmp(m1, m4, l1) == 0);
+                size_t d7 = 0;
+                for (size_t i = 0; i < l1; i++)
+                    if (m1[i] != m7[i]) d7++;
+                nt_diff7[k] = d7;
+                free(m1); free(m4); free(m7);
+            }
+            const char *nt_rm[] = { nt_in, nt_d1, nt_d4, nt_d7, nt_gg, nt_o1, nt_o4, nt_o7 };
+            for (size_t i = 0; i < sizeof nt_rm / sizeof *nt_rm; i++) remove(nt_rm[i]);
+            printf("ok: R4.53 imatrix readers match up to factor; x4 is byte-identical "
+                   "(x7 differing bytes reported: %s=%lu %s=%lu %s=%lu %s=%lu)\n",
+                   nt_names[0], (unsigned long)nt_diff7[0],
+                   nt_names[1], (unsigned long)nt_diff7[1],
+                   nt_names[2], (unsigned long)nt_diff7[2],
+                   nt_names[3], (unsigned long)nt_diff7[3]);
+        }
         assert(quantize_set_imatrix(NULL));
-        const char *rm[] = { imx_in, ref, w1, w2, w3, z, dat, dat7, gg, zdat, bad, bo };
+        const char *rm[] = { imx_in, ref, w1, w2, w3, z, dat, dat4, gg, zdat, bad, bo };
         for (size_t i = 0; i < sizeof(rm) / sizeof(rm[0]); i++) remove(rm[i]);
     }
 

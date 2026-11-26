@@ -1551,10 +1551,14 @@ static void quantize_row_any_w(int type, const float *rowf, uint8_t *rowq, int n
 //     "<name>.counts" (F32, [1, n_mat]); the values are in_sum2 / counts;
 //   - legacy .dat: int32 n_entries, then per entry int32 name length, the
 //     name, int32 ncall, int32 nval, nval float32 values.
-// Only the ratios inside one matrix shape the quantization, so the two
-// formats' different normalisations give the same bytes. A matrix whose
-// values are all zero (an expert the calibration never routed to) carries
-// no information and its rows are written as without an imatrix.
+// In exact arithmetic only the ratios inside one matrix shape the
+// quantization; in float32, the weighted candidate-scale searches compare
+// float sums of w*x*q and w*q^2, so identical bytes hold only for
+// power-of-two rescalings (which shift exponents without rounding mantissas).
+// A non-power-of-two rescale or normalisation can flip near-ties (ggml shares
+// this). A matrix whose values are all zero (an expert the calibration never
+// routed to) carries no information and its rows are written as without an
+// imatrix.
 typedef struct {
     char   name[128];
     int64_t n_per_row, n_mat;
@@ -1702,6 +1706,14 @@ static const imatrix_entry *imatrix_find(const char *tname) {
     for (int i = 0; i < g_imx.n; i++)
         if (!strcmp(g_imx.e[i].name, tname)) return &g_imx.e[i];
     return NULL;
+}
+
+const float *quantize_imatrix_entry(const char *name, int64_t *n_per_row, int64_t *n_mat) {
+    const imatrix_entry *e = name ? imatrix_find(name) : NULL;
+    if (!e) return NULL;
+    if (n_per_row) *n_per_row = e->n_per_row;
+    if (n_mat) *n_mat = e->n_mat;
+    return e->v;
 }
 
 // The weights for row `row` of a tensor with `mats` matrices of
