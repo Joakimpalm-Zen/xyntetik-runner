@@ -2720,11 +2720,12 @@ static bool sm80_module_wanted(const gpu_weights *w) {
     return gpu_tc2_on() && gpu_sm80_on() && cu.DeviceGetAttribute &&
            cu.DeviceGetAttribute(&ccmaj, CU_DEV_ATTR_CC_MAJOR, w->dev) == 0 && ccmaj >= 8;
 }
-// R10.29: on the first load after a new card or driver the driver JIT-compiles the embedded PTX
-// (measured: 33.4 s on an RTX 5070 for a 370 KB model, then 0.40 s from the driver's cache of
-// 47.6 MB), and the process sat there without a word. A load still running after 2 s says why on
-// stderr, once per process: a warm load ends first and says nothing. stdout and receipts are untouched.
-static atomic_bool g_jit_noted;
+// R10.29 / R6.130: cuModuleLoadDataEx can block for seconds (a first PTX JIT compile on a new
+// card or driver, or a slow cached load under heavy host contention), leaving the process silent.
+// Because the driver exposes no progress callback while the call is in flight, a 2 s timer only
+// measures elapsed wait time and must not claim a compile occurred: say only what is observed,
+// once per process. A fast load ends before 2 s and says nothing. stdout and receipts are untouched.
+static atomic_bool g_mod_slow_noted;
 // R6.90: a device that is up and a kernel module that does not load. The
 // driver's JIT rejects the embedded PTX whole when one kernel in it uses a
 // feature above the header's pinned .version (scripts/embed-ptx.py; nvcc 13's
@@ -2784,10 +2785,10 @@ static bool module_cc_ok(CUdevice dev, int need_major, int need_minor, const cha
 // name: the embedded string's name and its target, for the record (never the bare
 // name in quotes: scripts/check-ptx-roster.py reads every "k_..." literal as a kernel)
 static CUresult module_load_noted(CUmodule *mod, const void *img, const char *name) {
-    plat_slow_note *n = atomic_load(&g_jit_noted) ? NULL :
-        plat_slow_note_begin(stderr, "gpu: compiling the GPU kernels for this card and driver; this "
-                             "happens once per card and driver, later loads take them from the "
-                             "driver's cache", 2.0);
+    plat_slow_note *n = atomic_load(&g_mod_slow_noted) ? NULL :
+        plat_slow_note_begin(stderr,
+                             "gpu: loading the GPU kernels is taking longer than 2 s; "
+                             "still waiting on the CUDA driver", 2.0);
     // the driver's error log from this load, when the driver can give one
     char log[1536] = "";
     CUresult r;
@@ -2799,7 +2800,7 @@ static CUresult module_load_noted(CUmodule *mod, const void *img, const char *na
         r = cu.ModuleLoadData(mod, img);
     }
     log[sizeof(log) - 1] = 0;
-    if (plat_slow_note_end(n)) atomic_store(&g_jit_noted, true);
+    if (plat_slow_note_end(n)) atomic_store(&g_mod_slow_noted, true);
     if (r != 0) module_load_failed(name, r, log);
     return r;
 }
