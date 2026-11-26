@@ -5,7 +5,7 @@ vocabulary so the tokenizer loads. The dense projections are F32, BF16 or Q8_0 (
 file carries reaches the engine; F16 too, a type the CUDA route's products do not take (its device test keeps such
 projections on the host). No pytest here: the Makefile writes the variants with any Python.
 
-  python tests/inkling2_tiny.py OUT.gguf [--dense f32|bf16|q8_0|f16]
+  python tests/inkling2_tiny.py OUT.gguf [--dense f32|bf16|q8_0|f16] [--varied]
 """
 
 import struct
@@ -69,12 +69,14 @@ def _f32(n, scale, seed):
     return struct.pack(f"<{n}f", *[(r.random() - 0.5) * 2 * scale for _ in range(n)])
 
 
-def _nvfp4(n_el, seed):
+def _nvfp4(n_el, seed, varied=False):
+    """NVFP4 blocks: a UE4M3 scale per 16-value sub-block (0.5, or with varied each drawn from 2^-3 .. 2^1 and its
+    mantissas) and random E2M1 codes."""
     import random
     r = random.Random(seed)
     out = bytearray()
     for _ in range(n_el // 64):
-        out += bytes([0x30, 0x30, 0x30, 0x30])                 # UE4M3 0.5 for each sub-block
+        out += bytes(r.randrange(0x18, 0x40) for _ in range(4)) if varied else bytes([0x30, 0x30, 0x30, 0x30])
         out += bytes(r.randrange(256) for _ in range(32))      # E2M1 codes
     return bytes(out)
 
@@ -101,10 +103,11 @@ def _q8_0(data):
     return bytes(out)
 
 
-def _tensors(no_scale_layer=None, scale_len=E, dense_nvfp4=False, dense="f32"):
+def _tensors(no_scale_layer=None, scale_len=E, dense_nvfp4=False, dense="f32", factors=None, varied=False):
     """(name, ggml dims, type, bytes) for every tensor of the tiny model. dense: the type of the 2-D projections whose
     rows hold a whole number of 32-value blocks ("f32", "bf16", "q8_0" or "f16"); norms, vectors and short rows stay F32, as
-    a converter leaves them."""
+    a converter leaves them. factors: the E per-expert factors every ffn_*_exps.scale holds (0.25 each by default);
+    varied: the expert stacks' NVFP4 sub-block scales drawn per sub-block instead of all 0.5."""
     t = []
     seed = [0]
 
@@ -169,14 +172,15 @@ def _tensors(no_scale_layer=None, scale_len=E, dense_nvfp4=False, dense="f32"):
                 f(p + f"loop_{r}_ctrl_gain.weight", [RANK, H], 0.15)
             f(p + "loop_msg_query.weight", [H, 4], 0.2)
         seed[0] += 1
-        t.append((p + "ffn_gate_up_exps.weight", [H, 2 * FF, E], T_NVFP4, _nvfp4(H * 2 * FF * E, seed[0])))
+        t.append((p + "ffn_gate_up_exps.weight", [H, 2 * FF, E], T_NVFP4, _nvfp4(H * 2 * FF * E, seed[0], varied)))
         seed[0] += 1
-        t.append((p + "ffn_down_exps.weight", [FF, H, E], T_NVFP4, _nvfp4(FF * H * E, seed[0])))
+        t.append((p + "ffn_down_exps.weight", [FF, H, E], T_NVFP4, _nvfp4(FF * H * E, seed[0], varied)))
         for which in ("gate_up", "down"):
             if no_scale_layer == b and which == "down":
                 continue
             n = scale_len if b == 0 and which == "gate_up" else E
-            t.append((p + f"ffn_{which}_exps.scale", [n], T_F32, struct.pack(f"<{n}f", *([0.25] * n))))
+            fs = list(factors) if factors is not None and n == E else [0.25] * n
+            t.append((p + f"ffn_{which}_exps.scale", [n], T_F32, struct.pack(f"<{n}f", *fs)))
     return t
 
 
@@ -248,9 +252,13 @@ if __name__ == "__main__":
     ap.add_argument("out")
     ap.add_argument("--dense", choices=("f32", "bf16", "q8_0", "f16"), default="f32")
     ap.add_argument("--lora", action="store_true", help="write the tiny model's LoRA adapter instead of the model")
+    ap.add_argument("--varied", action="store_true",
+                    help="the expert stacks' NVFP4 scales varied and per-expert factors that are not powers of two")
     a = ap.parse_args()
     if a.lora:
         kv, ts = _lora()
         _write(pathlib.Path(a.out), kv, ts)
+    elif a.varied:
+        _write(pathlib.Path(a.out), _kvs(), _tensors(dense=a.dense, varied=True, factors=[0.3, 1.7, 0.9, 0.55]))
     else:
         _write(pathlib.Path(a.out), _kvs(), _tensors(dense=a.dense))
