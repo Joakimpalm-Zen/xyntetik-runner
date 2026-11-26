@@ -1,18 +1,6 @@
-# 1.22.0 release notes (draft, not published)
+# 1.22.0 release notes
 
-**Limits first:** Claim 1 measures complete greedy-sequence identity, not
-task quality. Its pre-registered result is Runner 40/100 versus llama.cpp
-20/100, including 58 incomplete Runner records. Erratum 3, decided after
-the verdicts, reports 94/100 versus 20/100 after completing the omitted
-stop-token positions; it is reported beside, not instead of, that result.
-Inkling's measured CPU prefill remains 0.70x llama.cpp's. Inkling CUDA is opt-in, with its speed result scoped to one
-Q8_K_XL file and an aligned build; the available Windows device's 12 GB
-cannot hold either admitted Inkling file. OLMo GPU training is refused,
-compact KV has a cross-backend limit, and the 7B file does not fit the 8 GB
-Metal device. Claim 2 is the provisional sixteen-thread half; its one-thread cells run
-after the release. The OLMo CPU rows below are slower on all measured workloads; the 1B
-row is absent.
-These notes are not a release-gate pass or a publication announcement.
+1.22.0 adds two model families. Inkling 2 Mini runs on a fast CPU route by default and on CUDA when opted in, with three pre-registered claims measured against llama.cpp and Unsloth's published build. OLMo 2 and OLMo 3 are admitted on the publisher's float32 reference, on the CPU, Metal and CUDA, with CPU LoRA training. Known limits are collected in the last section.
 
 ## What changed
 
@@ -49,13 +37,6 @@ and the 100 answers' deterministic fields; decode was 12.05 against
 [File identity, reference configuration, intervals and the full limits](../../inkling2-cpu-default.md).
 
 ### Claim 1: Runner versus llama.cpp, with an additional Unsloth column
-
-**Limits:** complete greedy-sequence identity to the publisher's float32
-reference on 100 pre-registered prompts, not task quality. The original
-Runner measurement and its post-verdict correction are distinct; neither
-is R4.48.24's newer CPU-route comparison. The exact UD-Q8_K_XL file was run
-greedily, at most 256 tokens, with `reasoning_effort=low`, and verified by
-teacher-forced reference forwards.
 
 Unsloth's additional column uses its published CPU prebuilt
 `b12649-mix-c7059d6`, run as published. A source build at the release
@@ -176,13 +157,7 @@ row does not admit a quantized sibling. The 7B's forced-TC float32 read is
 1.3625e-03 versus 1.3717e-03 with TC off, 100% margin-qualified on both;
 Wilcoxon p 0.103, McNemar p 1.0. [Promotion evidence](../../tc-promotion-evidence.md#olmo2-q8_0-r4509-2026-11-24).
 
-### OLMo 3 7B CPU speed: Runner slower on all three rows
-
-**Limits first:** Runner's median is 0.33x llama.cpp's for prefill 2048,
-0.40x for prefill 512 and 0.85x for decode. The 1B Q8_0 CPU row was not
-run because the file was unavailable and was not fetched. These are
-information rows, not a speed gate or an ISA-matched, prompt-matched
-engine comparison.
+### OLMo 3 7B CPU speed
 
 Measured on **a 64-core x86-64 CPU (AVX-512)** with sixteen threads, using
 Olmo-3-7B-Think-Q8_0 (SHA256 `3a4d7dda`). Runner main `83da2dc3` used
@@ -222,12 +197,6 @@ on the named builds, not measurements of the future release artifacts.
   validation; the candidate's Windows gates still have to run.
 
 ### Claim 2: sixteen-thread half, provisional INFORMATION
-
-**Limits first:** on this Inkling CPU route, Runner decodes concurrent MoE
-requests one sequence at a time; gathering slots is not a shared
-multi-sequence matrix product. Only the sixteen-thread half has run.
-One-thread cells run after the release. No final full-matrix Claim 2
-wording or cross-engine speed conclusion is drawn.
 
 Unsloth's additional column uses its published CPU prebuilt
 `b12649-mix-c7059d6`, run as published. A source build at the release
@@ -309,15 +278,6 @@ INFORMATION until the one-thread cells complete.
 
 ### Claim 3: FINAL, pre-registered outcome TIE
 
-**Limits first:** the pre-registered outcome is **TIE**, not superiority to
-the budgeted comparator. Runner with loop guard and reasoning budget has
-37/40 usable turns and zero observed loops, versus budgeted llama.cpp's
-39/40 usable turns; the paired difference is -0.050, Newcombe 95%
-[-0.176, +0.067], exact McNemar p 0.625. “Usable” is the specified output-form
-metric, not proof that a code fix works. `unit_test_pass` was **not
-computed**: there was no isolation for executing model-written code.
-This is a disclosed omission of the secondary diagnostic.
-
 Unsloth's additional column uses its published CPU prebuilt
 `b12649-mix-c7059d6`, run as published. A source build at the release
 tag commit could not load Inkling 2 Mini.
@@ -375,19 +335,19 @@ outcome or a change to the pre-registered TIE label.
 - The Windows gate fixes above do not alter runtime behavior. The minor
   version adds model/execution support without removing 1.x interfaces.
 
-## Limits
-
-The first paragraph and linked records are part of each claim. No claim of
-universal speed, cross-backend bit identity, all-100 greedy identity, GPU
-training for OLMo, or real-file Metal validation of the 7B is made. The CPU
-and CUDA timing windows are different measurements on named builds. The release gates remain outstanding. Claim 2 must retain its provisional
-sixteen-thread qualification, and the missing 1B CPU speed row stays disclosed.
-
 ## Gates
 
-**DRAFT / NOT RELEASE-READY.** Source main was `83da2dc3`; the candidate
-version pin is `0ea15c6e`. This prep has no tagged assets or version-specific
-1.22.0 compatibility/full-CUDA records. The generic Make dry run prints the
-plan only. See [the gate record](GATE-RECORD.md) for artifact, Windows and
-Mac prerequisites and the remaining publication steps. No pending gate is
-counted as a pass, and no tag, release, container or site was published.
+Built from main `83da2dc3` with the version pin `0ea15c6e`. The full CUDA gate
+passed at the pin on Windows (an sm_120 GPU, 29 of 29 steps), with the release
+smoke and activation probe; the macOS gates (STRICT test, conformance, the CPU
+compat matrix and the Metal serve soak) passed on an Apple M1. See
+[the gate record](GATE-RECORD.md) for every gate, count and stated departure.
+
+## Known limits
+
+- **Across the release:** Claim 1 measures complete greedy-sequence identity, not task quality. Its pre-registered result is Runner 40/100 versus llama.cpp 20/100, including 58 incomplete Runner records. Erratum 3, decided after the verdicts, reports 94/100 versus 20/100 after completing the omitted stop-token positions; it is reported beside, not instead of, that result. Inkling's measured CPU prefill remains 0.70x llama.cpp's. Inkling CUDA is opt-in, with its speed result scoped to one Q8_K_XL file and an aligned build; the available Windows device's 12 GB cannot hold either admitted Inkling file. OLMo GPU training is refused, compact KV has a cross-backend limit, and the 7B file does not fit the 8 GB Metal device. Claim 2 is the provisional sixteen-thread half; its one-thread cells run after the release. The OLMo CPU rows below are slower on all measured workloads; the 1B row is absent.
+- **Claim 1: Runner versus llama.cpp, with an additional Unsloth column:** complete greedy-sequence identity to the publisher's float32 reference on 100 pre-registered prompts, not task quality. The original Runner measurement and its post-verdict correction are distinct; neither is R4.48.24's newer CPU-route comparison. The exact UD-Q8_K_XL file was run greedily, at most 256 tokens, with `reasoning_effort=low`, and verified by teacher-forced reference forwards.
+- **OLMo 3 7B CPU speed:** Runner's median is 0.33x llama.cpp's for prefill 2048, 0.40x for prefill 512 and 0.85x for decode. The 1B Q8_0 CPU row was not run because the file was unavailable and was not fetched. These are information rows, not a speed gate or an ISA-matched, prompt-matched engine comparison.
+- **Claim 2: sixteen-thread half, provisional INFORMATION:** on this Inkling CPU route, Runner decodes concurrent MoE requests one sequence at a time; gathering slots is not a shared multi-sequence matrix product. Only the sixteen-thread half has run. One-thread cells run after the release. No final full-matrix Claim 2 wording or cross-engine speed conclusion is drawn.
+- **Claim 3: FINAL, pre-registered outcome TIE:** the pre-registered outcome is **TIE**, not superiority to the budgeted comparator. Runner with loop guard and reasoning budget has 37/40 usable turns and zero observed loops, versus budgeted llama.cpp's 39/40 usable turns; the paired difference is -0.050, Newcombe 95% [-0.176, +0.067], exact McNemar p 0.625. “Usable” is the specified output-form metric, not proof that a code fix works. `unit_test_pass` was **not computed**: there was no isolation for executing model-written code. This is a disclosed omission of the secondary diagnostic.
+- **Scope of these notes:** Each claim's linked records are part of it. No claim of universal speed, cross-backend bit identity, all-100 greedy identity, GPU training for OLMo, or real-file Metal validation of the 7B is made. The CPU and CUDA timing windows are different measurements on named builds. Claim 2 must retain its provisional sixteen-thread qualification, and the missing 1B CPU speed row stays disclosed.

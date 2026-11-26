@@ -9,7 +9,7 @@ published by this preparation. No release-specific device gate is claimed.
 1.22.0 is a compatible minor release: new model families, execution paths
 and additive protocol support, with the 1.x interface promises unchanged.
 1.21.0 remains the last published release. README explicitly labels this
-candidate unpublished; its final published banner and the release date
+candidate unpublished at prep; the published banner and the release date
 remain for the actual cut.
 
 `python3 scripts/changelog-entries.py fold --write` assembled 46 entries:
@@ -143,8 +143,9 @@ reads `runner 1.22.0`. A memory guard read `vm.swapusage` and the pressure level
   not a speed gate.
 - Fresh candidate CI, no open scheduled-red issue, final device reports,
   release-check and artifact verification.
-- The candidate date is provisionally 2026-11-25; confirm the actual cut
-  date and replace the unpublished README banner before release approval.
+- The release date is 2026-11-26, the owner's go; the README banner names
+  1.22.0 as published, and the CHANGELOG section leads with the features
+  and ends with its Known limits (the owner's rule of 2026-11-26).
 - Merge/tag/publish, container visibility, site rebuild, asset verification
   and the Homebrew update wait for the release decision. This document is
   not authorization to perform those steps.
