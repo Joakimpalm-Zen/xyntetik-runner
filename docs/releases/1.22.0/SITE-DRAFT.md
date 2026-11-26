@@ -37,7 +37,12 @@ run as published. A source build at the release tag commit could not load
 Inkling 2 Mini. The [release notes](RELEASE-NOTES.md) carry intervals,
 pairwise results, the full timing/load/residency table and the limitations.
 
-**PLACEHOLDER-OLMO2-CPU-SPEED:** completed CPU rows and their scope.
+On a 64-core x86-64 CPU (AVX-512), the measured OLMo 3 7B Q8_0 CPU rows
+put Runner at 0.33x llama.cpp for prefill 2048, 0.40x for prefill 512 and
+0.85x for decode. Runner's release x86-64-v3 build and llama.cpp's native
+AVX-512 build use different batching, sampling and prompts; the 1B CPU row
+is missing. [The benchmark scope and context](../../olmo2-cpu-speed.md)
+stay beside those figures.
 
 This is the proposed claim-first site passage, not an edit to the deployed
 site. Apply only after the release decision. The live site still describes

@@ -10,7 +10,8 @@ Q8_K_XL file and an aligned build; the available Windows device's 12 GB
 cannot hold either admitted Inkling file. OLMo GPU training is refused,
 compact KV has a cross-backend limit, and the 7B file does not fit the 8 GB
 Metal device. Claim 2 is the provisional sixteen-thread half; its one-thread cells run
-after the release. The OLMo CPU speed rows remain pending.
+after the release. The OLMo CPU rows below are slower on all measured workloads; the 1B
+row is absent.
 These notes are not a release-gate pass or a publication announcement.
 
 ## What changed
@@ -175,9 +176,37 @@ row does not admit a quantized sibling. The 7B's forced-TC float32 read is
 1.3625e-03 versus 1.3717e-03 with TC off, 100% margin-qualified on both;
 Wilcoxon p 0.103, McNemar p 1.0. [Promotion evidence](../../tc-promotion-evidence.md#olmo2-q8_0-r4509-2026-11-24).
 
-**PLACEHOLDER-OLMO2-CPU-SPEED:** insert the fixed per-file CPU speed rows,
-baselines, build/flags, settings, ranges and limits when the measurements
-finish. No CPU throughput improvement is claimed here yet.
+### OLMo 3 7B CPU speed: Runner slower on all three rows
+
+**Limits first:** Runner's median is 0.33x llama.cpp's for prefill 2048,
+0.40x for prefill 512 and 0.85x for decode. The 1B Q8_0 CPU row was not
+run because the file was unavailable and was not fetched. These are
+information rows, not a speed gate or an ISA-matched, prompt-matched
+engine comparison.
+
+Measured on **a 64-core x86-64 CPU (AVX-512)** with sixteen threads, using
+Olmo-3-7B-Think-Q8_0 (SHA256 `3a4d7dda`). Runner main `83da2dc3` used
+the release x86-64-v3 build; llama.cpp `56eea9e4` used its native AVX-512
+build. Runner caps CPU prefill at batch 256; llama-bench used batch 2048
+and micro-batch 512. Runner's bench samples with its default sampler and
+ignores EOS; llama-bench does not sample. Each tool used its own prompt
+tokens. Those differences are retained, not adjusted away.
+
+Each engine had one uncounted warm-up of the three rows, then five counted
+rounds alternated engine order, one process at a time. The table leads with the lowest
+ratio. Load is the median/peak of samples within both engines' counted
+windows for that workload. Every counted start residency was 1.0, above
+the 0.99 gate, with no misses.
+
+| Workload, sixteen CPU threads | Runner median [min, max] tok/s; spread | llama.cpp median [min, max] tok/s; spread | Runner / llama.cpp | Build codegen on every row | Count per engine | Load median / peak | Start residency / misses |
+|---|---:|---:|---:|---|---:|---:|---|
+| Prefill 2048 | 59.894 [58.751, 60.723]; 3.3% | 183.384 [181.552, 184.343]; 1.5% | 0.327x | Runner x86-64-v3 / llama.cpp native AVX-512 | 5 | 24.170 / 26.89 | 1.000000 / 0 |
+| Prefill 512 | 79.149 [72.096, 81.075]; 11.3% | 197.107 [196.925, 197.853]; 0.5% | 0.402x | Runner x86-64-v3 / llama.cpp native AVX-512 | 5 | 24.485 / 28.17 | 1.000000 / 0 |
+| Decode 128 at depth 512 | 11.833 [11.712, 12.118]; 3.4% | 13.864 [13.625, 14.360]; 5.3% | 0.853x | Runner x86-64-v3 / llama.cpp native AVX-512 | 5 | 23.380 / 26.27 | 1.000000 / 0 |
+
+Spread is (max - min) / median. These are the tools' own benchmark results
+on the named builds, not measurements of the future release artifacts.
+[Method, exact file and build provenance](../../olmo2-cpu-speed.md).
 
 ### Windows gate fixes
 
@@ -351,9 +380,8 @@ outcome or a change to the pre-registered TIE label.
 The first paragraph and linked records are part of each claim. No claim of
 universal speed, cross-backend bit identity, all-100 greedy identity, GPU
 training for OLMo, or real-file Metal validation of the 7B is made. The CPU
-and CUDA timing windows are different measurements on named builds. The OLMo CPU-speed
-placeholder and release gates must be resolved before these notes are final;
-Claim 2 must retain its provisional sixteen-thread qualification.
+and CUDA timing windows are different measurements on named builds. The release gates remain outstanding. Claim 2 must retain its provisional
+sixteen-thread qualification, and the missing 1B CPU speed row stays disclosed.
 
 ## Gates
 

@@ -1,5 +1,6 @@
 **Limits first: DRAFT, not release-ready.** Claim 2 is the provisional sixteen-thread half, with one-thread cells
-after the release; the OLMo CPU speed rows are unfinished. The actual 1.22.0 artifacts, Windows and Mac
+after the release. The measured OLMo 7B CPU rows are slower, with different
+builds and tool workloads; the 1B CPU row is missing. The actual 1.22.0 artifacts, Windows and Mac
 release gates, compat/device reports and final release-check remain pending.
 No tag, push, publication or site deployment is part of this preparation.
 
@@ -7,7 +8,7 @@ Prepares 1.22.0 from `83da2dc3`: a compatible minor release for Inkling 2
 Mini and OLMo 2/3 support and new execution paths. Version pins are a separate
 commit (`0ea15c6e`); README calls the candidate unpublished and keeps 1.21.0
 identified as the last published release. The house fold tool assembled
-all 41 pending entries plus the run-3 and release Claims 1, 2 and 3 result entries, without hand-merging
+all 41 pending entries plus the run-3 and release Claims 1, 2 and 3 plus OLMo CPU-speed result entries, without hand-merging
 bodies. The provisional date is to be confirmed at the actual cut.
 
 The [notes draft](RELEASE-NOTES.md) leads with limits and includes the
@@ -19,8 +20,9 @@ scoped opt-in CUDA measurement, OLMo backend/CPU-training admission and the
 7B bar, Q8_0 tensor-core prefill, and Windows gate test fixes. The
 [site-copy draft](SITE-DRAFT.md) leads with the feature claim and keeps its
 limits in the same passage. The notes include the final Claim 3 TIE, the provisional sixteen-thread
-Claim 2 tables and additional Unsloth columns. The OLMo CPU-speed
-placeholder remains; no full-matrix Claim 2 result is claimed.
+Claim 2 tables and additional Unsloth columns. The OLMo CPU-speed rows report all three slower ratios and their build,
+prompt, batching and sampler differences; the 1B CPU row is absent. No
+full-matrix Claim 2 result is claimed.
 
 [Gate record](GATE-RECORD.md): `make -n release-check` prints a plan only;
 the checker has no dedicated dry-validation mode. The real release gate

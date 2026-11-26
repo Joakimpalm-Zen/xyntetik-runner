@@ -12,12 +12,12 @@ and additive protocol support, with the 1.x interface promises unchanged.
 candidate unpublished; its final published banner and the release date
 remain for the actual cut.
 
-`python3 scripts/changelog-entries.py fold --write` assembled 45 entries:
+`python3 scripts/changelog-entries.py fold --write` assembled 46 entries:
 41 pending entries from the cut plus R4.48.24 and release Claims 1, 2 and 3
-result entries. The Claim 1 correction preserves the pre-registered result first
+and OLMo CPU-speed result entries. The Claim 1 correction preserves the pre-registered result first
 and labels erratum 3 as decided after the verdicts. Only the
 release heading and fresh empty Unreleased heading were added outside the
-fold. The folded body was compared with all 45 corrected source texts in the tool's
+fold. The folded body was compared with all 46 corrected source texts in the tool's
 order. `changes/README.md` remains; no pending entry is left behind.
 
 ## Dry-run status
@@ -102,7 +102,9 @@ the current-version full-CUDA requirement are separate checks.
   are scheduled after the release, not counted as completed.
 - Claim 3: final pre-registered outcome TIE; additional Unsloth pairs do
   not change it. The secondary unit-test diagnostic was not computed.
-- **PLACEHOLDER-OLMO2-CPU-SPEED:** final CPU timings and limits.
+- OLMo CPU rows: the measured 7B ratios and scope are reported; the
+  unrun 1B Q8_0 row is disclosed, not inferred. The rows are information,
+  not a speed gate.
 - Fresh candidate CI, no open scheduled-red issue, final device reports,
   release-check and artifact verification.
 - The candidate date is provisionally 2026-11-25; confirm the actual cut
