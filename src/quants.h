@@ -113,6 +113,8 @@ bool  quantize_floor_bytes(const char *in_path, int top, int bottom, const char 
 int   quantize_error_report(const char *in_path, const int *types, int n_types,
                             const char *out_path);
 // The same report with a tensor's rows costed on n_threads; the bytes do not depend on the count.
+// R4.55: --type-plan-show, the rewrite's decision per tensor as JSON lines on stdout, nothing written (quantize.c)
+int   quantize_type_plan_show(const char *in_path, const char *type_plan_path);
 int   quantize_error_report_threads(const char *in_path, const int *types, int n_types,
                                     const char *out_path, int n_threads);
 // Compile a longer native-YaRN context contract into a standalone GGUF.

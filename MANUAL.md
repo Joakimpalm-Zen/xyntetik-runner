@@ -3271,7 +3271,7 @@ whether the draft is `active` there.
 |---|---|
 | `--rewrite OUT` | The one tensor-rewrite pass: write a rewritten model to `OUT` and exit, with a provenance record beside it. Without a trigger it is a requantization (see `--quant`); `--merge-lora` and `--context-surgery` are its triggers, one per pass. Each kind of pass keeps its own record (`OUT.quant.json`, `OUT.merge.json`, `OUT.context.json`), so a lineage walk reads the same records it always read. A plain rewrite quantizes rows on `-t N` threads (every CPU when `-t` is not given) and writes them in order, so the file's bytes do not depend on the count; a merge and an expert prune run on one thread. |
 | `--quant q8_0\|q4_0\|q5_1\|q3_k\|q4_k\|q5_k\|q6_k\|iq3_xxs\|iq4_nl\|mxfp4\|nvfp4\|f16\|bf16\|keep` | Requantization target (`mxfp4`: OCP microscaling FP4, one power-of-two scale per 32 values, the bytes ggml's reference writer emits, so gpt-oss's expert format can be written as well as read; `nvfp4`: two-level NVIDIA FP4 with 16-element UE4M3 sub-block scales covering all 127 finite codes `0x00..0x7E` and synthesized F32 `.scale` companions per expert on `inkling2_loop` stacks or per tensor otherwise, declined on `inkling2_loop` dense tensors; `iq3_xxs`, `q5_1`, `q5_k` and `iq4_nl` follow ggml with or without an importance matrix, byte for byte); default `q4_0`, or keep per-tensor types when pruning, removing or merging alone. Requires `--rewrite`; without it the flag is refused rather than ignored. |
-| `--type-plan PLAN.json` | Apply a per-tensor rewrite plan; first matching substring rule wins. [Details](#cli-type-plan). |
+| `--type-plan PLAN.json` | Apply a per-tensor rewrite plan: a `match` rule is a substring, a `name` rule an exact name; the first rule that applies wins. `--type-plan-show` lists what each tensor would get, writing nothing. [Details](#cli-type-plan). |
 | `--type-plan-strict` | With `--type-plan`: fail before writing anything when a rule would be declined (block width, never-grow) or fall back to a 32-block type, instead of reporting it and building the file. Off by default. |
 | `--imatrix FILE` | With `--rewrite`: an importance matrix, in llama.cpp's GGUF or legacy `.dat` imatrix format, so a published one serves as it is. It weights rounding for `q3_k`, `q4_0`, `q4_k`, `q5_k`, `q6_k`, `q5_1`, `iq3_xxs` and `iq4_nl` toward the input columns a calibration text drives hardest, using ggml's type-specific weighted quantizers. Q6_K uses raw importance weights; the other types shape them by their row or block variance. The added writers are byte-identical to pinned ggml on the [real slice and boundary fixtures](tests/fixtures/quant-golden/README.md). Other output types are written as without it, a matrix the calibration never reached (an expert no token was routed to) is written unweighted, and an entry whose size does not fit its tensor fails the rewrite. The summary line counts what it shaped; the `.quant.json` record names the file by sha256. Without it every writer emits the reference bytes it always has. |
 | `--quant-error OUT.jsonl` | Write no model: for every tensor a rewrite would quantize and every `--quant` type (a comma list, e.g. `q4_0,q3_k`), one JSON line with the type's bytes and the squared round-trip error the rewrite's own writer leaves, summed over rows and weighted per input column by `--imatrix` when given (1 without one), so it reads as the expected squared output perturbation the type adds to that matrix. A type whose block cannot describe the row is costed as the 32-block type the rewrite writes in its place (the width fallback, `q4_k` to `q5_0`), with `"written_as"` naming it, so a plan built from the report predicts the file; a type with no fallback reads `null`. `scripts/type-plan-by-sensitivity.py` turns the report into a `--type-plan` that demotes whole blocks (or single tensors) to a lower type in order of the error they add per byte they save. The ranking is a proxy: measure the plan's file against the reference before trusting it. A tensor's rows are costed on `-t N` threads (every CPU when `-t` is not given), and the report's bytes do not depend on the count; progress is printed every 15 seconds. |
@@ -3379,7 +3379,27 @@ header, and `runner --fit FILE -c N` answers them per context.
 <a id="cli-type-plan"></a>
 #### `--type-plan PLAN.json`
 
-Per-tensor rewrite plan. First substring rule wins; types are `keep`, `q8_0`, `q4_0`,
+Per-tensor rewrite plan. A rule is `{"match": S, "type": T}`, which applies to every tensor
+whose name holds S, or `{"name": N, "type": T}`, which applies to the one tensor named N.
+The first rule that applies wins, whichever kind it is. A `match` is a substring:
+`{"match":"output.weight"}` also takes every `blk.N.attn_output.weight`; to take the head
+alone, write `{"name":"output.weight"}`. A rule with both keys or neither is refused, and a
+key a rule does not read is named in a warning. Each run warns, and `--type-plan-strict`
+refuses:
+- when a `match` is the whole role of a tensor (its name after `blk.N.`) yet also takes
+  tensors of another role;
+- when a `name` names no tensor in the file.
+
+A `match` that takes nothing is only warned about, so a generic plan still works under
+`--type-plan-strict` on a smaller file.
+
+`-m FILE --type-plan PLAN.json --type-plan-show` writes nothing. It prints a JSON line per
+tensor: the rule that applied, the type asked, the type the rewrite would write, and why.
+That decision is the rewrite's own, fallbacks and declines included. It then prints a line
+per rule with the tensors it took and its warning, and one for the default. It exits 0, or
+under `--type-plan-strict` as the real run would.
+
+Types are `keep`, `q8_0`, `q4_0`,
 `q5_1`, `q3_k`, `q4_k`, `q5_k`, `q6_k`, `iq3_xxs`, `iq4_nl`, `mxfp4`, `nvfp4`, `f16`, and `bf16`. Example:
 `{"default":"keep","rules":[{"match":"_exps.weight","type":"q3_k"}]}`. Requires
 `--rewrite`. A rule whose type's block does not divide the row width is honoured in the

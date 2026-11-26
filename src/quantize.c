@@ -1998,7 +1998,9 @@ static void prune_plan_free(prune_plan_t *p) {
 // actually write (q8_0, q4_0, q5_1, q3_k, q4_k, q5_k, q6_k, iq4_nl, mxfp4,
 // f16, bf16, keep) — naming
 // one it cannot is an error at load, not a silent fallback.
-typedef struct { char *match; int type; } type_rule_t;
+// R4.55: a rule is a "match" (a substring of the tensor's name) or a "name" (the tensor's whole name, exact); one
+// precedence for both: the first rule that applies wins
+typedef struct { char *match; int type; bool exact; } type_rule_t;
 typedef struct { type_rule_t *rules; int n; int dflt; } type_plan_t;
 
 // A plan file (--type-plan, --prune-experts) as its JSON object, or NULL with
@@ -2103,15 +2105,36 @@ static bool type_plan_load(const char *path, type_plan_t *plan) {
     if (ok && rules && rules->type == J_ARR && rules->n > 0) {
         plan->rules = calloc((size_t)rules->n, sizeof(type_rule_t));
         if (!plan->rules) { jv_free(root); return false; }
+        const char *warned[8];   // R4.55: each unknown rule key named once, not refused
+        int n_warned = 0;
         for (int i = 0; ok && i < rules->n; i++) {
             jv *r = rules->items[i];
             jv *m = r && r->type == J_OBJ ? jv_get(r, "match") : NULL;
+            jv *nm = r && r->type == J_OBJ ? jv_get(r, "name") : NULL;
             jv *t = r && r->type == J_OBJ ? jv_get(r, "type") : NULL;
-            if (!m || m->type != J_STR || !t || t->type != J_STR) {
-                fprintf(stderr, "error: type-plan rule %d needs string "
-                        "\"match\" and \"type\"\n", i);
+            if ((m != NULL) == (nm != NULL)) {
+                fprintf(stderr, "error: type-plan rule %d needs exactly one of \"match\" (a substring of the tensor's "
+                        "name) and \"name\" (its whole name)\n", i);
                 ok = false;
                 break;
+            }
+            if (m) nm = NULL;
+            jv *pat = m ? m : nm;
+            if (pat->type != J_STR || !t || t->type != J_STR) {
+                fprintf(stderr, "error: type-plan rule %d needs a string \"%s\" and a string \"type\"\n", i,
+                        m ? "match" : "name");
+                ok = false;
+                break;
+            }
+            for (int k = 0; k < r->n; k++) {
+                const char *key = r->keys[k];
+                if (!strcmp(key, "match") || !strcmp(key, "name") || !strcmp(key, "type")) continue;
+                bool seen = false;
+                for (int w = 0; w < n_warned; w++) seen = seen || !strcmp(warned[w], key);
+                if (seen) continue;
+                if (n_warned < (int)(sizeof warned / sizeof *warned)) warned[n_warned++] = key;
+                fprintf(stderr, "warning: type-plan rule %d has the key \"%.40s\", which no rule reads (a rule reads "
+                        "\"match\" or \"name\", and \"type\"); it is ignored\n", i, key);
             }
             int ty = type_from_name(jv_str(t, NULL));
             if (ty == -2) {
@@ -2120,9 +2143,10 @@ static bool type_plan_load(const char *path, type_plan_t *plan) {
                 ok = false;
                 break;
             }
-            plan->rules[plan->n].match = strdup(jv_str(m, ""));
+            plan->rules[plan->n].match = strdup(jv_str(pat, ""));
             if (!plan->rules[plan->n].match) { ok = false; break; }
             plan->rules[plan->n].type = ty;
+            plan->rules[plan->n].exact = nm != NULL;
             plan->n++;
         }
     }
@@ -2140,9 +2164,16 @@ static bool type_plan_load(const char *path, type_plan_t *plan) {
 }
 
 // first matching rule wins; T_KEEP means "leave this tensor exactly as it is"
-static int type_plan_pick(const type_plan_t *plan, const char *name) {
-    for (int i = 0; i < plan->n; i++)
-        if (strstr(name, plan->rules[i].match)) return plan->rules[i].type;
+// The type for a tensor, and in *rule the index of the rule that applied (-1: the default)
+static int type_plan_pick(const type_plan_t *plan, const char *name, int *rule) {
+    for (int i = 0; i < plan->n; i++) {
+        const type_rule_t *r = &plan->rules[i];
+        if (r->exact ? !strcmp(name, r->match) : strstr(name, r->match) != NULL) {
+            if (rule) *rule = i;
+            return r->type;
+        }
+    }
+    if (rule) *rule = -1;
     return plan->dflt;
 }
 
@@ -2892,6 +2923,9 @@ typedef struct {
     int *out_type;
     uint64_t *out_off;
     const float **fac;        // per tensor: the per-expert factors its re-quantization folds in (NULL: none)
+    // R4.55, with a --type-plan: per tensor the rule that applied (-1 the default), the type asked, and how the
+    // decision went (TPH_*); per rule the tensors it took (what --type-plan-show lists and the audit reads)
+    int *tp_rule, *tp_want, *tp_how, *tp_caught;
     syn_scale_t *syn;         // synthesized F32 .scale companion tensors for newly written NVFP4 tensors
     uint64_t n_syn;
     int64_t *nvfp4_syn;       // per source tensor: index into syn[], or -1
@@ -2909,6 +2943,8 @@ static void quantize_job_close_source(quantize_job *J) {
     free(J->rowf); free(J->rowq);
     free(J->out_type); free(J->out_off); free(J->eff_ne);
     free(J->fac); J->fac = NULL;
+    free(J->tp_rule); free(J->tp_want); free(J->tp_how); free(J->tp_caught);
+    J->tp_rule = J->tp_want = J->tp_how = J->tp_caught = NULL;
     for (uint64_t k = 0; k < J->n_syn; k++) free(J->syn[k].vals);
     free(J->syn); J->syn = NULL; J->n_syn = 0;
     free(J->nvfp4_syn); J->nvfp4_syn = NULL;
@@ -3497,11 +3533,81 @@ static void quantize_job_uniform_expert_count(quantize_job *J) {
 // for). The declared value is computed from the histogram of what is
 // actually written, and the histogram itself is printed so a mixed
 // result is visible in the log, not just in a header field.
+// R4.55: how a tensor's type was decided, for --type-plan-show: asked keep, the router (its own type always), not a
+// quantized tensor (a norm, a vector), or decide_type's answer (TPH_DECIDED + its type_decision)
+enum { TPH_KEEP = 1, TPH_ROUTER, TPH_NOT_QUANTIZED, TPH_DECIDED };
+static const char *tph_words(int how) {
+    switch (how) {
+    case TPH_KEEP: return "keep";
+    case TPH_ROUTER: return "the router keeps its type";
+    case TPH_NOT_QUANTIZED: return "not a quantized tensor";
+    case TPH_DECIDED + DEC_AS_ASKED: return "as asked";
+    case TPH_DECIDED + DEC_FALLBACK: return "width fallback: the block does not divide the row";
+    case TPH_DECIDED + DEC_KEPT_WIDTH: return "kept: no type on offer divides the row";
+    case TPH_DECIDED + DEC_KEPT_SIZE: return "kept: not smaller than what it carries";
+    default: return "?";
+    }
+}
+// a tensor's role: its name past "blk.N."
+static const char *tensor_role(const char *name) {
+    if (strncmp(name, "blk.", 4)) return name;
+    const char *p = name + 4;
+    while (*p >= '0' && *p <= '9') p++;
+    return *p == '.' && p > name + 4 ? p + 1 : name;
+}
+// R4.55: the traps of a hand-written plan, each a warning on stderr (and, with warn given, a sentence per rule there):
+// - a "name" rule that names no tensor in the file (a typo: its tensor falls to the default);
+// - a "match" rule that is the whole role of some tensor and also takes tensors of another role ("output.weight"
+//   takes every blk.N.attn_output.weight);
+// - a "match" rule that takes nothing (said only: a generic plan reused on a smaller file keeps working).
+// Returns whether a trap --type-plan-strict refuses was found (the first two). say: print them.
+static bool type_plan_audit(const quantize_job *J, char (*warn)[512], bool say) {
+    bool trap = false;
+    for (int r = 0; r < J->tplan.n; r++) {
+        const type_rule_t *ru = &J->tplan.rules[r];
+        char msg[512] = "";
+        if (ru->exact && J->tp_caught[r] == 0) {
+            snprintf(msg, sizeof msg, "type-plan rule %d (\"name\": \"%.200s\") names no tensor in this file; its "
+                     "tensor would take the default", r, ru->match);
+            trap = true;
+        } else if (!ru->exact && J->tp_caught[r] == 0) {
+            snprintf(msg, sizeof msg, "type-plan rule %d (\"match\": \"%.200s\") takes no tensor in this file", r,
+                     ru->match);
+        } else if (!ru->exact) {
+            bool is_role = false;
+            for (uint64_t i = 0; !is_role && i < J->g.n_tensors; i++)
+                is_role = !strcmp(tensor_role(J->g.tensors[i].name), ru->match);
+            const char *other = NULL;
+            int n_other = 0;
+            for (uint64_t i = 0; is_role && i < J->g.n_tensors; i++)
+                if (J->tp_rule[i] == r && strcmp(tensor_role(J->g.tensors[i].name), ru->match)) {
+                    if (!other) other = J->g.tensors[i].name;
+                    n_other++;
+                }
+            if (n_other) {
+                snprintf(msg, sizeof msg, "type-plan rule %d (\"match\": \"%.120s\") is the whole role of a tensor "
+                         "but also takes %d tensor(s) of another role (first: %.120s): a match is a substring; use "
+                         "{\"name\": ...} for the one tensor, or a longer match", r, ru->match, n_other, other);
+                trap = true;
+            }
+        }
+        if (say && msg[0]) fprintf(stderr, "warning: %s\n", msg);
+        if (warn) snprintf(warn[r], sizeof warn[r], "%s", msg);
+    }
+    return trap;
+}
+
 static bool quantize_job_decide_types(quantize_job *J, int target,
                                       const char *type_plan_path,
                                       const merge_set_t *ms) {
     J->out_type = malloc(sizeof(int) * J->g.n_tensors);
     if (J->g.n_tensors > 0 && !J->out_type) J->w.ok = false;
+    if (type_plan_path && J->w.ok) {
+        const size_t nt = J->g.n_tensors ? J->g.n_tensors : 1;
+        J->tp_rule = calloc(nt, sizeof(int)); J->tp_want = calloc(nt, sizeof(int));
+        J->tp_how = calloc(nt, sizeof(int)); J->tp_caught = calloc((size_t)J->tplan.n + 1, sizeof(int));
+        if (!J->tp_rule || !J->tp_want || !J->tp_how || !J->tp_caught) J->w.ok = false;
+    }
     // RI-3: a declined rule names the tensor and the type it asked for.
     // An aggregate count told the author of a plan that something was dropped
     // but not what, so the only way to find it was to diff the built histogram
@@ -3541,7 +3647,12 @@ static bool quantize_job_decide_types(quantize_job *J, int target,
         // names other tensors. The router never changes type.
         int want = target;
         if (type_plan_path) {
-            want = type_plan_pick(&J->tplan, t->name);
+            int rule = -1;
+            want = type_plan_pick(&J->tplan, t->name, &rule);
+            if (J->tp_rule) {
+                J->tp_rule[i] = rule; J->tp_want[i] = want;
+                if (rule >= 0) J->tp_caught[rule]++;
+            }
         } else if (target != T_KEEP) {
             const char *only = ms ? NULL : getenv("RUNNER_REQUANT_ONLY");
             if (only && *only) g_qrep.requant_only = only;
@@ -3552,11 +3663,14 @@ static bool quantize_job_decide_types(quantize_job *J, int target,
             // pushed to F32 by a plan whose whole instruction was to convert
             // nothing
             J->out_type[i] = t->type;
+            if (J->tp_how) J->tp_how[i] = want == T_KEEP ? TPH_KEEP : TPH_ROUTER;
         } else if (!should_quantize(t)) {
             J->out_type[i] = t->type == T_F16 ? T_F16 : T_F32;
+            if (J->tp_how) J->tp_how[i] = TPH_NOT_QUANTIZED;
         } else {
             type_decision how;
             J->out_type[i] = decide_type(&J->g, t, want, grow, &how);
+            if (J->tp_how) J->tp_how[i] = TPH_DECIDED + (int)how;
             if (how == DEC_FALLBACK) {
                 if (n_fb < DECLINE_NAMES) {
                     fb_name[n_fb] = t->name; fb_want[n_fb] = (uint32_t)want;
@@ -3588,8 +3702,10 @@ static bool quantize_job_decide_types(quantize_job *J, int target,
         }
     }
     if (merge_unwritable) return false;
+    // R4.55: the plan's own traps, said in every run and refused under --type-plan-strict
+    const bool plan_trap = type_plan_path && J->w.ok && type_plan_audit(J, NULL, true);
     bool strict_refuse = g_type_plan_strict && type_plan_path &&
-                         (fell_back || declined_width || declined_size);
+                         (fell_back || declined_width || declined_size || plan_trap);
     if (J->w.ok && fell_back) {
         fprintf(stderr, "quantize: %llu tensor(s) written in a 32-block fallback "
                 "type — the requested type's block does not divide their row "
@@ -3625,10 +3741,14 @@ static bool quantize_job_decide_types(quantize_job *J, int target,
                     (unsigned long long)(declined_size - (uint64_t)n_decl_s));
     }
     if (strict_refuse) {
-        fprintf(stderr, "error: --type-plan-strict: %llu plan rule(s) would "
-                "not be applied as written (listed above); nothing was "
-                "written\n", (unsigned long long)(fell_back + declined_width +
-                                                  declined_size));
+        if (fell_back || declined_width || declined_size)
+            fprintf(stderr, "error: --type-plan-strict: %llu plan rule(s) would "
+                    "not be applied as written (listed above); nothing was "
+                    "written\n", (unsigned long long)(fell_back + declined_width +
+                                                      declined_size));
+        if (plan_trap)
+            fprintf(stderr, "error: --type-plan-strict: the plan's rules do not take the tensors they name (the "
+                    "warnings above); nothing was written\n");
         return false;
     }
     return true;
@@ -4297,6 +4417,63 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
 done:
     g_stage_sidecar = NULL;
     g_stage_ud = NULL;
+    quantize_job_release(J);
+    return rc;
+}
+
+// R4.55 --type-plan-show: what a rewrite with this plan would write, tensor by tensor, from the rewrite's own decision
+// (quantize_job_decide_types), with nothing written. stdout: one JSON line per tensor (kind "tensor": its source type,
+// the rule that applied, the type asked and the type written, and why), then one per rule (kind "rule": the tensors it
+// took and its warning) and one for the default (kind "default"). Warnings go to stderr. 0, or under
+// --type-plan-strict what the real run would return.
+static void lower_type(char *out, size_t n, int type) {
+    snprintf(out, n, "%s", type == T_KEEP ? "keep" : ggml_type_name(type));
+    for (char *c = out; *c; c++) *c = (char)tolower((unsigned char)*c);
+}
+int quantize_type_plan_show(const char *in_path, const char *type_plan_path) {
+    quantize_job job;
+    memset(&job, 0, sizeof(job));
+    quantize_job *J = &job;
+    int rc = 1;
+    if (!quantize_job_open_source(J, in_path, NULL, type_plan_path, NULL)) goto done;
+    J->w.ok = true;   // no output: the decision alone
+    const bool decided = quantize_job_decide_types(J, T_KEEP, type_plan_path, NULL);
+    if (!J->tp_rule) goto done;   // an allocation failed (J->w.ok said it)
+    char (*warn)[512] = calloc((size_t)J->tplan.n + 1, sizeof *warn);
+    if (!warn) goto done;
+    type_plan_audit(J, warn, false);   // the same warnings (said above), as sentences for the rule lines
+    int n_default = 0;
+    for (uint64_t i = 0; i < J->g.n_tensors; i++) {
+        const gguf_tensor *t = &J->g.tensors[i];
+        char tname[sizeof t->name * 6 + 8], src[24], asked[24], wrote[24];
+        json_escape(t->name, strlen(t->name), tname, sizeof tname);
+        lower_type(src, sizeof src, (int)t->type);
+        lower_type(asked, sizeof asked, J->tp_want[i]);
+        lower_type(wrote, sizeof wrote, J->out_type[i]);
+        const int r = J->tp_rule[i];
+        if (r < 0) n_default++;
+        char rule[16];
+        snprintf(rule, sizeof rule, r < 0 ? "null" : "%d", r);
+        printf("{\"kind\":\"tensor\",\"tensor\":\"%s\",\"source_type\":\"%s\",\"rule\":%s,\"by\":\"%s\",\"asked\":\"%s\","
+               "\"written\":\"%s\",\"why\":\"%s\"}\n", tname, src, rule,
+               r < 0 ? "default" : J->tplan.rules[r].exact ? "name" : "match", asked, wrote, tph_words(J->tp_how[i]));
+    }
+    for (int r = 0; r < J->tplan.n; r++) {
+        const type_rule_t *ru = &J->tplan.rules[r];
+        char pat[sizeof warn[0] * 2], w[sizeof warn[0] * 2], ty[24];
+        json_escape(ru->match, strlen(ru->match), pat, sizeof pat);
+        json_escape(warn[r], strlen(warn[r]), w, sizeof w);
+        lower_type(ty, sizeof ty, ru->type);
+        printf("{\"kind\":\"rule\",\"rule\":%d,\"by\":\"%s\",\"pattern\":\"%s\",\"type\":\"%s\",\"caught\":%d,"
+               "\"warning\":%s%s%s}\n", r, ru->exact ? "name" : "match", pat, ty, J->tp_caught[r],
+               warn[r][0] ? "\"" : "", warn[r][0] ? w : "null", warn[r][0] ? "\"" : "");
+    }
+    char dt[24];
+    lower_type(dt, sizeof dt, J->tplan.dflt);
+    printf("{\"kind\":\"default\",\"type\":\"%s\",\"caught\":%d}\n", dt, n_default);
+    free(warn);
+    rc = decided ? 0 : 1;   // false only where --type-plan-strict refuses (the real run's own answer)
+done:
     quantize_job_release(J);
     return rc;
 }
