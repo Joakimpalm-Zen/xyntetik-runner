@@ -23,7 +23,9 @@
 // quantize.c is compiled into this test with its allocators
 // macro-substituted, the pattern of tests/test_model_load_oom.c; the system
 // headers come first, so the macros rewrite only quantize.c's own calls.
-// Usage: test-quantize-oom WORKDIR DENSE.gguf MOE.gguf YARN.gguf ADAPTER.gguf
+// R4.48.8.1: an inkling2_loop file's stacks re-quantized (the per-expert factors folded in, their .scale tensors
+// dropped) is a seventh transformation, and its non-uniform prune a fourth refusal.
+// Usage: test-quantize-oom WORKDIR DENSE.gguf MOE.gguf YARN.gguf ADAPTER.gguf INKLING.gguf
 #include <errno.h>
 #include <math.h>
 #include <stdio.h>
@@ -231,17 +233,22 @@ static void refusal(const qcase *c, const char *out) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 6) {
-        fprintf(stderr, "usage: test-quantize-oom WORKDIR DENSE.gguf MOE.gguf YARN.gguf ADAPTER.gguf\n");
+    if (argc < 7) {
+        fprintf(stderr, "usage: test-quantize-oom WORKDIR DENSE.gguf MOE.gguf YARN.gguf ADAPTER.gguf INKLING.gguf\n");
         return 2;
     }
     const char *work = argv[1], *dense = argv[2], *moe = argv[3], *yarn = argv[4],
-               *adapter = argv[5];
-    char tplan[1024], prune[1024];
+               *adapter = argv[5], *inkling = argv[6];
+    char tplan[1024], prune[1024], ink_plan[1024], ink_prune[1024];
     snprintf(tplan, sizeof tplan, "%s/test-quantize-oom-type-plan.json", work);
     snprintf(prune, sizeof prune, "%s/test-quantize-oom-prune.json", work);
+    snprintf(ink_plan, sizeof ink_plan, "%s/test-quantize-oom-ink2-plan.json", work);
+    snprintf(ink_prune, sizeof ink_prune, "%s/test-quantize-oom-ink2-prune.json", work);
     write_file(tplan, "{\"default\": \"q8_0\", \"rules\": [{\"match\": \"ffn\", \"type\": \"q4_0\"}]}");
     write_file(prune, "{\"layer_0\": [0, 1], \"layer_1\": [2, 3]}");
+    // MXFP4 is narrower than the stacks' NVFP4, so every stack is re-quantized and its .scale dropped
+    write_file(ink_plan, "{\"default\": \"keep\", \"rules\": [{\"match\": \"_exps.weight\", \"type\": \"mxfp4\"}]}");
+    write_file(ink_prune, "{\"layer_0\": [0, 1], \"layer_1\": [0, 1, 2], \"layer_2\": [0, 1], \"layer_3\": [0, 1]}");
     int q8 = quantize_type_from_name("q8_0"), keep = quantize_type_from_name("keep");
     const qcase cases[] = {
         { "quantize-q8",   0, dense, NULL,  NULL,  NULL,     NULL,    q8 },
@@ -250,6 +257,7 @@ int main(int argc, char **argv) {
         { "prune-experts", 0, moe,   prune, NULL,  NULL,     NULL,    keep },
         { "merge-q8",      1, dense, NULL,  NULL,  NULL,     adapter, q8 },
         { "surgery",       2, yarn,  NULL,  NULL,  NULL,     NULL,    keep },
+        { "ink2-fold",     0, inkling, NULL, ink_plan, NULL,   NULL,    keep },
     };
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) sweep(&cases[i], work);
 
@@ -266,18 +274,22 @@ int main(int argc, char **argv) {
         { "prune-range",   0, moe,   bad_prune, NULL,        NULL,     NULL, keep },
         { "no-out-dir",    0, dense, NULL,      NULL,        "attn:1", NULL, keep },
         { "strict-plan",   0, dense, NULL,      strict_plan, "attn:1", NULL, keep },
+        { "ink2-nonuniform", 0, inkling, ink_prune, NULL,    NULL,     NULL, keep },
     };
     refusal(&refused[0], out);
     refusal(&refused[1], no_dir);
     quantize_set_type_plan_strict(true);
     refusal(&refused[2], out);
     quantize_set_type_plan_strict(false);
+    refusal(&refused[3], out);
+    remove(ink_plan);
+    remove(ink_prune);
     remove(bad_prune);
     remove(strict_plan);
     remove(tplan);
     remove(prune);
     if (g_fail) { fprintf(stderr, "test-quantize-oom FAILED\n"); return 1; }
-    fprintf(stderr, "test-quantize-oom: every allocation of six transformations failed in turn, "
-            "each refused cleanly or wrote the clean output; three refusals; no leaks\n");
+    fprintf(stderr, "test-quantize-oom: every allocation of seven transformations failed in turn, "
+            "each refused cleanly or wrote the clean output; four refusals; no leaks\n");
     return 0;
 }
