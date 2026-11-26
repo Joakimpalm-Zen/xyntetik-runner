@@ -47,24 +47,28 @@ was in progress. Recheck both status and open scheduled-red issues before
 cutting; this snapshot is not an assertion about their later state. The
 unpushed candidate has no candidate CI run yet.
 
-## Remaining artifact and Windows checks
+## Windows gates (an sm_120 GPU, 12 GB; the release recipe)
+
+All ran on the pin commit `0ea15c6e`, on a release-recipe `runner.exe` (`tools/release-make` first on PATH; 62 compiles, all `-march=x86-64-v3`, 0 warnings; `runner 1.22.0`, sha256 `e75bd789...`, unchanged after every part).
+
+- **Full CUDA gate** (`scripts/cuda-gate.sh`, class `windows-x86_64-cuda`): pass, 29 of 29 steps in 14 minutes, `GATE_MODEL` Qwen3-0.6B-Q8_0 (sha256 `9465e63a...`), llama.cpp `56eea9e4` (release b12640, its published Windows CUDA archives checked against their digests). The summary is `docs/device-runs-2026-11-26/windows-x86_64-cuda/cuda-gate-20261126T063529Z.json`, and the class row's `last_verified` points at it. `test-cuda-gated`: 524 passed, 19 skipped (Metal-only cases, one allowed CUDA-availability skip, two fixture-carried cases, and four training cases whose Python-made fixtures a fresh tree lacks; those four were then generated and run: `test_train.py` 92 passed, 0 skipped).
+- **Release smoke and activation probe** (`release-cuda-gate.py --card sm120-12gb`): pass; the smoke has 13 checks, 0 warnings, and a full GPU split; every probe value is finite and exact.
+- **Recurrent-context lane:** 16 passed, 0 skipped, with UTF-8 mode on and off.
+- **venv cases:** health wait 10/10, timeout scaling 10/10.
+- **Portable math:** vectorization ok; 63 objects import no libm transcendental.
+- **T3:** the build has 0 warnings; pytest 163 passed, 2 skipped. A first run failed 2 tests because the host script set an unrelated `RUNNER_` variable, which the training record correctly refuses as not known to be inert. Unset, they pass. The 2 skips need symlinks, which this Windows account cannot create. CI's T3 lane is Linux.
+- **Not run:** the checklist's NVFP4 prefill read, because its file is not staged on this host. The real Inkling files do not fit 12 GB, so their Linux real-file marks stand separately.
+
+## Remaining artifact checks
 
 - Build the Linux x86_64, Windows x86_64 and macOS arm64 release artifacts
   under the workflow's recipes. x86 uses x86-64-v3, macOS apple-m1, not a
   native x86 build. Preserve the pin commit and actual binary hashes.
-- Run the Windows full CUDA gate and smoke/activation probe at that pin,
-  with `tools/release-make` first on PATH. Commit the gate summary, class
-  ledger row and version-specific reports; preserve any real failure.
-- Check Windows portable math/T3, the venv health/timeout cases and the
-  recurrent-context lane's skip checker. Old fixture passes on 1.21.0 are
-  not fresh 1.22.0 artifact gates. The real Inkling files do not fit the
-  available 12 GB Windows device; its fixture gate is separate from the
-  Linux real-file marks.
 - Package BUILD-INFO, source commit, checksums, licenses and notices. The
   workflow's glibc floor/dot-product/version checks must pass on the produced
   assets. Download-and-checksum verification needs the actual assets.
-- A full CUDA gate for 1.22.0, with agreeing committed summary, is still
-  required even though the feature-level 284-check Inkling runs passed.
+- Run `make release-check` at the final head (a local dry run at `b768fd92`
+  with these records exited 0; the real run follows the artifacts).
 
 ## macOS gates (an Apple M1, 8 GB; Apple clang 21.0.0; the project venv's Python 3.14.8)
 
