@@ -12950,6 +12950,8 @@ struct gpu_ink2 {
     // (the decode fix) the core as two kernels, k_ink2_attn_logits then k_ink2_attn, over the stored logits alg; the
     // former single kernel f_attn_ref is the TEST-ONLY reference (gpu_ink2_test_attn_ref)
     CUfunction f_attn, f_attn_lg, f_attn_ref;
+    CUfunction f_attn_q8, f_attn_lg_q8, f_attn_ref_q8, f_kvst_q8;   // R4.48.8.5: the q8 rings' cores and store
+    unsigned char *hq; size_t hq_cap;   // R4.48.8.5: a chunk's K or V as q8 rows on the host (gpu_ink2_attn)
     CUdeviceptr aq, arl, ask, apos, aatt, alg;
     size_t aq_cap, arl_cap, ask_cap, apos_cap, aatt_cap, alg_cap;
     int attn_ref;
@@ -13021,6 +13023,10 @@ gpu_ink2 *gpu_ink2_bind(void) {
     if (cu.ModuleGetFunction(&h->f_swiglu, h->mod, "k_ink2_swiglu") != 0) h->f_swiglu = NULL;
     if (cu.ModuleGetFunction(&h->f_attn, h->mod, "k_ink2_attn") != 0) h->f_attn = NULL;
     if (cu.ModuleGetFunction(&h->f_attn_lg, h->mod, "k_ink2_attn_logits") != 0) h->f_attn_lg = NULL;
+    if (cu.ModuleGetFunction(&h->f_attn_q8, h->mod, "k_ink2_attn_q8") != 0) h->f_attn_q8 = NULL;
+    if (cu.ModuleGetFunction(&h->f_attn_lg_q8, h->mod, "k_ink2_attn_logits_q8") != 0) h->f_attn_lg_q8 = NULL;
+    if (cu.ModuleGetFunction(&h->f_attn_ref_q8, h->mod, "k_ink2_attn_ref_q8") != 0) h->f_attn_ref_q8 = NULL;
+    if (cu.ModuleGetFunction(&h->f_kvst_q8, h->mod, "k_ink2_kv_store_q8") != 0) h->f_kvst_q8 = NULL;
     if (cu.ModuleGetFunction(&h->f_attn_ref, h->mod, "k_ink2_attn_ref") != 0) h->f_attn_ref = NULL;
     static const struct { size_t off; const char *name; } gl[] = {
         { offsetof(gpu_ink2, f_sclip), "k_ink2_scaled_clip" }, { offsetof(gpu_ink2, f_kvconv), "k_ink2_kv_conv" },
@@ -13855,6 +13861,9 @@ bool gpu_ink2_experts_ok(const gpu_ink2 *h) { return h && h->f_gather && h->f_sc
 // G2b step 2b: and the K and V convolutions' histories, a ring of hist_rows (conv_k - 1) rows of C each per
 // application (position u in row u % hist_rows: ink2_cache's layout); 0 hist_rows: none (2a's callers)
 struct gpu_ink2_kv { gpu_ink2 *h; int n_app; int *rows, *C; CUdeviceptr *k, *v, *hk, *hv; int hist_rows; size_t bytes;
+                     // R4.48.8.5: the rings' kind (0 float32, 1 q8), and the packed applications' one allocation per
+                     // side (packed[a]: a's ring is at an offset in kpack / vpack, not its own allocation)
+                     int kind; CUdeviceptr kpack, vpack; unsigned char *packed;
                      // D1d.3b: the post convolutions' device copies, [n_app][2][post_rows][post_H] (0 until
                      // gpu_ink2_kv_post_init)
                      CUdeviceptr post; int post_rows, post_H; size_t post_bytes; };
@@ -13882,20 +13891,69 @@ bool gpu_ink2_kv_post_sync(gpu_ink2_kv *kv, float *host, int up) {
     return ok;
 }
 size_t gpu_ink2_kv_post_bytes(const gpu_ink2_kv *kv) { return kv ? kv->post_bytes : 0; }
-gpu_ink2_kv *gpu_ink2_kv_new(gpu_ink2 *h, int n_app, const int *rows, const int *C, int hist_rows) {
-    if (!h || n_app <= 0 || !rows || !C || hist_rows < 0 || cu.CtxSetCurrent(h->ctx) != 0) return NULL;
+// a ring row's bytes in a kind
+static size_t ink2_ring_rb(int C, int kind) { return kind == 1 ? (size_t)(C / 32) * 34 : sizeof(float) * (size_t)C; }
+// TEST-ONLY (R4.48.8.5): T rows x [T][C] through k_ink2_kv_store_q8 into a zeroed q8 ring of R rows from ring row s0
+// (the wrap in the kernel), the whole ring back into ring_out (R rows of C/32 * 34 bytes)
+bool gpu_ink2_test_kv_store_q8(gpu_ink2 *h, const float *x, int T, int C, int R, int s0, unsigned char *ring_out) {
+    if (!h || !h->f_kvst_q8 || !x || !ring_out || T <= 0 || T > R || C <= 0 || C % 32 || s0 < 0 || s0 >= R ||
+        cu.CtxSetCurrent(h->ctx) != 0)
+        return false;
+    const size_t xb = sizeof(float) * (size_t)T * (size_t)C, rb = ink2_ring_rb(C, 1) * (size_t)R;
+    CUdeviceptr dx = 0, dr = 0;
+    bool ok = cu.MemAlloc(&dx, xb) == 0 && cu.MemAlloc(&dr, rb) == 0 && cu.MemsetD8(dr, 0, rb) == 0 &&
+              cu.MemcpyHtoD(dx, x, xb) == 0;
+    int tt = T, cc = C, rr = R, ss = s0;
+    void *p[] = { &dx, &dr, &tt, &cc, &rr, &ss };
+    ok = ok && cu.LaunchKernel(h->f_kvst_q8, (unsigned)((C / 32 + 127) / 128), (unsigned)T, 1, 128, 1, 1, 0, NULL, p, NULL) == 0 &&
+         cu.MemcpyDtoH(ring_out, dr, rb) == 0;
+    if (dx) cu.MemFree(dx);
+    if (dr) cu.MemFree(dr);
+    return ok;
+}
+bool gpu_ink2_kvq8_ok(const gpu_ink2 *h) {
+    return h && h->f_attn_q8 && h->f_attn_lg_q8 && h->f_kvst_q8 && (!h->attn_ref || h->f_attn_ref_q8);
+}
+gpu_ink2_kv *gpu_ink2_kv_new(gpu_ink2 *h, int n_app, const int *rows, const int *C, int hist_rows, int kind,
+                             const unsigned char *pack) {
+    if (!h || n_app <= 0 || !rows || !C || hist_rows < 0 || (kind != 0 && kind != 1) || (kind == 1 && !gpu_ink2_kvq8_ok(h)) ||
+        cu.CtxSetCurrent(h->ctx) != 0)
+        return NULL;
+    for (int a = 0; a < n_app; a++) if (kind == 1 && C[a] % 32) return NULL;
     gpu_ink2_kv *kv = calloc(1, sizeof *kv);
     if (!kv) return NULL;
-    kv->h = h; kv->n_app = n_app; kv->hist_rows = hist_rows;
+    kv->h = h; kv->n_app = n_app; kv->hist_rows = hist_rows; kv->kind = kind;
     kv->rows = malloc(sizeof(int) * (size_t)n_app); kv->C = malloc(sizeof(int) * (size_t)n_app);
     kv->k = calloc((size_t)n_app, sizeof(CUdeviceptr)); kv->v = calloc((size_t)n_app, sizeof(CUdeviceptr));
     kv->hk = calloc((size_t)n_app, sizeof(CUdeviceptr)); kv->hv = calloc((size_t)n_app, sizeof(CUdeviceptr));
-    bool ok = kv->rows && kv->C && kv->k && kv->v && kv->hk && kv->hv;
+    kv->packed = calloc((size_t)n_app, 1);
+    bool ok = kv->rows && kv->C && kv->k && kv->v && kv->hk && kv->hv && kv->packed;
+    // the packed applications' offsets, each at a GPU_INK2_RING_ALIGN boundary, and their one allocation per side
+    size_t packed_b = 0;
+    for (int a = 0; ok && a < n_app; a++) {
+        ok = rows[a] > 0 && C[a] > 0;
+        if (ok && pack && pack[a]) {
+            packed_b = (packed_b + GPU_INK2_RING_ALIGN - 1) / GPU_INK2_RING_ALIGN * GPU_INK2_RING_ALIGN;
+            packed_b += ink2_ring_rb(C[a], kind) * (size_t)rows[a];
+        }
+    }
+    if (ok && packed_b) {
+        ok = cu.MemAlloc(&kv->kpack, packed_b) == 0 && cu.MemAlloc(&kv->vpack, packed_b) == 0;
+        if (ok) kv->bytes += 2 * packed_b;
+    }
+    size_t off = 0;
     for (int a = 0; ok && a < n_app; a++) {
         kv->rows[a] = rows[a]; kv->C[a] = C[a];
-        const size_t b = sizeof(float) * (size_t)rows[a] * (size_t)C[a];
-        ok = rows[a] > 0 && C[a] > 0 && cu.MemAlloc(&kv->k[a], b) == 0 && cu.MemAlloc(&kv->v[a], b) == 0;
-        if (ok) kv->bytes += 2 * b;
+        const size_t b = ink2_ring_rb(C[a], kind) * (size_t)rows[a];
+        if (pack && pack[a]) {
+            off = (off + GPU_INK2_RING_ALIGN - 1) / GPU_INK2_RING_ALIGN * GPU_INK2_RING_ALIGN;
+            kv->k[a] = kv->kpack + off; kv->v[a] = kv->vpack + off;
+            kv->packed[a] = 1;
+            off += b;
+        } else {
+            ok = cu.MemAlloc(&kv->k[a], b) == 0 && cu.MemAlloc(&kv->v[a], b) == 0;
+            if (ok) kv->bytes += 2 * b;
+        }
         if (ok && hist_rows > 0) {
             const size_t hb = sizeof(float) * (size_t)hist_rows * (size_t)C[a];
             ok = cu.MemAlloc(&kv->hk[a], hb) == 0 && cu.MemAlloc(&kv->hv[a], hb) == 0;
@@ -13910,13 +13968,18 @@ void gpu_ink2_kv_free(gpu_ink2_kv *kv) {
     if (!kv) return;
     if (kv->h && cu.CtxSetCurrent(kv->h->ctx) == 0)
         for (int a = 0; a < kv->n_app; a++) {
-            if (kv->k && kv->k[a]) cu.MemFree(kv->k[a]);
-            if (kv->v && kv->v[a]) cu.MemFree(kv->v[a]);
+            const bool own = !(kv->packed && kv->packed[a]);   // a packed ring is freed with its allocation, below
+            if (own && kv->k && kv->k[a]) cu.MemFree(kv->k[a]);
+            if (own && kv->v && kv->v[a]) cu.MemFree(kv->v[a]);
             if (kv->hk && kv->hk[a]) cu.MemFree(kv->hk[a]);
             if (kv->hv && kv->hv[a]) cu.MemFree(kv->hv[a]);
         }
-    if (kv->h && kv->post && cu.CtxSetCurrent(kv->h->ctx) == 0) cu.MemFree(kv->post);
-    free(kv->rows); free(kv->C); free(kv->k); free(kv->v); free(kv->hk); free(kv->hv); free(kv);
+    if (kv->h && cu.CtxSetCurrent(kv->h->ctx) == 0) {
+        if (kv->post) cu.MemFree(kv->post);
+        if (kv->kpack) cu.MemFree(kv->kpack);
+        if (kv->vpack) cu.MemFree(kv->vpack);
+    }
+    free(kv->rows); free(kv->C); free(kv->k); free(kv->v); free(kv->hk); free(kv->hv); free(kv->packed); free(kv);
 }
 bool gpu_ink2_attn_ok(const gpu_ink2 *h) { return h && h->f_attn && h->f_attn_lg; }
 // the stored logits' buffer: a chunk's queries x nh x the most keys a query admits, at most this many bytes (the core
@@ -13972,9 +14035,11 @@ typedef struct { int nh, nkv, hd, C, Q, R, window, global, ext; float scale; } i
 static bool ink2_core_launch(gpu_ink2 *h, gpu_ink2_kv *kv, int app, int T, int p0, int nh, int nkv, int hd,
                              int window, int global, int ext, float scale) {
     ink2_attn_args_host a = { nh, nkv, hd, kv->C[app], nh * hd, kv->rows[app], window, global, ext, scale };
+    const bool q8 = kv->kind == 1;   // R4.48.8.5: a q8 ring's twins (the same arguments, the rings as bytes)
     if (h->attn_ref) {
         void *p[] = { &h->aq, &kv->k[app], &kv->v[app], &h->arl, &h->ask, &h->apos, &h->aatt, &a };
-        return cu.LaunchKernel(h->f_attn_ref, (unsigned)T, (unsigned)nh, 1, 32, 1, 1, 0, NULL, p, NULL) == 0;
+        return cu.LaunchKernel(q8 ? h->f_attn_ref_q8 : h->f_attn_ref, (unsigned)T, (unsigned)nh, 1, 32, 1, 1, 0, NULL, p,
+                               NULL) == 0;
     }
     int nks = global ? p0 + T : (window < p0 + T ? window : p0 + T);   // the most keys a query of the call admits
     const size_t fb = sizeof(float), per_q = fb * (size_t)nh * (size_t)nks;
@@ -13993,9 +14058,9 @@ static bool ink2_core_launch(gpu_ink2 *h, gpu_ink2_kv *kv, int app, int T, int p
         CUdeviceptr at = h->aatt + fb * (size_t)g0 * (size_t)a.Q;
         void *pl[] = { &q, &kv->k[app], &rl, &ps, &h->alg, &nks, &a };
         void *pc[] = { &kv->v[app], &sk, &ps, &h->alg, &at, &nks, &a };
-        ok = cu.LaunchKernel(h->f_attn_lg, ((unsigned)nks + 127) / 128, (unsigned)nh, (unsigned)g, 128, 1, 1, 0, NULL, pl,
-                             NULL) == 0 &&
-             cu.LaunchKernel(h->f_attn, (unsigned)g, (unsigned)nh, 1, nt, 1, 1, 0, NULL, pc, NULL) == 0;
+        ok = cu.LaunchKernel(q8 ? h->f_attn_lg_q8 : h->f_attn_lg, ((unsigned)nks + 127) / 128, (unsigned)nh, (unsigned)g,
+                             128, 1, 1, 0, NULL, pl, NULL) == 0 &&
+             cu.LaunchKernel(q8 ? h->f_attn_q8 : h->f_attn, (unsigned)g, (unsigned)nh, 1, nt, 1, 1, 0, NULL, pc, NULL) == 0;
     }
     return ok;
 }
@@ -14017,14 +14082,26 @@ bool gpu_ink2_attn(gpu_ink2 *h, gpu_ink2_kv *kv, int app, int T, const int *pos,
               ink2_grow(&h->ask, &h->ask_cap, fb * (size_t)T * nh) && ink2_grow(&h->apos, &h->apos_cap, sizeof(int) * (size_t)T) &&
               cu.MemcpyHtoD(h->aq, q, fb * (size_t)T * Q) == 0 && cu.MemcpyHtoD(h->arl, rl, fb * (size_t)T * nh * ext) == 0 &&
               cu.MemcpyHtoD(h->ask, sk, fb * (size_t)T * nh) == 0 && cu.MemcpyHtoD(h->apos, pos, sizeof(int) * (size_t)T) == 0;
-    // this chunk's K and V into the ring: consecutive positions, so at most two runs (the second from row 0)
+    // this chunk's K and V into the ring: consecutive positions, so at most two runs (the second from row 0). A q8
+    // ring takes the rows quantized here by the host's own q8_quant_row (R4.48.8.5), each side in turn through hq
     const int s0 = pos[0] % R, n1 = T < R - s0 ? T : R - s0;
-    const size_t row = fb * (size_t)C;
-    ok = ok && cu.MemcpyHtoD(kv->k[app] + row * (size_t)s0, k, row * (size_t)n1) == 0 &&
-         cu.MemcpyHtoD(kv->v[app] + row * (size_t)s0, v, row * (size_t)n1) == 0;
-    if (ok && n1 < T)
-        ok = cu.MemcpyHtoD(kv->k[app], k + (size_t)n1 * C, row * (size_t)(T - n1)) == 0 &&
-             cu.MemcpyHtoD(kv->v[app], v + (size_t)n1 * C, row * (size_t)(T - n1)) == 0;
+    const size_t row = ink2_ring_rb(C, kv->kind);
+    for (int side = 0; ok && side < 2; side++) {
+        const float *x = side ? v : k;
+        const unsigned char *src = (const unsigned char *)x;
+        if (kv->kind == 1) {
+            if (h->hq_cap < row * (size_t)T) {
+                unsigned char *g = realloc(h->hq, row * (size_t)T);
+                if (!g) { ok = false; break; }
+                h->hq = g; h->hq_cap = row * (size_t)T;
+            }
+            for (int t = 0; t < T; t++) q8_quant_row(x + (size_t)t * C, h->hq + row * (size_t)t, C);
+            src = h->hq;
+        }
+        const CUdeviceptr ring = side ? kv->v[app] : kv->k[app];
+        ok = cu.MemcpyHtoD(ring + row * (size_t)s0, src, row * (size_t)n1) == 0 &&
+             (n1 == T || cu.MemcpyHtoD(ring, src + row * (size_t)n1, row * (size_t)(T - n1)) == 0);
+    }
     ok = ok && ink2_core_launch(h, kv, app, T, pos[0], nh, nkv, hd, window, global, ext, scale);
     ok = ok && cu.MemcpyDtoH(att, h->aatt, fb * (size_t)T * Q) == 0;   // the null stream: after the launch
     pthread_mutex_unlock(&h->mu);
@@ -14122,12 +14199,21 @@ static bool ink2_block_core(gpu_ink2 *h, gpu_ink2_kv *kv, int app, const gpu_ink
     // the sinks, the ring, the core
     ok = ok && ink2_block_mv(h, b, GI2_S, H, nh, T, dxq, h->ask);
     const int Rr = kv->rows[app], s0 = p0 % Rr, n1 = T < Rr - s0 ? T : Rr - s0;
-    const size_t row = fb * (size_t)C;
-    ok = ok && cu.MemcpyDtoD(kv->k[app] + row * (size_t)s0, h->bk, row * (size_t)n1) == 0 &&
-         cu.MemcpyDtoD(kv->v[app] + row * (size_t)s0, h->bv, row * (size_t)n1) == 0;
-    if (ok && n1 < T)
-        ok = cu.MemcpyDtoD(kv->k[app], h->bk + row * (size_t)n1, row * (size_t)(T - n1)) == 0 &&
-             cu.MemcpyDtoD(kv->v[app], h->bv + row * (size_t)n1, row * (size_t)(T - n1)) == 0;
+    if (kv->kind == 1) {
+        // R4.48.8.5: the chunk's rows quantized into the q8 ring by k_ink2_kv_store_q8 (the wrap in the kernel)
+        int cc = C, tt = T, rr = Rr, ss = s0;
+        void *pk[] = { &h->bk, &kv->k[app], &tt, &cc, &rr, &ss }, *pv[] = { &h->bv, &kv->v[app], &tt, &cc, &rr, &ss };
+        const unsigned gx = (unsigned)((C / 32 + 127) / 128);
+        ok = ok && cu.LaunchKernel(h->f_kvst_q8, gx, (unsigned)T, 1, 128, 1, 1, 0, NULL, pk, NULL) == 0 &&
+             cu.LaunchKernel(h->f_kvst_q8, gx, (unsigned)T, 1, 128, 1, 1, 0, NULL, pv, NULL) == 0;
+    } else {
+        const size_t row = fb * (size_t)C;
+        ok = ok && cu.MemcpyDtoD(kv->k[app] + row * (size_t)s0, h->bk, row * (size_t)n1) == 0 &&
+             cu.MemcpyDtoD(kv->v[app] + row * (size_t)s0, h->bv, row * (size_t)n1) == 0;
+        if (ok && n1 < T)
+            ok = cu.MemcpyDtoD(kv->k[app], h->bk + row * (size_t)n1, row * (size_t)(T - n1)) == 0 &&
+                 cu.MemcpyDtoD(kv->v[app], h->bv + row * (size_t)n1, row * (size_t)(T - n1)) == 0;
+    }
     ok = ok && ink2_core_launch(h, kv, app, T, p0, nh, nkv, hd, b->window, full, ext, b->scale);
     // o_proj: att times sigmoid(gate_proj(xq)), then the product
     ok = ok && ink2_block_mv(h, b, GI2_G, H, Q, T, dxq, h->bga);
@@ -14594,6 +14680,22 @@ bool gpu_ink2_reserve(gpu_ink2 *h, size_t x_bytes, size_t y_bytes) {
     pthread_mutex_unlock(&h->mu);
     return ok;
 }
+// R4.48.8.5: the bytes the handle's grown buffers hold (the products', experts', router's, attention's, block's and
+// message's), each as allocated: what a placement's reservations took before it read the free memory
+size_t gpu_ink2_reserved_bytes(gpu_ink2 *h) {
+    if (!h) return 0;
+    pthread_mutex_lock(&h->mu);
+    const size_t c[] = { h->dx_cap, h->dy_cap, h->ex_cap, h->eo_cap, h->exe_cap, h->eact_cap, h->edn_cap, h->eidx_cap,
+                         h->ew_cap, h->eint_cap, h->esc_cap, h->mx_cap, h->mm_cap, h->mgh_cap, h->md_cap, h->mfa_cap,
+                         h->mga_cap, h->mout_cap, h->rsc_cap, h->rwt_cap, h->rch_cap, h->rpc_cap, h->rmg_cap, h->rsm_cap,
+                         h->rbr_cap, h->rcol_cap, h->aq_cap, h->arl_cap, h->ask_cap, h->apos_cap, h->aatt_cap, h->alg_cap,
+                         h->bxq_cap, h->bxk_cap, h->bxv_cap, h->blin_cap, h->bdyn_cap, h->bk_cap, h->bv_cap, h->brs_cap,
+                         h->bga_cap, h->bout_cap };
+    pthread_mutex_unlock(&h->mu);
+    size_t b = 0;
+    for (size_t k = 0; k < sizeof c / sizeof *c; k++) b += c[k];
+    return b;
+}
 size_t gpu_ink2_lin_out_bytes(gpu_ink2 *h) {
     if (!h) return 0;
     pthread_mutex_lock(&h->mu);
@@ -14622,5 +14724,6 @@ void gpu_ink2_free(gpu_ink2 *h) {
     pthread_mutex_destroy(&h->mu);
     cu.PrimaryCtxRelease(h->dev);
     free(h->t);
+    free(h->hq);
     free(h);
 }

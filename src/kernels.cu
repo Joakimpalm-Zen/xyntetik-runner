@@ -5987,6 +5987,147 @@ extern "C" __global__ void k_ink2_attn(const float *vr, const float *sk, const i
     if (tid < a.hd) att[(ulong64)i * a.Q + (ulong64)h * a.hd + tid] = acc / total;
 }
 
+// R4.48.8.5: Inkling 2 Mini's q8 rings. A ring row is the house's q8_0 row (C/32 blocks of an fp16 scale and 32 int8
+// values, 34 bytes, only 2-byte aligned: q8_blk above), value e read as (float)q * d, exact in float32. The three cores
+// below are k_ink2_attn_ref and the production pair with only their K and V loads changed, so over a q8 ring each
+// gives what it gives over a float32 ring holding those values, and the float32 kernels' source and PTX stay as
+// they were. k_ink2_kv_store_q8 writes T rows of a chunk's float32 K or V into a q8 ring with kv_store_row's q8
+// arithmetic, the host's q8_quant_row byte for byte (tests/test_inkling2_cuda.c).
+#define INK2_Q8_RB(C) ((ulong64)((C) / 32) * 34)
+__device__ __forceinline__ float ink2_kvq8_at(const unsigned char *row, int e) {
+    const q8_blk *b = (const q8_blk *)row + (e >> 5);
+    return (float)b->qs[e & 31] * __half2float(b->d);
+}
+extern "C" __global__ void k_ink2_attn_ref_q8(const float *q, const unsigned char *kr, const unsigned char *vr, const float *rl,
+                                           const float *sk, const int *pos, float *att, ink2_attn_args a) {
+    const int i = blockIdx.x, h = blockIdx.y, lane = threadIdx.x;
+    const int kh = h / (a.nh / a.nkv), pi = pos[i];
+    const int lo = a.global ? 0 : (pi - a.window + 1 > 0 ? pi - a.window + 1 : 0);
+    __shared__ float qs[256];
+    __shared__ float es[32];
+    const float *qi = q + (ulong64)i * a.Q + (ulong64)h * a.hd;
+    for (int e = lane; e < a.hd; e += 32) qs[e] = qi[e];
+    __syncwarp();
+    const float *bias = rl + ((ulong64)i * a.nh + h) * a.ext;
+    const float sink = sk[(ulong64)i * a.nh + h];
+    // pass 1: the max over the admitted keys and the sink
+    float mx = sink;
+    for (int j0 = lo; j0 <= pi; j0 += 32) {
+        const int j = j0 + lane;
+        if (j <= pi) {
+            const unsigned char *kj = kr + (ulong64)(j % a.R) * INK2_Q8_RB(a.C);
+            float s = 0.0f;
+            for (int e = 0; e < a.hd; e++) s = fmaf(qs[e], ink2_kvq8_at(kj, kh * a.hd + e), s);
+            const int d = pi - j;
+            const float l = s * a.scale + (d < a.ext ? bias[d] : 0.0f);
+            mx = fmaxf(mx, l);
+        }
+    }
+    for (int o = 16; o > 0; o >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, o));
+    // pass 2: the exponentials, their sum and the weighted values
+    float acc[8];
+    for (int k = 0; k < 8; k++) acc[k] = 0.0f;
+    float sum = 0.0f;
+    for (int j0 = lo; j0 <= pi; j0 += 32) {
+        const int j = j0 + lane;
+        float ev = 0.0f;
+        if (j <= pi) {
+            const unsigned char *kj = kr + (ulong64)(j % a.R) * INK2_Q8_RB(a.C);
+            float s = 0.0f;
+            for (int e = 0; e < a.hd; e++) s = fmaf(qs[e], ink2_kvq8_at(kj, kh * a.hd + e), s);
+            const int d = pi - j;
+            ev = expf(s * a.scale + (d < a.ext ? bias[d] : 0.0f) - mx);
+        }
+        es[lane] = ev;
+        float cs = ev;
+        for (int o = 16; o > 0; o >>= 1) cs += __shfl_down_sync(0xffffffffu, cs, o);
+        sum += __shfl_sync(0xffffffffu, cs, 0);
+        __syncwarp();
+        const int nj = pi - j0 + 1 < 32 ? pi - j0 + 1 : 32;
+        for (int jj = 0; jj < nj; jj++) {
+            const float p = es[jj];
+            const unsigned char *vj = vr + (ulong64)((j0 + jj) % a.R) * INK2_Q8_RB(a.C);
+            for (int k = 0, e = lane; e < a.hd; k++, e += 32) acc[k] = fmaf(p, ink2_kvq8_at(vj, kh * a.hd + e), acc[k]);
+        }
+        __syncwarp();
+    }
+    const float total = sum + expf(sink - mx);
+    float *ai = att + (ulong64)i * a.Q + (ulong64)h * a.hd;
+    for (int k = 0, e = lane; e < a.hd; k++, e += 32) ai[e] = acc[k] / total;
+}
+
+extern "C" __global__ void k_ink2_attn_logits_q8(const float *q, const unsigned char *kr, const float *rl, const int *pos,
+                                              float *lg, int nks, ink2_attn_args a) {
+    const int i = blockIdx.z, h = blockIdx.y, jr = blockIdx.x * blockDim.x + threadIdx.x;
+    const int kh = h / (a.nh / a.nkv), pi = pos[i];
+    const int lo = a.global ? 0 : (pi - a.window + 1 > 0 ? pi - a.window + 1 : 0);
+    const int j = lo + jr;
+    if (jr >= nks || j > pi) return;
+    const float *qi = q + (ulong64)i * a.Q + (ulong64)h * a.hd;
+    const unsigned char *kj = kr + (ulong64)(j % a.R) * INK2_Q8_RB(a.C);
+    float s = 0.0f;
+    for (int e = 0; e < a.hd; e++) s = fmaf(qi[e], ink2_kvq8_at(kj, kh * a.hd + e), s);
+    const int d = pi - j;
+    const float *bias = rl + ((ulong64)i * a.nh + h) * a.ext;
+    lg[((ulong64)i * a.nh + h) * nks + jr] = s * a.scale + (d < a.ext ? bias[d] : 0.0f);
+}
+// Then the core per (query i = blockIdx.x, head h = blockIdx.y) over the stored logits, hd threads (rounded up to a
+// warp; hd <= 256): the max over the keys and the sink (exact in any order); e = expf(logit - max) per key, in place;
+// warp 0 sums the keys in chunks of 32 by the reference's tree (__shfl_down from 16) and adds the chunks' sums in
+// ascending order; each thread one dimension's fmaf chain over the keys ascending (the reference's lane held the
+// dimensions lane + 32 k, each its own chain: spreading them changes no bit); one division by (sum + exp(sink - max)).
+extern "C" __global__ void k_ink2_attn_q8(const unsigned char *vr, const float *sk, const int *pos, float *lg, float *att,
+                                       int nks, ink2_attn_args a) {
+    const int i = blockIdx.x, h = blockIdx.y, tid = threadIdx.x, nt = blockDim.x;
+    const int kh = h / (a.nh / a.nkv), pi = pos[i];
+    const int lo = a.global ? 0 : (pi - a.window + 1 > 0 ? pi - a.window + 1 : 0);
+    const int nk = pi - lo + 1;
+    float *li = lg + ((ulong64)i * a.nh + h) * nks;
+    const float sink = sk[(ulong64)i * a.nh + h];
+    __shared__ float red[8];
+    __shared__ float s_mx, s_sum;
+    float mx = sink;
+    for (int r = tid; r < nk; r += nt) mx = fmaxf(mx, li[r]);
+    for (int o = 16; o > 0; o >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, o));
+    if ((tid & 31) == 0) red[tid >> 5] = mx;
+    __syncthreads();
+    if (tid == 0) {
+        float m = red[0];
+        for (int w = 1; w < nt / 32; w++) m = fmaxf(m, red[w]);
+        s_mx = m;
+    }
+    __syncthreads();
+    mx = s_mx;
+    for (int r = tid; r < nk; r += nt) li[r] = expf(li[r] - mx);
+    __syncthreads();
+    if (tid < 32) {
+        float sum = 0.0f;
+        for (int r0 = 0; r0 < nk; r0 += 32) {
+            float cs = r0 + tid < nk ? li[r0 + tid] : 0.0f;
+            for (int o = 16; o > 0; o >>= 1) cs += __shfl_down_sync(0xffffffffu, cs, o);
+            sum += __shfl_sync(0xffffffffu, cs, 0);
+        }
+        if (tid == 0) s_sum = sum;
+    }
+    float acc = 0.0f;
+    if (tid < a.hd)
+        for (int r = 0; r < nk; r++) {
+            const unsigned char *vj = vr + (ulong64)((lo + r) % a.R) * INK2_Q8_RB(a.C);
+            acc = fmaf(li[r], ink2_kvq8_at(vj, kh * a.hd + tid), acc);
+        }
+    __syncthreads();
+    const float total = s_sum + expf(sink - mx);
+    if (tid < a.hd) att[(ulong64)i * a.Q + (ulong64)h * a.hd + tid] = acc / total;
+}
+
+// src [T][C] into ring rows (s0 + t) % R, each row's C/32 blocks quantized by kv_store_row. Grid ((C/32 + 127) / 128,
+// T), block 128: one thread a block of 32 values.
+extern "C" __global__ void k_ink2_kv_store_q8(const float *src, unsigned char *ring, int T, int C, int R, int s0) {
+    const int t = blockIdx.y, i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= T || i >= C / 32) return;
+    kv_store_row(ring + (ulong64)((s0 + t) % R) * INK2_Q8_RB(C), src + (ulong64)t * C, C, 1, i);
+}
+
 // R4.48.9 G2b step 2b: the attention block's glue, each kernel 1:1 with src/inkling2.c's host code, its small sums
 // serial and ascending with separate multiplies and adds (__fmul_rn / __fadd_rn: the host builds that file with
 // -ffp-contract=off), so given the same inputs they give the host's bits; CUDA's sqrtf and division are IEEE-rounded
