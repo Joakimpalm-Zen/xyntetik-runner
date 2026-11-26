@@ -3559,7 +3559,7 @@ int engine_draft_k(const engine *e) {
 
 bool engine_cuda_full(const engine *e) {
     const model_t *m = e->m;
-    return m && !strcmp(model_backend_name(m), "cuda") && m->gpu_layers >= m->n_layer;
+    return m && !m->ink2 && !strcmp(model_backend_name(m), "cuda") && m->gpu_layers >= m->n_layer;
 }
 
 void engine_note_draft_route(engine *e) {

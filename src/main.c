@@ -5264,7 +5264,7 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
         char setnote[48] = "";
         if (rt->set_parts > 1) snprintf(setnote, sizeof setnote, " | a split set of %u parts", rt->set_parts);
         fprintf(stderr, "loaded %s | %s | %d layers | ctx %d | %d threads%s | %.2fs%s\n",
-                cli_model_name(rt, load_path), rt->m.arch, rt->m.n_layer, rt->m.n_ctx,
+                cli_model_name(rt, load_path), rt->m.arch, model_layer_count(&rt->m), rt->m.n_ctx,
                 o->serve ? o->n_threads
                          : rt->m.ink2 ? model_inkling2_threads(&rt->m)
                                       : tpool_size(rt->m.tp),
@@ -7582,8 +7582,8 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
         tpool_size(rt->m.tp) != expected_threads || rt->m.kv_q8 != expected_q8 ||
         rt->m.kv_fp4 != expected_fp4 || rt->m.kv_split != expected_split ||
         rt->m.kv_f32 != expected_f32 ||
-        (rt->m.gpu != NULL) != expected_gpu ||
-        (expected_layers_v && rt->m.gpu_layers != expected_layers) ||
+        model_uses_gpu(&rt->m) != expected_gpu ||
+        (expected_layers_v && model_gpu_layer_count(&rt->m) != expected_layers) ||
         (got_window > 0 && got_window != expected_window) ||
         (got_window > 0 && gpu_route_active(&rt->m) != vr->route)) {
         fprintf(stderr, "UNVERIFIABLE: runtime could not reproduce the "
@@ -8468,12 +8468,10 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
     size_t vfree = 0, vtotal = 0;
     bool vram_ok = gpu_there && gpu_mem_info(&vfree, &vtotal);
     bool asked_gpu = o->mp.gpu_mode != GPU_OFF;
-    const char *backend =
-#ifdef __APPLE__
-        rt->m.gpu ? "metal" : "cpu";
-#else
-        rt->m.gpu ? "cuda" : "cpu";
-#endif
+    const bool on_gpu = model_uses_gpu(&rt->m);
+    const int n_layers = model_layer_count(&rt->m);
+    const int n_gpu_layers = model_gpu_layer_count(&rt->m);
+    const char *backend = model_backend_name(&rt->m);
     sbuf r = {0};
     sb_lit(&r, "{\"schema\":\"xyntetik.runner.doctor.v1\",\"runner\":{\"version\":\"" RUNNER_VERSION "\"},");
     // identity: what the file says it is, never where it lives (R19.17.1: a split set by the set's name, beside the
@@ -8487,11 +8485,10 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
     sb_lit(&r, "\",\"name\":\"");
     sb_esc(&r, gn, strlen(gn));
     sb_fmt(&r, "\",\"layers\":%d,\"trained_context\":%d,\"adapter\":%s},",
-           rt->m.n_layer, rt->m.n_ctx_train, o->lora_path ? "true" : "false");
+           n_layers, rt->m.n_ctx_train, o->lora_path ? "true" : "false");
     sb_fmt(&r, "\"placement\":{\"requested\":\"%s\",\"backend\":\"%s\","
                "\"gpu_layers\":%d,\"layers\":%d,\"device\":\"",
-           asked_gpu ? "auto" : "off", backend, rt->m.gpu ? rt->m.gpu_layers : 0,
-           rt->m.n_layer);
+           asked_gpu ? "auto" : "off", backend, n_gpu_layers, n_layers);
     sb_esc(&r, gname, strlen(gname));
     sb_lit(&r, "\"");
     if (vram_ok)
@@ -8547,11 +8544,11 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
         doctor_finding(&fd, 1, "tokenizer_pre_unknown", det,
                 "compare a few strings against the model's own tokenizer, and report the model so its split rule can be added");
     }
-    if (asked_gpu && gpu_there && !rt->m.gpu)
+    if (asked_gpu && gpu_there && !on_gpu)
         doctor_finding(&fd, 1, "gpu_not_used",
                 "a GPU is present and was not used for this model; the load output above the report names the reason",
                 "read the load lines for the refusal; a quantization or architecture without a device kernel runs on the CPU");
-    else if (rt->m.gpu && rt->m.gpu_layers < rt->m.n_layer)
+    else if (on_gpu && n_gpu_layers < n_layers)
         doctor_finding(&fd, 1, "partial_offload",
                 "only some layers are on the GPU, so every token crosses between device and host",
                 "use a smaller quantization or a shorter -c so the whole model fits, or accept the split");
@@ -8585,7 +8582,7 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
                     "generation is under one token per second",
                     "check available RAM against the model size with --fit; a model larger than RAM pages from disk");
     }
-    if (cap.ram_available_bytes && rt->m.file_size > cap.ram_available_bytes && !rt->m.gpu)
+    if (cap.ram_available_bytes && rt->m.file_size > cap.ram_available_bytes && !on_gpu)
         doctor_finding(&fd, 1, "file_larger_than_available_ram",
                 "the model file is larger than the RAM available right now",
                 "close other programs, pick a smaller quantization, or run --fit for the exact numbers");
@@ -8701,7 +8698,7 @@ static int run_bench(cli_opts *o, cli_run *rt) {
            "\"gpu_layers\":%d,\"layers\":%d,\"prompt_tokens\":%d,"
            "\"generated_tokens\":%d,\"prompt_tok_s\":%.3f,"
            "\"gen_tok_s\":%.3f,\"prompt_s\":%.3f,\"gen_s\":%.3f,\"route\":%s}\n",
-           esc_model, rt->m.arch, rt->m.n_ctx, rt->m.gpu_layers, rt->m.n_layer,
+           esc_model, rt->m.arch, rt->m.n_ctx, model_gpu_layer_count(&rt->m), model_layer_count(&rt->m),
            n_prompt, n_gen,
            n_prompt / (ptime > 0 ? ptime : 1e-9),
            n_gen / (gtime > 0 ? gtime : 1e-9), ptime, gtime, route);
@@ -8869,7 +8866,9 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
     if (o->transcript_path) {
         const char *prev_hash = rt->prev_hash;   // read before the load (cli_main)
         char gname[128] = "";
-        if (rt->m.gpu) gpu_available(gname, sizeof gname);
+        const bool on_gpu = model_uses_gpu(&rt->m);
+        if (on_gpu && !gpu_available(gname, sizeof gname))
+            snprintf(gname, sizeof gname, "gpu");
         // R1.1.2: what shaped the output beyond the sampler, so --verify
         // replays it under the same constraints or refuses it
         char cons[256] = "", schema_sha[65] = "";
@@ -8911,9 +8910,9 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
             .os = "linux",
 #endif
             .arch = RUNNER_BUILD_ARCH,
-            .device = rt->m.gpu ? gname : "cpu",
-            .gpu = rt->m.gpu != NULL,
-            .gpu_layers = rt->m.gpu_layers,
+            .device = on_gpu ? gname : "cpu",
+            .gpu = on_gpu,
+            .gpu_layers = model_gpu_layer_count(&rt->m),
             .gpu_window = gpu_prompt_window(&rt->m),
             .gpu_route = gpu_route_record(&rt->m),
             .threads = tpool_size(rt->m.tp), .n_ctx = rt->m.n_ctx,

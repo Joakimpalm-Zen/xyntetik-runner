@@ -2586,7 +2586,49 @@ int main(int argc, char **argv) {
         model_inkling2_cuda_placement(c4, &p4, NULL, NULL);
         CHECK(p3 == 'C' && p4 == 'C' && c3 && c4 && !model_inkling2_cuda(c3) && !model_inkling2_cuda(c4),
               "(p) free below both needs: placements %c %c (want C C), neither on the device", p3 ? p3 : '-', p4 ? p4 : '-');
+        // R4.48.32: route_collect / model_route_json / model_route_receipt_json / model_route_hash on 'W', 'M', and 'C'
+        if (c3) {
+            char j_c[4096];
+            model_route_json(c3, j_c, sizeof j_c);
+            const int nb = model_inkling2_n_block(c3);
+            char want_l[64];
+            snprintf(want_l, sizeof want_l, "\"gpu_layers\":0,\"layers\":%d,\"experts_on_host\":0,\"moe_layers\":%d", nb, nb);
+            CHECK(!model_uses_gpu(c3) && !strcmp(model_backend_name(c3), "cpu") &&
+                  model_layer_count(c3) == nb && model_gpu_layer_count(c3) == 0 &&
+                  strstr(j_c, "\"backend\":\"cpu\"") && strstr(j_c, want_l) &&
+                  !strstr(j_c, "\"fallback\":\"\""),
+                  "(r4.48.32) CPU fallback route reports backend=cpu, 0/%d gpu_layers, non-empty fallback: %.300s", nb, j_c);
+        }
         drop(c3); drop(c4);
+        model_t *rw = load(argv[2], true, false, 64);
+        cpu_moe = true;
+        model_t *rm = load(argv[2], true, false, 64);
+        cpu_moe = false;
+        model_t *rc = load(argv[2], false, false, 64);
+        if (rw && rm && rc) {
+            const int nb = model_inkling2_n_block(rw);
+            char jw[4096], jm[4096], recw[MODEL_ROUTE_RECEIPT_CAP], want_w[96], want_m[96];
+            model_route_json(rw, jw, sizeof jw);
+            model_route_json(rm, jm, sizeof jm);
+            model_route_receipt_json(rw, recw, sizeof recw);
+            snprintf(want_w, sizeof want_w, "\"gpu_layers\":%d,\"layers\":%d,\"experts_on_host\":0,\"moe_layers\":%d", nb, nb, nb);
+            snprintf(want_m, sizeof want_m, "\"gpu_layers\":%d,\"layers\":%d,\"experts_on_host\":%d,\"moe_layers\":%d", nb, nb, nb, nb);
+            const uint64_t hw = model_route_hash(rw), hm = model_route_hash(rm), hc = model_route_hash(rc);
+            CHECK(model_uses_gpu(rw) && !strcmp(model_backend_name(rw), "cuda") &&
+                  model_layer_count(rw) == nb && model_gpu_layer_count(rw) == nb &&
+                  strstr(jw, "\"backend\":\"cuda\"") && !strstr(jw, "\"device\":\"\"") &&
+                  strstr(jw, want_w) && strstr(jw, "placed=W") &&
+                  strstr(recw, "\"backend\":\"cuda\"") && strstr(recw, "\"tc_types\":\"\""),
+                  "(r4.48.32) CUDA whole route reports backend=cuda, device, %d/%d layers, placed=W, empty tc_types: %.300s | %.200s",
+                  nb, nb, jw, recw);
+            CHECK(model_uses_gpu(rm) && !strcmp(model_backend_name(rm), "cuda") &&
+                  strstr(jm, want_m) && strstr(jm, "placed=M") && strstr(jm, "exp=off"),
+                  "(r4.48.32) CUDA --cpu-moe route reports experts_on_host=%d and placed=M: %.300s", nb, jm);
+            CHECK(hw != hc && hw != hm && hm != hc,
+                  "(r4.48.32) model_route_hash separates W (%llx), M (%llx) and CPU (%llx)",
+                  (unsigned long long)hw, (unsigned long long)hm, (unsigned long long)hc);
+        }
+        drop(rw); drop(rm); drop(rc);
     }
     printf(fails ? "FAIL %d\n" : "PASS\n", fails);
     return fails ? 1 : 0;

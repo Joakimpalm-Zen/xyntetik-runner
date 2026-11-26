@@ -2583,7 +2583,7 @@ static void model_debug_geometry(const model_t *m) {
     bool device_rec = m->qwen35 || m->granite_hybrid || m->nemotron_h;
     fprintf(stderr, "load: (geometry: layers %d, mtp %d, kv %zu per token as %s, "
             "sliding %d at window %d, recurrent %zu)\n",
-            m->n_layer, m->mtp_ready ? 1 : 0, kv, model_kv_name(m),
+            model_layer_count(m), m->mtp_ready ? 1 : 0, kv, model_kv_name(m),
             n_swa, n_swa ? m->swa_window : 0, device_rec ? model_rec_count(m) : (size_t)0);
 }
 
@@ -8254,7 +8254,8 @@ static bool route_enabled(void) {
 }
 
 static const char *route_backend(const model_t *m) {
-    if (!m->gpu) return "cpu";
+    if (m && m->ink2) return model_inkling2_cuda(m) ? "cuda" : "cpu";
+    if (!m || !m->gpu) return "cpu";
 #if defined(RUNNER_GPU_METAL)
     return "metal";
 #elif defined(RUNNER_GPU_CUDA)
@@ -8265,6 +8266,21 @@ static const char *route_backend(const model_t *m) {
 }
 
 const char *model_backend_name(const model_t *m) { return route_backend(m); }
+
+bool model_uses_gpu(const model_t *m) {
+    return m && (m->gpu != NULL || model_inkling2_cuda(m));
+}
+
+int model_layer_count(const model_t *m) {
+    if (!m) return 0;
+    return m->ink2 ? model_inkling2_n_block(m) : m->n_layer;
+}
+
+int model_gpu_layer_count(const model_t *m) {
+    if (!m) return 0;
+    if (m->ink2) return model_inkling2_cuda(m) ? model_inkling2_n_block(m) : 0;
+    return m->gpu ? m->gpu_layers : 0;
+}
 
 static const char *route_build(void) {
 #if defined(RUNNER_T3_BUILD)
@@ -8385,32 +8401,43 @@ static void route_device_init(void) {
 static void route_collect(const model_t *m, route_facts *r) {
     pthread_once(&route_device_once, route_device_init);
     const char *device = route_device_name;
+    const bool on_gpu = model_uses_gpu(m);
     r->backend = route_backend(m);
-    snprintf(r->device, sizeof r->device, "%s", m->gpu ? device : "");
-    r->gpu_layers = m->gpu ? m->gpu_layers : 0;
-    r->n_layer = m->n_layer;
+    snprintf(r->device, sizeof r->device, "%s", on_gpu ? device : "");
+    r->gpu_layers = model_gpu_layer_count(m);
+    r->n_layer = model_layer_count(m);
     r->moe_layers = r->moe_host = 0;
-    for (int l = 0; l < m->n_layer; l++)
-        if (m->layers[l].is_moe) {
-            r->moe_layers++;
-            if (m->moe_host && m->moe_host[l]) r->moe_host++;
-        }
-    // RUNNER_MOE_HOT: the expert slots the device holds in host layers
-    r->moe_hot = m->gpu && m->moe_hot_slot ? m->moe_hot_total : 0;
+    if (m->ink2) {
+        r->moe_layers = m->n_expert > 0 ? r->n_layer : 0;
+        char placed = 0;
+        const bool ink_cuda = model_inkling2_cuda_placement(m, &placed, NULL, NULL);
+        r->moe_host = (ink_cuda && placed == 'M') ? r->moe_layers : 0;
+        r->moe_hot = 0;
+        r->detail = ink_cuda ? model_inkling2_route_detail(m) : "";
+        snprintf(r->act, sizeof r->act, "%s", model_inkling2_act8(m) ? "int8" : "f32");
+    } else {
+        for (int l = 0; l < m->n_layer; l++)
+            if (m->layers[l].is_moe) {
+                r->moe_layers++;
+                if (m->moe_host && m->moe_host[l]) r->moe_host++;
+            }
+        // RUNNER_MOE_HOT: the expert slots the device holds in host layers
+        r->moe_hot = m->gpu && m->moe_hot_slot ? m->moe_hot_total : 0;
+        r->detail = m->gpu ? gpu_route_detail(m) : "";
+        // the activation the CPU's matvecs dot against: f32, or int8 under the
+        // tolerance-gated RUNNER_CPU_I8 (a device path names its own in detail)
+        // RUNNER_CPU_I8_PREFILL adds "+int8-prefill": batches of 8 or more
+        // columns run the int8 tiles whatever the decode route is
+        // RUNNER_CPU_I8K adds "+int8k-decode": one-column Q4_K and Q6_K matvecs
+        // take the K-quant int8 dot whatever the route above is
+        snprintf(r->act, sizeof r->act, "%s%s",
+                 i8_prefill_enabled() ? (i8_dot_enabled() ? "int8+int8-prefill" : "f32+int8-prefill")
+                                      : i8_dot_enabled() ? "int8" : "f32",
+                 i8k_dot_enabled() ? "+int8k-decode" : "");
+    }
     r->kv = model_kv_name(m);
-    r->detail = m->gpu ? gpu_route_detail(m) : "";
     r->build = route_build();
     r->codegen = route_codegen();
-    // the activation the CPU's matvecs dot against: f32, or int8 under the
-    // tolerance-gated RUNNER_CPU_I8 (a device path names its own in detail)
-    // RUNNER_CPU_I8_PREFILL adds "+int8-prefill": batches of 8 or more
-    // columns run the int8 tiles whatever the decode route is
-    // RUNNER_CPU_I8K adds "+int8k-decode": one-column Q4_K and Q6_K matvecs
-    // take the K-quant int8 dot whatever the route above is
-    snprintf(r->act, sizeof r->act, "%s%s",
-             i8_prefill_enabled() ? (i8_dot_enabled() ? "int8+int8-prefill" : "f32+int8-prefill")
-                                  : i8_dot_enabled() ? "int8" : "f32",
-             i8k_dot_enabled() ? "+int8k-decode" : "");
     r->cpu_act = r->act;
     route_weights(m, r->weights, sizeof r->weights);
     route_tuning(r->tuning, sizeof r->tuning);
@@ -8652,14 +8679,16 @@ void model_route_receipt_json(const model_t *m, char *out, int cap) {
     char tct[256] = "";
     if (!strcmp(r.backend, "cuda")) {
         bool seen[64] = { false };
-        for (uint64_t i = 0; i < m->gf.n_tensors; i++) {
-            const gguf_tensor *t = &m->gf.tensors[i];
-            if (t->n_dims == 2 && t->type < 64) seen[t->type] = true;
+        if (m->gpu) {
+            for (uint64_t i = 0; i < m->gf.n_tensors; i++) {
+                const gguf_tensor *t = &m->gf.tensors[i];
+                if (t->n_dims == 2 && t->type < 64) seen[t->type] = true;
+            }
         }
         size_t n = 0;
         n += (size_t)snprintf(tct, sizeof tct, ",\"tc_types\":\"");
         bool first = true;
-        for (int t = 0; t < 64 && n < sizeof tct; t++) {
+        for (int t = 0; m->gpu && t < 64 && n < sizeof tct; t++) {
             if (!seen[t] || !gpu_tc_takes(m, t)) continue;
             n += (size_t)snprintf(tct + n, sizeof tct - n, "%s%s", first ? "" : ",", ggml_type_name(t));
             first = false;
@@ -17494,7 +17523,12 @@ static float *forward_batch_run(model_t *m, const int32_t *tokens, int n, int po
 // when this forward is flagged to emit every row's head
 float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                            bool want_logits) {
-    if (m->ink2) return model_inkling2_forward(m, tokens, n, pos, want_logits, false);
+    if (m->ink2) {
+        float *lg = model_inkling2_forward(m, tokens, n, pos, want_logits, false);
+        if (lg || (!want_logits && model_inkling2_last_ok(m)))
+            route_ran(m, n == 1 ? RP_SOLO : RP_BATCH, n);
+        return lg;
+    }
     int path = n > 0 && m->spec_want_all >= n ? RP_KEEP : n == 1 ? RP_SOLO : RP_BATCH;
     float *lg = forward_batch_run(m, tokens, n, pos, want_logits);
     model_kv_ring_note(m, pos, n);
@@ -17545,7 +17579,13 @@ void model_kv_host_wrote(model_t *m, int lo) {
 }
 
 bool model_forward_batch_keep(model_t *m, const int32_t *tokens, int n, int pos) {
-    if (m->ink2) return n <= m->n_batch && model_inkling2_forward(m, tokens, n, pos, true, true) != NULL;
+    if (m->ink2) {
+        if (n <= m->n_batch && model_inkling2_forward(m, tokens, n, pos, true, true) != NULL) {
+            route_ran(m, RP_KEEP, n);
+            return true;
+        }
+        return false;
+    }
     if (!model_spec_verify_ok(m)) return false;
     if (!m->all_logits)
         m->all_logits = malloc(sizeof(float) * (size_t)m->spec_batch * m->n_vocab);
