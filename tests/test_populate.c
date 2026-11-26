@@ -200,35 +200,49 @@ static void test_modes_and_trap(void) {
     ck(plat_mincore_trustworthy_ids(0, 0, false),
        "mincore trap: root owning read-only file is trustworthy");
 
-    // Load-line formatting: mode, bytes mapped, bytes lazy, seconds, skip reason
-    char line[256];
-    model_populate_result r1 = { MODEL_POP_CACHED, 5150000000ull, 0, 0.142, NULL };
-    ck(model_populate_format_line(line, sizeof line, &r1) > 0 &&
-       strstr(line, "populate: cached") && strstr(line, "5.15 GB mapped") &&
-       strstr(line, "0 B lazy") && strstr(line, "0.142 s"),
-       "load line: cached warm states mode, mapped, lazy, seconds");
+    // Kernel LRU mode parsing (/sys/kernel/mm/lru_gen/enabled)
+    ck(!strcmp(plat_linux_lru_mode_parse("0x0007\n"), "mglru"),
+       "lru mode: 0x0007 parses as mglru");
+    ck(!strcmp(plat_linux_lru_mode_parse("0x0001"), "mglru"),
+       "lru mode: 0x0001 parses as mglru");
+    ck(!strcmp(plat_linux_lru_mode_parse("0x0000\n"), "classic"),
+       "lru mode: 0x0000 parses as classic");
+    ck(!strcmp(plat_linux_lru_mode_parse("0\n"), "classic"),
+       "lru mode: 0 parses as classic");
+    ck(!strcmp(plat_linux_lru_mode_parse(NULL), "classic"),
+       "lru mode: absent file (NULL) parses as classic");
+    ck(!strcmp(plat_linux_lru_mode_parse(""), "classic"),
+       "lru mode: empty text parses as classic");
 
-    model_populate_result r2 = { MODEL_POP_FULL, 5150000000ull, 0, 1.250, NULL };
+    // Load-line formatting: mode, kernel LRU mode, bytes mapped, bytes lazy, seconds, skip reason
+    char line[256];
+    model_populate_result r1 = { MODEL_POP_CACHED, 5150000000ull, 0, 0.142, NULL, "mglru" };
+    ck(model_populate_format_line(line, sizeof line, &r1) > 0 &&
+       strstr(line, "populate: cached [mglru],") && strstr(line, "5.15 GB mapped") &&
+       strstr(line, "0 B lazy") && strstr(line, "0.142 s"),
+       "load line: cached warm states mode, [mglru], mapped, lazy, seconds");
+
+    model_populate_result r2 = { MODEL_POP_FULL, 5150000000ull, 0, 1.250, NULL, "classic" };
     ck(model_populate_format_line(line, sizeof line, &r2) > 0 &&
-       strstr(line, "populate: full") && strstr(line, "5.15 GB mapped") &&
+       strstr(line, "populate: full [classic],") && strstr(line, "5.15 GB mapped") &&
        strstr(line, "0 B lazy") && strstr(line, "1.250 s"),
-       "load line: full states mode, mapped, lazy, seconds");
+       "load line: full states mode, [classic], mapped, lazy, seconds");
 
     model_populate_result r3 = {
         MODEL_POP_CACHED, 0, 5150000000ull, 0.0,
-        "skipped: file not owned or writable; mincore untrusted"
+        "skipped: file not owned or writable; mincore untrusted", "mglru"
     };
     ck(model_populate_format_line(line, sizeof line, &r3) > 0 &&
-       strstr(line, "populate: cached") && strstr(line, "mincore untrusted") &&
+       strstr(line, "populate: cached [mglru]") && strstr(line, "mincore untrusted") &&
        strstr(line, "0 B mapped") && strstr(line, "5.15 GB lazy") &&
        strstr(line, "0.000 s"),
-       "load line: mincore trap states skip reason, 0 B mapped, lazy bytes, seconds");
+       "load line: mincore trap states [mglru], skip reason, 0 B mapped, lazy bytes, seconds");
 
-    model_populate_result r4 = { MODEL_POP_OFF, 0, 6400000ull, 0.0, NULL };
+    model_populate_result r4 = { MODEL_POP_OFF, 0, 6400000ull, 0.0, NULL, NULL };
     ck(model_populate_format_line(line, sizeof line, &r4) > 0 &&
-       strstr(line, "populate: off") && strstr(line, "0 B mapped") &&
+       strstr(line, "populate: off,") && strstr(line, "0 B mapped") &&
        strstr(line, "6.40 MB lazy") && strstr(line, "0.000 s"),
-       "load line: off states mode, 0 B mapped, lazy bytes, seconds");
+       "load line: off without lru_mode states mode, 0 B mapped, lazy bytes, seconds");
 }
 
 static void test_policy(void) {

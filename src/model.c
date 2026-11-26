@@ -2527,16 +2527,20 @@ static void fmt_pop_bytes(uint64_t b, char *out, size_t cap) {
 size_t model_populate_format_line(char *buf, size_t cap,
                                   const model_populate_result *res) {
     if (!buf || !cap || !res) return 0;
-    char mb[32], lb[32];
+    char mb[32], lb[32], lru[32];
     fmt_pop_bytes(res->mapped_bytes, mb, sizeof mb);
     fmt_pop_bytes(res->lazy_bytes, lb, sizeof lb);
+    if (res->lru_mode && res->lru_mode[0])
+        snprintf(lru, sizeof lru, " [%s]", res->lru_mode);
+    else
+        lru[0] = '\0';
     int w;
     if (res->skip_reason && res->skip_reason[0])
-        w = snprintf(buf, cap, "populate: %s (%s), %s mapped, %s lazy (%.3f s)",
-                     pop_mode_name(res->mode), res->skip_reason, mb, lb, res->seconds);
+        w = snprintf(buf, cap, "populate: %s%s (%s), %s mapped, %s lazy (%.3f s)",
+                     pop_mode_name(res->mode), lru, res->skip_reason, mb, lb, res->seconds);
     else
-        w = snprintf(buf, cap, "populate: %s, %s mapped, %s lazy (%.3f s)",
-                     pop_mode_name(res->mode), mb, lb, res->seconds);
+        w = snprintf(buf, cap, "populate: %s%s, %s mapped, %s lazy (%.3f s)",
+                     pop_mode_name(res->mode), lru, mb, lb, res->seconds);
     if (w < 0) { buf[0] = '\0'; return 0; }
     return (size_t)w >= cap ? cap - 1 : (size_t)w;
 }
@@ -2564,10 +2568,11 @@ uint64_t model_populate_weights(model_t *m, bool locked) {
     size_t n = model_populate_ranges(m, NULL, 0, &total);
     if (!n || locked || m->moe_prefetch) return 0;
 
+    const char *lru = plat_linux_lru_mode();
     model_pop_mode mode = model_populate_mode_parse(getenv("RUNNER_POPULATE"));
     if (mode == MODEL_POP_OFF) {
         m->weights_lazy_bytes = total;
-        model_populate_result res = { mode, 0, total, 0.0, NULL };
+        model_populate_result res = { mode, 0, total, 0.0, NULL, lru };
         emit_pop_line(&res);
         return 0;
     }
@@ -2575,7 +2580,7 @@ uint64_t model_populate_weights(model_t *m, bool locked) {
                                false, false, false)) {
         m->weights_lazy_bytes = total;
         model_populate_result res = {
-            mode, 0, total, 0.0, "skipped: over RAM/cgroup budget"
+            mode, 0, total, 0.0, "skipped: over RAM/cgroup budget", lru
         };
         emit_pop_line(&res);
         return 0;
@@ -2586,7 +2591,7 @@ uint64_t model_populate_weights(model_t *m, bool locked) {
         m->weights_lazy_bytes = total;
         model_populate_result res = {
             mode, 0, total, 0.0,
-            "skipped: file not owned or writable; mincore untrusted"
+            "skipped: file not owned or writable; mincore untrusted", lru
         };
         emit_pop_line(&res);
         return 0;
@@ -2617,7 +2622,7 @@ uint64_t model_populate_weights(model_t *m, bool locked) {
     double dt = plat_now() - t0;
     m->weights_populated_bytes = exec.mapped;
     m->weights_lazy_bytes = exec.lazy;
-    model_populate_result res = { mode, exec.mapped, exec.lazy, dt, NULL };
+    model_populate_result res = { mode, exec.mapped, exec.lazy, dt, NULL, lru };
     emit_pop_line(&res);
     return exec.mapped;
 }

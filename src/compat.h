@@ -77,6 +77,11 @@ bool   plat_populate_cached_ro(const void *addr, size_t len,
 bool   plat_mincore_trustworthy_ids(uint32_t file_uid, uint32_t euid,
                                     bool writable);
 bool   plat_file_mincore_safe(const char *path);
+// Linux kernel LRU mode parsed from /sys/kernel/mm/lru_gen/enabled ("mglru"
+// when non-zero, "classic" when 0 or absent). Returns NULL off Linux.
+// Zero heap allocations. Pure parser exposed for unit testing.
+const char *plat_linux_lru_mode_parse(const char *text);
+const char *plat_linux_lru_mode(void);
 // Hand the pages of a range of a READ-ONLY file mapping back to the OS: they
 // leave this process's resident set, and a later read faults them back in
 // from the file (normally the page cache) with the same bytes. Only whole

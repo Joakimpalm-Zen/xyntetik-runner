@@ -1934,6 +1934,7 @@ typedef struct {
     uint64_t       lazy_bytes;
     double         seconds;
     const char    *skip_reason; // NULL when populate ran; short reason when skipped
+    const char    *lru_mode;    // "mglru" or "classic" on Linux, NULL off Linux
 } model_populate_result;
 model_pop_mode model_populate_mode_parse(const char *env);
 size_t   model_populate_format_line(char *buf, size_t cap,

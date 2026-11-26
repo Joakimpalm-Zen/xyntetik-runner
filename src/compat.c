@@ -137,6 +137,20 @@ bool plat_file_mincore_safe(const char *path) {
     return false;
 }
 
+const char *plat_linux_lru_mode_parse(const char *text) {
+    if (!text) return "classic";
+    while (*text == ' ' || *text == '\t' || *text == '\n' || *text == '\r') text++;
+    if (!*text) return "classic";
+    char *end = NULL;
+    unsigned long long v = strtoull(text, &end, 0);
+    if (end == text) return "classic";
+    return v != 0 ? "mglru" : "classic";
+}
+
+const char *plat_linux_lru_mode(void) {
+    return NULL;
+}
+
 static int machine_cpu_count(void) {
     // the process affinity mask first (a job object or `start /affinity`
     // narrows it), the machine's count as the fallback; see the POSIX twin
@@ -686,6 +700,31 @@ bool plat_file_mincore_safe(const char *path) {
     if (stat(path, &st) != 0) return false;
     return plat_mincore_trustworthy_ids((uint32_t)st.st_uid, (uint32_t)geteuid(),
                                         access(path, W_OK) == 0);
+}
+
+const char *plat_linux_lru_mode_parse(const char *text) {
+    if (!text) return "classic";
+    while (*text == ' ' || *text == '\t' || *text == '\n' || *text == '\r') text++;
+    if (!*text) return "classic";
+    char *end = NULL;
+    unsigned long long v = strtoull(text, &end, 0);
+    if (end == text) return "classic";
+    return v != 0 ? "mglru" : "classic";
+}
+
+const char *plat_linux_lru_mode(void) {
+#ifdef __linux__
+    int fd = open("/sys/kernel/mm/lru_gen/enabled", O_RDONLY);
+    if (fd < 0) return "classic";
+    char buf[32];
+    ssize_t n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (n <= 0) return "classic";
+    buf[n] = '\0';
+    return plat_linux_lru_mode_parse(buf);
+#else
+    return NULL;
+#endif
 }
 
 #ifdef __linux__
