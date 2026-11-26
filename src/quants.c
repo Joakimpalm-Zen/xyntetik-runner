@@ -133,6 +133,8 @@ static _Alignas(32) float g_iq3s_gridf[512][4];
 static _Alignas(32) float g_iq3xxs_gridf[256][4];
 static _Alignas(32) uint32_t g_iq_sign8[256][8];
 
+const uint32_t *quants_iq3xxs_grid(void) { return iq3xxs_grid; }
+
 static void dot_tables_init(void) {
     for (int e = 0; e < 256; e++) {
         g_e8m0[e] = ldexpf(1.0f, e - 127);

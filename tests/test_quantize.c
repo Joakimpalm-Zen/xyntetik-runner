@@ -1034,6 +1034,104 @@ static void check_publish_pair_recovery_and_locks(void) {
     printf("ok: publish pair backup/rollback (all outcomes) and lock fallback/refusal\n");
 }
 
+static float test_ue4m3_to_f32(uint8_t x) {
+    if (x == 0 || x == 0x7F) return 0.0f;
+    int exp = (x >> 3) & 0xF, man = x & 7;
+    return exp == 0 ? ldexpf((float)man, -9) : ldexpf(1.0f + (float)man / 8.0f, exp - 7);
+}
+
+// R4.48.8.6: IQ3_XXS and two-level NVFP4 writers round-trip through Runner's own decoders.
+static void check_device_writers(void) {
+    // 1. Exhaustive 127 UE4M3 codes (0x00..0x7E, never 0x7F) through quantize_gguf + dequant_row(T_NVFP4).
+    {
+        const char *fin = "q_nv127_in.gguf", *fout = "q_nv127_out.gguf";
+        enum { COLS = 256, ROWS = 8, N = COLS * ROWS };
+        static float w[N], norm[COLS];
+        memset(w, 0, sizeof w);
+        for (int i = 0; i < COLS; i++) norm[i] = 1.0f;
+        const float f_target = 0.01f;
+        for (int u = 0; u < 127; u++) {
+            float du = test_ue4m3_to_f32((uint8_t)u);
+            w[u * 16 + 0] = 6.0f * du * f_target;
+            w[u * 16 + 1] = -3.0f * du * f_target;
+            w[u * 16 + 8] = 1.5f * du * f_target;
+        }
+        tdesc ts[2] = {
+            { "output_norm.weight",    {COLS, 1},    1, norm, COLS, T_F32 },
+            { "blk.0.ffn_gate.weight", {COLS, ROWS}, 2, w,    N,    T_F32 },
+        };
+        write_gguf(fin, ts, 2, 0);
+        assert(quantize_gguf(fin, fout, T_NVFP4, NULL) == 0);
+        check_file_type(fout, 39);
+        gguf_file g;
+        assert(gguf_open(&g, fout));
+        gguf_tensor *tw = gguf_find_tensor(&g, "blk.0.ffn_gate.weight");
+        gguf_tensor *ts_sc = gguf_find_tensor(&g, "blk.0.ffn_gate.scale");
+        assert(tw && tw->type == T_NVFP4 && ts_sc && ts_sc->type == T_F32 && ts_sc->ne[0] == 1);
+        assert(fabsf(tw->scale - f_target) <= 1e-6f * f_target);
+        const uint8_t *raw = (const uint8_t *)tw->data;
+        for (int u = 0; u < 127; u++) {
+            uint8_t got_u = raw[(u / 4) * 36 + (u % 4)];
+            assert(got_u == (uint8_t)u && got_u != 0x7F);
+        }
+        float dec[COLS];
+        size_t rs = ggml_row_size(T_NVFP4, COLS);
+        for (int r = 0; r < ROWS; r++) {
+            dequant_row(T_NVFP4, raw + (size_t)r * rs, dec, COLS);
+            for (int c = 0; c < COLS; c++) {
+                float got = dec[c] * tw->scale;
+                float want = w[r * COLS + c];
+                assert(fabsf(got - want) <= 1e-5f * (fabsf(want) + 1e-6f));
+            }
+        }
+        gguf_close(&g);
+        remove(fin); remove(fout);
+        printf("ok: NVFP4 encodes and decodes all 127 UE4M3 codes (0x00..0x7E) through Runner's decoder\n");
+    }
+
+    // 2. IQ3_XXS round-trip through Runner's own dequant_row(T_IQ3_XXS) + MOSTLY_IQ3_XXS file_type.
+    {
+        const char *fin = "q_iq3_in.gguf", *fout = "q_iq3_out.gguf";
+        enum { COLS = 256, ROWS = 6, N = COLS * ROWS };
+        static float w[N], norm[COLS];
+        for (int i = 0; i < COLS; i++) norm[i] = 1.0f;
+        uint64_t rng = 0x20261126ULL;
+        for (int i = 0; i < N; i++) {
+            rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+            float u = (float)((int32_t)(rng >> 33)) / 1073741824.0f - 1.0f;
+            w[i] = (i >= COLS && i < 2 * COLS) ? 0.0f : u * 0.3f;
+        }
+        tdesc ts[2] = {
+            { "output_norm.weight",    {COLS, 1},    1, norm, COLS, T_F32 },
+            { "blk.0.ffn_gate.weight", {COLS, ROWS}, 2, w,    N,    T_F32 },
+        };
+        write_gguf(fin, ts, 2, 0);
+        assert(quantize_gguf(fin, fout, T_IQ3_XXS, NULL) == 0);
+        check_file_type(fout, 23);
+        gguf_file g;
+        assert(gguf_open(&g, fout));
+        gguf_tensor *tw = gguf_find_tensor(&g, "blk.0.ffn_gate.weight");
+        assert(tw && tw->type == T_IQ3_XXS && tw->nbytes == (size_t)ROWS * 98);
+        float dec[COLS];
+        double sq_err = 0.0, sq_ref = 0.0;
+        for (int r = 0; r < ROWS; r++) {
+            dequant_row(T_IQ3_XXS, (const uint8_t *)tw->data + (size_t)r * 98, dec, COLS);
+            for (int c = 0; c < COLS; c++) {
+                assert(isfinite(dec[c]));
+                if (r == 1) assert(dec[c] == 0.0f);
+                double d = (double)dec[c] - (double)w[r * COLS + c];
+                sq_err += d * d;
+                sq_ref += (double)w[r * COLS + c] * (double)w[r * COLS + c];
+            }
+        }
+        double rel_rmse = sqrt(sq_err / sq_ref);
+        assert(rel_rmse < 0.20);
+        gguf_close(&g);
+        remove(fin); remove(fout);
+        printf("ok: IQ3_XXS round-trips through Runner's decoder (rel_rmse=%.4f)\n", rel_rmse);
+    }
+}
+
 int main(void) {
     f16_init();   // dequant_row's scale lookup table (unused by the quantizer
                   // itself, but the round-trip check below dequantizes)
@@ -1634,6 +1732,7 @@ int main(void) {
     printf("ok: failed install left the destination untouched and kept partial\n");
 
     check_mxfp4_dequant();
+    check_device_writers();
     check_error_report();
     check_ggml_golden();
     check_ggml_weighted_golden();

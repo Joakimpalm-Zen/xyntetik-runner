@@ -329,9 +329,10 @@ static int parse_args(int argc, char **argv, derive_opts *o) {
         bool distinct = o->n_rungs >= 2;
         for (int i = 0; i < o->n_rungs; i++) {
             for (int j = 0; j < i; j++) distinct &= strcmp(o->rungs[i], o->rungs[j]) != 0;
-            if (quantize_type_from_name(o->rungs[i]) < 0) {
+            int qt = quantize_type_from_name(o->rungs[i]);
+            if (qt < 0 && !(i == 0 && qt == T_KEEP)) {
                 fprintf(stderr, "error: '%s' is not a writable type (one of " QUANT_TYPE_NAMES
-                        ", keep excepted)\n", o->rungs[i]);
+                        ", keep only as the top rung)\n", o->rungs[i]);
                 return 1;
             }
         }
@@ -1076,6 +1077,7 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
                        sized_result *res) {
     const int nr = o->n_rungs;
     const char *top = o->rungs[0], *bottom = o->rungs[nr - 1];
+    const bool top_keep = !strcmp(top, "keep");
     res->report = suffixed(o->out, ".quant-error.jsonl");
     res->plan = suffixed(o->out, ".type-plan.json");
     if (!res->report || !res->plan) {
@@ -1088,7 +1090,7 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
         int ttop = quantize_type_from_name(top), tbot = quantize_type_from_name(bottom);
         long long now = 0, fl = 0, at_top = 0;
         if (o->recipe[2] && !quantize_set_imatrix(o->recipe[2])) return false;
-        bool known = ttop >= 0 && tbot >= 0 && pbytes > 0 &&
+        bool known = (ttop >= 0 || ttop == T_KEEP) && tbot >= 0 && pbytes > 0 &&
                      quantize_floor_bytes(o->parent, ttop, tbot, o->match, &now, &fl) &&
                      quantize_floor_bytes(o->parent, ttop, ttop, o->match, &now, &at_top);
         quantize_set_imatrix(NULL);
@@ -1104,8 +1106,8 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     char types[256];
     size_t tl = 0;
     types[0] = 0;
-    for (int k = 0; k < nr; k++)
-        tl += (size_t)snprintf(types + tl, sizeof types - tl, "%s%s", k ? "," : "", o->rungs[k]);
+    for (int k = top_keep ? 1 : 0; k < nr; k++)
+        tl += (size_t)snprintf(types + tl, sizeof types - tl, "%s%s", tl ? "," : "", o->rungs[k]);
     const char *a[16];
     int n = 0;
     a[n++] = "-m"; a[n++] = o->parent; a[n++] = "--quant-error"; a[n++] = res->report;
@@ -1144,10 +1146,20 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
         if (!row || !tn) { fprintf(stderr, "error: %s: a malformed line\n", res->report); ok = false; }
         else if (strstr(tn, match)) {
             double rb[DERIVE_MAX_RUNGS], re[DERIVE_MAX_RUNGS];
-            int miss = -1;
-            for (int k = 0; k < nr && miss < 0; k++)
-                if (!type_cost(row, o->rungs[k], &rb[k], &re[k])) miss = k;
             gguf_tensor *t = gguf_find_tensor(&g, tn);
+            int miss = -1;
+            for (int k = 0; k < nr && miss < 0; k++) {
+                if (top_keep && k == 0) {
+                    rb[0] = t ? (double)t->nbytes : 0.0;
+                    re[0] = 0.0;
+                } else if (!type_cost(row, o->rungs[k], &rb[k], &re[k])) {
+                    miss = k;
+                } else if (top_keep && t && rb[k] >= (double)t->nbytes) {
+                    // decide_type leaves a tensor at its source type rather than growing it
+                    rb[k] = (double)t->nbytes;
+                    re[k] = 0.0;
+                }
+            }
             if (miss >= 0) {
                 fprintf(stderr, "error: %s has no %s entry (the type does not fit its rows, or the "
                         "report did not cost it)\n", tn, o->rungs[miss]);

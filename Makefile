@@ -4605,9 +4605,9 @@ test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SC
 	    test-load-oom-cut.gguf test-load-oom-ffw.gguf 2> test-model-load-oom.err || \
 	    { tail -40 test-model-load-oom.err; exit 1; }
 	@tail -1 test-model-load-oom.err
-	@# every allocation of seven file transformations (requant, type plan,
+	@# every allocation of eight file transformations (requant, type plan,
 	@# sublayer removal, expert prune, merge, context surgery, an inkling2_loop
-	@# fold) failed in turn, and four refusals between their stages
+	@# fold, NVFP4 .scale synthesis) failed in turn, and four refusals between their stages
 	./$(TEST_QUANTIZE_OOM) . test.gguf test-load-oom-moe.moe4.gguf test-yarn.gguf \
 	    test-lora.full.gguf $(INKLING2_TINY_VARIED) 2> test-quantize-oom.err || \
 	    { tail -40 test-quantize-oom.err; exit 1; }
@@ -4769,6 +4769,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_derive.py \
     tests/test_derive_ref_logits.py \
     tests/test_device_evidence.py \
+    tests/test_device_writers.py \
     tests/test_difftok.py \
     tests/test_doc_counts.py \
     tests/test_doctor.py \
