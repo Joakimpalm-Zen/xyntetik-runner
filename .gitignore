@@ -191,6 +191,20 @@ test-inkling2-fast.out
 test-nvfp4-dot
 test-nvfp4-dot.exe
 test-nvfp4-dot.out
+# R6.129: outputs make test leaves that were never ignored (found by git status after a full run)
+test-full-grad
+test-full-grad.exe
+test-gpu-id-bounds.out
+test-inkling2-kvq8
+test-inkling2-kvq8.exe
+test-inkling2-kvq8.out
+test-inkling2-requant
+test-inkling2-requant.exe
+test-inkling2-requant.out
+test-metal-lfm2.out
+test-mv-tol-missing.out
+test-slow-note
+test-slow-note.exe
 test-inkling2-vmath
 test-inkling2-vmath.exe
 test-inkling2-vmath.out

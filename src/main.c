@@ -1164,9 +1164,18 @@ static void usage_to(FILE *f, const char *prog) {
         "                 Per-tensor is the finest GGUF can express: experts are stored\n"
         "                 stacked, one tensor per layer, so per-EXPERT\n"
         "                 precision is not representable\n"
+        "                 A rule's \"match\" is a SUBSTRING of the tensor's name\n"
+        "                 (\"output.weight\" also takes every attn_output.weight);\n"
+        "                 {\"name\":\"output.weight\",\"type\":\"q6_k\"} takes that one\n"
+        "                 tensor only. The first rule that applies wins.\n"
         "  --type-plan-strict  with --type-plan: fail before writing when\n"
-        "                 any rule would be declined or fall back, instead of\n"
+        "                 any rule would be declined or fall back, or a rule\n"
+        "                 does not take the tensors it names, instead of\n"
         "                 reporting it and writing the file\n"
+        "  --type-plan-show  with -m and --type-plan: write nothing; print per\n"
+        "                 tensor (JSON lines) the rule that applied, the type\n"
+        "                 asked and the type the rewrite would write, then each\n"
+        "                 rule's count and warning\n"
         "  --imatrix FILE  importance matrix (llama.cpp's GGUF or legacy .dat\n"
         "                 imatrix) weighting q3_k, q4_0, q4_k, q5_k, q6_k,\n"
         "                 q5_1 and iq4_nl toward input columns a calibration text\n"
@@ -2507,6 +2516,7 @@ typedef struct {
     const char *type_plan, *merge_out, *context_out;
     const char *imatrix;    // calibration for the importance-weighted writers
     bool type_plan_strict, merge_allow_erased;
+    bool type_plan_show;       // R4.55: list the plan's decision per tensor, write nothing
     // adapters and training
     const char *lora_path;
     const char *lora_sig;   // R1.2.3: the adapter's OMS bundle
@@ -2758,6 +2768,7 @@ static const cli_opt CLI_OPTS[] = {
     { "--remove-sublayer", NULL, OPT_STR, false, OPT_AT(const char *, remove_sublayer), OPT_NONE, 0, 0 },
     { "--type-plan", NULL, OPT_STR, false, OPT_AT(const char *, type_plan), OPT_NONE, 0, 0 },
     { "--type-plan-strict", NULL, OPT_FLAG, false, OPT_AT(bool, type_plan_strict), OPT_NONE, 0, 0 },
+    { "--type-plan-show", NULL, OPT_FLAG, false, OPT_AT(bool, type_plan_show), OPT_NONE, 0, 0 },
     { "--imatrix", NULL, OPT_STR, false, OPT_AT(const char *, imatrix), OPT_NONE, 0, 0 },
     { "--temp", NULL, OPT_FLOAT, false, OPT_AT(float, ov.temp), OPT_AT(bool, ov.has_temp), 0, FLT_MAX },
     { "--top-k", NULL, OPT_INT, false, OPT_AT(int, ov.top_k), OPT_AT(bool, ov.has_top_k), 0, INT_MAX },
@@ -3219,6 +3230,7 @@ static int cli_verbs(const cli_opts *o, const char **names, int cap) {
          o->rewrite_out ? "--rewrite" : o->quant_out ? "--quantize"
          : o->merge_out ? "--merge-lora" : "--context-surgery");
     verb_note(names, &n, cap, o->quant_error_out, "--quant-error");
+    verb_note(names, &n, cap, o->type_plan_show, "--type-plan-show");
     verb_note(names, &n, cap, o->train_path, "--train");
     verb_note(names, &n, cap, o->dpo_path, "--train-dpo");
     verb_note(names, &n, cap, o->verify_path, "--verify");
@@ -4032,7 +4044,7 @@ static bool cli_resolve_inputs(cli_opts *o, const char *prog, bool have_detect_t
         o->prompt = *owned_prompt = fbuf;
     }
     if (!o->prompt && !o->interactive && !o->serve && !o->quant_out && !o->merge_out &&
-        !o->context_out && !o->quant_error_out &&
+        !o->context_out && !o->quant_error_out && !o->type_plan_show &&
         !o->bench_json && !o->doctor && !o->tool_info && !o->adapt_info && !o->train_path && !o->dpo_path && !o->verify_path &&
         !o->decide_path && !o->systemone_path && !have_detect_text && !o->resume_path) {
         fprintf(stderr, "error: need -p PROMPT, -i, or --serve\n");
@@ -4837,6 +4849,22 @@ static bool stage_quantize_sidecar(const char *tmp_path, const char *out_path,
                            sidecar_out, sidecar_out_cap);
     free(rec.s);
     return ok;
+}
+
+// R4.55 --type-plan-show: what --rewrite with this --type-plan would write, per tensor, as JSON lines; nothing written
+static int run_type_plan_show(const cli_opts *o) {
+    if (!o->type_plan) {
+        fprintf(stderr, "error: --type-plan-show needs --type-plan PLAN.json\n");
+        return 1;
+    }
+    if (o->quant_out || o->merge_out || o->quant_error_out || o->context_out || o->quant_type || o->prune_experts ||
+        o->remove_sublayer) {
+        fprintf(stderr, "error: --type-plan-show writes nothing and shows the plan alone: drop --rewrite / --quantize, "
+                "--quant, --quant-error, --prune-experts and --remove-sublayer\n");
+        return 1;
+    }
+    quantize_set_type_plan_strict(o->type_plan_strict);
+    return quantize_type_plan_show(o->model_path, o->type_plan);
 }
 
 static int run_quantize(const cli_opts *o) {
@@ -9444,6 +9472,7 @@ static int cli_main(int argc, char **argv, char **owned_prompt, session_image *s
 
     if (o->context_out) return run_context_surgery(o, load_path);
     if (o->merge_out) return run_merge_lora(o);
+    if (o->type_plan_show) return run_type_plan_show(o);
     if (o->quant_out) return run_quantize(o);
     if (o->quant_error_out) return run_quant_error(o);
     if (!cli_configure_serving(o)) return 1;
