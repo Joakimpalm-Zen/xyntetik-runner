@@ -2260,9 +2260,56 @@ static bool is_inkling_expert_stack(gguf_file *g, const gguf_tensor *t) {
 }
 
 static bool nvfp4_allowed_for_tensor(gguf_file *g, const gguf_tensor *t) {
-    if (strcmp(gguf_get_str(g, "general.architecture", ""), "inkling2_loop") != 0)
-        return true;
-    return is_inkling_expert_stack(g, t);
+    const char *arch = gguf_get_str(g, "general.architecture", "");
+    if (!strcmp(arch, "inkling2_loop"))
+        return is_inkling_expert_stack(g, t);
+    // Do not overwrite an existing non-scalar .scale companion (such as Gemma 4's
+    // learned [n_expert] ffn_down_exps.scale) with a [1] NVFP4 scale tensor.
+    size_t nl = strlen(t->name);
+    if (nl >= 7 && !strcmp(t->name + nl - 7, ".weight")) {
+        char sn[sizeof t->name + 8];
+        snprintf(sn, sizeof sn, "%.*s.scale", (int)(nl - 7), t->name);
+        const gguf_tensor *s = gguf_find_tensor(g, sn);
+        if (s) {
+            uint64_t nel = s->ne[0] * s->ne[1] * s->ne[2] * s->ne[3];
+            if (nel != 1) return false;
+            if (!strcmp(arch, "gemma4") && nl >= 21 &&
+                !strcmp(t->name + nl - 21, ".ffn_down_exps.weight"))
+                return false;
+        }
+    }
+    return true;
+}
+
+// R4.48.8.7: Gemma 4 MoE carries a learned per-expert output scale tensor
+// blk.N.ffn_down_exps.scale ([n_expert]), applied after the down-projection
+// matvec (src/model.c:10717) and kept untouched across rewrites. Decode it
+// the way model.c's tensor_to_f32 does (F32, BF16, F16, or any supported type)
+// so --quant-error weights expert e's row error by f[e]^2.
+static float *gemma4_down_exps_scales(gguf_file *g, const gguf_tensor *t, bool *oom) {
+    static const char SUF[] = ".ffn_down_exps.weight";
+    const size_t n = strlen(t->name), ns = sizeof SUF - 1;
+    if (t->n_dims != 3 || n < ns || strcmp(t->name + n - ns, SUF) != 0)
+        return NULL;
+    if (strcmp(gguf_get_str(g, "general.architecture", ""), "gemma4") != 0)
+        return NULL;
+    char sn[sizeof t->name + 8];
+    snprintf(sn, sizeof sn, "%.*s.scale", (int)(n - strlen(".weight")), t->name);
+    const gguf_tensor *s = gguf_find_tensor(g, sn);
+    if (!s || s->n_dims != 1 || s->ne[0] != t->ne[2] || s->ne[0] == 0 ||
+        s->ne[0] > INT_MAX || !s->data || !ggml_type_supported(s->type))
+        return NULL;
+    int bs = ggml_block_size(s->type);
+    if (bs <= 0 || s->ne[0] % (uint64_t)bs != 0) return NULL;
+    size_t rs = ggml_row_size(s->type, s->ne[0]);
+    if (rs == 0 || rs > s->nbytes) return NULL;
+    float *buf = malloc(sizeof(float) * (size_t)s->ne[0]);
+    if (!buf) {
+        if (oom) *oom = true;
+        return NULL;
+    }
+    dequant_row(s->type, (const uint8_t *)s->data, buf, (int)s->ne[0]);
+    return buf;
 }
 
 static const float *expert_factors(gguf_file *g, const gguf_tensor *t, uint64_t *idx) {
@@ -4276,6 +4323,7 @@ bool quantize_floor_bytes(const char *in_path, int top, int bottom, const char *
 typedef struct {
     const gguf_tensor *t;
     const float *fac;      // the per-expert factors folded into each row (expert_factors), or NULL
+    const float *row_scale; // per-expert post-quantize output scale (Gemma 4 ffn_down_exps.scale), or NULL
     const float *nv_fac;   // precomputed two-level NVFP4 scales [nv_n], or NULL
     int64_t nv_n;
     bool nv_ok;            // whether T_NVFP4 is valid for this tensor
@@ -4309,6 +4357,11 @@ static void qerr_rows(void *ctx, int i0, int i1) {
         const float *w = j->ie ? imatrix_row(j->ie, n0, (uint64_t)r, j->per, j->mats, &bad) : NULL;
         if (bad) { atomic_store(&j->bad, 1); break; }
         j->wrow[r] = w != NULL;
+        double rsc2 = 1.0;
+        if (j->row_scale) {
+            double f = (double)j->row_scale[(uint64_t)r / j->per];
+            rsc2 = f * f;
+        }
         double *cell = j->cost + (size_t)r * (size_t)j->n_types;
         for (int k = 0; k < j->n_types; k++) {
             // the type the rewrite would write for this row
@@ -4331,7 +4384,7 @@ static void qerr_rows(void *ctx, int i0, int i1) {
                 double d = (double)rowf[c] - deq[c];
                 s += (w ? (double)w[c] : 1.0) * d * d;
             }
-            cell[k] = s;
+            cell[k] = s * rsc2;
         }
     }
     fp_denormals_restore(fps);
@@ -4392,15 +4445,18 @@ int quantize_error_report_threads(const char *in_path, const int *types, int n_t
         uint64_t rows = t->ne[1] * t->ne[2] * t->ne[3];
         uint64_t mats = t->n_dims > 2 && t->ne[2] > 1 ? t->ne[2] : 1;
         const float *src_fac = expert_factors(&g, t, NULL);
+        bool sc_oom = false;
+        float *row_scale = gemma4_down_exps_scales(&g, t, &sc_oom);
+        if (sc_oom) { rc = 1; break; }
         bool nv_ok = nvfp4_allowed_for_tensor(&g, t) && type_fits_row(T_NVFP4, n0);
         int64_t nv_n = is_inkling_expert_stack(&g, t) ? (int64_t)t->ne[2] : 1;
         float *nv_fac = NULL;
         if (want_nvfp4 && nv_ok && t->type != T_NVFP4) {
             nv_fac = malloc(sizeof(float) * (size_t)nv_n);
-            if (!nv_fac) { rc = 1; break; }
+            if (!nv_fac) { free(row_scale); rc = 1; break; }
             compute_nvfp4_scales(t, src_fac, false, NULL, NULL, nv_n, nv_fac, nv_scratch);
         }
-        qerr_job job = { .t = t, .fac = src_fac, .nv_fac = nv_fac, .nv_n = nv_n, .nv_ok = nv_ok,
+        qerr_job job = { .t = t, .fac = src_fac, .row_scale = row_scale, .nv_fac = nv_fac, .nv_n = nv_n, .nv_ok = nv_ok,
                          .ie = g_imx.n ? imatrix_find(t->name) : NULL,
                          .types = types,
                          .n_types = n_types, .n0 = n0, .per = mats > 1 ? t->ne[1] : rows, .mats = mats,
@@ -4414,6 +4470,8 @@ int quantize_error_report_threads(const char *in_path, const int *types, int n_t
         } else if (rows > 0) {
             qerr_rows(&job, 0, (int)rows);
         }
+        bool has_row_scale = row_scale != NULL;
+        free(row_scale);
         free(nv_fac);
         if (atomic_load(&job.oom)) rc = 1;
         if (atomic_load(&job.bad)) {
@@ -4427,7 +4485,7 @@ int quantize_error_report_threads(const char *in_path, const int *types, int n_t
             weighted |= wrow[r] != 0;
             for (int k = 0; k < n_types; k++) err[k] += cost[r * (uint64_t)n_types + (uint64_t)k];
         }
-        double sc2 = (double)t->scale * t->scale;
+        double sc2 = has_row_scale ? 1.0 : ((double)t->scale * t->scale);
         int layer;
         const char *suffix;
         if (lp_count > 1 && parse_blk_name(t->name, &layer, &suffix) && (uint32_t)layer >= lp_start &&

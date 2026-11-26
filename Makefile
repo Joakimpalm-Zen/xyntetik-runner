@@ -4803,6 +4803,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_full_train.py \
     tests/test_gate_scripts.py \
     tests/test_gemma4_auto_toolchoice.py \
+    tests/test_gemma4_quant_error.py \
     tests/test_gemma4_untyped_fallback.py \
     tests/test_gen_quality_metrics.py \
     tests/test_generation_fault_framing.py \
