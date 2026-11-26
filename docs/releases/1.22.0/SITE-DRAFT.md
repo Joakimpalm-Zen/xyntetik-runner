@@ -9,18 +9,33 @@ file; the 7B OLMo file also exceeds the 8 GB Metal device's memory. The
 [file measurements](../../model-support.md) and [release notes](RELEASE-NOTES.md)
 keep those limits beside the claims.
 
-On Claim 1's 100 pre-registered prompts, Runner matched the publisher's
-complete greedy sequence on 40/100 versus llama.cpp's 20/100. This measures
-greedy identity, not task quality, and includes 58 incomplete Runner records
-whose v1 client omitted the stop token. Beside that unchanged result,
-**erratum 3, decided after the verdicts**, reports 94/100 versus 20/100 after
-reading the stop token from the original records and verifying the completed
-sequences; it does not replace the pre-registered result. The separate
-R4.48.24 fast-route gate is not this comparison.
+On Claim 1's pre-registered 100 prompts, Runner matched the publisher's
+complete greedy sequence on 40/100 versus llama.cpp's 20/100 and the
+additional Unsloth column's 16/100. This is greedy identity, not task quality,
+and includes 58 incomplete Runner records whose v1 client omitted the stop
+token. Beside it, **erratum 3, decided after the verdicts**, reports Runner
+94/100 versus 20/100 and 16/100 after completing and verifying the original
+records; it does not replace the pre-registered result.
 
-**PLACEHOLDER-CLAIM-2:** final alone-versus-batched result, with its limits.
+At sixteen threads, Runner's measured target outputs were identical on
+20/20 prompts across its two measured cells; mainline llama.cpp and the
+additional Unsloth column were each 2/20 across their eight measured cells.
+This is the **sixteen-thread half, provisional**, with one-thread cells
+after the release. Runner's Inkling CPU decode is sequential; its page
+eviction makes the contextual timing rows information, not a speed claim.
 
-**PLACEHOLDER-CLAIM-3:** final reasoning-loop result, with its controls and limits.
+Claim 3's pre-registered outcome is **TIE**: Runner with loop guard and
+budget gives 37/40 structurally usable turns, zero observed loops, versus
+budgeted llama.cpp's 39/40; the additional Unsloth budgeted column gives
+37/40 and two loop/exhaustion turns, without a combined outcome label.
+The loop guard fired on zero combined-arm turns and the budget forced
+18 closes. `unit_test_pass` was not computed because model-written code
+had no isolated execution environment.
+
+Unsloth's columns use its published CPU prebuilt `b12649-mix-c7059d6`,
+run as published. A source build at the release tag commit could not load
+Inkling 2 Mini. The [release notes](RELEASE-NOTES.md) carry intervals,
+pairwise results, the full timing/load/residency table and the limitations.
 
 **PLACEHOLDER-OLMO2-CPU-SPEED:** completed CPU rows and their scope.
 

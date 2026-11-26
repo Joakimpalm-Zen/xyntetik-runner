@@ -9,7 +9,8 @@ Inkling's measured CPU prefill remains 0.70x llama.cpp's. Inkling CUDA is opt-in
 Q8_K_XL file and an aligned build; the available Windows device's 12 GB
 cannot hold either admitted Inkling file. OLMo GPU training is refused,
 compact KV has a cross-backend limit, and the 7B file does not fit the 8 GB
-Metal device. Claims 2 and 3 and the OLMo CPU speed rows below are pending.
+Metal device. Claim 2 is the provisional sixteen-thread half; its one-thread cells run
+after the release. The OLMo CPU speed rows remain pending.
 These notes are not a release-gate pass or a publication announcement.
 
 ## What changed
@@ -46,44 +47,59 @@ and the 100 answers' deterministic fields; decode was 12.05 against
 12.217 tok/s (0.986x). These are not faster-than-llama.cpp claims.
 [File identity, reference configuration, intervals and the full limits](../../inkling2-cpu-default.md).
 
-### Claim 1: Runner versus llama.cpp
+### Claim 1: Runner versus llama.cpp, with an additional Unsloth column
 
-**Limits:** this is complete greedy-sequence identity to the publisher's
-float32 reference on 100 pre-registered prompts, not task quality. The
-original Runner measurement and its post-verdict correction are distinct;
-neither is R4.48.24's newer fast-versus-reference-route comparison.
-The exact UD-Q8_K_XL file was run greedily, at most 256 tokens, with
-`reasoning_effort=low`, and verified by teacher-forced reference forwards.
+**Limits:** complete greedy-sequence identity to the publisher's float32
+reference on 100 pre-registered prompts, not task quality. The original
+Runner measurement and its post-verdict correction are distinct; neither
+is R4.48.24's newer CPU-route comparison. The exact UD-Q8_K_XL file was run
+greedily, at most 256 tokens, with `reasoning_effort=low`, and verified by
+teacher-forced reference forwards.
 
-| Analysis, in reporting order | Runner identical / 100 [95% Wilson] | llama.cpp identical / 100 [95% Wilson] |
-|---|---|---|
-| Pre-registered result, unchanged | 40/100 [0.309, 0.498] | 20/100 [0.133, 0.289] |
-| Erratum 3, decided after the verdicts | 94/100 [0.875, 0.972] | 20/100 [0.133, 0.289] |
+Unsloth's additional column uses its published CPU prebuilt
+`b12649-mix-c7059d6`, run as published. A source build at the release
+tag commit could not load Inkling 2 Mini.
 
-**Pre-registered paired result:** +0.200, Newcombe Method 10 95% interval
-[+0.049, +0.339], exact McNemar p = 0.0135, outcome **higher**. The paired
-table is zero both, 40 Runner-only, 20 llama.cpp-only and 40 neither.
-Runner had 58 incomplete records; llama.cpp had no incomplete record and
-one encoding discrepancy. These are the result and counting rule as
-pre-registered, reported first and unchanged.
+**Pre-registered result, first and unchanged:**
 
-**Erratum 3 disclosure, decided after the verdicts:** Runner's v1 client
-stored the receipt's generated IDs without the stop token even though the
-response separately recorded `stop_token_id`. Its 58 early-stopped answers
-therefore failed the completeness rule. The erratum read that field from
-the original records and appended the omitted stop token; no prompt,
-engine answer, setting, metric or llama.cpp record was changed. Of the
-58 completed sequences, 40 were teacher-forced afresh and 18 reused verified
-rows for token-identical llama.cpp sequences, including the final stop.
-The other 42 Runner sequences and all llama.cpp sequences were unchanged.
+| Engine | Identical / 100 [95% Wilson] |
+|---|---|
+| Runner's first run | 40/100 [0.309, 0.498] |
+| llama.cpp | 20/100 [0.133, 0.289] |
+| Unsloth published CPU prebuilt, additional | 16/100 [0.101, 0.244] |
 
-The resulting 94/100 versus 20/100 is the adjacent erratum figure, not a
-replacement pre-registered verdict. Its paired difference is +0.740,
-Newcombe 95% [+0.626, +0.816], exact McNemar p = 2.039e-20; the paired table
-is 18 both, 76 Runner-only, two llama.cpp-only and four neither. Future
-cells use the v2 client, which retains the stop token. These figures refer
-to the original Claim 1 records; they are not a new measurement of the
-candidate fast route.
+| Pre-registered Runner pair | Difference [Newcombe Method 10 95%] | Exact McNemar p | Outcome |
+|---|---|---:|---|
+| Versus llama.cpp | +0.200 [+0.049, +0.339] | 0.0135 | higher |
+| Versus Unsloth prebuilt | +0.240 [+0.099, +0.369] | 0.0015 | higher |
+
+Runner had 58 incomplete records because its v1 client omitted the stop
+token from its stored IDs. llama.cpp had no incomplete record and one
+encoding discrepancy. The pre-registered rule counts these records as
+they stood; the result above is not replaced.
+
+**Beside it: erratum 3, decided after the verdicts:**
+
+| Engine | Identical / 100 [95% Wilson] |
+|---|---|
+| Runner's completed original records | 94/100 [0.875, 0.972] |
+| llama.cpp, unchanged | 20/100 [0.133, 0.289] |
+| Unsloth published CPU prebuilt, additional | 16/100 [0.101, 0.244] |
+
+| Erratum-3 Runner pair, decided after the verdicts | Difference [Newcombe 95%] | Exact McNemar p | Outcome |
+|---|---|---:|---|
+| Versus llama.cpp | +0.740 [+0.626, +0.816] | 2.039e-20 | higher |
+| Versus Unsloth prebuilt | +0.780 [+0.668, +0.851] | 1.4e-21 | higher |
+
+The response separately recorded the stop token. The erratum appended it
+to the 58 early-stopped original records, without changing a prompt,
+engine answer, setting, metric or llama.cpp record. Forty completed
+sequences were teacher-forced afresh and 18 reused verified rows for
+token-identical llama.cpp sequences, including the final stop. The other
+42 Runner sequences were unchanged. Future cells use the v2 client.
+Unsloth had zero encoding discrepancies and exact ties; one head-shape flag
+affected no verdict. These remain dated original Claim 1 figures, not a
+new measurement of the candidate fast route.
 
 ### Shipped fast route: separate R4.48.24 rule (3) result
 
@@ -176,15 +192,148 @@ finish. No CPU throughput improvement is claimed here yet.
   unchanged by that workaround. These test fixes are not release-artifact
   validation; the candidate's Windows gates still have to run.
 
-### Measurements awaiting their final analysis
+### Claim 2: sixteen-thread half, provisional INFORMATION
 
-**PLACEHOLDER-CLAIM-2:** alone-versus-batched answer identity. Insert the
-pre-registered verdict, per-engine and batch results, denominators, failures
-and provenance. Do not infer this result from thread identity or kernel gates.
+**Limits first:** on this Inkling CPU route, Runner decodes concurrent MoE
+requests one sequence at a time; gathering slots is not a shared
+multi-sequence matrix product. Only the sixteen-thread half has run.
+One-thread cells run after the release. No final full-matrix Claim 2
+wording or cross-engine speed conclusion is drawn.
 
-**PLACEHOLDER-CLAIM-3:** reasoning-loop guard on the model's own loops.
-Insert the pre-registered analysis, controls, per-arm outcomes, failures and
-provenance. Interim arm completion is not a final result.
+Unsloth's additional column uses its published CPU prebuilt
+`b12649-mix-c7059d6`, run as published. A source build at the release
+tag commit could not load Inkling 2 Mini.
+
+Runner's two cells lost up to 3.7% of the file's pages to host reclaim while
+llama.cpp's stayed resident, so the times are information, not a speed
+comparison.
+
+The timing table names the default cells selected by the prewritten rule,
+flash attention on and micro-batch 512, as “quoted”. The other measured
+settings are shown beside them as information, not selected by their
+speed. Throughput is the generated-ID count divided by wall time, including
+prefill, over 20 rounds. A batch wall runs from barrier release through
+the ninth response; an alone wall covers its one response. The usage-based
+median is shown when the client count differs, including Runner's appended
+stop token. Every timing has its host-wide load and sampled file residency
+beside it.
+
+| Sixteen-thread cell | Generated-ID tok/s median [IQR] | Usage-based median when different | Load median / peak | File residency minimum | Samples below 0.99 |
+|---|---:|---:|---:|---:|---:|
+| Runner alone (quoted) | 11.18 [10.69, 12.49] | 11.18 | 49.87 / 60.50 | 0.963599 | 32.4% |
+| Runner batch (quoted) | 11.80 [11.44, 12.07] | 11.76 | 56.31 / 158.32 | 0.962821 | 92.4% |
+| llama.cpp alone, FA on, ub 512 (quoted) | 10.49 [9.65, 11.11] | - | 51.84 / 80.02 | 1.000000 | 0.0% |
+| llama.cpp alone, FA on, ub 1 (information) | 8.23 [6.91, 9.40] | - | 32.18 / 44.14 | 1.000000 | 0.0% |
+| llama.cpp alone, FA off, ub 512 (information) | 10.64 [9.91, 11.28] | - | 38.56 / 66.20 | 1.000000 | 0.0% |
+| llama.cpp alone, FA off, ub 1 (information) | 8.70 [6.50, 9.35] | - | 24.48 / 25.90 | 1.000000 | 0.0% |
+| llama.cpp batch, FA on, ub 512 (quoted) | 18.55 [17.98, 20.95] | - | 29.80 / 195.27 | 0.999989 | 0.0% |
+| llama.cpp batch, FA on, ub 1 (information) | 9.92 [9.82, 10.17] | - | 41.16 / 1356.19 | 1.000000 | 0.0% |
+| llama.cpp batch, FA off, ub 512 (information) | 17.02 [16.38, 19.45] | - | 58.40 / 337.58 | 1.000000 | 0.0% |
+| llama.cpp batch, FA off, ub 1 (information) | 9.19 [8.87, 9.39] | - | 45.20 / 115.22 | 0.999461 | 0.0% |
+| Unsloth prebuilt alone, FA on, ub 512 (quoted) | 10.86 [10.29, 11.22] | - | 36.46 / 69.35 | 1.000000 | 0.0% |
+| Unsloth prebuilt alone, FA on, ub 1 (information) | 8.60 [6.91, 9.46] | - | 46.93 / 86.08 | 1.000000 | 0.0% |
+| Unsloth prebuilt alone, FA off, ub 512 (information) | 10.53 [10.03, 11.31] | - | 64.03 / 79.75 | 0.999541 | 0.0% |
+| Unsloth prebuilt alone, FA off, ub 1 (information) | 8.14 [6.14, 8.96] | - | 60.89 / 97.39 | 1.000000 | 0.0% |
+| Unsloth prebuilt batch, FA on, ub 512 (quoted) | 18.50 [17.79, 19.47] | - | 50.23 / 102.02 | 1.000000 | 0.0% |
+| Unsloth prebuilt batch, FA on, ub 1 (information) | 10.49 [9.68, 10.82] | - | 35.65 / 79.54 | 0.999855 | 0.0% |
+| Unsloth prebuilt batch, FA off, ub 512 (information) | 18.38 [17.92, 18.87] | - | 33.75 / 72.73 | 1.000000 | 0.0% |
+| Unsloth prebuilt batch, FA off, ub 1 (information) | 9.70 [9.47, 9.87] | - | 27.57 / 72.70 | 0.999694 | 0.0% |
+
+A host-wide load spike overlaps the non-default llama.cpp
+flash-on/micro-batch-1 batch cell; no request there timed out or retried.
+
+Each measured cell has 20 complete target rounds, with prompt IDs equal
+across each engine's cells and no incomplete or torn record. Identity
+checks generated IDs and their decoded bytes, including the stop token.
+The counts below cover the measured cells only.
+
+| Engine | Measured sixteen-thread cells | Targets identical across those cells [95% Wilson] |
+|---|---:|---|
+| Runner | 2 | 20/20 [0.839, 1.000] |
+| llama.cpp | 8 | 2/20 [0.028, 0.301] |
+| Unsloth prebuilt, additional | 8 | 2/20 [0.028, 0.301] |
+
+The one-thread factors remain pending. Measured factor counts use the
+alone, sixteen-thread, flash-attention-on, micro-batch-512 baseline (Runner
+has no flash/micro-batch factor).
+
+| Factor changing only that setting, at sixteen threads | Runner differing targets | llama.cpp differing targets | Unsloth prebuilt differing targets, additional |
+|---|---:|---:|---:|
+| Alone versus batched | 0/20 | 15/20 | 15/20 |
+| Flash attention on versus off | n/a | 18/20 | 15/20 |
+| Micro-batch 512 versus 1 | n/a | 17/20 | 16/20 |
+
+llama.cpp's co-batching at micro-batch 512 is **inferred from the source
+and the slot log**. At micro-batch 1, concurrently active slots still decode
+one token at a time inside the call. The additional Unsloth column's
+co-batching is reported with the same inference qualification. Runner's
+batch counters count gathered slots; the measured-build source check
+confirms sequential one-row forwards. The debug route lines named in the
+pre-registration cannot appear on this architecture, so those counters
+and the source check are the disclosed evidence.
+
+Companions are information: the eight fixed companions were invariant
+across measured batched cells for Runner 8/8, llama.cpp 0/8 and Unsloth
+0/8. Runner has one measured batched configuration. Unsloth's column has
+no Claim 2 pairs and no combined label. The status remains provisional
+INFORMATION until the one-thread cells complete.
+
+### Claim 3: FINAL, pre-registered outcome TIE
+
+**Limits first:** the pre-registered outcome is **TIE**, not superiority to
+the budgeted comparator. Runner with loop guard and reasoning budget has
+37/40 usable turns and zero observed loops, versus budgeted llama.cpp's
+39/40 usable turns; the paired difference is -0.050, Newcombe 95%
+[-0.176, +0.067], exact McNemar p 0.625. “Usable” is the specified output-form
+metric, not proof that a code fix works. `unit_test_pass` was **not
+computed**: there was no isolation for executing model-written code.
+This is a disclosed omission of the secondary diagnostic.
+
+Unsloth's additional column uses its published CPU prebuilt
+`b12649-mix-c7059d6`, run as published. A source build at the release
+tag commit could not load Inkling 2 Mini.
+
+The set has 40 code-debugging prompts, 20 plain and 20 tool prompts, greedy
+at `reasoning_effort=high` on UD-Q8_K_XL. `off` leaves the controls off;
+`lg` enables Runner's loop guard and `lg-rb` combines it with the
+reasoning budget. The comparator `rb` arms have a reasoning budget.
+The loop metric combines span repetition with unclosed-thinking exhaustion;
+zero observed cases is scoped to this set.
+
+| Arm | Usable turns [95% Wilson] | Loop/exhaustion turns [95% Wilson] |
+|---|---|---|
+| runner-off | 24/40 [0.446, 0.737] | 15/40 [0.242, 0.530] |
+| runner-lg | 25/40 [0.470, 0.758] | 14/40 [0.221, 0.505] |
+| runner-lg-rb | 37/40 [0.801, 0.974] | 0/40 [0.000, 0.088] |
+| llama-off | 25/40 [0.470, 0.758] | 14/40 [0.221, 0.505] |
+| llama-rb | 39/40 [0.871, 0.996] | 1/40 [0.004, 0.129] |
+| unsloth-off | 26/40 [0.495, 0.779] | 14/40 [0.221, 0.505] |
+| unsloth-rb | 37/40 [0.801, 0.974] | 2/40 [0.014, 0.165] |
+
+The combined Runner arm is higher than unguarded Runner and unrestricted
+llama.cpp, but has no statistically distinguishable usable-turn difference
+from budgeted llama.cpp. The primary outcome above stays TIE.
+
+| Pre-registered pair: Runner loop guard + budget versus | Usable-turn difference [Newcombe 95%] | Exact McNemar p | Outcome |
+|---|---|---:|---|
+| Runner off | +0.325 [+0.166, +0.474] | 0.0002441 | higher |
+| llama.cpp off | +0.300 [+0.125, +0.459] | 0.001831 | higher |
+| llama.cpp budgeted | -0.050 [-0.176, +0.067] | 0.625 | tie |
+
+In the combined Runner arm the loop guard fired on 0/40 turns and the
+reasoning budget forced a close on 18/40. The zero-loop result must not be
+described as observed loop-guard interventions. Metric-field interpretations
+were documented after the five Runner/mainline arms existed, with no change
+to thresholds, arms, settings or interval methods; the omitted secondary
+unit-test diagnostic is disclosed above.
+
+The Unsloth arms and pairs are additional information, not a combined
+outcome or a change to the pre-registered TIE label.
+
+| Additional Unsloth pair: Runner loop guard + budget versus | Usable-turn difference [Newcombe 95%] | Exact McNemar p | Pair outcome only |
+|---|---|---:|---|
+| Unsloth prebuilt off | +0.275 [+0.105, +0.433] | 0.003418 | higher |
+| Unsloth prebuilt budgeted | +0.000 [-0.128, +0.128] | 1 | tie |
 
 ## Behaviour changes
 
@@ -202,8 +351,9 @@ provenance. Interim arm completion is not a final result.
 The first paragraph and linked records are part of each claim. No claim of
 universal speed, cross-backend bit identity, all-100 greedy identity, GPU
 training for OLMo, or real-file Metal validation of the 7B is made. The CPU
-and CUDA timing windows are different measurements on named builds. Pending
-placeholders and release gates must be resolved before these notes are final.
+and CUDA timing windows are different measurements on named builds. The OLMo CPU-speed
+placeholder and release gates must be resolved before these notes are final;
+Claim 2 must retain its provisional sixteen-thread qualification.
 
 ## Gates
 

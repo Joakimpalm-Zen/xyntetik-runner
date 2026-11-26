@@ -12,12 +12,12 @@ and additive protocol support, with the 1.x interface promises unchanged.
 candidate unpublished; its final published banner and the release date
 remain for the actual cut.
 
-`python3 scripts/changelog-entries.py fold --write` assembled 43 entries:
-41 pending entries from the cut plus R4.48.24 and release Claim 1 result
-entries. The Claim 1 correction preserves the pre-registered result first
+`python3 scripts/changelog-entries.py fold --write` assembled 45 entries:
+41 pending entries from the cut plus R4.48.24 and release Claims 1, 2 and 3
+result entries. The Claim 1 correction preserves the pre-registered result first
 and labels erratum 3 as decided after the verdicts. Only the
 release heading and fresh empty Unreleased heading were added outside the
-fold. The folded body was compared with all 43 corrected source texts in the tool's
+fold. The folded body was compared with all 45 corrected source texts in the tool's
 order. `changes/README.md` remains; no pending entry is left behind.
 
 ## Dry-run status
@@ -98,8 +98,10 @@ the current-version full-CUDA requirement are separate checks.
 
 ## Remaining result fields and final decision
 
-- **PLACEHOLDER-CLAIM-2:** final alone/batched analysis and provenance.
-- **PLACEHOLDER-CLAIM-3:** final reasoning-loop analysis and provenance.
+- Claim 2: sixteen-thread half reported provisionally; one-thread cells
+  are scheduled after the release, not counted as completed.
+- Claim 3: final pre-registered outcome TIE; additional Unsloth pairs do
+  not change it. The secondary unit-test diagnostic was not computed.
 - **PLACEHOLDER-OLMO2-CPU-SPEED:** final CPU timings and limits.
 - Fresh candidate CI, no open scheduled-red issue, final device reports,
   release-check and artifact verification.
