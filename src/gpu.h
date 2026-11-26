@@ -847,7 +847,18 @@ void       gpu_ink2_release_experts(gpu_ink2 *h);   // those buffers freed (a fi
 // (sk [T][nh]) of (q . k) * scale + rl[t][h][d] (d < ext), att [T][nh hd] = sum p v. q [T][nh hd], rl [T][nh][ext].
 // Head h reads K/V head h / (nh / nkv). False: a device failure or arguments it does not take.
 typedef struct gpu_ink2_kv gpu_ink2_kv;
-gpu_ink2_kv *gpu_ink2_kv_new(gpu_ink2 *h, int n_app, const int *rows, const int *C, int hist_rows);
+// R4.48.8.5: kind 0 float32 rings, 1 q8 (the house's q8_0 row: C/32 blocks of 34 bytes, written with q8_quant_row's
+// arithmetic, read as (float)q * d; NULL without the module's q8 kernels, gpu_ink2_kvq8_ok); pack[a] nonzero puts
+// application a's ring in the slot's one shared allocation per side, at GPU_INK2_RING_ALIGN-byte offsets (the sliding
+// applications: one allocation rounded up once, not each). pack may be NULL.
+#define GPU_INK2_RING_ALIGN 256
+gpu_ink2_kv *gpu_ink2_kv_new(gpu_ink2 *h, int n_app, const int *rows, const int *C, int hist_rows, int kind,
+                             const unsigned char *pack);
+bool       gpu_ink2_kvq8_ok(const gpu_ink2 *h);
+// R4.48.8.5: the bytes the handle's grown buffers hold (a placement's reservations), for --info fit's dry run
+size_t     gpu_ink2_reserved_bytes(gpu_ink2 *h);
+// TEST-ONLY (R4.48.8.5): k_ink2_kv_store_q8 over [T][C] floats into a zeroed q8 ring of R rows from row s0; the ring back
+bool       gpu_ink2_test_kv_store_q8(gpu_ink2 *h, const float *x, int T, int C, int R, int s0, unsigned char *ring_out);
 size_t     gpu_ink2_kv_bytes(const gpu_ink2_kv *kv);
 void       gpu_ink2_kv_free(gpu_ink2_kv *kv);
 // R4.48.9 D1d.3b: the post convolutions' device copies of one instance, [n_app][2][hist_rows][H] floats in the host's

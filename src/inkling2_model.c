@@ -340,22 +340,39 @@ static size_t dev_instance_bytes(const ink2_rt *r, bool attn_dev, int hist_rows,
 // (gpu_ink2_step_set's allocations: the raw rows, the normed rows, the block's inputs, the reads' rows, the logits, the
 // lists), each as the driver allocates it; 0 when the plan cannot be built (the step then stays off)
 static size_t step_dev_bytes(const ink2_rt *r);
-static size_t dev_instance_bytes_core(const ink2_rt *r, bool attn_dev, int hist_rows);
-static size_t dev_instance_bytes(const ink2_rt *r, bool attn_dev, int hist_rows, bool step) {
-    // D1d.3b: with the step, each slot's post convolutions' device copies (one allocation, gpu_ink2_kv_post_init)
-    const size_t post = step && hist_rows > 0 ?
-        dev_alloc_bytes(sizeof(float) * (size_t)r->s.n_app * 2 * (size_t)hist_rows * (size_t)r->s.hidden) : 0;
-    return post + dev_instance_bytes_core(r, attn_dev, hist_rows);
-}
-static size_t dev_instance_bytes_core(const ink2_rt *r, bool attn_dev, int hist_rows) {
-    if (!attn_dev) return 0;
-    size_t b = 0;
-    for (int a = 0; a < r->s.n_app; a++) {
-        const size_t C = (size_t)app_c(&r->s, a);
-        b += 2 * dev_alloc_bytes(sizeof(float) * (size_t)r->c.rows[a] * C);
-        if (hist_rows > 0) b += 2 * dev_alloc_bytes(sizeof(float) * (size_t)hist_rows * C);
+// R4.48.8.5: one slot's device layout, from the shape alone, as gpu_ink2_kv_new and gpu_ink2_kv_post_init allocate
+// it: the K/V rings in the cache's kind, the full applications' each its own allocation, the sliding ones packed into
+// one allocation per side at GPU_INK2_RING_ALIGN-byte offsets; on the block path each application's two convolution
+// histories; with the step, the post convolutions' copies (one allocation). Each allocation's bytes go through
+// `round` once: the driver's rounding (dev_alloc_bytes) for what the slot takes on the device, which the load's fit
+// (share_place) and --info fit count, or none for the bytes asked of the driver, which the slot's own count holds.
+static size_t no_rounding(size_t b) { return b; }
+static uint64_t dev_slot_layout(const ink2_shape *s, int n_ctx, int max_chunk, int kind, bool attn_dev, int hist_rows,
+                                bool step, size_t (*round)(size_t)) {
+    uint64_t b = step && hist_rows > 0 ? round(sizeof(float) * (size_t)s->n_app * 2 * (size_t)hist_rows * (size_t)s->hidden) : 0;
+    if (!attn_dev) return b;
+    size_t packed = 0;
+    for (int a = 0; a < s->n_app; a++) {
+        const size_t C = (size_t)ink2_app_kv_width(s, a);
+        const size_t ring = ink2_kv_row_bytes((int)C, kind) * (size_t)ink2_kv_app_rows(s, a, n_ctx, max_chunk);
+        if (ink2_app_global(s, a)) b += 2 * round(ring);
+        else packed = (packed + GPU_INK2_RING_ALIGN - 1) / GPU_INK2_RING_ALIGN * GPU_INK2_RING_ALIGN + ring;
+        if (hist_rows > 0) b += 2 * round(sizeof(float) * (size_t)hist_rows * C);
     }
+    if (packed) b += 2 * round(packed);
     return b;
+}
+uint64_t model_inkling2_dev_slot_bytes(const ink2_shape *s, int n_ctx, int max_chunk, int kind, bool attn_dev,
+                                       int hist_rows, bool step) {
+    return dev_slot_layout(s, n_ctx, max_chunk, kind, attn_dev, hist_rows, step, dev_alloc_bytes);
+}
+uint64_t model_inkling2_dev_slot_alloc_bytes(const ink2_shape *s, int n_ctx, int max_chunk, int kind, bool attn_dev,
+                                             int hist_rows, bool step) {
+    return dev_slot_layout(s, n_ctx, max_chunk, kind, attn_dev, hist_rows, step, no_rounding);
+}
+static size_t dev_instance_bytes(const ink2_rt *r, bool attn_dev, int hist_rows, bool step) {
+    return model_inkling2_dev_slot_bytes(&r->s, r->c.n_ctx, r->c.max_chunk, r->c.kv == INK2_KV_Q8 ? INK2_KV_Q8 : INK2_KV_F32,
+                                         attn_dev, hist_rows, step);
 }
 static void share_release(ink2_rt *r) {
     if (!r->share) return;
@@ -400,8 +417,19 @@ static const ink2_tensor *block_view(ink2_rt *r, int b, int role) {
 // so the free memory read counts them; then the weights the placement puts up, counted as the driver allocates them,
 // plus N slots' own bytes, against the free memory with 512 MiB kept. Whole first (unless --cpu-moe was asked), then
 // the expert stacks on the host, then the CPU.
+// R4.48.8.5: a placement's terms, as share_place checks them against the free memory it reads after its context,
+// module and reservations: the weights it would put up, the small tensors and the step's, every slot's own bytes, the
+// 512 MiB kept, the reservations, and the device's free and total memory; placed 'W' whole, 'M' experts on the host,
+// 'C' the CPU. A dry run (--info fit) records them and uploads nothing.
+typedef struct {
+    char placed;
+    size_t weights, small, slots, kept, reserved, free_b, total_b;   // the last placement tried
+    // the whole placement's own terms (every weight on the device), kept when a later placement is tried: what a
+    // device that holds it would need besides the weights, whether or not this one does
+    bool whole; size_t w_weights, w_small, w_slots, w_reserved;
+} ink2_dev_terms;
 static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batch, int n_ctx, int n_slots,
-                        const char *dev, bool step_req) {
+                        const char *dev, bool step_req, ink2_dev_terms *dry) {
     sh->placed = 'C';
     gpu_ink2 *h = gpu_ink2_bind();
     if (!h) { snprintf(sh->why, sizeof sh->why, "no CUDA device for inkling2_loop"); return; }
@@ -470,6 +498,18 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
         if (capv && *capv) { const size_t cv = (size_t)strtoull(capv, NULL, 10); if (cv < fr) fr = cv; }
         if (!cm) need_w = c.need;
         sh->fit_free = fr;
+        if (dry) {   // field by field: a later placement's terms must not wipe the whole placement's
+            dry->placed = 'C'; dry->weights = c.need; dry->small = small; dry->slots = inst; dry->kept = RES;
+            dry->reserved = gpu_ink2_reserved_bytes(h); dry->free_b = fr; dry->total_b = tot;
+            if (!cm) { dry->whole = true; dry->w_weights = c.need; dry->w_small = small; dry->w_slots = inst; dry->w_reserved = dry->reserved; }
+        }
+        if (dry && c.need + small + inst + RES <= fr) {   // the dry run: this placement fits; nothing goes up
+            dry->placed = cm ? 'M' : 'W';
+            sh->placed = dry->placed;
+            gpu_ink2_free(h);
+            r->gpu = NULL;
+            return;
+        }
         if (c.need + small + inst + RES > fr) {   // this placement does not fit: the next, or the CPU
             // the whole-device attempt's expert-body buffers go before the retry, so it reads the memory it has
             if (exp_dev) gpu_ink2_release_experts(h);
@@ -669,6 +709,10 @@ static int dev_step(void *dev, int p0, const float *emb_row, float *logits) {
     return 0;
 }
 static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
+    if (r->c.kv == INK2_KV_RT) {   // TEST-ONLY: the round trip is the CPU routes' reference, never a device ring's
+        fprintf(stderr, "note: RUNNER_INKLING2_TEST_KV_RT is the CPU routes' alone; running on the CPU\n");
+        return 0;
+    }
     // The fast CUDA route remains opt-in, including a resident decode step when placement permits;
     // a default GPU-allowed load still uses the CPU.
     const char *on = getenv("RUNNER_INKLING2_CUDA");
@@ -721,7 +765,7 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
         sh = calloc(1, sizeof *sh);
         if (!sh) { pthread_mutex_unlock(&g_share_mu); fprintf(stderr, "note: out of memory binding inkling2_loop; running on the CPU\n"); return 0; }
         snprintf(sh->key, sizeof sh->key, "%s", key);
-        share_place(sh, r, p->cpu_moe, m->n_batch, m->n_ctx, n_slots, dev, step_req);
+        share_place(sh, r, p->cpu_moe, m->n_batch, m->n_ctx, n_slots, dev, step_req, NULL);
         // D1d.3b: the step's small tensors after the block's, while the copy is new (no instance reads it yet)
         sh->step_base = -1;
         if (step_req && sh->placed == 'W' && sh->block_dev && sh->gpu) {
@@ -770,9 +814,16 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
     // the device holds the only copy, so a device failure refuses (never a host core with a missing cache)
     if (sh->attn_dev) {
         int *rows = malloc(sizeof(int) * (size_t)r->s.n_app), *cw = malloc(sizeof(int) * (size_t)r->s.n_app);
-        for (int a = 0; rows && cw && a < r->s.n_app; a++) { rows[a] = r->c.rows[a]; cw[a] = app_c(&r->s, a); }
-        r->kv = rows && cw ? gpu_ink2_kv_new(r->gpu, r->s.n_app, rows, cw, sh->block_dev ? r->s.conv_k - 1 : 0) : NULL;
-        free(rows); free(cw);
+        // R4.48.8.5: the rings in the cache's kind, each slot's sliding ones packed into one allocation per side
+        unsigned char *pack = malloc((size_t)r->s.n_app);
+        for (int a = 0; rows && cw && pack && a < r->s.n_app; a++) {
+            rows[a] = r->c.rows[a]; cw[a] = app_c(&r->s, a); pack[a] = !ink2_app_global(&r->s, a);
+        }
+        if (r->c.kv == INK2_KV_Q8 && !gpu_ink2_kvq8_ok(r->gpu))
+            fprintf(stderr, "error: inkling2_loop --kv q8: this build's CUDA module has no q8 ring kernels\n");
+        r->kv = rows && cw && pack ? gpu_ink2_kv_new(r->gpu, r->s.n_app, rows, cw, sh->block_dev ? r->s.conv_k - 1 : 0,
+                                                     r->c.kv == INK2_KV_Q8 ? 1 : 0, pack) : NULL;
+        free(rows); free(cw); free(pack);
         if (!r->kv) {
             fprintf(stderr, "error: inkling2_loop: this instance's K/V rings could not be put on %s after the fit "
                             "counted them; the load is refused (never a CPU instance beside CUDA ones)\n", dev);
@@ -961,6 +1012,48 @@ static int ink2_batch_default(int n_batch, int n_ctx) {
     return n_batch;
 }
 
+// R4.48.8.5: the K/V cache's storage from --kv. f32 is this engine's own (the default, and --kv f32); --kv q8 stores
+// q8_0 rows when every head_dim is a multiple of 32. The house's other formats (f16, k8v4, fp4) are not this engine's,
+// and an asked one keeps f32 with a note, as an incompatible format does elsewhere. The CUDA route keeps f32 under
+// --kv q8 until its device kernels are proven (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_KVQ8=1 lifts that for the device
+// gates); TEST-ONLY RUNNER_INKLING2_TEST_KV_RT=1: float32 rows holding each row's q8 round trip (gate (a)).
+static const char *kv_kind_name(int kind) { return kind == INK2_KV_Q8 ? "q8" : kind == INK2_KV_RT ? "f32 round trip" : "f32"; }
+// the kind for a shape, a route and the asked --kv, with the sentence a load prints as a note and the fit as a line
+// (empty when there is none to say). The TEST-ONLY round trip is the runtime's alone.
+static int kv_kind_pick(const ink2_shape *s, char route, const model_params *p, char *note, size_t nn) {
+    note[0] = 0;
+    if (p->kv_fp4 || p->kv_split || p->kv_f16) {
+        snprintf(note, nn, "inkling2_loop's K/V cache is f32 or q8; --kv %s is not one of its formats, so it keeps f32",
+                 p->kv_fp4 ? "fp4" : p->kv_split ? "k8v4" : "f16");
+        return INK2_KV_F32;
+    }
+    if (!p->kv_q8) return INK2_KV_F32;
+    if (!ink2_kv_kind_ok(s, INK2_KV_Q8)) {
+        snprintf(note, nn, "inkling2_loop --kv q8 needs every head_dim to be a multiple of 32 (this file's are %d and %d); "
+                 "it keeps f32", s->head_dim, s->swa_head_dim);
+        return INK2_KV_F32;
+    }
+#ifdef RUNNER_GPU_CUDA
+    const char *on = getenv("RUNNER_INKLING2_CUDA"), *t = getenv("RUNNER_INKLING2_CUDA_TEST_KVQ8");
+    if (p->gpu_mode != GPU_OFF && on && !strcmp(on, "1") && route == 'F' && !(t && !strcmp(t, "1"))) {
+        snprintf(note, nn, "inkling2_loop --kv q8 keeps f32 on the CUDA route (RUNNER_INKLING2_CUDA=1) until its device "
+                 "kernels are proven; the CPU routes store q8");
+        return INK2_KV_F32;
+    }
+#else
+    (void)route;
+#endif
+    return INK2_KV_Q8;
+}
+static const char RING_NOTE[] = "inkling2_loop's sliding applications always keep a window ring (window - 1 + batch "
+                                "rows); --kv-ring off changes nothing";
+// a cache's K/V and convolution bytes: the figure --info fit predicts (ink2_cache_plan_bytes), from the live rows
+static uint64_t cache_kv_bytes(const ink2_cache *c) {
+    uint64_t n = 0;
+    for (int a = 0; a < c->n_app; a++) n += 2 * (uint64_t)c->rows[a] * c->rb[a] + (uint64_t)c->conv_floats[a] * sizeof(float);
+    return n;
+}
+
 bool model_inkling2_runtime(model_t *m, const model_params *p) {
     ink2_rt *r = rt_of(m);
     if (!r) return false;
@@ -973,7 +1066,13 @@ bool model_inkling2_runtime(model_t *m, const model_params *p) {
     m->n_batch = ink2_batch_default(p->n_batch, n_ctx);
     m->spec_batch = m->n_batch;
     r->n_threads = p->n_threads > 0 ? p->n_threads : 1;
-    if (ink2_cache_init_window(&r->c, &r->s, n_ctx, m->n_batch)) {
+    char note[256];
+    int kind = kv_kind_pick(&r->s, r->route, p, note, sizeof note);
+    if (note[0]) fprintf(stderr, "note: %s\n", note);
+    const char *rt = getenv("RUNNER_INKLING2_TEST_KV_RT");
+    if (rt && !strcmp(rt, "1") && ink2_kv_kind_ok(&r->s, INK2_KV_RT)) kind = INK2_KV_RT;
+    if (p->kv_ring == KV_RING_OFF) fprintf(stderr, "note: %s\n", RING_NOTE);
+    if (ink2_cache_init_kind(&r->c, &r->s, n_ctx, m->n_batch, kind)) {
         fprintf(stderr, "error: the inkling2_loop cache for -c %d does not fit in memory\n", n_ctx);
         return false;
     }
@@ -1002,9 +1101,10 @@ bool model_inkling2_runtime(model_t *m, const model_params *p) {
     }
     // the device last, once -c and the host buffers are known good (a refused -c uploads nothing)
     if (p->gpu_mode != GPU_OFF && cuda_bind(r, m, p) < 0) return false;   // < 0: this slot refuses (never mixed)
-    fprintf(stderr, "inkling2_loop: -c %d -b %d; cache %.2f GB (sliding K/V for the window only), expert cache up to "
-                    "%.2f GiB (the budget, RUNNER_INKLING2_EXPERT_CACHE)\n", n_ctx, m->n_batch,
-            host_cache_bytes(r) / 1e9, expert_cache_held(&r->s, r->ec_budget) / 1073741824.0);
+    fprintf(stderr, "inkling2_loop: -c %d -b %d; cache %.2f GB (%llu bytes; K/V %s; sliding K/V for the window only), "
+                    "expert cache up to %.2f GiB (the budget, RUNNER_INKLING2_EXPERT_CACHE)\n", n_ctx, m->n_batch,
+            host_cache_bytes(r) / 1e9, (unsigned long long)cache_kv_bytes(&r->c), kv_kind_name(r->c.kv),
+            expert_cache_held(&r->s, r->ec_budget) / 1073741824.0);
     return true;
 }
 
@@ -1231,7 +1331,53 @@ static int gguf_matrix_name(const char *name) {
     }
     return 0;
 }
-int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, int n_batch) {
+// R4.48.8.5: the CUDA route's placement for --info fit, as the load makes it: the file's views (ink2g_attach, the fast
+// route, the small tensors decoded) in a runtime that holds no cache, then share_place's own count as a dry run (the
+// device bound, its buffers reserved, the free memory read; no weight goes up). False when the file or the device
+// could not be read (why says which); t->placed 'C' with why when no placement fits.
+static bool fit_device(const char *path, int n_ctx, int n_batch, int slots, const model_params *mp, int kind,
+                       ink2_dev_terms *t, char *why, size_t wn) {
+    memset(t, 0, sizeof *t);
+    t->placed = 'C';
+    char dev[160] = "";
+    if (!gpu_available(dev, sizeof dev)) { snprintf(why, wn, "no CUDA device for inkling2_loop"); return true; }
+    gguf_file gf;
+    if (!gguf_open(&gf, path)) { snprintf(why, wn, "the file could not be opened"); return false; }
+    ink2_rt *r = calloc(1, sizeof *r);
+    bool ok = r != NULL;
+    if (ok) {
+        r->route = 'F';
+        r->g = ink2g_attach(&gf, &r->s, why, wn);
+        ok = r->g != NULL;
+    }
+    size_t decoded = 0;
+    if (ok) {
+        ink2g_set_route(r->g, 1, 0);
+        ok = ink2g_decode_all(r->g, &decoded) == 0;
+        if (!ok) snprintf(why, wn, "an inkling2_loop tensor could not be decoded to float32");
+    }
+    if (ok) {
+        ink2g_weights(r->g, &r->inner);
+        r->w = r->inner;
+        r->c.n_ctx = n_ctx; r->c.max_chunk = n_batch; r->c.kv = kind;   // the slot bytes' inputs (dev_instance_bytes)
+        const char *stv = getenv("RUNNER_INKLING2_CUDA_TEST_NO_STEP");
+        ink2_share sh;
+        memset(&sh, 0, sizeof sh);
+        share_place(&sh, r, mp->cpu_moe, n_batch, n_ctx, slots, dev, !(stv && !strcmp(stv, "1")), t);
+        if (t->placed == 'C') snprintf(why, wn, "%s", sh.why[0] ? sh.why : "no placement fits");
+    }
+    if (r && r->g) ink2g_close(r->g);
+    free(r);
+    gguf_close(&gf);
+    return ok;
+}
+static const char *placed_words(char p) {
+    return p == 'W' ? "every weight on the device" : p == 'M' ? "the expert stacks on the host (--cpu-moe)" : "the CPU";
+}
+
+int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, const model_params *mp, int n_seq) {
+    int n_batch = mp->n_batch;
+    const int slots = n_seq > 1 ? n_seq : 1;
     ink2_shape s;
     char why[512] = { 0 };
     if (ink2g_shape(g, &s, why, sizeof why)) {
@@ -1258,17 +1404,13 @@ int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, int
         else small += 4 * n;
     }
     if (route == 'F') dense = 0;
-    // the engine's cache under ink2_cache_init_window: K and V per application, the sliding ones for the window and
-    // the batch, plus each application's four convolution histories
-    uint64_t cache = 0;
-    for (int a = 0; a < s.n_app; a++) {
-        int gl = ink2_app_global(&s, a);
-        uint64_t kv = (uint64_t)(gl ? s.n_kv * s.head_dim : s.swa_n_kv * s.swa_head_dim);
-        uint64_t rows = (uint64_t)n_ctx;
-        if (!gl && (uint64_t)s.window - 1 + (uint64_t)n_batch < rows) rows = (uint64_t)s.window - 1 + (uint64_t)n_batch;
-        uint64_t wmax = kv > (uint64_t)s.hidden ? kv : (uint64_t)s.hidden;
-        cache += 2 * rows * kv * 4 + 4ull * (uint64_t)(s.conv_k - 1) * wmax * 4;
-    }
+    // the engine's cache (ink2_cache_init_kind): K and V per application in the kind --kv asks, the sliding ones for
+    // the window and the batch, plus each application's four convolution histories; one per slot
+    char note[256];
+    const int kind = kv_kind_pick(&s, route, mp, note, sizeof note);
+    const uint64_t cache = (uint64_t)slots * ink2_cache_plan_bytes(&s, n_ctx, n_batch, kind);
+    int n_sliding = 0;
+    for (int a = 0; a < s.n_app; a++) n_sliding += !ink2_app_global(&s, a);
     const uint64_t ec = route == 'R' ? expert_cache_held(&s, env_bytes("RUNNER_INKLING2_EXPERT_CACHE", (size_t)4 << 30)) : 0;
     uint64_t logits = 4ull * (uint64_t)s.vocab_used * (uint64_t)(n_batch + 1);
     uint64_t mapped = gguf_mapped_size(g);
@@ -1276,7 +1418,7 @@ int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, int
     uint64_t total = dense + small + cache + ec + logits + mapped;
     uint64_t avail = plat_ram_available_bytes();
     printf("fit: %s\n", path);
-    printf("  arch          inkling2_loop, %d layers, %d applications, %d experts (%d used); CPU only (no GPU path)\n",
+    printf("  arch          inkling2_loop, %d layers, %d applications, %d experts (%d used)\n",
            s.n_block, s.n_app, s.n_expert, s.n_used);
     printf("  route         %s\n", route_words(route));
     printf("  context       %d (trained %d), batch %d\n", n_ctx, train, n_batch);
@@ -1285,8 +1427,12 @@ int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, int
     if (route == 'R') printf("  dense f32     %.2f GiB (the matrices, decoded once)\n", dense / 1073741824.0);
     printf("  small f32     %.3f GiB (norms, convolution taps, queries, scales, the router; decoded once)\n",
            small / 1073741824.0);
-    printf("  cache         %.2f GiB (K/V per application, the %d sliding ones for window %d + batch; convolutions)\n",
-           cache / 1073741824.0, s.n_app - 8 > 0 ? s.n_app - 8 : 0, s.window);
+    printf("  cache         %.2f GiB (%llu bytes; K/V %s per application, the %d sliding ones for window %d + batch; "
+           "convolutions%s)\n", cache / 1073741824.0, (unsigned long long)cache, kv_kind_name(kind), n_sliding, s.window,
+           slots > 1 ? "; every slot's" : "");
+    if (slots > 1) printf("  slots         %d, each its own cache\n", slots);
+    if (note[0]) printf("  note          %s\n", note);
+    if (mp->kv_ring == KV_RING_OFF) printf("  note          %s\n", RING_NOTE);
     if (route == 'R') printf("  expert cache  up to %.2f GiB (the budget, RUNNER_INKLING2_EXPERT_CACHE)\n", ec / 1073741824.0);
     printf("  logits        %.2f GiB\n", logits / 1073741824.0);
     printf("  total         %.2f GiB of RAM (%.2f GB)\n", total / 1073741824.0, total / 1e9);
@@ -1294,7 +1440,57 @@ int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, int
         printf("  verdict       %s (%.2f GiB available)\n", total <= avail ? "FITS" : "DOES NOT FIT", avail / 1073741824.0);
     else
         printf("  verdict       unknown (available RAM unreadable)\n");
-    return avail && total > avail ? 1 : 0;
+    // R4.48.8.5: the CUDA route, as its load would place it (a dry run of share_place), with every term the load
+    // checks; the non-weight line is everything on the device but the weights
+    const char *on = getenv("RUNNER_INKLING2_CUDA");
+    if (mp->gpu_mode == GPU_OFF || !on || strcmp(on, "1")) {
+        if (mp->gpu_mode != GPU_OFF) printf("  device        the CPU (RUNNER_INKLING2_CUDA=1 opts the fast route into CUDA)\n");
+        return avail && total > avail ? 1 : 0;
+    }
+    if (route != 'F') { printf("  device        the CPU (the CUDA route takes the fast route's rows only)\n"); return 0; }
+    ink2_dev_terms t;
+    char dwhy[512] = "";
+    if (!fit_device(path, n_ctx, n_batch, slots, mp, kind, &t, dwhy, sizeof dwhy)) {
+        printf("  device        unknown: %s\n", dwhy);
+        return 1;
+    }
+    if (t.placed == 'C' && !t.total_b) { printf("  device        the CPU: %s\n", dwhy); return 0; }
+    const size_t rest = t.reserved + t.small + t.slots + t.kept;
+    printf("  device        CUDA route: %s%s%s\n", placed_words(t.placed), t.placed == 'C' ? ": " : "", t.placed == 'C' ? dwhy : "");
+    printf("  dev weights   %.2f GiB (%zu bytes, as the driver allocates them)\n", t.weights / 1073741824.0, t.weights);
+    printf("  dev buffers   %.2f GiB (%zu bytes: the products', experts', attention's and block's reservations)\n",
+           t.reserved / 1073741824.0, t.reserved);
+    printf("  dev small     %.2f GiB (%zu bytes: the attention's small tensors and the resident step's)\n",
+           t.small / 1073741824.0, t.small);
+    printf("  dev slots     %.2f GiB (%zu bytes: %d slot%s' K/V rings in %s and histories)\n", t.slots / 1073741824.0,
+           t.slots, slots, slots > 1 ? "s" : "", kv_kind_name(kind));
+    printf("  dev kept      %.2f GiB (%zu bytes)\n", t.kept / 1073741824.0, t.kept);
+    printf("  non-weight    %.2f GiB (%zu bytes: everything above but the weights)\n", rest / 1073741824.0, rest);
+    if (t.whole) {
+        const size_t wrest = t.w_reserved + t.w_small + t.w_slots + t.kept;
+        printf("  whole         %.2f GiB of weights (%zu bytes) and %.2f GiB besides them (non-weight %zu bytes): every "
+               "weight on the device, %s\n", t.w_weights / 1073741824.0, t.w_weights, wrest / 1073741824.0, wrest,
+               t.placed == 'W' ? "the placement above" : "what a device holding it would need");
+    }
+    printf("  dev free      %.2f GiB of %.2f GiB (after the context, the module and the buffers)\n",
+           t.free_b / 1073741824.0, t.total_b / 1073741824.0);
+    const char *dv = t.placed == 'W' ? "FITS" : "DOES NOT FIT";
+    // the generic vocabulary: FITS WITH --kv q8 when the f32 cache leaves the weights off the device and q8 does not
+    model_params alt = *mp;
+    char anote[256];
+    alt.kv_q8 = kind != INK2_KV_Q8;
+    alt.kv_fp4 = alt.kv_split = alt.kv_f16 = false;
+    const int akind = kv_kind_pick(&s, route, &alt, anote, sizeof anote);
+    if (akind != kind) {
+        ink2_dev_terms ta;
+        char awhy[512] = "";
+        if (fit_device(path, n_ctx, n_batch, slots, mp, akind, &ta, awhy, sizeof awhy)) {
+            if (kind == INK2_KV_Q8 && t.placed == 'W') dv = ta.placed == 'W' ? "FITS" : "FITS WITH --kv q8";
+            if (kind == INK2_KV_F32 && t.placed != 'W' && ta.placed == 'W') dv = "FITS WITH --kv q8";
+        }
+    }
+    printf("  dev verdict   %s\n", dv);
+    return (avail && total > avail) || t.placed == 'C' || (t.placed == 'M' && !mp->cpu_moe) ? 1 : 0;
 }
 
 char model_inkling2_route(const model_t *m) {

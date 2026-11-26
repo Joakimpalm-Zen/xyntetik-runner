@@ -2444,6 +2444,14 @@ Vulkan is not implemented; AMD and Intel GPUs use the CPU path.
   by 32. It works on CPU, CUDA, and Metal, participates in capacity auto-fit,
   and is intentionally not token-identical to f16 KV. An incompatible head
   dimension is reported at load and keeps the cache in f16.
+- Inkling 2 Mini (`inkling2_loop`) keeps its own f32 cache by default.
+  - `--kv q8` stores q8_0 rows on its CPU routes, read back exactly, so the
+    logits are the f32 cache's over the same rounded values.
+  - About 1.17 GiB of K/V at 64K on the real file, against 4.40 GiB at f32.
+  - The CUDA route keeps f32 under `--kv q8` until its device gates pass.
+  - `--kv f16`, `k8v4` and `fp4` keep f32 with a note.
+  - `--info fit` counts the asked format, every `--parallel` slot, and on the
+    CUDA route the load's own placement ([details](docs/inkling2-cuda.md)).
 - `--kv fp4` stores 16 values in 9 bytes (E2M1 codes with one UE4M3 scale per
   16 channels, the NVFP4 block layout without a second-level scale), quantised
   after RoPE and dequantised at attention, when every layer's head dimension

@@ -1246,6 +1246,9 @@ typedef struct {
     // K rows q8_0 and V rows fp4 (--kv k8v4): measured 2026-09-18 as the
     // side that survives 4 bits (K does not); about 41% of the f16 bytes.
     bool  kv_split;
+    // R4.48.8.5: --kv f16 asked by name (f16 is also the default when nothing is asked), so an engine without an f16
+    // cache (inkling2_loop) can say it keeps its own
+    bool  kv_f16;
     // R8.25.2: K and V rows as f32 (kind 3), for a training run only
     // (--train-kv-f32); the CPU path, no tied V, never asked by inference
     bool  kv_f32;
