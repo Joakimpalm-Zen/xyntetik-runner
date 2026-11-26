@@ -40,7 +40,7 @@ bool   model_inkling2_fit(model_t *m, inkling2_fit *f);
 char   model_inkling2_route(const model_t *m);
 // --info fit on an inkling2_loop header (no weights read): what a load at n_ctx and n_batch would hold, by the same
 // parts, against the RAM available now. Prints the report; returns the exit code (0 fits, 1 does not).
-int    model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, int n_batch);
+int    model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, const model_params *mp, int n_seq);
 // R4.48.9: whether this instance's forward runs on CUDA (false: the CPU engine).
 bool   model_inkling2_cuda(const model_t *m);
 // R4.48.9, TEST-ONLY (G1): read every device-resident matrix and expert stack back and compare it with the host

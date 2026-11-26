@@ -19,6 +19,7 @@
 //     contract. On the real file, a kernel 246 roundings off moved argmaxes through the routers' near-ties
 //     (R4.48.24 and R4.48.25), and the vector SwiGLU still did within 4 u of the double forms (R4.48.26).
 #include "inkling2.h"
+#include "fp16.h"
 #include "pmath.h"
 #include "quants.h"
 #include "tpool.h"
@@ -135,39 +136,93 @@ static int ink2_conv_width(const ink2_shape *s, int a) {
     return C > s->hidden ? C : s->hidden;
 }
 
-static int ink2_cache_alloc(ink2_cache *c, const ink2_shape *s, int n_ctx, int max_chunk);
-int ink2_cache_init(ink2_cache *c, const ink2_shape *s, int n_ctx) { return ink2_cache_alloc(c, s, n_ctx, 0); }
+// R4.48.8.5: the sizes every cache count shares (inkling2.h)
+int ink2_app_kv_width(const ink2_shape *s, int a) {
+    return ink2_app_global(s, a) ? s->n_kv * s->head_dim : s->swa_n_kv * s->swa_head_dim;
+}
+size_t ink2_kv_row_bytes(int C, int kind) {
+    return kind == INK2_KV_Q8 ? (size_t)(C / 32) * 34 : (size_t)C * sizeof(float);
+}
+int ink2_kv_app_rows(const ink2_shape *s, int a, int n_ctx, int max_chunk) {
+    if (max_chunk && !ink2_app_global(s, a) && (int64_t)s->window - 1 + max_chunk < n_ctx) return s->window - 1 + max_chunk;
+    return n_ctx;
+}
+int ink2_kv_kind_ok(const ink2_shape *s, int kind) {
+    if (kind == INK2_KV_F32) return 1;
+    if (kind != INK2_KV_Q8 && kind != INK2_KV_RT) return 0;
+    return s->head_dim % 32 == 0 && s->swa_head_dim % 32 == 0;
+}
+uint64_t ink2_cache_plan_bytes(const ink2_shape *s, int n_ctx, int max_chunk, int kind) {
+    uint64_t n = 0;
+    for (int a = 0; a < s->n_app; a++)
+        n += 2 * (uint64_t)ink2_kv_app_rows(s, a, n_ctx, max_chunk) * ink2_kv_row_bytes(ink2_app_kv_width(s, a), kind) +
+             (uint64_t)4 * (uint64_t)(s->conv_k > 1 ? s->conv_k - 1 : 0) * (uint64_t)ink2_conv_width(s, a) * sizeof(float);
+    return n;
+}
+
+int ink2_cache_init(ink2_cache *c, const ink2_shape *s, int n_ctx) { return ink2_cache_init_kind(c, s, n_ctx, 0, INK2_KV_F32); }
 int ink2_cache_init_window(ink2_cache *c, const ink2_shape *s, int n_ctx, int max_chunk) {
     if (max_chunk < 1) return -1;
-    return ink2_cache_alloc(c, s, n_ctx, max_chunk);
+    return ink2_cache_init_kind(c, s, n_ctx, max_chunk, INK2_KV_F32);
 }
-static int ink2_cache_alloc(ink2_cache *c, const ink2_shape *s, int n_ctx, int max_chunk) {
+int ink2_cache_init_kind(ink2_cache *c, const ink2_shape *s, int n_ctx, int max_chunk, int kind) {
     memset(c, 0, sizeof *c);
-    c->n_app = s->n_app; c->n_ctx = n_ctx; c->max_chunk = max_chunk;
+    if (max_chunk < 0 || !ink2_kv_kind_ok(s, kind)) return -1;
+    c->n_app = s->n_app; c->n_ctx = n_ctx; c->max_chunk = max_chunk; c->kv = kind;
     c->rows = calloc((size_t)s->n_app, sizeof *c->rows);
     c->k0 = calloc((size_t)s->n_app, sizeof *c->k0);
     if (!c->rows || !c->k0) { free(c->rows); free(c->k0); memset(c, 0, sizeof *c); return -1; }
     c->k = calloc((size_t)s->n_app, sizeof *c->k);
     c->v = calloc((size_t)s->n_app, sizeof *c->v);
+    c->rb = calloc((size_t)s->n_app, sizeof *c->rb);
     c->conv = calloc((size_t)s->n_app, sizeof *c->conv);
     c->conv_floats = calloc((size_t)s->n_app, sizeof *c->conv_floats);
     c->n_past = calloc((size_t)s->n_app, sizeof *c->n_past);
-    if (!c->k || !c->v || !c->conv || !c->conv_floats || !c->n_past) { ink2_cache_free(c); return -1; }
+    if (!c->k || !c->v || !c->rb || !c->conv || !c->conv_floats || !c->n_past) { ink2_cache_free(c); return -1; }
+    int c_max = 0;
     for (int a = 0; a < s->n_app; a++) {
-        int g = ink2_app_global(s, a);
-        size_t kv = (size_t)(g ? s->n_kv * s->head_dim : s->swa_n_kv * s->swa_head_dim);
-        int rows = n_ctx;
-        if (max_chunk && !g && (int64_t)s->window - 1 + max_chunk < n_ctx) rows = s->window - 1 + max_chunk;
-        c->rows[a] = rows;
-        c->k[a] = calloc((size_t)rows * kv, sizeof(float));
-        c->v[a] = calloc((size_t)rows * kv, sizeof(float));
+        const int C = ink2_app_kv_width(s, a);
+        if (C > c_max) c_max = C;
+        c->rows[a] = ink2_kv_app_rows(s, a, n_ctx, max_chunk);
+        c->rb[a] = ink2_kv_row_bytes(C, kind);
+        c->k[a] = calloc((size_t)c->rows[a], c->rb[a]);
+        c->v[a] = calloc((size_t)c->rows[a], c->rb[a]);
         // the four short convolutions of a layer, by the reference's conv_idx (0 k_proj.sconv, 1 v_proj.sconv,
         // 2 post_attention_convolution, 3 post_mlp_convolution), each a ring of conv_k - 1 input rows (ink2_conv_hist)
         c->conv_floats[a] = (size_t)4 * (size_t)(s->conv_k > 1 ? s->conv_k - 1 : 0) * (size_t)ink2_conv_width(s, a);
         c->conv[a] = c->conv_floats[a] ? calloc(c->conv_floats[a], sizeof(float)) : NULL;
         if (!c->k[a] || !c->v[a] || (c->conv_floats[a] && !c->conv[a])) { ink2_cache_free(c); return -1; }
     }
+    if (kind == INK2_KV_RT && !(c->rt_tmp = malloc(ink2_kv_row_bytes(c_max, INK2_KV_Q8)))) { ink2_cache_free(c); return -1; }
     return 0;
+}
+
+// R4.48.8.5: one q8_0 block of a K/V row (quants.c's block_q8_0), and value e of a row as the cores read it
+typedef struct { uint16_t d; int8_t qs[32]; } ink2_q8b;
+// the widest head a q8 cache's cores take (a head row is dequantized into a buffer this wide)
+#define INK2_Q8_HD_MAX 256
+static inline float ink2_q8_at(const unsigned char *row, int e) {
+    const ink2_q8b *b = (const ink2_q8b *)row + e / 32;
+    return (float)b->qs[e % 32] * f16_to_f32(b->d);
+}
+// values off..off+n-1 of a q8 row (off and n whole blocks) as float32
+static void ink2_q8_head(const unsigned char *row, int off, int n, float *dst) {
+    const ink2_q8b *b = (const ink2_q8b *)row + off / 32;
+    for (int k = 0; k < n / 32; k++, b++) {
+        const float d = f16_to_f32(b->d);
+        for (int j = 0; j < 32; j++) dst[32 * k + j] = (float)b->qs[j] * d;
+    }
+}
+// one new K or V row (C values) into its buffer row, in the cache's kind
+static void ink2_kv_store(const ink2_cache *c, const float *x, unsigned char *dst, int C) {
+    if (c->kv == INK2_KV_Q8) {
+        q8_quant_row(x, dst, C);
+    } else if (c->kv == INK2_KV_RT) {
+        q8_quant_row(x, c->rt_tmp, C);
+        ink2_q8_head(c->rt_tmp, 0, C, (float *)dst);
+    } else {
+        memcpy(dst, x, sizeof(float) * (size_t)C);
+    }
 }
 
 // The convolution history of application app, convolution idx (0..3): conv_k - 1 rows of the widest convolution's
@@ -195,7 +250,8 @@ void ink2_cache_free(ink2_cache *c) {
         if (c->v) free(c->v[a]);
         if (c->conv) free(c->conv[a]);
     }
-    free(c->k); free(c->v); free(c->conv); free(c->conv_floats); free(c->n_past); free(c->rows); free(c->k0);
+    free(c->k); free(c->v); free(c->rb); free(c->rt_tmp); free(c->conv); free(c->conv_floats); free(c->n_past); free(c->rows);
+    free(c->k0);
     free(c->work_fwd); free(c->work_dl); free(c->work_op); free(c->work_route);
     memset(c, 0, sizeof *c);
 }
@@ -234,13 +290,10 @@ static float *ink2_route_alloc(ink2_cache *c, size_t n_floats, int *owned) {
 static int ink2_decode_fuse_enabled(void);   // RUNNER_INK2_DECODE_FUSE, read once (ink2_env_init)
 
 size_t ink2_cache_bytes(const ink2_cache *c, const ink2_shape *s) {
+    (void)s;
     size_t n = 0;
-    for (int a = 0; a < c->n_app; a++) {
-        int g = ink2_app_global(s, a);
-        size_t kv = (size_t)(g ? s->n_kv * s->head_dim : s->swa_n_kv * s->swa_head_dim);
-        n += 2 * (size_t)c->rows[a] * kv * sizeof(float) + c->conv_floats[a] * sizeof(float);
-    }
-    return n + (size_t)c->n_app * (sizeof(float *) * 3 + sizeof(size_t) + sizeof(int) * 3);
+    for (int a = 0; a < c->n_app; a++) n += 2 * (size_t)c->rows[a] * c->rb[a] + c->conv_floats[a] * sizeof(float);
+    return n + (size_t)c->n_app * (sizeof(float *) * 3 + sizeof(size_t) * 2 + sizeof(int) * 3);
 }
 
 // n ** -0.5 as the float32 operand torch multiplies by (the reference's `head_dim**-0.5` and `hidden_size**-0.5`:
@@ -1211,6 +1264,9 @@ static void ink2_attn_rel(const ink2_shape *s, const ink2_attn_layer *L, int T, 
 typedef struct {
     const ink2_shape *s; const ink2_attn_layer *L; int T; const int *pos; const float *q, *k, *v; int nk, kp0;
     const float *rl, *sk; float *lg, *att, *probs;
+    // R4.48.8.5: a q8 cache's rows instead of k and v (rb bytes a row): each value read as (float)q * d, exact, so a
+    // route's arithmetic over them is its arithmetic over the float32 rows holding those values
+    const unsigned char *kq, *vq; size_t rb;
     int lg_rows;          // lg holds lg_rows rows of nk + 1, one a range (ink2_par_slot)
     _Atomic int *bad;     // set by a range that found no row of its own
 } ink2_core_ctx;
@@ -1220,7 +1276,9 @@ static void ink2_attn_core_range(void *cv, int64_t h0, int64_t h1) {
     const ink2_shape *s = c->s; const ink2_attn_layer *L = c->L;
     const int T = c->T, nk = c->nk, kp0 = c->kp0; const int *pos = c->pos;
     const float *q = c->q, *k = c->k, *v = c->v, *rl = c->rl, *sk = c->sk; float *att = c->att, *probs = c->probs;
+    const unsigned char *kq = c->kq, *vq = c->vq; const size_t rb = c->rb;
     int nh = L->nh, hd = L->hd, C = L->C, Q = L->Q, ext = L->ext;
+    float kbuf[INK2_Q8_HD_MAX];
     // this range's own logit row, sized by the caller (ink2_attn_scratch_c): nothing is allocated here
     const int slot = ink2_par_slot();
     if (slot >= c->lg_rows) { atomic_store(c->bad, 1); return; }
@@ -1236,7 +1294,8 @@ static void ink2_attn_core_range(void *cv, int64_t h0, int64_t h1) {
                 int d = pos[i] - (kp0 + j);
                 lg[j] = 0.0f;
                 if (!INK2_ADMIT(i, j)) continue;
-                const float *kj = k + (size_t)j * C + (size_t)kh * hd;
+                const float *kj = kq ? kbuf : k + (size_t)j * C + (size_t)kh * hd;
+                if (kq) ink2_q8_head(kq + (size_t)j * rb, kh * hd, hd, kbuf);
                 float a = 0.0f;
                 for (int e = 0; e < hd; e++) a += qi[e] * kj[e];
                 a = a * scale;
@@ -1254,7 +1313,11 @@ static void ink2_attn_core_range(void *cv, int64_t h0, int64_t h1) {
             float *ai = att + (size_t)i * Q + (size_t)h * hd;
             for (int e = 0; e < hd; e++) {
                 float a = 0.0f;
-                for (int j = 0; j < nk; j++) if (INK2_ADMIT(i, j)) a += lg[j] * v[(size_t)j * C + (size_t)kh * hd + e];
+                if (vq) {
+                    for (int j = 0; j < nk; j++) if (INK2_ADMIT(i, j)) a += lg[j] * ink2_q8_at(vq + (size_t)j * rb, kh * hd + e);
+                } else {
+                    for (int j = 0; j < nk; j++) if (INK2_ADMIT(i, j)) a += lg[j] * v[(size_t)j * C + (size_t)kh * hd + e];
+                }
                 ai[e] = a;
             }
         }
@@ -1291,6 +1354,56 @@ static inline float ink2_dot_f32(const float *a, const float *b, int n) {
 #endif
 }
 
+// The fast core's V accumulation over a q8 cache: att[e] = sum over the keys j0..j1-1 ascending of lg[j] * V[j][off + e],
+// in the float32 path's own lanes and operations (below), each value read as (float)q * d, exact. So it is the float32
+// path's result over rows holding those values, bit for bit (tests/test_inkling2_kvq8.c). hd is a multiple of 32.
+static void ink2_fast_v_q8(const unsigned char *vq, size_t rb, int off, int hd, const float *lg, int j0, int j1, float *ai) {
+    int e = 0;
+#if INK2_SIMD_AVX2
+    for (; e + 32 <= hd; e += 32) {
+        __m256 a0 = _mm256_setzero_ps(), a1 = _mm256_setzero_ps();
+        __m256 a2 = _mm256_setzero_ps(), a3 = _mm256_setzero_ps();
+        for (int kkey = j0; kkey < j1; kkey++) {
+            const ink2_q8b *b = (const ink2_q8b *)(vq + (size_t)kkey * rb) + (off + e) / 32;
+            const __m256 pv = _mm256_set1_ps(lg[kkey]), d = _mm256_set1_ps(f16_to_f32(b->d));
+            const __m128i q0 = _mm_loadu_si128((const __m128i *)b->qs), q1 = _mm_loadu_si128((const __m128i *)(b->qs + 16));
+            a0 = _mm256_fmadd_ps(pv, _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(q0)), d), a0);
+            a1 = _mm256_fmadd_ps(pv, _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128(q0, 8))), d), a1);
+            a2 = _mm256_fmadd_ps(pv, _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(q1)), d), a2);
+            a3 = _mm256_fmadd_ps(pv, _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128(q1, 8))), d), a3);
+        }
+        _mm256_storeu_ps(ai + e,      a0);
+        _mm256_storeu_ps(ai + e + 8,  a1);
+        _mm256_storeu_ps(ai + e + 16, a2);
+        _mm256_storeu_ps(ai + e + 24, a3);
+    }
+#elif INK2_SIMD_NEON
+    for (; e + 16 <= hd; e += 16) {
+        float32x4_t a0 = vdupq_n_f32(0), a1 = vdupq_n_f32(0), a2 = vdupq_n_f32(0), a3 = vdupq_n_f32(0);
+        for (int kkey = j0; kkey < j1; kkey++) {
+            const ink2_q8b *b = (const ink2_q8b *)(vq + (size_t)kkey * rb) + (off + e) / 32;
+            const float32x4_t pv = vdupq_n_f32(lg[kkey]);
+            const float d = f16_to_f32(b->d);
+            const int8x16_t q = vld1q_s8(b->qs + (off + e) % 32);
+            const int16x8_t lo = vmovl_s8(vget_low_s8(q)), hi = vmovl_s8(vget_high_s8(q));
+            a0 = vfmaq_f32(a0, pv, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(lo))), d));
+            a1 = vfmaq_f32(a1, pv, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_high_s16(lo))), d));
+            a2 = vfmaq_f32(a2, pv, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(hi))), d));
+            a3 = vfmaq_f32(a3, pv, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_high_s16(hi))), d));
+        }
+        vst1q_f32(ai + e,      a0);
+        vst1q_f32(ai + e + 4,  a1);
+        vst1q_f32(ai + e + 8,  a2);
+        vst1q_f32(ai + e + 12, a3);
+    }
+#endif
+    for (; e < hd; e++) {
+        float a = 0.0f;
+        for (int kkey = j0; kkey < j1; kkey++) a += lg[kkey] * ink2_q8_at(vq + (size_t)kkey * rb, off + e);
+        ai[e] = a;
+    }
+}
+
 // Fast-route attention core (Tier B): parallel over (head, query) outputs, contiguous admitted key range [j0, j1),
 // SIMD QK dot, SIMD exp softmax, and j-outer tiled SIMD V accumulation.
 static void ink2_attn_core_fast_range(void *cv, int64_t r0, int64_t r1) {
@@ -1298,7 +1411,9 @@ static void ink2_attn_core_fast_range(void *cv, int64_t r0, int64_t r1) {
     const ink2_shape *s = c->s; const ink2_attn_layer *L = c->L;
     const int T = c->T, nk = c->nk, kp0 = c->kp0; const int *pos = c->pos;
     const float *q = c->q, *k = c->k, *v = c->v, *rl = c->rl, *sk = c->sk; float *att = c->att, *probs = c->probs;
+    const unsigned char *kq = c->kq, *vq = c->vq; const size_t rb = c->rb;
     const int nh = L->nh, hd = L->hd, C = L->C, Q = L->Q, ext = L->ext, n_kv_rep = nh / L->nkv;
+    float kbuf[INK2_Q8_HD_MAX];
     // this range's own logit row, sized by the caller (ink2_attn_scratch_c): nothing is allocated here
     const int slot = ink2_par_slot();
     if (slot >= c->lg_rows) { atomic_store(c->bad, 1); return; }
@@ -1312,11 +1427,12 @@ static void ink2_attn_core_fast_range(void *cv, int64_t r0, int64_t r1) {
         if (j0 < 0) j0 = 0;
         if (j0 > j1) j0 = j1;
         const float *qi = q + (size_t)i * Q + (size_t)h * hd;
-        const float *k_head = k + (size_t)kh * hd;
+        const float *k_head = kq ? NULL : k + (size_t)kh * hd;
         const float *rl_ih = rl + ((size_t)i * nh + h) * ext;
         float mx = sk[(size_t)i * nh + h];
         for (int j = j0; j < j1; j++) {
-            const float a = ink2_dot_f32(qi, k_head + (size_t)j * C, hd) * scale;
+            if (kq) ink2_q8_head(kq + (size_t)j * rb, kh * hd, hd, kbuf);
+            const float a = ink2_dot_f32(qi, kq ? kbuf : k_head + (size_t)j * C, hd) * scale;
             const int d = pos[i] - (kp0 + j);
             const float lj = a + (d < ext ? rl_ih[d] : 0.0f);
             lg[j] = lj;
@@ -1361,6 +1477,7 @@ static void ink2_attn_core_fast_range(void *cv, int64_t r0, int64_t r1) {
             for (int z = j1; z < nk; z++) pr[z] = 0.0f;
         }
         float *ai = att + (size_t)i * Q + (size_t)h * hd;
+        if (vq) { ink2_fast_v_q8(vq, rb, kh * hd, hd, lg, j0, j1, ai); continue; }
         const float *v_head = v + (size_t)kh * hd;
         int e = 0;
 #if INK2_SIMD_AVX2
@@ -1416,12 +1533,16 @@ static void ink2_attn_core_fast_range(void *cv, int64_t r0, int64_t r1) {
         }
     }
 }
+// k and v: the rows as stored, float32 or (q8) q8_0 rows of rb bytes
 static ink2_status ink2_attn_core(const ink2_shape *s, const ink2_attn_layer *L, int fast, int T, const int *pos, const float *q,
-                           const float *k, const float *v, int nk, int kp0, const float *rl, const float *sk, float *lg,
-                           int lg_rows, float *att, float *probs) {
+                           const void *k, const void *v, int q8, size_t rb, int nk, int kp0, const float *rl,
+                           const float *sk, float *lg, int lg_rows, float *att, float *probs) {
     __atomic_add_fetch(&ink2_host_core_n, 1, __ATOMIC_RELAXED);
+    if (q8 && L->hd > INK2_Q8_HD_MAX) return INK2_BAD_INPUT;
     _Atomic int bad = 0;
-    ink2_core_ctx c = { s, L, T, pos, q, k, v, nk, kp0, rl, sk, lg, att, probs, lg_rows, &bad };
+    ink2_core_ctx c = { s, L, T, pos, q, q8 ? NULL : (const float *)k, q8 ? NULL : (const float *)v, nk, kp0, rl, sk, lg,
+                        att, probs, q8 ? (const unsigned char *)k : NULL, q8 ? (const unsigned char *)v : NULL, rb,
+                        lg_rows, &bad };
     if (fast) ink2_par((int64_t)T * L->nh, (int64_t)nk * 2 * L->hd, ink2_attn_core_fast_range, &c);
     else ink2_par(L->nh, (int64_t)T * nk * 2 * L->hd, ink2_attn_core_range, &c);
     // a range without a row: the pool grew between the caller's sizing and the loop (ink2_set_threads from another
@@ -1587,20 +1708,21 @@ kv_tail:;   // the fused decode branch joins here with its projections, historie
         if (p0 == 0) c->k0[app] = 0;
         if (p0 + T - c->k0[app] > c->rows[app]) {   // slide: keep kp0..p0-1 at the buffer's start
             if (kp0 < c->k0[app]) { ink2_op_free(buf, buf_owned); return INK2_BAD_INPUT; }
-            const size_t keep = (size_t)(p0 - kp0) * L.C, from = (size_t)(kp0 - c->k0[app]) * L.C;
-            memmove(c->k[app], c->k[app] + from, sizeof(float) * keep);
-            memmove(c->v[app], c->v[app] + from, sizeof(float) * keep);
+            const size_t rb = c->rb[app], keep = (size_t)(p0 - kp0) * rb, from = (size_t)(kp0 - c->k0[app]) * rb;
+            memmove(c->k[app], c->k[app] + from, keep);
+            memmove(c->v[app], c->v[app] + from, keep);
             c->k0[app] = kp0;
         }
+        // R4.48.8.5: each row in the cache's kind (float32, or q8_0 read back at attention)
         for (int t = 0; t < T; t++) {
-            memcpy(c->k[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SK] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
-            memcpy(c->v[app] + (size_t)(pos[t] - c->k0[app]) * L.C, p[SV] + (size_t)t * L.C, sizeof(float) * (size_t)L.C);
+            ink2_kv_store(c, p[SK] + (size_t)t * L.C, c->k[app] + (size_t)(pos[t] - c->k0[app]) * c->rb[app], L.C);
+            ink2_kv_store(c, p[SV] + (size_t)t * L.C, c->v[app] + (size_t)(pos[t] - c->k0[app]) * c->rb[app], L.C);
         }
-        const size_t koff = (size_t)(kp0 - c->k0[app]) * L.C;
+        const size_t koff = (size_t)(kp0 - c->k0[app]) * c->rb[app];
         // the host core (R4.48.25.1: its logit rows sized by the caller, a status instead of an abort)
         if (st == INK2_OK)
-            st = ink2_attn_core(s, &L, fast, T, pos, p[SQ], c->k[app] + koff, c->v[app] + koff, nk, kp0, p[SRL],
-                                p[SSK], p[SLG], lg_rows, p[SATT], probs);
+            st = ink2_attn_core(s, &L, fast, T, pos, p[SQ], c->k[app] + koff, c->v[app] + koff, c->kv == INK2_KV_Q8,
+                                c->rb[app], nk, kp0, p[SRL], p[SSK], p[SLG], lg_rows, p[SATT], probs);
     }
     c->n_past[app] = p0 + T;   // what the slot now holds consistently: rows and histories of 0..p0+T-1
     if (st == INK2_OK)
@@ -1667,7 +1789,7 @@ ink2_status ink2_attention_step(const ink2_shape *s, const ink2_weights *w, int 
             int d = pos[i] - pos[j];
             if (d >= 0 && d < ext) p[SRL][((size_t)i * nh + h) * ext + d] = in[3][((size_t)h * T + i) * T + j];
         }
-        st = ink2_attn_core(s, &L, 0, T, pos, in[0], in[1], in[2], T, pos[0], p[SRL], in[4], p[SLG], lg_rows, out, out2);
+        st = ink2_attn_core(s, &L, 0, T, pos, in[0], in[1], in[2], 0, 0, T, pos[0], p[SRL], in[4], p[SLG], lg_rows, out, out2);
     } else if (!strcmp(step, "o_proj")) {
         memcpy(p[SATT], in[0], sizeof(float) * (size_t)T * L.Q); ink2_attn_out(s, &L, T, in[1], p[SATT], p[SGA], out);
     } else st = INK2_BAD_INPUT;
@@ -2526,7 +2648,7 @@ ink2_status ink2_test_attn_core(int fast, int hd, int nk, const float *q, const 
     const int rows = ink2_par_width();
     float *lg = malloc(sizeof(float) * (size_t)rows * ((size_t)nk + 1));
     if (!lg) return INK2_BAD_INPUT;
-    ink2_status st = ink2_attn_core(&s, &L, fast, 1, &pos, q, k, v, nk, 0, &rl, &sink, lg, rows, out, NULL);
+    ink2_status st = ink2_attn_core(&s, &L, fast, 1, &pos, q, k, v, 0, 0, nk, 0, &rl, &sink, lg, rows, out, NULL);
     free(lg);
     return st;
 }

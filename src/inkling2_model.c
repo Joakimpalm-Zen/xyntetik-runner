@@ -961,6 +961,48 @@ static int ink2_batch_default(int n_batch, int n_ctx) {
     return n_batch;
 }
 
+// R4.48.8.5: the K/V cache's storage from --kv. f32 is this engine's own (the default, and --kv f32); --kv q8 stores
+// q8_0 rows when every head_dim is a multiple of 32. The house's other formats (f16, k8v4, fp4) are not this engine's,
+// and an asked one keeps f32 with a note, as an incompatible format does elsewhere. The CUDA route keeps f32 under
+// --kv q8 until its device kernels are proven (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_KVQ8=1 lifts that for the device
+// gates); TEST-ONLY RUNNER_INKLING2_TEST_KV_RT=1: float32 rows holding each row's q8 round trip (gate (a)).
+static const char *kv_kind_name(int kind) { return kind == INK2_KV_Q8 ? "q8" : kind == INK2_KV_RT ? "f32 round trip" : "f32"; }
+// the kind for a shape, a route and the asked --kv, with the sentence a load prints as a note and the fit as a line
+// (empty when there is none to say). The TEST-ONLY round trip is the runtime's alone.
+static int kv_kind_pick(const ink2_shape *s, char route, const model_params *p, char *note, size_t nn) {
+    note[0] = 0;
+    if (p->kv_fp4 || p->kv_split || p->kv_f16) {
+        snprintf(note, nn, "inkling2_loop's K/V cache is f32 or q8; --kv %s is not one of its formats, so it keeps f32",
+                 p->kv_fp4 ? "fp4" : p->kv_split ? "k8v4" : "f16");
+        return INK2_KV_F32;
+    }
+    if (!p->kv_q8) return INK2_KV_F32;
+    if (!ink2_kv_kind_ok(s, INK2_KV_Q8)) {
+        snprintf(note, nn, "inkling2_loop --kv q8 needs every head_dim to be a multiple of 32 (this file's are %d and %d); "
+                 "it keeps f32", s->head_dim, s->swa_head_dim);
+        return INK2_KV_F32;
+    }
+#ifdef RUNNER_GPU_CUDA
+    const char *on = getenv("RUNNER_INKLING2_CUDA"), *t = getenv("RUNNER_INKLING2_CUDA_TEST_KVQ8");
+    if (p->gpu_mode != GPU_OFF && on && !strcmp(on, "1") && route == 'F' && !(t && !strcmp(t, "1"))) {
+        snprintf(note, nn, "inkling2_loop --kv q8 keeps f32 on the CUDA route (RUNNER_INKLING2_CUDA=1) until its device "
+                 "kernels are proven; the CPU routes store q8");
+        return INK2_KV_F32;
+    }
+#else
+    (void)route;
+#endif
+    return INK2_KV_Q8;
+}
+static const char RING_NOTE[] = "inkling2_loop's sliding applications always keep a window ring (window - 1 + batch "
+                                "rows); --kv-ring off changes nothing";
+// a cache's K/V and convolution bytes: the figure --info fit predicts (ink2_cache_plan_bytes), from the live rows
+static uint64_t cache_kv_bytes(const ink2_cache *c) {
+    uint64_t n = 0;
+    for (int a = 0; a < c->n_app; a++) n += 2 * (uint64_t)c->rows[a] * c->rb[a] + (uint64_t)c->conv_floats[a] * sizeof(float);
+    return n;
+}
+
 bool model_inkling2_runtime(model_t *m, const model_params *p) {
     ink2_rt *r = rt_of(m);
     if (!r) return false;
@@ -973,7 +1015,13 @@ bool model_inkling2_runtime(model_t *m, const model_params *p) {
     m->n_batch = ink2_batch_default(p->n_batch, n_ctx);
     m->spec_batch = m->n_batch;
     r->n_threads = p->n_threads > 0 ? p->n_threads : 1;
-    if (ink2_cache_init_window(&r->c, &r->s, n_ctx, m->n_batch)) {
+    char note[256];
+    int kind = kv_kind_pick(&r->s, r->route, p, note, sizeof note);
+    if (note[0]) fprintf(stderr, "note: %s\n", note);
+    const char *rt = getenv("RUNNER_INKLING2_TEST_KV_RT");
+    if (rt && !strcmp(rt, "1") && ink2_kv_kind_ok(&r->s, INK2_KV_RT)) kind = INK2_KV_RT;
+    if (p->kv_ring == KV_RING_OFF) fprintf(stderr, "note: %s\n", RING_NOTE);
+    if (ink2_cache_init_kind(&r->c, &r->s, n_ctx, m->n_batch, kind)) {
         fprintf(stderr, "error: the inkling2_loop cache for -c %d does not fit in memory\n", n_ctx);
         return false;
     }
@@ -1002,9 +1050,10 @@ bool model_inkling2_runtime(model_t *m, const model_params *p) {
     }
     // the device last, once -c and the host buffers are known good (a refused -c uploads nothing)
     if (p->gpu_mode != GPU_OFF && cuda_bind(r, m, p) < 0) return false;   // < 0: this slot refuses (never mixed)
-    fprintf(stderr, "inkling2_loop: -c %d -b %d; cache %.2f GB (sliding K/V for the window only), expert cache up to "
-                    "%.2f GiB (the budget, RUNNER_INKLING2_EXPERT_CACHE)\n", n_ctx, m->n_batch,
-            host_cache_bytes(r) / 1e9, expert_cache_held(&r->s, r->ec_budget) / 1073741824.0);
+    fprintf(stderr, "inkling2_loop: -c %d -b %d; cache %.2f GB (%llu bytes; K/V %s; sliding K/V for the window only), "
+                    "expert cache up to %.2f GiB (the budget, RUNNER_INKLING2_EXPERT_CACHE)\n", n_ctx, m->n_batch,
+            host_cache_bytes(r) / 1e9, (unsigned long long)cache_kv_bytes(&r->c), kv_kind_name(r->c.kv),
+            expert_cache_held(&r->s, r->ec_budget) / 1073741824.0);
     return true;
 }
 
@@ -1231,7 +1280,9 @@ static int gguf_matrix_name(const char *name) {
     }
     return 0;
 }
-int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, int n_batch) {
+int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, const model_params *mp, int n_seq) {
+    int n_batch = mp->n_batch;
+    const int slots = n_seq > 1 ? n_seq : 1;
     ink2_shape s;
     char why[512] = { 0 };
     if (ink2g_shape(g, &s, why, sizeof why)) {
@@ -1258,17 +1309,13 @@ int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, int
         else small += 4 * n;
     }
     if (route == 'F') dense = 0;
-    // the engine's cache under ink2_cache_init_window: K and V per application, the sliding ones for the window and
-    // the batch, plus each application's four convolution histories
-    uint64_t cache = 0;
-    for (int a = 0; a < s.n_app; a++) {
-        int gl = ink2_app_global(&s, a);
-        uint64_t kv = (uint64_t)(gl ? s.n_kv * s.head_dim : s.swa_n_kv * s.swa_head_dim);
-        uint64_t rows = (uint64_t)n_ctx;
-        if (!gl && (uint64_t)s.window - 1 + (uint64_t)n_batch < rows) rows = (uint64_t)s.window - 1 + (uint64_t)n_batch;
-        uint64_t wmax = kv > (uint64_t)s.hidden ? kv : (uint64_t)s.hidden;
-        cache += 2 * rows * kv * 4 + 4ull * (uint64_t)(s.conv_k - 1) * wmax * 4;
-    }
+    // the engine's cache (ink2_cache_init_kind): K and V per application in the kind --kv asks, the sliding ones for
+    // the window and the batch, plus each application's four convolution histories; one per slot
+    char note[256];
+    const int kind = kv_kind_pick(&s, route, mp, note, sizeof note);
+    const uint64_t cache = (uint64_t)slots * ink2_cache_plan_bytes(&s, n_ctx, n_batch, kind);
+    int n_sliding = 0;
+    for (int a = 0; a < s.n_app; a++) n_sliding += !ink2_app_global(&s, a);
     const uint64_t ec = route == 'R' ? expert_cache_held(&s, env_bytes("RUNNER_INKLING2_EXPERT_CACHE", (size_t)4 << 30)) : 0;
     uint64_t logits = 4ull * (uint64_t)s.vocab_used * (uint64_t)(n_batch + 1);
     uint64_t mapped = gguf_mapped_size(g);
@@ -1276,7 +1323,7 @@ int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, int
     uint64_t total = dense + small + cache + ec + logits + mapped;
     uint64_t avail = plat_ram_available_bytes();
     printf("fit: %s\n", path);
-    printf("  arch          inkling2_loop, %d layers, %d applications, %d experts (%d used); CPU only (no GPU path)\n",
+    printf("  arch          inkling2_loop, %d layers, %d applications, %d experts (%d used)\n",
            s.n_block, s.n_app, s.n_expert, s.n_used);
     printf("  route         %s\n", route_words(route));
     printf("  context       %d (trained %d), batch %d\n", n_ctx, train, n_batch);
@@ -1285,8 +1332,12 @@ int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, int
     if (route == 'R') printf("  dense f32     %.2f GiB (the matrices, decoded once)\n", dense / 1073741824.0);
     printf("  small f32     %.3f GiB (norms, convolution taps, queries, scales, the router; decoded once)\n",
            small / 1073741824.0);
-    printf("  cache         %.2f GiB (K/V per application, the %d sliding ones for window %d + batch; convolutions)\n",
-           cache / 1073741824.0, s.n_app - 8 > 0 ? s.n_app - 8 : 0, s.window);
+    printf("  cache         %.2f GiB (%llu bytes; K/V %s per application, the %d sliding ones for window %d + batch; "
+           "convolutions%s)\n", cache / 1073741824.0, (unsigned long long)cache, kv_kind_name(kind), n_sliding, s.window,
+           slots > 1 ? "; every slot's" : "");
+    if (slots > 1) printf("  slots         %d, each its own cache\n", slots);
+    if (note[0]) printf("  note          %s\n", note);
+    if (mp->kv_ring == KV_RING_OFF) printf("  note          %s\n", RING_NOTE);
     if (route == 'R') printf("  expert cache  up to %.2f GiB (the budget, RUNNER_INKLING2_EXPERT_CACHE)\n", ec / 1073741824.0);
     printf("  logits        %.2f GiB\n", logits / 1073741824.0);
     printf("  total         %.2f GiB of RAM (%.2f GB)\n", total / 1073741824.0, total / 1e9);

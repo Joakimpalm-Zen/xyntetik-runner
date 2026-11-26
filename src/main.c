@@ -1755,7 +1755,7 @@ static int run_fit_check(const char *path, int n_ctx_want,
     if (!gguf_open_header(&g, path)) return 1;   // already reported why
     // inkling2_loop: its own engine's parts, not the llama-style KV formats and split
     if (!strcmp(gguf_get_str(&g, "general.architecture", ""), "inkling2_loop")) {
-        int rc = model_inkling2_fit_print(&g, path, n_ctx_want, mp->n_batch);
+        int rc = model_inkling2_fit_print(&g, path, n_ctx_want, mp, n_seq);
         gguf_close(&g);
         return rc;
     }
@@ -3009,6 +3009,7 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             const char *v = cli_next(a, argc, argv, &i);
             o->kv_given = true;
             o->mp.kv_q8 = o->mp.kv_fp4 = o->mp.kv_split = false;
+            o->mp.kv_f16 = !strcmp(v, "f16");
             o->kv_f32_cli = false;
             o->mp.kv_f32 = o->train_kv_f32;
             if (!strcmp(v, "q8")) o->mp.kv_q8 = true;
