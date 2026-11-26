@@ -106,8 +106,12 @@ same released binary as `runner` on your PATH; drop the `./` in the commands
 below:
 
 ```sh
+brew trust --formula joakimpalm-zen/xyntetik/xyntetik-runner
 brew install joakimpalm-zen/xyntetik/xyntetik-runner
 ```
+
+Recent Homebrew versions load a formula from a tap outside Homebrew's own only
+after you trust it; the first line trusts this one formula.
 
 **2. Start a model.** Runner downloads it, checks it against the Hub's
 SHA-256 record and serves it on `http://127.0.0.1:8080`:
@@ -400,21 +404,6 @@ its class-specific pin. Each backend's latest mark names the actual device
 class, date and Runner version; earlier class runs stay in the evidence.
 
 [The validated files by family, what each row claims, every file's full envelope and how to run the check](docs/model-support.md#overview)
-
-OLMo 2 and OLMo 3: GPU training is refused, compact KV caches have a
-cross-backend limit, and the 7B OLMo 3 file does not fit an 8 GB Mac.
-- Measured on real files: both run on the CPU and CUDA, and the 1B OLMo 2
-  Instruct file on Metal.
-- OLMo 3's Metal path is checked on generated files only.
-- LoRA training runs on the CPU.
-[The files and their measurements](docs/model-support.md#olmo-2-0425-1b-instruct-f16) · [Limits](MANUAL.md#olmo-2-and-olmo-3)
-
-Inkling 2 Mini on CUDA is opt-in, and the default stays on the CPU. The
-available Windows device's 12 GB cannot hold either real file. With
-`RUNNER_INKLING2_CUDA=1`, the Q8_K_XL and Q4_K_XL files pass the CUDA file
-smoke, both recorded on `linux-x86_64-cuda` on an sm_120 GPU (a 24 GB MIG
-slice).
-[Placement and adapter limits](MANUAL.md#inkling-2-mini) stay beside the route.
 
 <a id="more"></a>
 ## Also in the box
