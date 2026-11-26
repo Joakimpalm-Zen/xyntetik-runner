@@ -2261,42 +2261,34 @@ static int weights_lock(model_t *m, uint64_t *hot, uint64_t *cold) {
 // without faulting header-only opens, device-uploaded weights, or models that
 // exceed the tighter of host MemAvailable and the cgroup memory limit.
 
-typedef struct {
-    model_mem_range *out;
-    size_t           max;
-    size_t           n;
-    uint64_t         total;
-} pop_walk;
+typedef void (*pop_range_fn)(const void *addr, size_t len, void *ctx);
 
-static void pop_push(pop_walk *w, const void *addr, size_t len) {
-    if (!addr || !len) return;
-    if (w->out && w->n < w->max) w->out[w->n] = (model_mem_range){ addr, len };
-    w->n++;
-    w->total += (uint64_t)len;
+static void pop_emit(pop_range_fn fn, void *ctx, const void *addr, size_t len) {
+    if (fn && addr && len) fn(addr, len, ctx);
 }
 
-static void pop_push_tensor(pop_walk *w, const gguf_tensor *t) {
-    if (t && t->data && t->nbytes > 0) pop_push(w, t->data, (size_t)t->nbytes);
+static void pop_emit_tensor(pop_range_fn fn, void *ctx, const gguf_tensor *t) {
+    if (t && t->data && t->nbytes > 0) pop_emit(fn, ctx, t->data, (size_t)t->nbytes);
 }
 
-static void pop_layer_mixer(pop_walk *w, const layer_t *ly) {
+static void pop_layer_mixer(pop_range_fn fn, void *ctx, const layer_t *ly) {
     const gpu_mixer_desc *rows = gpu_mixer_rows();
     for (int i = 0; i < GT_N_MIXER; i++) {
         const gguf_tensor *t = *(gguf_tensor *const *)((const char *)ly + rows[i].field);
-        pop_push_tensor(w, t);
+        pop_emit_tensor(fn, ctx, t);
     }
 }
 
-static void pop_layer_ffn(pop_walk *w, const model_t *m, const layer_t *ly, int l,
-                          bool skip_hot_vram) {
+static void pop_layer_ffn(pop_range_fn fn, void *ctx, const model_t *m,
+                          const layer_t *ly, int l, bool skip_hot_vram) {
     if (!ly->is_moe) {
-        pop_push_tensor(w, ly->w_gate);
-        pop_push_tensor(w, ly->w_up);
-        pop_push_tensor(w, ly->w_down);
+        pop_emit_tensor(fn, ctx, ly->w_gate);
+        pop_emit_tensor(fn, ctx, ly->w_up);
+        pop_emit_tensor(fn, ctx, ly->w_down);
         return;
     }
-    pop_push_tensor(w, ly->ffn_gate_inp);
-    pop_push_tensor(w, ly->ffn_gate_up_exps);
+    pop_emit_tensor(fn, ctx, ly->ffn_gate_inp);
+    pop_emit_tensor(fn, ctx, ly->ffn_gate_up_exps);
     bool hot_active = skip_hot_vram && m->moe_hot_n && l >= 0 && l < m->n_layer &&
                       m->moe_hot_n[l] > 0 && m->moe_hot_slot &&
                       ly->ffn_gate_exps && ly->ffn_gate_exps->data &&
@@ -2315,33 +2307,94 @@ static void pop_layer_ffn(pop_walk *w, const model_t *m, const layer_t *ly, int 
         for (int e = 0; e < ly->n_expert; e++) {
             if (slot[e] >= 0) continue;   // resident in VRAM hot bank
             if ((uint64_t)(e + 1) * gs <= ly->ffn_gate_exps->nbytes)
-                pop_push(w, g + (size_t)e * gs, gs);
+                pop_emit(fn, ctx, g + (size_t)e * gs, gs);
             if ((uint64_t)(e + 1) * us <= ly->ffn_up_exps->nbytes)
-                pop_push(w, u + (size_t)e * us, us);
+                pop_emit(fn, ctx, u + (size_t)e * us, us);
             if ((uint64_t)(e + 1) * ds <= ly->ffn_down_exps->nbytes)
-                pop_push(w, dn + (size_t)e * ds, ds);
+                pop_emit(fn, ctx, dn + (size_t)e * ds, ds);
         }
     } else {
-        pop_push_tensor(w, ly->ffn_gate_exps);
-        pop_push_tensor(w, ly->ffn_up_exps);
-        pop_push_tensor(w, ly->ffn_down_exps);
+        pop_emit_tensor(fn, ctx, ly->ffn_gate_exps);
+        pop_emit_tensor(fn, ctx, ly->ffn_up_exps);
+        pop_emit_tensor(fn, ctx, ly->ffn_down_exps);
     }
-    pop_push_tensor(w, ly->w_gate_shexp);
-    pop_push_tensor(w, ly->w_up_shexp);
-    pop_push_tensor(w, ly->w_down_shexp);
-    pop_push_tensor(w, ly->ffn_gate_inp_shexp);
+    pop_emit_tensor(fn, ctx, ly->w_gate_shexp);
+    pop_emit_tensor(fn, ctx, ly->w_up_shexp);
+    pop_emit_tensor(fn, ctx, ly->w_down_shexp);
+    pop_emit_tensor(fn, ctx, ly->ffn_gate_inp_shexp);
     if (ly->moe_split) {
         for (int e = 0; e < ly->n_expert; e++) {
-            if (ly->moe_g) pop_push_tensor(w, ly->moe_g[e]);
-            if (ly->moe_u) pop_push_tensor(w, ly->moe_u[e]);
-            if (ly->moe_d) pop_push_tensor(w, ly->moe_d[e]);
+            if (ly->moe_g) pop_emit_tensor(fn, ctx, ly->moe_g[e]);
+            if (ly->moe_u) pop_emit_tensor(fn, ctx, ly->moe_u[e]);
+            if (ly->moe_d) pop_emit_tensor(fn, ctx, ly->moe_d[e]);
         }
     }
     if (ly->moe_gemma) {
-        pop_push_tensor(w, ly->w_gate);
-        pop_push_tensor(w, ly->w_up);
-        pop_push_tensor(w, ly->w_down);
+        pop_emit_tensor(fn, ctx, ly->w_gate);
+        pop_emit_tensor(fn, ctx, ly->w_up);
+        pop_emit_tensor(fn, ctx, ly->w_down);
     }
+}
+
+static void pop_each_range(const model_t *m, pop_range_fn fn, void *ctx) {
+    if (!m || !fn || m->gf.header_only || !gguf_mapped_size(&m->gf)) return;
+    if (m->ink2) {
+        model_inkling2_each_host_range(m, fn, ctx);
+        return;
+    }
+    if (!m->gpu) {
+        // Pure CPU: populate every GGUF mapping part past its header prefix.
+        uint32_t np = gguf_map_count(&m->gf);
+        for (uint32_t i = 0; i < np; i++) {
+            size_t sz = 0;
+            const uint8_t *mp = gguf_map_part(&m->gf, i, &sz);
+            size_t off = gguf_map_data_offset(&m->gf, i);
+            if (mp && sz > off) pop_emit(fn, ctx, mp + off, sz - off);
+        }
+        return;
+    }
+    // Unified-memory GPU (Metal): device-resident, populate nothing on host.
+    if (gpu_unified_memory()) return;
+
+    // Discrete GPU (CUDA): complement of cuda_release_host_weights().
+    // Full offload with no host experts yields 0 ranges; partial splits and
+    // --cpu-moe populate only the tensors the host actually computes with.
+    int gl = m->gpu_layers;
+    if (gl < 0) gl = 0;
+    if (gl > m->n_layer) gl = m->n_layer;
+    for (int l = 0; m->layers && l < gl; l++) {
+        const layer_t *ly = &m->layers[l];
+        if (ly->is_moe && m->cpu_moe && m->moe_host && m->moe_host[l])
+            pop_layer_ffn(fn, ctx, m, ly, l, true);
+    }
+    for (int l = gl; m->layers && l < m->n_layer; l++) {
+        const layer_t *ly = &m->layers[l];
+        pop_layer_mixer(fn, ctx, ly);
+        pop_layer_ffn(fn, ctx, m, ly, l, false);
+    }
+    if (gl < m->n_layer) {
+        pop_emit_tensor(fn, ctx, m->output);
+        if (gl == 0) pop_emit_tensor(fn, ctx, m->tok_embd);
+        if (m->mtp_ready && m->layers) {
+            const layer_t *mtp = &m->layers[m->n_layer];
+            pop_layer_mixer(fn, ctx, mtp);
+            pop_layer_ffn(fn, ctx, m, mtp, m->n_layer, false);
+        }
+    }
+}
+
+typedef struct {
+    model_mem_range *out;
+    size_t           max;
+    size_t           n;
+    uint64_t         total;
+} pop_walk;
+
+static void pop_collect_cb(const void *addr, size_t len, void *ctx) {
+    pop_walk *w = ctx;
+    if (w->out && w->n < w->max) w->out[w->n] = (model_mem_range){ addr, len };
+    w->n++;
+    w->total += (uint64_t)len;
 }
 
 bool model_populate_wanted(uint64_t host_bytes, uint64_t available,
@@ -2356,73 +2409,48 @@ bool model_populate_wanted(uint64_t host_bytes, uint64_t available,
 size_t model_populate_ranges(const model_t *m, model_mem_range *out,
                              size_t max, uint64_t *total_bytes) {
     if (total_bytes) *total_bytes = 0;
-    if (!m || m->gf.header_only || !gguf_mapped_size(&m->gf)) return 0;
-    if (m->ink2) return model_inkling2_host_ranges(m, out, max, total_bytes);
-
     pop_walk w = { out, max, 0, 0 };
-    if (!m->gpu) {
-        // Pure CPU: populate every GGUF mapping part past its header prefix.
-        uint32_t np = gguf_map_count(&m->gf);
-        for (uint32_t i = 0; i < np; i++) {
-            size_t sz = 0;
-            const uint8_t *mp = gguf_map_part(&m->gf, i, &sz);
-            size_t off = gguf_map_data_offset(&m->gf, i);
-            if (mp && sz > off) pop_push(&w, mp + off, sz - off);
-        }
-        if (total_bytes) *total_bytes = w.total;
-        return w.n;
-    }
-
-    // Unified-memory GPU (Metal): device-resident, populate nothing on host.
-    if (gpu_unified_memory()) return 0;
-
-    // Discrete GPU (CUDA): complement of cuda_release_host_weights().
-    // Full offload with no host experts yields 0 ranges; partial splits and
-    // --cpu-moe populate only the tensors the host actually computes with.
-    int gl = m->gpu_layers;
-    if (gl < 0) gl = 0;
-    if (gl > m->n_layer) gl = m->n_layer;
-    for (int l = 0; m->layers && l < gl; l++) {
-        const layer_t *ly = &m->layers[l];
-        if (ly->is_moe && m->cpu_moe && m->moe_host && m->moe_host[l])
-            pop_layer_ffn(&w, m, ly, l, true);
-    }
-    for (int l = gl; m->layers && l < m->n_layer; l++) {
-        const layer_t *ly = &m->layers[l];
-        pop_layer_mixer(&w, ly);
-        pop_layer_ffn(&w, m, ly, l, false);
-    }
-    if (gl < m->n_layer) {
-        pop_push_tensor(&w, m->output);
-        if (gl == 0) pop_push_tensor(&w, m->tok_embd);
-        if (m->mtp_ready && m->layers) {
-            const layer_t *mtp = &m->layers[m->n_layer];
-            pop_layer_mixer(&w, mtp);
-            pop_layer_ffn(&w, m, mtp, m->n_layer, false);
-        }
-    }
+    pop_each_range(m, pop_collect_cb, &w);
     if (total_bytes) *total_bytes = w.total;
     return w.n;
 }
 
-// Active populated-file registry for non-shared models (such as inkling2_loop
-// under --parallel N), protected by g_weights_mu. Shared models (m->W) track
-// weights_populated directly on m->W->proto.
-typedef struct pop_file_entry {
+// Fixed-size active populated-file registry for non-shared models (such as
+// inkling2_loop under --parallel N), protected by g_weights_mu. Zero heap
+// allocations so populate never fails or leaks under OOM sweeps.
+typedef struct {
+    bool           in_use;
     const model_t *owner;
     uint64_t       fsize, fino;
     int64_t        fmtime, fctime;
-    struct pop_file_entry *next;
 } pop_file_entry;
 
-static pop_file_entry *g_pop_files;
+enum { POP_FILE_CAP = 64 };
+static pop_file_entry g_pop_files[POP_FILE_CAP];
 
 static bool pop_file_exists_locked(const model_t *m) {
     if (!m->file_id_ok) return false;
-    for (pop_file_entry *e = g_pop_files; e; e = e->next) {
-        if (e->fsize == m->file_size && e->fino == m->file_ino &&
-            e->fmtime == m->file_mtime_ns && e->fctime == m->file_ctime_ns)
+    for (int i = 0; i < POP_FILE_CAP; i++) {
+        if (!g_pop_files[i].in_use) continue;
+        if (g_pop_files[i].fsize == m->file_size && g_pop_files[i].fino == m->file_ino &&
+            g_pop_files[i].fmtime == m->file_mtime_ns && g_pop_files[i].fctime == m->file_ctime_ns)
             return true;
+    }
+    return false;
+}
+
+static bool pop_file_register_locked(const model_t *m) {
+    if (!m->file_id_ok) return false;
+    for (int i = 0; i < POP_FILE_CAP; i++) {
+        if (!g_pop_files[i].in_use) {
+            g_pop_files[i].in_use = true;
+            g_pop_files[i].owner  = m;
+            g_pop_files[i].fsize  = m->file_size;
+            g_pop_files[i].fino   = m->file_ino;
+            g_pop_files[i].fmtime = m->file_mtime_ns;
+            g_pop_files[i].fctime = m->file_ctime_ns;
+            return true;
+        }
     }
     return false;
 }
@@ -2430,17 +2458,39 @@ static bool pop_file_exists_locked(const model_t *m) {
 static void pop_file_unregister(model_t *m) {
     if (!m || !m->pop_registered) return;
     pthread_mutex_lock(&g_weights_mu);
-    for (pop_file_entry **pp = &g_pop_files; *pp; ) {
-        if ((*pp)->owner == m) {
-            pop_file_entry *dead = *pp;
-            *pp = dead->next;
-            free(dead);
+    for (int i = 0; i < POP_FILE_CAP; i++) {
+        if (g_pop_files[i].in_use && g_pop_files[i].owner == m) {
+            g_pop_files[i].in_use = false;
+            g_pop_files[i].owner  = NULL;
             break;
         }
-        pp = &(*pp)->next;
     }
     m->pop_registered = false;
     pthread_mutex_unlock(&g_weights_mu);
+}
+
+typedef struct {
+    model_pop_mode mode;
+    uint64_t       mapped;
+    uint64_t       lazy;
+} pop_exec_ctx;
+
+static void pop_exec_cb(const void *addr, size_t len, void *ctx) {
+    pop_exec_ctx *e = ctx;
+    if (e->mode == MODEL_POP_CACHED) {
+        uint64_t mb = 0, lb = 0;
+        if (plat_populate_cached_ro(addr, len, &mb, &lb)) {
+            e->mapped += mb;
+            e->lazy += lb;
+        } else {
+            e->lazy += (uint64_t)len;
+        }
+    } else {
+        if (plat_populate_ro(addr, len))
+            e->mapped += (uint64_t)len;
+        else
+            e->lazy += (uint64_t)len;
+    }
 }
 
 model_pop_mode model_populate_mode_parse(const char *env) {
@@ -2542,7 +2592,7 @@ uint64_t model_populate_weights(model_t *m, bool locked) {
         return 0;
     }
 
-    // Claim populate-once ownership across --parallel N slots.
+    // Claim populate-once ownership across --parallel N slots (zero malloc).
     pthread_mutex_lock(&g_weights_mu);
     if (m->W) {
         if (m->W->proto.weights_populated) {
@@ -2555,55 +2605,21 @@ uint64_t model_populate_weights(model_t *m, bool locked) {
             pthread_mutex_unlock(&g_weights_mu);
             return 0;
         }
-        if (m->file_id_ok) {
-            pop_file_entry *e = malloc(sizeof *e);
-            if (e) {
-                e->owner = m;
-                e->fsize = m->file_size;
-                e->fino = m->file_ino;
-                e->fmtime = m->file_mtime_ns;
-                e->fctime = m->file_ctime_ns;
-                e->next = g_pop_files;
-                g_pop_files = e;
-                m->pop_registered = true;
-            }
-        }
+        m->pop_registered = pop_file_register_locked(m);
         m->weights_populated = true;
     }
     pthread_mutex_unlock(&g_weights_mu);
 
-    model_mem_range *ranges = malloc(n * sizeof *ranges);
-    if (!ranges) {
-        m->weights_lazy_bytes = total;
-        return 0;
-    }
-    size_t got = model_populate_ranges(m, ranges, n, NULL);
-    if (got > n) got = n;
+    // Zero-allocation range walk: never calls malloc/free during load.
     double t0 = plat_now();
-    uint64_t mapped = 0, lazy = 0;
-    for (size_t i = 0; i < got; i++) {
-        if (mode == MODEL_POP_CACHED) {
-            uint64_t mb = 0, lb = 0;
-            if (plat_populate_cached_ro(ranges[i].addr, ranges[i].len, &mb, &lb)) {
-                mapped += mb;
-                lazy += lb;
-            } else {
-                lazy += (uint64_t)ranges[i].len;
-            }
-        } else {
-            if (plat_populate_ro(ranges[i].addr, ranges[i].len))
-                mapped += (uint64_t)ranges[i].len;
-            else
-                lazy += (uint64_t)ranges[i].len;
-        }
-    }
+    pop_exec_ctx exec = { mode, 0, 0 };
+    pop_each_range(m, pop_exec_cb, &exec);
     double dt = plat_now() - t0;
-    free(ranges);
-    m->weights_populated_bytes = mapped;
-    m->weights_lazy_bytes = lazy;
-    model_populate_result res = { mode, mapped, lazy, dt, NULL };
+    m->weights_populated_bytes = exec.mapped;
+    m->weights_lazy_bytes = exec.lazy;
+    model_populate_result res = { mode, exec.mapped, exec.lazy, dt, NULL };
     emit_pop_line(&res);
-    return mapped;
+    return exec.mapped;
 }
 
 // ---------------------------------------------------- what a model owns

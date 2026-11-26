@@ -106,5 +106,8 @@ bool   model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, cons
 // Whole-CUDA ('W') returns 0; --cpu-moe CUDA ('M') returns only the host-side
 // expert stacks (and their scales); CPU returns each GGUF part's data section
 // past the header prefix.
+void   model_inkling2_each_host_range(const model_t *m,
+                                      void (*fn)(const void *addr, size_t len, void *ctx),
+                                      void *ctx);
 size_t model_inkling2_host_ranges(const model_t *m, model_mem_range *out, size_t max, uint64_t *total_bytes);
 #endif

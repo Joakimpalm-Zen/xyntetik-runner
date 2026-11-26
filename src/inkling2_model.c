@@ -1623,43 +1623,34 @@ bool model_inkling2_cuda_readback(model_t *m, int *n_tensors, int *n_differ, cha
 }
 
 typedef struct {
-    model_mem_range *out;
-    size_t           max;
-    size_t           n;
-    uint64_t         total;
-} ink2_host_walk;
-
-static void ink2_host_push(ink2_host_walk *w, const void *addr, size_t len) {
-    if (!addr || !len) return;
-    if (w->out && w->n < w->max) w->out[w->n] = (model_mem_range){ addr, len };
-    w->n++;
-    w->total += (uint64_t)len;
-}
+    void (*fn)(const void *addr, size_t len, void *ctx);
+    void  *ctx;
+} ink2_host_each_ctx;
 
 static int ink2_host_exp_cb(void *ctx, const ink2_tensor *t) {
-    ink2_host_walk *w = ctx;
+    ink2_host_each_ctx *c = ctx;
     if (!t || !t->q || t->dev != NULL) return 0;
     if (!strstr(t->name, ".mlp.experts.")) return 0;
     int64_t nr = view_rows(t);
     size_t rb = view_row_bytes(t);
-    if (nr > 0 && rb > 0) ink2_host_push(w, t->q, rb * (size_t)nr);
+    if (nr > 0 && rb > 0) c->fn(t->q, rb * (size_t)nr, c->ctx);
     int ns = view_scales(t);
-    if (t->q_scale && ns > 0) ink2_host_push(w, t->q_scale, sizeof(float) * (size_t)ns);
+    if (t->q_scale && ns > 0) c->fn(t->q_scale, sizeof(float) * (size_t)ns, c->ctx);
     return 0;
 }
 
-size_t model_inkling2_host_ranges(const model_t *m, model_mem_range *out, size_t max, uint64_t *total_bytes) {
-    if (total_bytes) *total_bytes = 0;
+void model_inkling2_each_host_range(const model_t *m,
+                                    void (*fn)(const void *addr, size_t len, void *ctx),
+                                    void *ctx) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
-    if (!r || m->gf.header_only) return 0;
-    ink2_host_walk w = { out, max, 0, 0 };
+    if (!r || !fn || m->gf.header_only) return;
     if (r->gpu) {
         // Whole model on CUDA ('W'): device-resident, populate nothing on host.
-        if (r->placed != 'M') return 0;
+        if (r->placed != 'M') return;
         // --cpu-moe CUDA ('M'): populate only the host-computed expert stacks.
-        if (r->g) (void)ink2g_each_view(r->g, ink2_host_exp_cb, &w);
-        if (total_bytes) *total_bytes = w.total;
-        return w.n;
+        ink2_host_each_ctx c = { fn, ctx };
+        if (r->g) (void)ink2g_each_view(r->g, ink2_host_exp_cb, &c);
+        return;
     }
     // Pure CPU Inkling 2: populate every GGUF part's tensor data section,
     // skipping the GGUF header prefix.
@@ -1668,8 +1659,29 @@ size_t model_inkling2_host_ranges(const model_t *m, model_mem_range *out, size_t
         size_t sz = 0;
         const uint8_t *mp = gguf_map_part(&m->gf, i, &sz);
         size_t off = gguf_map_data_offset(&m->gf, i);
-        if (mp && sz > off) ink2_host_push(&w, mp + off, sz - off);
+        if (mp && sz > off) fn(mp + off, sz - off, ctx);
     }
+}
+
+typedef struct {
+    model_mem_range *out;
+    size_t           max;
+    size_t           n;
+    uint64_t         total;
+} ink2_host_walk;
+
+static void ink2_host_collect_cb(const void *addr, size_t len, void *ctx) {
+    ink2_host_walk *w = ctx;
+    if (!addr || !len) return;
+    if (w->out && w->n < w->max) w->out[w->n] = (model_mem_range){ addr, len };
+    w->n++;
+    w->total += (uint64_t)len;
+}
+
+size_t model_inkling2_host_ranges(const model_t *m, model_mem_range *out, size_t max, uint64_t *total_bytes) {
+    if (total_bytes) *total_bytes = 0;
+    ink2_host_walk w = { out, max, 0, 0 };
+    model_inkling2_each_host_range(m, ink2_host_collect_cb, &w);
     if (total_bytes) *total_bytes = w.total;
     return w.n;
 }
