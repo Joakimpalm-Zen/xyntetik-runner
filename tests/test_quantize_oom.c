@@ -249,7 +249,8 @@ int main(int argc, char **argv) {
     // MXFP4 is narrower than the stacks' NVFP4, so every stack is re-quantized and its .scale dropped
     write_file(ink_plan, "{\"default\": \"keep\", \"rules\": [{\"match\": \"_exps.weight\", \"type\": \"mxfp4\"}]}");
     write_file(ink_prune, "{\"layer_0\": [0, 1], \"layer_1\": [0, 1, 2], \"layer_2\": [0, 1], \"layer_3\": [0, 1]}");
-    int q8 = quantize_type_from_name("q8_0"), keep = quantize_type_from_name("keep");
+    int q8 = quantize_type_from_name("q8_0"), keep = quantize_type_from_name("keep"),
+        nvfp4 = quantize_type_from_name("nvfp4");
     const qcase cases[] = {
         { "quantize-q8",   0, dense, NULL,  NULL,  NULL,     NULL,    q8 },
         { "type-plan",     0, dense, NULL,  tplan, NULL,     NULL,    keep },
@@ -258,6 +259,7 @@ int main(int argc, char **argv) {
         { "merge-q8",      1, dense, NULL,  NULL,  NULL,     adapter, q8 },
         { "surgery",       2, yarn,  NULL,  NULL,  NULL,     NULL,    keep },
         { "ink2-fold",     0, inkling, NULL, ink_plan, NULL,   NULL,    keep },
+        { "nvfp4-syn",     0, dense, NULL,  NULL,  NULL,     NULL,    nvfp4 },
     };
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) sweep(&cases[i], work);
 
@@ -289,7 +291,7 @@ int main(int argc, char **argv) {
     remove(tplan);
     remove(prune);
     if (g_fail) { fprintf(stderr, "test-quantize-oom FAILED\n"); return 1; }
-    fprintf(stderr, "test-quantize-oom: every allocation of seven transformations failed in turn, "
+    fprintf(stderr, "test-quantize-oom: every allocation of eight transformations failed in turn, "
             "each refused cleanly or wrote the clean output; four refusals; no leaks\n");
     return 0;
 }

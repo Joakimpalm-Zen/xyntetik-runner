@@ -165,7 +165,9 @@ int   quantize_type_from_name(const char *s);
 // the names quantize_type_from_name takes, for the messages that refuse one
 // (type_from_name in quantize.c is the list; test_type_plan.py holds the two
 // in step)
-#define QUANT_TYPE_NAMES "keep|q8_0|q4_0|q5_1|q3_k|q4_k|q5_k|q6_k|iq4_nl|mxfp4|f16|bf16"
+#define QUANT_TYPE_NAMES "keep|q8_0|q4_0|q5_1|q3_k|q4_k|q5_k|q6_k|iq3_xxs|iq4_nl|mxfp4|nvfp4|f16|bf16"
+// Read-only accessor for IQ3_XXS's 256-entry 4-magnitude grid (defined in quants_iq_grids.h).
+const uint32_t *quants_iq3xxs_grid(void);
 // dot(row, x) over n elements
 float vec_dot(int type, const void *row, const float *x, int n);
 // out[b] = dot(w, x + b*x_stride) for nb columns sharing one weight row

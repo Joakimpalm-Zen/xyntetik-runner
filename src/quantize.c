@@ -90,6 +90,8 @@ typedef struct {
     uint8_t scales[12], qh[32], qs[128];
 } wblock_q5_K;                                                             // 176 bytes
 typedef struct { f16_t d; uint8_t qs[16]; } wblock_iq4_nl;                 // 18 bytes
+typedef struct { f16_t d; uint8_t qs[96]; } wblock_iq3_xxs;                // 98 bytes (3 * 256 / 8)
+typedef struct { uint8_t d[4]; uint8_t qs[32]; } wblock_nvfp4;             // 36 bytes (4 x 16 sub-blocks)
 
 static void quantize_row_q8_0(const float *x, uint8_t *dst, int n) {
     wblock_q8_0 *b = (wblock_q8_0 *)dst;
@@ -808,6 +810,373 @@ static void quantize_row_mxfp4(const float *x, uint8_t *dst, int n) {
     }
 }
 
+// ---------------------------------------------------------------- NVFP4
+// Two-level NVIDIA FP4: 64-element super-block of four 16-element sub-blocks,
+// each carrying one unsigned FP8 E4M3 (UE4M3) block scale byte (0x00..0x7E,
+// 0x7F is NaN and never emitted) and 8 bytes of packed E2M1 nibbles (low
+// nibble element j, high nibble element j+8). Paired with an F32 second-level
+// .scale companion (per expert for inkling2_loop expert stacks, per tensor
+// otherwise), decoded in the loader's order (code * block_scale) * scale.
+// Ours encodes all 127 finite UE4M3 codes (0x00..0x7E, including [256..448]
+// and subnormal carry into 0x08) with IEEE round-to-nearest-even.
+static float g_ue4m3_tbl[127];
+static atomic_int g_ue4m3_ready = 0;
+
+static void ue4m3_tbl_init(void) {
+    if (atomic_load_explicit(&g_ue4m3_ready, memory_order_acquire) == 2) return;
+    int expected = 0;
+    if (atomic_compare_exchange_strong(&g_ue4m3_ready, &expected, 1)) {
+        g_ue4m3_tbl[0] = 0.0f;
+        for (int u = 1; u < 127; u++) {
+            int exp = (u >> 3) & 0xF;
+            int man = u & 0x7;
+            g_ue4m3_tbl[u] = exp == 0 ? ldexpf((float)man, -9)
+                                      : ldexpf(1.0f + (float)man / 8.0f, exp - 7);
+        }
+        atomic_store_explicit(&g_ue4m3_ready, 2, memory_order_release);
+    } else {
+        while (atomic_load_explicit(&g_ue4m3_ready, memory_order_acquire) != 2) {}
+    }
+}
+
+static uint8_t fp32_to_ue4m3(float x) {
+    ue4m3_tbl_init();
+    if (!(x > 0.0f)) return 0;
+    if (x >= 448.0f) return 0x7E;
+    int lo = 0, hi = 126;
+    while (hi - lo > 1) {
+        int mid = (lo + hi) >> 1;
+        if (g_ue4m3_tbl[mid] <= x) lo = mid;
+        else hi = mid;
+    }
+    float dlo = x - g_ue4m3_tbl[lo];
+    float dhi = g_ue4m3_tbl[hi] - x;
+    if (dlo < dhi) return (uint8_t)lo;
+    if (dhi < dlo) return (uint8_t)hi;
+    return (lo & 1) ? (uint8_t)hi : (uint8_t)lo;
+}
+
+static uint8_t nvfp4_nearest(float x, float d, float scale, float *out_val) {
+    int best = 0;
+    float best_v = scale == 1.0f ? (mxfp4_levels[0] * d)
+                                 : ((mxfp4_levels[0] * d) * scale);
+    float best_err = fabsf(best_v - x);
+    for (int i = 1; i < 16; i++) {
+        float val = scale == 1.0f ? (mxfp4_levels[i] * d)
+                                  : ((mxfp4_levels[i] * d) * scale);
+        float e = fabsf(val - x);
+        if (e < best_err) { best_err = e; best = i; best_v = val; }
+    }
+    if (out_val) *out_val = best_v;
+    return (uint8_t)best;
+}
+
+static void quantize_row_nvfp4_scaled(const float *x, uint8_t *dst, int n, float scale) {
+    ue4m3_tbl_init();
+    // R4.48.8.12: 8-candidate UE4M3 block-scale scan (ue_6 + [-1..+6], which
+    // contains Four Over Six's ue_4 across every UE4M3 interval), selected by
+    // plain unweighted block MSE. Ordered by distance from ue_6 with static-6
+    // first so ties keep the candidate nearest ue_6 (static-6 first). Outer
+    // scale stays amax / (6 * 448); imatrix_weighted_type(T_NVFP4) stays false.
+    static const int k_deltas[8] = { 0, -1, 1, 2, 3, 4, 5, 6 };
+    wblock_nvfp4 *b = (wblock_nvfp4 *)dst;
+    const float inv_6s = 1.0f / (6.0f * scale);
+    for (int i = 0; i < n / 64; i++, b++) {
+        for (int s = 0; s < 4; s++) {
+            const float *xb = x + i * 64 + s * 16;
+            float amax = 0.0f;
+            for (int j = 0; j < 16; j++) {
+                float a = fabsf(xb[j]);
+                if (a > amax) amax = a;
+            }
+            int ue6 = (int)fp32_to_ue4m3(scale == 1.0f ? (amax / 6.0f) : (amax * inv_6s));
+            uint8_t best_ue = (uint8_t)ue6;
+            uint8_t best_q[16];
+            double best_mse = INFINITY;
+            for (int t = 0; t < 8; t++) {
+                int cand = ue6 + k_deltas[t];
+                if (cand < 0 || cand > 126) continue;
+                float d = g_ue4m3_tbl[cand];
+                uint8_t q[16];
+                double mse = 0.0;
+                for (int j = 0; j < 16; j++) {
+                    float qv;
+                    q[j] = nvfp4_nearest(xb[j], d, scale, &qv);
+                    double diff = (double)xb[j] - (double)qv;
+                    mse += diff * diff;
+                }
+                if (t == 0 || mse < best_mse) {
+                    best_mse = mse;
+                    best_ue = (uint8_t)cand;
+                    memcpy(best_q, q, sizeof best_q);
+                }
+            }
+            b->d[s] = best_ue;
+            for (int j = 0; j < 8; j++)
+                b->qs[s * 8 + j] = (uint8_t)(best_q[j] | (best_q[j + 8] << 4));
+        }
+    }
+}
+
+static void quantize_row_nvfp4(const float *x, uint8_t *dst, int n) {
+    quantize_row_nvfp4_scaled(x, dst, n, 1.0f);
+}
+
+// ---------------------------------------------------------------- IQ3_XXS
+// Faithful port of ggml's quantize_row_iq3_xxs_impl(256, ...): MIT, Copyright
+// (c) 2023-2026 The ggml authors (LICENSES/ggml-MIT.txt). Lookup tables are
+// derived directly from quants_iq3xxs_grid() (no duplicated 256-entry table)
+// into static fixed storage (zero heap allocations, zero OOM failure surface).
+enum { IQ3XXS_NB_CAP = 22825 };
+static uint32_t   g_iq3xxs_qgrid[256];
+static int        g_iq3xxs_map[4096];
+static uint16_t   g_iq3xxs_nb[IQ3XXS_NB_CAP];
+static atomic_int g_iq3xxs_ready = 0;
+
+static int iq3xxs_cmp_pair(const void *left, const void *right) {
+    const int *l = (const int *)left;
+    const int *r = (const int *)right;
+    return l[0] < r[0] ? -1 : l[0] > r[0] ? 1 : l[1] < r[1] ? -1 : l[1] > r[1] ? 1 : 0;
+}
+
+static void iq3xxs_tables_init(void) {
+    if (atomic_load_explicit(&g_iq3xxs_ready, memory_order_acquire) == 2) return;
+    int expected = 0;
+    if (atomic_compare_exchange_strong(&g_iq3xxs_ready, &expected, 1)) {
+        const uint32_t *raw_grid = quants_iq3xxs_grid();
+        for (int i = 0; i < 4096; i++) g_iq3xxs_map[i] = -1;
+        for (int k = 0; k < 256; k++) {
+            const uint8_t *rb = (const uint8_t *)(raw_grid + k);
+            uint8_t pos[4];
+            uint16_t u = 0;
+            for (int i = 0; i < 4; i++) {
+                int l = rb[i] >> 3;   // {4,12,20,28,36,44,52,62} >> 3 -> 0..7
+                pos[i] = (uint8_t)(2 * l + 1);
+                u |= (uint16_t)(l << (3 * i));
+            }
+            memcpy(g_iq3xxs_qgrid + k, pos, 4);
+            g_iq3xxs_map[u] = k;
+        }
+        int dist2[512];
+        int nb_pos = 0;
+        for (int i = 0; i < 4096; i++) {
+            if (g_iq3xxs_map[i] >= 0) continue;
+            int8_t pos[4];
+            for (int k = 0; k < 4; k++) pos[k] = (int8_t)(2 * ((i >> (3 * k)) & 7) + 1);
+            for (int j = 0; j < 256; j++) {
+                const int8_t *pg = (const int8_t *)(g_iq3xxs_qgrid + j);
+                int d2 = 0;
+                for (int k = 0; k < 4; k++) {
+                    int diff = pg[k] - pos[k];
+                    d2 += diff * diff;
+                }
+                dist2[2 * j + 0] = d2;
+                dist2[2 * j + 1] = j;
+            }
+            qsort(dist2, 256, 2 * sizeof(int), iq3xxs_cmp_pair);
+            g_iq3xxs_map[i] = -(nb_pos + 1);
+            int start = nb_pos++;
+            int d2 = dist2[0], n = 0, nhave = 1;
+            for (int j = 0; j < 256; j++) {
+                if (dist2[2 * j] > d2) {
+                    if (nhave == 2) break;
+                    d2 = dist2[2 * j];
+                    nhave++;
+                }
+                g_iq3xxs_nb[nb_pos++] = (uint16_t)dist2[2 * j + 1];
+                n++;
+            }
+            g_iq3xxs_nb[start] = (uint16_t)n;
+        }
+        atomic_store_explicit(&g_iq3xxs_ready, 2, memory_order_release);
+    } else {
+        while (atomic_load_explicit(&g_iq3xxs_ready, memory_order_acquire) != 2) {}
+    }
+}
+
+static int iq3xxs_find_best_neighbour(const uint16_t *neighbours, const float *xval,
+                                      const float *weight, float scale, int8_t *L) {
+    int num_neighbors = neighbours[0];
+    float best_d2 = FLT_MAX;
+    int grid_index = neighbours[1];
+    for (int j = 1; j <= num_neighbors; j++) {
+        const int8_t *pg = (const int8_t *)(g_iq3xxs_qgrid + neighbours[j]);
+        float d2 = 0.0f;
+        for (int i = 0; i < 4; i++) {
+            float diff = scale * (float)pg[i] - xval[i];
+            d2 += weight[i] * diff * diff;
+        }
+        if (d2 < best_d2) { best_d2 = d2; grid_index = neighbours[j]; }
+    }
+    const int8_t *pg = (const int8_t *)(g_iq3xxs_qgrid + grid_index);
+    for (int i = 0; i < 4; i++) L[i] = (int8_t)((pg[i] - 1) / 2);
+    return grid_index;
+}
+
+static inline int iq3xxs_round_l(float v) {
+    if (v <= 0.0f) return 0;
+    if (v >= 7.0f) return 7;
+    int l = nearest_int(v);
+    return l < 0 ? 0 : (l > 7 ? 7 : l);
+}
+
+static void quantize_row_iq3_xxs(const float *x, uint8_t *dst, int n, const float *qw) {
+    iq3xxs_tables_init();
+    const int nbl = n / 256;
+    wblock_iq3_xxs *y = (wblock_iq3_xxs *)dst;
+    float scales[8], weight[32], xval[32], waux[32];
+    int8_t L[32], Laux[32];
+    bool is_on_grid[8], is_on_grid_aux[8];
+    uint8_t block_signs[4];
+    uint8_t q3[96];
+    uint32_t scales_and_signs[8];
+
+    for (int ibl = 0; ibl < nbl; ibl++, y++) {
+        y->d = f32_to_f16(0.0f);
+        memset(q3, 0, sizeof q3);
+        memset(scales_and_signs, 0, sizeof scales_and_signs);
+        float max_scale = 0.0f;
+        const float *xbl = x + 256 * ibl;
+        float sumx2 = 0.0f;
+        for (int i = 0; i < 256; i++) sumx2 += xbl[i] * xbl[i];
+        float sigma2 = 2.0f * sumx2 / 256.0f;
+
+        for (int ib = 0; ib < 8; ib++) {
+            const float *xb = xbl + 32 * ib;
+            if (qw) {
+                const float *qwb = qw + 256 * ibl + 32 * ib;
+                for (int i = 0; i < 32; i++) weight[i] = qwb[i] * sqrtf(sigma2 + xb[i] * xb[i]);
+            } else {
+                for (int i = 0; i < 32; i++) weight[i] = xb[i] * xb[i];
+            }
+            for (int i = 0; i < 32; i++) waux[i] = sqrtf(weight[i]);
+            for (int k = 0; k < 4; k++) {
+                int nflip = 0;
+                uint8_t s = 0;
+                for (int i = 0; i < 8; i++) {
+                    if (xb[8 * k + i] >= 0.0f) xval[8 * k + i] = xb[8 * k + i];
+                    else { xval[8 * k + i] = -xb[8 * k + i]; nflip++; s |= (uint8_t)(1u << i); }
+                }
+                if (nflip & 1) {
+                    int imin = 0;
+                    float minv = weight[8 * k] * xb[8 * k] * xb[8 * k];
+                    for (int i = 1; i < 8; i++) {
+                        float ax = weight[8 * k + i] * xb[8 * k + i] * xb[8 * k + i];
+                        if (ax < minv) { minv = ax; imin = i; }
+                    }
+                    xval[8 * k + imin] = -xval[8 * k + imin];
+                    s ^= (uint8_t)(1u << imin);
+                }
+                block_signs[k] = (uint8_t)(s & 127);
+            }
+            float vmax = xval[0];
+            for (int i = 1; i < 32; i++) if (xval[i] > vmax) vmax = xval[i];
+            memset(L, 0, sizeof L);
+            if (vmax < 1e-8f) {
+                scales[ib] = 0.0f;
+                continue;
+            }
+            float best = 0.0f;
+            float scale = vmax / 15.0f;
+            for (int k = 0; k < 8; k++) is_on_grid[k] = true;
+            for (int is = -15; is <= 15; is++) {
+                float id = (15.0f + is * 0.2f) / vmax;
+                float this_scale = 1.0f / id;
+                for (int k = 0; k < 8; k++) {
+                    uint16_t u = 0;
+                    for (int i = 0; i < 4; i++) {
+                        int l = iq3xxs_round_l(0.5f * (id * xval[4 * k + i] - 1.0f));
+                        Laux[4 * k + i] = (int8_t)l;
+                        u |= (uint16_t)(l << (3 * i));
+                    }
+                    int grid_index = g_iq3xxs_map[u];
+                    is_on_grid_aux[k] = true;
+                    if (grid_index < 0) {
+                        is_on_grid_aux[k] = false;
+                        const uint16_t *nb = g_iq3xxs_nb - g_iq3xxs_map[u] - 1;
+                        iq3xxs_find_best_neighbour(nb, xval + 4 * k, waux + 4 * k,
+                                                   this_scale, Laux + 4 * k);
+                    }
+                }
+                float sumqx = 0.0f, sumq2 = 0.0f;
+                for (int i = 0; i < 32; i++) {
+                    float w = weight[i];
+                    float q = (float)(2 * Laux[i] + 1);
+                    sumqx += w * xval[i] * q;
+                    sumq2 += w * q * q;
+                }
+                if (sumq2 > 0.0f && sumqx * sumqx > best * sumq2) {
+                    scale = sumqx / sumq2;
+                    best = scale * sumqx;
+                    memcpy(L, Laux, 32);
+                    memcpy(is_on_grid, is_on_grid_aux, sizeof is_on_grid);
+                }
+            }
+            int n_not_ongrid = 0;
+            for (int k = 0; k < 8; k++) if (!is_on_grid[k]) n_not_ongrid++;
+            if (n_not_ongrid > 0 && scale > 0.0f) {
+                float id = 1.0f / scale;
+                for (int k = 0; k < 8; k++) {
+                    if (is_on_grid[k]) continue;
+                    uint16_t u = 0;
+                    for (int i = 0; i < 4; i++) {
+                        int l = iq3xxs_round_l(0.5f * (id * xval[4 * k + i] - 1.0f));
+                        u |= (uint16_t)(l << (3 * i));
+                    }
+                    int grid_index = g_iq3xxs_map[u];
+                    if (grid_index < 0) {
+                        const uint16_t *nb = g_iq3xxs_nb - g_iq3xxs_map[u] - 1;
+                        grid_index = iq3xxs_find_best_neighbour(nb, xval + 4 * k, waux + 4 * k,
+                                                                scale, L + 4 * k);
+                    }
+                    const int8_t *pg = (const int8_t *)(g_iq3xxs_qgrid + grid_index);
+                    for (int i = 0; i < 4; i++) L[4 * k + i] = (int8_t)((pg[i] - 1) / 2);
+                }
+                float sumqx = 0.0f, sumq2 = 0.0f;
+                for (int i = 0; i < 32; i++) {
+                    float w = weight[i];
+                    float q = (float)(2 * L[i] + 1);
+                    sumqx += w * xval[i] * q;
+                    sumq2 += w * q * q;
+                }
+                if (sumq2 > 0.0f) scale = sumqx / sumq2;
+            }
+            if (scale < 0.0f) {
+                scale = -scale;
+                for (int k = 0; k < 4; k++) block_signs[k] = (uint8_t)((~block_signs[k]) & 127);
+            }
+            for (int k = 0; k < 8; k++) {
+                uint16_t u = 0;
+                for (int i = 0; i < 4; i++) u |= (uint16_t)(L[4 * k + i] << (3 * i));
+                int grid_index = g_iq3xxs_map[u];
+                q3[8 * ib + k] = (uint8_t)(grid_index >= 0 ? grid_index : 0);
+            }
+            scales_and_signs[ib] = (uint32_t)block_signs[0]
+                                 | ((uint32_t)block_signs[1] << 7)
+                                 | ((uint32_t)block_signs[2] << 14)
+                                 | ((uint32_t)block_signs[3] << 21);
+            scales[ib] = scale;
+            if (scale > max_scale) max_scale = scale;
+        }
+        if (max_scale == 0.0f) {
+            memset(y->qs, 0, sizeof y->qs);
+            continue;
+        }
+        float d = max_scale / 31.0f;
+        y->d = f32_to_f16(d * 1.0125f);
+        float id = 1.0f / d;
+        for (int ib = 0; ib < 8; ib++) {
+            float v = 0.5f * (id * scales[ib] - 1.0f);
+            int l = v <= 0.0f ? 0 : (v >= 15.0f ? 15 : nearest_int(v));
+            if (l < 0) l = 0;
+            if (l > 15) l = 15;
+            scales_and_signs[ib] |= ((uint32_t)l << 28);
+        }
+        memcpy(q3 + 64, scales_and_signs, sizeof scales_and_signs);
+        memcpy(y->qs, q3, sizeof y->qs);
+    }
+}
+
 // ---------------------------------- importance-weighted rows (R4.7.2, R4.34.3)
 // ggml's make_qx_quants with explicit weights (rmse_type 1 and a quant_weights
 // array): the scale that minimises the WEIGHTED squared error over the
@@ -1126,8 +1495,10 @@ static void quantize_row_any(int type, const float *rowf, uint8_t *rowq, int n) 
         case T_Q4_K: quantize_row_q4_K(rowf, rowq, n); break;
         case T_Q5_K: quantize_row_q5_K(rowf, rowq, n); break;
         case T_Q6_K: quantize_row_q6_K(rowf, rowq, n, NULL); break;
+        case T_IQ3_XXS: quantize_row_iq3_xxs(rowf, rowq, n, NULL); break;
         case T_IQ4_NL: quantize_row_iq4_nl(rowf, rowq, n, NULL); break;
         case T_MXFP4: quantize_row_mxfp4(rowf, rowq, n); break;
+        case T_NVFP4: quantize_row_nvfp4(rowf, rowq, n); break;
         case T_F16:  quantize_row_f16(rowf, rowq, n); break;
         case T_BF16: quantize_row_bf16(rowf, rowq, n); break;
         case T_F32:  memcpy(rowq, rowf, sizeof(float) * (size_t)n); break;
@@ -1146,14 +1517,15 @@ static bool quantize_row_writable(int type) {
     return type == T_F32 || type == T_F16 || type == T_BF16 ||
            type == T_Q8_0 || type == T_Q4_0 || type == T_Q5_0 || type == T_Q5_1 ||
            type == T_Q3_K || type == T_Q4_K || type == T_Q5_K || type == T_Q6_K ||
-           type == T_IQ4_NL || type == T_MXFP4;
+           type == T_IQ3_XXS || type == T_IQ4_NL || type == T_MXFP4 || type == T_NVFP4;
 }
 
 // The types an importance matrix shapes; every other type is written as
 // without one.
 static bool imatrix_weighted_type(int type) {
     return type == T_Q3_K || type == T_Q4_0 || type == T_Q5_1 ||
-           type == T_Q4_K || type == T_Q5_K || type == T_Q6_K || type == T_IQ4_NL;
+           type == T_Q4_K || type == T_Q5_K || type == T_Q6_K ||
+           type == T_IQ3_XXS || type == T_IQ4_NL;
 }
 
 // One row with its importance weights (NULL: the reference writer).
@@ -1165,6 +1537,7 @@ static void quantize_row_any_w(int type, const float *rowf, uint8_t *rowq, int n
     else if (qw && type == T_Q4_K) quantize_row_q4_K_w(rowf, rowq, n, qw);
     else if (qw && type == T_Q5_K) quantize_row_q5_K_w(rowf, rowq, n, qw);
     else if (qw && type == T_Q6_K) quantize_row_q6_K(rowf, rowq, n, qw);
+    else if (qw && type == T_IQ3_XXS) quantize_row_iq3_xxs(rowf, rowq, n, qw);
     else if (qw && type == T_IQ4_NL) quantize_row_iq4_nl(rowf, rowq, n, qw);
     else quantize_row_any(type, rowf, rowq, n);
 }
@@ -1657,8 +2030,10 @@ static int type_from_name(const char *s) {
     if (!strcmp(s, "q4_k")) return T_Q4_K;
     if (!strcmp(s, "q5_k")) return T_Q5_K;
     if (!strcmp(s, "q6_k")) return T_Q6_K;
+    if (!strcmp(s, "iq3_xxs")) return T_IQ3_XXS;
     if (!strcmp(s, "iq4_nl")) return T_IQ4_NL;
     if (!strcmp(s, "mxfp4")) return T_MXFP4;
+    if (!strcmp(s, "nvfp4")) return T_NVFP4;
     if (!strcmp(s, "f16"))  return T_F16;
     if (!strcmp(s, "bf16")) return T_BF16;
     return -2;
@@ -1877,12 +2252,23 @@ static bool parse_blk_name(const char *name, int *layer, const char **suffix) {
 // applies after the decode, whatever the stack's type (src/inkling2_gguf.c). Expert e's weight is therefore
 // (code * block_scale) * f[e]. gguf.c binds only a one-value companion (gguf_tensor.scale); this is the per-expert
 // one. NULL when t has none; *idx, if given, is the companion's tensor index.
-static const float *expert_factors(gguf_file *g, const gguf_tensor *t, uint64_t *idx) {
+static bool is_inkling_expert_stack(gguf_file *g, const gguf_tensor *t) {
     static const char W[] = "_exps.weight";
     const size_t n = strlen(t->name), nw = sizeof W - 1;
-    if (t->n_dims != 3 || n < nw || strcmp(t->name + n - nw, W) ||
-        strcmp(gguf_get_str(g, "general.architecture", ""), "inkling2_loop"))
+    return t->n_dims == 3 && n >= nw && !strcmp(t->name + n - nw, W) &&
+           !strcmp(gguf_get_str(g, "general.architecture", ""), "inkling2_loop");
+}
+
+static bool nvfp4_allowed_for_tensor(gguf_file *g, const gguf_tensor *t) {
+    if (strcmp(gguf_get_str(g, "general.architecture", ""), "inkling2_loop") != 0)
+        return true;
+    return is_inkling_expert_stack(g, t);
+}
+
+static const float *expert_factors(gguf_file *g, const gguf_tensor *t, uint64_t *idx) {
+    if (!is_inkling_expert_stack(g, t))
         return NULL;
+    const size_t n = strlen(t->name);
     char sn[sizeof t->name + 8];
     snprintf(sn, sizeof sn, "%.*s.scale", (int)(n - strlen(".weight")), t->name);
     const gguf_tensor *s = gguf_find_tensor(g, sn);
@@ -2242,7 +2628,11 @@ typedef enum {
 // carried the fallback was written in it again; both reported the fallback
 // before deciding whether to keep the tensor; the plan's copy never read
 // RUNNER_FORCE_REQUANT, which its refusal tells the reader to set.
-static int decide_type(const gguf_tensor *t, int want, bool grow, type_decision *how) {
+static int decide_type(gguf_file *g, const gguf_tensor *t, int want, bool grow, type_decision *how) {
+    if (want == T_NVFP4 && !nvfp4_allowed_for_tensor(g, t)) {
+        *how = DEC_KEPT_WIDTH;
+        return (int)t->type;
+    }
     int64_t n = (int64_t)t->ne[0];
     int eff = width_fallback(want, n);
     if (!type_fits_row(eff, n)) {
@@ -2384,6 +2774,13 @@ int merge_lora_gguf(const char *in_path, const char *adapter_path,
 // quantize_gguf_plan_inner() adds to it and every exit releases all of it in
 // one place, so a refusal at any stage unwinds every stage before it.
 typedef struct {
+    char     name[128];       // "<base>.scale"
+    int64_t  n_scales;        // post-prune n_expert for Inkling stacks, 1 otherwise
+    float   *vals;            // F32 array [n_scales], all finite > 0
+    uint64_t out_off;         // aligned byte offset in data section
+} syn_scale_t;
+
+typedef struct {
     prune_plan_t plan;
     type_plan_t tplan;
     rm_plan_t rm;
@@ -2411,6 +2808,9 @@ typedef struct {
     int *out_type;
     uint64_t *out_off;
     const float **fac;        // per tensor: the per-expert factors its re-quantization folds in (NULL: none)
+    syn_scale_t *syn;         // synthesized F32 .scale companion tensors for newly written NVFP4 tensors
+    uint64_t n_syn;
+    int64_t *nvfp4_syn;       // per source tensor: index into syn[], or -1
     int64_t (*eff_ne)[4];
     float *rowf, *basef, *deqm, *deqb;
     uint8_t *rowq, *rowqb;
@@ -2425,6 +2825,9 @@ static void quantize_job_close_source(quantize_job *J) {
     free(J->rowf); free(J->rowq);
     free(J->out_type); free(J->out_off); free(J->eff_ne);
     free(J->fac); J->fac = NULL;
+    for (uint64_t k = 0; k < J->n_syn; k++) free(J->syn[k].vals);
+    free(J->syn); J->syn = NULL; J->n_syn = 0;
+    free(J->nvfp4_syn); J->nvfp4_syn = NULL;
     J->basef = J->deqm = J->deqb = J->rowf = NULL;
     J->rowqb = J->rowq = NULL;
     J->out_type = NULL; J->out_off = NULL; J->eff_ne = NULL;
@@ -2831,6 +3234,122 @@ static void quantize_job_fold_factors(quantize_job *J) {
                 "their .scale tensors are not written\n", (unsigned long long)n_fold);
 }
 
+// Streaming amax pre-pass for two-level NVFP4: computes global_amax / (6 * 448)
+// per expert (n_scales > 1) or per tensor (n_scales == 1) in O(row) RAM.
+// All-zero or non-finite experts fall back to 1.0f so every emitted .scale
+// entry is finite and strictly positive.
+static void compute_nvfp4_scales(const gguf_tensor *t, const float *src_fac,
+                                 bool fold_tensor_scale, const prune_layer_t *pl,
+                                 const merge_pair_t *mp, int64_t n_scales,
+                                 float *out_vals, float *rowf) {
+    for (int64_t e = 0; e < n_scales; e++) out_vals[e] = 0.0f;
+    const int n0 = (int)t->ne[0];
+    if (pl) {
+        int64_t row_len, exp_rows;
+        expert_block_geometry(t, &row_len, &exp_rows);
+        for (int j = 0; j < pl->n_ids; j++) {
+            int64_t e_out = n_scales > 1 ? (int64_t)j : 0;
+            float amax = out_vals[e_out];
+            for (int64_t r = 0; r < exp_rows; r++) {
+                uint64_t src_row = (uint64_t)pl->ids[j] * (uint64_t)exp_rows + (uint64_t)r;
+                expert_row_dequant(t, src_fac, src_row, rowf);
+                if (fold_tensor_scale && !src_fac && t->scale != 1.0f)
+                    for (int c = 0; c < n0; c++) rowf[c] *= t->scale;
+                for (int c = 0; c < n0; c++) {
+                    float a = fabsf(rowf[c]);
+                    if (fp_isfinite(a) && a > amax) amax = a;
+                }
+            }
+            out_vals[e_out] = amax;
+        }
+    } else {
+        uint64_t rows = t->ne[1] * t->ne[2] * t->ne[3];
+        uint64_t per = n_scales > 1 ? t->ne[1] : rows;
+        for (uint64_t r = 0; r < rows; r++) {
+            expert_row_dequant(t, src_fac, r, rowf);
+            if (fold_tensor_scale && !src_fac && t->scale != 1.0f)
+                for (int c = 0; c < n0; c++) rowf[c] *= t->scale;
+            if (mp) merge_row(mp, r, rowf, n0);
+            int64_t e_out = n_scales > 1 ? (int64_t)(r / per) : 0;
+            float amax = out_vals[e_out];
+            for (int c = 0; c < n0; c++) {
+                float a = fabsf(rowf[c]);
+                if (fp_isfinite(a) && a > amax) amax = a;
+            }
+            out_vals[e_out] = amax;
+        }
+    }
+    for (int64_t e = 0; e < n_scales; e++) {
+        float f = out_vals[e] > 0.0f ? (out_vals[e] / (6.0f * 448.0f)) : 1.0f;
+        if (!(f > 0.0f) || !fp_isfinite(f)) f = 1.0f;
+        out_vals[e] = f;
+    }
+}
+
+// R4.48.8.6: plan synthesized F32 .scale companion tensors for every tensor
+// newly converted to two-level NVFP4 (per-expert [n_expert] for inkling2_loop
+// expert stacks, [1] otherwise). Any pre-existing source .scale is dropped so
+// the output never duplicates a tensor name.
+static void quantize_job_plan_nvfp4_scales(quantize_job *J, const merge_set_t *ms) {
+    uint64_t need = 0;
+    size_t max_row = 0;
+    for (uint64_t i = 0; J->w.ok && i < J->g.n_tensors; i++) {
+        gguf_tensor *t = &J->g.tensors[i];
+        if (J->drop && J->drop[i]) continue;
+        const merge_pair_t *mp = ms && ms->map[i].r && !ms->map[i].zero ? &ms->map[i] : NULL;
+        if (J->out_type[i] == T_NVFP4 && ((uint32_t)J->out_type[i] != t->type || mp)) {
+            need++;
+            if (t->ne[0] > max_row) max_row = t->ne[0];
+        }
+    }
+    if (!J->w.ok || need == 0) return;
+    J->nvfp4_syn = malloc(sizeof(int64_t) * J->g.n_tensors);
+    J->syn = calloc((size_t)need, sizeof(syn_scale_t));
+    float *rowf = malloc(sizeof(float) * (max_row ? max_row : 1));
+    if (!J->nvfp4_syn || !J->syn || !rowf) {
+        free(rowf);
+        J->w.ok = false;
+        return;
+    }
+    for (uint64_t i = 0; i < J->g.n_tensors; i++) J->nvfp4_syn[i] = -1;
+    uint64_t s = 0;
+    for (uint64_t i = 0; J->w.ok && i < J->g.n_tensors; i++) {
+        gguf_tensor *t = &J->g.tensors[i];
+        if (J->drop && J->drop[i]) continue;
+        const merge_pair_t *mp = ms && ms->map[i].r && !ms->map[i].zero ? &ms->map[i] : NULL;
+        if (J->out_type[i] != T_NVFP4 || ((uint32_t)J->out_type[i] == t->type && !mp)) continue;
+        size_t nl = strlen(t->name);
+        if (nl < 7 || strcmp(t->name + nl - 7, ".weight") != 0 || nl - 7 + 6 >= sizeof(J->syn[s].name)) {
+            J->w.ok = false;
+            break;
+        }
+        snprintf(J->syn[s].name, sizeof J->syn[s].name, "%.*s.scale", (int)(nl - 7), t->name);
+        gguf_tensor *old_sc = gguf_find_tensor(&J->g, J->syn[s].name);
+        if (old_sc) {
+            uint64_t ci = (uint64_t)(old_sc - J->g.tensors);
+            if (!J->drop) {
+                J->drop = calloc(J->g.n_tensors, sizeof(bool));
+                if (!J->drop) { J->w.ok = false; break; }
+            }
+            if (!J->drop[ci]) { J->drop[ci] = true; J->n_dropped++; }
+        }
+        const prune_layer_t *pl = resolve_prune(t, &J->plan);
+        int64_t n_scales = is_inkling_expert_stack(&J->g, t) ? (pl ? pl->n_ids : (int64_t)t->ne[2]) : 1;
+        J->syn[s].n_scales = n_scales;
+        J->syn[s].vals = malloc(sizeof(float) * (size_t)n_scales);
+        if (!J->syn[s].vals) { J->w.ok = false; break; }
+        compute_nvfp4_scales(t, J->fac ? J->fac[i] : NULL, true, pl, mp, n_scales,
+                             J->syn[s].vals, rowf);
+        J->nvfp4_syn[i] = (int64_t)s;
+        s++;
+        J->n_syn = s;
+    }
+    free(rowf);
+    if (J->w.ok && J->n_syn)
+        fprintf(stderr, "quantize: synthesized %llu F32 .scale companion tensor(s) for two-level NVFP4\n",
+                (unsigned long long)J->n_syn);
+}
+
 // The output's data alignment decided and its partial file open.
 static bool quantize_job_open_output(quantize_job *J, const char *out_path) {
     // Honor the file's declared data alignment. The reader derives every
@@ -2953,7 +3472,7 @@ static bool quantize_job_decide_types(quantize_job *J, int target,
             J->out_type[i] = t->type == T_F16 ? T_F16 : T_F32;
         } else {
             type_decision how;
-            J->out_type[i] = decide_type(t, want, grow, &how);
+            J->out_type[i] = decide_type(&J->g, t, want, grow, &how);
             if (how == DEC_FALLBACK) {
                 if (n_fb < DECLINE_NAMES) {
                     fb_name[n_fb] = t->name; fb_want[n_fb] = (uint32_t)want;
@@ -3053,7 +3572,7 @@ static uint32_t quantize_job_file_type(const quantize_job *J) {
         { T_NVFP4, 39, "NVFP4" }, { T_Q2_0, 41, "Q2_0" },   // llama.h LLAMA_FTYPE
     };
     uint64_t counts[sizeof(FT) / sizeof(*FT)] = {0};
-    uint64_t f32s = 0;
+    uint64_t f32s = J->n_syn;
     for (uint64_t i = 0; i < J->g.n_tensors; i++) {
         if (J->drop && J->drop[i]) continue;
         if (J->out_type[i] == T_F32) { f32s++; continue; }
@@ -3093,7 +3612,7 @@ static void quantize_job_write_header(quantize_job *J) {
 
     wr_u32(&J->w, 0x46554747);
     wr_u32(&J->w, 3);
-    wr_u64(&J->w, J->g.n_tensors - J->n_dropped);
+    wr_u64(&J->w, J->g.n_tensors - J->n_dropped + J->n_syn);
     wr_u64(&J->w, J->g.n_kv - dropped_kv + 1 + (J->layer_counts ? 1 : 0) + (uint64_t)J->n_reauth);
     for (uint64_t i = 0; i < J->g.n_kv; i++) {
         bool re = kv_is_reauthored(J->g.kv[i].key) ||
@@ -3169,6 +3688,22 @@ static void quantize_job_write_layout(quantize_job *J) {
         wr_u32(&J->w, (uint32_t)J->out_type[i]);
         wr_u64(&J->w, J->out_off[i]);
     }
+    for (uint64_t s = 0; J->w.ok && s < J->n_syn; s++) {
+        uint64_t bytes = (uint64_t)J->syn[s].n_scales * sizeof(float), end;
+        if (!checked_u64_add(off, bytes, &end) ||
+            !checked_u64_add(end, J->amask, &end)) {
+            J->w.ok = false;
+            break;
+        }
+        J->syn[s].out_off = off;
+        off = end & ~J->amask;
+
+        wr_str(&J->w, J->syn[s].name, strlen(J->syn[s].name));
+        wr_u32(&J->w, 1);
+        wr_u64(&J->w, (uint64_t)J->syn[s].n_scales);
+        wr_u32(&J->w, (uint32_t)T_F32);
+        wr_u64(&J->w, J->syn[s].out_off);
+    }
     // pad to data section
     int64_t hdr_end = wr_tell(&J->w);
     J->data_start = hdr_end >= 0 ? ((uint64_t)hdr_end + J->amask) & ~J->amask : 0;
@@ -3236,15 +3771,20 @@ static void quantize_job_write_pruned(quantize_job *J, uint64_t i,
     }
     size_t out_rs = ggml_row_size(J->out_type[i], row_len);
     const imatrix_entry *ie = imatrix_for_tensor(t, J->out_type[i]);
+    const syn_scale_t *syn = (J->nvfp4_syn && J->nvfp4_syn[i] >= 0) ? &J->syn[J->nvfp4_syn[i]] : NULL;
     for (int j = 0; J->w.ok && j < pl->n_ids; j++) {
+        float f_nv = syn ? syn->vals[syn->n_scales > 1 ? j : 0] : 1.0f;
         for (int64_t r = 0; J->w.ok && r < exp_rows; r++) {
             int64_t src_row = (int64_t)pl->ids[j] * exp_rows + r;
             // the source expert's factor: src_row / ne[1] is ids[j]
             expert_row_dequant(t, J->fac ? J->fac[i] : NULL, (uint64_t)src_row, J->rowf);
+            if (syn && !(J->fac && J->fac[i]) && t->scale != 1.0f)
+                for (int64_t c = 0; c < row_len; c++) J->rowf[c] *= t->scale;
             // the source expert's weights: the imatrix was made on the
             // unpruned model
             const float *qw = imatrix_row_checked(J, t, ie, (uint64_t)src_row);
-            quantize_row_any_w(J->out_type[i], J->rowf, J->rowq, (int)row_len, qw);
+            if (syn) quantize_row_nvfp4_scaled(J->rowf, J->rowq, (int)row_len, f_nv);
+            else quantize_row_any_w(J->out_type[i], J->rowf, J->rowq, (int)row_len, qw);
             wr(&J->w, J->rowq, out_rs);
         }
     }
@@ -3259,6 +3799,7 @@ static void quantize_job_write_pruned(quantize_job *J, uint64_t i,
 typedef struct {
     const gguf_tensor *t;
     const float *fac;        // the per-expert factors folded into each row, or NULL
+    const syn_scale_t *syn;  // synthesized NVFP4 scales, or NULL
     const imatrix_entry *ie;
     int out_type, n0;
     size_t in_rs, out_rs, max_row;
@@ -3283,11 +3824,18 @@ static void wrow_rows(void *ctx, int i0, int i1) {
     for (int b = i0; b < i1; b++) {
         uint64_t r = j->r0 + (uint64_t)b;
         expert_row_dequant(t, j->fac, r, rowf);
+        if (j->syn && !j->fac && t->scale != 1.0f)
+            for (int c = 0; c < j->n0; c++) rowf[c] *= t->scale;
         bool bad = false;
         const float *w = j->ie ? imatrix_row(j->ie, (int64_t)t->ne[0], r, j->per, j->mats, &bad) : NULL;
         if (bad) { atomic_store(&j->bad, 1); break; }
         j->weighted[b] = w != NULL;
-        quantize_row_any_w(j->out_type, rowf, rowq, j->n0, w);
+        if (j->syn) {
+            float f_nv = j->syn->vals[j->syn->n_scales > 1 ? (r / j->per) : 0];
+            quantize_row_nvfp4_scaled(rowf, rowq, j->n0, f_nv);
+        } else {
+            quantize_row_any_w(j->out_type, rowf, rowq, j->n0, w);
+        }
         memcpy(j->out + (size_t)b * j->out_rs, rowq, j->out_rs);
     }
     fp_denormals_restore(fps);
@@ -3311,7 +3859,9 @@ static bool quantize_job_write_rows_pool(quantize_job *J, uint64_t i, tpool *tp,
     unsigned char *weighted = malloc((size_t)batch);
     if (!out || !weighted) { free(out); free(weighted); return false; }
     uint64_t mats = t->n_dims > 2 && t->ne[2] > 1 ? t->ne[2] : 1;
-    wrow_job job = { .t = t, .fac = J->fac ? J->fac[i] : NULL, .ie = imatrix_for_tensor(t, J->out_type[i]),
+    const syn_scale_t *syn = (J->nvfp4_syn && J->nvfp4_syn[i] >= 0) ? &J->syn[J->nvfp4_syn[i]] : NULL;
+    wrow_job job = { .t = t, .fac = J->fac ? J->fac[i] : NULL, .syn = syn,
+                     .ie = imatrix_for_tensor(t, J->out_type[i]),
                      .out_type = J->out_type[i],
                      .n0 = (int)t->ne[0], .in_rs = ggml_row_size(t->type, t->ne[0]), .out_rs = out_rs,
                      .max_row = max_row, .per = mats > 1 ? t->ne[1] : rows, .mats = mats,
@@ -3379,27 +3929,37 @@ static void quantize_job_write_rows(quantize_job *J, uint64_t i, merge_set_t *ms
     if (!mp && J->tp && quantize_job_write_rows_pool(J, i, J->tp, J->max_row)) return;
     int n0 = (int)t->ne[0];
     const imatrix_entry *ie = imatrix_for_tensor(t, J->out_type[i]);
+    const syn_scale_t *syn = (J->nvfp4_syn && J->nvfp4_syn[i] >= 0) ? &J->syn[J->nvfp4_syn[i]] : NULL;
+    uint64_t per = (syn && syn->n_scales > 1) ? t->ne[1] : rows;
     for (uint64_t r = 0; J->w.ok && r < rows; r++) {
         expert_row_dequant(t, J->fac ? J->fac[i] : NULL, r, J->rowf);
+        if (syn && !(J->fac && J->fac[i]) && t->scale != 1.0f)
+            for (int c = 0; c < n0; c++) J->rowf[c] *= t->scale;
         if (mp) {
             memcpy(J->basef, J->rowf, sizeof(float) * (size_t)n0);
             merge_row(mp, r, J->rowf, n0);
         }
         const float *qw = imatrix_row_checked(J, t, ie, r);
-        quantize_row_any_w(J->out_type[i], J->rowf, J->rowq, n0, qw);
+        float f_nv = syn ? syn->vals[syn->n_scales > 1 ? (r / per) : 0] : 1.0f;
+        if (syn) quantize_row_nvfp4_scaled(J->rowf, J->rowq, n0, f_nv);
+        else quantize_row_any_w(J->out_type[i], J->rowf, J->rowq, n0, qw);
         wr(&J->w, J->rowq, out_rs);
         if (mp) {
             // Did the grid keep the delta? The base alone, written at
             // the same type, is what the merge would be had the adapter
             // done nothing; the projection of (merged - that) onto the
             // intended delta is the part of the delta that survived.
-            quantize_row_any_w(J->out_type[i], J->basef, J->rowqb, n0, qw);
+            if (syn) quantize_row_nvfp4_scaled(J->basef, J->rowqb, n0, f_nv);
+            else quantize_row_any_w(J->out_type[i], J->basef, J->rowqb, n0, qw);
             merge_survival *sv = &ms->surv;
             sv->bytes += out_rs;
             for (size_t k = 0; k < out_rs; k++)
                 sv->bytes_changed += J->rowq[k] != J->rowqb[k];
             dequant_row(J->out_type[i], J->rowq, J->deqm, n0);
             dequant_row(J->out_type[i], J->rowqb, J->deqb, n0);
+            if (syn) {
+                for (int k = 0; k < n0; k++) { J->deqm[k] *= f_nv; J->deqb[k] *= f_nv; }
+            }
             for (int k = 0; k < n0; k++) {
                 double d = (double)J->rowf[k] - J->basef[k];
                 sv->ret_num += ((double)J->deqm[k] - J->deqb[k]) * d;
@@ -3444,6 +4004,15 @@ static void quantize_job_write_tensors(quantize_job *J, merge_set_t *ms) {
         const prune_layer_t *pl = resolve_prune(t, &J->plan);
         if (pl) quantize_job_write_pruned(J, i, pl);
         else quantize_job_write_rows(J, i, ms);
+    }
+    for (uint64_t s = 0; J->w.ok && s < J->n_syn; s++) {
+        uint64_t want;
+        if (!checked_u64_add(J->data_start, J->syn[s].out_off, &want)) {
+            J->w.ok = false;
+            break;
+        }
+        wr_pad_to(&J->w, want);
+        wr(&J->w, J->syn[s].vals, sizeof(float) * (size_t)J->syn[s].n_scales);
     }
     if (J->tp) { tpool_destroy(J->tp); J->tp = NULL; }
 }
@@ -3567,7 +4136,7 @@ static int quantize_job_finish(quantize_job *J, const char *in_path,
         fprintf(stderr, "imatrix: %llu tensors weighted (%llu rows; %llu rows "
                 "without calibration data written unweighted); %llu converted "
                 "tensors are of a type the imatrix does not shape (weighted: "
-                "q3_k, q4_0, q4_k, q5_k, q6_k, q5_1, iq4_nl)\n",
+                "q3_k, q4_0, q4_k, q5_k, q6_k, q5_1, iq3_xxs, iq4_nl)\n",
                 (unsigned long long)g_imx.tensors_weighted,
                 (unsigned long long)g_imx.rows_weighted,
                 (unsigned long long)g_imx.rows_without_data,
@@ -3609,7 +4178,7 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                        merge_survival *surv_out) {
     if (target != T_KEEP && !quantize_row_writable(target)) {
         fprintf(stderr, "error: quantize target must be q8_0, q4_0, q5_1, q3_k, "
-                "q4_k, q5_k, q6_k, iq4_nl, mxfp4, f16, or bf16\n");
+                "q4_k, q5_k, q6_k, iq3_xxs, iq4_nl, mxfp4, nvfp4, f16, or bf16\n");
         return 1;
     }
     quantize_job job;
@@ -3634,6 +4203,7 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
     if (J->uniform_prune) quantize_job_uniform_expert_count(J);
     if (!quantize_job_decide_types(J, target, type_plan_path, ms)) goto done;
     quantize_job_fold_factors(J);
+    quantize_job_plan_nvfp4_scales(J, ms);
     // a failed write clears J->w.ok, and the finish refuses the file
     quantize_job_write_header(J);
     quantize_job_write_layout(J);
@@ -3663,10 +4233,23 @@ bool quantize_floor_bytes(const char *in_path, int top, int bottom, const char *
         if (match && *match && !strstr(t->name, match)) continue;
         uint64_t rows = t->ne[1] * t->ne[2] * t->ne[3];
         int want = g_imx.n && !imatrix_find(t->name) ? top : bottom;
-        int ek = width_fallback(want, (int64_t)t->ne[0]);
         n += (long long)t->nbytes;
-        f += type_fits_row(ek, (int64_t)t->ne[0]) ? (long long)(ggml_row_size(ek, t->ne[0]) * rows)
-                                                  : (long long)t->nbytes;
+        if (want == T_KEEP || (want == T_NVFP4 && !nvfp4_allowed_for_tensor(&g, t))) {
+            f += (long long)t->nbytes;
+            continue;
+        }
+        int ek = width_fallback(want, (int64_t)t->ne[0]);
+        if (type_fits_row(ek, (int64_t)t->ne[0])) {
+            uint64_t rb = ggml_row_size(ek, t->ne[0]) * rows;
+            if (ek == T_NVFP4 && t->type != T_NVFP4) {
+                uint64_t ns = is_inkling_expert_stack(&g, t) ? t->ne[2] : 1;
+                rb += ns * sizeof(float);
+            }
+            if (top == T_KEEP && rb > t->nbytes) rb = t->nbytes;
+            f += (long long)rb;
+        } else {
+            f += (long long)t->nbytes;
+        }
     }
     gguf_close(&g);
     *now = n;
@@ -3693,6 +4276,9 @@ bool quantize_floor_bytes(const char *in_path, int top, int bottom, const char *
 typedef struct {
     const gguf_tensor *t;
     const float *fac;      // the per-expert factors folded into each row (expert_factors), or NULL
+    const float *nv_fac;   // precomputed two-level NVFP4 scales [nv_n], or NULL
+    int64_t nv_n;
+    bool nv_ok;            // whether T_NVFP4 is valid for this tensor
     const imatrix_entry *ie;
     const int *types;
     int n_types, n0;
@@ -3730,8 +4316,16 @@ static void qerr_rows(void *ctx, int i0, int i1) {
             int ek = width_fallback(j->types[k], n0);
             cell[k] = 0;
             if (!type_fits_row(ek, n0)) continue;
-            quantize_row_any_w(ek, rowf, rowq, n0, imatrix_weighted_type(ek) ? w : NULL);
-            dequant_row(ek, rowq, deq, n0);
+            if (ek == T_NVFP4) {
+                if (!j->nv_ok || t->type == T_NVFP4) continue;
+                float f_nv = j->nv_fac[j->nv_n > 1 ? ((uint64_t)r / j->per) : 0];
+                quantize_row_nvfp4_scaled(rowf, rowq, n0, f_nv);
+                dequant_row(T_NVFP4, rowq, deq, n0);
+                for (int c = 0; c < n0; c++) deq[c] *= f_nv;
+            } else {
+                quantize_row_any_w(ek, rowf, rowq, n0, imatrix_weighted_type(ek) ? w : NULL);
+                dequant_row(ek, rowq, deq, n0);
+            }
             double s = 0;
             for (int c = 0; c < n0; c++) {
                 double d = (double)rowf[c] - deq[c];
@@ -3765,11 +4359,14 @@ int quantize_error_report_threads(const char *in_path, const int *types, int n_t
         if (rows > max_rows) max_rows = rows;
         eligible++;
     }
+    bool want_nvfp4 = false;
+    for (int k = 0; k < n_types; k++) if (types[k] == T_NVFP4) want_nvfp4 = true;
     double *err = calloc((size_t)n_types, sizeof(double));
     double *cost = max_rows <= INT_MAX ? malloc(sizeof(double) * (size_t)max_rows * (size_t)n_types) : NULL;
     unsigned char *wrow = max_rows <= INT_MAX ? malloc((size_t)max_rows) : NULL;
+    float *nv_scratch = want_nvfp4 ? malloc(sizeof(float) * max_row) : NULL;
     tpool *tp = n_threads > 1 ? tpool_create(n_threads) : NULL;
-    int rc = err && cost && wrow && (n_threads == 1 || tp) ? 0 : 1;
+    int rc = err && cost && wrow && (!want_nvfp4 || nv_scratch) && (n_threads == 1 || tp) ? 0 : 1;
     if (rc && max_rows > INT_MAX)
         fprintf(stderr, "error: a tensor of %s has more rows than this report can cost\n", in_path);
     uint64_t reported = 0;
@@ -3794,7 +4391,17 @@ int quantize_error_report_threads(const char *in_path, const int *types, int n_t
         int n0 = (int)t->ne[0];
         uint64_t rows = t->ne[1] * t->ne[2] * t->ne[3];
         uint64_t mats = t->n_dims > 2 && t->ne[2] > 1 ? t->ne[2] : 1;
-        qerr_job job = { .t = t, .fac = expert_factors(&g, t, NULL), .ie = g_imx.n ? imatrix_find(t->name) : NULL,
+        const float *src_fac = expert_factors(&g, t, NULL);
+        bool nv_ok = nvfp4_allowed_for_tensor(&g, t) && type_fits_row(T_NVFP4, n0);
+        int64_t nv_n = is_inkling_expert_stack(&g, t) ? (int64_t)t->ne[2] : 1;
+        float *nv_fac = NULL;
+        if (want_nvfp4 && nv_ok && t->type != T_NVFP4) {
+            nv_fac = malloc(sizeof(float) * (size_t)nv_n);
+            if (!nv_fac) { rc = 1; break; }
+            compute_nvfp4_scales(t, src_fac, false, NULL, NULL, nv_n, nv_fac, nv_scratch);
+        }
+        qerr_job job = { .t = t, .fac = src_fac, .nv_fac = nv_fac, .nv_n = nv_n, .nv_ok = nv_ok,
+                         .ie = g_imx.n ? imatrix_find(t->name) : NULL,
                          .types = types,
                          .n_types = n_types, .n0 = n0, .per = mats > 1 ? t->ne[1] : rows, .mats = mats,
                          .in_rs = ggml_row_size(t->type, t->ne[0]), .max_row = max_row,
@@ -3807,6 +4414,7 @@ int quantize_error_report_threads(const char *in_path, const int *types, int n_t
         } else if (rows > 0) {
             qerr_rows(&job, 0, (int)rows);
         }
+        free(nv_fac);
         if (atomic_load(&job.oom)) rc = 1;
         if (atomic_load(&job.bad)) {
             fprintf(stderr, "error: the imatrix entry for %s does not fit the tensor\n", t->name);
@@ -3829,12 +4437,12 @@ int quantize_error_report_threads(const char *in_path, const int *types, int n_t
         // the line one the planner cannot read (R6.68.85)
         char tname[sizeof t->name * 6 + 8];
         json_escape(t->name, strlen(t->name), tname, sizeof tname);
-        fprintf(out, "{\"tensor\":\"%s\",\"source_type\":\"%s\",\"rows\":%llu,\"cols\":%d,"
+        fprintf(out, "{\"tensor\":\"%s\",\"source_type\":\"%s\",\"source_bytes\":%llu,\"rows\":%llu,\"cols\":%d,"
                 "\"weighted\":%s,\"types\":{", tname, ggml_type_name(t->type),
-                (unsigned long long)rows, n0, weighted ? "true" : "false");
+                (unsigned long long)t->nbytes, (unsigned long long)rows, n0, weighted ? "true" : "false");
         for (int k = 0; k < n_types; k++) {
             int ek = width_fallback(types[k], n0);
-            bool fits = type_fits_row(ek, n0);
+            bool fits = type_fits_row(ek, n0) && (ek != T_NVFP4 || nv_ok);
             // the --type-plan spelling (lower case), so a planner can write
             // the report's keys straight into a plan
             char tn[16], en[16];
@@ -3850,9 +4458,12 @@ int quantize_error_report_threads(const char *in_path, const int *types, int n_t
                 // divide the row
                 // null when not finite: a tensor holding a NaN or an
                 // overflowing value has no error to cost (R6.68.115)
+                uint64_t tbytes = ggml_row_size(ek, t->ne[0]) * rows;
+                if (ek == T_NVFP4 && t->type != T_NVFP4)
+                    tbytes += (uint64_t)nv_n * sizeof(float);
                 char nb[32];
                 fprintf(out, "{\"bytes\":%llu,\"error\":%s",
-                        (unsigned long long)(ggml_row_size(ek, t->ne[0]) * rows),
+                        (unsigned long long)tbytes,
                         json_numg(nb, 9, err[k] * sc2));
                 if (ek != types[k]) fprintf(out, ",\"written_as\":\"%s\"", en);
                 fputc('}', out);
@@ -3869,6 +4480,7 @@ int quantize_error_report_threads(const char *in_path, const int *types, int n_t
     }
     if (tp) tpool_destroy(tp);
     if (fclose(out) != 0) rc = 1;
+    free(nv_scratch);
     free(cost); free(wrow); free(err);
     gguf_close(&g);
     if (rc == 0)

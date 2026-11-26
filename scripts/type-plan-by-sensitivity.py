@@ -45,13 +45,30 @@ def load(path):
         return [json.loads(line) for line in f if line.strip()]
 
 
+def _rung_cost(r, rung, top_keep):
+    if top_keep and rung == "keep":
+        sb = r.get("source_bytes")
+        if sb is None:
+            sys.exit(f"error: {r['tensor']} has no source_bytes field required for 'keep' rung")
+        return {"bytes": sb, "error": 0.0}
+    c = r["types"].get(rung)
+    if c is None:
+        return None
+    if top_keep:
+        sb = r.get("source_bytes")
+        if sb is not None and c["bytes"] >= sb:
+            return {"bytes": sb, "error": 0.0}
+    return c
+
+
 def groups_of(rows, match, high, low, by):
     """Candidate tensors grouped, each group's added error and saved bytes."""
+    top_keep = high == "keep"
     groups = {}
     for r in rows:
         if match not in r["tensor"]:
             continue
-        h, l = r["types"].get(high), r["types"].get(low)
+        h, l = _rung_cost(r, high, top_keep), _rung_cost(r, low, top_keep)
         if h is None or l is None:
             sys.exit(f"error: {r['tensor']} has no {high if h is None else low} entry "
                      "(the type does not fit its rows, or the report did not cost it)")
@@ -68,11 +85,12 @@ def groups_of(rows, match, high, low, by):
 
 def ladder_groups(rows, match, ladder, by):
     """Candidate tensors grouped, each group's bytes and error at every rung."""
+    top_keep = ladder[0] == "keep"
     groups = {}
     for r in rows:
         if match not in r["tensor"]:
             continue
-        costs = [r["types"].get(t) for t in ladder]
+        costs = [_rung_cost(r, t, top_keep) for t in ladder]
         for t, c in zip(ladder, costs):
             if c is None:
                 sys.exit(f"error: {r['tensor']} has no {t} entry "
