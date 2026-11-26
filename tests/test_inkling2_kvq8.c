@@ -79,6 +79,35 @@ int main(int argc, char **argv) {
             for (int kv = 0; kv < 3; kv++) free(out[kv]);
         }
     plat_setenv("RUNNER_INKLING2_TEST_KV_RT", "");
+    // the device bytes the CUDA load and --info fit count for one slot (model_inkling2_dev_slot_bytes), on Inkling 2
+    // Mini's own shape at 64K (24 blocks, the loop 6..18 x 3: 8 full applications and 40 sliding; 8 K/V heads of 128;
+    // window 1024; hidden 2304; conv_k 4), each figure worked by hand from the driver's rounding (2 MiB from 1 MiB up,
+    // else 512 bytes) and the packed sliding rings (one allocation a side, 256-byte offsets)
+    {
+        ink2_shape rs;
+        memset(&rs, 0, sizeof rs);
+        rs.n_block = 24; rs.attn_res_block = 6; rs.loop_start = 6; rs.loop_end = 18; rs.loop_passes = 3;
+        for (int b = 0; b < 24; b++) rs.block_global[b] = (b + 1) % 6 == 0;
+        rs.hidden = 2304; rs.n_kv = rs.swa_n_kv = 8; rs.head_dim = rs.swa_head_dim = 128; rs.window = 1024; rs.conv_k = 4;
+        char why[128];
+        const int derived = ink2_shape_derive(&rs, why, sizeof why);
+        int n_full = 0;
+        for (int a = 0; derived == 0 && a < rs.n_app; a++) n_full += ink2_app_global(&rs, a);
+        CHECK(derived == 0 && rs.n_app == 48 && n_full == 8, "the real shape: %d applications, %d full (want 48 and 8)",
+              rs.n_app, n_full);
+        static const struct { int kind, batch; uint64_t want; const char *what; } dv[] = {
+            // 8 x 2 x 256 MiB full rings + 2 x 400 MiB packed (40 x 1279 rows x 4096) + 96 x 12 KiB + 4 MiB post
+            { INK2_KV_F32, 256, 4719771648ull, "f32, -b 256" },
+            // 8 x 2 x 68 MiB + 2 x 108 MiB packed (40 x 1279 x 1088, 256-aligned) + histories + post
+            { INK2_KV_Q8, 256, 1259470848ull, "q8, -b 256" },
+            { INK2_KV_Q8, 1, 1238499328ull, "q8, -b 1" },
+        };
+        for (size_t k = 0; derived == 0 && k < sizeof dv / sizeof *dv; k++) {
+            const uint64_t got = model_inkling2_dev_slot_bytes(&rs, 65536, dv[k].batch, dv[k].kind, true, 3, true);
+            CHECK(got == dv[k].want, "the device bytes of one slot at 64K, %s: %llu (want %llu)", dv[k].what,
+                  (unsigned long long)got, (unsigned long long)dv[k].want);
+        }
+    }
     if (fails) { printf("test_inkling2_kvq8: %d FAILED\n", fails); return 1; }
     printf("test_inkling2_kvq8: ok\n");
     return 0;
