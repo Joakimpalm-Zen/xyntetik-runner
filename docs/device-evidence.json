@@ -12,7 +12,7 @@
       "id": "windows-x86_64-cuda",
       "claimed_by": "README platform table, row 3: Windows x86_64, MinGW-w64 via MSYS2, CUDA on Turing or newer",
       "covers": "the MinGW build, every Windows-only path in the harness, and the only display-attached NVIDIA card in the lab, which is a test surface a headless datacenter GPU does not have (v0.4.2 reported every desktop card as unified memory and a headless box would have passed it)",
-      "host": "the Windows CUDA host, RTX 3070 8 GB, CUDA 13.3, MSYS2 UCRT64",
+      "host": "the Windows CUDA hosts, MSYS2 UCRT64: an RTX 3070 8 GB (CUDA 13.3) and an sm_120 GPU 12 GB (CUDA 13.5); last_verified names the card it ran on",
       "ownership": "owned",
       "expect": {
         "os": "windows",
@@ -20,19 +20,19 @@
         "gpu_backend": "cuda"
       },
       "last_verified": {
-        "date": "2026-10-24",
-        "commit": "33c2a08fee8fbd08dd564396466c7c532df12cf2",
-        "ran": "scripts/cuda-gate.sh on the v1.6.0 release commit (main 33c2a08f), RTX 3070, default routes: every step (tc-overflow, iquants, cuda-gated 297 passed with 3 allowed skips of 300, kv-fp4, nvfp4, qwen4exp, q3k, tc-kq, moe-legacy, varff, tc2-bytes, moe-twin, batch-id, spec-id, cpu-cuda on Llama-3.2-3B Q4_K_M) pass, build 0 warnings; the same build earlier in the run: runner --version 1.6.0, native XML routing 28/28, scripts/cuda-smoke.py 13/13 (docs/compat-reports/cuda-smoke-1.6.0-2026-10-24-rtx3070.json), clean-setup walkthrough pass (fit, -hf serve into an empty cache, the opencode example, shutdown, doctor)",
+        "date": "2026-11-26",
+        "commit": "0ea15c6e0050e4e413c50d70a045ea54545213b9",
+        "ran": "scripts/cuda-gate.sh: test-tc-overflow, test-cuda-iquants, test-cuda-gated, test-cuda-kv-fp4, test-cuda-kv-f32, test-cuda-nvfp4, test-cuda-qwen4exp, test-cuda-qwen35moe, test-cuda-q3k, test-cuda-tc-kq, test-cuda-i8, test-cuda-moe-legacy, test-cuda-varff, test-cuda-tc2-bytes, test-cuda-moe-twin, test-cuda-keepn, test-cuda-moe-replay, test-cuda-batch-identity, test-cuda-hybrids, test-cuda-olmo2, test-cuda-attn-wide, test-cuda-spec-identity, test-cuda-longrope, test-cuda-batch-columns, test-cuda-batch-q35, test-cuda-moe-limb-fixture, cpu_cuda_check (Qwen3-0.6B-Q8_0.gguf, 64 tokens)",
         "result": "pass",
         "caps": {
-          "version": "1.6.0",
+          "version": "1.22.0",
           "os": "windows",
           "arch": "x86_64",
-          "cpu_cores": 8,
+          "cpu_cores": 16,
           "gpu_backend": "cuda",
-          "gpu_name": "NVIDIA GeForce RTX 3070"
+          "gpu_name": "NVIDIA GeForce RTX 5070"
         },
-        "evidence": "docs/device-runs-2026-10-24/windows-x86_64-cuda/cuda-gate-20261024T123536Z.json"
+        "evidence": "docs/device-runs-2026-11-26/windows-x86_64-cuda/cuda-gate-20261126T063529Z.json"
       }
     },
     {

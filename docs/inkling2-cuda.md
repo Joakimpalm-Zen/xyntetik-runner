@@ -88,7 +88,7 @@ identity, transfer counts, slot ownership and injected failure refusals.
 
 On the rebased head `1fb25712`, a CUDA build reading the CPU fast route
 reproduces R4.48.24 run 3's read: the four fast rows are byte-identical, the
-100 Claim 1 answers are equal on their deterministic fields (wall time and
+100 run-3 answer captures are equal on their deterministic fields (wall time and
 the signed receipt excluded), and the 16-thread decode reads 0.986x
 llama.cpp `56eea9e4`'s (12.05 against 12.217 tok/s), against the 0.5x bar.
 

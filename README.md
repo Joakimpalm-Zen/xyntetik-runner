@@ -74,9 +74,9 @@ It takes about a minute to try: [quick start](#quick-start).
   <a href="docs/community-results.md">Community results</a>
 </p>
 
-> **Published release: 1.21.0.** The [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) is for prompt speed on a mixture-of-experts model on CUDA, for training on the GPU, and for the same reply on every Windows host. Gemma-4-26B-A4B's QAT Q4_0 file takes a new route for its expert products by default on CUDA: measured on one CUDA device class under Linux, its prompt runs 2.81x faster at 512 tokens and 2.41x at 2,048, with no difference shown in its distance from the publisher's float32 model (a paired ratio of 1.0018, 95% interval 0.9979 to 1.0069), and its decode is 0.6% slower. `--train-gpu` runs the whole training step on the device, 2.67x faster a step than 1.20.0 on an RTX 5070 host. A training record says how its run can be replayed, and `runner attest` checks it: a replay, an unlearning, a lineage, a segment or a random sample of segments. Concurrent requests on a dense Qwen3.5-family model (qwen35, such as Qwen3.8-27B) share one decode step on CUDA, 3.00x the total at 8 streams with every request's bytes unchanged. A Windows build takes the portable math by default, so one `runner.exe` gives the same reply on every Windows host, and the rope position table is computed the same way in every build. Output bits change once for many users, and a reply can change with them: on Windows, on the CPU's prompt path, for a model with rotary positions on any build that is not strict, and for that Gemma 4 file on CUDA; the pinned replies that moved are recorded again. The new route and the shared decode step were each measured on one CUDA device class, the training claim of one adapter across builds is for the measured model (Qwen3-4B) and the builds measured, and does not hold on Phi-3.5 mini, and no speed claim is made for the release as a whole.
+> **Published release: 1.22.0.** The [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) is for two new model families. Inkling 2 Mini runs from its community GGUF files with its own chat protocol, tool calls and reasoning channel. It takes a fast CPU route by default after a [pre-registered verification](docs/inkling2-cpu-default.md) passed, and runs on CUDA when opted in with `RUNNER_INKLING2_CUDA=1`. Three pre-registered claims were measured against llama.cpp and Unsloth's published build. Runner followed the publisher's float32 model's greedy answer on 40 of 100 prompts, against llama.cpp's 20 and Unsloth's 16; that is 94 of 100 after a stop-token erratum decided after the verdicts. Runner gave byte-identical answers alone and in a 9-request batch on 20 of 20 prompts at sixteen threads (provisional; the one-thread cells follow). Its loop guard with a reasoning budget left no answer stuck in reasoning and tied llama.cpp's reasoning budget on usable answers. OLMo 2 and OLMo 3 are admitted on the publisher's float32 reference, on the CPU, Metal and CUDA, with CPU LoRA training and tensor-core Q8_0 prefill on CUDA. Known limits: Inkling's CPU prefill is 0.70x llama.cpp's, its CUDA route is opt-in and was timed on one file, and on the CPU Runner decodes concurrent Inkling requests one at a time. OLMo's CPU and CUDA prefill are well below llama.cpp's, GPU training is refused for it, and its 7B file does not fit an 8 GB Apple device. The [CHANGELOG](CHANGELOG.md) lists every change and limit.
 
-> **Version `1.21.0`.** The command line, the HTTP API, the record formats and
+> **Version `1.22.0`.** The command line, the HTTP API, the record formats and
 > the model files that load stay compatible across 1.x
 > ([versioning policy](docs/versioning.md)). This page is the short version;
 > every flag, endpoint, limit and measurement is in the [manual](MANUAL.md).
@@ -526,7 +526,7 @@ passing evaluation made for those exact bytes.
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 1.21.0
+./runner --version   # -> runner 1.22.0
 ```
 
 Linux, macOS and Windows. NVIDIA GPUs need a driver with CUDA 13.0 support

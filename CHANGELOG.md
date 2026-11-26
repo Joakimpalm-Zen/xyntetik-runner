@@ -11,6 +11,811 @@ file each, until the release folds them in below. Add a new entry there, not her
 
 ## Unreleased
 
+## v1.22.0 - 2026-11-26
+### Features
+
+- **Inkling 2 Mini runs: two community files admitted at Tier 2, with the engine reading llama.cpp's inkling2_loop GGUF bit for bit the forward it gives on the publisher's checkpoint** (R4.48.6).
+  - **The loader:** `src/inkling2_gguf.c` reads the shape from the file's metadata (equal to the reference config, field for field) and serves the reference model's parameter names as float32 in the reference loader's order: an NVFP4 expert is `(E2M1 x UE4M3) x factor`, two float32 multiplies, with the factor read from the file's `.scale` (bit-equal to the publisher's amax / denominator); the static convolutions get their taps reversed back, the relative-position projection is transposed back, the twelve message queries are stacked, the head keeps the unpadded vocabulary. Every tensor is checked at open.
+  - **Runner's normal path:** `runner -m FILE` loads it (`src/inkling2_model.c`, the seam between the engine and `model_t`): `--score` and the forwards the engine and server make go to the engine, every prompt split giving the same rows. The 40 sliding layer applications keep their K/V for the window and the batch only (`ink2_cache_init_window`), the same rows bit for bit. `--info fit` reports the engine's own parts (the mapped file, the dense float32 tensors, the cache, the expert cache); `--info adapter` declares that the adapter paths do not cover it yet. The other ggml types a smaller file carries (Q8_0, the K-quants, IQ4) are decoded through Runner's own dequantizer, and a per-expert `.scale` is applied after the decode whatever the stored type, as llama.cpp's graph applies it.
+  - **Hardening:** `tests/test_inkling2_hardening.py` writes a tiny but complete inkling2_loop file, which loads and answers, and five damaged copies, each refused with a sentence (tensor data cut short, a `.scale` of the wrong length, a loop key missing, an NVFP4 stack without its `.scale`, an NVFP4 dense tensor). `tests/fuzz/fuzz_inkling_open.c` fuzzes the header and tensor-table checks from a valid seed. The GGUF source now builds the half-float table itself (`f16_init`), which a block type's scales are read through.
+  - **The gate:** `tests/test_inkling2_gguf.c` compares every tensor and every expert against the test-side provider on the publisher's safetensors (0 differing elements over 645 tensors and 6,144 experts) and runs three wrong decodes that must fail it (the factor dropped, the taps not reversed, the nibbles swapped). `tests/inkling2_read.c`, the read harness, reproduces step 1's recorded rows (sha256 `cbab5e99...` on the 2,000-id chat read) from the safetensors.
+  - **`scripts/gold-logits.py` takes a reference computed elsewhere:** `--gold-rows` and `--gold-ids` give the publisher's float32 rows from another process (here the dequantizing store of the R4.48 reads, because transformers skips the checkpoint's `modelopt` quantizer and a float32 model would need about 105 GB), and `--rows-a`/`--rows-b` give a side as full rows. The ids must begin with the corpus's own tokenization or the run stops; every metric runs through the existing code. `tests/test_gold_logits.py` gains a test in which the in-process reference and the rows path give the same record on a tiny model, and a perturbed gold row changes it.
+  - **The two rows:** `inkling-2-mini-ud-q8_k_xl` (unsloth's Mainline_Support `UD-Q8_K_XL`, the publisher's checkpoint bit for bit) and `inkling-2-mini-ud-q4_k_xl` (the same NVFP4 experts, Q8_0 elsewhere), both at `45fd0876`, listing `text` and `tools`. Against the publisher's float32 implementation (gold-logits, 1,991 positions a corpus), the exact file reads 1.3e-06 mean KL and 100% top-1 on chat and 0.0013 and 99.4% on raw text, where llama.cpp on the same file reads 0.0037 and 0.0078; Q4_K_XL reads 0.0042 and 0.0055 on full rows. `scripts/tool-protocol-check.py` passes all three cases buffered and streamed on both files. The validation smoke pins and records both on `linux-x86_64-cuda`, CPU cell. The evidence is `docs/compat-reports/inkling2-mini-reference-2026-11-22/README.md`.
+  - **Served on the server's threads:** a server loads each slot with a one-thread pool and swaps the shared pool in afterwards, so the engine, which read its count at bind, ran every served request on one thread; it now takes the count at use. Under ThreadSanitizer two pool races were found and fixed: the count was read outside the pool's lock, and a worker created by a resize could take up the previous loop. The rows do not depend on the thread count, by the pool's own record (`ink2_par_stats`): the exact file's rows are the same at 1, 4 and 16 threads and served at 2 and 13. `tests/test_inkling2_threads.c` (in `make test`, and under ThreadSanitizer in the CI race lane) holds it on the tiny file.
+
+- **Inkling 2 Mini CPU-default decision and its limits** (R4.48.24).
+  - Run 3 at `7bf8b64d` passes the pre-registered fresh-read bar and the fast CPU route is the release default; `RUNNER_INKLING2_ROUTE=reference` retains the reference route. Chat mean KL is 3.311354e-05 against reference 3.311425e-05, margin-qualified 1707/1707 on both; raw is 2.438582e-12 against 1.116652e-11, 1659/1659 on both. Each is below twice reference and both 8-bit activation controls fail as required. The fast rows are byte-identical at 1, 4 and 16 threads.
+  - **Shipped fast route, separate R4.48.24 rule (3):** fast 99/100 versus Runner reference 98/100 is a statistical tie: paired counts 98 both, one fast-only, zero reference-only and one neither; difference +1 percentage point, Newcombe 95% [-3.18, +5.78], McNemar p 1.0. It is not evidence that fast is better. Run 3's load range was 21.43 to 71.59; engines ran in blocks, not interleaved repetitions. The accepted run met every start residency gate.
+  - The earlier R4.48.19 envelope failed on both reads, as the reference route's would; that verdict stands. Runs 1 and 2 under the new bar failed chat; scalar SwiGLU made run 3 pass. The final rebase at `1fb25712` reproduced the four fast rows and 100 answers' deterministic fields, with decode 0.986x llama.cpp. [The file, reference setup, figures and limitations](docs/inkling2-cpu-default.md).
+
+- **Inkling 2 Mini: fast CPU route, SIMD NVFP4/BF16/Q8_0 kernels, decode barrier fusion, and house `tpool` dispatch** (R4.48.20).
+  - **Weights in place on the fast CPU route:** projections, the head, the embedding, and expert stacks are read directly from their stored GGUF formats (NVFP4, BF16, Q8_0, F32) and decoded in registers rather than materialized as float32 matrices or an expert cache (`--info fit` drops from 32.17 GiB on the reference route to 22.21 GiB on the exact file at 8K context). Norms, taps, queries, scales, and router weights remain small float32 decodes, and the reference route is unchanged.
+  - **SIMD kernels and wide-batch prefill:** adds NVFP4, BF16, and Q8_0 single-column and multi-column dots (`vec_dot`, `vec_dot_multi`) on NEON, AVX2+FMA, and AVX-512, SIMD BF16 `dequant_row`, and exact wide-batch prefill tiles (`vec_dot_exact_tile`) with explicit `fmaf` tails, keeping batch-width (`-b 1`, `-b 8`, `-b 64`, `-b 256`) and thread-count invariance on the fast route (on arm64, `test-dot-route` measures `0.46x` per-column loop time for 7-column NVFP4 `vec_dot_multi` and `0.68x` for 64-column NVFP4 exact tile against multi-8). Also vectorizes the fast-route attention core and SwiGLU (`exp`/`tanh`) and batches message-gate projections across tokens.
+  - **Dispatch, decode fusion, and memory:** moves `ink2_par` from a process-global condvar pool onto the house spin-wait `tpool` (`m->tp`) with thread-local pool binding and nested-worker serialization so concurrent server slots overlap inside `ink2_par` without serializing; fuses decode barriers and batches `T=1` active experts (`201 -> 89` barriers per decoded token on the 4-layer tiny fixture, with `RUNNER_INK2_DECODE_FUSE=0` as a kill switch); raises default prefill chunk size to `256` with lazy logits-row allocation (`--score` / `RUNNER_INKLING2_ROWS` only) and last-row-only prefill head; and prints `model_inkling2_threads` on the CLI load line instead of `0`.
+  - **Gates:** adds `tests/test_inkling2_fast.c`, `tests/test_inkling2_fast.py`, `tests/test_nvfp4_dot.c`, `tests/test_dot_route.c` NVFP4/tile ratios, `tests/test_inkling2_threads.c` concurrent 4T/2T overlap and nested-worker checks, `tests/test_inkling2_grad.c` fast-route backward refusal, and `Makefile` `test-gates-core` link checks for external-data Inkling tests.
+
+- **Inkling 2 Mini on CUDA** (R4.48.9).
+  - CUDA runs supported stored products, per-expert factors, attention blocks and K/V rings, expert bodies and loop message gates. An eligible plain single-position decode runs all 48 layer applications and the head on the device: only the embedding row and position go up and the logits come back. Adapters use the non-resident path with their attention terms on the host. Server slots share weights and own their histories; a failed device operation refuses the instance's later forwards.
+  - The CPU fast route retains main's scalar `ink2_swiglu`; CUDA uses its own `tanhf`/`expf` and reduction orders. The resident step is held byte for byte to non-resident CUDA execution across prefill, decode, chunk transitions and concurrent slots. The rebase preserves caller-sized attention scratch and its error status; a relative-probe allocation failure commits the host K/V chunk, advances `n_past`, leaves output untouched and returns the error, so the next chunk continues.
+  - On an sm_120 GPU (a 24 GB MIG slice), the exact Q8_K_XL file at revision `45fd0876`, SHA256 `2da51788d43a17e1f033bec420fa83ba9cb87ac1f0130dc9135a4d2ed2678b68`, decoded at 23.269 tok/s against 21.308 / 21.307: 1.092x. Prefill was 77.741 against 77.554 / 77.477 tok/s, not lower and equal within noise. All columns used explicitly aligned Inkling objects; shipped flags are unchanged. The earlier unaligned prefill gap was host code layout, not extra device work. This is one file and one aligned measurement build, not a general speed claim.
+  - At `1fb25712`, the CUDA suite passed 284 of 284 on Linux sm_120 and Windows sm_120, including Windows STRICT and release-recipe builds. Compute Sanitizer, with a positive control first and filters for `k_ink2_rms_rows`, `k_ink2_msg_norm` and `k_ink2_depth_attn_ix`, reported zero racecheck hazards/errors/warnings and zero synccheck errors; all 284 checks passed under each. This is scoped to those three kernels. [The exact file, speed window, arithmetic and limits](docs/inkling2-cuda.md).
+  - On the rebased head `1fb25712`, a CUDA build reading the CPU fast route reproduces R4.48.24 run 3's read: the four fast rows are byte-identical, the 100 run-3 answer captures are equal on their deterministic fields (wall time and the signed receipt excluded), and the 16-thread decode reads 0.986x llama.cpp `56eea9e4`'s (12.05 against 12.217 tok/s), against the 0.5x bar.
+  - The file smoke records per-backend environment overrides in each pin's settings and recorded command. Inkling's CUDA bind banner counts only for an explicitly opted-in Inkling row; a CPU fallback cannot become a CUDA pass. Existing backend pins without overrides keep their settings.
+  - The Q8_K_XL and Q4_K_XL files each matched their CUDA pin on `linux-x86_64-cuda` at `299cba11`, built with the release recipe and run under `taskset -c 0-15`. Both recorded pass with the Mercury fact found. The generated command names `env RUNNER_INKLING2_CUDA=1`; the marks apply to an sm_120 GPU (a 24 GB MIG slice), not the Windows class. The same runs recorded the engine's LoRA support answer. [The file rows](docs/model-support.md#inkling-2-mini-ud-q8_k_xl).
+
+- **Inkling 2 Mini: LoRA attention SFT training & serving on `inkling2_loop` (R4.48.10), and `enable_thinking: false` / `--think off` effort mapping (R4.48.16)**.
+  - **What it adds (R4.48.10):**
+    - Serial float32 checkpoint-recompute backward pass (`src/inkling2_bwd.c`, built strict with `-fno-fast-math -ffp-contract=off`), skipping unused logits allocations, retaining attention intermediates (`b_attn_fwd_save`), verifying bit-exact recompute (`memcmp == 0`), and reversing through depth residuals, message gates, top-k sigmoid MoE routers, static/dynamic short convolutions, fixed `log_tau` length scaling, L2 clips, relative bias, sinks, gated `o_proj`, and separate softcapped `lm_head`.
+    - Shared-layer adapter serving (`src/inkling2.c`, `src/inkling2_model.c`) and SFT admission (`src/model.c`, `src/dpo.c`, `src/main.c`, `src/inkling2_gguf.c`).
+    - CLI thread-count fix on `main`: `model_inkling2_threads` reads `r->n_threads` when `m->tp` is `NULL`, fixing CLI/`--score` forwards ignoring `-t` and running on 1 thread (`tests/test_inkling2_threads.c` case 4).
+    - MoE router bounds fix on `main`: `src/inkling2_gguf.c` refuses `expert_used_count` outside `1..expert_count` at open, and both top-k loops (`src/inkling2.c` forward and `src/inkling2_bwd.c` backward) break on `best < 0`, preventing a `chosen[-1]` write when `K > E` (`tests/test_inkling2_hardening.py`).
+    - Leak & error fixes: `model_free` (`src/model.c`) frees adapters via `model_lora_free` before `model_inkling2_free` zeroes `m->ink2` (64 leaks / `71,680` B on macOS `leaks --atExit` -> `0` leaks after across 13 OOM sites; Linux CI LSan covers `tests/test_inkling2_train.py` in scheduled/dispatched `suite-sanitized`); all OOM/failure paths in `src/inkling2_bwd.c`, `src/inkling2.c`, and `src/main.c` (`step %d`) emit stderr errors; `lora_parse_tensor` sizes `s_name` to `gguf_tensor.name` (`128` bytes), requires exact `%n` end-of-name match, and refuses truncation/overflow instead of cutting at `95` bytes (`tests/test_inkling2_train.py::test_adapter_long_tensor_name_handling`). That `%n` end-of-name check also fixes a defect on `main` across every family where the serving loader accepted suffixed names such as `...weight.lora_a2` as side `'a'` and let them silently overwrite `lora_a`.
+  - **What it adds (R4.48.16):** maps `enable_thinking: false` (without non-null `reasoning_effort`) and `--think off` / `--no-think` to effort `"none"` (`0`, `req_inkling_effort` / `template_inkling_effort_none` in `src/template.c`, `src/server.c`, `src/main.c`) and fixes `J_NULL` in `chat_template_kwargs.reasoning_effort` shadowing top-level effort (`src/template_inkling.h`). Real checkpoint at effort `none` still reasons first (content `0 B`; reasoning `192 B` at 48 tokens, `701 B` at 160), so `"none"` selects least effort, not thinking off.
+  - **Gates and verification:**
+    - Fixture (`tests/test_inkling2_hardening.py`, 3 passes / `8` apps): components under `0.25` value share were rescaled (`attn_sink_proj` `0.05 -> 0.22`, `loop_*_ctrl_*` `0.05 -> 0.15`, `loop_msg_query` `0.10 -> 0.20`): before -> after value shares are `relative_position_bias` `1.1239 -> 1.1461`, `sink` normaliser (`std(exp_sk)/std(sum_exp_k)`) `0.0622 -> 0.5564`, short convs `0.3954..0.4849`, `pass 1` vs `pass 0` `0.0497/0.0665 -> 0.5826/0.8992`, `pass 2` vs `pass 1` `0.0035/0.0044 -> 0.4703/0.7021`; `relative_position_bias` derivative share is `median 1.1775` / `min 0.9288` (`xq`) and `median 0.7929` / `min 0.6364` (`h`).
+    - Parameter & thread gate (`tests/test_inkling2_grad.c`): exact snapshot `memcpy` restore; stiff per-coord FD (`96` coords: `19` floor-assisted, `16` above `floor(h) = 2e-3 * (1e-3 / h)`, worst abs `0.01358`, worst rel `0.3354`) with hard gate `cosine >= 0.9999` (`0.999999`). Fixed-step directional probes (`5e-5f` sign, `2e-4f` Rademacher, `|fd - an| / ||g_block||_1 <= 0.005`) pass on committed `+0`, `+1000003` and scratch `+2000006`, `+3000009` (`max_true = 0.00117`, `0` redraws). All 8 parameter/thread/recompute controls fail cleanly: `thread_order_dep` (breaks 4-thread bit-identity), `drift_ckpt` (app 7), `drop_pass1` (`0.24402`), `drop_pass2` (`0.74174`), `scale_102` (`0.02524`), `drop_router` (`0.03069`), `drop_sink` (`0.02809`), `drop_dynconv` (`0.05459`). Threads `-t 1/2/4` (`memcmp == 0` on loss `120.085634` and `32` grad buffers), `tests/test_inkling2_threads.c`, and `test-inkling2-threads-tsan` pass; `12` C and `13` Py OOM sites fail with stderr errors.
+    - Isolated `relative_position_bias` branch probe (`ink2_set_rel_probe`, inert unless `RUNNER_TEST_INK2_REL_PROBE` set; app-0 sweep `{1e-4..1e-2} x rms` froze `3e-3f` sign [`0.000014`] and `1e-2f` rand [`0.000024`]): all `8` apps pass (`max_true = 0.00153 <= 0.005`); `c1` (`drop_relbias`, `1.00000`) and `c2` (`scale_relbias_102`, `0.02155`) FAIL the gate as required; `c3` (`eps=0` bit-equal loss `120.085634`) and `c4` (`eps=0.003` shifted loss `120.094946`) behave as required.
+    - End-to-end & non-regression: `tests/test_inkling2_train.py`, `tests/test_inkling2_protocol.py`, `tests/test_lora_grad.c`, `tests/test_lora.py`, `tests/test_moe_lora.py` pass (`53 passed, 1 skipped`); `template-conformance.py` (`37/37`) and `test-template-families` (`43` families) pass.
+  - **Gate and fixture history:** The Rademacher step started at `1e-3` (a holdout failed on truncation), and a `2e-4` relative-to-`|g . d|` rule then failed on float32 loss noise, so L1 gradient-norm scaling replaced it. The fixture's sink and loop controller weights were rescaled under the value-share rule (`>= 0.25`) so dropped terms are visible. Because residual paths still masked `relative_position_bias` in parameter-gradient probes on this fixture, the isolated relative-branch probe was added to gate it directly.
+
+- **Read Inkling 2 Mini's tokenizer and render its native chat protocol** (R4.48.13).
+  - The GGUF pre-tokenizer name `inkling2` now selects the o200k split and
+    ignore-merges rule instead of the unknown-name GPT-2 fallback.
+  - The publisher tokenizer differential changes from 21 differences in
+    721 fixed strings to zero. A one-merge negative control fails as expected.
+  - The native chat renderer matches 35 publisher-template cases byte for
+    byte and token for token, including every named effort and numeric levels.
+    A changed-byte negative control fails the gate.
+  - Zero-capacity rendering does not write through the caller's pointer;
+    the capacity sweep now includes zero and Inkling NULL size queries.
+  - Additional checks cover structured history and template edge cases.
+    Images remain an explicitly refused HTTP capability; unsupported
+    structured API adapters refuse Inkling rather than drop fields.
+  - Vocabulary differential: zero differences on 197,979 whole-UTF-8 entries,
+    with 2,019 partial-UTF-8 pieces explicitly excluded. Disabling
+    ignore-merges gives 337 differences. Only declared EOS/EOG IDs stop
+    Inkling generation; the padding token no longer ends a turn.
+  - Native tool protocol `TP_INKLING2` parses and demultiplexes
+    `<|message_model|>[name]<|content_*|>` turns (reasoning, text, tool JSON,
+    and parallel calls) across streamed and buffered `/v1/chat/completions`
+    responses, with `schema_compile_inkling2_turn` enforcing valid calls and
+    `sval_close` closing truncated turns at any boundary to schema-valid JSON.
+  - Plain Inkling chat without declared tools (`TP_INKLING_PLAIN`) demuxes
+    reasoning and text channels only, never spells `<|content_invoke_tool_json|>`
+    or emits `tool_calls`, and reports malformed frames consistently with
+    `envelope_error` in both streamed and buffered paths.
+  - Unconstrained Inkling chat (`!constrain && !schema && !json_mode`) stops
+    generation immediately on participant turn headers (`<|message_user|>`,
+    `<|message_system|>`, `<|message_tool|>`) via `req_stop_ids` without
+    decoding further tokens or leaking headers into `content` or
+    `reasoning_content`, records `ended_at="turn_header"` and `turn_header` in
+    `runner_telemetry` and receipt `serve` metadata, and replays identically
+    under `--verify` (while leaving `/v1/completions` and `tok_stop_ids` at the
+    publisher EOS-only configuration).
+  - Reasoning budget (`--reasoning-budget` / `reasoning_max_tokens`) and the
+    loop guard (`--loop-guard`) bind single-token control markers
+    (`<|content_thinking|>` and `<|end_message|>`) via
+    `engine_bind_think_tokens` and close long or repeating deliberation with
+    `<|end_message|>` before continuing the answer; models without a
+    single-token `<|end_message|>` refuse `reasoning_max_tokens` with HTTP 400.
+  - This step completes protocol parsing, grammar closure, and reasoning
+    transitions; weights download, GPU runs, and live-model inference remain out
+    of scope here.
+
+- **OLMo 2 and OLMo 3 admitted on the publisher's float32 reference** (R4.50.6.1).
+  - `olmo2` moves from `architectures_pending` into `--caps`' admitted list. CPU, Metal and CUDA forward paths are
+    implemented; LoRA training runs on the CPU. Experts and a non-default YaRN attention factor are refused by name.
+  - Two file rows, each with both reads against its publisher's float32 reference, default f16 KV, 2,000 positions:
+    - OLMo-2-0425-1B-Instruct-F16: its own Runner mean KL 1.0642e-04, llama.cpp 1.1261e-04; their 95% intervals overlap,
+      both at 100% margin-qualified top-1.
+    - Olmo-3-7B-Think-Q8_0: Runner mean KL 1.3671e-03, llama.cpp 9.1434e-02, separated intervals;
+      margin-qualified top-1 100% and 95.77%, plain top-1 98.55% and 85.25%.
+  - OLMo 3's template passes 48 of 48 cases in text and tokens. Its native fields render; modern OpenAI tool requests
+    are refused rather than silently dropped. The support rows, manual and site carry the same limits.
+  - The six x86 release-recipe pins are committed for linux-x86_64-cuda CPU/CUDA and windows-x86_64-cuda CUDA.
+    All eight class/backend clean-rebuild comparisons pass. The roster shows the latest cell per backend:
+    CPU/CUDA now name linux-x86_64-cuda, while the earlier successful class runs and all pins remain evidence.
+    No unrun file or backend inherits a pass. The unmeasured Q8_0 1B and Q4_K_M 7B siblings are not admitted.
+  - The real-file compatibility matrix passed every declared check on both rows: load, tokenizer, cpu_cuda and
+    chat. The 7B's cpu_cuda is a margin-qualified pass: 8 of 9 exact, one near tie in the dense band.
+    `scripts/compat_matrix.py` now counts that as complete, as the rest of the tree already does.
+  - [The record](docs/compat-reports/olmo2-admission-2026-11-24/README.md), with each reference read's records in
+    `reference-records/`. They include a llama.cpp read of the 7B with only its YaRN attn_factor set to 1.0:
+    2.4031e-03, 38 times lower than on the file as published. Runner stays closer on the published file.
+  - The Instruct 1B row follows its own bar and 16/16 token-conformant template. The base 1B row is removed:
+    its chat attempt echoed the prompt, and its numerical evidence is disclosed separately, never inherited.
+    The 7B Think rerun uses a fixed 3,072-token cap with the same fact/length guards;
+    ignored thinking flags are omitted. Failed fact checks report reasoning-channel size without accepting it
+    as the answer. No failed run writes a pin or passing record.
+  - On macos-arm64-metal, the Instruct F16 CPU and Metal replies each match their own committed pin after a
+    clean rebuild, and the tool records both passes. The first CPU attempt timed out under paging; a separate
+    retry after RAM was freed passed with the same request and 1,800-second limit. The earlier timeout remains
+    disclosed, and no CPU pass is inferred from Metal.
+
+- **olmo2 (OLMo 2 and OLMo 3) runs on the CPU, gated on a generated file; its admission is pending** (R4.50.1).
+  - **What it is:** the block the publisher's `modeling_olmo3` runs, with llama.cpp's olmo2 file names
+    (`post_attention_norm`, `post_ffw_norm`, the full-width `attn_q_norm` and `attn_k_norm`):
+    - RMSNorm after attention and after the MLP only, with no pre-norm;
+    - one QK norm over the whole q and k projections before the rotation, not one per head;
+    - SwiGLU, no biases, NeoX rotation, an untied head.
+    - OLMo 3's sliding window covers 3 of every 4 layers, from `attention.sliding_window_pattern` (one bool a layer;
+      the publisher's 3-in-4 when it is absent).
+    - YaRN applies to the full layers only. The sliding layers rotate at the global base, unscaled and at magnitude
+      1, as the publisher's `rotary_embs["sliding_attention"]` does.
+    - A file without the window key is OLMo 2: every layer full.
+  - **The gate:** `tests/test_olmo2_cpu.py`, on files `scripts/make-test-olmo2.py` writes: 4 layers, a window of 8,
+    YaRN with a mixed correction range. Red first: main refused every olmo2 file (24 of its 31 tests failed; the 7
+    llama calibration tests passed).
+    - The anchor is `tests/olmo2_reference.py`, the publisher's equations in float64 numpy. The runner's logprobs,
+      159 positions by 256 ids, sit within 2x the script's own float32 rounding of it on every route:
+      - the default route at 1 and 4 threads, and the batched route at `-b` 1, 8 and 64;
+      - OLMo 3: worst 3.049e-6 against a bound of 5.917e-6;
+      - OLMo 2: worst 2.785e-6 against 5.772e-6;
+      - the plain llama fixture: 1.508e-6 against 4.380e-6, the check that the rule passes an admitted family.
+    - Four wrong ports read 0.85 to 3.31 from the runner, over 1e5 times the bound:
+      - each head's QK norm on its own;
+      - the sliding layers on YaRN;
+      - a pre-norm kept;
+      - the window off.
+    - The thread count changes no bit, and `-b 1` is the decode route.
+    - `-b 8` and `-b 64` agree before `-b 8`'s last chunk. That chunk differs on a plain llama file on main too.
+    - The default pattern equals the array's.
+    - The llama fixture's bits are unchanged from main.
+  - CI installs numpy for the reference (`tests/ci/requirements.txt`).
+  - The gate's tolerance was first set at twice the llama fixture's distance (3.016e-6). It was replaced after
+    data, when olmo2's batched route read 3.049e-6 against it. Llama's distance is not olmo2's float32 tolerance:
+    the same rounding moves olmo2's equations about twice as far.
+
+- **olmo2 (OLMo 2 and OLMo 3) runs on the Metal backend** (R4.50.4).
+  - **Host Metal wiring (`src/metal.m`):**
+    - `metal_upload_layers` allows absent pre-norms (`LC_IF_PRESENT`) when `post_norm_only` is set (keeping `LC_REQUIRED` for pre-norm and Gemma sandwich-norm models) and uploads full projection widths (`l_q_dim` / `l_kv_dim`) for `qn` / `kn` when `qk_norm_full` is set.
+    - `metal_enc_attn_in`, `metal_enc_ffn`, and `gpu_batch_decode` skip pre-norm dispatches when `nil`, read `g->x` (stride `n_embd`) directly into Q/K/V and SwiGLU projections, and dispatch in-place `enc_rmsnorm_n` over `q_dim_l` / `kv_dim_l` instead of per-head `enc_qknorm_n`.
+    - `metal_front_pipe` refuses `!g->attn_norm[l]` and `qk_norm_full`; `f2a` and `f2b` guard on `g->ffn_norm[l]` and `g->attn_norm[l + 1]`; F1 decode fusion (`k_rope_store`) stays active.
+  - **The gate (`make test-metal-olmo2`, wired into `test-metal`):**
+    - Red first on `50f21096`: Metal refused `olmo2` via `cpu_only` and `test-gpu-identity` skipped.
+    - Green on `scripts/make-test-olmo2.py` fixtures (OLMo 3 default, `--gqa`, `--plain`): `GPU_ID_LIMIT=1e-5 test-gpu-identity` (prefill+decode, decode-only `n_batch=1`, partial `-ngl 2`; measured residues `7.16e-6`, `8.35e-7`, `1.78e-6` of range), F1 decode fusion byte-identity (`RUNNER_METAL_FUSE=0` vs default), quantized Q8_0 `RUNNER_METAL_FRONT=all` refusal guard, `test-batch-identity`, and `test-spec-identity`.
+  - No new Metal shader kernels are added: existing `k_rmsnorm`, `k_rope` / `k_rope_store`, `k_silu_mul`, and SWA attention kernels cover every `olmo2` op.
+
+- **olmo2 (OLMo 2 and OLMo 3) runs on CUDA** (R4.50.5).
+  - **What it is:** no new kernel, only host wiring in `src/cuda.c`:
+    - a block without a pre-norm hands its branch the residual itself: a column copy into the branch's input, in
+      the prompt's tile and in the microbatch's decode;
+    - the QK norm runs one group over the whole q and k projections, `k_qknorm` over q_dim and kv_dim as a single
+      head, with its weights uploaded at those widths;
+    - the post-norms, the sliding window on 3 of every 4 layers and YaRN on the full layers ran already.
+    - `src/arch.h`: with Metal's R4.50.4, olmo2 carries no CPU-only field at all: both GPU backends run it.
+  - **The real file:** on the same chat, the CUDA route against the CPU's, full-vocab logits:
+    - f16 KV: top-1 354 of 354, KL mean 4.4e-8 (max 4.0e-7), the worst position's largest logit difference
+      1.9e-4 of its range;
+    - q8 KV: top-1 354 of 354, KL mean 3.0e-5;
+    - 8 of 16 layers on the device reads the same.
+  - **The gate:** `make test-cuda-olmo2`, a step of `scripts/cuda-gate.sh`, on `scripts/make-test-olmo2.py`'s five
+    fixtures (OLMo 3, OLMo 2 with `--plain`, `--gqa`, and 32-wide heads with `--head-dim 32`, with and without
+    `--gqa`), 51 arms:
+    - `test-gpu-identity` at `GPU_ID_LIMIT=1e-5`: prefill batch 32 and 1, and 2 of 4 layers on the device.
+      Measured 1.9e-6 to 7.9e-6 of range, the f16 KV rows' rounding (Metal measured 7.16e-6 on the same OLMo 3
+      fixture).
+    - With f32 KV rows in both arms (`GPU_ID_KV=f32`, new) the residue is 6.9e-8 to 8.4e-8, held to 1e-6.
+    - The compact KV caches where they engage, at prefill batch 32, 7 and 1. q8 and k8v4 need a head width
+      that is a multiple of 32; fp4, of 16.
+      - An arm whose cache did not engage fails: gpu-identity now checks that the load took the cache, and a
+        `keeping f16` note fails the gate. Red first: the head-16 q8 and k8v4 arms this gate ran before had
+        kept f16, and they fail it.
+      - Five arms hold 1e-5, measured near 5e-8: h32 k8v4, h32-gqa with q8, k8v4 and fp4, and OLMo 3 fp4.
+      - Two hold the house's compact-cache bound of 1e-3: h32 q8 and gqa fp4. On these toys a compact cache turns
+        the CPU arm's own reassociation into whole code steps. At `MV_SMALL_BATCH` (8) columns or more its
+        products take the f32 tile, below it the native dot, and its own logits move between the two by 6.25e-5
+        and 3.19e-5 of range. The device is byte-identical at every width.
+      - Those two arms are not vacuous: the QK norm taken per head fails them at 0.0588 and 0.0792, and the K
+        norm dropped at 0.107.
+    - `test-batch-identity` (the microbatch, byte for byte) and `test-spec-identity` (the verify rows).
+    - Red first: on main the load ran olmo2 on the CPU and said why, and the gate failed on its first fixture.
+    - Six mutants of the wiring each fail it, the smallest at 2.47e-3 of range, 247x the bound:
+      - the QK norm taken per head;
+      - the K norm dropped;
+      - the attention input normed with the post-attention norm;
+      - the sliding window dropped;
+      - the sliding layers rotated with the full layers' YaRN table, or given their YaRN magnitude.
+
+- **olmo2's Q8_0 prefill takes CUDA tensor cores by default** (R4.50.9).
+  - The real Olmo-3-7B-Think Q8_0 file passes both gates: `test-tc-tol` reads 0.004% of logit range and
+    0 / 64 flips; against the publisher's float32 reference over 2,000 positions, forced TC reads mean KL
+    1.3625e-03 versus 1.3717e-03 off (0.9933x), Wilcoxon p 0.103, McNemar p 1.0.
+    Plain top-1 is 98.50% versus 98.55%; margin-qualified top-1 stays 100%.
+  - The measured speed bar passes on five interleaved rounds of one clean STRICT db58bb2b binary:
+    prefill at 512 / 2048 is 7.31x / 5.30x the opt-out on OLMo-2-0425-1B-Instruct Q8_0,
+    and 9.07x / 6.80x on Olmo-3-7B-Think Q8_0. Median decode is 0.996x and 1.001x, above the
+    predeclared 0.98x floor. The evidence includes every median and min-max range.
+  - The host policy check fails before promotion and passes after it. The CUDA gate checks the default Q8_0
+    route and its dispatch counter, the opt-out, and an unmeasured type staying off.
+  - `RUNNER_CUDA_TC=0` keeps the scalar route. [The evidence](docs/tc-promotion-evidence.md#olmo2-q8_0-r4509-2026-11-24).
+
+- **LoRA training on olmo2 (OLMo 2 and OLMo 3), on the CPU** (R4.50.3).
+  - **What it is:** the trainer's own copy of the forward recomputes and differentiates the olmo2 block as the
+    serving forward runs it:
+    - the attention and the MLP read the residual itself, so the input gradients pass straight through where the
+      pre-norms' adjoints were;
+    - the post-norms' adjoints sit on each branch output before the residual add;
+    - the QK norm's adjoint is one group over the whole q and k projections.
+    - The sliding window and YaRN on the full layers need nothing new in the backward.
+  - **The gates:**
+    - `test-lora-grad` on both fixtures, every adapter slot, with f32 KV rows:
+      - 168 of 168 coordinates resolved;
+      - cosine 1.000000;
+      - the whole-adapter directional derivative within 0.03%;
+      - each slot's within 2e-5.
+    - Its live control takes the QK norm's adjoint per head while the forward stays full width (a TEST-ONLY model
+      field only the gate sets). That moves the q and k slots' directional derivatives by 9.7% and 3.1% (OLMo 3)
+      and 10.2% and 4.6% (OLMo 2), past the 2% the gate holds the real gradient to, and the gate asserts it fails.
+    - `tests/test_train.py`:
+      - the adapter is byte-deterministic;
+      - the batched taped forward trains the solo bytes;
+      - `-t 1` and `-t 3` train the same bytes;
+      - the loss falls in 30 steps, and the adapter, served through `--lora`, scores the text better than the base.
+    - `tests/test_rollout_identity.py`: the trainer's taped forward scores a served rollout's tokens with the
+      server's own logprobs, byte for byte.
+    - `tests/test_olmo2_cpu.py`:
+      - a zero adapter serves the base byte for byte;
+      - an adapter on all seven projections serves within 5e-4 of the merged weights, and moves the score.
+  - Red first: the R4.50.1 build refused olmo2 training by name, and 11 of these tests failed there.
+  - Its gradient gate runs with f32 KV rows. With f16 rows, the norms on every branch output amplify the rows'
+    rounding into the loss: a third of the per-coordinate differences went unresolved, against none with f32
+    rows.
+
+- **OLMo 3's chat template, rendered exactly** (R4.50.2).
+  - **What it is:** a new `olmo3` template (`--chat-template olmo3`), detected from allenai/Olmo-3-7B-Think's own
+    template. It is keyed on the native fields, the `environment` role and the publisher's default system turn.
+    It writes every branch of that template:
+    - the default system turn when no message is a system message;
+    - a system turn's `<functions>` suffix, or the "no functions" sentence;
+    - a user turn's `<functions>` line;
+    - an assistant turn's `<function_calls>` block;
+    - the eos token ending a last assistant turn;
+    - `environment` turns;
+    - a generation prompt that opens the thought (`<|im_start|>assistant\n<think>`).
+    - A request declares functions as a string in `messages[].functions`, replays a call as a string in
+      `messages[].function_calls` (the turn's content may then be null), and returns its result as an
+      `environment` turn. A non-string value is refused.
+  - **Evidence:**
+    - `scripts/template-conformance.py` gains the `olmo3` family (the publisher's `chat_template.jinja`, revision
+      d97e442d) and `olmo3-gguf` (the Hub GGUF's `tokenizer.chat_template`, the same bytes): 24 of 24 cases each,
+      byte for byte and token for token. Under the `chatml-think` rendering Runner chose for this template before,
+      all 22 cases it compared differed.
+    - The tokenizer matches transformers' on 721 of 721 corpus strings and on all 99,474 whole vocabulary entries
+      (`tests/compatibility/tokenizer-references/olmo-3-7b-think.tokenizer-json.json`).
+    - Offline, `tests/test_template.c` pins the branches.
+    - `tests/test_olmo3_template.py` holds the refusals and the native fields on a served file.
+
+- **OLMo 2 Instruct's chat template, rendered exactly** (R4.50.10).
+  - **What it is:** a new `olmo2` template (`--chat-template olmo2`), detected from
+    allenai/OLMo-2-0425-1B-Instruct's own template. Runner took it for zephyr before, which ends every turn with a
+    literal `</s>` and writes no BOS. It writes every branch of the publisher's template:
+    - the BOS once;
+    - a system or user turn ending with a newline;
+    - an assistant turn ending with the end-of-text token, then a newline unless it is the last message;
+    - the generation prompt after the last message.
+  - **Evidence:**
+    - `scripts/template-conformance.py` gains the `olmo2` family (the publisher's template, revision 48d788ec, the
+      same bytes as its GGUF's): 16 of 16 cases byte for byte and token for token. Under the zephyr rendering, all 16
+      differed.
+    - Its tokenizer is OLMo 3's, byte for byte (vocabulary, merges, pre-tokenizer and added tokens), which
+      `tests/compatibility/tokenizer-references/olmo-3-7b-think.tokenizer-json.json` already holds against
+      transformers.
+    - `tests/test_template.c` pins the branches offline.
+    - `tests/test_olmo2_template.py` holds on served files:
+      - the refusals;
+      - the BOS once with `add_bos_token` set. Before the guard, the prompt opened with two;
+      - a raw prompt's BOS as before;
+      - the template on a file with another EOS staying zephyr (it read olmo2 before the guard).
+    - On the publisher file's own metadata (its header, no weights), through the marked render the chat surfaces
+      use: detection is olmo2, and the chat prompt opens with one BOS whether `add_bos_token` is off (the
+      publisher's) or forced on.
+
+- **Tulu 3's chat template, rendered exactly** (R4.50.11).
+  - **What it is:**
+    - Tulu 3's template is in allenai/Llama-3.1-Tulu-3 8B, 70B and 405B. allenai/OLMo-2-0325-32B-Instruct ships it
+      byte for byte.
+    - It is OLMo 2 Instruct's template without the BOS. Runner read it as zephyr before, which ends every turn with
+      a literal `</s>`.
+    - It now writes every branch of the publisher's template:
+      - no BOS (the tokenizer's, where it adds one: Tulu 3's does, OLMo 2's does not);
+      - a newline after a system or user turn;
+      - the file's end token after an assistant turn, then a newline unless it is the last message;
+      - the generation prompt after the last message.
+    - `olmo2` shares the rendering after its BOS, and its cases are unchanged.
+  - **Evidence:**
+    - `scripts/template-conformance.py` gains two families, pinned to the publishers' templates:
+      - `tulu3`: allenai/Llama-3.1-Tulu-3-8B at 66694379;
+      - `tulu3-olmo2`: allenai/OLMo-2-0325-32B-Instruct at 6be039a1.
+    - Each passes 16 of 16 cases byte for byte and token for token. Under the zephyr rendering, all 32 differed.
+    - `tests/test_template.c` pins the branches offline.
+    - `tests/test_tulu3_template.py` holds on served files:
+      - detection by the file's EOS;
+      - the file's own end token closing an assistant turn;
+      - the BOS once;
+      - the refusals.
+
+- **A recurrent model pins a named context on CUDA too; on the Metal backend it is still refused** (R4.48.22).
+  - **What was refused:** `POST /v1/runner/contexts` and a context import refused a recurrent model on a device
+    (qwen35 and qwen4exp, granite hybrid, nemotron-H on CUDA). The refusal dated from 2026-10-02, when the prefix
+    cache could not fork a device-resident recurrent state. Since R4.26.7 the automatic prefix cache forks one: the
+    recurrent blob save pulls the device layers' state through the host buffers and the load pushes it back. So a pin
+    refused what the automatic cache already served. On CUDA the pin and the import now take the same path. The refusal
+    messages name the one recurrent case left, a recurrent model on the Metal backend, with the `--gpu off` advice; the
+    ring and tied-V cases keep their own sentence.
+  - **The gate:** `tests/test_recurrent_device_contexts.py` (a CUDA or Metal device; it skips elsewhere), every
+    server's log showing the device and `RUNNER_GPU_FALLBACK=fail` refusing a fall to the CPU.
+    - On the Metal backend, for every recurrent family that runs there (qwen35, granite hybrid, nemotron-H, and lfm2
+      as its `--wide` fixture quantized to Q4_K): the automatic tier forks on the device; the pin is refused with
+      `409` naming the Metal backend; a snapshot pinned on the CPU and imported on Metal is refused the same way.
+      qwen4exp runs on the CPU under Metal (its load line is held) and skips there. Red first: on the lift alone the
+      four Metal pins succeeded (`200`).
+    - On CUDA it holds qwen35, qwen4exp, granite hybrid and nemotron-H:
+      - the automatic tier forks a prompt's prefix on the device (no test held it before);
+      - a pinned context's answer is the automatic fork's bit for bit, and a cold prefill's text with its logprobs to
+        1e-5;
+      - the context exported to a snapshot file and imported into a new process answers as the pin did.
+  - **Found on the way:** qwen4exp's import differs from its pin by up to 1.0e-4 in its logprobs (the same text), on
+    the CPU as on CUDA. With the test fixture's PLE n-gram block zeroed the import is the pin's bit for bit, so the
+    PLE state a new process restores is not quite the pin's. The gate holds qwen4exp's import to its text and 1e-3;
+    the other three families' imports are bit for bit.
+
+- **A recurrent model pins a named context on the Metal backend too: the pin prefills as a completion does**
+  (R4.48.22.2).
+  - **The cause:** the pin prefilled its prompt as one batch. A completion on a recurrent model prefills all but the
+    last prompt token, then that token alone, and the automatic prefix cache forks that fold. The CPU and a default
+    CUDA build give the same bits either way. A T3 build on CUDA did not (qwen4exp, `4.8e-7` in logprobs), and the
+    Metal backend did not: there prefill chunks of 4 or more take the tiled GEMM, and a pin answered differently from
+    the automatic fork (nemotron-H by up to `4.7e-7` in logprobs, lfm2 more), so R4.48.22 refused it on Metal.
+  - **The fix:** one helper, `engine_feed_prompt`, builds the recurrent prompt prefill for a completion and for a pin
+    (both of the pin's entry points). So a pin's state is the automatic prefix cache's on every backend and build, by
+    construction: the T3 CUDA build and the Metal backend included. R4.48.22's Metal refusal is lifted, and the refusal messages are the ring and tied-V ones again. No
+    shader changes.
+  - **The gate:** `tests/test_recurrent_device_contexts.py` on the Metal backend, for qwen35, granite hybrid,
+    nemotron-H and lfm2 (its `--wide` fixture quantized to Q4_K):
+    - the automatic prefix cache forks on the device;
+    - a pinned context's answer is the automatic fork's bit for bit;
+    - a cold prefill's text is equal (the first gate of the house's prefill-GEMM class, `tests/test_tc_tol.c`, which
+      holds teacher-forced logits this test does not observe). Its logprobs are within 2x the worst gap measured over
+      5 repeated runs (all equal), per weight type: `1.334e-5` on F32 weights, `6.98e-3` on lfm2's Q4_K;
+    - an export and an import into a new process give the pin's bits;
+    - the `messages` entry point too: a chat prefix pinned by messages, then a chat request naming it, answers as the
+      automatic fork of the same tokens bit for bit, with the cold prefill's text equal, on the device and on the CPU
+      (where the cold logprobs are the pin's bit for bit). With the pin's prefill reverted to one batch, the Metal case
+      fails for qwen35, nemotron-H and lfm2.
+    - Red first: without the helper, nemotron-H and lfm2 failed "pin equals the automatic fork" on Metal.
+    - On the CPU the helper changes no byte. A pin's snapshot `.kv` and a request naming it are identical to the
+      previous build's for qwen35, qwen4exp, granite hybrid, nemotron-H, lfm2 and an attention-only model.
+
+- **A recurrent model's prefix fork finds a used pin and a re-asked prompt again** (R4.48.22.4).
+  - **The gain:**
+    - A pinned context, used once and then after an unrelated prompt, is served again (it was `409
+      context_unavailable`).
+    - The automatic tier's re-ask of a prompt after an unrelated one forks the earlier prompt's entry: 162 tokens
+      cached on the test fixture, where it prefilled cold.
+  - **What was wrong:** two things in the shared prefix tier, on qwen35 and qwen4exp alike (CPU and CUDA, default and
+    T3 builds).
+    - The pick took the entry with the longest common prefix over all entries. A recurrent model forks only an
+      entry the prompt holds whole, so when that entry was the previous request's own prompt (published whole, and
+      shared in part), the hit was declined and no other entry was tried, though the pin still matched whole.
+    - Publishing a prompt dropped the unpinned entry it strictly extends, which a recurrent model can never fork
+      again at that length.
+  - **The fix:** for a recurrent model the candidates are the entries the prompt holds whole, and the longest of them
+    is forked. A recurrent model's strict extension is stored beside the shorter entry.
+  - **The gate:** `tests/test_recurrent_prefix_pick.py`, on qwen4exp and qwen35, on the CPU and on CUDA (in
+    `test-cuda-gated`).
+    - The named sequence: pin P, a request naming it, an unrelated prompt, the request again (the same question,
+      and a question sharing words with the first).
+    - The automatic tier: P, P + Q, an unrelated prompt, P + Q.
+    - Each fork caches the pin's or P's tokens. On the CPU its tokens and logprobs equal the cold prefill of the same
+      prompt bit for bit; on CUDA it equals the first use and the cold prefill's text.
+    - Red first: all 8 of those cases failed before the fix (`409`, and 0 tokens cached).
+    - A 14-turn qwen4exp conversation under a 1 MB prefix budget:
+      - the total stays within the budget after every turn and some turns are evicted;
+      - each turn forks the previous turn whole;
+      - the newest turn's entry and the pin survive, and the oldest turn is the one evicted.
+    - Unchanged, and held:
+      - a recurrent continuation still forks its longer whole entry;
+      - the dense fixture's cached counts are as before, each the longest share there is;
+      - a dense conversation keeps one entry beside the pin.
+
+- **Keep a shorter recurrent prefix when its longer entry was stored first** (R4.48.22.4.1).
+  - **The fix:** a longer KV snapshot can serve a shorter prefix, but its recurrent fold belongs only to its own
+    end. Publishing P after P + Q therefore keeps P's own state, so a later P + Q2 can fork P instead of prefilling
+    cold after the live slot has moved elsewhere.
+  - **The gate:** recurrent qwen35 and qwen4exp fixtures exercise that publication order and compare the forked
+    answer with cold prefill. The dense control retains its cached counts and one covering entry. Descending
+    recurrent prefixes fill a 1 MiB budget while preserving the pin, and the existing ascending budget test holds.
+  - README impact: none; no flag, API or documented cache policy changes. The extra retained entry is the cost of
+    keeping the recurrent fork point, not a new model admission or a speed claim.
+
+- Context-overflow refusals name both token counts (R19.16.1):
+  - HTTP 400 `context_length_exceeded` errors on `/v1/completions`, `/v1/chat/completions`, `/v1/messages`, and `/v1/responses` now state `"prompt does not fit the context window with room to generate (<N> tokens; the context holds <C>)"` while keeping the existing error `code` and `param` unchanged; `/v1/embeddings` (when `n > n_ctx`) and `/v1/rerank` (`/v1/decide`) include the same counts on their context-overflow 400s.
+  - Importing a KV snapshot longer than this server's context window now returns HTTP 409 `snapshot_model_mismatch` naming both lengths instead of `snapshot_corrupt`; a snapshot of exactly the context's length (leaving no room to continue) was accepted before and is now refused with the same `409 snapshot_model_mismatch`.
+
+- **JSON objects and tool arguments accept declared keys in any order** (R4.48.23).
+  - **Root cause:** Many chat templates (including publisher references) render tool parameter properties in sorted or model-preferred order rather than JSON declaration order, so enforcing strict declaration order inside `SN_OBJ` forced or rejected valid reordered tool calls and `json_schema` objects.
+  - Closed fixed-property `SN_OBJ` schemas (`response_format` `json_schema` and JSON tool arguments) now accept any unseen declared property in any order, track seen keys in a 64-bit mask stored in `sframe.num_abs` (leaving `sizeof(sval)` unchanged), emit missing required keys in declaration order on forced close, and still refuse duplicates, unknown keys, and early closes missing required fields. Discriminated unions and tool-union wrappers keep the discriminator before branch-conditional properties (`SN_COND`).
+  - `RUNNER_SCHEMA_ORDERED=1` restores strict declaration key order at schema compile time (in the capability inventory).
+
+- **Include `response_format` `json_schema` instructions in `TMPL_MUSE` system messages on `/v1/chat/completions` and `/v1/responses`** (R6.110).
+  - **Cause (`src/template.c`, `src/server.c`, `src/api_responses.c`):** Upstream `meta-models/Muse-Glimmer-30B` (`1297fd7d`) added `render_response_format()` to both system-message paths (absent system and caller system), appending `\n\nIn your final response to the user's latest message the output must adhere to the following json schema: ` followed by `tojson` serialization of the schema when `response_format.type == "json_schema"`. Runner constrained the output grammar in `src/completion.c` without passing `response_format` / `text.format` to `render_muse`, and the conformance matrix never tested `response_format`.
+  - **Fix (`src/template.c`, `src/template.h`, `src/api.h`, `src/server.c`, `src/api_responses.c`):** Added `render_messages_state_rf` and `render_prompt_state_rf_alloc` (preserving existing callers untouched with `NULL`), forwarded `request_schema(req)` from `handle_chat` and `final_schema` (`responses_schema`) from `handle_responses` (including KV preamble/generation-prompt boundary checks), and emitted the schema instruction via `jv_dump_tojson` (matching the reference renderer's key-order preservation, non-ASCII passthrough, `< > & '` unescaped formatting, and `, ` / `: ` separators) in both Muse system paths ahead of tool definitions and `# Valid recipients:`.
+  - **Conformance & tests (`scripts/template-conformance.py`, `scripts/template-conformance-render.c`, `tests/test_template.c`, `tests/test_tool_attribution.c`):** Added `response_format` conformance matrix cases (`rf-json-schema-default-system`, `rf-json-schema-caller-system`, `rf-json-schema-caller-system-reasoning`, `tool-rf-json-schema`, `rf-json-object`, `rf-text`) covering unsorted keys, UTF-8, `< > & '`, and nested arrays (observed failing with `4 NEW-DRIFT` before the fix and clean across all 27 Muse cases after), wired `request_schema` into `template-conformance-render.c`, and added unit tests in `tests/test_template.c` (`test_muse_response_format`) and `tests/test_tool_attribution.c` (`test_muse_response_format_both_surfaces`).
+
+- **A split GGUF set refuses a part from another set, and goes by the set's name** (R19.17.1).
+  - **The defect:** a part from another quant of the same model, split the same way, agrees on every split key. It was
+    accepted without a word, and a mixed model ran. Now a part that states a key the first part states too, and
+    contradicts it, is refused by name before the model binds: `general.file_type` first, then every other key both
+    state (the quantization version, the architecture's hyperparameters, the tokenizer), compared by their stored
+    bits. For example: `split GGUF part 2/3 is from another set: general.file_type 2 against 7 in part 1: <path>`.
+    Two arrays of one length name the element where they part: `tokenizer.ggml.tokens, an array of 259, differs
+    from part 1's at element 3`.
+  - **The naming:** a split set went by the name of whichever part opened it, so one model had another id per entry
+    part. Every surface that names the model now names the first part's file, the name the other parts are derived
+    from, whichever part opens it:
+    - `/v1/models`' id and the capabilities' `resident`;
+    - the discovery record the tray reads;
+    - `--score`'s `score_route.model` and `--info doctor`'s `model` (the file, and the whole set's bytes);
+    - `--bench-json`'s `model` and `--decide`'s `model`;
+    - the load line, which names the first part and ends `| a split set of N parts`. Whether the line says so is the
+      set's `split.count`, not the number of mapped files: an `--mtp-file` companion maps a second file, and a single
+      file with one said `a split set of 2 parts`.
+    A single file's names are as they were.
+  - **One file beside its digest:** `/v1/runner/provenance`'s `model` names the part the server was started from,
+    with that part's path, size and sha256, as the receipts do. So the receipts and provenance name the same file
+    with the same digest, and `expect_resident`'s `model_sha256` keeps meaning one file's digest. A digest of the
+    whole set, which would verify every part, is not built here.
+  - **Cost:** the set's name and bytes read the entry part's header once. Each part's path comes from the file
+    name and its size from the file system; before, every part's path re-read the entry part's header.
+  - **The gate:** `tests/test_split_gguf.py`, red first on main (18840c63):
+    - a full-metadata part from the Q4_0 set in the Q8_0 set's place is refused by name from every entry part;
+    - a sparse cross-quant part is accepted (the limit, held);
+    - the set's id, capabilities, `score_route.model` and load line are equal from every part;
+    - a single file keeps its own name.
+  - **The second gate** (after a second read), red first on f4d344d8:
+    - a full-metadata part that contradicts one key of each stored kind is refused by name: an integer, a float, a
+      boolean, a string, a string array, a float array and an integer array. The F32 fixture carries no
+      `general.file_type`, so only the loop over every key can refuse them: with that loop disabled, all 7 fail.
+    - from every part, the load line names the first part, and the discovery record, `--info doctor`,
+      `--bench-json` and `--decide` name the set, while provenance names the entry part with its own digest;
+    - a single file with an `--mtp-file` companion is not called a split set.
+
+- **Training replay preserves explicit `-s N` seeds (`runner attest replay`)** (R17.10): fixes `cli_prepare_replay_train` (`src/main.c`) so the record's seed is also copied to `o->smp.rng` on replay and unlearn paths before `cli_resolve_inputs` reads `o->smp.rng` back into `o->seed`. Any training record made with `-s N` (`N != 0`) since training replay existed was replayed with seed `0` and failed with `MISMATCH adapter.sha256`; such records now replay `VERIFIED` (`tests/test_train_replay.py::test_replay_preserves_nonzero_train_seed`).
+
+### Measured claims (Inkling 2 Mini)
+
+- **Inkling 2 Mini release Claim 1: pre-registered results first, erratum beside, Unsloth additional** (R4.48.12).
+  - Pre-registered Runner-versus-llama.cpp difference +0.200, Newcombe 95% [+0.049, +0.339], exact McNemar p 0.0135, higher. Runner-versus-Unsloth difference +0.240 [+0.099, +0.369], p 0.0015, higher.
+  - **Beside it, erratum 3, decided after the verdicts:** completing the v1 client's missing stop token from the original response fields gives Runner 94/100 [0.875, 0.972], versus unchanged llama.cpp 20/100 and Unsloth 16/100. It does not replace the pre-registered result. The corresponding pairs are +0.740 [+0.626, +0.816], p 2.039e-20, and +0.780 [+0.668, +0.851], p 1.4e-21. No prompt, engine answer, setting or comparator record changes.
+  - Unsloth is its published CPU prebuilt b12649-mix-c7059d6, run as published; a source build at the release tag commit could not load Inkling 2 Mini. R4.48.24's 99/100 fast versus 98/100 Runner reference is a separate CPU-default comparison. [The release account](docs/releases/1.22.0/RELEASE-NOTES.md) keeps the results and disclosure distinct.
+
+- **Inkling 2 Mini Claim 2: the sixteen-thread half, provisional information** (R4.48.12).
+  - Across measured sixteen-thread cells only, Runner has 20/20 identical targets, Wilson [0.839, 1.000], in two cells; llama.cpp and the additional Unsloth column each have 2/20 [0.028, 0.301] across eight cells. Alone/batched differences are 0/20, 15/20 and 15/20. No Claim 2 pair or combined label is computed for Unsloth.
+  - The complete measured timing table keeps each median and IQR beside its load and residency, including the non-default information cells. llama.cpp's co-batching is inferred from the source and the slot log; Runner's scheduler counts gathered slots, not shared matrix products. The pre-registered full-matrix wording is not used.
+  - Unsloth is its published CPU prebuilt b12649-mix-c7059d6, run as published; a source build at the release tag commit could not load this model. [The provisional account](docs/releases/1.22.0/RELEASE-NOTES.md) retains the pending thread half and the page-loss disclosure.
+
+- **Inkling 2 Mini Claim 3 final: a pre-registered tie, with Unsloth additional** (R4.48.12).
+  - The combined Runner arm is higher than Runner off (24/40 usable, 15/40 loops; difference +0.325 [+0.166, +0.474], p 0.0002441) and llama.cpp off (25/40, 14/40; +0.300 [+0.125, +0.459], p 0.001831). The loop guard fired on 0/40 combined-arm turns; the reasoning budget forced 18/40 closes. Field interpretations were documented after the five Runner/mainline arms existed.
+  - Additional Unsloth columns are off 26/40 usable with 14/40 loops and budgeted 37/40 with 2/40 loops. Runner's additional pairs are +0.275 [+0.105, +0.433], p 0.003418, higher versus off; and +0.000 [-0.128, +0.128], p 1, tie versus budgeted. No combined label changes the pre-registered TIE.
+  - Unsloth is its published CPU prebuilt b12649-mix-c7059d6, run as published; a source build at the release tag commit could not load this model. [The final account](docs/releases/1.22.0/RELEASE-NOTES.md) reports every arm and the secondary-diagnostic omission.
+
+### Fixes and maintenance
+
+- **Inkling 2 Mini's fast CPU route takes the reference route's scalar SwiGLU again** (R4.48.26).
+  - **Why:** the vector SwiGLU moved the real file's expert routing.
+    - On R4.48.24's chat read, the fast route failed its bar at the same 10 positions in run 1 and in run 2, run 2
+      with R4.48.25's accurate tanh.
+    - The vector SwiGLU was within 4 u of the double forms. Routing that picks 8 of 128 experts still turned those
+      last-bit differences into another expert set wherever two experts nearly tied.
+    - The same build with the scalar SwiGLU read like the reference route: mean KL 3.311354e-05 against the
+      reference's 3.311425e-05, all 1,707 margin-qualified positions, the reference's top 10.
+  - **What changes:**
+    - The fast route's SwiGLU is now the reference route's function, bit for bit.
+    - The vector tanh, whose only caller it was, is removed.
+  - **The gate:** `tests/test_inkling2_vmath.c` holds the fast route's SwiGLU to the reference route's, byte for byte,
+    at Inkling's softcaps and the tiny files'. It failed before this change, on 230 to 450 of 7,056 outputs.
+
+- **Inkling 2 Mini's fast CPU route: an accurate vector tanh, and a gate for each of the route's own vector
+  kernels** (R4.48.25).
+  - **The bug:**
+    - R4.48.20's vector tanh computed (1 - e^-2|x|) / (1 + e^-2|x|) in float32.
+    - Near |x| = 1e-3 that subtraction cancels: 246 times float32's unit roundoff (u), against about 1 u for the
+      scalar tanh it replaced.
+    - Inkling's softcaps divide the gate by 4 and the up branch by 25, so ordinary activations land there, in
+      every expert of every layer.
+    - On the real file it moved 18 argmaxes of 2,000 on R4.48.24's read, through the routers' near-ties.
+    - The end-to-end gate on the tiny files, 1e-4 of the reference route's logits, could not see it.
+  - **The fix:**
+    - Below 0.625, an odd polynomial.
+    - From 0.625 up, 1 - 2 / (e^2|x| + 1), which cannot cancel there.
+    - Worst error 2.40 u over every 256th float bit pattern.
+    - The new tanh is no slower than the one it replaces: 0.89 ns an element against 0.98, on an arm64 core (one run,
+      information only).
+  - **The gate:** `tests/test_inkling2_vmath.c`, part of `make test`, holds each vector kernel of the fast route
+    against pmath's double forms, with each bound's rule stated in the test:
+    - exp: 4 u, over every 256th float bit pattern;
+    - tanh: 4 u, over the same sweep;
+    - the SwiGLU block at Inkling's softcaps and the tiny files': 20 u;
+    - the attention core, fast and reference: the first-order worst case of its operations, from 1 to 2,000 keys.
+    - Live controls must each fail: the old tanh, an exp missing half its range reduction, and an attention core
+      missing a key.
+    - On the code before the fix, the tanh read 246 u and the SwiGLU 164 to 181 u.
+
+- **Hardening found while fixing the fast route's tanh: no abort() in serving, no served error cut, one tail
+  rule** (R4.48.25.1).
+  - **Inkling 2 Mini's attention cores no longer abort() when a long context's row cannot be allocated:**
+    - Each core took a logit row a range with malloc (the fast core past 1,024 keys, the reference core whenever its
+      heads split over threads), and called abort() when it failed. One long request on a busy host could end the
+      whole server.
+    - The rows are now sized by the caller, one for each range the thread pool can run at once, before anything is
+      stored in the cache. A failure is an error status for that request.
+  - **A served error carries its whole message:**
+    - Every refusal on every surface goes through one sink, which escaped the message into 384 bytes. A longer one
+      lost its end without a word.
+    - The four refusals that echo a request's type string (chat's content parts, the Anthropic tool_result, the
+      Responses input items and their content parts) cut the sentence when that string was long. They now echo it
+      up to 64 bytes, and mark the cut with the string's length.
+  - **Smaller:**
+    - The BF16 exact tile's tail and the BF16 dot's are one rule, so no build can give them different loops.
+    - Inkling's decode-fusion switch (`RUNNER_INK2_DECODE_FUSE`) is read once, not on every layer of every step.
+    - inkling2.c's opening comment states the reference route's contract and the fast route's own.
+  - **Gates:** each fix failed its test before it and passes after:
+    - `tests/test_inkling2_fast.c` (m): 1,100 positions, both routes; the rows at 1 and 4 threads, and the error
+      status when the attention scratch fails;
+    - (k): the fusion switch read once;
+    - `tests/test_send_error.c`;
+    - `tests/test_error_messages_whole.py`;
+    - `tests/test_quants_simd.c`: every length mod 32 at 7, 8 and 9 columns, shown live by a scratch mutant.
+  - No logit changes on any route: rows on the tiny files are byte-identical before and after, on both Inkling 2
+    Mini routes, at 1, 4 and 16 threads. The real file's reference rows are checked by the lab before merge.
+
+- **olmo2's gates run the quantized KV caches; a file declaring experts is refused** (R4.50.4.1).
+  - **What changes:**
+    - An olmo2 file that declares experts is refused by name. olmo2 is dense (OLMoE is its own architecture), and
+      neither backend's expert layers run its post-norm-only blocks.
+    - `scripts/make-test-olmo2.py --head-dim 32` writes a file with 32-wide heads. At the fixtures' 16, the q8 and
+      k8v4 caches fall back to f16, so no gate had run them.
+  - **Gates:**
+    - `tests/test_olmo2_cpu.py`: the head_dim-32 GQA file joins the reference comparison. On it, each of q8, k8v4
+      and fp4 engages, keeps the solo forward's bits at a batch of 7, and changes the scores against f32.
+    - `make test-metal-olmo2`:
+      - q8, k8v4 and fp4 against the CPU at 1e-5, at a batch of 7 and decode-only;
+      - a cache that falls back to f16 fails;
+      - a live control for its front-megakernel refusal: the pre-norm twin must engage the megakernel.
+
+- **The exact tile's scratch is a thread's own, kept across calls** (R4.48.20.4).
+  - **What was slow:** `vec_dot_exact_tile` allocated and freed its 16 x n float scratch on every call. A block that
+    large goes back to the system on free (Windows' heap decommits it; glibc maps one past its 128 KB mmap
+    threshold), so every call faulted its pages in again: 45 demand-zero pages a call at K 2880, about 0.03 ms on a
+    bare-metal Zen 4 and several times that in a VM. The Windows CI canary read the tile at 1.96x the multi-8 loop at
+    16 columns (2.27x for NVFP4); a bare-metal Zen 4 with the same compiler read 0.7x, and the lab's Linux host
+    1.09x to 1.21x.
+  - **The fix:** a per-thread buffer, grown when a call needs more and freed when its thread exits (a pthread key's
+    destructor, so a pool worker's goes with the pool). The header's account of "per-thread scratch" is now what
+    the code does.
+  - **The MoE layer, the same kind:** at more than one position Inkling 2 Mini's fast route allocated its routing
+    tables (T x E bytes and T x E floats), a position's scores and the expert body's position lists on every layer
+    call. The tables now live in the instance's scratch (`ink2_cache`, beside the scratch the expert body takes),
+    the scores on the stack and the position lists in the body's own scratch. `test-inkling2-fast` (l): on the tiny
+    F32, BF16 and Q8_0 files at 1 and 4 threads and `-b` 1, 8, 64 and 256, two prefills after the first allocate
+    nothing in the MoE layer (red first: 2800, 400 and 160 times at `-b` 8, 64 and 256). Every row of those
+    prefills is the same bits before and after, 24 configurations.
+  - **The tile check follows the build:** `test-inkling2-fast` (h), "T=64 BF16 prefill takes exact tile path",
+    failed on every build without a BF16 exact tile: a T3 build, whose canonical kernels have none, and a build
+    with no SIMD kernels, such as the sanitized build, which carries no `-march`. It now skips wherever
+    `vec_dot_exact_tile_ok` is false at the model's width, saying why. It fails if a T3 build ever reports a tile,
+    or if a build compiled for AVX2 with FMA and F16C, or for aarch64 NEON, reports none.
+  - **The gate:** `tests/test_dot_route.c`.
+    - On one thread, 100 calls after the first allocate nothing, a call needing more allocates once, and the
+      calls after it nothing.
+    - On the house's thread pool, the first run allocates at most once a worker and 20 runs after it nothing.
+    - Destroying the pool frees its workers' scratches.
+    - Red first: 100 allocations in 100 calls, and 160 in 20 pool runs.
+    - The tile canary's message now gives the page faults a call for the tile and for the multi-8 loop (Windows
+      `GetProcessMemoryInfo`, POSIX `getrusage` minor faults), so a slow host shows whether the time went to faults.
+    - NEON `T_NVFP4` tile allocation failure now falls straight back to `vec_dot_multi` instead of reusing a smaller held scratch on the generic `dequant_row` + `exact_tile_block` branch (covered red-first alongside NEON `T_NVFP4` scratch reuse, `(l)` non-vacuous first-prefill count, and `RUNNER_NO_SIMD` in `(h)`).
+  - No output changes: the scratch holds the rows' decoded weights only. The tile's outputs are the same bits
+    before and after, measured over 3.6 million outputs (BF16 and NVFP4 at the canary's shapes and the boundary
+    lengths, AVX-512 and AVX2 builds).
+  - Each thread keeps one buffer the size of its largest call (16 x n floats, 184 KB at K 2880) until it exits.
+  - Inkling 2 Mini's fast route keeps its MoE layer's routing tables in the instance's scratch: one more buffer
+    an instance, the size of its widest call's tables (5 x T x E bytes, 320 KB at 512 positions and 128
+    experts), freed with its cache. A call without an instance (`ink2_expert_layer`) still allocates them, and so
+    does a model of more than 256 experts for a position's scores.
+  - Not checked under ASan or LSan here: the Windows MinGW toolchain has no sanitizer libraries. The test counts
+    the live scratches instead.
+
+- **qwen4exp continues a forked prefix with the prefix's own tokens in its PLE n-gram hash** (R4.48.22.1).
+  - **What was wrong:** the PLE block hashes each token's n-grams with the token's predecessors, read from the token
+    history the feed writes. A prefix entry's recurrent blob holds the block's convolution window but not that
+    history, and a fork did not rewrite it. So the first `ngram - 1` tokens after a fork hashed whatever the slot's
+    history held at the prefix's end. After a longer prompt that was that prompt's tokens; in a new process it was
+    nothing. Measured on the qwen4exp fixture, each of these answered with the cold prefill's text but logprobs up to
+    1.0e-4 off it, on the CPU and CUDA alike (the PLE block runs on the host on every backend):
+    - a context imported from a snapshot file;
+    - a pinned context forked after a longer prompt;
+    - the automatic prefix cache's own fork after a longer prompt.
+    The automatic fork with nothing in between, and a pin forked straight after a shorter prompt, were bit for bit,
+    which is why no test had seen it.
+  - **The fix:** a fold load rebuilds the history from the tokens the fold was taken over (the fork's, a session
+    image's). The file format is unchanged: entries and snapshot files already carry their tokens.
+  - **The gate:**
+    - `tests/test_ple_fork_history.py`, anchored to the cold prefill of the same prompt in a fresh process:
+      - on the CPU, three forks equal it bit for bit, tokens and logprobs: a pin after a longer prompt, its import into
+        a new process, and the automatic tier after a longer prompt;
+      - on CUDA (in `test-cuda-gated`), the automatic tier's fork equals it bit for bit, with nothing in between and
+        after a longer prompt.
+      - Red first: before the fix the three CPU forks were 6.2e-5, 1.0e-4 and 6.2e-5 off, and the CUDA fork after a
+        longer prompt 6.2e-5.
+    - `tests/test_recurrent_device_contexts.py` (R4.48.22) now holds qwen4exp's import into a new process on CUDA to
+      its pin's bits, as it holds every other family's; it held qwen4exp to its text and 1e-3 before.
+    - `make test`'s CPU `test-spec-identity` now runs the qwen4exp fixture. The reference reloads its fold naming its
+      sequence (189 rows byte-identical to the verify rows) and asserts that a reload naming none is refused. Before
+      the fix that reload was accepted.
+
+- **GCC 16 builds the fast-math test binaries on a Zen 4 host again** (R4.48.20.3).
+  - **What broke:** GCC 16.2 (MSYS2 UCRT64) crashed in its loop vectorizer ("during GIMPLE pass: vect ... internal
+    compiler error: Segmentation fault" in `vec_dot`) building `test-i8-tol.exe`, the first binary of the Windows
+    gates to compile `quants.c` with `-O3 -ffast-math -march=native`, on a host where native is `znver4`. The crash
+    needs the AVX-512 set with `znver4` tuning (`-march=x86-64-v4 -mtune=znver4` crashes, plain `x86-64-v4` does not),
+    `-O3`, reassociation and inlining. Its construct is the fmaf reduction in `bf16_dot_tail` once
+    `dot_bf16_avx512` inlines it into `vec_dot`.
+  - **The fix:** `#pragma GCC novector` on that loop, only where GCC 14 or later may reassociate on an AVX-512
+    target.
+  - **The evidence:**
+    - Red: at 4462d353, `make STRICT=1 test-i8-tol.exe` stops with the crash on a Zen 4 host.
+    - Green: every prerequisite of `test-gates-core` and the runner build STRICT with 0 warnings and no crash (the
+      three POSIX-only lab tools refuse Windows as before).
+    - Byte identity: `quants.c` compiled before and after has the same `.text`, byte for byte, as `quants.o` (znver4
+      and x86-64-v3), as the T3 `quants.o`, and as the fast-math build on x86-64-v3 and without AVX-512F. A probe over
+      BF16 `vec_dot` and `vec_dot_multi` (every tail 0 to 47 past 0, 16, 32, 64, 256 and 4096 elements, nc 1 to 8, the
+      zero row, the largest and smallest normal BF16) gives the same bits before and after in each.
+    - `test-nvfp4-dot`, `test-dot-route`, `test-i8-tol`, `test-inkling2-fast` and `test-quants-simd` pass.
+
+- Metal runtime fallback diagnostics (R6.98): `gpu_runtime_failure()` now carries the backend's last runtime error (`gpu_last_error()`, widening `route_fallback` to 256 bytes) into the end-of-run `gpu_lost_note` and `route.fallback` (`--bench-json` / `RUNNER_DEBUG_ROUTE`), so command-buffer `NSError` domain/code/description, scratch allocation, weight-wrap, and KV-map details survive long CPU-fallback prompts instead of being buried by `\rprompt:` progress updates (CUDA and CPU-only builds return an empty detail string, unchanged). `tests/test_metal_kv_grow.py` now reports all `test seam:` and `gpu:` lines on failure and calibrates `test_a_multipart_model_grows_against_all_of_its_weights` at `WS_MB = 572` / `-c 4096` (~2,100 tokens; live-controlled against the single-part weight-charge bug). The underlying `NSError` behind the hosted macOS runner's paravirtual device failure remains unknown until the next sighting prints it.
+  - in a GCC fast-math build for AVX-512 (only the test binaries that compile `src/quants.c` with
+  `CFLAGS`, such as `test-i8-tol`), the BF16 dot's tail is now summed in order. Under a tuning whose cost model
+  vectorized that tail before (`-march=skylake-avx512`), the tail's bits change, to what the same build gives under
+  generic tuning. The runner's own `quants.o`, the T3 build and every build without AVX-512 compile to the same
+  code as before, byte for byte. The crash is not yet reported upstream.
+
+- **The CUDA gate holds lfm2 to the CPU that `src/arch.h` declares for it, instead of skipping its device cases** (R6.128).
+  - **Cause (`tests/test_recurrent_device_contexts.py`, R4.48.22):** under CUDA, the pinned-context and messages-pin device cases skipped lfm2, which `src/arch.h` declares the CPU's off Metal (`cpu_only_nonmetal`). The skip's reason named CUDA, and the gate's lane check (`scripts/check-junit.py --no-skips-matching '(?i)cuda|device|gpu'`) rejects such a skip. So on main `make test-cuda-gated` exited 2 with 525 passed, 17 skipped and none failed.
+  - **Fix:** the test now reads the CPU declarations from `src/arch.h`'s table itself (`cpu_only` on every GPU backend, `cpu_only_noncuda` off CUDA, `cpu_only_nonmetal` off Metal, as `model_gpu_cpu_only_why` reads them), never from a list of its own. A family the table declares the CPU's on the backend is held to what the declaration promises.
+    - Every server is still asked for the device (`--gpu 99`, with `RUNNER_GPU_FALLBACK=fail`), and each load must print the declared reason and take the CPU (`gpu: <reason> ... using CPU`), with no fall at run time.
+    - The cold prefill runs on a `--gpu off` server, the CPU tier itself. The pin's, the automatic fork's and the import's logprobs must equal it bit for bit.
+    - A runtime decline the table does not declare (qwen4exp on Metal) still skips once its load line is held. On the CUDA lane no device skip remains; qwen4exp's runtime decline skips only on Metal.
+    - A new case checks that the table's parse is whole without naming any declaration: every family is a row, every CPU field the table assigns is read, and no reason is cut at a literal's end.
+  - **Evidence:**
+    - `make test-cuda-gated` exits 0: 528 passed, 15 skipped and none failed. The skips are main's list without the two lfm2 lines, and the two lfm2 device cases pass.
+    - A mutant in which the runner skips `cpu_only_nonmetal` (so lfm2 goes for the device under CUDA) FAILs both lfm2 device cases on the missing declaration line. Restored, they pass again.
+  - a test-only change, no change to Runner. No hosted CI lane runs `make test-cuda-gated` (a hosted runner has no device), so only a device gate sees this. Measured on a Windows host with an sm_120 GPU under the release recipe. No Metal device was used: on the Metal backend the cases are unchanged by construction (lfm2 is a device case there, and qwen4exp's runtime decline still skips), and CI's macOS Metal pytest runs them.
+
+- **R6.117's health-wait and timeout tests pass on Windows with a virtual environment's Python** (R6.127).
+  - **Cause (`tests/test_ornith_cpu.py`):** `test_ornith_server_health_wait_fails_with_log_on_deadline` started its fake server as `sys.executable` with stderr in a kept log, killed and waited for it, then deleted the log. In a Windows venv `sys.executable` is a launcher that runs the real interpreter as its own child. `kill()` and `wait()` reached the launcher while the interpreter still held the log's handle, so the delete failed with WinError 32 (file in use). The release dry run's CUDA gate failed on it, the step's only failure among 524 cases.
+  - **Fix:** both cases' children start the base interpreter (`getattr(sys, "_base_executable", sys.executable)`): the health-wait test's two fake servers and the timeout test's two sleepers. So the process a test kills and waits for is the one holding the log. No retry and no sleep.
+  - **Evidence:** the case alone, 10 runs each, under the venv's launcher: 1 of 10 passed before (9 WinError 32; 0 of 10 in an earlier pass), 10 of 10 after. The base interpreter as `sys.executable` passed 10 of 10 before, the control. The whole file passes on Windows: 7 passed, 7 skipped (Metal only).
+  - **`test_ornith_timeout_scales_and_keeps_child_output`, the same race in a wider window:** its timeout kills the launcher too, and the kept log is deleted only after it is read. It passed 10 of 10 under the launcher, but by timing, not by construction, so it takes the base interpreter as well.
+  - **The same pattern elsewhere in `tests/`:** none. Every other held-file child that a test kills is `runner.exe` itself, a native process.
+  - a test-only fix, no change to Runner. Measured on a Windows CUDA host under the release gate's python (a venv). No CI job runs a Windows venv, so on Windows only the release gate guards this. Linux and macOS outside a venv spawn the same interpreter as before (`sys._base_executable` equals `sys.executable` there), and inside one the base interpreter, which is enough for a child that only imports `sys` and `time`; CI shows them.
+
+- **Training learning-rate schedule matches strict `T3=1` bits in every build** (R8.29).
+  - Extracted `train_lr_at` into `src/train_lr.c` (`train_lr_schedule_at`), compiled as its own strict-math translation unit (`-fno-fast-math -ffp-contract=off`) calling `pm_sincos_d` from `src/pmath.h` rather than `-ffast-math` and libm `cos`, so linear warmup and cosine decay produce identical IEEE-754 double bits across default, `PORTABLE_MATH=1`, and `T3=1` builds and across C libraries.
+  - Default-build training runs using `--lr-warmup` or `--lr-schedule cosine` now match strict builds and move once relative to pre-fix default-build schedule bytes; checked all training tests and repository fixtures/pins (none hardcode a warmup or cosine adapter hash).
+  - Added the strict-unit check to `test-makefile-sane` and bit-exact schedule gates (`r829_lr_schedule_checks`) to `tests/test_train_gpu.c`.
+
+- **Windows publish lock follow-ups on retry errors, retry bound documentation, reparse-point diagnostics, and lasting denial coverage** (R6.119).
+  - **Retry `ERROR_SHARING_VIOLATION` (`src/compat.c`):** `plat_publish_lock` now retries the lock-file `CreateFileW` on `ERROR_SHARING_VIOLATION` (such as a scanner holding a newly created lock file briefly without sharing) as well as `ERROR_ACCESS_DENIED`, within the same 400-try bound (20 tries of 1 ms, then 380 tries of 10 ms).
+  - **Retry bound and test comments (`src/compat.c`, `tests/test_kvsnap_replace.c`):** Updated the comment in `plat_publish_lock` from "about 4 s" to "about 4 to 6 s in all on Windows' default timer tick" (matching the folded `v1.21.0` changelog wording) and replaced the stale "cause is still to be read" comment in `tests/test_kvsnap_replace.c`.
+  - **Reparse-point diagnostic (`src/compat.c`):** Refusing a lock file with `FILE_ATTRIBUTE_REPARSE_POINT` now prints `publish lock: refusing <path> (the lock file is a reparse point)` instead of routing through `pub_lock_fail(..., 0)` with `(Windows error 0)`.
+  - **Tests (`tests/test_kvsnap_replace.c`):** Added Windows cases covering transient `ERROR_SHARING_VIOLATION` contention, lasting `ERROR_ACCESS_DENIED` on both a read-only lock file and a directory at the lock path (verifying `PLAT_LOCK_ERROR`, bounded `3500..30000` ms wait, `opening the lock file`, and `Windows error 5`), and the reparse-point diagnostic when unprivileged symlinks are allowed.
+
+- **Scale `tests/test_ornith_cpu.py` subprocess timeouts and preserve child logs on failure** (R6.117).
+  - **Cause (`tests/test_ornith_cpu.py`):** Seven tiny-fixture CLI runs (`--gpu off`, `--gpu auto`, and `--gpu auto` injected failure) used a hardcoded `timeout=20`, while the `--score` runs used an unscaled `timeout=60`, `--caps` and fixture generators were unbounded, and `test_metal_failure_after_a_forked_prefix_rebuilds_from_that_prefix` polled `/health` in a fixed `range(100)` loop (`10 s`) that fell through silently on expiry and used unscaled `120 s` / `30 s` server limits. None of these timeouts assert latency; under host load and disk contention, `--gpu auto` (CUDA initialization, PTX JIT, and temporary GGUF writes) exceeded `20 s` and discarded child stdout/stderr on `subprocess.TimeoutExpired`.
+  - **Fix (`tests/test_ornith_cpu.py`):** Reused `scaled_timeout` and `KeptProcessLog` from `tests/conformance/harness.py` (`RUNNER_TEST_TIMEOUT_SCALE`, `1` normally and `8` under `SAN_PYTEST_ENV`): CLI calls now run through `_run_runner` at a `60 s` base (`30 s` for `--caps`) and keep child stderr logs plus stderr/stdout tails on timeout; the Metal server test now polls `/health` through `_wait_for_health` (`scaled_timeout(30)`), failing explicitly with the kept server log on deadline expiry or early server exit, and scales the request (`120 s`) and shutdown (`30 s`) waits. Added `test_ornith_timeout_scales_and_keeps_child_output` and `test_ornith_server_health_wait_fails_with_log_on_deadline`.
+
+- **Forced `--kv-ring on` / `RUNNER_KV_RING=1` when no ring can form says so instead of staying silent** (R3.77).
+  - **Stderr and load report:** `runtime_kv_layout` in `src/model.c` resolves the ring override through a shared `model_kv_ring_resolve` helper (reused by `fit_kv_ring_on`, `kv_ring_wanted`, and `--info fit`). When forced `on` and `rows >= n_ctx`, it fills `m->kv_ring_why` for `-v`'s `kv ring` load line and prints the reason once per model file and geometry on stderr (`kv ring: ... keeping flat cache`), so `--parallel N` slots of one file print once without `-v` while distinct models in a swap server each report once.
+  - **Training and `--info`:** training admission (`lora_bw_supported`) already checks whether a ring actually formed (`model_kv_is_ring`), so forced-but-unformed runs train on the flat cache while runs where a ring forms (e.g., `-b 64`) refuse with `RUNNER_KV_RING`. `--info fit` prints the forced-ring note when `kv_ring_rows == 0`, and `--info adapter` follows what actually formed.
+  - **Tests:** `tests/test_kv_ring.py` adds `test_forced_ring_unformed_says_so_once_and_keeps_flat_cache` and `test_forced_ring_unformed_dedupes_per_model_file` (`--parallel 2` and multi-model swap); `tests/test_train.py`'s `test_batch_width_and_the_kv_ring_move_no_training_bytes` also asserts the unformed notice at the default batch beside the `-b 64` ring refusal. Both new checks failed before the fix.
+  - no model bytes or outputs change. When `swa_window + n_batch >= n_ctx` (common at small contexts under the 256 / 512 batch defaults), the ring cannot shrink below the flat allocation and still stays flat; models without sliding-window layers keep ignoring the flag (`tests/test_kv_ring.py`).
+
+- **Stop Mamba-2 SSD contraction inside `SSM_PRECISE` on Clang without slowing NEON or moving non-Mamba-2 pins** (R6.115).
+  - **Root cause (`src/model.c`, `Makefile`):** `SSM_PRECISE_SCOPE` previously expanded on Clang to `_Pragma("float_control(precise, on)")` alone, which leaves floating-point contraction enabled (even in `T3=1` `-ffp-contract=off` builds), and under `-ffast-math` (`-ffp-contract=fast`) Clang ignores contraction pragmas completely. On Apple Clang 21 arm64 at `3b9d08da`, `_mamba2_ssd_core_serial` emitted `16` FMA instructions (`fmadd`/`fmla.4s`), `_ssm_conv1d_worker` emitted `4`, and `_ssm_scan_worker` emitted `29` (`16`, `2`, and `14` under `T3=1`). `lfm2_shortconv` and `qwen35`/`qwen4exp` (`q35_heads_worker`, `qwen35_linear`) carry no `SSM_PRECISE` scope.
+  - **Fix (`src/model.c`, `Makefile`):** Pairs `_Pragma("float_control(precise, on)")` with `_Pragma("clang fp contract(off)")` in `SSM_PRECISE_SCOPE`, and scopes `-ffp-contract=fast-honor-pragmas -Wno-overriding-option` to `$(OBJDIR)/model.o` (`MODEL_CFLAGS`) on Clang builds only when `-ffast-math` is active and `-ffp-contract=off` is absent. Putting `-ffp-contract=fast-honor-pragmas` on global `CFLAGS` would leak into `QUANTS_CFLAGS` (`2,069` diff lines in `quants.s`, failing 25 `i8_quant_act` cases in `test_quants_simd.c`) and trigger `-Werror,-Woverriding-option`; scoping to `model.o` keeps `quants.c` untouched and leaves `model.s` outside `SSM_PRECISE` byte-identical (`0` diff lines measured on Apple Clang arm64). GCC keeps `__attribute__((optimize("no-fast-math", "fp-contract=off")))` and all its flags untouched.
+  - **Limits & measured impact:** Probes over reachable Mamba-2 shapes (`ds` `4..128`, `conv_kernel` `3..4`, `T` `1..4`) and the `nemotron`/`granitehybrid` fixtures showed both cores fusing identically on Apple Clang 21 (`0` behavioural diff), so `tests/test_ssm_precise.py` checks `0` FMA instructions in all five `SSM_PRECISE` functions across default and `T3=1` builds (observed red at `3b9d08da`: `16`/`4`/`29` FMA default, `16`/`2`/`14` `T3=1`; `0`/`0`/`0` after). Scalar `asm` barriers inside the inner loops (considered and rejected) dropped NEON `.4s` vectorization and slowed the Mamba-2 CPU core by `+33.6%` prefill / `+29.9%` decode; `MODEL_CFLAGS` retains `.4s` vector ops at `+2.8%` prefill (`2796` vs `2720 us`) and `+1.5%` decode (`167.6` vs `165.1 us`) on Apple Silicon arm64 (`nh=32 hd=64 ds=128`, `4T`, best of 4 interleaved rounds). On Apple Silicon arm64 `--score`, only Mamba-2 CPU moves (`test-prefill-rec-nemotron` CPU: `3/80` positions, `max|dlogprob| = 4.80e-07`, `0` argmax changes); `granitehybrid` Metal, `lfm2`, `qwen35`, `qwen4exp`, and `Qwen3-0.6B` (`Q3_K_M`/`BF16`, CPU and Metal) are bit-identical. No macOS CPU Mamba-2 pin exists in `docs/model-tiers.json` (`granitehybrid` macOS pins run on Metal).
+
+- **A context pin on Inkling 2 Mini is refused, not a crash** (R4.48.21).
+  - The prefix cache's reuse, its publish, a context pin and a context import now ask one predicate for the models the cache serves, so a pin cannot be accepted for a model whose prompts the cache never forks.
+  - Every recurrent-fold function (snapshot, mark, restore, the blob save and load) asks one predicate that leaves `inkling2_loop` out; the blob save and load had no such check and divided by the model's zero SSM heads.
+
+- **Inkling 2 Mini: the expert cache line says what it can hold, and the read harness takes a prefill wider than its chunk** (R4.48.17).
+  - `--info fit` and the load line printed the decoded-expert cache's budget (`RUNNER_INKLING2_EXPERT_CACHE`, 4 GiB by default) as if it were held, and fit's total counted it. The cache maps its budget lazily and holds at most every expert decoded, so both now print `expert cache up to X GiB (the budget, RUNNER_INKLING2_EXPERT_CACHE)` with X the smaller of the two, and the total counts that. On the exact file nothing changes (4 GiB, under its 98 GB of decoded experts); on a small file the figure is no longer 4 GiB for a few hundred kilobytes.
+  - `tests/inkling2_read.c` allocated its logits rows for `INK2_READ_CHUNK` positions but wrote `INK2_READ_PREFILL` of them in its first call, so a prefill wider than the chunk overran the heap (found by a 512-token prefill against the default chunk of 500, which aborted at exit). The buffer now holds the widest call. `make test-inkling2-read-san` runs the harness on the tiny file with a prefill of 8 against a chunk of 4 under ASan and UBSan, in CI's sanitized job.
+
+- **Three findings from a second Apple machine's run of the test suite: an EC key with explicit curve parameters is refused with a reason, the tests run with macOS's own openssl, and nothing a test or a gate writes names its operator** (R6.124, R6.125).
+  - **Signing keys:** macOS's own `/usr/bin/openssl` (LibreSSL 3.3.6) writes `genpkey` EC keys with the curve as explicit parameters (field, coefficients, generator) where OpenSSL 3 writes the curve's name. `--sign-model` refused them with "is not an EC private key on P-256, P-384 or P-521", which gave no reason. It now says the key gives its curve as explicit parameters and names the command that writes a named curve (`-pkeyopt ec_param_enc:named_curve`, which both write). MANUAL says so beside the other refused keys. `tests/test_sign_model.py` writes its keys with that option and gains `test_explicit_curve_parameters_are_refused` (SEC1 and PKCS#8 forms: refused, the message checked, no bundle written, and the same key with its curve named signs), which failed on the unchanged engine. `tests/test_watermark.py`'s SipHash cross-check skips, with the reason, when the openssl on PATH has no `mac` command (LibreSSL answers it with an error on stderr and exit status 0). With LibreSSL first on PATH the four tests that failed now pass and the cross-check skips; with OpenSSL first all pass.
+  - **The CUDA gate's summary:** it is committed as device evidence, and it recorded the temporary directory as given, so a TMPDIR under the home folder put the login name into the record (seen on that machine; the lab had to edit a host-named work folder out of a summary by hand the same day). A temporary directory under HOME (or USERPROFILE on Windows) is now written from `~`; the console notes keep the full path. `tests/test_ci_contracts.py` gains a case with a TMPDIR under a stand-in home, which failed on the unchanged gate, and the case that compares the recorded path expects the `~` form when the test's own temporary directory is under its home. A work folder named after a host or a person outside the home folder is still the operator's to avoid.
+  - **The instance registry test:** `tests/test_instances.c` made its private HOME at a fixed `/tmp/xyntetik-test-<pid>`, ignoring TMPDIR, and never removed it: a Mac that runs the suite daily had 335 of them. It now uses TMPDIR when set and removes the folder at the end, on success and on failure.
+  - **A test that asserted a library bug:** `tests/test_gold_logits.py` checked that loading an FP8 Mistral3 checkpoint in float32 left some BF16 tensors behind, the transformers 5.14 and 5.16 behaviour `float32_stragglers` exists to repair. A later transformers release, which the anchors job installs unpinned, loads them as float32 itself, so the test failed on every engine change while the reference path was right. The test now calls the repair without asserting it found something, and still requires every tensor float32 and exact and the logits equal to the float32 model's.
+  - no engine output changes. Keys with explicit curve parameters stay refused, as before; only the error is new. Windows keeps its instance test under TEMP as before, and that folder is still not removed at the end there.
+
+### Known limits
+
+- **Inkling 2 Mini** (R4.48.6, R4.48.9, R4.48.10, R4.48.20, R4.48.21, R4.48.24):
+  - Text path only: the vision tower is a separate file and is not loaded. This architecture has no Metal route,
+    speculative decoding or shared prefix cache, and a rewind re-prefills from the start. A named-context pin is
+    refused with `409` (`context_unsupported`).
+  - On the CPU the fast route is the default. Measured at 16 threads on one file's native build, its 512-token
+    prefill is 52.7 tok/s against llama.cpp's 75.5 (0.70x) and its decode 11.77 against 12.154 (0.968x); these are
+    not task-quality scores. A training load takes the serial float32 reference route, which
+    `RUNNER_INKLING2_ROUTE=reference` also selects.
+  - CUDA is opt-in (`RUNNER_INKLING2_CUDA=1`) on a CUDA build's fast text route; the default and the reference route
+    stay on the CPU. Fit can keep the expert stacks on the host, or fall back to the CPU with a reason. CUDA and CPU
+    logits are not claimed byte-identical, and there is no GPU training. The 12 GB Windows recording device holds
+    neither real file, so Windows CUDA is checked on generated fixtures.
+  - LoRA: CPU-only SFT of attention adapters and CPU adapter serving, up to `head_dim` 128 and rank 256 (larger
+    values are refused cleanly). `--train-teacher`, `--train-dpo`, `--train-full` and the GPU paths are refused for
+    this architecture.
+- **Inkling 2 Mini's measured claims** (R4.48.12):
+  - Claim 1 measures complete greedy-sequence identity with the publisher's float32 reference on 100 prompts, not
+    task quality. The pre-registered result (Runner 40/100, llama.cpp 20/100, Unsloth's published build 16/100)
+    includes Runner's 58 incomplete records. The 94/100 is erratum 3's, decided after the verdicts.
+  - Claim 2 is the provisional sixteen-thread half. The one-thread cells run after the release, so no full-matrix
+    result is claimed. On this CPU route Runner decodes concurrent MoE requests one sequence at a time, so batching
+    does not raise its throughput. Its cells lost up to 3.7% of the file's pages to host reclaim while llama.cpp's
+    stayed resident, so the timing rows are information, not a speed comparison.
+  - Claim 3's pre-registered outcome is a tie with budgeted llama.cpp: 37/40 against 39/40 usable turns, a
+    difference of -0.050, Newcombe 95% [-0.176, +0.067]. "Usable" is an output-form metric, not proof that a fix
+    works. The secondary unit-test diagnostic was not computed, because no isolated environment was available to run
+    model-written code.
+- **OLMo 2 and OLMo 3 (`olmo2`)** (R4.50.1 to R4.50.11):
+  - GPU training is refused: the gradient gate needs f32 KV rows, which the GPU trainer does not keep. LoRA
+    training runs on the CPU.
+  - The opt-in fp4 KV cache can differ between backends: on OLMo-2-0425-1B-Instruct Q8_0, CUDA against the CPU
+    with the same cache reads top-1 95.8% and mean KL 8.2e-3. Compact-cache identity between the CPU and the Apple
+    GPU is gated below batch 8 and in decode.
+  - The 7B Q8_0 file does not fit, with its runtime state, on the 8 GB Apple device. OLMo 3's Metal path is checked
+    on generated files only.
+  - CUDA tensor cores take only Q8_0 prefill; other types stay scalar until measured. It is a tolerance route, not
+    bit identity, and its speed was measured on one sm_120 system. With it, prefill at 512 is still 0.27x (1B) and
+    0.29x (7B) of llama.cpp b12640's.
+  - On the CPU, Runner is slower than llama.cpp on all three OLMo 3 7B Q8_0 rows at 16 threads: prefill 2048 at
+    0.33x, prefill 512 at 0.40x and decode at 0.85x. Runner's release build targets x86-64-v3 and llama.cpp's was
+    native AVX-512; the prefill batches and prompts differ, and Runner's bench samples. The 1B Q8_0 CPU row was not
+    run. [Method, exact file and rows](docs/olmo2-cpu-speed.md).
+  - A file whose YaRN `rope.scaling.attn_factor` is not its default, `1 + 0.1 ln(factor)`, is refused by name,
+    because converters mean two different things by that key.
+  - The OLMo 2, OLMo 3 and Tulu 3 templates have no tool protocol. The OpenAI tool protocol is refused on them with
+    a 400 on `/v1/chat/completions`, `/v1/responses` and `/v1/messages`, never translated or dropped, and
+    `--info tools` reports `"tool_family":"none"`. Template detection keys on the file's EOS, so the same template on
+    a file with other specials keeps its former zephyr reading. In the CLI's interactive chat, a later turn on the
+    OLMo 2 template opens with the BOS.
+  - The template token checks ran on GGUF headers (metadata, no weights): the publisher's for OLMo 2, and a
+    community conversion's for Tulu 3, since AllenAI publishes no Tulu 3 GGUF.
+- **Recurrent models' named contexts and prefix cache** (R4.48.22 to R4.48.22.4.1):
+  - On the Metal backend a cold prefill of a pinned prompt does not give the pin's bits: its one batch takes the
+    tiled prefill GEMM, a tolerance class (up to `6.67e-6` in logprobs on F32 weights, `3.49e-3` on Q4_K). The pin,
+    the automatic prefix cache and an import agree bit for bit. On Metal, or under a T3 CUDA build, a pinned chat
+    prefix answers as the automatic prefix cache does, not as the slot's own anchor rewind.
+  - The shared prefix cache forks a recurrent model only on an exact full-prefix hit. A tied-V or ring KV layout and
+    an `inkling2_loop` model are refused with `409`. Session images and the automatic preamble snapshots still
+    refuse a recurrent model.
+  - A recurrent model keeps one prefix entry per conversation turn, each duplicating the KV rows it shares with the
+    last, within the same prefix budget. Eviction takes unproven entries first, then the least recently used.
+  - qwen4exp runs on the CPU under Metal. lfm2 runs on the Metal GPU only where its layer weights are mostly Q4_K.
+    lfm2's Q4_K on the CPU at `-b 1` is `7.6e-6` from `-b 512` (the decode route by design), and about `1e-6` on
+    Metal with the GEMM off.
+  - After a forked prefix, qwen4exp's first MTP draft pair is provisional. Drafts are verified, so answers do not
+    change; only how many are accepted can.
+- **Other** (R19.17.1, R4.48.25.1, R4.48.26):
+  - A split GGUF part in llama.cpp's sparse layout carries no set identity, so another set's part with the same
+    split layout is still accepted, as llama.cpp accepts it.
+  - A served error that echoes a request's own string still caps that string at 64 bytes, now marked as cut.
+  - Inkling 2 Mini's fast route keeps the scalar SwiGLU, which costs some speed in the experts' activation. Its
+    other vector arithmetic stays, so its rows differ from the reference route's by rounding.
+
 ## v1.21.0 - 2026-11-21
 
 - **On CUDA, Gemma-4-26B-A4B's QAT Q4_0 file reads a prompt 2.81x faster at 512 tokens and 2.41x at 2048: its Q4_0 experts take a new route by default, and a prompt row's expert products are a lone decode's bits at any width (moe-limb)** (R3.81, R3.83).
