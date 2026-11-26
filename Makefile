@@ -5000,6 +5000,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_turn_write_guard.py \
     tests/test_type_plan.py \
     tests/test_type_plan_by_sensitivity.py \
+    tests/test_type_plan_exact.py \
     tests/test_type_plan_size.py \
     tests/test_unicode_classes.py \
     tests/test_unload_honesty.py \
