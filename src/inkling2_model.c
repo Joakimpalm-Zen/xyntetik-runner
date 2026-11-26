@@ -412,7 +412,13 @@ static const ink2_tensor *block_view(ink2_rt *r, int b, int role) {
 // module and reservations: the weights it would put up, the small tensors and the step's, every slot's own bytes, the
 // 512 MiB kept, the reservations, and the device's free and total memory; placed 'W' whole, 'M' experts on the host,
 // 'C' the CPU. A dry run (--info fit) records them and uploads nothing.
-typedef struct { char placed; size_t weights, small, slots, kept, reserved, free_b, total_b; } ink2_dev_terms;
+typedef struct {
+    char placed;
+    size_t weights, small, slots, kept, reserved, free_b, total_b;   // the last placement tried
+    // the whole placement's own terms (every weight on the device), kept when a later placement is tried: what a
+    // device that holds it would need besides the weights, whether or not this one does
+    bool whole; size_t w_weights, w_small, w_slots, w_reserved;
+} ink2_dev_terms;
 static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batch, int n_ctx, int n_slots,
                         const char *dev, bool step_req, ink2_dev_terms *dry) {
     sh->placed = 'C';
@@ -483,7 +489,11 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
         if (capv && *capv) { const size_t cv = (size_t)strtoull(capv, NULL, 10); if (cv < fr) fr = cv; }
         if (!cm) need_w = c.need;
         sh->fit_free = fr;
-        if (dry) *dry = (ink2_dev_terms){ 'C', c.need, small, inst, RES, gpu_ink2_reserved_bytes(h), fr, tot };
+        if (dry) {   // field by field: a later placement's terms must not wipe the whole placement's
+            dry->placed = 'C'; dry->weights = c.need; dry->small = small; dry->slots = inst; dry->kept = RES;
+            dry->reserved = gpu_ink2_reserved_bytes(h); dry->free_b = fr; dry->total_b = tot;
+            if (!cm) { dry->whole = true; dry->w_weights = c.need; dry->w_small = small; dry->w_slots = inst; dry->w_reserved = dry->reserved; }
+        }
         if (dry && c.need + small + inst + RES <= fr) {   // the dry run: this placement fits; nothing goes up
             dry->placed = cm ? 'M' : 'W';
             sh->placed = dry->placed;
@@ -1447,6 +1457,12 @@ int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, con
            t.slots, slots, slots > 1 ? "s" : "", kv_kind_name(kind));
     printf("  dev kept      %.2f GiB (%zu bytes)\n", t.kept / 1073741824.0, t.kept);
     printf("  non-weight    %.2f GiB (%zu bytes: everything above but the weights)\n", rest / 1073741824.0, rest);
+    if (t.whole) {
+        const size_t wrest = t.w_reserved + t.w_small + t.w_slots + t.kept;
+        printf("  whole         %.2f GiB of weights (%zu bytes) and %.2f GiB besides them (non-weight %zu bytes): every "
+               "weight on the device, %s\n", t.w_weights / 1073741824.0, t.w_weights, wrest / 1073741824.0, wrest,
+               t.placed == 'W' ? "the placement above" : "what a device holding it would need");
+    }
     printf("  dev free      %.2f GiB of %.2f GiB (after the context, the module and the buffers)\n",
            t.free_b / 1073741824.0, t.total_b / 1073741824.0);
     const char *dv = t.placed == 'W' ? "FITS" : "DOES NOT FIT";

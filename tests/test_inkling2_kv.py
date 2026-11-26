@@ -141,6 +141,9 @@ def test_the_cuda_fit_places_the_file_as_its_load_does(runner_bin, tiny):
     if not m:
         pytest.skip("no CUDA device here: the device fit is a CUDA host's (" + fit.stdout.strip().splitlines()[-1] + ")")
     assert re.search(r"non-weight\s+[0-9.]+ GiB \(\d+ bytes", fit.stdout), fit.stdout
+    # the whole placement's own non-weight bytes, whichever placement the device took
+    assert re.search(r"whole\s+[0-9.]+ GiB of weights \(\d+ bytes\) and [0-9.]+ GiB besides them \(non-weight \d+ bytes\)",
+                     fit.stdout), fit.stdout
     load = subprocess.run(common + ["-t", "2", "-p", "hi", "-n", "1", "--temp", "0"], capture_output=True,
                           encoding="utf-8", errors="replace", env=env, timeout=600)
     assert load.returncode == 0, load.stderr[-2000:]
