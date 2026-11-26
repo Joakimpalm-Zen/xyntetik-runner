@@ -56,6 +56,12 @@ size_t plat_willneed_window(void);
 // already (the Metal shader library that failed to compile while --caps still
 // advertised the backend).
 bool   plat_willneed_available(void);
+// Prefault a range of a READ-ONLY file mapping into process page tables on
+// Linux so the kernel's LRU tracks the folios as mapped (referenced_ptes >= 1)
+// rather than reclaiming them on the first inactive_file pass (R18.13).
+// Advisory and best-effort: never modifies bytes, no-op off Linux.
+bool   plat_populate_available(void);
+bool   plat_populate_ro(const void *addr, size_t len);
 // Hand the pages of a range of a READ-ONLY file mapping back to the OS: they
 // leave this process's resident set, and a later read faults them back in
 // from the file (normally the page cache) with the same bytes. Only whole

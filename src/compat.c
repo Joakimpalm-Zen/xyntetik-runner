@@ -113,6 +113,13 @@ void plat_munmap(void *p, size_t size) {
     if (p) UnmapViewOfFile(p);
 }
 
+bool plat_populate_available(void) { return false; }
+
+bool plat_populate_ro(const void *addr, size_t len) {
+    (void)addr; (void)len;
+    return false;
+}
+
 static int machine_cpu_count(void) {
     // the process affinity mask first (a job object or `start /affinity`
     // narrows it), the machine's count as the fallback; see the POSIX twin
@@ -651,6 +658,71 @@ void plat_willneed(const void *addr, size_t len) {
 }
 
 bool plat_willneed_available(void) { return true; }   // madvise is always there
+
+#ifdef __linux__
+#ifndef MADV_POPULATE_READ
+#if defined(__x86_64__) || defined(__aarch64__) || defined(__i386__) || \
+    defined(__arm__) || defined(__riscv) || defined(__powerpc__) || \
+    defined(__s390x__)
+#define MADV_POPULATE_READ 22
+#endif
+#endif
+
+static void populate_touch_loop(const uint8_t *lo, size_t len, size_t ps) {
+    volatile uint8_t sink = 0;
+    for (size_t off = 0; off < len; off += ps)
+        sink ^= lo[off];
+    (void)sink;
+}
+
+bool plat_populate_available(void) { return true; }
+
+// Prefault a read-only file mapping into process PTEs (R18.13).
+// On Linux 5.14+, MADV_POPULATE_READ invokes faultin_page_range() directly
+// (identical to MAP_POPULATE, without faulting header-only or device-uploaded
+// ranges at mmap time). On older kernels (EINVAL), fall back to reading one
+// byte per page. Bracket with MADV_SEQUENTIAL / MADV_NORMAL so cold files
+// stream in with full readahead while later sparse reads stay normal.
+bool plat_populate_ro(const void *addr, size_t len) {
+    if (!addr || !len) return false;
+    long ps_raw = sysconf(_SC_PAGESIZE);
+    if (ps_raw <= 0) return false;
+    size_t ps = (size_t)ps_raw;
+    uintptr_t p = (uintptr_t)addr;
+    if (len > UINTPTR_MAX - p) return false;
+    uintptr_t end = p + len;
+    uintptr_t lo = p & ~(uintptr_t)(ps - 1);
+    if (end > UINTPTR_MAX - (ps - 1)) return false;
+    uintptr_t hi = (end + (uintptr_t)(ps - 1)) & ~(uintptr_t)(ps - 1);
+    if (hi <= lo) return false;
+    size_t alen = (size_t)(hi - lo);
+
+    (void)madvise((void *)lo, alen, MADV_SEQUENTIAL);
+    int rc = -1;
+#ifdef MADV_POPULATE_READ
+    do {
+        errno = 0;
+        rc = madvise((void *)lo, alen, MADV_POPULATE_READ);
+    } while (rc != 0 && errno == EINTR);
+    if (rc != 0 && errno == EINVAL) {
+        populate_touch_loop((const uint8_t *)lo, alen, ps);
+        rc = 0;
+    }
+#else
+    populate_touch_loop((const uint8_t *)lo, alen, ps);
+    rc = 0;
+#endif
+    (void)madvise((void *)lo, alen, MADV_NORMAL);
+    return rc == 0;
+}
+#else
+bool plat_populate_available(void) { return false; }
+
+bool plat_populate_ro(const void *addr, size_t len) {
+    (void)addr; (void)len;
+    return false;
+}
+#endif
 
 // MADV_DONTNEED on a PROT_READ, MAP_PRIVATE file mapping (plat_mmap_ro's)
 // drops the pages from this process; the next read maps the file's bytes
@@ -2491,18 +2563,27 @@ static void cg_fold(const char *dir, int v, bool cpu, bool mem, cg_bound *b) {
         int n = v == 2 ? cg2_quota(dir) : cg1_quota(dir);
         if (n > 0 && (!b->cpus || n < b->cpus)) b->cpus = n;
     }
-    uint64_t max, used;
-    if (!mem || !cg_num(dir, v == 2 ? "memory.max" : "memory.limit_in_bytes", 1, &max) ||
-        (v == 1 && max >= CG1_UNLIMITED)) return;
+    if (!mem) return;
+    uint64_t max = 0, high = 0, used = 0;
+    bool has_max = cg_num(dir, v == 2 ? "memory.max" : "memory.limit_in_bytes", 1, &max) &&
+                   !(v == 1 && max >= CG1_UNLIMITED);
+    // cgroup v2 memory.high throttles and drives reclaim even when memory.max
+    // is "max" or looser (R18.13): fold the tighter of the two into headroom
+    // while keeping mem_max as the hard ceiling.
+    bool has_high = (v == 2) && cg_num(dir, "memory.high", 0, &high);
+    if (has_max && (!b->mem_max || max < b->mem_max)) b->mem_max = max;
+    if (!has_max && !has_high) return;
+    uint64_t cap = has_max && has_high ? (max < high ? max : high)
+                 : has_max             ? max
+                                       : high;
     // headroom under this level's limit (siblings' usage included, since an
     // ancestor's charge covers its whole subtree), plus what it can reclaim
-    uint64_t left = max;
+    uint64_t left = cap;
     if (cg_num(dir, v == 2 ? "memory.current" : "memory.usage_in_bytes", 0, &used)) {
-        left = used < max ? max - used : 0;
+        left = used < cap ? cap - used : 0;
         uint64_t r = cg_reclaimable(dir, v);
-        left = r > max - left ? max : left + r;
+        left = r > cap - left ? cap : left + r;
     }
-    if (!b->mem_max || max < b->mem_max) b->mem_max = max;
     if (!b->have_left || left < b->mem_left) { b->mem_left = left; b->have_left = true; }
 }
 

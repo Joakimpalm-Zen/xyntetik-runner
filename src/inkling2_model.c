@@ -1621,3 +1621,55 @@ bool model_inkling2_cuda_readback(model_t *m, int *n_tensors, int *n_differ, cha
     if (n_differ) *n_differ = bad;
     return true;
 }
+
+typedef struct {
+    model_mem_range *out;
+    size_t           max;
+    size_t           n;
+    uint64_t         total;
+} ink2_host_walk;
+
+static void ink2_host_push(ink2_host_walk *w, const void *addr, size_t len) {
+    if (!addr || !len) return;
+    if (w->out && w->n < w->max) w->out[w->n] = (model_mem_range){ addr, len };
+    w->n++;
+    w->total += (uint64_t)len;
+}
+
+static int ink2_host_exp_cb(void *ctx, const ink2_tensor *t) {
+    ink2_host_walk *w = ctx;
+    if (!t || !t->q || t->dev != NULL) return 0;
+    if (!strstr(t->name, ".mlp.experts.")) return 0;
+    int64_t nr = view_rows(t);
+    size_t rb = view_row_bytes(t);
+    if (nr > 0 && rb > 0) ink2_host_push(w, t->q, rb * (size_t)nr);
+    int ns = view_scales(t);
+    if (t->q_scale && ns > 0) ink2_host_push(w, t->q_scale, sizeof(float) * (size_t)ns);
+    return 0;
+}
+
+size_t model_inkling2_host_ranges(const model_t *m, model_mem_range *out, size_t max, uint64_t *total_bytes) {
+    if (total_bytes) *total_bytes = 0;
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    if (!r || m->gf.header_only) return 0;
+    ink2_host_walk w = { out, max, 0, 0 };
+    if (r->gpu) {
+        // Whole model on CUDA ('W'): device-resident, populate nothing on host.
+        if (r->placed != 'M') return 0;
+        // --cpu-moe CUDA ('M'): populate only the host-computed expert stacks.
+        if (r->g) (void)ink2g_each_view(r->g, ink2_host_exp_cb, &w);
+        if (total_bytes) *total_bytes = w.total;
+        return w.n;
+    }
+    // Pure CPU Inkling 2: populate every GGUF part's tensor data section,
+    // skipping the GGUF header prefix.
+    uint32_t np = gguf_map_count(&m->gf);
+    for (uint32_t i = 0; i < np; i++) {
+        size_t sz = 0;
+        const uint8_t *mp = gguf_map_part(&m->gf, i, &sz);
+        size_t off = gguf_map_data_offset(&m->gf, i);
+        if (mp && sz > off) ink2_host_push(&w, mp + off, sz - off);
+    }
+    if (total_bytes) *total_bytes = w.total;
+    return w.n;
+}

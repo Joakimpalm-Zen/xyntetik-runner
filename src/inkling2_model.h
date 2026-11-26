@@ -102,4 +102,9 @@ int    model_inkling2_threads(const model_t *m);
 bool   model_inkling2_save_sel(model_t *m, const int *sel, int n);
 bool   model_inkling2_last_sel(const model_t *m, const int **sel_out, int *n_out);
 bool   model_inkling2_lora_backward(model_t *m, const int32_t *toks, int T, const float *pos_w, double *loss_out);
+// R18.13: host-used weight byte ranges for Linux post-bind PTE population.
+// Whole-CUDA ('W') returns 0; --cpu-moe CUDA ('M') returns only the host-side
+// expert stacks (and their scales); CPU returns each GGUF part's data section
+// past the header prefix.
+size_t model_inkling2_host_ranges(const model_t *m, model_mem_range *out, size_t max, uint64_t *total_bytes);
 #endif

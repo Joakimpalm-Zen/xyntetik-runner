@@ -46,8 +46,10 @@ typedef struct {
 typedef struct {
     void       *map;
     size_t      map_size;
+    size_t      data_offset; // byte offset of tensor data in `map` (past header)
     void      **maps;       // split GGUF ownership; NULL for a single file
     size_t     *map_sizes;
+    size_t     *map_data_offsets; // per-part tensor data offset; NULL for single file
     uint32_t    n_maps;
     uint64_t    mapped_size; // sum of every mapped part
     uint32_t    version;
@@ -85,6 +87,9 @@ uint64_t     gguf_mapped_size(const gguf_file *g);
 // iterate. Part `i` past the end is (NULL, 0).
 uint32_t     gguf_map_count(const gguf_file *g);
 void        *gguf_map_part(const gguf_file *g, uint32_t i, size_t *size);
+// Byte offset of the tensor data section within mapping part `i` (skipping
+// the GGUF header and metadata prefix). Returns 0 if out of range.
+size_t       gguf_map_data_offset(const gguf_file *g, uint32_t i);
 // Parse metadata and tensor DESCRIPTORS from a file whose data section may be
 // absent or short -- a header-only download, or the first few megabytes of a
 // remote file. This is a separate read path on purpose: gguf_open() refuses a

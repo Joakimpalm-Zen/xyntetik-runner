@@ -1739,7 +1739,12 @@ bool model_paging_note_wanted(uint64_t faults, int tokens) {
 // between the card and system memory included. A unified-memory backend's
 // device weights are the file mapping itself (Metal), so it never counts.
 bool model_weights_on_device(const model_t *m) {
-    if (!m || !m->gpu || m->gpu_layers < m->n_layer) return false;
+    if (!m) return false;
+    if (m->ink2) {
+        char placed = 0;
+        return model_inkling2_cuda_placement(m, &placed, NULL, NULL) && placed == 'W';
+    }
+    if (!m->gpu || m->gpu_layers < m->n_layer) return false;
     if (m->cpu_moe && m->moe_host)
         for (int l = 0; l < m->n_layer; l++)
             if (m->moe_host[l]) return false;
@@ -2247,6 +2252,261 @@ static int weights_lock(model_t *m, uint64_t *hot, uint64_t *cold) {
     return rc;
 }
 
+// ---- R18.13: Linux post-bind PTE population (MADV_POPULATE_READ) -----------
+//
+// Linux's folio_check_references() reclaims unmapped clean file folios
+// (referenced_ptes == 0) on the first inactive_file pass even with
+// PG_referenced set. Faulting the host-used weight ranges into process page
+// tables once at load keeps them tracked alongside llama.cpp's MAP_POPULATE,
+// without faulting header-only opens, device-uploaded weights, or models that
+// exceed the tighter of host MemAvailable and the cgroup memory limit.
+
+typedef struct {
+    model_mem_range *out;
+    size_t           max;
+    size_t           n;
+    uint64_t         total;
+} pop_walk;
+
+static void pop_push(pop_walk *w, const void *addr, size_t len) {
+    if (!addr || !len) return;
+    if (w->out && w->n < w->max) w->out[w->n] = (model_mem_range){ addr, len };
+    w->n++;
+    w->total += (uint64_t)len;
+}
+
+static void pop_push_tensor(pop_walk *w, const gguf_tensor *t) {
+    if (t && t->data && t->nbytes > 0) pop_push(w, t->data, (size_t)t->nbytes);
+}
+
+static void pop_layer_mixer(pop_walk *w, const layer_t *ly) {
+    const gpu_mixer_desc *rows = gpu_mixer_rows();
+    for (int i = 0; i < GT_N_MIXER; i++) {
+        const gguf_tensor *t = *(gguf_tensor *const *)((const char *)ly + rows[i].field);
+        pop_push_tensor(w, t);
+    }
+}
+
+static void pop_layer_ffn(pop_walk *w, const model_t *m, const layer_t *ly, int l,
+                          bool skip_hot_vram) {
+    if (!ly->is_moe) {
+        pop_push_tensor(w, ly->w_gate);
+        pop_push_tensor(w, ly->w_up);
+        pop_push_tensor(w, ly->w_down);
+        return;
+    }
+    pop_push_tensor(w, ly->ffn_gate_inp);
+    pop_push_tensor(w, ly->ffn_gate_up_exps);
+    bool hot_active = skip_hot_vram && m->moe_hot_n && l >= 0 && l < m->n_layer &&
+                      m->moe_hot_n[l] > 0 && m->moe_hot_slot &&
+                      ly->ffn_gate_exps && ly->ffn_gate_exps->data &&
+                      ly->ffn_up_exps && ly->ffn_up_exps->data &&
+                      ly->ffn_down_exps && ly->ffn_down_exps->data &&
+                      ly->n_expert > 0;
+    if (hot_active) {
+        int nff = ly->n_ff_exp > 0 ? ly->n_ff_exp : m->n_ff_exp;
+        size_t gs = (size_t)nff * ggml_row_size(ly->ffn_gate_exps->type, m->n_embd);
+        size_t us = (size_t)nff * ggml_row_size(ly->ffn_up_exps->type, m->n_embd);
+        size_t ds = (size_t)m->n_embd * ggml_row_size(ly->ffn_down_exps->type, nff);
+        const int *slot = m->moe_hot_slot + (size_t)l * (size_t)m->n_expert;
+        const uint8_t *g = ly->ffn_gate_exps->data;
+        const uint8_t *u = ly->ffn_up_exps->data;
+        const uint8_t *dn = ly->ffn_down_exps->data;
+        for (int e = 0; e < ly->n_expert; e++) {
+            if (slot[e] >= 0) continue;   // resident in VRAM hot bank
+            if ((uint64_t)(e + 1) * gs <= ly->ffn_gate_exps->nbytes)
+                pop_push(w, g + (size_t)e * gs, gs);
+            if ((uint64_t)(e + 1) * us <= ly->ffn_up_exps->nbytes)
+                pop_push(w, u + (size_t)e * us, us);
+            if ((uint64_t)(e + 1) * ds <= ly->ffn_down_exps->nbytes)
+                pop_push(w, dn + (size_t)e * ds, ds);
+        }
+    } else {
+        pop_push_tensor(w, ly->ffn_gate_exps);
+        pop_push_tensor(w, ly->ffn_up_exps);
+        pop_push_tensor(w, ly->ffn_down_exps);
+    }
+    pop_push_tensor(w, ly->w_gate_shexp);
+    pop_push_tensor(w, ly->w_up_shexp);
+    pop_push_tensor(w, ly->w_down_shexp);
+    pop_push_tensor(w, ly->ffn_gate_inp_shexp);
+    if (ly->moe_split) {
+        for (int e = 0; e < ly->n_expert; e++) {
+            if (ly->moe_g) pop_push_tensor(w, ly->moe_g[e]);
+            if (ly->moe_u) pop_push_tensor(w, ly->moe_u[e]);
+            if (ly->moe_d) pop_push_tensor(w, ly->moe_d[e]);
+        }
+    }
+    if (ly->moe_gemma) {
+        pop_push_tensor(w, ly->w_gate);
+        pop_push_tensor(w, ly->w_up);
+        pop_push_tensor(w, ly->w_down);
+    }
+}
+
+bool model_populate_wanted(uint64_t host_bytes, uint64_t available,
+                           bool locked, bool moe_prefetch, bool opt_out) {
+    if (opt_out) return false;       // RUNNER_POPULATE=0 / off
+    if (locked) return false;        // --mlock already faults and pins
+    if (moe_prefetch) return false;  // oversubscribed MoE: expert path owns paging
+    if (!host_bytes || !available) return false;
+    return host_bytes <= available;
+}
+
+size_t model_populate_ranges(const model_t *m, model_mem_range *out,
+                             size_t max, uint64_t *total_bytes) {
+    if (total_bytes) *total_bytes = 0;
+    if (!m || m->gf.header_only || !gguf_mapped_size(&m->gf)) return 0;
+    if (m->ink2) return model_inkling2_host_ranges(m, out, max, total_bytes);
+
+    pop_walk w = { out, max, 0, 0 };
+    if (!m->gpu) {
+        // Pure CPU: populate every GGUF mapping part past its header prefix.
+        uint32_t np = gguf_map_count(&m->gf);
+        for (uint32_t i = 0; i < np; i++) {
+            size_t sz = 0;
+            const uint8_t *mp = gguf_map_part(&m->gf, i, &sz);
+            size_t off = gguf_map_data_offset(&m->gf, i);
+            if (mp && sz > off) pop_push(&w, mp + off, sz - off);
+        }
+        if (total_bytes) *total_bytes = w.total;
+        return w.n;
+    }
+
+    // Unified-memory GPU (Metal): device-resident, populate nothing on host.
+    if (gpu_unified_memory()) return 0;
+
+    // Discrete GPU (CUDA): complement of cuda_release_host_weights().
+    // Full offload with no host experts yields 0 ranges; partial splits and
+    // --cpu-moe populate only the tensors the host actually computes with.
+    int gl = m->gpu_layers;
+    if (gl < 0) gl = 0;
+    if (gl > m->n_layer) gl = m->n_layer;
+    for (int l = 0; m->layers && l < gl; l++) {
+        const layer_t *ly = &m->layers[l];
+        if (ly->is_moe && m->cpu_moe && m->moe_host && m->moe_host[l])
+            pop_layer_ffn(&w, m, ly, l, true);
+    }
+    for (int l = gl; m->layers && l < m->n_layer; l++) {
+        const layer_t *ly = &m->layers[l];
+        pop_layer_mixer(&w, ly);
+        pop_layer_ffn(&w, m, ly, l, false);
+    }
+    if (gl < m->n_layer) {
+        pop_push_tensor(&w, m->output);
+        if (gl == 0) pop_push_tensor(&w, m->tok_embd);
+        if (m->mtp_ready && m->layers) {
+            const layer_t *mtp = &m->layers[m->n_layer];
+            pop_layer_mixer(&w, mtp);
+            pop_layer_ffn(&w, m, mtp, m->n_layer, false);
+        }
+    }
+    if (total_bytes) *total_bytes = w.total;
+    return w.n;
+}
+
+// Active populated-file registry for non-shared models (such as inkling2_loop
+// under --parallel N), protected by g_weights_mu. Shared models (m->W) track
+// weights_populated directly on m->W->proto.
+typedef struct pop_file_entry {
+    const model_t *owner;
+    uint64_t       fsize, fino;
+    int64_t        fmtime, fctime;
+    struct pop_file_entry *next;
+} pop_file_entry;
+
+static pop_file_entry *g_pop_files;
+
+static bool pop_file_exists_locked(const model_t *m) {
+    if (!m->file_id_ok) return false;
+    for (pop_file_entry *e = g_pop_files; e; e = e->next) {
+        if (e->fsize == m->file_size && e->fino == m->file_ino &&
+            e->fmtime == m->file_mtime_ns && e->fctime == m->file_ctime_ns)
+            return true;
+    }
+    return false;
+}
+
+static void pop_file_unregister(model_t *m) {
+    if (!m || !m->pop_registered) return;
+    pthread_mutex_lock(&g_weights_mu);
+    for (pop_file_entry **pp = &g_pop_files; *pp; ) {
+        if ((*pp)->owner == m) {
+            pop_file_entry *dead = *pp;
+            *pp = dead->next;
+            free(dead);
+            break;
+        }
+        pp = &(*pp)->next;
+    }
+    m->pop_registered = false;
+    pthread_mutex_unlock(&g_weights_mu);
+}
+
+static bool populate_env_disabled(void) {
+    const char *e = getenv("RUNNER_POPULATE");
+    return e && (!strcmp(e, "0") || !strcmp(e, "off") || !strcmp(e, "false"));
+}
+
+uint64_t model_populated_bytes(const model_t *m) {
+    return m ? m->weights_populated_bytes : 0;
+}
+
+uint64_t model_populate_weights(model_t *m, bool locked) {
+    if (!m) return 0;
+    m->weights_populated_bytes = 0;
+    if (!plat_populate_available()) return 0;
+    uint64_t total = 0;
+    size_t n = model_populate_ranges(m, NULL, 0, &total);
+    if (!n || !model_populate_wanted(total, plat_ram_available_bytes(),
+                                     locked, m->moe_prefetch,
+                                     populate_env_disabled()))
+        return 0;
+
+    // Claim populate-once ownership across --parallel N slots.
+    pthread_mutex_lock(&g_weights_mu);
+    if (m->W) {
+        if (m->W->proto.weights_populated) {
+            pthread_mutex_unlock(&g_weights_mu);
+            return 0;
+        }
+        m->W->proto.weights_populated = true;
+    } else {
+        if (m->weights_populated || pop_file_exists_locked(m)) {
+            pthread_mutex_unlock(&g_weights_mu);
+            return 0;
+        }
+        if (m->file_id_ok) {
+            pop_file_entry *e = malloc(sizeof *e);
+            if (e) {
+                e->owner = m;
+                e->fsize = m->file_size;
+                e->fino = m->file_ino;
+                e->fmtime = m->file_mtime_ns;
+                e->fctime = m->file_ctime_ns;
+                e->next = g_pop_files;
+                g_pop_files = e;
+                m->pop_registered = true;
+            }
+        }
+        m->weights_populated = true;
+    }
+    pthread_mutex_unlock(&g_weights_mu);
+
+    model_mem_range *ranges = malloc(n * sizeof *ranges);
+    if (!ranges) return 0;
+    size_t got = model_populate_ranges(m, ranges, n, NULL);
+    if (got > n) got = n;
+    uint64_t done = 0;
+    for (size_t i = 0; i < got; i++) {
+        if (plat_populate_ro(ranges[i].addr, ranges[i].len))
+            done += (uint64_t)ranges[i].len;
+    }
+    free(ranges);
+    m->weights_populated_bytes = done;
+    return done;
+}
+
 // ---------------------------------------------------- what a model owns
 //
 // R6.68.30: the buffers model.c allocates for a model and frees with a plain
@@ -2356,6 +2616,9 @@ static void model_free_weights(model_t *m) {
     // locked: with shared weights several model_t alias one map, and only the
     // record's proto (freed by the last holder) or an unshared model reaches
     // here.
+    pop_file_unregister(m);
+    m->weights_populated = false;
+    m->weights_populated_bytes = 0;
     weights_unlock(&m->gf, m->lock_spans, m->n_lock_spans);
     free(m->lock_spans);
     m->lock_spans = NULL;
@@ -2648,6 +2911,12 @@ bool model_load(model_t *m, const char *path, const model_params *p) {
     if (m->moe_prefetch)
         fprintf(stderr, "moe: prefetching routed experts as whole blocks "
                 "(--moe-prefetch off disables)\n");
+    // R18.13: on Linux, prefault host-used weight ranges into process PTEs
+    // (MADV_POPULATE_READ) so the kernel's LRU tracks them as mapped rather
+    // than evicting them on the first inactive_file reclaim pass. Skips
+    // header-only opens, device-uploaded weights, oversubscribed/cgroup-tight
+    // loads, and repeat --parallel slots. Opt out with RUNNER_POPULATE=0.
+    (void)model_populate_weights(m, locked);
     // Whole-mapping WILLNEED sweep for a model that FITS — OPT-IN
     // (RUNNER_PREFETCH=1), and the measurement that made it opt-in is the
     // point: on the 128 GB Apple Silicon Mac the sweep made the cold 63 GB gpt-oss-120b load
