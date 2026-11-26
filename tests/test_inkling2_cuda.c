@@ -1094,14 +1094,13 @@ int main(int argc, char **argv) {
             ink2_set_test_chunk_bump(0.0f);
             CHECK(k0 && k64 && memcmp(k0, k64, sizeof(float) * nl), "(w) %s: control: a bump at each chunk's start moves "
                   "-b 256's rows away from -b 64's (the boundaries are live)", kind[f]);
-            // the sliding rings: window - 1 + 256 rows; a full layer's -c; plus each layer's two histories (conv_k - 1)
-            size_t want_kv = 0, kvb = 0;
-            for (int ap = 0; ws && ap < ws->n_app; ap++) {
-                const int gl = ink2_app_global(ws, ap);
-                const size_t C = (size_t)(gl ? ws->n_kv * ws->head_dim : ws->swa_n_kv * ws->swa_head_dim);
-                const size_t rws = gl || ws->window - 1 + 256 >= CL ? (size_t)CL : (size_t)(ws->window - 1 + 256);
-                want_kv += 2 * sizeof(float) * C * (rws + (size_t)(ws->conv_k - 1));
-            }
+            // the sliding rings: window - 1 + 256 rows; a full layer's -c; plus each layer's two histories (conv_k - 1).
+            // R4.48.8.5: the want is the slot layout's own rule (model_inkling2_dev_slot_alloc_bytes: full rings alone,
+            // the sliding ones packed at 256-byte offsets per side, histories alone; the bytes asked of the driver),
+            // not a sum re-derived here: a sum of unpadded rings went stale when the sliding rings were packed
+            size_t kvb = 0;
+            const size_t want_kv = ws ? (size_t)model_inkling2_dev_slot_alloc_bytes(ws, CL, 256, INK2_KV_F32, true,
+                                                                                    ws->conv_k - 1, false) : 0;
             if (w0) model_inkling2_cuda_attn_calls(w0, &kvb);
             CHECK(ws && kvb == want_kv && want_kv > 0, "(w) %s: the device K/V rings and histories at -b 256: %zu bytes, want "
                   "%zu (each sliding ring window %d - 1 + 256 rows)", kind[f], kvb, want_kv, ws ? ws->window : -1);
@@ -2393,23 +2392,42 @@ int main(int argc, char **argv) {
         const void *xsp = NULL;
         if (g) model_inkling2_parts(g, &xsp, NULL);
         const ink2_shape *xs = xsp;
-        // one slot by hand (the driver's rounding: 512 bytes under 1 MiB, 2 MiB pages from it): per application its
-        // K and V rings (rows: -c 64, a sliding ring's window - 1 + 64 = 71 capped there) and its two histories
-        // (conv_k - 1 = 3 rows); every row 32 floats on the tiny file
-        size_t want = 0;
-        for (int ap = 0; xs && ap < xs->n_app; ap++) {
-            const int gl = ink2_app_global(xs, ap);
-            const size_t C = (size_t)(gl ? xs->n_kv * xs->head_dim : xs->swa_n_kv * xs->swa_head_dim);
-            const size_t rws = gl || xs->window - 1 + 64 >= 64 ? 64 : (size_t)(xs->window - 1 + 64);
-            const size_t b[2] = { sizeof(float) * rws * C, sizeof(float) * (size_t)(xs->conv_k - 1) * C };
-            for (int k = 0; k < 2; k++) {
-                const size_t gr = b[k] >= ((size_t)1 << 20) ? (size_t)2 << 20 : 512;
-                want += 2 * ((b[k] + gr - 1) / gr * gr);
-            }
-        }
+        // one slot (rows: -c 64, a sliding ring's window - 1 + 64 = 71 capped there; histories of conv_k - 1 = 3 rows;
+        // every row 32 values on the tiny file). R4.48.8.5: the want is the slot layout's own rule,
+        // model_inkling2_dev_slot_bytes (full rings alone, the sliding ones packed at 256-byte offsets per side,
+        // histories alone, the driver's rounding once per allocation), not each ring rounded as its own allocation.
+        // That hand sum agreed only while every ring was a multiple of 512 bytes (a float32 ring of 64 rows, 8,192);
+        // the q8 shape below is not (2,176 bytes a ring).
+        const size_t want = xs ? (size_t)model_inkling2_dev_slot_bytes(xs, 64, 64, INK2_KV_F32, true, xs->conv_k - 1, false) : 0;
         const size_t slot = model_inkling2_cuda_slot_fit_bytes(g);
         CHECK(g && model_inkling2_cuda_block_calls(g) >= 0 && slot == want && want > 0, "(x) the fit counts one slot's K/V "
               "rings and convolution histories: %zu bytes, want %zu", slot, want);
+        {   // the q8 shape: the fit's count and the allocation itself (the bytes asked of the driver) are the layout's,
+            // and the layout differs from each ring rounded alone (the case the shape exists for)
+            plat_setenv("RUNNER_INKLING2_CUDA_TEST_KVQ8", "1");
+            kv_q8_on = true;
+            model_t *g8 = load(argv[2], true, false, 64);
+            kv_q8_on = false;
+            plat_setenv("RUNNER_INKLING2_CUDA_TEST_KVQ8", "");
+            size_t kv8 = 0, alone = 0;
+            if (g8) model_inkling2_cuda_attn_calls(g8, &kv8);
+            for (int ap = 0; xs && ap < xs->n_app; ap++) {   // each ring (and history) rounded as its own allocation
+                const size_t C = (size_t)ink2_app_kv_width(xs, ap);
+                const size_t b2[2] = { ink2_kv_row_bytes((int)C, INK2_KV_Q8) * (size_t)ink2_kv_app_rows(xs, ap, 64, 64),
+                                       sizeof(float) * (size_t)(xs->conv_k - 1) * C };
+                for (int k = 0; k < 2; k++) {
+                    const size_t gr = b2[k] >= ((size_t)1 << 20) ? (size_t)2 << 20 : 512;
+                    alone += 2 * ((b2[k] + gr - 1) / gr * gr);
+                }
+            }
+            const size_t w8 = xs ? (size_t)model_inkling2_dev_slot_bytes(xs, 64, 64, INK2_KV_Q8, true, xs->conv_k - 1, false) : 0;
+            const size_t a8 = xs ? (size_t)model_inkling2_dev_slot_alloc_bytes(xs, 64, 64, INK2_KV_Q8, true, xs->conv_k - 1, false) : 0;
+            const size_t s8 = model_inkling2_cuda_slot_fit_bytes(g8);
+            CHECK(g8 && s8 == w8 && kv8 == a8 && w8 > 0 && w8 != alone, "(x) the q8 shape: the fit counts %zu bytes (want %zu, "
+                  "the layout's), the slot allocated %zu (want %zu); each ring rounded alone would be %zu (want it to differ, "
+                  "or the shape tests nothing)", s8, w8, kv8, a8, alone);
+            drop(g8);
+        }
         // the block's ten buffers reserved before the fit read the free memory: their bytes before any forward are
         // T = 64 x (4 H + 3 C + nkv K + nh dr + Q) floats, and a forward does not grow them
         const size_t bb0 = model_inkling2_cuda_block_buf_bytes(g);

@@ -47,6 +47,9 @@ int    model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, 
 // it: what the CUDA load's fit counts per slot and --info fit prints
 uint64_t model_inkling2_dev_slot_bytes(const ink2_shape *s, int n_ctx, int max_chunk, int kind, bool attn_dev,
                                        int hist_rows, bool step);
+// The same layout's bytes as asked of the driver, before its rounding: what the slot's own count holds (gpu_ink2_kv_bytes)
+uint64_t model_inkling2_dev_slot_alloc_bytes(const ink2_shape *s, int n_ctx, int max_chunk, int kind, bool attn_dev,
+                                             int hist_rows, bool step);
 // R4.48.9: whether this instance's forward runs on CUDA (false: the CPU engine).
 bool   model_inkling2_cuda(const model_t *m);
 // R4.48.9, TEST-ONLY (G1): read every device-resident matrix and expert stack back and compare it with the host

@@ -340,26 +340,35 @@ static size_t dev_instance_bytes(const ink2_rt *r, bool attn_dev, int hist_rows,
 // (gpu_ink2_step_set's allocations: the raw rows, the normed rows, the block's inputs, the reads' rows, the logits, the
 // lists), each as the driver allocates it; 0 when the plan cannot be built (the step then stays off)
 static size_t step_dev_bytes(const ink2_rt *r);
-// R4.48.8.5: one slot's device bytes, each allocation as the driver rounds it, from the shape alone: the load's fit
-// (share_place) and --info fit both count this, so they cannot disagree. The K/V rings in the cache's kind, the full
-// applications' each its own allocation, the sliding ones packed into one per side at GPU_INK2_RING_ALIGN-byte offsets
-// (gpu_ink2_kv_new's layout); on the block path each application's two convolution histories; with the step, the post
-// convolutions' copies (one allocation, gpu_ink2_kv_post_init).
-uint64_t model_inkling2_dev_slot_bytes(const ink2_shape *s, int n_ctx, int max_chunk, int kind, bool attn_dev,
-                                       int hist_rows, bool step) {
-    uint64_t b = step && hist_rows > 0 ?
-        dev_alloc_bytes(sizeof(float) * (size_t)s->n_app * 2 * (size_t)hist_rows * (size_t)s->hidden) : 0;
+// R4.48.8.5: one slot's device layout, from the shape alone, as gpu_ink2_kv_new and gpu_ink2_kv_post_init allocate
+// it: the K/V rings in the cache's kind, the full applications' each its own allocation, the sliding ones packed into
+// one allocation per side at GPU_INK2_RING_ALIGN-byte offsets; on the block path each application's two convolution
+// histories; with the step, the post convolutions' copies (one allocation). Each allocation's bytes go through
+// `round` once: the driver's rounding (dev_alloc_bytes) for what the slot takes on the device, which the load's fit
+// (share_place) and --info fit count, or none for the bytes asked of the driver, which the slot's own count holds.
+static size_t no_rounding(size_t b) { return b; }
+static uint64_t dev_slot_layout(const ink2_shape *s, int n_ctx, int max_chunk, int kind, bool attn_dev, int hist_rows,
+                                bool step, size_t (*round)(size_t)) {
+    uint64_t b = step && hist_rows > 0 ? round(sizeof(float) * (size_t)s->n_app * 2 * (size_t)hist_rows * (size_t)s->hidden) : 0;
     if (!attn_dev) return b;
     size_t packed = 0;
     for (int a = 0; a < s->n_app; a++) {
         const size_t C = (size_t)ink2_app_kv_width(s, a);
         const size_t ring = ink2_kv_row_bytes((int)C, kind) * (size_t)ink2_kv_app_rows(s, a, n_ctx, max_chunk);
-        if (ink2_app_global(s, a)) b += 2 * dev_alloc_bytes(ring);
+        if (ink2_app_global(s, a)) b += 2 * round(ring);
         else packed = (packed + GPU_INK2_RING_ALIGN - 1) / GPU_INK2_RING_ALIGN * GPU_INK2_RING_ALIGN + ring;
-        if (hist_rows > 0) b += 2 * dev_alloc_bytes(sizeof(float) * (size_t)hist_rows * C);
+        if (hist_rows > 0) b += 2 * round(sizeof(float) * (size_t)hist_rows * C);
     }
-    if (packed) b += 2 * dev_alloc_bytes(packed);
+    if (packed) b += 2 * round(packed);
     return b;
+}
+uint64_t model_inkling2_dev_slot_bytes(const ink2_shape *s, int n_ctx, int max_chunk, int kind, bool attn_dev,
+                                       int hist_rows, bool step) {
+    return dev_slot_layout(s, n_ctx, max_chunk, kind, attn_dev, hist_rows, step, dev_alloc_bytes);
+}
+uint64_t model_inkling2_dev_slot_alloc_bytes(const ink2_shape *s, int n_ctx, int max_chunk, int kind, bool attn_dev,
+                                             int hist_rows, bool step) {
+    return dev_slot_layout(s, n_ctx, max_chunk, kind, attn_dev, hist_rows, step, no_rounding);
 }
 static size_t dev_instance_bytes(const ink2_rt *r, bool attn_dev, int hist_rows, bool step) {
     return model_inkling2_dev_slot_bytes(&r->s, r->c.n_ctx, r->c.max_chunk, r->c.kv == INK2_KV_Q8 ? INK2_KV_Q8 : INK2_KV_F32,
