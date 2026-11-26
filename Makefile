@@ -4818,6 +4818,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_inkling2_fast.py \
     tests/test_inkling2_hardening.py \
     tests/test_inkling2_protocol.py \
+    tests/test_inkling2_rewrite.py \
     tests/test_inkling2_train.py \
     tests/test_iquants.py \
     tests/test_k2_horizon.py \
