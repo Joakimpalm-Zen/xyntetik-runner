@@ -856,21 +856,29 @@ static uint8_t fp32_to_ue4m3(float x) {
     return (lo & 1) ? (uint8_t)hi : (uint8_t)lo;
 }
 
-static uint8_t nvfp4_nearest(float x, float d, float scale) {
+static uint8_t nvfp4_nearest(float x, float d, float scale, float *out_val) {
     int best = 0;
-    float best_err = fabsf(scale == 1.0f ? (mxfp4_levels[0] * d - x)
-                                         : ((mxfp4_levels[0] * d) * scale - x));
+    float best_v = scale == 1.0f ? (mxfp4_levels[0] * d)
+                                 : ((mxfp4_levels[0] * d) * scale);
+    float best_err = fabsf(best_v - x);
     for (int i = 1; i < 16; i++) {
         float val = scale == 1.0f ? (mxfp4_levels[i] * d)
                                   : ((mxfp4_levels[i] * d) * scale);
         float e = fabsf(val - x);
-        if (e < best_err) { best_err = e; best = i; }
+        if (e < best_err) { best_err = e; best = i; best_v = val; }
     }
+    if (out_val) *out_val = best_v;
     return (uint8_t)best;
 }
 
 static void quantize_row_nvfp4_scaled(const float *x, uint8_t *dst, int n, float scale) {
     ue4m3_tbl_init();
+    // R4.48.8.12: 8-candidate UE4M3 block-scale scan (ue_6 + [-1..+6], which
+    // contains Four Over Six's ue_4 across every UE4M3 interval), selected by
+    // plain unweighted block MSE. Ordered by distance from ue_6 with static-6
+    // first so ties keep the candidate nearest ue_6 (static-6 first). Outer
+    // scale stays amax / (6 * 448); imatrix_weighted_type(T_NVFP4) stays false.
+    static const int k_deltas[8] = { 0, -1, 1, 2, 3, 4, 5, 6 };
     wblock_nvfp4 *b = (wblock_nvfp4 *)dst;
     const float inv_6s = 1.0f / (6.0f * scale);
     for (int i = 0; i < n / 64; i++, b++) {
@@ -881,14 +889,31 @@ static void quantize_row_nvfp4_scaled(const float *x, uint8_t *dst, int n, float
                 float a = fabsf(xb[j]);
                 if (a > amax) amax = a;
             }
-            uint8_t ue = fp32_to_ue4m3(scale == 1.0f ? (amax / 6.0f) : (amax * inv_6s));
-            b->d[s] = ue;
-            float d = g_ue4m3_tbl[ue];
-            for (int j = 0; j < 8; j++) {
-                uint8_t x0 = nvfp4_nearest(xb[j],     d, scale);
-                uint8_t x1 = nvfp4_nearest(xb[j + 8], d, scale);
-                b->qs[s * 8 + j] = (uint8_t)(x0 | (x1 << 4));
+            int ue6 = (int)fp32_to_ue4m3(scale == 1.0f ? (amax / 6.0f) : (amax * inv_6s));
+            uint8_t best_ue = (uint8_t)ue6;
+            uint8_t best_q[16];
+            double best_mse = INFINITY;
+            for (int t = 0; t < 8; t++) {
+                int cand = ue6 + k_deltas[t];
+                if (cand < 0 || cand > 126) continue;
+                float d = g_ue4m3_tbl[cand];
+                uint8_t q[16];
+                double mse = 0.0;
+                for (int j = 0; j < 16; j++) {
+                    float qv;
+                    q[j] = nvfp4_nearest(xb[j], d, scale, &qv);
+                    double diff = (double)xb[j] - (double)qv;
+                    mse += diff * diff;
+                }
+                if (t == 0 || mse < best_mse) {
+                    best_mse = mse;
+                    best_ue = (uint8_t)cand;
+                    memcpy(best_q, q, sizeof best_q);
+                }
             }
+            b->d[s] = best_ue;
+            for (int j = 0; j < 8; j++)
+                b->qs[s * 8 + j] = (uint8_t)(best_q[j] | (best_q[j + 8] << 4));
         }
     }
 }

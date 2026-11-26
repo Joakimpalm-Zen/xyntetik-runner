@@ -1089,6 +1089,49 @@ static void check_device_writers(void) {
         printf("ok: NVFP4 encodes and decodes all 127 UE4M3 codes (0x00..0x7E) through Runner's decoder\n");
     }
 
+    // 1b. R4.48.8.12: 8-candidate UE4M3 block-scale scan (ue_6 + [-1..+6]) through Runner's own decoder.
+    {
+        const char *fin = "q_nvscan_in.gguf", *fout = "q_nvscan_out.gguf";
+        enum { COLS = 64 };
+        float w[COLS], norm[COLS];
+        for (int i = 0; i < COLS; i++) { w[i] = 0.0f; norm[i] = 1.0f; }
+        // Sub-block 0: [6, 5*15] -> static-6 (d=1.0) MSE=15.0; scan picks d=1.625 (ue_6+5, code 61) MSE=0.484375.
+        w[0] = 6.0f; for (int j = 1; j < 16; j++) w[j] = 5.0f;
+        // Sub-block 1: [6, 4.5*15] -> Four Over Six d_4=1.5 (ue_6+4) gives 0.0 MSE.
+        w[16] = 6.0f; for (int j = 1; j < 16; j++) w[16 + j] = 4.5f;
+        // Sub-block 2: [6, 3, 1.5, 0*13] -> tie (0.0 MSE at d=1.0 and d=1.5) stays at static-6 (d=1.0).
+        w[32] = 6.0f; w[33] = 3.0f; w[34] = 1.5f;
+        // Sub-block 3: [2688, 0*15] -> fixes outer scale f = 2688 / (6*448) = 1.0 exactly.
+        w[48] = 2688.0f;
+        tdesc ts[2] = {
+            { "output_norm.weight",    {COLS, 1}, 1, norm, COLS, T_F32 },
+            { "blk.0.ffn_gate.weight", {COLS, 1}, 2, w,    COLS, T_F32 },
+        };
+        write_gguf(fin, ts, 2, 0);
+        assert(quantize_gguf(fin, fout, T_NVFP4, NULL) == 0);
+        gguf_file g;
+        assert(gguf_open(&g, fout));
+        gguf_tensor *tw = gguf_find_tensor(&g, "blk.0.ffn_gate.weight");
+        assert(tw && tw->type == T_NVFP4 && fabsf(tw->scale - 1.0f) <= 1e-6f);
+        const uint8_t *raw = (const uint8_t *)tw->data;
+        assert(raw[0] == 61);   // d=1.625 (ue_6 + 5)
+        assert(raw[1] == 60);   // d=1.50 (ue_4 = ue_6 + 4)
+        assert(raw[2] == 56);   // d=1.00 (static-6 wins tie)
+        float dec[COLS];
+        dequant_row(T_NVFP4, raw, dec, COLS);
+        double mse0 = 0.0, mse1 = 0.0, mse2 = 0.0;
+        for (int j = 0; j < 16; j++) {
+            double d0 = (double)(dec[j] * tw->scale) - (double)w[j];
+            double d1 = (double)(dec[16 + j] * tw->scale) - (double)w[16 + j];
+            double d2 = (double)(dec[32 + j] * tw->scale) - (double)w[32 + j];
+            mse0 += d0 * d0; mse1 += d1 * d1; mse2 += d2 * d2;
+        }
+        assert(fabs(mse0 - 0.484375) <= 1e-5 && mse1 == 0.0 && mse2 == 0.0);
+        gguf_close(&g);
+        remove(fin); remove(fout);
+        printf("ok: NVFP4 8-scale scan (ue_6 + [-1..+6]) beats static-6, includes 4/6, and breaks ties to ue_6\n");
+    }
+
     // 2. IQ3_XXS round-trip through Runner's own dequant_row(T_IQ3_XXS) + MOSTLY_IQ3_XXS file_type.
     {
         const char *fin = "q_iq3_in.gguf", *fout = "q_iq3_out.gguf";

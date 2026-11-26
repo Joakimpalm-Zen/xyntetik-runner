@@ -754,3 +754,131 @@ sys.exit(r.returncode)
     )
     assert rb.returncode != 0
     assert "SENTINEL_LLAMA_ERR" in rb.stderr, f"stderr not surfaced:\n{rb.stderr}"
+
+
+def test_nvfp4_8scale_scan_invariants(runner_bin, tmp_path):
+    """R4.48.8.12: NVFP4 writer uses 8-candidate UE4M3 scan (ue_6 + [-1..+6]) by plain unweighted MSE:
+    - red-first block where static-6 is not MSE-optimal;
+    - Four Over Six scale (amax / (4*f)) is inside the candidate set and achieves 0 MSE on a 4/6-exact block;
+    - ties go to candidate nearest ue_6, static-6 first;
+    - outer scale stays amax / (6 * 448);
+    - per-block scan MSE <= static-6 MSE on 100% of blocks of an Inkling-shaped BF16 matrix (>22% total MSE drop);
+    - -t 1 equals -t 4 byte-for-byte;
+    - imatrix does NOT change NVFP4 bytes (imatrix_weighted_type(T_NVFP4) stays false)."""
+    ue_tbl = [_ue4m3_to_f32(u) for u in range(127)]
+
+    def to_ue(x):
+        if not (x > 0.0):
+            return 0
+        if x >= 448.0:
+            return 126
+        lo, hi = 0, 126
+        while hi - lo > 1:
+            m = (lo + hi) >> 1
+            if ue_tbl[m] <= x:
+                lo = m
+            else:
+                hi = m
+        dlo, dhi = x - ue_tbl[lo], ue_tbl[hi] - x
+        if dlo < dhi:
+            return lo
+        if dhi < dlo:
+            return hi
+        return hi if (lo & 1) else lo
+
+    # Exhaustive check: Four Over Six's ue_4 always lies in ue_6 + [-1..+6].
+    for i in range(126):
+        for x6 in (ue_tbl[i], 0.5 * (ue_tbl[i] + ue_tbl[i + 1]), ue_tbl[i + 1]):
+            u6, u4 = to_ue(x6), to_ue(1.5 * x6)
+            assert -1 <= (u4 - u6) <= 6, f"x6={x6}: u6={u6}, u4={u4}"
+
+    # Crafted 4-sub-block row (64 values) with amax = 6*448 = 2688 in sub-block 3 so f_got == 1.0 exactly:
+    # - sub-block 0: [6.0, 5.0, ..., 5.0] -> static-6 (d=1.0) MSE=15.0; scan picks d=1.625 (ue_6+5, code 61)
+    #   where 4*1.625=6.5 and 3*1.625=4.875 -> MSE = 0.25 + 15*0.015625 = 0.484375 (31x lower than static-6)!
+    # - sub-block 1: [6.0, 4.5, ..., 4.5] -> 4/6 exact at d_4=1.5 (ue_6+4), MSE=0.0!
+    # - sub-block 2: [6.0, 3.0, 1.5, 0, ...] -> exact at BOTH d_6=1.0 and d_4=1.5; tie goes to static-6 (d=1.0)!
+    # - sub-block 3: [2688.0, 0, ...] -> sets outer scale f = 2688 / (6*448) = 1.0 exactly.
+    row = (
+        [6.0] + [5.0] * 15
+        + [6.0] + [4.5] * 15
+        + [6.0, 3.0, 1.5] + [0.0] * 13
+        + [2688.0] + [0.0] * 15
+    )
+    ones64 = struct.pack("<64f", *([1.0] * 64))
+    src_c = _write(
+        tmp_path / "crafted.gguf",
+        [("general.architecture", STR, "llama"), ("general.alignment", U32, 32)],
+        [("output_norm.weight", [64], T_F32, ones64),
+         ("blk.0.ffn_gate.weight", [64, 1], T_F32, struct.pack("<64f", *row))],
+    )
+    out_c = tmp_path / "crafted-nvfp4.gguf"
+    r = _run(runner_bin, "-m", src_c, "--quantize", out_c, "--quant", "nvfp4")
+    assert r.returncode == 0, r.stderr
+    _, got_c = _gguf(out_c)
+    (f_c,) = struct.unpack("<f", got_c["blk.0.ffn_gate.scale"][2])
+    assert f_c == pytest.approx(1.0, rel=1e-6), f"outer scale must stay amax/(6*448)=1.0, got {f_c}"
+    raw_c = got_c["blk.0.ffn_gate.weight"][2]
+    dec_c = [v * f_c for v in _decode_nvfp4_llama_interop(raw_c, 64)]
+
+    u_100 = to_ue(1.0)
+    u_1625 = to_ue(1.625)
+    u_150 = to_ue(1.5)
+    assert raw_c[0] == u_1625, f"sub-block 0 must pick d=1.625 (code {u_1625}), got code {raw_c[0]}"
+    mse0 = sum((a - b) ** 2 for a, b in zip(row[0:16], dec_c[0:16]))
+    assert mse0 == pytest.approx(0.484375, abs=1e-5), f"expected MSE 0.484375 (< static-6 15.0), got {mse0}"
+
+    assert raw_c[1] == u_150, f"sub-block 1 (4/6 exact) must pick d_4=1.5 (code {u_150}), got code {raw_c[1]}"
+    mse1 = sum((a - b) ** 2 for a, b in zip(row[16:32], dec_c[16:32]))
+    assert mse1 == 0.0, f"sub-block 1 must decode with 0.0 MSE under 4/6, got {mse1}"
+
+    assert raw_c[2] == u_100, f"sub-block 2 (tie between d=1.0 and d=1.5) must keep static-6 (code {u_100}), got {raw_c[2]}"
+    mse2 = sum((a - b) ** 2 for a, b in zip(row[32:48], dec_c[32:48]))
+    assert mse2 == 0.0
+
+    # Per-block invariant + >22% total MSE reduction + -t 1 == -t 4 + imatrix invariance on BF16 matrix.
+    rng = random.Random(20261126)
+    cols, rows = 256, 128
+    n_el = cols * rows
+    raw_f32 = struct.pack(f"<{n_el}f", *[rng.gauss(0.0, 0.03) for _ in range(n_el)])
+    bf16_raw = bytearray()
+    bf16_vals = []
+    for (u,) in struct.iter_unpack("<I", raw_f32):
+        u += 0x7FFF + ((u >> 16) & 1)
+        h16 = (u >> 16) & 0xFFFF
+        bf16_raw += struct.pack("<H", h16)
+        bf16_vals.append(struct.unpack("<f", struct.pack("<I", h16 << 16))[0])
+    ones256 = struct.pack("<256f", *([1.0] * 256))
+    src_bf = _write(
+        tmp_path / "bf.gguf",
+        [("general.architecture", STR, "llama"), ("general.alignment", U32, 32)],
+        [("output_norm.weight", [cols], T_F32, ones256),
+         ("blk.0.ffn_gate.weight", [cols, rows], T_BF16, bytes(bf16_raw))],
+    )
+    imx = _write_gguf_imatrix(tmp_path / "bf-imx.gguf", {
+        "blk.0.ffn_gate.weight": (cols, 1, [0.1 + 20.0 * ((c * 17) % 13) for c in range(cols)]),
+    })
+    out_t1 = tmp_path / "bf-t1.gguf"
+    out_t4 = tmp_path / "bf-t4.gguf"
+    out_imx = tmp_path / "bf-imx-out.gguf"
+    assert _run(runner_bin, "-m", src_bf, "--quantize", out_t1, "--quant", "nvfp4", "-t", "1").returncode == 0
+    assert _run(runner_bin, "-m", src_bf, "--quantize", out_t4, "--quant", "nvfp4", "-t", "4").returncode == 0
+    assert _run(runner_bin, "-m", src_bf, "--quantize", out_imx, "--quant", "nvfp4", "--imatrix", imx, "-t", "1").returncode == 0
+    assert out_t1.read_bytes() == out_t4.read_bytes(), "-t 1 and -t 4 must be byte-identical"
+    assert out_t1.read_bytes() == out_imx.read_bytes(), "imatrix must not alter NVFP4 bytes (imatrix_weighted_type stays false)"
+
+    _, got_bf = _gguf(out_t1)
+    (f_bf,) = struct.unpack("<f", got_bf["blk.0.ffn_gate.scale"][2])
+    expected_f = max(abs(v) for v in bf16_vals) / (6.0 * 448.0)
+    assert f_bf == pytest.approx(expected_f, rel=1e-6)
+    dec_bf = [v * f_bf for v in _decode_nvfp4_llama_interop(got_bf["blk.0.ffn_gate.weight"][2], n_el)]
+
+    tot_scan, tot_s6 = 0.0, 0.0
+    for off in range(0, n_el, 16):
+        sub = bf16_vals[off:off + 16]
+        d6 = ue_tbl[to_ue(max(abs(v) for v in sub) / (6.0 * f_bf))]
+        m_s6 = sum((min(((lvl * d6) * f_bf for lvl in E2M1_TABLE), key=lambda q: abs(q - v)) - v) ** 2 for v in sub)
+        m_sc = sum((dec_bf[off + j] - sub[j]) ** 2 for j in range(16))
+        assert m_sc <= m_s6 + 1e-12, f"block {off // 16}: scan MSE {m_sc} > static-6 MSE {m_s6}"
+        tot_scan += m_sc
+        tot_s6 += m_s6
+    assert tot_scan < 0.78 * tot_s6, f"expected >22% total MSE reduction, got {(tot_scan / tot_s6 - 1.0) * 100:.2f}%"
