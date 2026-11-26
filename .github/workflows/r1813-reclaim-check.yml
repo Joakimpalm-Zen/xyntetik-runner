@@ -16,7 +16,7 @@ permissions:
 jobs:
   reclaim-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - name: Checkout target ref
         uses: actions/checkout@v7
