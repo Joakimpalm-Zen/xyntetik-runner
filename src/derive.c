@@ -22,6 +22,7 @@
 #include "envelope.h"
 #include "fpclass.h"
 #include "quants.h"
+#include "ref_logits.h"
 #include "runner.h"
 #include <ctype.h>
 #include <math.h>
@@ -45,7 +46,8 @@ static const struct { const char *flag, *key; bool file; } RECIPE[] = {
 #define N_RECIPE (int)(sizeof RECIPE / sizeof RECIPE[0])
 
 typedef struct {
-    const char *parent, *out, *corpus, *reference_hf;
+    const char *parent, *out, *corpus, *reference_hf, *reference_logits;
+    long long ram_cap;         // --ram-cap: optional RAM cap in bytes (0 = unset)
     const char *ref_args[8];   // --reference-arg: passed to gold-logits.py as given
     const char *license;       // --license: for a parent that declares none
     const char *base_model;    // --base-model REPO[@REV]: the publisher's repository
@@ -125,11 +127,17 @@ static void derive_usage(FILE *f) {
         "                 time: the cheapest next step down any group's lower\n"
         "                 convex hull of (bytes, error) over the ladder\n\n"
         "measurement:\n"
-        "  --reference hf:DIR  the publisher's model in float32 through\n"
-        "                 scripts/gold-logits.py (Python with torch and\n"
-        "                 transformers); the only reference a card may state the\n"
-        "                 bar against. Default: the parent file in Runner's\n"
-        "                 arithmetic, named so on the card, with no bar verdict\n"
+        "  --reference hf:DIR|logits:MANIFEST.json\n"
+        "                 the publisher's model in float32, either live through\n"
+        "                 scripts/gold-logits.py (hf:DIR, needs Python with torch and\n"
+        "                 transformers) or streamed from pinned pre-computed reference\n"
+        "                 logits (logits:MANIFEST.json, xyntetik.runner.ref-logits.v1,\n"
+        "                 exact full-vocab float64 KL in O(V) RAM, no Python/torch);\n"
+        "                 the only references a card may state the bar against.\n"
+        "                 Default: the parent file in Runner's arithmetic, named so\n"
+        "                 on the card, with no bar verdict\n"
+        "  --ram-cap BYTES  fail fast before scoring if file size + streaming buffer\n"
+        "                 exceeds BYTES (accepts M/MiB/G/GiB suffix)\n"
         "  --reference-arg ARG  with --reference: pass ARG to gold-logits.py as\n"
         "                 given, repeatable (--upcast-at-use, or --offload-dir DIR\n"
         "                 --max-memory GIB, for a reference too large for float32\n"
@@ -241,14 +249,33 @@ static int parse_args(int argc, char **argv, derive_opts *o) {
                 fprintf(stderr, "error: --target-size is a byte count (got %s)\n", v);
                 return 1;
             }
-        }
-        else if (!strcmp(a, "--reference")) {
-            if (strncmp(v, "hf:", 3) || !v[3]) {
-                fprintf(stderr, "error: --reference takes hf:DIR, the publisher's model "
-                        "directory\n");
+        } else if (!strcmp(a, "--ram-cap")) {
+            char *end = NULL;
+            long long val = strtoll(v, &end, 10);
+            long long mult = 1;
+            if (end && *end) {
+                if (!strcmp(end, "K") || !strcmp(end, "KiB")) mult = 1024LL;
+                else if (!strcmp(end, "M") || !strcmp(end, "MiB")) mult = 1024LL * 1024LL;
+                else if (!strcmp(end, "G") || !strcmp(end, "GiB")) mult = 1024LL * 1024LL * 1024LL;
+                else val = 0;
+            }
+            if (val < 1 || val > (INT64_MAX / mult)) {
+                fprintf(stderr, "error: --ram-cap expects a positive byte count (optional K/M/G/KiB/MiB/GiB suffix, got %s)\n", v);
                 return 1;
             }
-            o->reference_hf = v + 3;
+            o->ram_cap = val * mult;
+        }
+        else if (!strcmp(a, "--reference")) {
+            if (!strncmp(v, "hf:", 3) && v[3]) {
+                o->reference_hf = v + 3;
+                o->reference_logits = NULL;
+            } else if (!strncmp(v, "logits:", 7) && v[7]) {
+                o->reference_logits = v + 7;
+                o->reference_hf = NULL;
+            } else {
+                fprintf(stderr, "error: --reference takes hf:DIR or logits:MANIFEST.json\n");
+                return 1;
+            }
         } else if (!strcmp(a, "--window")) {
             if (!parse_window(v, o)) {
                 fprintf(stderr, "error: --window is START:STRIDE:COUNT, each at least 1 "
@@ -260,13 +287,13 @@ static int parse_args(int argc, char **argv, derive_opts *o) {
             return 1;
         }
     }
-    if (o->n_compares && !o->reference_hf) {
+    if (o->n_compares && !o->reference_hf && !o->reference_logits) {
         fprintf(stderr, "error: --compare sets other files beside this one against the publisher "
-                "reference and needs --reference hf:DIR\n");
+                "reference and needs --reference hf:DIR or logits:MANIFEST.json\n");
         return 1;
     }
     if (o->n_ref_args && !o->reference_hf) {
-        fprintf(stderr, "error: --reference-arg passes arguments to the publisher reference and "
+        fprintf(stderr, "error: --reference-arg passes arguments to scripts/gold-logits.py and "
                 "needs --reference hf:DIR\n");
         return 1;
     }
@@ -348,14 +375,15 @@ static int run_self(const char *self, const char **args) {
 
 // `--score --score-top 20` of model over the window's head, into out
 static bool score(const char *self, const derive_opts *o, const char *model,
-                  const char *out, int n_tokens) {
+                  const char *out, int n_tokens, const char *score_ref) {
     char ntok[16];
     snprintf(ntok, sizeof ntok, "%d", n_tokens);
-    const char *a[24];
+    const char *a[28];
     int n = 0;
     a[n++] = "-m"; a[n++] = model; a[n++] = "--score"; a[n++] = "--score-top"; a[n++] = "20";
     a[n++] = "-f"; a[n++] = o->corpus; a[n++] = "--score-out"; a[n++] = out;
     a[n++] = "--score-tokens"; a[n++] = ntok;
+    if (score_ref) { a[n++] = "--score-ref"; a[n++] = score_ref; }
     a[n++] = "--gpu"; a[n++] = o->gpu ? o->gpu : "off";
     // without -c the context is the window's span, so the default context
     // of a short-context model is never what limits the measurement
@@ -621,30 +649,7 @@ static const char *bar_verdict_name(int v) {
     return v == BAR_PASS ? "pass" : v == BAR_FAIL ? "fail" : "not_decided";
 }
 
-static bool gold_measure(const derive_opts *o, const char *script, const char *file_score,
-                         int n_special, const char *gold_out, derive_measure *m) {
-    char s[16], t[16], c[16];
-    snprintf(s, sizeof s, "%d", o->start);
-    snprintf(t, sizeof t, "%d", o->stride);
-    snprintf(c, sizeof c, "%d", o->count);
-    const char *a[32];
-    int n = 0;
-    a[n++] = gold_python(); a[n++] = script; a[n++] = "--hf"; a[n++] = o->reference_hf;
-    a[n++] = "--corpus"; a[n++] = o->corpus; a[n++] = "--score-a"; a[n++] = file_score;
-    a[n++] = "--min-prefix"; a[n++] = s; a[n++] = "--stride"; a[n++] = t;
-    a[n++] = "--max-positions"; a[n++] = c; a[n++] = "--top-n"; a[n++] = "20";
-    a[n++] = "--out"; a[n++] = gold_out;
-    if (o->threads) { a[n++] = "--threads"; a[n++] = o->threads; }
-    // Runner prepended BOS to the text it scored; the reference must see the
-    // same prefix even where the publisher's tokenizer adds none
-    if (n_special > 0) a[n++] = "--force-bos";
-    for (int i = 0; i < o->n_ref_args; i++) a[n++] = o->ref_args[i];
-    a[n] = NULL;
-    int rc = plat_spawn_wait(a);
-    if (rc != 0) {
-        fprintf(stderr, "error: the publisher reference run failed (exit %d)\n", rc);
-        return false;
-    }
+static bool gold_read_result(const char *gold_out, derive_measure *m) {
     jv *g = read_json(gold_out);
     if (!g) return false;
     jv *sum = jv_get(g, "summary"), *side = jv_get(jv_get(sum, "sides"), "a");
@@ -716,6 +721,129 @@ static bool gold_measure(const derive_opts *o, const char *script, const char *f
         return false;
     }
     return true;
+}
+
+static bool gold_measure(const derive_opts *o, const char *script, const char *file_score,
+                         int n_special, const char *gold_out, derive_measure *m) {
+    char s[16], t[16], c[16];
+    snprintf(s, sizeof s, "%d", o->start);
+    snprintf(t, sizeof t, "%d", o->stride);
+    snprintf(c, sizeof c, "%d", o->count);
+    const char *a[32];
+    int n = 0;
+    a[n++] = gold_python(); a[n++] = script; a[n++] = "--hf"; a[n++] = o->reference_hf;
+    a[n++] = "--corpus"; a[n++] = o->corpus; a[n++] = "--score-a"; a[n++] = file_score;
+    a[n++] = "--min-prefix"; a[n++] = s; a[n++] = "--stride"; a[n++] = t;
+    a[n++] = "--max-positions"; a[n++] = c; a[n++] = "--top-n"; a[n++] = "20";
+    a[n++] = "--out"; a[n++] = gold_out;
+    if (o->threads) { a[n++] = "--threads"; a[n++] = o->threads; }
+    // Runner prepended BOS to the text it scored; the reference must see the
+    // same prefix even where the publisher's tokenizer adds none
+    if (n_special > 0) a[n++] = "--force-bos";
+    for (int i = 0; i < o->n_ref_args; i++) a[n++] = o->ref_args[i];
+    a[n] = NULL;
+    int rc = plat_spawn_wait(a);
+    if (rc != 0) {
+        fprintf(stderr, "error: the publisher reference run failed (exit %d)\n", rc);
+        return false;
+    }
+    return gold_read_result(gold_out, m);
+}
+
+// Build OUT.gold.json (xyntetik.runner.gold-logits.v4) from --score --score-ref's
+// streaming float64 KL rows over the scoring window, then read it through the
+// shared gold_read_result() bootstrap/verdict path (R4.48.8.3).
+static bool logits_measure(const derive_opts *o, const ref_logits_manifest *rm,
+                           jv *run_doc, const char *gold_out, derive_measure *m) {
+    jv *rrows = jv_get(run_doc, "ref_rows");
+    if (!rrows || rrows->type != J_ARR) {
+        fprintf(stderr, "error: score output has no ref_rows (--score-ref)\n");
+        return false;
+    }
+    int n_special = (int)jv_num(jv_get(run_doc, "n_special"), 0);
+    jv **picked = calloc((size_t)o->count, sizeof *picked);
+    if (!picked) {
+        fprintf(stderr, "error: out of memory selecting reference window rows\n");
+        return false;
+    }
+    int cur = 0;
+    double sum_kld = 0.0, max_kld = 0.0;
+    int agree = 0, qual = 0, qual_hit = 0;
+    for (int n = 0; n < o->count; n++) {
+        int want = n_special + o->start + n * o->stride - 1;
+        while (cur < rrows->n && (int)jv_num(jv_get(rrows->items[cur], "pos"), -1) < want)
+            cur++;
+        if (cur >= rrows->n || (int)jv_num(jv_get(rrows->items[cur], "pos"), -1) != want) {
+            fprintf(stderr, "error: reference score row for position %d is missing\n", want);
+            free(picked);
+            return false;
+        }
+        jv *row = rrows->items[cur++];
+        double kld = 0.0, margin = 0.0;
+        if (!num_of(row, "kld", &kld) || !num_of(row, "gold_margin", &margin)) {
+            fprintf(stderr, "error: malformed ref_rows entry at position %d\n", want);
+            free(picked);
+            return false;
+        }
+        bool hit = jv_bool(jv_get(row, "agree"), false);
+        picked[n] = row;
+        sum_kld += kld;
+        if (n == 0 || kld > max_kld) max_kld = kld;
+        if (hit) agree++;
+        if (margin > 0.5) {
+            qual++;
+            if (hit) qual_hit++;
+        }
+    }
+    double mean_kld = sum_kld / (double)o->count;
+    double top1_pct = 100.0 * (double)agree / (double)o->count;
+    double mq_pct = qual > 0 ? 100.0 * (double)qual_hit / (double)qual : 100.0;
+
+    sbuf b = {0};
+    sb_lit(&b, "{\"schema_version\":\"xyntetik.runner.gold-logits.v4\",\"summary\":{");
+    sb_fmt(&b, "\"positions\":%d,\"kl_method\":\"full-vocab-f64\"", o->count);
+    sb_lit(&b, ",\"reference_class\":"); sb_str(&b, rm->ref_class);
+    sb_lit(&b, ",\"reference_dtype\":"); sb_str(&b, rm->ref_dtype ? rm->ref_dtype : "float32");
+    sb_lit(&b, ",\"manifest_sha256\":"); sb_str(&b, rm->manifest_sha256);
+    sb_lit(&b, ",\"logits_sha256\":"); sb_str(&b, rm->logits_sha256);
+    sb_lit(&b, ",\"producer_mode\":"); sb_str(&b, rm->ref_producer_mode);
+    sb_lit(&b, ",\"sides\":{\"a\":{\"mean_kld_vs_gold\":"); sb_numj(&b, mean_kld);
+    sb_lit(&b, ",\"max_kld_vs_gold\":"); sb_numj(&b, max_kld);
+    sb_lit(&b, ",\"top1_agreement_pct\":"); sb_numj(&b, top1_pct);
+    sb_lit(&b, ",\"margin_qualified_top1_pct\":"); sb_numj(&b, mq_pct);
+    sb_lit(&b, "}}},\"rows\":[");
+    for (int n = 0; n < o->count; n++) {
+        jv *row = picked[n];
+        int pos = (int)jv_num(jv_get(row, "pos"), 0);
+        double kld = 0.0, margin = 0.0, max_abs = 0.0;
+        num_of(row, "kld", &kld);
+        num_of(row, "gold_margin", &margin);
+        num_of(row, "max_abs", &max_abs);
+        int gtop = (int)jv_num(jv_get(row, "gold_top1"), 0);
+        int ctop = (int)jv_num(jv_get(row, "cand_top1"), 0);
+        bool hit = jv_bool(jv_get(row, "agree"), false);
+        sb_fmt(&b, "%s{\"pos\":%d,\"gold_margin\":", n ? "," : "", pos);
+        sb_numj(&b, margin);
+        sb_fmt(&b, ",\"gold_top1\":%d,\"a\":{\"kld\":", gtop);
+        sb_numj(&b, kld);
+        sb_fmt(&b, ",\"cand_top1\":%d,\"agree\":%s,\"max_abs\":", ctop, hit ? "true" : "false");
+        sb_numj(&b, max_abs);
+        sb_lit(&b, "}}");
+    }
+    sb_lit(&b, "]}\n");
+    free(picked);
+    bool wrote = false;
+    if (!b.failed) {
+        FILE *f = plat_fopen(gold_out, "wb");
+        wrote = f && fwrite(b.s, 1, b.n, f) == b.n;
+        if (f && fclose(f) != 0) wrote = false;
+        if (!wrote) fprintf(stderr, "error: cannot write %s\n", gold_out);
+    } else {
+        fprintf(stderr, "error: out of memory writing %s\n", gold_out);
+    }
+    free(b.s);
+    if (!wrote) return false;
+    return gold_read_result(gold_out, m);
 }
 
 static long long file_bytes(const char *path) {
@@ -1714,9 +1842,10 @@ static bool card_from_record(const char *rec_path, const char *card_path,
         // the reference by repository and revision where the record knows it,
         // not by the local folder it was read from, so a reader can reproduce it
         const char *cmd = jv_str(jv_get(r, "command"), "");
+        const char *lman = jv_str(jv_get(ref, "logits_manifest"), NULL);
         char from[600];
         snprintf(from, sizeof from, " --reference hf:%s", rec_base(ref, "hf"));
-        const char *hit = publisher && repo && *repo ? strstr(cmd, from) : NULL;
+        const char *hit = publisher && !lman && repo && *repo ? strstr(cmd, from) : NULL;
         if (hit) {
             sb_put(&c, cmd, (size_t)(hit - cmd));
             sb_fmt(&c, " --reference hf:%s", repo);
@@ -1749,13 +1878,20 @@ static bool card_from_record(const char *rec_path, const char *card_path,
         snprintf(mq, sizeof mq, "%.2f%%", mqp);
     sb_fmt(&c, "| %s | %d | %.4f | %s | %.4f | %.2f%% | %s |\n\n",
            publisher ? "publisher, float32" : "parent file, Runner", positions, mean, med, mx, top1, mq);
-    sb_lit(&c, "KL is over the reference's 20 most likely tokens, both sides renormalised; a "
-           "position is margin-qualified when the reference's top two are more than 0.5 nats "
-           "apart. ");
+    const char *kl_method = jv_str(jv_get(ref, "kl_method"), NULL);
+    if (kl_method && !strcmp(kl_method, "full-vocab-f64"))
+        sb_lit(&c, "KL is exact full-vocabulary float64 KL against the pinned reference logits; "
+               "a position is margin-qualified when the reference's top two are more than 0.5 nats "
+               "apart. ");
+    else
+        sb_lit(&c, "KL is over the reference's 20 most likely tokens, both sides renormalised; a "
+               "position is margin-qualified when the reference's top two are more than 0.5 nats "
+               "apart. ");
     sb_fmt(&c, "Positions %d + n x %d for n < %d of `%s`.\n\n## Reference\n\n",
            (int)rec_num(win, "start", 0), (int)rec_num(win, "stride", 0), (int)rec_num(win, "count", 0),
            rec_base(meas, "corpus"));
     if (publisher) {
+        const char *lman = jv_str(jv_get(ref, "logits_manifest"), NULL);
         // the reference's arithmetic as the instrument reported it: the
         // record's, or (a record from before it carried one) the gold run's
         const char *dt = jv_str(jv_get(ref, "dtype"), NULL);
@@ -1779,12 +1915,28 @@ static bool card_from_record(const char *rec_path, const char *card_path,
         char name[512];
         if (*repo_id && *repo_rev) snprintf(name, sizeof name, "`%s` at `%s`", repo_id, repo_rev);
         else if (*repo_id) snprintf(name, sizeof name, "`%s`", repo_id);
+        else if (lman) {
+            const char *rrep = jv_str(jv_get(ref, "repo"), NULL);
+            snprintf(name, sizeof name, "`%s`", rrep && *rrep ? rrep : lman);
+        }
         else snprintf(name, sizeof name, "`%s`", rec_base(ref, "hf"));
-        sb_fmt(&c, "The publisher's model %s%s%s%s, run %s by scripts/gold-logits.py. "
-               "The bar (mean KLD at most %.2f, margin-qualified top-1 at least %.0f%%) is "
-               "stated against this reference only.\n\n",
-               name, cls ? " (" : "", cls ? cls : "", cls ? ")" : "", how,
-               BAR_MEAN_KLD, BAR_MQ_TOP1);
+        if (lman) {
+            const char *lsha = jv_str(jv_get(ref, "logits_sha256"), "");
+            const char *pmode = jv_str(jv_get(ref, "producer_mode"), NULL);
+            sb_fmt(&c, "The publisher's model %s%s%s%s, pre-computed reference logits pinned in `%s` "
+                   "(logits sha256 `%.12s`%s%s%s) and streamed in float64 by Runner. "
+                   "The bar (mean KLD at most %.2f, margin-qualified top-1 at least %.0f%%) is "
+                   "stated against this reference only.\n\n",
+                   name, cls ? " (" : "", cls ? cls : "", cls ? ")" : "", lman, lsha,
+                   pmode ? ", mode `" : "", pmode ? pmode : "", pmode ? "`" : "",
+                   BAR_MEAN_KLD, BAR_MQ_TOP1);
+        } else {
+            sb_fmt(&c, "The publisher's model %s%s%s%s, run %s by scripts/gold-logits.py. "
+                   "The bar (mean KLD at most %.2f, margin-qualified top-1 at least %.0f%%) is "
+                   "stated against this reference only.\n\n",
+                   name, cls ? " (" : "", cls ? cls : "", cls ? ")" : "", how,
+                   BAR_MEAN_KLD, BAR_MQ_TOP1);
+        }
         jv_free(gold);
     } else {
         bool full = file_type == 0 || file_type == 1 || file_type == 32;
@@ -1855,6 +2007,8 @@ static void put_command(sbuf *b, const derive_opts *o) {
     if (o->corpus_given) sb_fmt(b, " --corpus %s", plat_path_base(o->corpus));
     sb_fmt(b, " --window %d:%d:%d", o->start, o->stride, o->count);
     if (o->reference_hf) sb_fmt(b, " --reference hf:%s", plat_path_base(o->reference_hf));
+    else if (o->reference_logits) sb_fmt(b, " --reference logits:%s", plat_path_base(o->reference_logits));
+    if (o->ram_cap) sb_fmt(b, " --ram-cap %lld", o->ram_cap);
     for (int i = 0; i < o->n_ref_args; i++)
         sb_fmt(b, " --reference-arg %s", plat_path_base(o->ref_args[i]));
     for (int i = 0; i < o->n_compares; i++) {
@@ -1931,6 +2085,8 @@ typedef struct {
     sized_result sz;       // what sized_plan decided (--target-size)
     derive_measure m;      // what the comparison measured
     parent_meta pm;
+    ref_logits_manifest ref_man; // pre-computed reference logits (--reference logits:)
+    bool have_ref_man;
     int n_tokens;          // the window's tokens and a BOS: what the measurement reads
     sbuf r, cmd;           // the record being written, and the command it names
 } derive_run;
@@ -1974,10 +2130,35 @@ static bool derive_setup(derive_run *d) {
 }
 
 static bool derive_reference(derive_run *d) {
-    // 1. the reference first (default reference): a corpus too short for the
-    //    window is refused before anything is made
-    if (!d->o.reference_hf) {
-        if (!score(d->self, &d->o, d->o.parent, d->ref_score, d->n_tokens) || !(d->ref = read_json(d->ref_score)))
+    // 1. the reference first: validate before anything is made so a bad
+    //    manifest, checksum mismatch, or short corpus refuses before --rewrite
+    if (d->o.reference_logits) {
+        char why[512] = "";
+        if (!ref_logits_load_manifest(d->o.reference_logits, true, &d->ref_man, why, sizeof why)) {
+            fprintf(stderr, "error: --reference logits: %s\n", why);
+            return false;
+        }
+        d->have_ref_man = true;
+        if (d->ref_man.corpus_sha256[0]) {
+            char csha[65];
+            if (!envelope_file_sha256(d->o.corpus, csha)) {
+                fprintf(stderr, "error: cannot hash corpus %s\n", d->o.corpus);
+                return false;
+            }
+            if (strcmp(csha, d->ref_man.corpus_sha256) != 0) {
+                fprintf(stderr, "error: corpus sha256 mismatch: manifest expects %s, %s has %s\n",
+                        d->ref_man.corpus_sha256, d->o.corpus, csha);
+                return false;
+            }
+        }
+        if (!ref_logits_covers_window(&d->ref_man, d->o.start, d->o.stride, d->o.count,
+                                      why, sizeof why)) {
+            fprintf(stderr, "error: --reference logits: %s\n", why);
+            return false;
+        }
+    } else if (!d->o.reference_hf) {
+        if (!score(d->self, &d->o, d->o.parent, d->ref_score, d->n_tokens, NULL) ||
+            !(d->ref = read_json(d->ref_score)))
             return false;
         if (!window_fits(&d->o, d->ref)) return false;
     }
@@ -2008,8 +2189,27 @@ static bool derive_make(derive_run *d) {
 
 static bool derive_measure_file(derive_run *d) {
     // 3. measure it
-    if (!score(d->self, &d->o, d->o.out, d->file_score, d->n_tokens) || !(d->run = read_json(d->file_score))) return false;
-    if (d->o.reference_hf) {
+    if (d->o.ram_cap > 0) {
+        long long ob = file_bytes(d->o.out);
+        long long extra = d->have_ref_man ? (long long)d->ref_man.n_vocab * 4LL : 0LL;
+        if (ob > 0 && ob + extra > d->o.ram_cap) {
+            fprintf(stderr, "error: --ram-cap %lld exceeded before scoring (%s is %lld bytes + %lld bytes ref buffer)\n",
+                    d->o.ram_cap, d->o.out, ob, extra);
+            return false;
+        }
+    }
+    if (!score(d->self, &d->o, d->o.out, d->file_score, d->n_tokens, d->o.reference_logits) ||
+        !(d->run = read_json(d->file_score)))
+        return false;
+    if (d->o.reference_logits) {
+        if (!window_fits(&d->o, d->run)) {
+            plat_remove(d->o.out);
+            plat_remove(d->quant_rec);
+            return false;
+        }
+        if (!logits_measure(&d->o, &d->ref_man, d->run, d->gold_out, &d->m))
+            return false;
+    } else if (d->o.reference_hf) {
         if (!window_fits(&d->o, d->run)) {
             plat_remove(d->o.out);
             plat_remove(d->quant_rec);
@@ -2035,14 +2235,14 @@ static bool derive_record(derive_run *d) {
         return false;
     }
     long long pbytes = parent_bytes(d->o.parent), fbytes = file_bytes(d->o.out);
-    bool publisher = d->o.reference_hf != NULL;
+    bool publisher = d->o.reference_hf != NULL || d->o.reference_logits != NULL;
     int verdict = bar_verdict(d->m.mean_kld, d->m.mq_top1_pct, &d->m.ci);
     sb_lit(&d->r, "{\"schema_version\":\"xyntetik.runner.derive.v1\",\"runner_version\":");
     sb_str(&d->r, RUNNER_VERSION);
     sb_lit(&d->r, ",\"reference_kind\":");
     sb_str(&d->r, publisher ? "publisher-float32" : "parent-file");
     sb_lit(&d->r, ",\"reference\":{");
-    if (publisher) {
+    if (d->o.reference_hf) {
         sb_lit(&d->r, "\"hf\":"); put_dir_name(&d->r, d->o.reference_hf);
         sb_lit(&d->r, ",\"class\":"); sb_str(&d->r, d->m.reference_class);
         sb_lit(&d->r, ",\"dtype\":"); sb_str(&d->r, d->m.reference_dtype);
@@ -2052,6 +2252,20 @@ static bool derive_record(derive_run *d) {
             sb_str(&d->r, d->o.ref_args[i]);
         }
         sb_lit(&d->r, "]");
+    } else if (d->o.reference_logits) {
+        sb_lit(&d->r, "\"logits_manifest\":"); sb_str(&d->r, plat_path_base(d->o.reference_logits));
+        sb_fmt(&d->r, ",\"manifest_sha256\":\"%s\"", d->ref_man.manifest_sha256);
+        sb_lit(&d->r, ",\"logits_file\":"); sb_str(&d->r, plat_path_base(d->ref_man.logits_path));
+        sb_fmt(&d->r, ",\"logits_sha256\":\"%s\"", d->ref_man.logits_sha256);
+        sb_lit(&d->r, ",\"logits_format\":"); sb_str(&d->r, d->ref_man.logits_format);
+        sb_lit(&d->r, ",\"kl_method\":\"full-vocab-f64\"");
+        sb_lit(&d->r, ",\"class\":"); sb_str(&d->r, d->m.reference_class);
+        sb_lit(&d->r, ",\"dtype\":"); sb_str(&d->r, d->m.reference_dtype);
+        sb_lit(&d->r, ",\"repo\":"); sb_str(&d->r, d->ref_man.ref_repo);
+        sb_lit(&d->r, ",\"revision\":"); sb_str(&d->r, d->ref_man.ref_revision);
+        sb_lit(&d->r, ",\"producer\":"); sb_str(&d->r, d->ref_man.ref_producer);
+        sb_lit(&d->r, ",\"producer_mode\":"); sb_str(&d->r, d->ref_man.ref_producer_mode);
+        sb_lit(&d->r, ",\"weights_sha256\":"); sb_str(&d->r, d->ref_man.ref_weights_sha256);
     } else {
         sb_lit(&d->r, "\"file\":"); sb_str(&d->r, plat_path_base(d->o.parent));
         sb_fmt(&d->r, ",\"sha256\":\"%s\",\"arithmetic\":\"runner, cpu\"", psha);
@@ -2234,6 +2448,7 @@ static void derive_release(derive_run *d) {
     free(d->dir); free(d->self); free(d->default_corpus); free(d->gold_script);
     free(d->quant_rec); free(d->ref_score); free(d->file_score); free(d->gold_out);
     free(d->rec_path); free(d->card_path);
+    if (d->have_ref_man) ref_logits_manifest_free(&d->ref_man);
 }
 
 int derive_main(int argc, char **argv) {

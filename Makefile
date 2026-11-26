@@ -567,7 +567,7 @@ $(OBJDIR)/metal.o: src/metal.m $(HDR) src/kernels_metal.h src/kernels_tensor_met
 	$(CC) $(CFLAGS) -I src -c $< -o $@
 
 SRC = src/gguf.c src/compat.c $(QUANTS_OBJ) $(INKLING2_OBJS) src/instances.c src/tokenizer.c src/model.c src/sample.c src/dpo.c \
-      src/vramreg.c src/npy.c \
+      src/vramreg.c src/npy.c src/ref_logits.c \
       src/template.c src/jsonmode.c $(SCHEMA_SRC) $(QUANTIZE_OBJ) $(TRAIN_LR_OBJ) src/engine.c src/decide.c src/clef.c src/json.c src/envelope.c src/ed25519.c $(MLDSA_SRC) src/ecdsa.c src/oms.c src/http.c src/registry.c src/provenance.c src/lineage.c src/train_record.c src/respstore.c src/receipts.c src/watermark.c src/kvsnap.c src/session.c src/scheduler.c src/completion.c src/api_responses.c src/api_anthropic.c src/server.c src/hfhub.c src/bundle.c \
       src/derive.c src/main.c $(GPU_SRC) $(TRAY_SRC)
 
