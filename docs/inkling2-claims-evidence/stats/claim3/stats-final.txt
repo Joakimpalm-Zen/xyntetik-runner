@@ -1,0 +1,91 @@
+CLAIM 3 (PREREG 3.3 / 3.4), FINAL: the five pre-registered arms and Unsloth's two (an additional column)
+inputs: runner-off 95f407390a07a048, runner-lg 38da280ab0148192, runner-lg-rb 4bc2e2509bb6da18, llama-off 5558936924cc2eef, llama-rb e13e52cbd848d434, unsloth-off b1133ae9af3b1b0e, unsloth-rb 31fd22a5b752a1db
+checks: runner-off stop: finish_reason 'stop' turns ending in 200006: 15 / 15; runner-lg stop: finish_reason 'stop' turns ending in 200006: 16 / 16; runner-lg-rb stop: finish_reason 'stop' turns ending in 200006: 26 / 26; llama-off: decode(gen_ids) == raw_detokenized on 40 / 40; llama-off stop: finish_reason 'stop' turns ending in 200006: 13 / 13; llama-rb: decode(gen_ids) == raw_detokenized on 40 / 40; llama-rb stop: finish_reason 'stop' turns ending in 200006: 24 / 24; unsloth-off: decode(gen_ids) == raw_detokenized on 40 / 40; unsloth-off stop: finish_reason 'stop' turns ending in 200006: 14 / 14; unsloth-rb: decode(gen_ids) == raw_detokenized on 40 / 40; unsloth-rb stop: finish_reason 'stop' turns ending in 200006: 24 / 24
+
+arm           subset      usable k/n [Wilson]    loop k/n [Wilson]       srl  exh  wtl  gpl  finish
+runner-off    all         24/40 [0.446, 0.737]   15/40 [0.242, 0.530]      0   15    0    1  stop 15, length 15, tool_calls 10
+              plain_debug 10/20 [0.299, 0.701]   10/20 [0.299, 0.701]      0   10    0    0  stop 10, length 10
+              tool_debug  14/20 [0.481, 0.855]    5/20 [0.112, 0.469]      0    5    0    1  tool_calls 10, stop 5, length 5
+runner-lg     all         25/40 [0.470, 0.758]   14/40 [0.221, 0.505]      0   14    0    1  stop 16, length 14, tool_calls 10
+              plain_debug 10/20 [0.299, 0.701]   10/20 [0.299, 0.701]      0   10    0    0  stop 10, length 10
+              tool_debug  15/20 [0.531, 0.888]    4/20 [0.081, 0.416]      0    4    0    1  tool_calls 10, stop 6, length 4
+runner-lg-rb  all         37/40 [0.801, 0.974]    0/40 [0.000, 0.088]      0    0    0    0  stop 26, tool_calls 12, length 2
+              plain_debug 20/20 [0.839, 1.000]    0/20 [0.000, 0.161]      0    0    0    0  stop 20
+              tool_debug  17/20 [0.640, 0.948]    0/20 [0.000, 0.161]      0    0    0    0  tool_calls 12, stop 6, length 2
+llama-off     all         25/40 [0.470, 0.758]   14/40 [0.221, 0.505]      1   14    1    2  length 15, stop 13, tool_calls 12
+              plain_debug  9/20 [0.258, 0.658]   10/20 [0.299, 0.701]      1   10    1    2  length 11, stop 9
+              tool_debug  16/20 [0.584, 0.919]    4/20 [0.081, 0.416]      0    4    0    0  tool_calls 12, stop 4, length 4
+llama-rb      all         39/40 [0.871, 0.996]    1/40 [0.004, 0.129]      0    1    0    1  stop 24, tool_calls 15, length 1
+              plain_debug 20/20 [0.839, 1.000]    0/20 [0.000, 0.161]      0    0    0    1  stop 20
+              tool_debug  19/20 [0.764, 0.991]    1/20 [0.009, 0.236]      0    1    0    0  tool_calls 15, stop 4, length 1
+unsloth-off   all         26/40 [0.495, 0.779]   14/40 [0.221, 0.505]      0   14    0    1  length 14, stop 14, tool_calls 12
+              plain_debug 10/20 [0.299, 0.701]   10/20 [0.299, 0.701]      0   10    0    1  length 10, stop 10
+              tool_debug  16/20 [0.584, 0.919]    4/20 [0.081, 0.416]      0    4    0    0  tool_calls 12, stop 4, length 4
+unsloth-rb    all         37/40 [0.801, 0.974]    2/40 [0.014, 0.165]      0    2    0    0  stop 24, tool_calls 14, length 2
+              plain_debug 19/20 [0.764, 0.991]    1/20 [0.009, 0.236]      0    1    0    0  stop 19, length 1
+              tool_debug  18/20 [0.699, 0.972]    1/20 [0.009, 0.236]      0    1    0    0  tool_calls 14, stop 5, length 1
+  srl = span_repeat_loop(R), exh = unclosed_thinking_exhaustion (loop = srl OR exh); wtl = whole_turn_span_loop, gpl = general_periodic_loop(R) (secondary)
+
+runner-off    tool_debug usable via tool 10 / text 4; with_truncation_recovery (companion, not primary) +0
+runner-lg     loop guard: interventions on 1 turns, loop-ended 0; tool_debug usable via tool 10 / text 5; with_truncation_recovery (companion, not primary) +0
+runner-lg-rb  loop guard: interventions on 0 turns, loop-ended 0; reasoning budget forced close on 18 turns; tool_debug usable via tool 12 / text 5; with_truncation_recovery (companion, not primary) +0
+llama-off     tool_debug usable via tool 12 / text 4
+llama-rb      tool_debug usable via tool 15 / text 4
+unsloth-off   tool_debug usable via tool 12 / text 4
+unsloth-rb    tool_debug usable via tool 14 / text 4
+
+tokens (PREREG 3.3 3): completion / reasoning / output, per arm over 40 (and by subset)
+runner-off    all         completion total 49135 mean 1228.4 median 1050.5 IQR 591..2048 p90 2048 max 2048 | reasoning total 45266 mean 1131.7 median 898.5 IQR 412.75..2046 p90 2046 max 2046 | output total 3869 mean 96.7 median 112.5 IQR 2..152 p90 206.2 max 277
+                            beside: usage.completion_tokens differs on 25 turns (generated ids - usage = [1]; finish stop, tool_calls): total 49110 mean 1227.8 median 1049.5 IQR 590..2048 p90 2048 max 2048
+              plain_debug completion total 29082 mean 1454.1 median 1878 IQR 833.25..2048 p90 2048 max 2048 | reasoning total 27787 mean 1389.3 median 1738.5 IQR 717.5..2046 p90 2046 max 2046 | output total 1295 mean 64.8 median 21 IQR 2..118 p90 135.7 max 277
+                            beside: usage.completion_tokens differs on 10 turns (generated ids - usage = [1]; finish stop): total 29072 mean 1453.6 median 1877.5 IQR 832.25..2048 p90 2048 max 2048
+              tool_debug  completion total 20053 mean 1002.6 median 745.5 IQR 491.25..1573.25 p90 2048 max 2048 | reasoning total 17479 mean 874.0 median 539.5 IQR 343.5..1416.75 p90 2046 max 2046 | output total 2574 mean 128.7 median 146 IQR 71..183.5 p90 210.8 max 267
+                            beside: usage.completion_tokens differs on 15 turns (generated ids - usage = [1]; finish stop, tool_calls): total 20038 mean 1001.9 median 744.5 IQR 490.25..1572.5 p90 2048 max 2048
+runner-lg     all         completion total 48706 mean 1217.7 median 1050.5 IQR 591..2048 p90 2048 max 2048 | reasoning total 44661 mean 1116.5 median 898.5 IQR 412.75..2046 p90 2046 max 2046 | output total 4045 mean 101.1 median 117.5 IQR 2..159 p90 206.2 max 277
+                            beside: usage.completion_tokens differs on 26 turns (generated ids - usage = [1]; finish stop, tool_calls): total 48680 mean 1217.0 median 1049.5 IQR 590..2048 p90 2048 max 2048
+              plain_debug completion total 29082 mean 1454.1 median 1878 IQR 833.25..2048 p90 2048 max 2048 | reasoning total 27787 mean 1389.3 median 1738.5 IQR 717.5..2046 p90 2046 max 2046 | output total 1295 mean 64.8 median 21 IQR 2..118 p90 135.7 max 277
+                            beside: usage.completion_tokens differs on 10 turns (generated ids - usage = [1]; finish stop): total 29072 mean 1453.6 median 1877.5 IQR 832.25..2048 p90 2048 max 2048
+              tool_debug  completion total 19624 mean 981.2 median 745.5 IQR 491.25..1466 p90 2048 max 2048 | reasoning total 16874 mean 843.7 median 539.5 IQR 343.5..1265.5 p90 2046 max 2046 | output total 2750 mean 137.5 median 151 IQR 114.25..183.5 p90 210.8 max 267
+                            beside: usage.completion_tokens differs on 16 turns (generated ids - usage = [1]; finish stop, tool_calls): total 19608 mean 980.4 median 744.5 IQR 490.25..1465 p90 2048 max 2048
+runner-lg-rb  all         completion total 37000 mean 925.0 median 1033.5 IQR 591..1162.5 p90 1235.1 max 2048 | reasoning total 29419 mean 735.5 median 898.5 IQR 412.75..1036 p90 1036 max 1036 | output total 7581 mean 189.5 median 142.5 IQR 114..187.5 p90 267.5 max 1012
+                            beside: usage.completion_tokens differs on 38 turns (generated ids - usage = [1]; finish stop, tool_calls): total 36962 mean 924.0 median 1032.5 IQR 590..1161.5 p90 1234.1 max 2048
+              plain_debug completion total 19579 mean 979.0 median 1100.5 IQR 833.25..1159.5 p90 1225.2 max 1308 | reasoning total 17161 mean 858.0 median 1036 IQR 717.5..1036 p90 1036 max 1036 | output total 2418 mean 120.9 median 118.5 IQR 86.75..138.25 p90 189.2 max 272
+                            beside: usage.completion_tokens differs on 20 turns (generated ids - usage = [1]; finish stop): total 19559 mean 978.0 median 1099.5 IQR 832.25..1158.5 p90 1224.2 max 1307
+              tool_debug  completion total 17421 mean 871.0 median 745.5 IQR 491.25..1179.5 p90 1392.8 max 2048 | reasoning total 12258 mean 612.9 median 539.5 IQR 343.5..1036 p90 1036 max 1036 | output total 5163 mean 258.1 median 179.5 IQR 143.75..213.5 p90 356.8 max 1012
+                            beside: usage.completion_tokens differs on 18 turns (generated ids - usage = [1]; finish stop, tool_calls): total 17403 mean 870.1 median 744.5 IQR 490.25..1178.5 p90 1391.9 max 2048
+llama-off     all         completion total 48462 mean 1211.5 median 1019 IQR 560.75..2048 p90 2048 max 2048 | reasoning total 44758 mean 1119.0 median 813.5 IQR 380.25..2046 p90 2046 max 2046 | output total 3704 mean 92.6 median 110 IQR 2..152.5 p90 192.6 max 241
+              plain_debug completion total 29671 mean 1483.5 median 2048 IQR 769..2048 p90 2048 max 2048 | reasoning total 28677 mean 1433.8 median 2043 IQR 652.75..2046 p90 2046 max 2046 | output total 994 mean 49.7 median 5 IQR 2..108.5 p90 130.7 max 151
+              tool_debug  completion total 18791 mean 939.5 median 608.5 IQR 437.5..1294 p90 2048 max 2048 | reasoning total 16081 mean 804.0 median 382 IQR 269.25..1128 p90 2046 max 2046 | output total 2710 mean 135.5 median 154 IQR 109.75..185.75 p90 222.9 max 241
+llama-rb      all         completion total 34834 mean 870.9 median 1009 IQR 560.75..1137.25 p90 1185.1 max 2048 | reasoning total 29442 mean 736.0 median 813.5 IQR 380.25..1024 p90 1024 max 2043 | output total 5392 mean 134.8 median 131 IQR 98.25..175.5 p90 208.5 max 272
+              plain_debug completion total 19316 mean 965.8 median 1088.5 IQR 769..1138.25 p90 1214 max 1296 | reasoning total 17044 mean 852.2 median 1024 IQR 652.75..1024 p90 1024 max 1024 | output total 2272 mean 113.6 median 113.5 IQR 71.75..131.75 p90 190 max 272
+              tool_debug  completion total 15518 mean 775.9 median 608.5 IQR 437.5..1127 p90 1180.2 max 2048 | reasoning total 12398 mean 619.9 median 382 IQR 269.25..974.5 p90 1024 max 2043 | output total 3120 mean 156.0 median 157 IQR 130..185.75 p90 222.9 max 241
+unsloth-off   all         completion total 47789 mean 1194.7 median 963.5 IQR 536.5..2048 p90 2048 max 2048 | reasoning total 44087 mean 1102.2 median 810.5 IQR 399.5..2046 p90 2046 max 2046 | output total 3702 mean 92.5 median 118.5 IQR 2..162 p90 172.1 max 233
+              plain_debug completion total 30045 mean 1502.2 median 1958 IQR 892.25..2048 p90 2048 max 2048 | reasoning total 28946 mean 1447.3 median 1919.5 IQR 772..2046 p90 2046 max 2046 | output total 1099 mean 55.0 median 21 IQR 2..117.25 p90 127.6 max 158
+              tool_debug  completion total 17744 mean 887.2 median 672.5 IQR 492.5..980.75 p90 2048 max 2048 | reasoning total 15141 mean 757.0 median 509.5 IQR 290..797.75 p90 2046 max 2046 | output total 2603 mean 130.2 median 162 IQR 116.5..171 p90 182.8 max 233
+unsloth-rb    all         completion total 35326 mean 883.1 median 963.5 IQR 536.5..1124 p90 1191.4 max 2048 | reasoning total 30283 mean 757.1 median 810.5 IQR 399.5..1024 p90 1024 max 2043 | output total 5043 mean 126.1 median 127.5 IQR 91..164.25 p90 182.7 max 272
+              plain_debug completion total 20369 mean 1018.5 median 1098 IQR 892.25..1146 p90 1221.3 max 2048 | reasoning total 18211 mean 910.5 median 1024 IQR 772..1024 p90 1024 max 2043 | output total 2158 mean 107.9 median 118.5 IQR 73.25..127.25 p90 161.1 max 272
+              tool_debug  completion total 14957 mean 747.9 median 672.5 IQR 492.5..980.75 p90 1133.2 max 2048 | reasoning total 12072 mean 603.6 median 509.5 IQR 290..797.75 p90 1024 max 2043 | output total 2885 mean 144.2 median 163 IQR 129.25..171 p90 182.8 max 233
+  completion = the generated id count (interpretation 7); usage.completion_tokens is shown beside only where it differs
+
+paired on k_usable (A = runner-lg-rb)
+  vs runner-off n_11 24 n_10 13 n_01  0 n_00  3  delta +0.325  Newcombe 95% [+0.166, +0.474]  McNemar p 0.0002441  -> higher
+  vs llama-off  n_11 24 n_10 13 n_01  1 n_00  2  delta +0.300  Newcombe 95% [+0.125, +0.459]  McNemar p 0.001831  -> higher
+  vs llama-rb   n_11 36 n_10  1 n_01  3 n_00  0  delta -0.050  Newcombe 95% [-0.176, +0.067]  McNemar p 0.625  -> tie
+
+PREREG 3.4 outcome: tie
+wording: On 40 code-debugging prompts (UD-Q8_K_XL, greedy, reasoning_effort=high), guarded Runner yielded 37/40 usable turns (95% Wilson [0.801, 0.974], loop 0/40, median 1033.5 tokens) vs unguarded Runner 24/40 (15/40, 1050.5 tokens) and llama.cpp 25/40 unrestricted / 39/40 budgeted, with no statistically distinguishable paired difference on usable turns against comparator(s) llama-rb (paired Newcombe 95% CI includes 0); the loop guard fired on 0/40 turns.
+
+Unsloth's column (ADDENDUM-2026-11-24-unsloth.md; its published prebuilt, ADDENDUM-2026-11-25-unsloth-prebuilt.md), paired exactly as against mainline; ADDITIONAL, the outcome and wording above unchanged (A = runner-lg-rb)
+  vs unsloth-off n_11 25 n_10 12 n_01  1 n_00  2  delta +0.275  Newcombe 95% [+0.105, +0.433]  McNemar p 0.003418  -> higher
+  vs unsloth-rb n_11 35 n_10  2 n_01  2 n_00  1  delta +0.000  Newcombe 95% [-0.128, +0.128]  McNemar p 1  -> tie
+
+interpretations (where the PREREG names a field the records do not carry):
+  1. finish_reason is the response's choices[0].finish_reason (Runner's record field 'finish' is the client's).
+  2. R = the generated ids strictly between each <|content_thinking|> (200008) and the next <|end_message|> (200010), or to the turn's end if never closed, concatenated in order.
+  3. unclosed_thinking_exhaustion: completion_tokens == 2048 AND finish_reason == 'length' AND the last <|content_thinking|> has no later <|end_message|>.
+  4. runner_lg_interventions: PREREG 3.3 names runner_telemetry.loop_guard.closes; the records carry loop_guard.interventions (and ended_turn), so closes > 0 is read as interventions > 0, and a loop-ended turn as finish_reason == 'loop' OR loop_guard.ended_turn.
+  5. plain answer: a <|content_text|> ... <|end_message|> segment outside thinking (decoded text) that holds 'def <entry_point>(' (inside a ```python block or as plain text); 'stubbed pass only' = the def's body, by ast when the code parses (docstrings dropped), else by its indented lines, is only 'pass' / '...'.
+  6. tool path: the engine's parsed tool_calls (choices[0].message.tool_calls) holds a submit_patch whose arguments parse to a JSON object with non-empty string fixed_code containing 'def <entry_point>(' and non-empty string root_cause; primary only with finish_reason in {tool_calls, stop}; finish_reason == 'length' with such a call is the with_truncation_recovery companion (Runner arms, as PREREG 3.3 2.1 states).
+  7. completion_tokens = the GENERATED ID COUNT len(gen_ids) (ruled 2026-11-25, CLAIM3-INTERPRETATIONS-2026-11-25.md 7, to the earlier addendum); usage.completion_tokens is reported beside it wherever the two differ. reasoning_tokens = len(R) (the records carry no reasoning_tokens field); output_tokens = completion_tokens - reasoning_tokens.
+  8. unit_test_pass (secondary, PREREG 3.3 2): NOT computed for this report (ruled 2026-11-25, item 8): it executes model-written code, and this shared, borrowed host offers no isolation. Disclosed; nothing fetched.
+  9. PREREG 3.4's tie wording's F (the loop guard fired on F/40 turns) = runner-lg-rb turns with interventions > 0; the worse wording's F (truncated/closed before a usable fix) = runner-lg-rb turns not usable that ended at 'length' or 'loop', or had a loop-guard intervention or a forced reasoning-budget close.
