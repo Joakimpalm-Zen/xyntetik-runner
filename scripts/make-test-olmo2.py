@@ -21,7 +21,7 @@ frequencies rather than taking one of them whole. Every norm weight is
 1 +- 0.5 (deterministic), so a norm read at the wrong place or width moves
 the logits.
 
-    make-test-olmo2.py OUT.gguf [--llama] [--plain] [--gqa] [--head-dim 16|32] [--olmo-specials | --tulu3-specials]
+    make-test-olmo2.py OUT.gguf [--llama] [--plain] [--gqa] [--wide] [--head-dim 16|32] [--olmo-specials | --tulu3-specials]
                        [--instruct-template | --tulu3-template]
                        [--no-pattern-array] [--attn-factor F] [--bad KIND]
 
@@ -32,6 +32,9 @@ the logits.
   --plain             OLMo 2's layout: no sliding window, no RoPE scaling
   --gqa               half the KV heads (2 of 4: kv_dim 32 != q_dim 64 !=
                       head_dim 16; with --head-dim 32, 1 of 2)
+  --wide              256-wide rows (n_embd 256, FFN 512): every 2-D matrix has
+                      inner dimension divisible by 256 so K-quants quantize
+                      without width fallback
   --olmo-specials     OLMo 2's <|endoftext|> as one control token, the file's BOS and EOS (add_bos_token
                       stays true: the case a template that writes its own BOS must not double)
   --instruct-template write OLMo 2 Instruct's chat template (revision 48d788ec) into the file
@@ -74,7 +77,7 @@ EPS = 1e-6
 BAD_KINDS = ("pre-norm", "no-qk-norm", "narrow-qk-norm", "no-post-norm", "pattern-period", "pattern-short",
              "experts")
 args = sys.argv[1:]
-LLAMA = PLAIN = GQA = NO_PATTERN = OLMO_SPECIALS = TULU3_SPECIALS = False
+LLAMA = PLAIN = GQA = WIDE = NO_PATTERN = OLMO_SPECIALS = TULU3_SPECIALS = False
 INSTRUCT_TEMPLATE = TULU3_TEMPLATE = False
 ATTN_FACTOR = 1.0 + 0.1 * math.log(YARN_FACTOR)
 BAD = None
@@ -88,10 +91,11 @@ while k < len(args):
         PLAIN = True
     elif a == "--gqa":
         GQA = True
+    elif a == "--wide":
+        WIDE = True
     elif a == "--head-dim" and k + 1 < len(args) and args[k + 1] in ("16", "32"):
         k += 1
         HEAD_DIM = int(args[k])
-        N_HEAD = N_KV = N_EMBD // HEAD_DIM
     elif a == "--no-pattern-array":
         NO_PATTERN = True
     elif a == "--olmo-specials":
@@ -117,6 +121,9 @@ while k < len(args):
     k += 1
 if OUT is None:
     sys.exit(__doc__)
+if WIDE:
+    N_EMBD, N_FF = 256, 512
+N_HEAD = N_KV = N_EMBD // HEAD_DIM
 if GQA:
     N_KV = N_HEAD // 2
 

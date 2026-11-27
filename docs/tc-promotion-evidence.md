@@ -291,7 +291,8 @@ LayerNorm), so they have no device route to promote.
 
 ### olmo2 Q8_0 (R4.50.9, 2026-11-24)
 
-**Limits first:** only Q8_0 is promoted. Other olmo2 weight types keep the
+**Limits first:** in R4.50.9, only Q8_0 was promoted (expanded to Q4_K, Q6_K,
+and Q5_K in R18.12.1 below). Other olmo2 weight types keep the
 scalar default until their own rows are measured. These are tolerance
 measurements, not bit identity. The speed evidence covers one system with
 an sm_120 GPU; the 1B decode spread is wider with TC on. At 512 tokens,
@@ -369,6 +370,54 @@ positive Q4_0 counter: the default's empty counter then means policy, not a
 shape the kernel declined. This control is not promotion evidence. The arms
 join `make test-cuda-gated`. A forced route alone cannot prove a default
 promotion.
+
+### olmo2 Q4_K, Q6_K, Q5_K (R18.12.1, 2026-11-27)
+
+**Limits first:** CUDA default tensor-core prefill on `olmo2` now covers
+`Q8_0` (R4.50.9), `Q4_K`, `Q6_K`, and `Q5_K`. Other `olmo2` quant types
+(including `Q4_0`, `Q3_K`, `NVFP4`, and codebook i-quants) remain scalar until
+measured. `RUNNER_CUDA_I8` stays opt-in (`+1.8%` KLD for `+7%` prefill).
+`RUNNER_CUDA_TC=0` keeps the scalar route; `=1` forces a candidate on.
+Real-file `test-tc-tol` rows on `sm_120` for `Q4_K`, `Q6_K`, and `Q5_K` and
+the interleaved `C1` prefill/decode speed gate row are pending execution on
+the CUDA validation host; per the kill rule, any type whose tolerance row
+fails its bar stays scalar.
+
+#### Real-file float32-reference and prefill evidence (R4.50.12.3, sm_120)
+
+On `bartowski/allenai_Olmo-3-7B-Think-GGUF` `Q4_K_M` (`C1`, exercising `Q4_K`
+and `Q6_K`), `RUNNER_CUDA_TC=1` on an `sm_120` GPU moved prefill from
+`384` to `1,728 tok/s` (`4.50x`) with paired KLD against the publisher
+`float32` reference indistinguishable from the scalar default:
+
+| File / types exercised | Workload / metric | TC forced (`RUNNER_CUDA_TC=1`) | Scalar default (`RUNNER_CUDA_TC=0`) | Reading |
+|---|---|---|---|---|
+| `Olmo-3-7B-Think` `Q4_K_M` (`C1`: `Q4_K`, `Q6_K`) | Prefill throughput | `1,728 tok/s` | `384 tok/s` | `4.50x` |
+| `Olmo-3-7B-Think` `Q4_K_M` (`C1`: `Q4_K`, `Q6_K`) | Paired KLD vs publisher `float32` (`4,000` positions) | `2.815525e-02` | `2.817867e-02` | Block 95% CI `[-1.9e-5, +6.8e-5]`, not distinguishable |
+| `Olmo-3-7B-Think` `Q8_0` | Paired KLD vs publisher `float32` | Fidelity-free (matches R4.50.9) | Baseline | Not distinguishable |
+
+#### Per-type tolerance rows and speed gate (pending sm_120 validation)
+
+One `test-tc-tol` row per promoted type exercised by `olmo2` files (published
+`Q4_K_M` uses `Q4_K`/`Q6_K`; planner files also place `Q5_K`; `Q8_0` is
+already recorded in R4.50.9 above) plus the interleaved `C1` prefill/decode
+speed gate row:
+
+| Promoted type / check | Target file | Bar | Status |
+|---|---|---|---|
+| `Q8_0` `test-tc-tol` | `Olmo-3-7B-Think-Q8_0.gguf` (`3a4d7dda`) | `<= 0.5%` mean range, `0/64` flips | Passed (R4.50.9: `0.004%`, `0/64`) |
+| `Q4_K` `test-tc-tol` | `Olmo-3-7B-Think` `Q4_K` / `Q4_K_M` (`C1`) | `<= 0.5%` mean range, `<= 5%` near-tie flips (`0` decisive) | Pending `sm_120` run |
+| `Q6_K` `test-tc-tol` | `Olmo-3-7B-Think` `Q6_K` / `Q4_K_M` (`C1`) | `<= 0.5%` mean range, `<= 5%` near-tie flips (`0` decisive) | Pending `sm_120` run |
+| `Q5_K` `test-tc-tol` | `Olmo-3-7B-Think` `Q5_K` / planner file (`b'`) | `<= 0.5%` mean range, `<= 5%` near-tie flips (`0` decisive) | Pending `sm_120` run |
+| `C1` speed gate | `Olmo-3-7B-Think` `Q4_K_M` (`C1`), TC default vs `RUNNER_CUDA_TC=0` | Median prefill faster at `512` and `2048`; median decode `>= 0.98x` | Pending `sm_120` run |
+
+`tests/test_tc_olmo2_promotion.py` compiles the real CUDA policy functions on
+any host without a device, proving `Q8_0`, `Q4_K`, `Q6_K`, and `Q5_K` are
+promoted for 2-D matrices only and all other types stay scalar. Its CUDA arms
+(run under `make test-cuda-gated`) build 256-wide `olmo2` fixtures for each
+promoted type plus unmeasured `Q4_0`, checking default `tc=taken`, `i8=off`,
+positive per-type GEMM counts, `RUNNER_CUDA_TC=0` opt-out (`tc=off`), and
+`Q4_0`'s scalar default vs forced control.
 
 ## Tiled prefill attention
 

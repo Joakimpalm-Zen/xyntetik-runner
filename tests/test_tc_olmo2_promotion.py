@@ -1,15 +1,17 @@
-"""R4.50.9: olmo2's default tensor-core promotion is scoped to Q8_0.
+"""R4.50.9 / R18.12.1: olmo2's default tensor-core promotion covers Q8_0, Q4_K, Q6_K, and Q5_K.
 
 The host arm compiles the actual pure decision functions from cuda.c against
 model.h, with metadata only. It tests the policy and the route-label decision,
-not device dispatch or arithmetic. Its expected scope comes from the measured
-Q8_0 file, not the implementation's table. It runs without CUDA.
+not device dispatch or arithmetic. Its expected scope comes from the promoted
+types for olmo2 files (Q8_0 from R4.50.9; Q4_K, Q6_K, and Q5_K from R18.12.1),
+not from reading the implementation's table. It runs without CUDA.
 
-The CUDA arm runs a chunked score on generated Q8_0 and Q4_0 files, checking
-both the default's tc=taken/off label and its GEMM counter. A forced-Q4_0
-control on the same file proves its shape can dispatch TC; that control is
-not promotion evidence. Real-file numerical evidence
-is recorded in docs/tc-promotion-evidence.md.
+The CUDA arm runs a chunked score on generated 256-wide olmo2 files (Q8_0,
+Q4_K, Q6_K, Q5_K, and unmeasured Q4_0), checking the default's tc=taken/off
+label, i8=off (I8 stays opt-in), and GEMM counter. A forced-Q4_0 control on
+the same file proves its shape can dispatch TC; that control is not promotion
+evidence. Real-file numerical evidence is recorded in
+docs/tc-promotion-evidence.md.
 """
 import json
 import os
@@ -25,6 +27,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 TYPES = ("Q8_0", "Q4_0", "Q4_K", "Q6_K", "Q5_K", "Q3_K", "Q2_K", "Q4_1", "Q5_0", "Q5_1",
          "IQ1_S", "IQ1_M", "IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ3_XXS", "IQ3_S", "IQ4_XS", "IQ4_NL",
          "NVFP4", "F32", "F16", "BF16")
+PROMOTED_OLMO2 = ("Q8_0", "Q4_K", "Q6_K", "Q5_K")
 
 
 @pytest.fixture(scope="module")
@@ -65,20 +68,24 @@ def policy(tmp_path_factory):
     return query
 
 
-def test_olmo2_q8_0_is_promoted_for_matrices_only(policy):
-    assert policy("olmo2")["Q8_0"] == (1, 1, 0)
+@pytest.mark.parametrize("qtype", PROMOTED_OLMO2)
+def test_olmo2_promoted_types_are_matrices_only(policy, qtype):
+    assert policy("olmo2")[qtype] == (1, 1, 0)
 
 
 def test_olmo2_unmeasured_types_stay_scalar(policy):
     got = policy("olmo2")
-    assert {t: bits for t, bits in got.items() if t != "Q8_0"} == {
-        t: (0, 0, 0) for t in TYPES if t != "Q8_0"}
+    assert {t: bits for t, bits in got.items() if t not in PROMOTED_OLMO2} == {
+        t: (0, 0, 0) for t in TYPES if t not in PROMOTED_OLMO2}
 
 
 def test_the_existing_scoped_control_is_live(policy):
     got = policy("clef")
     assert got["Q8_0"] == got["Q4_K"] == (1, 1, 0)
     assert got["Q4_0"] == (0, 0, 0)
+    spark = policy("spark2_5")
+    assert spark["Q4_K"] == spark["Q6_K"] == (1, 1, 0)
+    assert spark["Q8_0"] == (0, 0, 0)
 
 
 @pytest.fixture(scope="module")
@@ -88,10 +95,10 @@ def cuda_models(runner_bin, tmp_path_factory):
         pytest.skip("needs a CUDA device")
     d = tmp_path_factory.mktemp("tc-olmo2")
     base = d / "olmo2.gguf"
-    subprocess.run([sys.executable, ROOT / "scripts/make-test-olmo2.py", str(base), "--head-dim", "32", "--gqa"],
-                   cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-olmo2.py", str(base), "--wide", "--head-dim", "32",
+                    "--gqa"], cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
     out = {}
-    for quant in ("q8_0", "q4_0"):
+    for quant in ("q8_0", "q4_k", "q6_k", "q5_k", "q4_0"):
         path = d / f"olmo2-{quant}.gguf"
         subprocess.run([str(runner_bin), "-m", str(base), "--quantize", str(path), "--quant", quant],
                        cwd=ROOT, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -102,6 +109,12 @@ def cuda_models(runner_bin, tmp_path_factory):
 @pytest.mark.parametrize("quant, override, label, types", [
     ("q8_0", None, "taken", {"Q8_0"}),
     ("q8_0", "0", "off", set()),
+    ("q4_k", None, "taken", {"Q4_K"}),
+    ("q4_k", "0", "off", set()),
+    ("q6_k", None, "taken", {"Q6_K"}),
+    ("q6_k", "0", "off", set()),
+    ("q5_k", None, "taken", {"Q5_K"}),
+    ("q5_k", "0", "off", set()),
     ("q4_0", None, "off", set()),
     ("q4_0", "1", "forced", {"Q4_0"}),  # control: the same shape can dispatch TC
 ])
@@ -109,6 +122,7 @@ def test_cuda_label_and_dispatch_match_the_policy(runner_bin, cuda_models, quant
     env = dict(os.environ)
     env.pop("RUNNER_CUDA_TC", None)
     env.pop("RUNNER_CUDA_TC_NVFP4", None)
+    env.pop("RUNNER_CUDA_I8", None)
     env.update(RUNNER_SCORE_CHUNKED="1", RUNNER_DEBUG_ROUTE="1")
     if override is not None:
         env["RUNNER_CUDA_TC"] = override
@@ -118,8 +132,10 @@ def test_cuda_label_and_dispatch_match_the_policy(runner_bin, cuda_models, quant
                        capture_output=True, text=True, timeout=300)
     assert p.returncode == 0, p.stderr[-2000:]
     route = re.search(r" tc=([a-z-]+)", p.stderr)
+    i8 = re.search(r" i8=([a-z]+)", p.stderr)
     gemm = re.search(r'"gemm_by_type":(\{[^}]*\})', p.stderr)
-    assert route and gemm, p.stderr[-2000:]
+    assert route and i8 and gemm, p.stderr[-2000:]
     counts = json.loads(gemm.group(1))
     assert route.group(1) == label, (quant, route.group(1), counts)
+    assert i8.group(1) == "off", (quant, i8.group(1))
     assert set(counts) == types and all(n > 0 for n in counts.values()), (quant, counts)
