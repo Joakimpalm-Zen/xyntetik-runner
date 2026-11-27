@@ -46,7 +46,7 @@ SOURCE_RULES = [
     ("execution", re.compile(r"^kernels")),
     ("execution", {"cuda", "metal", "gpu", "gpu_none", "engine", "scheduler", "quants",
                    "quants_iq_grids", "tpool", "act", "dn_eps", "fp16", "fpclass", "fpenv",
-                   "iq_decode", "kernel_args", "kq_stage", "metal_admission", "pmath",
+                   "iq_decode", "kernel_args", "kq_stage", "nvfp4_lane", "metal_admission", "pmath",
                    "pm_order", "softmax", "upload_report", "gpu_tables", "train_args",
                    "inkling2", "inkling2_bwd", "inkling2_gguf", "inkling2_ecache", "inkling2_model"}),
     ("runtime", {"server", "server_int", "http", "api", "api_anthropic", "api_responses",
