@@ -1151,16 +1151,15 @@ static void usage_to(FILE *f, const char *prog) {
         "  --rewrite OUT  write a rewritten model to OUT.gguf and exit, with a\n"
         "                 provenance record beside it. Without a trigger below\n"
         "                 this is a requantization (see --quant)\n"
-        "  --quant T      quantize target: q8_0 | q4_0 | q5_1 | q3_k | q4_k |\n"
-        "                 q5_k | q6_k | iq4_nl | mxfp4 | f16 | bf16 | keep\n"
+        "  --quant T      quantize target:\n"
+        "                 " QUANT_TYPE_NAMES "\n"
         "                 (default q4_0, or keep when --prune-experts,\n"
         "                 --remove-sublayer or --merge-lora is the reason to\n"
         "                 rewrite)\n"
         "  --type-plan PLAN.json  per-tensor precision while rewriting:\n"
         "                 {\"default\":\"keep\",\"rules\":[{\"match\":\"_exps.weight\",\n"
-        "                 \"type\":\"q4_0\"}]}. First matching rule wins; types are\n"
-        "                 keep|q8_0|q4_0|q5_1|q3_k|q4_k|q5_k|q6_k|iq4_nl|\n"
-        "                 mxfp4|f16|bf16.\n"
+        "                 \"type\":\"q4_0\"}]}. First matching rule wins; types are:\n"
+        "                 " QUANT_TYPE_NAMES ".\n"
         "                 Per-tensor is the finest GGUF can express: experts are stored\n"
         "                 stacked, one tensor per layer, so per-EXPERT\n"
         "                 precision is not representable\n"
@@ -1177,10 +1176,10 @@ static void usage_to(FILE *f, const char *prog) {
         "                 asked and the type the rewrite would write, then each\n"
         "                 rule's count and warning\n"
         "  --imatrix FILE  importance matrix (llama.cpp's GGUF or legacy .dat\n"
-        "                 imatrix) weighting q3_k, q4_0, q4_k, q5_k, q6_k,\n"
-        "                 q5_1 and iq4_nl toward input columns a calibration text\n"
-        "                 drives hardest; other types are written as without\n"
-        "                 it. Named by sha256 in the provenance record\n"
+        "                 imatrix) weighting %s\n"
+        "                 toward input columns a calibration text drives hardest;\n"
+        "                 other types are written as without it. Named by sha256\n"
+        "                 in the provenance record\n"
         "  --quant-error OUT.jsonl  write no model: per tensor a rewrite would\n"
         "                 quantize, the bytes and weighted squared round-trip\n"
         "                 error of each --quant type (a comma list, e.g.\n"
@@ -1467,7 +1466,7 @@ static void usage_to(FILE *f, const char *prog) {
         "family (runner train); --keygen, --sign-record, --check-record, --lineage,\n"
         "--export-bundle, --check-bundle, --export-pack, --check-pack, --sign-model,\n"
         "--watermark-keygen, --detect-watermark (runner attest).\n",
-        prog);
+        prog, quantize_imatrix_type_names());
 }
 
 // The verbs' part of `runner attest --help`, also cut per verb for `runner
@@ -5322,7 +5321,7 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
         char setnote[48] = "";
         if (rt->set_parts > 1) snprintf(setnote, sizeof setnote, " | a split set of %u parts", rt->set_parts);
         fprintf(stderr, "loaded %s | %s | %d layers | ctx %d | %d threads%s | %.2fs%s\n",
-                cli_model_name(rt, load_path), rt->m.arch, rt->m.n_layer, rt->m.n_ctx,
+                cli_model_name(rt, load_path), rt->m.arch, model_layer_count(&rt->m), rt->m.n_ctx,
                 o->serve ? o->n_threads
                          : rt->m.ink2 ? model_inkling2_threads(&rt->m)
                                       : tpool_size(rt->m.tp),
@@ -7592,6 +7591,31 @@ static float *replay_micro_fwd(void *ud, model_t *m, int32_t tok, int pos) {
     return model_batch_decode(r->mb, idx, btok, bpos, w, out) ? out[0] : NULL;
 }
 
+// R4.48.32: strict MAJOR.MINOR.PATCH <= (1, 22, 0). Every released Inkling 2
+// build through 1.22.0 ran f32 K/V only and stamped profile.kv as "f16"
+// (model_t's zero-initialized default). Unparseable or post-1.22.0 versions
+// return false so --verify stays strict.
+static bool runner_ver_le_1_22_0(const char *s) {
+    if (!s || !*s) return false;
+    unsigned long v[3] = { 0, 0, 0 };
+    const char *p = s;
+    for (int i = 0; i < 3; i++) {
+        if (*p < '0' || *p > '9') return false;
+        char *end = NULL;
+        v[i] = strtoul(p, &end, 10);
+        if (end == p || v[i] > 999999ul) return false;
+        if (i < 2) {
+            if (*end != '.') return false;
+            p = end + 1;
+        } else if (*end != '\0') {
+            return false;
+        }
+    }
+    if (v[0] != 1) return v[0] < 1;
+    if (v[1] != 22) return v[1] < 22;
+    return v[2] == 0;
+}
+
 static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const char *load_path) {
     jv *vm = jv_get(vr->rec, "model"), *va = jv_get(vr->rec, "adapter");
     jv *vprof = jv_get(vr->rec, "profile");
@@ -7603,6 +7627,11 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     bool expected_fp4 = strcmp(jv_str(jv_get(vprof, "kv"), ""), "fp4") == 0;
     bool expected_split = strcmp(jv_str(jv_get(vprof, "kv"), ""), "k8v4") == 0;
     bool expected_f32 = strcmp(jv_str(jv_get(vprof, "kv"), ""), "f32") == 0;
+    // R4.48.32: accept legacy profile.kv="f16" as Inkling 2's f32 cache only
+    // when the receipt's runner version is <= 1.22.0.
+    if (rt->m.ink2 && !expected_q8 && !expected_fp4 && !expected_split &&
+        !expected_f32 && runner_ver_le_1_22_0(jv_str(jv_get(vr->rec, "runner"), NULL)))
+        expected_f32 = true;
     jv *expected_layers_v = jv_get(vprof, "gpu_layers");
     int expected_layers = (int)jv_num(expected_layers_v, -1);
     // a CUDA replay must run at the record's prompt window (64 for a record
@@ -7615,8 +7644,8 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
         tpool_size(rt->m.tp) != expected_threads || rt->m.kv_q8 != expected_q8 ||
         rt->m.kv_fp4 != expected_fp4 || rt->m.kv_split != expected_split ||
         rt->m.kv_f32 != expected_f32 ||
-        (rt->m.gpu != NULL) != expected_gpu ||
-        (expected_layers_v && rt->m.gpu_layers != expected_layers) ||
+        model_uses_gpu(&rt->m) != expected_gpu ||
+        (expected_layers_v && model_gpu_layer_count(&rt->m) != expected_layers) ||
         (got_window > 0 && got_window != expected_window) ||
         (got_window > 0 && gpu_route_active(&rt->m) != vr->route)) {
         fprintf(stderr, "UNVERIFIABLE: runtime could not reproduce the "
@@ -8435,7 +8464,7 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
     printf("}\n");
     // the paths and kernels the forwards took, on stderr: the kernel counters
     // show a route's kernels ran
-    char route[4096];
+    char route[6144];
     model_route_json(&rt->m, route, sizeof route);
     fprintf(stderr, "score: route %s\n", route);
     if (nonfinite >= 0) {
@@ -8522,12 +8551,10 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
     size_t vfree = 0, vtotal = 0;
     bool vram_ok = gpu_there && gpu_mem_info(&vfree, &vtotal);
     bool asked_gpu = o->mp.gpu_mode != GPU_OFF;
-    const char *backend =
-#ifdef __APPLE__
-        rt->m.gpu ? "metal" : "cpu";
-#else
-        rt->m.gpu ? "cuda" : "cpu";
-#endif
+    const bool on_gpu = model_uses_gpu(&rt->m);
+    const int n_layers = model_layer_count(&rt->m);
+    const int n_gpu_layers = model_gpu_layer_count(&rt->m);
+    const char *backend = model_backend_name(&rt->m);
     sbuf r = {0};
     sb_lit(&r, "{\"schema\":\"xyntetik.runner.doctor.v1\",\"runner\":{\"version\":\"" RUNNER_VERSION "\"},");
     // identity: what the file says it is, never where it lives (R19.17.1: a split set by the set's name, beside the
@@ -8541,11 +8568,10 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
     sb_lit(&r, "\",\"name\":\"");
     sb_esc(&r, gn, strlen(gn));
     sb_fmt(&r, "\",\"layers\":%d,\"trained_context\":%d,\"adapter\":%s},",
-           rt->m.n_layer, rt->m.n_ctx_train, o->lora_path ? "true" : "false");
+           n_layers, rt->m.n_ctx_train, o->lora_path ? "true" : "false");
     sb_fmt(&r, "\"placement\":{\"requested\":\"%s\",\"backend\":\"%s\","
                "\"gpu_layers\":%d,\"layers\":%d,\"device\":\"",
-           asked_gpu ? "auto" : "off", backend, rt->m.gpu ? rt->m.gpu_layers : 0,
-           rt->m.n_layer);
+           asked_gpu ? "auto" : "off", backend, n_gpu_layers, n_layers);
     sb_esc(&r, gname, strlen(gname));
     sb_lit(&r, "\"");
     if (vram_ok)
@@ -8601,11 +8627,11 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
         doctor_finding(&fd, 1, "tokenizer_pre_unknown", det,
                 "compare a few strings against the model's own tokenizer, and report the model so its split rule can be added");
     }
-    if (asked_gpu && gpu_there && !rt->m.gpu)
+    if (asked_gpu && gpu_there && !on_gpu)
         doctor_finding(&fd, 1, "gpu_not_used",
                 "a GPU is present and was not used for this model; the load output above the report names the reason",
                 "read the load lines for the refusal; a quantization or architecture without a device kernel runs on the CPU");
-    else if (rt->m.gpu && rt->m.gpu_layers < rt->m.n_layer)
+    else if (on_gpu && n_gpu_layers < n_layers)
         doctor_finding(&fd, 1, "partial_offload",
                 "only some layers are on the GPU, so every token crosses between device and host",
                 "use a smaller quantization or a shorter -c so the whole model fits, or accept the split");
@@ -8639,7 +8665,7 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
                     "generation is under one token per second",
                     "check available RAM against the model size with --fit; a model larger than RAM pages from disk");
     }
-    if (cap.ram_available_bytes && rt->m.file_size > cap.ram_available_bytes && !rt->m.gpu)
+    if (cap.ram_available_bytes && rt->m.file_size > cap.ram_available_bytes && !on_gpu)
         doctor_finding(&fd, 1, "file_larger_than_available_ram",
                 "the model file is larger than the RAM available right now",
                 "close other programs, pick a smaller quantization, or run --fit for the exact numbers");
@@ -8749,13 +8775,13 @@ static int run_bench(cli_opts *o, cli_run *rt) {
     // an editor-assistant user actually waits on, and the one a rate alone
     // hides. Both phases report seconds beside their rates.
     // the route the decode ran (plan P1): a rate means nothing without it
-    char route[4096];
+    char route[6144];
     model_route_json(&rt->m, route, sizeof route);
     printf("{\"model\":\"%s\",\"arch\":\"%s\",\"context\":%d,"
            "\"gpu_layers\":%d,\"layers\":%d,\"prompt_tokens\":%d,"
            "\"generated_tokens\":%d,\"prompt_tok_s\":%.3f,"
            "\"gen_tok_s\":%.3f,\"prompt_s\":%.3f,\"gen_s\":%.3f,\"route\":%s}\n",
-           esc_model, rt->m.arch, rt->m.n_ctx, rt->m.gpu_layers, rt->m.n_layer,
+           esc_model, rt->m.arch, rt->m.n_ctx, model_gpu_layer_count(&rt->m), model_layer_count(&rt->m),
            n_prompt, n_gen,
            n_prompt / (ptime > 0 ? ptime : 1e-9),
            n_gen / (gtime > 0 ? gtime : 1e-9), ptime, gtime, route);
@@ -8923,7 +8949,9 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
     if (o->transcript_path) {
         const char *prev_hash = rt->prev_hash;   // read before the load (cli_main)
         char gname[128] = "";
-        if (rt->m.gpu) gpu_available(gname, sizeof gname);
+        const bool on_gpu = model_uses_gpu(&rt->m);
+        if (on_gpu && !gpu_available(gname, sizeof gname))
+            snprintf(gname, sizeof gname, "gpu");
         // R1.1.2: what shaped the output beyond the sampler, so --verify
         // replays it under the same constraints or refuses it
         char cons[256] = "", schema_sha[65] = "";
@@ -8966,9 +8994,9 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
             .os = "linux",
 #endif
             .arch = RUNNER_BUILD_ARCH,
-            .device = rt->m.gpu ? gname : "cpu",
-            .gpu = rt->m.gpu != NULL,
-            .gpu_layers = rt->m.gpu_layers,
+            .device = on_gpu ? gname : "cpu",
+            .gpu = on_gpu,
+            .gpu_layers = model_gpu_layer_count(&rt->m),
             .gpu_window = gpu_prompt_window(&rt->m),
             .gpu_route = gpu_route_record(&rt->m),
             .threads = tpool_size(rt->m.tp), .n_ctx = rt->m.n_ctx,

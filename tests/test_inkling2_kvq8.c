@@ -108,6 +108,43 @@ int main(int argc, char **argv) {
                   (unsigned long long)got, (unsigned long long)dv[k].want);
         }
     }
+    // R4.48.32: placement-fails fallback sentence with a 159-byte device name (~360 bytes) and escaped-quote
+    // worst case (>520 escaped bytes) must appear untruncated in model_route_json().
+    {
+        model_t *m = load(argv[1], "fast", 0, 5);
+        CHECK(m != NULL, "route_fallback truncation check: load tiny model");
+        if (m) {
+            char dev[160];
+            memset(dev, 'A', 152);
+            memcpy(dev + 152, "GPU-END", 8);   // 159 bytes + NUL
+            char why[512];
+            int wn = snprintf(why, sizeof why,
+                              "inkling2_loop's weights for the device do not fit the %.2f GB free on %s "
+                              "for %d slot%s (after its context, module and buffers, with 0.54 GB kept), "
+                              "not with its expert stacks on the host either",
+                              12.34, dev, 2, "s");
+            snprintf(m->route_fallback, sizeof m->route_fallback, "%s", why);
+            char jbuf[6144], needle[600];
+            model_route_json(m, jbuf, (int)sizeof jbuf);
+            snprintf(needle, sizeof needle, "\"fallback\":\"%s\"", why);
+            CHECK(wn > 300 && strstr(jbuf, needle) != NULL,
+                  "route_json preserves full %d-byte placement-fails fallback with 159-byte device name", wn);
+
+            // Escaping can double the length: 340 quotes -> 680 escaped bytes (exceeds old why[520]).
+            char qwhy[341], qesc[700];
+            memset(qwhy, '"', 340);
+            qwhy[340] = 0;
+            snprintf(m->route_fallback, sizeof m->route_fallback, "%s", qwhy);
+            model_route_json(m, jbuf, (int)sizeof jbuf);
+            size_t p = 0;
+            p += (size_t)snprintf(qesc + p, sizeof qesc - p, "\"fallback\":\"");
+            for (int i = 0; i < 340; i++) { qesc[p++] = '\\'; qesc[p++] = '"'; }
+            qesc[p++] = '"'; qesc[p] = 0;
+            CHECK(strstr(jbuf, qesc) != NULL,
+                  "route_json escape buffer preserves 340 escaped quotes (680 bytes) without truncation");
+            drop(m);
+        }
+    }
     if (fails) { printf("test_inkling2_kvq8: %d FAILED\n", fails); return 1; }
     printf("test_inkling2_kvq8: ok\n");
     return 0;

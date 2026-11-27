@@ -2793,6 +2793,31 @@ int quantize_type_from_name(const char *s) {
     return type_from_name(s);
 }
 
+const char *quantize_imatrix_type_names(void) {
+    static _Thread_local char buf[256];
+    if (!buf[0]) {
+        size_t n = 0;
+        const char *p = QUANT_TYPE_NAMES;
+        while (*p) {
+            const char *bar = strchr(p, '|');
+            size_t len = bar ? (size_t)(bar - p) : strlen(p);
+            char tok[32];
+            if (len < sizeof tok) {
+                memcpy(tok, p, len);
+                tok[len] = 0;
+                int t = type_from_name(tok);
+                if (t >= 0 && imatrix_weighted_type(t)) {
+                    int w = snprintf(buf + n, sizeof buf - n, "%s%s", n ? ", " : "", tok);
+                    if (w > 0 && (size_t)w < sizeof buf - n) n += (size_t)w;
+                }
+            }
+            if (!bar) break;
+            p = bar + 1;
+        }
+    }
+    return buf;
+}
+
 static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, int target,
                        const char *prune_path, const char *type_plan_path,
                        const char *remove_spec,
@@ -4329,11 +4354,12 @@ static int quantize_job_finish(quantize_job *J, const char *in_path,
         fprintf(stderr, "imatrix: %llu tensors weighted (%llu rows; %llu rows "
                 "without calibration data written unweighted); %llu converted "
                 "tensors are of a type the imatrix does not shape (weighted: "
-                "q3_k, q4_0, q4_k, q5_k, q6_k, q5_1, iq3_xxs, iq4_nl)\n",
+                "%s)\n",
                 (unsigned long long)g_imx.tensors_weighted,
                 (unsigned long long)g_imx.rows_weighted,
                 (unsigned long long)g_imx.rows_without_data,
-                (unsigned long long)g_imx.tensors_other_type);
+                (unsigned long long)g_imx.tensors_other_type,
+                quantize_imatrix_type_names());
         if (!g_imx.tensors_weighted)
             fprintf(stderr, "warning: the imatrix named none of the tensors "
                     "written as an importance-weighted type\n");
@@ -4370,8 +4396,7 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                        float surgery_factor, context_surgery_result *surgery_result,
                        merge_survival *surv_out) {
     if (target != T_KEEP && !quantize_row_writable(target)) {
-        fprintf(stderr, "error: quantize target must be q8_0, q4_0, q5_1, q3_k, "
-                "q4_k, q5_k, q6_k, iq3_xxs, iq4_nl, mxfp4, nvfp4, f16, or bf16\n");
+        fprintf(stderr, "error: quantize target must be one of " QUANT_TYPE_NAMES "\n");
         return 1;
     }
     quantize_job job;

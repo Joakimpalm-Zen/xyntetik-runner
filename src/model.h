@@ -492,8 +492,9 @@ typedef struct {
     int    spec_want_all;    // >0: the NEXT forward emits logits for every
                              // column (speculative verify), not just the last
     // RUNNER_DEBUG_ROUTE: why this instance runs on the CPU when a GPU was
-    // asked for ("" while it is not), and the last route line printed
-    char     route_fallback[256];
+    // asked for ("" while it is not), and the last route line printed.
+    // Sized to hold ink2_share.why (up to 363 bytes with a 159-byte device name).
+    char     route_fallback[512];
     uint64_t route_last;
     // the draft source the engine runs (model_route_draft), "" for none
     char     route_draft[24];
@@ -1976,6 +1977,13 @@ void   model_forward_refold(model_t *m, const int32_t *tokens, int n, int pos);
 bool   model_spec_verify_ok(const model_t *m);
 // the backend the route record names: "cpu", "cuda", "metal" (or "gpu")
 const char *model_backend_name(const model_t *m);
+// R4.48.32: effective GPU use and physical/offloaded layer counts for reporting,
+// receipts, --verify, --doctor, and provenance (includes architectures with
+// their own device binding such as inkling2_loop, where m->gpu and m->n_layer
+// stay NULL/0 so generic layer loops skip m->layers).
+bool        model_uses_gpu(const model_t *m);
+int         model_layer_count(const model_t *m);
+int         model_gpu_layer_count(const model_t *m);
 float *model_spec_row_logits(model_t *m, int b);
 // The caller wrote KV rows [lo, ...) into the host cache itself (a prefix
 // snapshot or a session image installed): a device mirror of the cache takes
