@@ -820,8 +820,8 @@ enum { MD_THREADS = 512, MD_GMAX = 16, MD_NJ = 8, MD_TK = 32 };
 #define CU_DEV_ATTR_SMEM_OPTIN 97     // CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN
 #define CU_FUNC_ATTR_STATIC_SMEM 1    // CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES
 #define TC_N    64   // tensor-core GEMM token tile (keep in sync)
-// R4.48.33: the NVFP4 decode GEMV's lane map, by kernel name (kernels.cu NVFP4_GEMV): map A
-#define NVFP4_GEMV_KERNEL "k_gemv_nvfp4"
+// R4.48.33: the NVFP4 decode GEMV's lane map, by kernel name (kernels.cu NVFP4_GEMV): map A' (timing build)
+#define NVFP4_GEMV_KERNEL "k_gemv_nvfp4_a2"
 
 // flash-decoding KV split count — must match ATTN_SPLITS in kernels.cu; fixed
 // (not context-dependent) so the decode CUDA graph stays valid across positions
