@@ -410,9 +410,9 @@ HDR = $(wildcard src/*.h)
 QUANTS_OBJ = $(OBJDIR)/quants.o
 QUANTS_CFLAGS = $(filter-out -ffast-math,$(CFLAGS)) -fno-fast-math
 
-# The offline GGUF quantizer (--quantize) is quant arithmetic too: its Q8_0
-# (and q4_0/q3_k) output must be the canonical, bit-exact ggml result, so a
-# runner-produced file is byte-identical to llama.cpp's for the same input.
+# The offline GGUF quantizer (--quantize) is quant arithmetic too: its
+# writers port ggml's algorithms, and their rounding must be the IEEE
+# arithmetic those algorithms are written for, not -ffast-math's.
 # Under -ffast-math the reciprocal id=1/d and the roundf boundary drifted,
 # tipping ~1-code-per-block differences vs ggml on identical input while the
 # fp16 block scale still matched. Build it fast-math-free, like quants.o.
@@ -422,8 +422,9 @@ QUANTIZE_OBJ = $(OBJDIR)/quantize.o
 # twice; clang does that by default (and GCC more), and on a real BF16 tensor
 # it moved 88 of 27,648 q4_0 blocks, 34 of 3,456 q4_k and 8 of 3,456 q6_k
 # super-blocks off ggml's bytes by one rounding step. Uncontracted, every
-# writer is byte-identical to ggml's own built the same way, on every
-# compiler; test_quantize's ggml golden pins it. The object depends on this
+# compiler gives the same bytes, and test_quantize's ggml golden checks the
+# writers agree with ggml's built the same way on its rows (Runner keeps its
+# own evaluation order where it differs: R4.56). The object depends on this
 # Makefile so a change of these flags rebuilds it.
 QUANTIZE_CFLAGS = $(QUANTS_CFLAGS) -ffp-contract=off
 # R8.29: the learning-rate schedule (warmup + cosine) must agree bit for bit

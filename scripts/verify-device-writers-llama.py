@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""R4.48.8.6 cross-check harness: Runner vs llama.cpp (IQ3_XXS bit-for-bit & NVFP4 interop).
+"""R4.48.8.6 cross-check harness: Runner vs llama.cpp (an IQ3_XXS port check & NVFP4 interop).
 
 Usage on a host with llama-quantize:
     python3 scripts/verify-device-writers-llama.py \
@@ -8,14 +8,15 @@ Usage on a host with llama-quantize:
         [--llama-cpp-py /path/to/llama.cpp/gguf-py]
 
 What it verifies:
-  1. IQ3_XXS bit-for-bit: generates a tiny valid Llama F32 GGUF (256-wide rows; 9 quantizable
+  1. IQ3_XXS port check: generates a tiny valid Llama F32 GGUF (256-wide rows; 9 quantizable
      tensors: 7 blk.0.* weights + token_embd.weight + output.weight) and a GGUF imatrix
      (including imatrix.datasets, imatrix.chunk_count, imatrix.chunk_size metadata) with entries
      for the 7 blk.0.* tensors only. Runs `runner --quantize ... --quant iq3_xxs --imatrix` and
      `llama-quantize --pure --imatrix ... IQ3_XXS` (llama-quantize requires --imatrix for IQ3_XXS,
      while token_embd.weight and output.weight have no imatrix entry and verify the unweighted
      path in the same run). Asserts all 9 tensors are written as IQ3_XXS by both tools with 0
-     differing bytes.
+     differing bytes on this fixture: a correctness check of the port, not a promise that the two
+     writers agree on every input (Runner keeps its own evaluation order where it differs).
   2. NVFP4 127-code & interop: runs `runner --quantize ... --quant nvfp4` on a fixture
      covering all 127 finite UE4M3 codes (0x00..0x7E, never 0x7F) and on an Inkling-shaped
      N(0, 0.03^2) BF16 matrix; decodes via gguf-py (when --llama-cpp-py is given) and the
@@ -374,7 +375,7 @@ def check_nvfp4(runner: Path, llama_cpp_py: Path | None, tmp: Path):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--runner", type=Path, required=True)
-    ap.add_argument("--llama-quantize", type=Path, help="llama-quantize binary for IQ3_XXS bit-for-bit check")
+    ap.add_argument("--llama-quantize", type=Path, help="llama-quantize binary for the IQ3_XXS port check")
     ap.add_argument("--llama-cpp-py", type=Path, help="Optional path to llama.cpp/gguf-py for NVFP4 decode interop")
     args = ap.parse_args()
     runner = args.runner.resolve()

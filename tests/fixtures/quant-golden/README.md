@@ -1,6 +1,9 @@
-# Quantizer byte-identity fixture
+# Quantizer check fixtures
 
-`tests/test_quantize.c` writes this slice with Runner's reference and weighted writers and compares every byte with ggml's.
+`tests/test_quantize.c` writes this slice with Runner's reference and weighted writers and compares every byte with
+ggml's. That checks that the ports follow ggml's algorithms on these inputs. It is not a promise of identical bytes
+on every input: where Runner's evaluation order differs from ggml's, Runner keeps its own, and the last section
+pins Runner's bytes at two such points.
 
 - `smollm2-135m-l0-ffn_down-16rows.bf16`: 16 rows (0, 1, 2, 5, 9, 11, 21, 22, 23, 26, 28, 33, 39, 48, 61, 82) of
   `model.layers.0.mlp.down_proj.weight` (576 x 1536, BF16, row-major, little-endian) from
@@ -106,3 +109,24 @@ afae0adb92b30422785040b44c98c0d40d4d2893593c25faffd03a7a91e97c0c  ggml-c1d0e7a-w
 d4a119433d4b5377df739ab322e6ab644c4aea49159fc4c4be7397ba9cb3a3fc  ggml-c1d0e7a-weighted-q6_k.bin
 e45284d01bebda2fd10d0b4850f5c20a4d9521d8eddce98e62652bb7d356b7fe  weighted-edges.f32
 ```
+
+## Runner's own bytes at two float32 near ties (R4.56)
+
+`olmo3-7b-think-q4_k-near-ties.json` pins Runner's own Q4_K bytes at two super-blocks where the scale search of
+`make_qkx2_quants` meets a float32 near tie. It pins the determinism of Runner's writer, not agreement with
+llama.cpp.
+- The inputs come from the BF16 weights of `allenai/Olmo-3-7B-Think` at d97e442d7cc678210054dbcc9b440894d62c89a4
+  (the parent of the roster's `olmo-3-7b-think-q8_0` row, Apache-2.0), widened exactly to float32.
+  - `token_embd.weight` block 567878 has no importance-matrix entry, so it takes the reference writer.
+  - `blk.12.attn_q.weight` block 12447 takes the weighted writer, with `qw`, its 256 weights from bartowski's
+    importance matrix (`in_sum2 / counts` in float32).
+- `a1` is the block as Runner writes it: 144 bytes (`d`, `dmin`, `scales[12]`, `qs[128]`, little-endian).
+  `tests/test_quantize.c` requires these bytes.
+- `c1` is the same block in bartowski's llama.cpp Q4_K_M of the model. Runner sums each error term as
+  `(w * diff) * diff` and ggml as `w * (diff * diff)`. At these ties the last bit decides which candidate the
+  strict `<` keeps, so the two differ.
+  - On OLMo 3 7B Think that happens in 157 of 12.46 million Q4_K super-blocks. The two files' KL divergence from
+    the reference cannot be told apart.
+  - A failure of the test says whether the writer moved to `c1`'s bytes.
+- `x` and `qw` are float32 bit patterns, 8 hex digits each, most significant first. The `about` field is the note
+  the file was made with; it predates the decision to keep Runner's order.
