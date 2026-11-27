@@ -820,6 +820,8 @@ enum { MD_THREADS = 512, MD_GMAX = 16, MD_NJ = 8, MD_TK = 32 };
 #define CU_DEV_ATTR_SMEM_OPTIN 97     // CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN
 #define CU_FUNC_ATTR_STATIC_SMEM 1    // CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES
 #define TC_N    64   // tensor-core GEMM token tile (keep in sync)
+// R4.48.33: the NVFP4 decode GEMV's lane map, by kernel name (kernels.cu NVFP4_GEMV): map A
+#define NVFP4_GEMV_KERNEL "k_gemv_nvfp4"
 
 // flash-decoding KV split count — must match ATTN_SPLITS in kernels.cu; fixed
 // (not context-dependent) so the decode CUDA graph stays valid across positions
@@ -3060,6 +3062,10 @@ static bool shared_load_module(gpu_weights *w) {
     };
     for (size_t i = 0; i < sizeof(fns) / sizeof(*fns); i++)
         CK(cu.ModuleGetFunction(fns[i].f, w->mod, fns[i].name));
+    // R4.48.33: NVFP4's coalesced decode GEMV, resolved non-fatally so a PTX without it keeps k_mv_nvfp4. The
+    // two lane maps are timed as two builds of this one name (k_gemv_nvfp4 is map A, k_gemv_nvfp4_a2 map A');
+    // the map that wins is frozen before this branch merges and the other kernel removed.
+    if (cu.ModuleGetFunction(&w->f_gemv[T_NVFP4], w->mod, NVFP4_GEMV_KERNEL) != 0) w->f_gemv[T_NVFP4] = NULL;
     // Tensor-core kernels: resolved non-fatally, so an older embedded PTX
     // without them still loads with TC unavailable. This table is the one
     // gpu_tc_type_has_kernel() answers from, so the tolerance gate's idea of
@@ -5396,6 +5402,15 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     // Decode (batch==1) uses the coalesced lane-per-element GEMV where available
     // (Q8_0/Q4_K); same 4-rows/block shape, so capture-compatible with no
     // host-side branching on per-token state.
+    // R4.48.33: NVFP4's coalesced GEMV takes the per-tensor scale as its trailing parameter, as k_mv_nvfp4 does;
+    // a multiply by 1.0f is exact, so one launch serves every NVFP4 file. It comes before the branch below, which
+    // passes no scale. A prompt's columns reach it one at a time (prefill_per_column: NVFP4 has no twins yet), so a
+    // prompt's rows carry a lone decode's bits.
+    if (batch == 1 && w->type == T_NVFP4 && g->sw->f_gemv[T_NVFP4]) {
+        float sc = w->scale;
+        void *pn[] = { &weights, &x, &y, &a, &b, &sc };
+        return launch(g, g->sw->f_gemv[T_NVFP4], (n_out + 3) / 4, 1, 1, 128, pn);
+    }
     if (batch == 1 && w->scale == 1.0f && g->sw->f_gemv[w->type])
         return launch(g, g->sw->f_gemv[w->type], (n_out + 3) / 4, 1, 1, 128, p);
     // 128 threads = 4 warps = 4 rows per block; the tile variant applies each

@@ -2560,6 +2560,40 @@ extern "C" __global__ void k_mv_nvfp4(MV_PARAMS, float scale) {
     }
 }
 
+// R4.48.33: NVFP4's coalesced decode GEMV, in the two lane maps the advisor set, to be timed on the card before
+// one is frozen (src/nvfp4_lane.h, held on the host by test-nvfp4-lane). A warp a row, 4 rows a 128-thread block
+// as k_gemv_q4_K; a pass reads 4 consecutive blocks (144 bytes) across the warp with 4-byte loads, the weights
+// decoded in registers, the activations as two float4s a lane. The per-tensor scale is the trailing parameter,
+// as k_mv_nvfp4's; every multiply-add is the header's explicit fmaf and the tail is rounded once each.
+#include "nvfp4_lane.h"
+#define NVFP4_GEMV(NAME, MAP)                                                                                    \
+extern "C" __global__ void NAME(MV_PARAMS, float scale) {                                                       \
+    MV_HEAD;                                                                                                    \
+    const int nb = a.n_in / 64;                                                                                 \
+    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 36;                                                    \
+    nv_lane_t m;                                                                                                \
+    nv_lane_map(MAP, (int)lane, &m);                                                                            \
+    const int x1 = MAP == NV_MAP_A ? m.x0 + 4 : m.x1;                                                           \
+    float s = 0.0f;                                                                                             \
+    for (int b0 = 0; b0 < nb; b0 += 4) {                                                                        \
+        const int b = b0 + m.blk;                                                                               \
+        if (b < nb) {                                                                                           \
+            const uchar *bp = rw + (ulong64)b * 36;                                                             \
+            const float *xb = x + (ulong64)b * 64;                                                              \
+            float w[8], xv[8];                                                                                  \
+            nv_lane_w(MAP, (int)lane, bp, w);                                                                   \
+            const float4 xa = *(const float4 *)(xb + m.x0), xc = *(const float4 *)(xb + x1);                    \
+            xv[0] = xa.x; xv[1] = xa.y; xv[2] = xa.z; xv[3] = xa.w;                                             \
+            xv[4] = xc.x; xv[5] = xc.y; xv[6] = xc.z; xv[7] = xc.w;                                             \
+            s = fmaf(nv_ue4m3(bp[m.sub]), nv_dot8(w, xv), s);                                                   \
+        }                                                                                                       \
+    }                                                                                                           \
+    s = warp_sum(s);                                                                                            \
+    if (lane == 0) y[row] = nv_tail(s, scale, a.has_bias, a.has_bias ? bias[row] : 0.0f);                       \
+}
+NVFP4_GEMV(k_gemv_nvfp4, NV_MAP_A)
+NVFP4_GEMV(k_gemv_nvfp4_a2, NV_MAP_A2)
+
 // ---------------------------------------------------------------- rope
 // grid: (ceil(half_dim/32), n_heads, batch); vs = element stride per column
 
