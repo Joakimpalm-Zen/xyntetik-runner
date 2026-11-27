@@ -19,8 +19,8 @@ The anchors, on the qwen4exp fixture:
 - on CUDA, the automatic tier: (c) and the fork made with nothing in between each give the cold prefill's tokens,
   its logprobs within LOGPROB_TOL and its fold within FOLD_REL_TOL (R4.48.34, the advisor's ruling C). R3.60's prefill
   identity is a CPU-only run's (engine_prompt_prefill): on a device, a continued prompt's host steps and kernels may
-  round otherwise than a fresh one's, and on one card class the fork's fold differed from the cold one in 107 of
-  2,496 words by the last bits. The PLE history's proof is the CPU arm's, bit for bit. Every server's log shows the
+  round otherwise than a fresh one's (the bounds below say by how much). The PLE history's proof is the CPU arm's,
+  bit for bit. Every server's log shows the
   device and RUNNER_GPU_FALLBACK=fail makes a fall to the CPU an error. A pin and an import of a recurrent model on
   the device are held by tests/test_recurrent_device_contexts.py (R4.48.22), qwen4exp's import to its pin's bits.
 A fold installed with no tokens named is refused on qwen4exp (model_recurrent_blob_load returns false and changes
@@ -51,12 +51,16 @@ QUESTION = "Where is item 42?"
 LONG = "unrelated text that shares nothing at all with the context above, " * 4
 # R4.48.34, the advisor's ruling C (CUDA only; the CPU stays bit for bit):
 # - a logprob within 1e-5 absolute;
-# - a fold word within FOLD_REL_TOL of the larger of the two, relatively. The measured worst word is 1.9e-6 on the
-#   lab's card (107 of 2,496 words differed), and the bound is 8x that, rounded down. No seam reproduces the PLE
-#   history defect, so the CPU arm carries that proof. With R4.48.22.1's rebuild undone in a scratch build, the
-#   defect moved the CPU fold by 0.963 at worst (704 of 2,496 words; the logprobs by 6.15e-5), far over the bound.
+# - a fold word within FOLD_REL_TOL, measured per word as |a - b| / max(|a|, |b|).
+# Both bounds come from this test's own CUDA arm, "the fork with nothing in between", on an sm_120 MIG
+# slice on 2026-11-27: a logprob gap of 4.8e-7, and a worst fold word of 6.77e-5 (484 of 2,496 words differed).
+# FOLD_REL_TOL is 8x that word, rounded down.
+# For context: the pin method (a pin of SYS, then SYS + QUESTION) measured 1.89e-6 on the same slice.
+# No seam reproduces the PLE history defect, so the CPU arm carries that proof. With R4.48.22.1's rebuild undone in a
+# scratch build, the defect moved the CPU fold by 0.963 at worst (704 of 2,496 words; the logprobs by 6.15e-5),
+# about 1,800x over FOLD_REL_TOL.
 LOGPROB_TOL = 1e-5
-FOLD_REL_TOL = 1.5e-5
+FOLD_REL_TOL = 5.4e-4
 RECDUMP = re.compile(r"recdump: pos (\d+) words (\d+) fnv ([0-9a-f]{16}) hex ([0-9a-f]+)")
 
 
