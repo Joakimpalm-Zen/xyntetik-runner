@@ -31,11 +31,18 @@
 // ---------------------------------------------------------------- rows
 // The reference quantizers below (Q8_0, Q4_0, Q3_K, Q4_K, Q6_K, and the
 // make_qx_quants / make_qkx2_quants searches) are ports of ggml's
-// ggml-quants.c, byte-identical to it when both are built without
-// floating-point contraction (this file always is: QUANTIZE_CFLAGS in the
-// Makefile; tests/fixtures/quant-golden pins it on a real tensor): MIT,
-// Copyright (c) 2023-2026 The ggml authors; the notice is
-// LICENSES/ggml-MIT.txt (see NOTICE).
+// ggml-quants.c: MIT, Copyright (c) 2023-2026 The ggml authors; the notice is
+// LICENSES/ggml-MIT.txt (see NOTICE). The algorithms are ggml's at the pinned
+// commits, built without floating-point contraction (QUANTIZE_CFLAGS in the
+// Makefile), and tests/fixtures/quant-golden checks the ports against ggml's
+// writers on a real slice and boundary rows. That is a check, not a promise
+// of identical bytes on every input: where Runner's evaluation order differs,
+// Runner keeps its own. make_qkx2_quants sums each error term as
+// (w * diff) * diff and ggml as w * (diff * diff), so at a float32 near tie
+// between two candidate scales the strict '<' can keep another one (R4.56:
+// 157 of 12.46M OLMo 3 Q4_K super-blocks against llama.cpp's file, KL
+// divergence from the reference indistinguishable). check_q4k_near_ties in
+// tests/test_quantize.c pins Runner's own bytes at two of them.
 
 // ------------------------------------------------ IEEE subnormals for quant
 // ggml computes quant block scales with IEEE subnormals (it is built without
@@ -477,6 +484,8 @@ static void quantize_row_q6_K(const float *x, uint8_t *dst, int n, const float *
 // ggml's make_qkx2_quants with squared-error weighting (use_mad false): the
 // search steps the inverse scale from (nmax + rmin) / (max - min) by rdelta,
 // nstep times. Q4_K searches from -1 in 20 steps, Q5_K from -0.5 in 15.
+// Each error term is (w * diff) * diff, Runner's own order (ggml squares
+// first; see the header and check_q4k_near_ties).
 static float make_qkx2_quants(int n, int nmax, const float *x,
                               const float *weights, uint8_t *L,
                               float *the_min, uint8_t *Laux,

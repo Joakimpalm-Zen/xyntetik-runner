@@ -1,6 +1,9 @@
-# Quantizer byte-identity fixture
+# Quantizer check fixtures
 
-`tests/test_quantize.c` writes this slice with Runner's reference and weighted writers and compares every byte with ggml's.
+`tests/test_quantize.c` writes this slice with Runner's reference and weighted writers and compares every byte with
+ggml's. That checks that the ports follow ggml's algorithms on these inputs. It is not a promise of identical bytes
+on every input: where Runner's evaluation order differs from ggml's, Runner keeps its own, and the last section
+pins Runner's bytes at two such points.
 
 - `smollm2-135m-l0-ffn_down-16rows.bf16`: 16 rows (0, 1, 2, 5, 9, 11, 21, 22, 23, 26, 28, 33, 39, 48, 61, 82) of
   `model.layers.0.mlp.down_proj.weight` (576 x 1536, BF16, row-major, little-endian) from

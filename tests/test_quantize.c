@@ -449,12 +449,15 @@ static double weighted_err(const char *path, const char *name, const float *x,
     return e;
 }
 
-// The reference writers against ggml's own on a real tensor: 16 rows of a
+// The reference writers checked against ggml's on a real tensor: 16 rows of a
 // published BF16 weight (tests/fixtures/quant-golden, README there), written
 // by each writer and compared byte for byte with what ggml b10353's writers
-// emit for the same rows, compiled without floating-point contraction. The
-// rows are ones a build that fuses multiply-adds writes differently for q4_0,
-// q4_k and q6_k, which is why quantize.o is compiled -ffp-contract=off.
+// emit for the same rows, compiled without floating-point contraction. It
+// checks that the ports follow ggml's algorithms on these rows; it is not a
+// promise of identical bytes on every input (check_q4k_near_ties pins where
+// Runner's own order differs). The rows are ones a build that fuses
+// multiply-adds writes differently for q4_0, q4_k and q6_k, which is why
+// quantize.o is compiled -ffp-contract=off.
 static void check_ggml_golden(void) {
     enum { ROWS = 16, COLS = 1536, N = ROWS * COLS };
     const char *dir = "tests/fixtures/quant-golden/";
@@ -524,8 +527,8 @@ static void check_ggml_golden(void) {
         free(mine); free(ref);
     }
     remove(in); remove(out);
-    printf("ok: q8_0, q4_0, q3_k, q4_k, q6_k and mxfp4 writers are byte-identical to ggml "
-           "b10353, and q5_0, q5_1, q5_k and iq4_nl to ggml c1d0e7a, on a real tensor\n");
+    printf("ok: q8_0, q4_0, q3_k, q4_k, q6_k and mxfp4 writers agree with ggml b10353, and "
+           "q5_0, q5_1, q5_k and iq4_nl with ggml c1d0e7a, on the golden slice\n");
 }
 
 static void check_weighted_bytes(const char *out, const char *type, bool edges) {
@@ -547,8 +550,8 @@ static void check_weighted_bytes(const char *out, const char *type, bool edges) 
     free(mine); free(ref);
 }
 
-// External byte anchor: unmodified ggml at the pinned revision, not another
-// Runner build. Boundary inputs include zero groups, signed endpoints,
+// External check: unmodified ggml at the pinned revision, not another Runner
+// build, on these inputs (agreement on them, not an identity promise). Boundary inputs include zero groups, signed endpoints,
 // constant rows, tiny/large scales and exact half steps (fixture README).
 static void check_ggml_weighted_golden(void) {
     enum { COLS = 1536, REAL_ROWS = 16, EDGE_ROWS = 8 };
@@ -611,7 +614,7 @@ static void check_ggml_weighted_golden(void) {
                 assert(quantize_gguf(in, out, types[k].type, NULL) != 0);
             }
         }
-        printf("ok: weighted %s is a ggml c1d0e7a byte twin on the real slice and boundaries\n", types[k].name);
+        printf("ok: weighted %s agrees with ggml c1d0e7a on the real slice and boundaries\n", types[k].name);
     }
     assert(quantize_set_imatrix(NULL));
     const char *paths[] = {in, out, plain, dat, zdat, bad, gg};
