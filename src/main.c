@@ -9610,6 +9610,8 @@ static void warn_retired_switches(void) {
     static const struct { const char *name; const char *why; } retired[] = {
         { "RUNNER_METAL_MOE_EM", "retired in R3.84 (measured 3 to 4% slower)" },
         { "RUNNER_METAL_TENSOR", "retired in R3.84 (measured parity only on M5)" },
+        { "RUNNER_CPU_I8", "retired in R3.84 (no format cleared the 0/64 bar with a gain worth taking: +7.8% and +1.0% decode failed it, and the one that passed gained +1.0%)" },
+        { "RUNNER_PREFETCH", "retired in R3.84 (load-time WILLNEED sweep measured slower or flat)" },
     };
     for (size_t i = 0; i < sizeof(retired) / sizeof(*retired); i++) {
         const char *v = getenv(retired[i].name);

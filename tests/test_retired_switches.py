@@ -35,8 +35,24 @@ RETIRED = {
 RETIRED_WITH_NOTICE = {
     "RUNNER_METAL_MOE_EM": "R3.84 / R18.8.8: measured 3 to 4% slower than slot-major",
     "RUNNER_METAL_TENSOR": "R3.84 / R18.8.8: measured parity only on M5, short of 1.2x bar",
+    "RUNNER_CPU_I8": (
+        "R3.84: no format cleared the 0/64 bar with a gain worth taking "
+        "(2026-08-13: Llama-3.2-3B Q4_K_M 1/64 FAIL at +7.8% decode, "
+        "granite-4.1-8b Q4_0 2/64 FAIL at +1.0%, SmolLM2-135M Q8_0 0/64 PASS at +1.0%)"
+    ),
+    "RUNNER_PREFETCH": "R3.84: load-time WILLNEED sweep measured slower or flat on macOS, Linux and Windows",
 }
 
+# R3.84: symbols belonging exclusively to the retired RUNNER_CPU_I8 decode route
+# and RUNNER_PREFETCH loader sweep. The shared activation quantizer
+# (i8_quant_act, i8_act_size) and prefill tiles (i8_tile_dot, RUNNER_CPU_I8_PREFILL) stay.
+RETIRED_CPU_LOADER_SYMBOLS = (
+    "vec_dot_i8",
+    "i8_dot_enabled",
+    "i8_dot_ok",
+    "i8_dot_force",
+    "model_load_prefetch_wanted",
+)
 # R18.8.11: the CUDA tile kernels no default route reaches since the prefill
 # stack (R6.41 to R6.58): on the scalar route a prompt runs the batch-1
 # kernel's 16-wide twins or the batch-1 kernel per column, and the decode
@@ -75,6 +91,21 @@ def test_a_retired_notice_switch_has_no_active_reader(name):
     assert f'"{name}"' in main_src, f"{name} is missing from main.c's retired-switch notice table"
 
 
+@pytest.mark.parametrize("sym", RETIRED_CPU_LOADER_SYMBOLS)
+def test_retired_cpu_and_loader_symbols_are_gone(sym):
+    word = re.compile(rf"\b{sym}\b")
+    found = [p.name for p in SOURCES if word.search(p.read_text(encoding="utf-8", errors="replace"))]
+    assert not found, f"{sym} is still in {found}"
+    assert not (ROOT / "tests" / "test_load_prefetch.py").exists()
+    assert not (ROOT / "tests" / "test_i8_tol.c").exists()
+
+
+def test_shared_i8_prefill_quantizer_stays():
+    """RUNNER_CPU_I8_PREFILL shares i8_quant_act / i8_act_size / i8_tile_dot; retiring
+    RUNNER_CPU_I8 decode must keep them intact."""
+    quants_h = (ROOT / "src" / "quants.h").read_text(encoding="utf-8")
+    for sym in ("i8_quant_act", "i8_act_size", "i8_tile_dot", "i8_prefill_enabled"):
+        assert re.search(rf"\b{sym}\b", quants_h), sym
 @pytest.mark.parametrize("kernel", RETIRED_KERNELS)
 def test_a_retired_kernel_is_defined_loaded_and_embedded_nowhere(kernel):
     """Not in cuda.c's load tables, not in a kernel source, and not in the
@@ -119,8 +150,8 @@ def test_retired_notice_switch_left_active_docs(name):
 
 @pytest.fixture(scope="module")
 def tiny_model(tmp_path_factory):
-    p = tmp_path_factory.mktemp("retired-sw") / "tiny.gguf"
-    subprocess.run([sys.executable, str(ROOT / "scripts/make-test-model.py"), str(p)],
+    p = tmp_path_factory.mktemp("retired-sw") / "tiny-q8.gguf"
+    subprocess.run([sys.executable, str(ROOT / "scripts/make-test-model.py"), "--quant", "q8_0", str(p)],
                    cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
     return p
 
@@ -129,7 +160,7 @@ def tiny_model(tmp_path_factory):
 def test_retired_switch_prints_one_notice_and_has_no_effect(runner_bin, tiny_model, name):
     base_env = {k: v for k, v in os.environ.items() if k not in RETIRED_WITH_NOTICE}
     cmd = [str(runner_bin), "-m", str(tiny_model), "-p", "hi", "-n", "4",
-           "--temp", "0", "-s", "1", "--no-tray", "-t", "2"]
+           "--temp", "0", "-s", "1", "--gpu", "off", "--no-tray", "-t", "2"]
     base = subprocess.run(cmd, cwd=ROOT, env=base_env, capture_output=True, timeout=60)
     assert base.returncode == 0, base.stderr.decode("utf-8", "replace")
     assert name.encode() not in base.stderr

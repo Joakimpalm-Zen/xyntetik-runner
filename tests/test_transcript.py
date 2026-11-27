@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import pathlib
+import platform
 import shutil
 import subprocess
 import sys
@@ -752,7 +753,12 @@ def test_an_old_v1_receipt_still_verifies(runner_bin, base, tmp_path):
 
 def test_the_route_is_checked_on_replay(runner_bin, base, tmp_path):
     out = tmp_path / "r.json"
-    env = dict(os.environ, RUNNER_CPU_I8="1")
+    if platform.machine().lower() in ("arm64", "aarch64"):
+        sw, want_act, no_kernel = "RUNNER_CPU_I8_PREFILL", "f32+int8-prefill", b"no int8 prefill kernel on this build"
+    else:
+        sw, want_act, no_kernel = "RUNNER_CPU_I8K", "f32+int8k-decode", b"no K-quant int8 decode kernel on this build"
+    plain = {k: v for k, v in os.environ.items() if not k.startswith("RUNNER_CPU_I8")}
+    env = dict(plain, **{sw: "1"})
     p = subprocess.run(
         [runner_bin, "-m", str(base), "-p", "the runner trains the", "-n", "6",
          "--temp", "0", "--gpu", "off", "-t", "2", "--transcript", str(out)],
@@ -760,12 +766,11 @@ def test_the_route_is_checked_on_replay(runner_bin, base, tmp_path):
     assert p.returncode == 0, p.stderr
     # a build without the int8 kernel (`make debug` has no -mavx2) says so
     # and records f32, which is right; the route check needs the kernel
-    if b"no int8 dot kernel on this build" in p.stderr:
-        pytest.skip("this build has no int8 dot kernel (RUNNER_CPU_I8 ignored)")
-    assert json.loads(out.read_bytes())["profile"]["route"]["cpu_act"] == "int8"
-    plain = {k: v for k, v in os.environ.items() if not k.startswith("RUNNER_CPU_I8")}
+    if no_kernel in p.stderr:
+        pytest.skip(f"this build has no int8 kernel ({sw} ignored)")
+    assert json.loads(out.read_bytes())["profile"]["route"]["cpu_act"] == want_act
     v = _verify_in(runner_bin, out, ROOT, "-m", str(base), env=plain)
     assert v.returncode == 3 and "did not take the recorded route" in v.stderr and \
-        "cpu_act=int8" in v.stderr and "cpu_act=f32" in v.stderr, v.stderr
+        f"cpu_act={want_act}" in v.stderr and "cpu_act=f32" in v.stderr, v.stderr
     v = _verify_in(runner_bin, out, ROOT, "-m", str(base), env=env)
     assert v.returncode == 0 and '"route":"matched"' in v.stdout, v.stdout + v.stderr

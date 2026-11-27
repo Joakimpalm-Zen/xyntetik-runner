@@ -15,6 +15,7 @@ gemma3's layout and a Q8_0 file.
 import json
 import os
 import pathlib
+import platform
 import subprocess
 import sys
 import urllib.request
@@ -55,7 +56,9 @@ def _exe():
 
 
 def _env(fuse, i8):
-    env = dict(os.environ, RUNNER_CPU_I8="1" if i8 else "0")
+    sw = "RUNNER_CPU_I8_PREFILL" if platform.machine().lower() in ("arm64", "aarch64") else "RUNNER_CPU_I8K"
+    env = {k: v for k, v in os.environ.items() if not k.startswith("RUNNER_CPU_I8")}
+    env[sw] = "1" if i8 else "0"
     if fuse:
         env.pop("RUNNER_MV_FUSE", None)
     else:

@@ -3327,7 +3327,7 @@ bool plat_running_image_id(char *out, size_t cap) {
 // arithmetic. Every other one a run starts with counts as a switch that may:
 // a training record names it, and it is part of a row's route identity. No
 // list of the switches that move bytes is known to be complete for every
-// model (RUNNER_CPU_I8 and RUNNER_CPU_I8_PREFILL move a default build's), so
+// model (RUNNER_CPU_I8_PREFILL and RUNNER_CPU_I8K move a default build's), so
 // the environment is read whole, as route_tuning reads it, and only these
 // are let through.
 // Here, in the platform layer, because every binary that links the model or

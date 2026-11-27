@@ -13,7 +13,7 @@
 "cpu-same-binary"
 "gpu-within-tolerance"
 "environment"
-"RUNNER_CPU_I8"
+"RUNNER_CPU_I8K"
 "(set)"
 "model_overrides"
 "rope_base"

@@ -11,6 +11,7 @@ import json
 import math
 import os
 import pathlib
+import platform
 import shutil
 import struct
 import subprocess
@@ -349,20 +350,22 @@ def test_replay_takes_the_model_overrides_from_the_record_alone(runner_bin, fx, 
 
 
 def test_replay_takes_the_environment_from_the_record_alone(runner_bin, fx, tmp_path):
-    """The P2: RUNNER_CPU_I8=1 changes a default build's adapter, and a same-binary replay verified only when the
-    replayer happened to set it too. Now the record names it, and a replay whose RUNNER_ switches differ from the
-    record's is refused before training, whichever side has one."""
-    rec, sha = _trained(runner_bin, fx, tmp_path, "i8", env=_clean_env(RUNNER_CPU_I8="1"))
+    """The P2: a byte-moving switch (RUNNER_CPU_I8_PREFILL on arm64, RUNNER_CPU_I8K on AVX2) changes a default
+    build's bytes, and a same-binary replay verified only when the replayer happened to set it too. Now the record
+    names it, and a replay whose RUNNER_ switches differ from the record's is refused before training, whichever
+    side has one."""
+    sw = "RUNNER_CPU_I8_PREFILL" if platform.machine().lower() in ("arm64", "aarch64") else "RUNNER_CPU_I8K"
+    rec, sha = _trained(runner_bin, fx, tmp_path, "i8", env=_clean_env(**{sw: "1"}))
     flags = ["attest", "replay", rec, "--allow-same-binary", "-t", "1"]
     missing = _run_env(runner_bin, flags, _clean_env())
     assert missing.returncode == 2 and "MISMATCH environment" in missing.stdout, missing.stdout + missing.stderr
     assert "train:" not in missing.stderr, "refused only after training"
-    same = _run_env(runner_bin, flags, _clean_env(RUNNER_CPU_I8="1"))
+    same = _run_env(runner_bin, flags, _clean_env(**{sw: "1"}))
     assert same.returncode == 0 and f"VERIFIED i8.gguf sha256 {sha}" in same.stdout, same.stdout + same.stderr
     other_dir = tmp_path / "plain"
     other_dir.mkdir()
     plain, _ = _trained(runner_bin, fx, other_dir, "plain")
-    added = _run_env(runner_bin, ["attest", "replay", plain, "-t", "1", *_same_binary(plain)], _clean_env(RUNNER_CPU_I8="1"))
+    added = _run_env(runner_bin, ["attest", "replay", plain, "-t", "1", *_same_binary(plain)], _clean_env(**{sw: "1"}))
     assert added.returncode == 2 and "MISMATCH environment" in added.stdout, added.stdout + added.stderr
 
 

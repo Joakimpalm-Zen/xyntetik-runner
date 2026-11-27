@@ -184,21 +184,6 @@ int main(int argc, char **argv) {
         model_free(&om);
     }
 
-    // --- load-time prefetch decision -------------------------------------
-    // Cold-start page-in of a big model arrives as ~16 KB synchronous faults
-    // (1.1M+ of them for the 120B); a WILLNEED sweep batches them. The
-    // decision is pure arithmetic so it is gated here, hand-computed.
-    ck(model_load_prefetch_wanted(10, 100, false, false),
-       "a model that fits gets the prefetch hint");
-    ck(!model_load_prefetch_wanted(100, 10, false, false),
-       "an oversubscribed model is never swept — that is thrash, not warmth");
-    ck(!model_load_prefetch_wanted(10, 100, true, false),
-       "mlock already forces residency; a hint on top is noise");
-    ck(!model_load_prefetch_wanted(10, 100, false, true),
-       "the expert-prefetch path owns paging on oversubscribed MoE");
-    ck(!model_load_prefetch_wanted(10, 0, false, false),
-       "unknown available RAM means no guess");
-
     // --- prompt-batch default --------------------------------------------
     // The old default was sized from FREE RAM at launch, which made the
     // sampled tokens of a reassociating prefill depend on what else the

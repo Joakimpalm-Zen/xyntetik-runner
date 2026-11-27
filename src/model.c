@@ -1711,16 +1711,6 @@ uint64_t model_hot_set_bytes(const model_t *m) {
 // degree for a sparse MoE: gemma-4-26B-A4B was measured at 8+ tok/s on a 16 GB
 // Mac while being told every token would page, because only 8 of its 128
 // experts per layer are ever touched.
-bool model_load_prefetch_wanted(uint64_t mapped, uint64_t available,
-                                bool locked, bool moe_prefetch) {
-    if (locked) return false;        // mlock already forces residency
-    if (moe_prefetch) return false;  // oversubscribed MoE: expert path owns paging
-    if (!mapped || !available) return false;   // unknown figures: no guess
-    // Sweeping a mapping larger than RAM is self-defeating: the head of the
-    // readahead evicts its own tail. Only a model that FITS gets the hint.
-    return mapped <= available;
-}
-
 // Whether a request's page-in count says the weights left RAM. On POSIX the
 // counter is hard faults only; on Windows it counts soft faults too, and a
 // request there shows a few hundred of them at full speed with the model
@@ -3038,33 +3028,6 @@ bool model_load(model_t *m, const char *path, const model_params *p) {
     // header-only opens, device-uploaded weights, oversubscribed/cgroup-tight
     // loads, and repeat --parallel slots. Opt out with RUNNER_POPULATE=0.
     (void)model_populate_weights(m, locked);
-    // Whole-mapping WILLNEED sweep for a model that FITS — OPT-IN
-    // (RUNNER_PREFETCH=1), and the measurement that made it opt-in is the
-    // point: on the 128 GB Apple Silicon Mac the sweep made the cold 63 GB gpt-oss-120b load
-    // 60% SLOWER (11.5 s demand-faulted vs 18.4 s swept, interleaved,
-    // evicted between arms) — macOS demand paging already outruns its own
-    // WILLNEED readahead, the same shape as the 2026-08-31 mmap-vs-pread
-    // result. Linux batches faults under WILLNEED and Windows has
-    // PrefetchVirtualMemory, so the lever stays for those platforms to
-    // measure on their own boxes; a default is a measurement, not a hope.
-    {
-        const char *e = getenv("RUNNER_PREFETCH");
-        bool opt_in = e && *e && strcmp(e, "0") && strcmp(e, "off");
-        if (opt_in && plat_willneed_available() &&
-            model_load_prefetch_wanted(gguf_mapped_size(&m->gf),
-                                       plat_ram_available_bytes(),
-                                       locked, m->moe_prefetch)) {
-            uint32_t np = gguf_map_count(&m->gf);
-            for (uint32_t i = 0; i < np; i++) {
-                size_t sz;
-                void *mp = gguf_map_part(&m->gf, i, &sz);
-                if (mp && sz) plat_willneed(mp, sz);
-            }
-            fprintf(stderr, "prefetch: hinted %.1f GB of weights to the OS "
-                    "(RUNNER_PREFETCH opt-in)\n",
-                    (double)gguf_mapped_size(&m->gf) / 1e9);
-        }
-    }
     return true;
 }
 
@@ -7752,7 +7715,7 @@ static void mv_rows(void *ctx, int i0, int i1) {
         // each weight block once and keeps every column's arithmetic the
         // single-column dot's, so y is byte-equal to the loop it replaces
         // while a codebook quant pays its decode once per tile, not per row.
-        if (!j->xq && j->n_batch == 1) {
+        if (j->n_batch == 1) {
             // one column: the single-column kernel itself. The multi-column
             // twins keep their accumulators in runtime-indexed vector arrays,
             // which no compiler holds in registers, and a lone row paid for
@@ -7783,28 +7746,15 @@ static void mv_rows(void *ctx, int i0, int i1) {
             }
             return;
         }
-        if (!j->xq) {
-            const float *xs[VEC_DOT_MULTI_MAX];
-            float v[VEC_DOT_MULTI_MAX];
-            for (int c = 0; c < j->n_batch; c++) xs[c] = j->x + (size_t)c * j->x_stride;
-            for (int r = i0; r < i1; r++) {
-                const void *row = base + (size_t)r * j->rsz;
-                float b0 = j->bias ? j->bias[r] : 0.0f;
-                vec_dot_multi(type, row, xs, j->n_batch, n_in, v);
-                for (int c = 0; c < j->n_batch; c++)
-                    j->y[(size_t)c * j->y_stride + r] = v[c] * sc + b0;
-            }
-            return;
-        }
+        const float *xs[VEC_DOT_MULTI_MAX];
+        float v[VEC_DOT_MULTI_MAX];
+        for (int c = 0; c < j->n_batch; c++) xs[c] = j->x + (size_t)c * j->x_stride;
         for (int r = i0; r < i1; r++) {
             const void *row = base + (size_t)r * j->rsz;
             float b0 = j->bias ? j->bias[r] : 0.0f;
-            for (int c = 0; c < j->n_batch; c++) {
-                float v = vec_dot_i8(type, row,
-                                     (const uint8_t *)j->xq + (size_t)c * j->xq_stride,
-                                     n_in);
-                j->y[(size_t)c * j->y_stride + r] = v * sc + b0;
-            }
+            vec_dot_multi(type, row, xs, j->n_batch, n_in, v);
+            for (int c = 0; c < j->n_batch; c++)
+                j->y[(size_t)c * j->y_stride + r] = v[c] * sc + b0;
         }
         return;
     }
@@ -7966,24 +7916,23 @@ static void mv_rows(void *ctx, int i0, int i1) {
 }
 
 // Y[b] = W X[b] (+ bias) for b in [0, n_batch)
-//
-// Single-column (decode) matvecs on a promoted quant type take the fused int8
-// route: the activation column is quantized ONCE here and every row dots
-// against it in int8 (quants.c "fused int8 dot"). The quantization is O(n_in)
-// against O(n_in*n_out) of matvec work, so it is only worth it once the output
-// is wide enough to amortize — a 1-row projection would pay for a whole
-// activation quant to save one dot.
-enum { I8_MIN_ROWS = 32 };
 
 // A CPU-only prompt's prefill on this thread (forward_batch_run, from
 // model_t.prefill_pass): every product of it takes the batch route, the int8
 // one included when RUNNER_CPU_I8_PREFILL pins it on (R3.60).
 static _Thread_local bool t_mv_prefill;
+// A speculative verify round (model_forward_verify) on this thread: its rows
+// are the walk's tokens only if each is the solo step's bits, and a batch of
+// MV_SMALL_BATCH or more columns takes the dequantized f32 tile, whose sums
+// run in another order. So the round's projections take the per-column route
+// (every column the solo step's dot, each weight block decoded once for all
+// of them), VEC_DOT_MULTI_MAX columns a pass.
+static _Thread_local bool t_mv_exact;
 
-static bool mv_takes_i8(const gguf_tensor *w, int n_in, int n_out, int n_batch) {
-    if (n_batch >= MV_SMALL_BATCH || t_mv_prefill)
-        return i8_prefill_enabled() && i8_tile_ok(w->type, n_in);
-    return n_out >= I8_MIN_ROWS && i8_dot_enabled() && i8_dot_ok(w->type, n_in);
+static bool mv_takes_i8(const gguf_tensor *w, int n_in, int n_batch) {
+    if (t_mv_exact) return false;
+    return (n_batch >= MV_SMALL_BATCH || t_mv_prefill) &&
+           i8_prefill_enabled() && i8_tile_ok(w->type, n_in);
 }
 
 // The int8 activation columns: the quantization depends on the activations
@@ -8012,15 +7961,6 @@ static const float *mv_xsums(const gguf_tensor *w, const float *x, int n_in,
     return xs;
 }
 
-// A speculative verify round (model_forward_verify) on this thread: its rows
-// are the walk's tokens only if each is the solo step's bits, and a batch of
-// MV_SMALL_BATCH or more columns takes the dequantized f32 tile, whose sums
-// run in another order. So the round's projections take the per-column route
-// (every column the solo step's dot, each weight block decoded once for all
-// of them), VEC_DOT_MULTI_MAX columns a pass. With the int8 activations
-// pinned on, the solo step's route is the int8 dot, which the per-column
-// route takes below MV_SMALL_BATCH only (mv_takes_i8).
-static _Thread_local bool t_mv_exact;
 // R8.19 device mode on this thread (a training step or its eval with
 // model_t.train_dev): every product below goes to the training context's
 // batch-invariant product, a tensor it declines (no kernel, scaled, over the
@@ -8029,9 +7969,7 @@ static _Thread_local bool t_mv_exact;
 // rounds), the recompute (the whole window) and the head (16-position
 // chunks) see the same values.
 static _Thread_local model_t *t_mv_dev;
-static int mv_exact_cols(void) {
-    return i8_dot_enabled() ? MV_SMALL_BATCH - 1 : VEC_DOT_MULTI_MAX;
-}
+static int mv_exact_cols(void) { return VEC_DOT_MULTI_MAX; }
 
 static void matvec_b(tpool *tp, float *y, int y_stride, const gguf_tensor *w,
                      const float *x, int x_stride, int n_in, int n_out,
@@ -8058,7 +7996,7 @@ static void matvec_b(tpool *tp, float *y, int y_stride, const gguf_tensor *w,
         (xk = malloc(i8k_act_size(n_in)))) {
         i8k_quant_act(x, xk, n_in);
         j.xk = xk;
-    } else if (mv_takes_i8(w, n_in, n_out, n_batch) &&
+    } else if (mv_takes_i8(w, n_in, n_batch) &&
         (xq = mv_quant_act(x, x_stride, n_in, n_batch))) {
         j.xq = xq;
         j.xq_stride = i8_act_size(n_in);
@@ -8185,7 +8123,7 @@ static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
             }
             j.xk = xk;
         }
-        if (!j.xk && mv_takes_i8(p[s].w, n_in, p[s].n_out, n_batch)) {
+        if (!j.xk && mv_takes_i8(p[s].w, n_in, n_batch)) {
             if (!xq_tried) {
                 xq = mv_quant_act(x, x_stride, n_in, n_batch);
                 xq_tried = true;
@@ -8239,7 +8177,7 @@ static void matvec_b_parts_x(tpool *tp, const mv_part *p, const float *const *xs
         mv_job j = { p[s].w, xs[s], p[s].bias, p[s].y, n_in, 1, n_in,
                      p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0, NULL,
                      false, NULL, t_mv_prefill };
-        if (mv_takes_i8(p[s].w, n_in, p[s].n_out, 1)) {
+        if (mv_takes_i8(p[s].w, n_in, 1)) {
             xq[s] = mv_quant_act(xs[s], n_in, n_in, 1);
             if (xq[s]) { j.xq = xq[s]; j.xq_stride = i8_act_size(n_in); }
         }
@@ -8723,7 +8661,7 @@ extern char **environ;
 
 // Every RUNNER_* variable this process was started with, comma-joined: the
 // switches that select or pin a route (RUNNER_CUDA_TC=0, RUNNER_METAL_MM=0,
-// RUNNER_CPU_I8=1, ...) are all spelled that way, so reading the environment
+// RUNNER_CPU_I8K=1, ...) are all spelled that way, so reading the environment
 // is complete by construction where a list kept here would not be. A value
 // whose name says it might be a credential is reported as set, not shown.
 static void route_tuning(char *out, size_t cap) {
@@ -8814,15 +8752,14 @@ static void route_collect(const model_t *m, route_facts *r) {
         // RUNNER_MOE_HOT: the expert slots the device holds in host layers
         r->moe_hot = m->gpu && m->moe_hot_slot ? m->moe_hot_total : 0;
         r->detail = m->gpu ? gpu_route_detail(m) : "";
-        // the activation the CPU's matvecs dot against: f32, or int8 under the
-        // tolerance-gated RUNNER_CPU_I8 (a device path names its own in detail)
+        // the activation the CPU's matvecs dot against: f32 (a device path
+        // names its own in detail)
         // RUNNER_CPU_I8_PREFILL adds "+int8-prefill": batches of 8 or more
-        // columns run the int8 tiles whatever the decode route is
+        // columns run the int8 tiles
         // RUNNER_CPU_I8K adds "+int8k-decode": one-column Q4_K and Q6_K matvecs
-        // take the K-quant int8 dot whatever the route above is
+        // take the K-quant int8 dot
         snprintf(r->act, sizeof r->act, "%s%s",
-                 i8_prefill_enabled() ? (i8_dot_enabled() ? "int8+int8-prefill" : "f32+int8-prefill")
-                                      : i8_dot_enabled() ? "int8" : "f32",
+                 i8_prefill_enabled() ? "f32+int8-prefill" : "f32",
                  i8k_dot_enabled() ? "+int8k-decode" : "");
     }
     r->kv = model_kv_name(m);

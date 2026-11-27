@@ -217,25 +217,20 @@ static int bits_equal(float a, float b) {
     return ua == ub || (isnan(a) && isnan(b));
 }
 
-// RUNNER_CPU_I8 is honoured only where an int8 kernel exists: the route line
-// and receipts read i8_dot_enabled() to name the route, and a build without
-// the kernel (this canonical build on arm64, or the 1.11.0 macOS binary built
-// for generic armv8-a) runs every matvec f32. Enabled implies a kernel, on
-// every build, from the environment and when forced.
+// RUNNER_CPU_I8_PREFILL is honoured only where the arm64 dot-product kernel
+// exists (not on a RUNNER_CANON_KERNELS build or on x86): the route line and
+// receipts read i8_prefill_enabled() to name the route, so a build without the
+// kernel must decline it with a notice rather than claiming a route that never
+// ran.
 static int check_i8_flag_needs_a_kernel(void) {
-    bool kernel = i8_dot_ok(T_Q8_0, 32);
-    setenv_compat("RUNNER_CPU_I8", "1");
-    bool env_on = i8_dot_enabled();
-    i8_dot_force(1);
-    bool forced_on = i8_dot_enabled();
-    i8_dot_force(-1);
-    if (env_on != kernel || forced_on != kernel) {
-        fprintf(stderr, "FAIL: RUNNER_CPU_I8 enabled=%d forced=%d on a build where an "
-                "int8 kernel %s\n", env_on, forced_on, kernel ? "exists" : "does not exist");
+    setenv_compat("RUNNER_CPU_I8_PREFILL", "1");
+    bool env_on = i8_prefill_enabled();
+    if (env_on) {
+        fprintf(stderr, "FAIL: RUNNER_CPU_I8_PREFILL enabled=%d on a canonical build "
+                "where the NEON int8 prefill kernel is absent\n", env_on);
         return 1;
     }
-    printf("int8 flag: %s (kernel %s)\n", env_on ? "on" : "off, with a notice",
-           kernel ? "present" : "absent");
+    printf("int8 prefill flag: off, with a notice (canonical build)\n");
     return 0;
 }
 

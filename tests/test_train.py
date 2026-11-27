@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import pathlib
+import platform
 import shutil
 import subprocess
 import sys
@@ -916,14 +917,15 @@ def test_a_model_override_that_moves_the_bytes_is_in_the_record(runner_bin, base
 
 
 def test_a_runner_switch_in_the_environment_is_recorded_and_not_exact(runner_bin, base, tmp_path):
-    """RUNNER_CPU_I8=1 (and RUNNER_CPU_I8_PREFILL=1) change a default build's adapter on test-q8.gguf. No list of
+    """RUNNER_CPU_I8_PREFILL=1 (arm64) and RUNNER_CPU_I8K=1 (AVX2) move a default build's bytes. No list of
     switches is known to be complete for every model, so every RUNNER_ variable outside a named inert set is in
     the record, and a run with one set is never cpu-t3-exact. RUNNER_TRAIN_ROWS is in the inert set: every width
     trains the same bytes (test_batched_taped_forward_is_the_solo_bytes)."""
-    rec, _ = _train_record_with(runner_bin, base, tmp_path, "i8", env={"RUNNER_CPU_I8": "1", "RUNNER_TRAIN_ROWS": "1"})
-    assert rec.get("environment") == {"RUNNER_CPU_I8": "1"}, rec.get("environment")
+    sw = "RUNNER_CPU_I8_PREFILL" if platform.machine().lower() in ("arm64", "aarch64") else "RUNNER_CPU_I8K"
+    rec, _ = _train_record_with(runner_bin, base, tmp_path, "i8", env={sw: "1", "RUNNER_TRAIN_ROWS": "1"})
+    assert rec.get("environment") == {sw: "1"}, rec.get("environment")
     assert rec["determinism"] == "cpu-same-binary", rec["determinism"]
-    assert any("RUNNER_CPU_I8" in r for r in rec.get("determinism_reasons", [])), rec.get("determinism_reasons")
+    assert any(sw in r for r in rec.get("determinism_reasons", [])), rec.get("determinism_reasons")
     # inert: RUNNER_TRAIN_ROWS, and the variables GitHub Actions' runner sets on every job (the binary reads none)
     inert, _ = _train_record_with(runner_bin, base, tmp_path, "rows",
                                   env={"RUNNER_TRAIN_ROWS": "1", "RUNNER_OS": "Linux", "RUNNER_TEMP": "/tmp",

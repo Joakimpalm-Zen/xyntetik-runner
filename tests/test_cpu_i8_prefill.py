@@ -47,7 +47,7 @@ def model(tmp_path_factory):
 
 def _score(runner_bin, model, i8p, chunked):
     env = {k: v for k, v in os.environ.items()
-           if k not in ("RUNNER_CPU_I8", "RUNNER_CPU_I8_PREFILL", "RUNNER_SCORE_CHUNKED")}
+           if k not in ("RUNNER_CPU_I8K", "RUNNER_CPU_I8_PREFILL", "RUNNER_SCORE_CHUNKED")}
     if i8p:
         env["RUNNER_CPU_I8_PREFILL"] = "1"
     if chunked:

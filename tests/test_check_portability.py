@@ -26,12 +26,12 @@ def _hits(tmp_path, src):
 
 def test_a_bare_setenv_fails(tmp_path):
     # the #553 shape
-    assert _hits(tmp_path, 'int main(void) { setenv("RUNNER_CPU_I8", "1", 1); return 0; }\n') == ["setenv"]
+    assert _hits(tmp_path, 'int main(void) { setenv("RUNNER_CPU_I8K", "1", 1); return 0; }\n') == ["setenv"]
 
 
 @pytest.mark.parametrize("src", [
     # the compat form: plat_setenv, or a macro naming the POSIX spelling
-    'int main(void) { plat_setenv("RUNNER_CPU_I8", "1"); return 0; }\n',
+    'int main(void) { plat_setenv("RUNNER_CPU_I8K", "1"); return 0; }\n',
     '#ifdef _WIN32\n#define setenv_compat(k, v) _putenv_s(k, v)\n#else\n'
     '#define setenv_compat(k, v) setenv(k, v, 1)\n#endif\n',
     # branches Windows never compiles

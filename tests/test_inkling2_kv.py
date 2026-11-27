@@ -338,7 +338,7 @@ def test_route_reports_real_layers_paths_cpu_act_and_debug_route(runner_bin, tin
 
     # 3. Generic RUNNER_CPU_I8* must NOT pollute Inkling 2's cpu_act
     r_i8 = run_env(["--score", "1", "-p", PROMPT],
-                   {"RUNNER_CPU_I8": "1", "RUNNER_CPU_I8_PREFILL": "1", "RUNNER_CPU_I8K": "1"})
+                   {"RUNNER_CPU_I8_PREFILL": "1", "RUNNER_CPU_I8K": "1"})
     assert r_i8.returncode == 0, r_i8.stderr[-2000:]
     assert _score_route(r_i8.stderr)["cpu_act"] == "f32", _score_route(r_i8.stderr)
     assert json.loads(r_i8.stdout)["score_route"]["cpu_act"] == "f32"
