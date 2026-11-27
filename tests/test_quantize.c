@@ -708,6 +708,61 @@ static void check_q4k_near_ties(void) {
            "(reference and imatrix)\n");
 }
 
+// R4.57: the scale search must round every input to its nearest level, even
+// far outside the block's range. Each 32-value block here holds four large
+// negative inputs with no importance weight beside 28 tiny weighted positives.
+// Where a candidate fit to the positives wins (block 2), v = iscale * (x - min)
+// for the four lies far outside nearest_int's range (|v| > 2^22), where its
+// rounding trick returns a wrapped value, not a rounding. Weighted Q5_1 writes
+// the search's codes, so each of the four must take the code nearest its value
+// in the block's own d and m (within one step, for their f16 rounding).
+static void check_q5_1_out_of_range_codes(void) {
+    float x[256], qw[256];
+    for (int g = 0; g < 8; g++)
+        for (int p = 0; p < 32; p++) {
+            int i = 32 * g + p;
+            x[i] = p < 4 ? -(0.5f + 0.1f * (float)p + 0.01f * (float)g)
+                         : 1e-6f * (0.2f + 0.03f * (float)p + 0.01f * (float)g);
+            qw[i] = p < 4 ? 0.0f : 1.0f + (float)(p % 5);
+        }
+    const char *in = "q_oor_in.gguf", *out = "q_oor_out.gguf", *dat = "q_oor.dat";
+    const char *tn = "blk.0.ffn_down.weight";
+    tdesc t = { tn, {256, 1}, 2, x, 256, T_F32 };
+    write_gguf(in, &t, 1, 0);
+    write_imatrix_dat(dat, tn, qw, 256, 1.0f);
+    assert(quantize_set_imatrix(dat));
+    assert(quantize_gguf(in, out, T_Q5_1, NULL) == 0);
+    assert(quantize_set_imatrix(NULL));
+    size_t n;
+    unsigned char *q = slurp_tensor(out, tn, &n);
+    assert(n == 8 * 24);
+    int bad = 0;
+    for (int g = 0; g < 8; g++) {
+        const unsigned char *b = q + 24 * g;   // f16 d, f16 m, qh[4], qs[16]
+        f16_t dh, mh;
+        uint32_t qh;
+        memcpy(&dh, b, 2);
+        memcpy(&mh, b + 2, 2);
+        memcpy(&qh, b + 4, 4);
+        float d = f16_to_f32(dh), m = f16_to_f32(mh);
+        assert(d > 0.0f);
+        for (int p = 0; p < 4; p++) {
+            int code = (b[8 + p] & 15) | (int)((qh >> p) & 1) << 4;
+            float v = (x[32 * g + p] - m) / d;
+            int nearest = v <= 0.0f ? 0 : v >= 31.0f ? 31 : (int)lrintf(v);
+            if (abs(code - nearest) > 1) {
+                fprintf(stderr, "FAIL: weighted q5_1 block %d input %d (%g, no weight) took code %d; "
+                        "its nearest is %d\n", g, p, (double)x[32 * g + p], code, nearest);
+                bad++;
+            }
+        }
+    }
+    free(q);
+    remove(in); remove(out); remove(dat);
+    assert(bad == 0);
+    printf("ok: weighted q5_1 rounds inputs far outside the search's range to their nearest code\n");
+}
+
 // A row that divides by 32 but not 256 cannot take a 256-block K-quant; the
 // quantizer writes the 32-block type of the nearest bit budget. Each such
 // fallback must be a type this file writes: from v0.5.7 to 1.12.0 a Q4_K
@@ -1961,6 +2016,7 @@ int main(void) {
     check_ggml_golden();
     check_ggml_weighted_golden();
     check_q4k_near_ties();
+    check_q5_1_out_of_range_codes();
     check_width_fallback();
     check_publish_pair_recovery_and_locks();
 
