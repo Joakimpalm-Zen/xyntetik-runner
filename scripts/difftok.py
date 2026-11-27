@@ -69,9 +69,10 @@ def load_corpus(path):
     return out
 
 
-def runner_ids(exe, gguf, corpus_path, n):
+def runner_ids(exe, gguf, corpus_path, n, no_special=False):
+    cmd = [exe, "--no-special", gguf, corpus_path] if no_special else [exe, gguf, corpus_path]
     try:
-        r = subprocess.run([exe, gguf, corpus_path], capture_output=True, text=True)
+        r = subprocess.run(cmd, capture_output=True, text=True)
     except OSError as exc:
         unavailable(f"the harness {exe} could not be started", exc)
     if r.returncode != 0:
@@ -84,6 +85,97 @@ def runner_ids(exe, gguf, corpus_path, n):
     if len(lines) != n:
         raise SystemExit(f"harness emitted {len(lines)} lines, corpus has {n}")
     return [[int(x) for x in ln.split()] for ln in lines]
+
+
+def runner_decode_all(exe, gguf):
+    try:
+        r = subprocess.run([exe, "--decode-all", gguf], capture_output=True, text=True)
+    except OSError as exc:
+        unavailable(f"the harness {exe} could not be started", exc)
+    if r.returncode != 0:
+        sys.stderr.write(r.stderr)
+        sys.stderr.write(f"difftok --decode-all failed ({r.returncode})\n")
+        raise SystemExit(EXIT_HARNESS_FAILED)
+    lines = r.stdout.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return [bytes.fromhex(ln) if ln else b"" for ln in lines]
+
+
+UFFFD_PROBES = ["\ufffd", " \ufffd", "\ufffd\ufffd", "\ufffds"]
+
+
+def run_admission_type_and_decode_checks(exe, gguf, ref, revision, tok, show=20):
+    """R4.50.13 Gate (A): headers-only vocab/type check against publisher
+    tokenizer.json, U+FFFD encode probes (both parse_special=true and
+    --no-special), and tok_decode parity against skip_special_tokens=True."""
+    import importlib.util
+    cvt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check-vocab-types.py")
+    spec = importlib.util.spec_from_file_location("check_vocab_types", cvt_path)
+    cvt = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cvt)
+
+    kv = cvt.read_local_gguf_kv(gguf)
+    tj = cvt.load_publisher_tokenizer_json(ref, revision)
+    res = cvt.check_vocab_types(kv, tj)
+    print(cvt.format_report(res, show=show))
+    failed = bool(res["failures"])
+
+    # 1. U+FFFD encode probes on both parse_special=true and --no-special
+    fd, pfile = tempfile.mkstemp(suffix=".jsonl", prefix="difftok-ufffd-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            for s in UFFFD_PROBES:
+                f.write(json.dumps(s, ensure_ascii=False) + "\n")
+        raw_ids = runner_ids(exe, gguf, pfile, len(UFFFD_PROBES), no_special=False)
+        txt_ids = runner_ids(exe, gguf, pfile, len(UFFFD_PROBES), no_special=True)
+    finally:
+        os.remove(pfile)
+    ref_ids = [tok.encode(s, add_special_tokens=False).ids for s in UFFFD_PROBES]
+    ufffd_diffs = []
+    for mode, got in (("parse_special=true", raw_ids), ("parse_special=false", txt_ids)):
+        for s, g, w in zip(UFFFD_PROBES, got, ref_ids):
+            if g != w:
+                ufffd_diffs.append((mode, s, g, w))
+    if ufffd_diffs:
+        failed = True
+        print(f"FAIL: U+FFFD encode probe: {len(ufffd_diffs)} divergence(s):")
+        for mode, s, g, w in ufffd_diffs[:show]:
+            print(f"  [{mode}] {s!r}: runner={g} ref={w}")
+
+    # 2. Decode parity on plain-vocab and non-special added tokens
+    decoded = runner_decode_all(exe, gguf)
+    added_map = {a["id"]: a for a in tj.get("added_tokens") or []}
+    pub_vocab = tok.get_vocab(with_added_tokens=True)
+    decode_diffs = []
+    for i in sorted(set(pub_vocab.values())):
+        if i >= len(decoded):
+            continue
+        a = added_map.get(i)
+        if a and a.get("special"):
+            continue
+        ref_s = tok.decode([i], skip_special_tokens=True)
+        if not ref_s:
+            continue
+        # Skip partial UTF-8 lone-byte pieces (not genuine U+FFFD)
+        if "\ufffd" in ref_s and tok.encode(ref_s, add_special_tokens=False).ids != [i]:
+            continue
+        got_b = decoded[i]
+        if len(got_b) == 0:
+            # Structural non-normalized added non-special tokens typed CONTROL are already
+            # reported above; fail here on plain vocab or word-like added tokens dropped to 0 bytes.
+            if a and not a.get("normalized") and (
+                (a.get("content", "").startswith("<") and a.get("content", "").endswith(">"))
+                or (a.get("content", "").startswith("[") and a.get("content", "").endswith("]"))
+            ):
+                continue
+            decode_diffs.append((i, ref_s, got_b))
+    if decode_diffs:
+        failed = True
+        print(f"FAIL: tok_decode dropped {len(decode_diffs)} rendered token(s) to 0 bytes:")
+        for i, ref_s, _ in decode_diffs[:show]:
+            print(f"  id={i} ref_decode={ref_s!r} runner_decode=b''")
+    return not failed
 
 
 def corpus_digest(corpus):
@@ -116,7 +208,8 @@ def vocab_corpus(tok):
     " läsa" in LFM2.5-8B's (2026-10-30); over the vocabulary, 654 and 2,557
     entries differed. Added tokens are left out (their text is matched as a
     special before any split), and so is a piece that is not whole UTF-8 on
-    its own (a byte of a longer character decodes to U+FFFD). The harness
+    its own (a byte of a longer character decodes to U+FFFD; a genuine U+FFFD
+    token like OLMo id 5809 round-trips back to [i] and is kept). The harness
     reads each string by its length, so the entry for U+0000 is compared
     too. Returns the strings and a count of each kind left out."""
     added = set(tok.get_added_tokens_decoder())
@@ -126,9 +219,10 @@ def vocab_corpus(tok):
             skipped["added"] += 1
             continue
         s = tok.decode([i], skip_special_tokens=False)
-        kind = "empty" if not s else "partial_utf8" if "\ufffd" in s else None
-        if kind:
-            skipped[kind] += 1
+        if not s:
+            skipped["empty"] += 1
+        elif "\ufffd" in s and tok.encode(s, add_special_tokens=False).ids != [i]:
+            skipped["partial_utf8"] += 1
         else:
             out.append(s)
     return out, skipped
@@ -210,6 +304,8 @@ def main():
     ap.add_argument("--show", type=int, default=20,
                     help="max divergences to print in detail")
     ap.add_argument("--no-build", action="store_true")
+    ap.add_argument("--no-check-types", action="store_true",
+                    help="skip the R4.50.13 token_type, U+FFFD, and tok_decode checks (default on with --ref)")
     args = ap.parse_args()
 
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -314,10 +410,18 @@ def main():
     print(f"\n{len(bad)}/{len(corpus)} strings differ "
           f"({leading_ws} of them begin with whitespace)")
 
+    types_ok = True
+    if tok is not None and not args.capture and not args.no_check_types:
+        types_ok = run_admission_type_and_decode_checks(
+            exe, args.gguf, args.ref, args.ref_revision, tok, show=args.show)
+
     if args.report_only:
         return 0
     if len(bad) != args.expect:
         print(f"FAIL: expected {args.expect}", file=sys.stderr)
+        return 1
+    if not types_ok:
+        print("FAIL: token_type / U+FFFD / decode admission check failed", file=sys.stderr)
         return 1
     print("OK")
     return 0

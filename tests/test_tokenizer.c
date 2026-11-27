@@ -995,6 +995,140 @@ static void test_ignore_merges_follows_the_family(void) {
     remove(path);
 }
 
+// R4.50.13: BPE merge-output CONTROL tokens (excluding bos/eos/unk/eog) are
+// demoted to USER_DEFINED so decode renders them while preserving added-token
+// match-first encoding parity with the publisher's tokenizer.json.
+static void test_r45013_control_merge_repair(void) {
+    // 0:<|endoftext|>(CTRL,bos/eos), 1:<think>(CTRL,not merge), 2:eog_merge(CTRL,eog),
+    // 3..14: single chars p,y,t,h,o,n,i,c,M,a,s,Ġ(U+0120),
+    // 15..23: BPE merges py,pyt,pyth,pytho,python(CTRL->USER_DEFINED),ic,
+    //         Ġpython(NORMAL),Ma..Mathias(CTRL->USER_DEFINED),ĠMathias(NORMAL)
+    static const char *const toks[] = {
+        "<|endoftext|>", "<think>", "ab",
+        "a", "b", "c", "h", "i", "n", "o", "p", "s", "t", "y", "M", "\xC4\xA0",
+        "py", "pyt", "pyth", "pytho", "python", "ic", "\xC4\xA0python",
+        "Ma", "Mat", "Math", "Mathi", "Mathia", "Mathias", "\xC4\xA0Mathias",
+    };
+    enum {
+        ID_EOS = 0, ID_THINK = 1, ID_EOG_MERGE = 2,
+        ID_C = 5, ID_G = 15, ID_PYTHON = 20, ID_IC = 21, ID_GPYTHON = 22,
+        ID_MATHIAS = 28, ID_GMATHIAS = 29,
+        NTOK = (int)(sizeof(toks) / sizeof(*toks))
+    };
+    static const char *const merges[] = {
+        "a b",
+        "p y", "py t", "pyt h", "pyth o", "pytho n",
+        "i c", "\xC4\xA0 python",
+        "M a", "Ma t", "Mat h", "Math i", "Mathi a", "Mathia s", "\xC4\xA0 Mathias",
+    };
+    enum { NMERGES = (int)(sizeof(merges) / sizeof(*merges)) };
+    int32_t ttype[NTOK];
+    for (int i = 0; i < NTOK; i++) ttype[i] = 1;
+    ttype[ID_EOS] = 3;
+    ttype[ID_THINK] = 3;
+    ttype[ID_EOG_MERGE] = 3;
+    ttype[ID_PYTHON] = 3;
+    ttype[ID_MATHIAS] = 3;
+
+    gbuf kv = {0};
+    uint64_t nkv = 0;
+    gkey(&kv, "general.architecture", GGUF_T_STR); gstr(&kv, "llama"); nkv++;
+    gkey(&kv, "tokenizer.ggml.model", GGUF_T_STR); gstr(&kv, "gpt2"); nkv++;
+    gkey(&kv, "tokenizer.ggml.pre", GGUF_T_STR); gstr(&kv, "lfm2"); nkv++;
+    gkey(&kv, "tokenizer.ggml.tokens", GGUF_T_ARR);
+    gu32(&kv, GGUF_T_STR); gu64(&kv, NTOK);
+    for (int i = 0; i < NTOK; i++) gstr(&kv, toks[i]);
+    nkv++;
+    gkey(&kv, "tokenizer.ggml.token_type", GGUF_T_ARR);
+    gu32(&kv, GGUF_T_I32); gu64(&kv, NTOK);
+    for (int i = 0; i < NTOK; i++) gu32(&kv, (uint32_t)ttype[i]);
+    nkv++;
+    gkey(&kv, "tokenizer.ggml.merges", GGUF_T_ARR);
+    gu32(&kv, GGUF_T_STR); gu64(&kv, NMERGES);
+    for (int i = 0; i < NMERGES; i++) gstr(&kv, merges[i]);
+    nkv++;
+    gkey(&kv, "tokenizer.ggml.bos_token_id", GGUF_T_U32); gu32(&kv, ID_EOS); nkv++;
+    gkey(&kv, "tokenizer.ggml.eos_token_id", GGUF_T_U32); gu32(&kv, ID_EOS); nkv++;
+    gkey(&kv, "tokenizer.ggml.eog_token_ids", GGUF_T_ARR);
+    gu32(&kv, GGUF_T_I32); gu64(&kv, 1); gu32(&kv, ID_EOG_MERGE); nkv++;
+
+    gbuf w = {0};
+    gu32(&w, 0x46554747); gu32(&w, 3); gu64(&w, 0); gu64(&w, nkv);
+    gput(&w, kv.b, kv.n);
+    while (w.n % 32) { unsigned char z = 0; gput(&w, &z, 1); }
+    const char *path = "tok-r45013-repair.gguf";
+    FILE *f = fopen(path, "wb");
+    assert(f);
+    assert(fwrite(w.b, 1, w.n, f) == w.n);
+    fclose(f);
+    free(kv.b); free(w.b);
+
+    current = path;
+    gguf_file g;
+    assert(gguf_open(&g, path));
+
+    // 1. Default (repair ON): python and Mathias demoted to USER_DEFINED;
+    //    eos, non-merge <think>, and declared eog_merge stay CONTROL.
+    tok_repair_pin(1);
+    tokenizer t;
+    assert(tokenizer_init(&t, &g));
+    assert(t.n_repaired_ctrl_total == 2);
+    assert(t.n_repaired_ctrl == 2);
+    assert(t.repaired_ctrl_ids[0] == ID_PYTHON);
+    assert(t.repaired_ctrl_ids[1] == ID_MATHIAS);
+    assert(tok_is_control(&t, ID_EOS));
+    assert(tok_is_control(&t, ID_THINK));
+    assert(tok_is_control(&t, ID_EOG_MERGE));
+    assert(!tok_is_control(&t, ID_PYTHON) && tok_is_special(&t, ID_PYTHON));
+    assert(!tok_is_control(&t, ID_MATHIAS) && tok_is_special(&t, ID_MATHIAS));
+
+    char buf[256];
+    int dn = tok_decode(&t, ID_PYTHON, buf, sizeof buf);
+    assert(dn == 6 && memcmp(buf, "python", 6) == 0);
+    dn = tok_decode(&t, ID_MATHIAS, buf, sizeof buf);
+    assert(dn == 7 && memcmp(buf, "Mathias", 7) == 0);
+    assert(tok_decode(&t, ID_THINK, buf, sizeof buf) == 0);
+    assert(tok_decode(&t, ID_EOG_MERGE, buf, sizeof buf) == 0);
+
+    // Encode parity against publisher LiquidAI/LFM2.5-350M@9e6c6ccf
+    int32_t ids[16];
+    assert(tok_encode(&t, "python", ids, 16, false, true) == 1 && ids[0] == ID_PYTHON);
+    assert(tok_encode(&t, " python", ids, 16, false, true) == 2 && ids[0] == ID_G && ids[1] == ID_PYTHON);
+    assert(tok_encode(&t, "pythonic", ids, 16, false, true) == 2 && ids[0] == ID_PYTHON && ids[1] == ID_IC);
+    assert(tok_encode(&t, "cpython", ids, 16, false, true) == 2 && ids[0] == ID_C && ids[1] == ID_PYTHON);
+    assert(tok_encode(&t, "Mathias", ids, 16, false, true) == 1 && ids[0] == ID_MATHIAS);
+    assert(tok_encode(&t, " Mathias", ids, 16, false, true) == 2 && ids[0] == ID_G && ids[1] == ID_MATHIAS);
+    (void)ID_GPYTHON; (void)ID_GMATHIAS;
+
+    char line[256];
+    tok_format_repair_line(&t, line, sizeof line);
+    assert(strstr(line, "20 \"python\"") != NULL);
+    assert(strstr(line, "28 \"Mathias\"") != NULL);
+    assert(strstr(line, "RUNNER_TOK_REPAIR=0") != NULL);
+
+    char rj[256] = "{\"backend\":\"cpu\"}";
+    tok_route_append(rj, sizeof rj, &t);
+    assert(strcmp(rj, "{\"backend\":\"cpu\",\"tok_repair\":[20,28]}") == 0);
+    tokenizer_free(&t);
+
+    // 2. Pinned OFF (opt-out / pre-fix --verify replay): stays CONTROL
+    tok_repair_pin(0);
+    assert(tokenizer_init(&t, &g));
+    assert(t.n_repaired_ctrl_total == 0);
+    assert(tok_is_control(&t, ID_PYTHON));
+    assert(tok_is_control(&t, ID_MATHIAS));
+    assert(tok_decode(&t, ID_PYTHON, buf, sizeof buf) == 0);
+    assert(tok_decode(&t, ID_MATHIAS, buf, sizeof buf) == 0);
+    strcpy(rj, "{\"backend\":\"cpu\"}");
+    tok_route_append(rj, sizeof rj, &t);
+    assert(strcmp(rj, "{\"backend\":\"cpu\"}") == 0);
+    tokenizer_free(&t);
+
+    tok_repair_pin(-1);
+    gguf_close(&g);
+    remove(path);
+}
+
 int main(void) {
     test_special_matching_across_first_bytes();
     test_stops_follow_type_and_declaration();
@@ -1047,6 +1181,7 @@ int main(void) {
     test_qwen2_trained_rules();
 
     run_bpe_spm_fixture("tests/fixtures/vocab-bpe-spm-gemma4.gguf");
+    test_r45013_control_merge_repair();
 
     puts("tokenizer tests ok");
     return 0;

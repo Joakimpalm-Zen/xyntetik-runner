@@ -99,28 +99,59 @@ static long unjson(const char *src, char *dst, size_t cap) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 3) {
-        fprintf(stderr, "usage: %s <model.gguf> <corpus.txt>\n", argv[0]);
+    bool parse_special = true;
+    bool decode_all = false;
+    int argi = 1;
+    while (argi < argc && argv[argi][0] == '-') {
+        if (strcmp(argv[argi], "--no-special") == 0) {
+            parse_special = false;
+            argi++;
+        } else if (strcmp(argv[argi], "--decode-all") == 0) {
+            decode_all = true;
+            argi++;
+        } else {
+            fprintf(stderr, "usage: %s [--no-special] <model.gguf> <corpus.txt>\n"
+                            "       %s --decode-all <model.gguf>\n", argv[0], argv[0]);
+            return 2;
+        }
+    }
+    int need = decode_all ? 1 : 2;
+    if (argc - argi < need) {
+        fprintf(stderr, "usage: %s [--no-special] <model.gguf> <corpus.txt>\n"
+                        "       %s --decode-all <model.gguf>\n", argv[0], argv[0]);
         return 2;
     }
+    const char *gguf_path = argv[argi];
 
     // The tokenizer reads only the metadata, so a header-only open lets the
     // harness run on the first megabytes of a GGUF (a ranged download)
     // rather than the whole file.
     gguf_file g;
-    if (!gguf_open_header(&g, argv[1])) {
-        fprintf(stderr, "difftok: cannot open %s\n", argv[1]);
+    if (!gguf_open_header(&g, gguf_path)) {
+        fprintf(stderr, "difftok: cannot open %s\n", gguf_path);
         return 1;
     }
     tokenizer t;
     if (!tokenizer_init(&t, &g)) {
-        fprintf(stderr, "difftok: cannot init tokenizer from %s\n", argv[1]);
+        fprintf(stderr, "difftok: cannot init tokenizer from %s\n", gguf_path);
         return 1;
     }
 
-    FILE *f = fopen(argv[2], "rb");
+    if (decode_all) {
+        char buf[1024];
+        for (int id = 0; id < t.n_vocab; id++) {
+            int n = tok_decode(&t, id, buf, (int)sizeof(buf));
+            for (int i = 0; i < n; i++) printf("%02x", (unsigned char)buf[i]);
+            printf("\n");
+        }
+        tokenizer_free(&t);
+        gguf_close(&g);
+        return 0;
+    }
+
+    FILE *f = fopen(argv[argi + 1], "rb");
     if (!f) {
-        fprintf(stderr, "difftok: cannot open %s\n", argv[2]);
+        fprintf(stderr, "difftok: cannot open %s\n", argv[argi + 1]);
         return 1;
     }
 
@@ -142,7 +173,7 @@ int main(int argc, char **argv) {
         }
         // by length: a corpus string may hold U+0000
         int n = tok_encode_n(&t, text, (size_t)tn, ids, (int)(sizeof(ids) / sizeof(*ids)),
-                             false, true);
+                             false, parse_special);
         for (int i = 0; i < n; i++) printf("%s%d", i ? " " : "", ids[i]);
         printf("\n");
     }
