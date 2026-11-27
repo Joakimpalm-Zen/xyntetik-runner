@@ -55,7 +55,10 @@ LONG = "unrelated text that shares nothing at all with the context above, " * 4
 # Both bounds come from this test's own CUDA arm, "the fork with nothing in between", on an sm_120 MIG
 # slice on 2026-11-27: a logprob gap of 4.8e-7, and a worst fold word of 6.77e-5 (484 of 2,496 words differed).
 # FOLD_REL_TOL is 8x that word, rounded down.
-# For context: the pin method (a pin of SYS, then SYS + QUESTION) measured 1.89e-6 on the same slice.
+# For context: the pin method (a pin of SYS, then SYS + QUESTION) measured 1.89e-6 on the same slice. This arm reads
+# about 36x that because its cold is one 185-row pass, so both of the fork's one-row passes (rows 161 and 184) differ
+# from it; a pin's cold feeds its last row alone too, so there only row 161 differs. Both are the same one-row host
+# step, outside R3.60's CPU-only contract.
 # No seam reproduces the PLE history defect, so the CPU arm carries that proof. With R4.48.22.1's rebuild undone in a
 # scratch build, the defect moved the CPU fold by 0.963 at worst (704 of 2,496 words; the logprobs by 6.15e-5),
 # about 1,800x over FOLD_REL_TOL.
