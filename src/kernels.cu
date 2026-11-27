@@ -4518,15 +4518,16 @@ IQ_LANE_MVB(k_gemvb_iq3_xxs_x16, iq3xxs_lane_n, 98, 16)
 IQ_LANE_MVB(k_gemvb_iq3_s_x16, iq3s_lane_n, 110, 16)
 GEMVB_IQ4XS(k_gemvb_iq4_xs_x16, 16)
 
-// ---- int8-activation codebook GEMVs (RUNNER_CUDA_Q8X=1, EXPERIMENTAL) ------
-// x is quantized once per call to int8 in 32-element blocks (scale amax/127),
-// and a lane's eight codebook weights are packed into two signed int8x4 words
-// for __dp4a, the route llama.cpp's MMVQ takes. A verify column then costs
-// two integer dot instructions per lane-block instead of eight float FMAs and
-// eight float loads. NOT the float route's bits: the activation is rounded to
-// int8, so this is tolerance-gated against the CPU like every reassociating
-// kernel; within the route, batch-1 and the 2..8-column kernels share one
-// lane function, so a verify row is still the plain decode's bits.
+// ---- int8-activation IQ3_S GEMV (RUNNER_CUDA_Q8X=1, EXPERIMENTAL) ----------
+// Narrowed in R3.84 to IQ3_S only (+22% decode; Q4_K, Q8_0, IQ3_XXS and IQ4_XS
+// retired). x is quantized once per call to int8 in 32-element blocks (scale
+// amax/127), and a lane's eight codebook weights are packed into two signed
+// int8x4 words for __dp4a, the route llama.cpp's MMVQ takes. A verify column
+// then costs two integer dot instructions per lane-block instead of eight float
+// FMAs and eight float loads. NOT the float route's bits: the activation is
+// rounded to int8, so this is tolerance-gated against the CPU like every
+// reassociating kernel; within the route, batch-1 and the 2..8-column kernels
+// share one lane function, so a verify row is still the plain decode's bits.
 extern "C" __global__ void k_quant_q8x(const float *x, signed char *xq, float *dx,
                                        int n, int ncols, int xs) {
     int gw = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
@@ -4575,38 +4576,6 @@ static __device__ __forceinline__ void iq3s_q8(const uchar *blk, const signed ch
     Q8X_COLS(w1, ib * 32 + l * 8, w2, ib * 32 + l * 8 + 4, db)
 }
 
-static __device__ __forceinline__ void iq3xxs_q8(const uchar *blk, const signed char *xq, const float *dx,
-                                                 int n, int lane, int nc, float *acc) {
-    int ib = lane >> 2, l = lane & 3;
-    float d = f16f(blk);
-    const uchar *qs = blk + 2 + ib * 8, *ss = blk + 66;
-    unsigned aux = iq_ld32a2(ss + 4 * ib);
-    float db = d * (0.5f + (float)(aux >> 28)) * 0.5f;
-    unsigned g1 = kiq3xxs_grid[qs[2 * l + 0]];
-    unsigned g2 = kiq3xxs_grid[qs[2 * l + 1]];
-    unsigned signs = iq_signs7((aux >> (7 * l)) & 127);
-    int w1 = iq_pack4(g1, signs), w2 = iq_pack4(g2, signs >> 4);
-    Q8X_COLS(w1, ib * 32 + l * 8, w2, ib * 32 + l * 8 + 4, db)
-}
-
-static __device__ __forceinline__ void iq4xs_q8(const uchar *blk, const signed char *xq, const float *dx,
-                                                int n, int lane, int nc, float *acc) {
-    int ib = lane >> 2, l = lane & 3;
-    float d = f16f(blk);
-    unsigned sh = (unsigned)blk[2] | ((unsigned)blk[3] << 8);
-    int ls = ((blk[4 + ib / 2] >> 4 * (ib % 2)) & 0xF) | (((sh >> 2 * ib) & 3) << 4);
-    float dl = d * (ls - 32);
-    const uchar *q = blk + 8 + ib * 16 + l * 4;
-    unsigned lo = 0, hi = 0;
-    _Pragma("unroll")
-    for (int j = 0; j < 4; j++) {
-        lo |= (unsigned)(uchar)kv_iq4[q[j] & 0xF] << (8 * j);
-        hi |= (unsigned)(uchar)kv_iq4[q[j] >> 4] << (8 * j);
-    }
-    int wl = (int)lo, wh = (int)hi;
-    Q8X_COLS(wl, ib * 32 + l * 4, wh, ib * 32 + 16 + l * 4, dl)
-}
-
 #define Q8X_PARAMS const uchar *wb, const signed char *xq, const float *dx, float *y, mv_args a, const float *bias
 // ROWS rows per warp, NC columns; 4 warps per 128-thread block
 #define Q8X_MV(NAME, fn, BS, NC, ROWS) \
@@ -4641,77 +4610,6 @@ Q8X_MV(k_q8x_iq3_s_x5, iq3s_q8, 110, 5, 1)
 Q8X_MV(k_q8x_iq3_s_x6, iq3s_q8, 110, 6, 1)
 Q8X_MV(k_q8x_iq3_s_x7, iq3s_q8, 110, 7, 1)
 Q8X_MV(k_q8x_iq3_s_x8, iq3s_q8, 110, 8, 1)
-Q8X_MV(k_q8x_iq3_xxs_x1, iq3xxs_q8, 98, 1, 2)
-Q8X_MV(k_q8x_iq3_xxs_x2, iq3xxs_q8, 98, 2, 1)
-Q8X_MV(k_q8x_iq3_xxs_x3, iq3xxs_q8, 98, 3, 1)
-Q8X_MV(k_q8x_iq3_xxs_x4, iq3xxs_q8, 98, 4, 1)
-Q8X_MV(k_q8x_iq3_xxs_x5, iq3xxs_q8, 98, 5, 1)
-Q8X_MV(k_q8x_iq3_xxs_x6, iq3xxs_q8, 98, 6, 1)
-Q8X_MV(k_q8x_iq3_xxs_x7, iq3xxs_q8, 98, 7, 1)
-Q8X_MV(k_q8x_iq3_xxs_x8, iq3xxs_q8, 98, 8, 1)
-Q8X_MV(k_q8x_iq4_xs_x1, iq4xs_q8, 136, 1, 2)
-Q8X_MV(k_q8x_iq4_xs_x2, iq4xs_q8, 136, 2, 1)
-Q8X_MV(k_q8x_iq4_xs_x3, iq4xs_q8, 136, 3, 1)
-Q8X_MV(k_q8x_iq4_xs_x4, iq4xs_q8, 136, 4, 1)
-Q8X_MV(k_q8x_iq4_xs_x5, iq4xs_q8, 136, 5, 1)
-Q8X_MV(k_q8x_iq4_xs_x6, iq4xs_q8, 136, 6, 1)
-Q8X_MV(k_q8x_iq4_xs_x7, iq4xs_q8, 136, 7, 1)
-Q8X_MV(k_q8x_iq4_xs_x8, iq4xs_q8, 136, 8, 1)
-
-// Q4_K: d*sc*q - dmin*m per 32-element sub-block; lane L takes sub-block L/4,
-// elements 8*(L%4).. +8 (one nibble half of the pair's 32 quant bytes)
-static __device__ __forceinline__ void q4k_q8(const uchar *blk, const signed char *xq, const float *dx,
-                                              int n, int lane, int nc, float *acc) {
-    int ib = lane >> 2, l = lane & 3;
-    float d = f16f(blk), dmin = f16f(blk + 2);
-    uchar sc, mn;
-    get_scale_min_k4(ib, blk + 4, &sc, &mn);
-    const uchar *q = blk + 16 + (ib >> 1) * 32 + l * 8;
-    int shift = (ib & 1) * 4;
-    int w0 = (int)((iq_ld32a2(q) >> shift) & 0x0F0F0F0Fu);
-    int w1 = (int)((iq_ld32a2(q + 4) >> shift) & 0x0F0F0F0Fu);
-    float dsc = d * (float)sc, dm = dmin * (float)mn;
-    _Pragma("unroll")
-    for (int c = 0; c < nc; c++) {
-        const signed char *xc = xq + (ulong64)c * n + ib * 32 + l * 8;
-        int x0 = *(const int *)xc, x1 = *(const int *)(xc + 4);
-        int s = __dp4a(w0, x0, 0); s = __dp4a(w1, x1, s);
-        int sx = __dp4a(0x01010101, x0, 0); sx = __dp4a(0x01010101, x1, sx);
-        acc[c] += dx[(ulong64)c * (n / 32) + ib] * (dsc * (float)s - dm * (float)sx);
-    }
-}
-
-// Q8_0 in groups of eight 34-byte blocks (256 elements): lane L takes block
-// L/4, elements 8*(L%4).. +8
-static __device__ __forceinline__ void q80_q8(const uchar *grp, const signed char *xq, const float *dx,
-                                              int n, int lane, int nc, float *acc) {
-    int ib = lane >> 2, l = lane & 3;
-    const uchar *blk = grp + ib * 34;
-    float d = f16f(blk);
-    int w0 = (int)iq_ld32a2(blk + 2 + l * 8), w1 = (int)iq_ld32a2(blk + 6 + l * 8);
-    _Pragma("unroll")
-    for (int c = 0; c < nc; c++) {
-        const signed char *xc = xq + (ulong64)c * n + ib * 32 + l * 8;
-        int s = __dp4a(w0, *(const int *)xc, 0); s = __dp4a(w1, *(const int *)(xc + 4), s);
-        acc[c] += d * dx[(ulong64)c * (n / 32) + ib] * (float)s;
-    }
-}
-Q8X_MV(k_q8x_q4_K_x1, q4k_q8, 144, 1, 2)
-Q8X_MV(k_q8x_q4_K_x2, q4k_q8, 144, 2, 1)
-Q8X_MV(k_q8x_q4_K_x3, q4k_q8, 144, 3, 1)
-Q8X_MV(k_q8x_q4_K_x4, q4k_q8, 144, 4, 1)
-Q8X_MV(k_q8x_q4_K_x5, q4k_q8, 144, 5, 1)
-Q8X_MV(k_q8x_q4_K_x6, q4k_q8, 144, 6, 1)
-Q8X_MV(k_q8x_q4_K_x7, q4k_q8, 144, 7, 1)
-Q8X_MV(k_q8x_q4_K_x8, q4k_q8, 144, 8, 1)
-Q8X_MV(k_q8x_q8_0_x1, q80_q8, 272, 1, 2)
-Q8X_MV(k_q8x_q8_0_x2, q80_q8, 272, 2, 1)
-Q8X_MV(k_q8x_q8_0_x3, q80_q8, 272, 3, 1)
-Q8X_MV(k_q8x_q8_0_x4, q80_q8, 272, 4, 1)
-Q8X_MV(k_q8x_q8_0_x5, q80_q8, 272, 5, 1)
-Q8X_MV(k_q8x_q8_0_x6, q80_q8, 272, 6, 1)
-Q8X_MV(k_q8x_q8_0_x7, q80_q8, 272, 7, 1)
-Q8X_MV(k_q8x_q8_0_x8, q80_q8, 272, 8, 1)
 
 // exact widths 2, 3, 5, 6 and 7 (2026-10-08): the x4/x8 classes made a 5-row
 // verify tile (--draft-k 4) pay for eight columns; the 27B head decoded at
