@@ -4860,6 +4860,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_prefix_scored.py \
     tests/test_prompt_file_crlf.py \
     tests/test_provenance.py \
+    tests/test_ptx_entry_compare.py \
     tests/test_pull.py \
     tests/test_quant_fidelity.py \
     tests/test_queued_load_disconnect.py \
