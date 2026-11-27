@@ -117,4 +117,8 @@ void   model_inkling2_each_host_range(const model_t *m,
                                       void (*fn)(const void *addr, size_t len, void *ctx),
                                       void *ctx);
 size_t model_inkling2_host_ranges(const model_t *m, model_mem_range *out, size_t max, uint64_t *total_bytes);
+// --info fit's device line names the slots' K/V rings with this one rule (R4.48.8.5.2): "1 slot's K/V rings",
+// "2 slots' K/V rings". One slot once printed "1 slot' K/V rings".
+static inline const char *inkling2_slots_possessive(int slots) { return slots == 1 ? "slot's" : "slots'"; }
+
 #endif
