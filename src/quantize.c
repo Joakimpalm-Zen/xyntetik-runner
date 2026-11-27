@@ -477,6 +477,9 @@ static void quantize_row_q6_K(const float *x, uint8_t *dst, int n, const float *
 // ggml's make_qkx2_quants with squared-error weighting (use_mad false): the
 // search steps the inverse scale from (nmax + rmin) / (max - min) by rdelta,
 // nstep times. Q4_K searches from -1 in 20 steps, Q5_K from -0.5 in 15.
+// Each error term is w * (diff * diff), ggml's association (R4.56): written
+// (w * diff) * diff its last bit can differ, and at a near tie the strict '<'
+// then keeps another candidate (tests/test_quantize.c check_q4k_near_ties).
 static float make_qkx2_quants(int n, int nmax, const float *x,
                               const float *weights, uint8_t *L,
                               float *the_min, uint8_t *Laux,
@@ -504,7 +507,8 @@ static float make_qkx2_quants(int n, int nmax, const float *x,
         if (l > nmax) l = nmax;
         L[i] = (uint8_t)l;
         float diff = scale * l + min - x[i];
-        best_mad += weights[i] * diff * diff;
+        diff = diff * diff;               // ggml's order: w * (diff * diff)
+        best_mad += weights[i] * diff;
     }
     if (nstep < 1) {
         *the_min = -min;
@@ -533,7 +537,8 @@ static float make_qkx2_quants(int n, int nmax, const float *x,
         float mad = 0.0f;
         for (int i = 0; i < n; i++) {
             float diff = this_scale * Laux[i] + this_min - x[i];
-            mad += weights[i] * diff * diff;
+            diff = diff * diff;
+            mad += weights[i] * diff;
         }
         if (mad < best_mad) {
             memcpy(L, Laux, (size_t)n);
