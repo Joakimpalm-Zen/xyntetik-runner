@@ -489,6 +489,159 @@ static const char *qwen2_trained_rule(gguf_file *g) {
     return NULL;
 }
 
+static int g_tok_repair_pin = -1;
+
+void tok_repair_pin(int mode) {
+    g_tok_repair_pin = mode;
+}
+
+static bool tok_repair_enabled(void) {
+    if (g_tok_repair_pin >= 0) return g_tok_repair_pin != 0;
+    const char *e = getenv("RUNNER_TOK_REPAIR");
+    if (!e || !*e) return true;
+    return strcmp(e, "0") != 0 && strcmp(e, "off") != 0 &&
+           strcmp(e, "false") != 0 && strcmp(e, "OFF") != 0 &&
+           strcmp(e, "FALSE") != 0;
+}
+
+static bool tok_is_declared_eog(const tokenizer *t, int id) {
+    for (int i = 0; i < t->n_eog; i++)
+        if (t->eog_ids[i] == id) return true;
+    return false;
+}
+
+static void tok_repair_record(tokenizer *t, int id) {
+    enum { CAP = (int)(sizeof(t->repaired_ctrl_ids) / sizeof(*t->repaired_ctrl_ids)) };
+    t->n_repaired_ctrl_total++;
+    int pos = t->n_repaired_ctrl;
+    if (pos < CAP) {
+        t->n_repaired_ctrl++;
+    } else if (id >= t->repaired_ctrl_ids[CAP - 1]) {
+        return;
+    } else {
+        pos = CAP - 1;
+    }
+    while (pos > 0 && t->repaired_ctrl_ids[pos - 1] > id) {
+        t->repaired_ctrl_ids[pos] = t->repaired_ctrl_ids[pos - 1];
+        pos--;
+    }
+    t->repaired_ctrl_ids[pos] = id;
+}
+
+// R4.50.13: demote BPE merge-output CONTROL tokens (excluding bos/eos/unk/eog)
+// to USER_DEFINED. Added non-special words in BPE tokenizers (e.g. "Mathias"
+// and "python" in LiquidAI/LFM2.5-350M-GGUF) are matched before BPE and
+// rendered on decode; mistyping them CONTROL hides them in tok_decode and masks
+// them in JSON/schema mode while keeping special_ids match-first encoding.
+// Demoting to USER_DEFINED fixes decode and masking and preserves encode parity.
+static void tok_repair_control_merges(tokenizer *t, const gguf_kv *mg) {
+    if (!t->ttype || !mg || !tok_repair_enabled()) return;
+    char joined[1024];
+    for (uint64_t i = 0; i < mg->arr_n; i++) {
+        const gg_str *ms = &mg->arr_str[i];
+        const char *sp = memchr(ms->s, ' ', ms->n);
+        if (!sp || sp == ms->s || sp + 1 >= ms->s + ms->n) continue;
+        size_t llen = (size_t)(sp - ms->s);
+        size_t rlen = ms->n - llen - 1;
+        size_t jlen = llen + rlen;
+        if (jlen == 0 || jlen > sizeof(joined)) continue;
+        memcpy(joined, ms->s, llen);
+        memcpy(joined + llen, sp + 1, rlen);
+        int id = hmap_get(&t->vocab, joined, jlen);
+        if (id < 0 || id >= t->n_vocab) continue;
+        if (t->ttype[id] != TT_CONTROL) continue;
+        if (id == t->bos_id || id == t->eos_id || id == t->unk_id ||
+            tok_is_declared_eog(t, id))
+            continue;
+        t->ttype[id] = TT_USER_DEFINED;
+        tok_repair_record(t, id);
+    }
+}
+
+static size_t tok_buf_put(char *out, size_t cap, size_t pos, const char *s, size_t n) {
+    if (pos + 1 >= cap) return pos;
+    size_t avail = cap - 1 - pos;
+    size_t take = n < avail ? n : avail;
+    if (take > 0) memcpy(out + pos, s, take);
+    pos += take;
+    out[pos] = '\0';
+    return pos;
+}
+
+static size_t tok_buf_str(char *out, size_t cap, size_t pos, const char *s) {
+    return tok_buf_put(out, cap, pos, s, strlen(s));
+}
+
+void tok_format_repair_line(const tokenizer *t, char *out, size_t cap) {
+    if (!out || cap == 0) return;
+    out[0] = '\0';
+    if (!t || t->n_repaired_ctrl_total <= 0) return;
+    char num[32];
+    int n = snprintf(num, sizeof(num), "%d", t->n_repaired_ctrl_total);
+    size_t pos = 0;
+    pos = tok_buf_str(out, cap, pos, "tokenizer: demoted ");
+    if (n > 0) pos = tok_buf_put(out, cap, pos, num, (size_t)n);
+    pos = tok_buf_str(out, cap, pos, " merge-output CONTROL token(s) to USER_DEFINED: ");
+    for (int i = 0; i < t->n_repaired_ctrl; i++) {
+        if (i > 0) pos = tok_buf_str(out, cap, pos, ", ");
+        int id = t->repaired_ctrl_ids[i];
+        n = snprintf(num, sizeof(num), "%d", id);
+        if (n > 0) pos = tok_buf_put(out, cap, pos, num, (size_t)n);
+        pos = tok_buf_str(out, cap, pos, " \"");
+        if (id >= 0 && id < t->n_vocab && t->tokens[id].s) {
+            const char *s = t->tokens[id].s;
+            size_t sl = t->tokens[id].n;
+            for (size_t k = 0; k < sl; k++) {
+                unsigned char c = (unsigned char)s[k];
+                if (c == '"' || c == '\\') {
+                    char esc[2] = { '\\', (char)c };
+                    pos = tok_buf_put(out, cap, pos, esc, 2);
+                } else if (c < 0x20 || c == 0x7f) {
+                    char esc[8];
+                    int en = snprintf(esc, sizeof(esc), "\\x%02x", c);
+                    if (en > 0) pos = tok_buf_put(out, cap, pos, esc, (size_t)en);
+                } else {
+                    pos = tok_buf_put(out, cap, pos, &s[k], 1);
+                }
+            }
+        }
+        pos = tok_buf_str(out, cap, pos, "\"");
+    }
+    if (t->n_repaired_ctrl_total > t->n_repaired_ctrl) {
+        pos = tok_buf_str(out, cap, pos, ", ... (");
+        n = snprintf(num, sizeof(num), "%d", t->n_repaired_ctrl_total - t->n_repaired_ctrl);
+        if (n > 0) pos = tok_buf_put(out, cap, pos, num, (size_t)n);
+        pos = tok_buf_str(out, cap, pos, " more)");
+    }
+    pos = tok_buf_str(out, cap, pos, " (RUNNER_TOK_REPAIR=0 to keep raw types)");
+    (void)pos;
+}
+
+void tok_route_append(char *route_json, size_t cap, const tokenizer *t) {
+    if (!route_json || cap == 0 || !t || t->n_repaired_ctrl_total <= 0) return;
+    size_t len = strlen(route_json);
+    if (len < 2 || route_json[len - 1] != '}') return;
+    char add[512];
+    size_t pos = 0;
+    add[0] = '\0';
+    pos = tok_buf_str(add, sizeof(add), pos, ",\"tok_repair\":[");
+    for (int i = 0; i < t->n_repaired_ctrl; i++) {
+        char num[32];
+        int n = snprintf(num, sizeof(num), "%s%d", i ? "," : "", t->repaired_ctrl_ids[i]);
+        if (n > 0) pos = tok_buf_put(add, sizeof(add), pos, num, (size_t)n);
+    }
+    pos = tok_buf_str(add, sizeof(add), pos, "]");
+    if (t->n_repaired_ctrl_total > t->n_repaired_ctrl) {
+        char num[32];
+        int n = snprintf(num, sizeof(num), ",\"tok_repair_total\":%d", t->n_repaired_ctrl_total);
+        if (n > 0) pos = tok_buf_put(add, sizeof(add), pos, num, (size_t)n);
+    }
+    if (len - 1 + pos + 2 > cap) return;
+    memcpy(route_json + len - 1, add, pos);
+    route_json[len - 1 + pos] = '}';
+    route_json[len - 1 + pos + 1] = '\0';
+}
+
 bool tokenizer_init(tokenizer *t, gguf_file *g) {
     memset(t, 0, sizeof(*t));
 
@@ -762,6 +915,7 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
         if (!hmap_init(&t->merges, mg->arr_n)) return false;
         for (uint64_t i = 0; i < mg->arr_n; i++)
             hmap_put(&t->merges, mg->arr_str[i].s, mg->arr_str[i].n, (int)i);
+        tok_repair_control_merges(t, mg);
     }
     return true;
 }

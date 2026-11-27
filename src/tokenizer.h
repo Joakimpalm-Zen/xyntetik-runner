@@ -84,6 +84,13 @@ typedef struct {
     int      sb_off[257];
     int      b2u[256];      // BPE byte -> codepoint
     int      u2b[512];      // BPE codepoint -> byte (-1 = none)
+    // R4.50.13: BPE merge-output tokens that the GGUF typed CONTROL (excluding
+    // bos/eos/unk/eog) are demoted to USER_DEFINED at load so decode renders
+    // them and constrained generation allows them while preserving special_ids
+    // match-first encoding (opt-out: RUNNER_TOK_REPAIR=0).
+    int      repaired_ctrl_ids[32]; // sorted ascending by token id
+    int      n_repaired_ctrl;       // stored in repaired_ctrl_ids (<= 32)
+    int      n_repaired_ctrl_total; // total repaired count
     // Read-only after tokenizer_init: parallel slots share one tokenizer and
     // encode concurrently. Per-call state lives on the calling thread.
 } tokenizer;
@@ -147,5 +154,14 @@ int  tok_find(tokenizer *t, const char *s); // exact vocab lookup, -1 if absent
 // two must produce identical ids on every input -- see
 // tests/test_tokenizer_merge.c.
 void tok_merge_force(int on);
+// R4.50.13: pin BPE merge-output CONTROL->USER_DEFINED repair for --verify
+// replay (-1: default / obey RUNNER_TOK_REPAIR env, 0: force off, 1: force on).
+void tok_repair_pin(int mode);
+// Format the load-line note naming each repaired token id and string (empty
+// string when n_repaired_ctrl_total == 0).
+void tok_format_repair_line(const tokenizer *t, char *out, size_t cap);
+// Append ,"tok_repair":[...] (and ,"tok_repair_total":N if truncated) inside
+// the closing '}' of a route JSON object built by model_route_receipt_json.
+void tok_route_append(char *route_json, size_t cap, const tokenizer *t);
 
 #endif // RUNNER_TOKENIZER_H

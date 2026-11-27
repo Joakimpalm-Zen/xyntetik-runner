@@ -449,12 +449,15 @@ static double weighted_err(const char *path, const char *name, const float *x,
     return e;
 }
 
-// The reference writers against ggml's own on a real tensor: 16 rows of a
+// The reference writers checked against ggml's on a real tensor: 16 rows of a
 // published BF16 weight (tests/fixtures/quant-golden, README there), written
 // by each writer and compared byte for byte with what ggml b10353's writers
-// emit for the same rows, compiled without floating-point contraction. The
-// rows are ones a build that fuses multiply-adds writes differently for q4_0,
-// q4_k and q6_k, which is why quantize.o is compiled -ffp-contract=off.
+// emit for the same rows, compiled without floating-point contraction. It
+// checks that the ports follow ggml's algorithms on these rows; it is not a
+// promise of identical bytes on every input (check_q4k_near_ties pins where
+// Runner's own order differs). The rows are ones a build that fuses
+// multiply-adds writes differently for q4_0, q4_k and q6_k, which is why
+// quantize.o is compiled -ffp-contract=off.
 static void check_ggml_golden(void) {
     enum { ROWS = 16, COLS = 1536, N = ROWS * COLS };
     const char *dir = "tests/fixtures/quant-golden/";
@@ -524,8 +527,8 @@ static void check_ggml_golden(void) {
         free(mine); free(ref);
     }
     remove(in); remove(out);
-    printf("ok: q8_0, q4_0, q3_k, q4_k, q6_k and mxfp4 writers are byte-identical to ggml "
-           "b10353, and q5_0, q5_1, q5_k and iq4_nl to ggml c1d0e7a, on a real tensor\n");
+    printf("ok: q8_0, q4_0, q3_k, q4_k, q6_k and mxfp4 writers agree with ggml b10353, and "
+           "q5_0, q5_1, q5_k and iq4_nl with ggml c1d0e7a, on the golden slice\n");
 }
 
 static void check_weighted_bytes(const char *out, const char *type, bool edges) {
@@ -547,8 +550,8 @@ static void check_weighted_bytes(const char *out, const char *type, bool edges) 
     free(mine); free(ref);
 }
 
-// External byte anchor: unmodified ggml at the pinned revision, not another
-// Runner build. Boundary inputs include zero groups, signed endpoints,
+// External check: unmodified ggml at the pinned revision, not another Runner
+// build, on these inputs (agreement on them, not an identity promise). Boundary inputs include zero groups, signed endpoints,
 // constant rows, tiny/large scales and exact half steps (fixture README).
 static void check_ggml_weighted_golden(void) {
     enum { COLS = 1536, REAL_ROWS = 16, EDGE_ROWS = 8 };
@@ -611,11 +614,153 @@ static void check_ggml_weighted_golden(void) {
                 assert(quantize_gguf(in, out, types[k].type, NULL) != 0);
             }
         }
-        printf("ok: weighted %s is a ggml c1d0e7a byte twin on the real slice and boundaries\n", types[k].name);
+        printf("ok: weighted %s agrees with ggml c1d0e7a on the real slice and boundaries\n", types[k].name);
     }
     assert(quantize_set_imatrix(NULL));
     const char *paths[] = {in, out, plain, dat, zdat, bad, gg};
     for (size_t i = 0; i < sizeof paths / sizeof *paths; i++) remove(paths[i]);
+}
+
+// One hex field of a block in the near-tie fixture: the text between the
+// quotes after "field": inside the block's object (no nested objects).
+static void neartie_hex(const char *json, const char *block, const char *field,
+                        uint8_t *out, size_t nbytes) {
+    char key[96];
+    snprintf(key, sizeof key, "\"%s\": {", block);
+    const char *b = strstr(json, key);
+    assert(b);
+    const char *end = strchr(b + strlen(key), '}');
+    snprintf(key, sizeof key, "\"%s\": \"", field);
+    const char *v = strstr(b, key);
+    assert(v && v < end);
+    v += strlen(key);
+    for (size_t i = 0; i < nbytes; i++) {
+        unsigned byte;
+        assert(sscanf(v + 2 * i, "%2x", &byte) == 1);
+        out[i] = (uint8_t)byte;
+    }
+    assert(v[2 * nbytes] == '"');
+}
+
+static void neartie_floats(const char *json, const char *block, const char *field, float *x) {
+    uint8_t be[256 * 4];
+    neartie_hex(json, block, field, be, sizeof be);
+    for (int i = 0; i < 256; i++) {
+        uint32_t u = (uint32_t)be[4 * i] << 24 | (uint32_t)be[4 * i + 1] << 16 |
+                     (uint32_t)be[4 * i + 2] << 8 | be[4 * i + 3];
+        memcpy(&x[i], &u, 4);
+    }
+}
+
+// R4.56: a regression pin of Runner's own Q4_K bytes at two OLMo-3-7B-Think
+// super-blocks where make_qkx2_quants' search meets a float32 near tie
+// (tests/fixtures/quant-golden, README there). Runner sums each error term as
+// (w * diff) * diff; ggml writes w * (diff * diff), and at these ties the last
+// bit decides which candidate the strict '<' keeps. a1 is Runner's bytes and
+// is what this pins; c1, llama.cpp's for the same block, is kept beside it to
+// name the order a failure moved to. One block takes the reference writer (no
+// imatrix), the other the weighted writer (its imatrix weights).
+static void check_q4k_near_ties(void) {
+    FILE *f = fopen("tests/fixtures/quant-golden/olmo3-7b-think-q4_k-near-ties.json", "rb");
+    assert(f);
+    static char json[16384];
+    size_t n = fread(json, 1, sizeof json - 1, f);
+    fclose(f);
+    assert(n > 0 && n < sizeof json - 1);
+    json[n] = '\0';
+    static const struct { const char *block; bool weighted; } B[] = {
+        { "token_embd.weight", false }, { "blk.12.attn_q.weight", true },
+    };
+    const char *in = "q_neartie_in.gguf", *out = "q_neartie_out.gguf";
+    const char *dat = "q_neartie.dat", *tn = "blk.0.ffn_down.weight";
+    int fails = 0;
+    for (size_t k = 0; k < sizeof B / sizeof *B; k++) {
+        float x[256], qw[256];
+        uint8_t c1[144], a1[144];
+        neartie_floats(json, B[k].block, "x", x);
+        neartie_hex(json, B[k].block, "c1", c1, sizeof c1);
+        neartie_hex(json, B[k].block, "a1", a1, sizeof a1);
+        tdesc t = { tn, {256, 1}, 2, x, 256, T_F32 };
+        write_gguf(in, &t, 1, 0);
+        if (B[k].weighted) {
+            neartie_floats(json, B[k].block, "qw", qw);
+            write_imatrix_dat(dat, tn, qw, 256, 1.0f);
+            assert(quantize_set_imatrix(dat));
+        }
+        assert(quantize_gguf(in, out, T_Q4_K, NULL) == 0);
+        assert(quantize_set_imatrix(NULL));
+        size_t got;
+        unsigned char *mine = slurp_tensor(out, tn, &got);
+        assert(got == sizeof c1);
+        if (memcmp(mine, a1, sizeof a1)) {
+            size_t first = 0;
+            while (mine[first] == a1[first]) first++;
+            fprintf(stderr, "FAIL: %s block's Q4_K differs from Runner's pinned bytes at byte %zu%s\n",
+                    B[k].block, first, memcmp(mine, c1, sizeof c1) ? "" :
+                    " (it is ggml's w*(diff*diff) order's bytes)");
+            fails++;
+        }
+        free(mine);
+    }
+    remove(in); remove(out); remove(dat);
+    assert(fails == 0);
+    printf("ok: Q4_K writes Runner's pinned bytes on both OLMo 3 near-tie blocks "
+           "(reference and imatrix)\n");
+}
+
+// R4.57: the scale search must round every input to its nearest level, even
+// far outside the block's range. Each 32-value block here holds four large
+// negative inputs with no importance weight beside 28 tiny weighted positives.
+// Where a candidate fit to the positives wins (block 2), v = iscale * (x - min)
+// for the four lies far outside nearest_int's range (|v| > 2^22), where its
+// rounding trick returns a wrapped value, not a rounding. Weighted Q5_1 writes
+// the search's codes, so each of the four must take the code nearest its value
+// in the block's own d and m (within one step, for their f16 rounding).
+static void check_q5_1_out_of_range_codes(void) {
+    float x[256], qw[256];
+    for (int g = 0; g < 8; g++)
+        for (int p = 0; p < 32; p++) {
+            int i = 32 * g + p;
+            x[i] = p < 4 ? -(0.5f + 0.1f * (float)p + 0.01f * (float)g)
+                         : 1e-6f * (0.2f + 0.03f * (float)p + 0.01f * (float)g);
+            qw[i] = p < 4 ? 0.0f : 1.0f + (float)(p % 5);
+        }
+    const char *in = "q_oor_in.gguf", *out = "q_oor_out.gguf", *dat = "q_oor.dat";
+    const char *tn = "blk.0.ffn_down.weight";
+    tdesc t = { tn, {256, 1}, 2, x, 256, T_F32 };
+    write_gguf(in, &t, 1, 0);
+    write_imatrix_dat(dat, tn, qw, 256, 1.0f);
+    assert(quantize_set_imatrix(dat));
+    assert(quantize_gguf(in, out, T_Q5_1, NULL) == 0);
+    assert(quantize_set_imatrix(NULL));
+    size_t n;
+    unsigned char *q = slurp_tensor(out, tn, &n);
+    assert(n == 8 * 24);
+    int bad = 0;
+    for (int g = 0; g < 8; g++) {
+        const unsigned char *b = q + 24 * g;   // f16 d, f16 m, qh[4], qs[16]
+        f16_t dh, mh;
+        uint32_t qh;
+        memcpy(&dh, b, 2);
+        memcpy(&mh, b + 2, 2);
+        memcpy(&qh, b + 4, 4);
+        float d = f16_to_f32(dh), m = f16_to_f32(mh);
+        assert(d > 0.0f);
+        for (int p = 0; p < 4; p++) {
+            int code = (b[8 + p] & 15) | (int)((qh >> p) & 1) << 4;
+            float v = (x[32 * g + p] - m) / d;
+            int nearest = v <= 0.0f ? 0 : v >= 31.0f ? 31 : (int)lrintf(v);
+            if (abs(code - nearest) > 1) {
+                fprintf(stderr, "FAIL: weighted q5_1 block %d input %d (%g, no weight) took code %d; "
+                        "its nearest is %d\n", g, p, (double)x[32 * g + p], code, nearest);
+                bad++;
+            }
+        }
+    }
+    free(q);
+    remove(in); remove(out); remove(dat);
+    assert(bad == 0);
+    printf("ok: weighted q5_1 rounds inputs far outside the search's range to their nearest code\n");
 }
 
 // A row that divides by 32 but not 256 cannot take a 256-block K-quant; the
@@ -1870,6 +2015,8 @@ int main(void) {
     check_error_report();
     check_ggml_golden();
     check_ggml_weighted_golden();
+    check_q4k_near_ties();
+    check_q5_1_out_of_range_codes();
     check_width_fallback();
     check_publish_pair_recovery_and_locks();
 

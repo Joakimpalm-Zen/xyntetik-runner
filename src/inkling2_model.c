@@ -1027,9 +1027,9 @@ static int ink2_batch_default(int n_batch, int n_ctx) {
 
 // R4.48.8.5: the K/V cache's storage from --kv. f32 is this engine's own (the default, and --kv f32); --kv q8 stores
 // q8_0 rows when every head_dim is a multiple of 32. The house's other formats (f16, k8v4, fp4) are not this engine's,
-// and an asked one keeps f32 with a note, as an incompatible format does elsewhere. The CUDA route keeps f32 under
-// --kv q8 until its device kernels are proven (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_KVQ8=1 lifts that for the device
-// gates); TEST-ONLY RUNNER_INKLING2_TEST_KV_RT=1: float32 rows holding each row's q8 round trip (gate (a)).
+// and an asked one keeps f32 with a note, as an incompatible format does elsewhere. q8 holds on the CUDA route too: its
+// rings are held to the CPU's q8 cache by gate (c) (tests/test_inkling2_cuda.c). TEST-ONLY RUNNER_INKLING2_TEST_KV_RT=1:
+// float32 rows holding each row's q8 round trip (gate (a)).
 static const char *kv_kind_name(int kind) { return kind == INK2_KV_Q8 ? "q8" : kind == INK2_KV_RT ? "f32 round trip" : "f32"; }
 // the kind for a shape, a route and the asked --kv, with the sentence a load prints as a note and the fit as a line
 // (empty when there is none to say). The TEST-ONLY round trip is the runtime's alone.
@@ -1046,16 +1046,7 @@ static int kv_kind_pick(const ink2_shape *s, char route, const model_params *p, 
                  "it keeps f32", s->head_dim, s->swa_head_dim);
         return INK2_KV_F32;
     }
-#ifdef RUNNER_GPU_CUDA
-    const char *on = getenv("RUNNER_INKLING2_CUDA"), *t = getenv("RUNNER_INKLING2_CUDA_TEST_KVQ8");
-    if (p->gpu_mode != GPU_OFF && on && !strcmp(on, "1") && route == 'F' && !(t && !strcmp(t, "1"))) {
-        snprintf(note, nn, "inkling2_loop --kv q8 keeps f32 on the CUDA route (RUNNER_INKLING2_CUDA=1) until its device "
-                 "kernels are proven; the CPU routes store q8");
-        return INK2_KV_F32;
-    }
-#else
-    (void)route;
-#endif
+    (void)route;   // q8 on every route: the CPU's cores and the device's rings (gates (a) to (c))
     return INK2_KV_Q8;
 }
 static const char RING_NOTE[] = "inkling2_loop's sliding applications always keep a window ring (window - 1 + batch "
@@ -1664,4 +1655,68 @@ bool model_inkling2_cuda_readback(model_t *m, int *n_tensors, int *n_differ, cha
     if (n_tensors) *n_tensors = r->n_dev;
     if (n_differ) *n_differ = bad;
     return true;
+}
+
+typedef struct {
+    void (*fn)(const void *addr, size_t len, void *ctx);
+    void  *ctx;
+} ink2_host_each_ctx;
+
+static int ink2_host_exp_cb(void *ctx, const ink2_tensor *t) {
+    ink2_host_each_ctx *c = ctx;
+    if (!t || !t->q || t->dev != NULL) return 0;
+    if (!strstr(t->name, ".mlp.experts.")) return 0;
+    int64_t nr = view_rows(t);
+    size_t rb = view_row_bytes(t);
+    if (nr > 0 && rb > 0) c->fn(t->q, rb * (size_t)nr, c->ctx);
+    int ns = view_scales(t);
+    if (t->q_scale && ns > 0) c->fn(t->q_scale, sizeof(float) * (size_t)ns, c->ctx);
+    return 0;
+}
+
+void model_inkling2_each_host_range(const model_t *m,
+                                    void (*fn)(const void *addr, size_t len, void *ctx),
+                                    void *ctx) {
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    if (!r || !fn || m->gf.header_only) return;
+    if (r->gpu) {
+        // Whole model on CUDA ('W'): device-resident, populate nothing on host.
+        if (r->placed != 'M') return;
+        // --cpu-moe CUDA ('M'): populate only the host-computed expert stacks.
+        ink2_host_each_ctx c = { fn, ctx };
+        if (r->g) (void)ink2g_each_view(r->g, ink2_host_exp_cb, &c);
+        return;
+    }
+    // Pure CPU Inkling 2: populate every GGUF part's tensor data section,
+    // skipping the GGUF header prefix.
+    uint32_t np = gguf_map_count(&m->gf);
+    for (uint32_t i = 0; i < np; i++) {
+        size_t sz = 0;
+        const uint8_t *mp = gguf_map_part(&m->gf, i, &sz);
+        size_t off = gguf_map_data_offset(&m->gf, i);
+        if (mp && sz > off) fn(mp + off, sz - off, ctx);
+    }
+}
+
+typedef struct {
+    model_mem_range *out;
+    size_t           max;
+    size_t           n;
+    uint64_t         total;
+} ink2_host_walk;
+
+static void ink2_host_collect_cb(const void *addr, size_t len, void *ctx) {
+    ink2_host_walk *w = ctx;
+    if (!addr || !len) return;
+    if (w->out && w->n < w->max) w->out[w->n] = (model_mem_range){ addr, len };
+    w->n++;
+    w->total += (uint64_t)len;
+}
+
+size_t model_inkling2_host_ranges(const model_t *m, model_mem_range *out, size_t max, uint64_t *total_bytes) {
+    if (total_bytes) *total_bytes = 0;
+    ink2_host_walk w = { out, max, 0, 0 };
+    model_inkling2_each_host_range(m, ink2_host_collect_cb, &w);
+    if (total_bytes) *total_bytes = w.total;
+    return w.n;
 }

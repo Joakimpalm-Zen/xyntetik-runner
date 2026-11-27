@@ -3059,6 +3059,7 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
     bool env_known = provenance_envelope_state(&env_state);
     char route_json[MODEL_ROUTE_RECEIPT_CAP];
     model_route_receipt_json(m, route_json, sizeof route_json);
+    tok_route_append(route_json, sizeof route_json, s->tok);
     transcript_info ti = {
         .runner_version = RUNNER_VERSION,
         .compiler = __VERSION__,

@@ -113,6 +113,44 @@ void plat_munmap(void *p, size_t size) {
     if (p) UnmapViewOfFile(p);
 }
 
+bool plat_populate_available(void) { return false; }
+
+bool plat_populate_ro(const void *addr, size_t len) {
+    (void)addr; (void)len;
+    return false;
+}
+
+bool plat_populate_cached_ro(const void *addr, size_t len,
+                             uint64_t *mapped_bytes, uint64_t *lazy_bytes) {
+    (void)addr;
+    if (mapped_bytes) *mapped_bytes = 0;
+    if (lazy_bytes) *lazy_bytes = (uint64_t)len;
+    return false;
+}
+
+bool plat_mincore_trustworthy_ids(uint32_t file_uid, uint32_t euid, bool writable) {
+    return file_uid == euid || writable;
+}
+
+bool plat_file_mincore_safe(const char *path) {
+    (void)path;
+    return false;
+}
+
+const char *plat_linux_lru_mode_parse(const char *text) {
+    if (!text) return "classic";
+    while (*text == ' ' || *text == '\t' || *text == '\n' || *text == '\r') text++;
+    if (!*text) return "classic";
+    char *end = NULL;
+    unsigned long long v = strtoull(text, &end, 0);
+    if (end == text) return "classic";
+    return v != 0 ? "mglru" : "classic";
+}
+
+const char *plat_linux_lru_mode(void) {
+    return NULL;
+}
+
 static int machine_cpu_count(void) {
     // the process affinity mask first (a job object or `start /affinity`
     // narrows it), the machine's count as the fallback; see the POSIX twin
@@ -651,6 +689,176 @@ void plat_willneed(const void *addr, size_t len) {
 }
 
 bool plat_willneed_available(void) { return true; }   // madvise is always there
+
+bool plat_mincore_trustworthy_ids(uint32_t file_uid, uint32_t euid, bool writable) {
+    return file_uid == euid || writable;
+}
+
+bool plat_file_mincore_safe(const char *path) {
+    if (!path || !*path) return false;
+    struct stat st;
+    if (stat(path, &st) != 0) return false;
+    return plat_mincore_trustworthy_ids((uint32_t)st.st_uid, (uint32_t)geteuid(),
+                                        access(path, W_OK) == 0);
+}
+
+const char *plat_linux_lru_mode_parse(const char *text) {
+    if (!text) return "classic";
+    while (*text == ' ' || *text == '\t' || *text == '\n' || *text == '\r') text++;
+    if (!*text) return "classic";
+    char *end = NULL;
+    unsigned long long v = strtoull(text, &end, 0);
+    if (end == text) return "classic";
+    return v != 0 ? "mglru" : "classic";
+}
+
+const char *plat_linux_lru_mode(void) {
+#ifdef __linux__
+    int fd = open("/sys/kernel/mm/lru_gen/enabled", O_RDONLY);
+    if (fd < 0) return "classic";
+    char buf[32];
+    ssize_t n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (n <= 0) return "classic";
+    buf[n] = '\0';
+    return plat_linux_lru_mode_parse(buf);
+#else
+    return NULL;
+#endif
+}
+
+#ifdef __linux__
+#ifndef MADV_POPULATE_READ
+#if defined(__x86_64__) || defined(__aarch64__) || defined(__i386__) || \
+    defined(__arm__) || defined(__riscv) || defined(__powerpc__) || \
+    defined(__s390x__)
+#define MADV_POPULATE_READ 22
+#endif
+#endif
+
+static void populate_touch_loop(const uint8_t *lo, size_t len, size_t ps) {
+    volatile uint8_t sink = 0;
+    for (size_t off = 0; off < len; off += ps)
+        sink ^= lo[off];
+    (void)sink;
+}
+
+static bool populate_align_range(const void *addr, size_t len,
+                                 uintptr_t *lo_out, size_t *alen_out,
+                                 size_t *ps_out) {
+    if (!addr || !len) return false;
+    long ps_raw = sysconf(_SC_PAGESIZE);
+    if (ps_raw <= 0) return false;
+    size_t ps = (size_t)ps_raw;
+    uintptr_t p = (uintptr_t)addr;
+    if (len > UINTPTR_MAX - p) return false;
+    uintptr_t end = p + len;
+    uintptr_t lo = p & ~(uintptr_t)(ps - 1);
+    if (end > UINTPTR_MAX - (ps - 1)) return false;
+    uintptr_t hi = (end + (uintptr_t)(ps - 1)) & ~(uintptr_t)(ps - 1);
+    if (hi <= lo) return false;
+    *lo_out = lo;
+    *alen_out = (size_t)(hi - lo);
+    *ps_out = ps;
+    return true;
+}
+
+static bool populate_pages_noadvise(uintptr_t lo, size_t alen, size_t ps) {
+    int rc = -1;
+#ifdef MADV_POPULATE_READ
+    do {
+        errno = 0;
+        rc = madvise((void *)lo, alen, MADV_POPULATE_READ);
+    } while (rc != 0 && errno == EINTR);
+    if (rc != 0 && errno == EINVAL) {
+        populate_touch_loop((const uint8_t *)lo, alen, ps);
+        rc = 0;
+    }
+#else
+    populate_touch_loop((const uint8_t *)lo, alen, ps);
+    rc = 0;
+#endif
+    return rc == 0;
+}
+
+bool plat_populate_available(void) { return true; }
+
+// Opt-in full mode (A): prefault the entire range with MADV_SEQUENTIAL
+// readahead, then restore MADV_NORMAL so later sparse reads stay normal.
+bool plat_populate_ro(const void *addr, size_t len) {
+    uintptr_t lo = 0;
+    size_t alen = 0, ps = 0;
+    if (!populate_align_range(addr, len, &lo, &alen, &ps)) return false;
+    (void)madvise((void *)lo, alen, MADV_SEQUENTIAL);
+    bool ok = populate_pages_noadvise(lo, alen, ps);
+    (void)madvise((void *)lo, alen, MADV_NORMAL);
+    return ok;
+}
+
+// Default cached-only mode (C): mincore first, then MADV_POPULATE_READ over
+// contiguous runs already resident in the page cache. Zero new disk I/O, no
+// MADV_SEQUENTIAL toggle, and never falls back to a full blocking read if
+// mincore fails. Caller must gate with gguf_file.mincore_safe (kernel
+// 134fca9063ad).
+bool plat_populate_cached_ro(const void *addr, size_t len,
+                             uint64_t *mapped_bytes, uint64_t *lazy_bytes) {
+    if (mapped_bytes) *mapped_bytes = 0;
+    if (lazy_bytes) *lazy_bytes = 0;
+    uintptr_t lo = 0;
+    size_t alen = 0, ps = 0;
+    if (!populate_align_range(addr, len, &lo, &alen, &ps)) return false;
+
+    enum { CHUNK_PAGES = 16384 }; // 16 KiB stack buffer -> 64 MiB per chunk on 4 KiB pages
+    unsigned char vec[CHUNK_PAGES];
+    uint64_t mapped = 0, lazy = 0;
+    size_t pos = 0;
+    while (pos < alen) {
+        size_t rem_pages = (alen - pos) / ps;
+        size_t chunk_pages = rem_pages > CHUNK_PAGES ? CHUNK_PAGES : rem_pages;
+        size_t chunk_len = chunk_pages * ps;
+        if (mincore((void *)(lo + pos), chunk_len, vec) != 0) {
+            // Never fall back to full populate on mincore failure.
+            lazy += (uint64_t)chunk_len;
+            pos += chunk_len;
+            continue;
+        }
+        size_t i = 0;
+        while (i < chunk_pages) {
+            size_t z0 = i;
+            while (i < chunk_pages && !(vec[i] & 1)) i++;
+            if (i > z0) lazy += (uint64_t)(i - z0) * (uint64_t)ps;
+            size_t r0 = i;
+            while (i < chunk_pages && (vec[i] & 1)) i++;
+            if (i > r0) {
+                size_t rlen = (i - r0) * ps;
+                if (populate_pages_noadvise(lo + pos + r0 * ps, rlen, ps))
+                    mapped += (uint64_t)rlen;
+                else
+                    lazy += (uint64_t)rlen;
+            }
+        }
+        pos += chunk_len;
+    }
+    if (mapped_bytes) *mapped_bytes = mapped;
+    if (lazy_bytes) *lazy_bytes = lazy;
+    return true;
+}
+#else
+bool plat_populate_available(void) { return false; }
+
+bool plat_populate_ro(const void *addr, size_t len) {
+    (void)addr; (void)len;
+    return false;
+}
+
+bool plat_populate_cached_ro(const void *addr, size_t len,
+                             uint64_t *mapped_bytes, uint64_t *lazy_bytes) {
+    (void)addr;
+    if (mapped_bytes) *mapped_bytes = 0;
+    if (lazy_bytes) *lazy_bytes = (uint64_t)len;
+    return false;
+}
+#endif
 
 // MADV_DONTNEED on a PROT_READ, MAP_PRIVATE file mapping (plat_mmap_ro's)
 // drops the pages from this process; the next read maps the file's bytes
@@ -2491,18 +2699,27 @@ static void cg_fold(const char *dir, int v, bool cpu, bool mem, cg_bound *b) {
         int n = v == 2 ? cg2_quota(dir) : cg1_quota(dir);
         if (n > 0 && (!b->cpus || n < b->cpus)) b->cpus = n;
     }
-    uint64_t max, used;
-    if (!mem || !cg_num(dir, v == 2 ? "memory.max" : "memory.limit_in_bytes", 1, &max) ||
-        (v == 1 && max >= CG1_UNLIMITED)) return;
+    if (!mem) return;
+    uint64_t max = 0, high = 0, used = 0;
+    bool has_max = cg_num(dir, v == 2 ? "memory.max" : "memory.limit_in_bytes", 1, &max) &&
+                   !(v == 1 && max >= CG1_UNLIMITED);
+    // cgroup v2 memory.high throttles and drives reclaim even when memory.max
+    // is "max" or looser (R18.13): fold the tighter of the two into headroom
+    // while keeping mem_max as the hard ceiling.
+    bool has_high = (v == 2) && cg_num(dir, "memory.high", 0, &high);
+    if (has_max && (!b->mem_max || max < b->mem_max)) b->mem_max = max;
+    if (!has_max && !has_high) return;
+    uint64_t cap = has_max && has_high ? (max < high ? max : high)
+                 : has_max             ? max
+                                       : high;
     // headroom under this level's limit (siblings' usage included, since an
     // ancestor's charge covers its whole subtree), plus what it can reclaim
-    uint64_t left = max;
+    uint64_t left = cap;
     if (cg_num(dir, v == 2 ? "memory.current" : "memory.usage_in_bytes", 0, &used)) {
-        left = used < max ? max - used : 0;
+        left = used < cap ? cap - used : 0;
         uint64_t r = cg_reclaimable(dir, v);
-        left = r > max - left ? max : left + r;
+        left = r > cap - left ? cap : left + r;
     }
-    if (!b->mem_max || max < b->mem_max) b->mem_max = max;
     if (!b->have_left || left < b->mem_left) { b->mem_left = left; b->have_left = true; }
 }
 

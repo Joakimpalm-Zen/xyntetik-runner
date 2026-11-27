@@ -105,6 +105,7 @@ TEST_SAMPLER = test-sampler.exe
 TEST_SHARED = test-shared-weights.exe
 TEST_MLOCK = test-mlock.exe
 TEST_WILLNEED = test-willneed.exe
+TEST_POPULATE = test-populate.exe
 TEST_BATCH = test-batch.exe
 DIFFTOK = difftok.exe
 TEST_BIND = test-bind.exe
@@ -141,6 +142,7 @@ TEST_SAMPLER = test-sampler
 TEST_SHARED = test-shared-weights
 TEST_MLOCK = test-mlock
 TEST_WILLNEED = test-willneed
+TEST_POPULATE = test-populate
 TEST_BATCH = test-batch
 DIFFTOK = difftok
 TEST_BIND = test-bind
@@ -169,6 +171,7 @@ TEST_SAMPLER = test-sampler
 TEST_SHARED = test-shared-weights
 TEST_MLOCK = test-mlock
 TEST_WILLNEED = test-willneed
+TEST_POPULATE = test-populate
 TEST_BATCH = test-batch
 DIFFTOK = difftok
 TEST_BIND = test-bind
@@ -407,9 +410,9 @@ HDR = $(wildcard src/*.h)
 QUANTS_OBJ = $(OBJDIR)/quants.o
 QUANTS_CFLAGS = $(filter-out -ffast-math,$(CFLAGS)) -fno-fast-math
 
-# The offline GGUF quantizer (--quantize) is quant arithmetic too: its Q8_0
-# (and q4_0/q3_k) output must be the canonical, bit-exact ggml result, so a
-# runner-produced file is byte-identical to llama.cpp's for the same input.
+# The offline GGUF quantizer (--quantize) is quant arithmetic too: its
+# writers port ggml's algorithms, and their rounding must be the IEEE
+# arithmetic those algorithms are written for, not -ffast-math's.
 # Under -ffast-math the reciprocal id=1/d and the roundf boundary drifted,
 # tipping ~1-code-per-block differences vs ggml on identical input while the
 # fp16 block scale still matched. Build it fast-math-free, like quants.o.
@@ -419,8 +422,9 @@ QUANTIZE_OBJ = $(OBJDIR)/quantize.o
 # twice; clang does that by default (and GCC more), and on a real BF16 tensor
 # it moved 88 of 27,648 q4_0 blocks, 34 of 3,456 q4_k and 8 of 3,456 q6_k
 # super-blocks off ggml's bytes by one rounding step. Uncontracted, every
-# writer is byte-identical to ggml's own built the same way, on every
-# compiler; test_quantize's ggml golden pins it. The object depends on this
+# compiler gives the same bytes, and test_quantize's ggml golden checks the
+# writers agree with ggml's built the same way on its rows (Runner keeps its
+# own evaluation order where it differs: R4.56). The object depends on this
 # Makefile so a change of these flags rebuilds it.
 QUANTIZE_CFLAGS = $(QUANTS_CFLAGS) -ffp-contract=off
 # R8.29: the learning-rate schedule (warmup + cosine) must agree bit for bit
@@ -816,6 +820,11 @@ $(TEST_MLOCK): $(TEST_MLOCK_SRC) $(HDR)
 # R3.41: plat_willneed brings a whole unaligned range in on Linux
 $(TEST_WILLNEED): tests/test_willneed.c src/compat.c $(HDR)
 	$(CC) $(CFLAGS) -I src tests/test_willneed.c src/compat.c -o $@ $(LDFLAGS)
+# R18.13: post-bind Linux PTE population (MADV_POPULATE_READ)
+TEST_POPULATE_SRC = tests/test_populate.c src/gguf.c src/compat.c \
+                    $(QUANTS_OBJ) src/model.c $(INKLING2_OBJS) src/vramreg.c $(GPU_SRC)
+$(TEST_POPULATE): $(TEST_POPULATE_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_POPULATE_SRC) -o $@ $(LDFLAGS)
 test-es-mlock.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py --eseries 3,256 test-es-mlock.gguf
 
@@ -4193,7 +4202,7 @@ test-sample-nan: tests/test_sample_nan.c src/sample.c scripts/check-sample-nan.s
 test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) $(TEST_MICRO_SCHED) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_INKLING2_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) $(TEST_ATEM_OOM) $(TEST_TEMPLATE_FAMILIES) \
-      $(TEST_TOOLS) $(TEST_SHARED) $(TEST_MLOCK) test-es-mlock.gguf $(TEST_WILLNEED) $(TEST_SPAWN_EINTR) $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
+      $(TEST_TOOLS) $(TEST_SHARED) $(TEST_MLOCK) test-es-mlock.gguf $(TEST_WILLNEED) $(TEST_POPULATE) $(TEST_SPAWN_EINTR) $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
       $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_TRAY_MAC_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) $(TEST_LINEAGE_OOM) $(TEST_DERIVE_OOM) test-lora.full.gguf \
@@ -4406,6 +4415,7 @@ test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SC
 	  echo 'FAIL: a wrong lock was not named as one'; tail -5 .build/test-mlock-defect.out; exit 1; \
 	else echo 'test-mlock refusal cases: a transient refusal retried to a pass, a persistent one named as the machine, a wrong lock failed at once'; fi
 	./$(TEST_WILLNEED)
+	./$(TEST_POPULATE)
 	./$(TEST_SPAWN_EINTR)
 	./$(TEST_FILE_ID)
 	$(METAL_PREFIX_TIGHT) ./$(TEST_PREFIX)
@@ -5279,7 +5289,7 @@ clean:
 	rm -f test-moe-fixture.*.gguf test-q8.gguf test-bf16.gguf test-inkling2-train.gguf runner runner-debug runner-no-manifest.exe $(TEST_INKLING2_GRAD) $(TEST_UTF8_CONSOLE) $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) $(TEST_MICRO_SCHED) \
 		$(TEST_TEMPLATE_OOM) $(TEST_ATEM_OOM) $(TEST_TEMPLATE_FAMILIES) \
 	      $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_TOKENIZER) \
-	      $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) $(TEST_SHARED) $(TEST_MLOCK) $(TEST_WILLNEED) $(TEST_SPAWN_EINTR) \
+	      $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) $(TEST_SHARED) $(TEST_MLOCK) $(TEST_WILLNEED) $(TEST_POPULATE) $(TEST_SPAWN_EINTR) \
 	      $(TEST_BATCH) $(TEST_BIND) $(TEST_HOST_HEADER) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_TRAIN_GPU) test-shared-asan-bin \
 	      $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_TOOLS) $(DIFFTOK) \
 	      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \

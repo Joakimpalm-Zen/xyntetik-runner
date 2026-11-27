@@ -4368,6 +4368,31 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
         double ctx_d = jv_num(ctx_v, -1), batch_d = jv_num(batch_v, -1);
         double threads_d = jv_num(threads_v, -1);
         double gpu_layers_d = jv_num(gpu_layers_v, -1);
+        jv *rroute_p = jv_get(prof, "route");
+        jv *rtokrep_p = rroute_p && rroute_p->type == J_OBJ
+                      ? jv_get(rroute_p, "tok_repair") : NULL;
+        jv *rtoktot_p = rroute_p && rroute_p->type == J_OBJ
+                      ? jv_get(rroute_p, "tok_repair_total") : NULL;
+        bool tokrep_bad = false;
+        if (rtokrep_p) {
+            if (rtokrep_p->type != J_ARR || rtokrep_p->n < 1) {
+                tokrep_bad = true;
+            } else {
+                for (int i = 0; i < rtokrep_p->n; i++) {
+                    jv *it = rtokrep_p->items[i];
+                    if (!it || it->type != J_NUM || it->num < 0 ||
+                        it->num > (double)INT_MAX || it->num != floor(it->num)) {
+                        tokrep_bad = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (rtoktot_p && (!rtokrep_p || rtoktot_p->type != J_NUM ||
+                          rtoktot_p->num < (double)rtokrep_p->n ||
+                          rtoktot_p->num > (double)INT_MAX ||
+                          rtoktot_p->num != floor(rtoktot_p->num)))
+            tokrep_bad = true;
         if (!prof || prof->type != J_OBJ || !cfg || cfg->type != J_OBJ ||
             !ctx_v || ctx_v->type != J_NUM || ctx_d < 1 || ctx_d > INT_MAX ||
             ctx_d != (double)(int)ctx_d || !batch_v || batch_v->type != J_NUM ||
@@ -4383,7 +4408,7 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
              gpu_window_d > 4096 || gpu_window_d != (double)(int)gpu_window_d ||
              (int)gpu_window_d % 64 != 0)) ||
             (gpu_route_v && gpu_route_m < 0) ||
-            (jv_get(prof, "route") && jv_get(prof, "route")->type != J_OBJ) ||
+            (rroute_p && rroute_p->type != J_OBJ) || tokrep_bad ||
             (strcmp(kv, "f16") != 0 && strcmp(kv, "q8") != 0 &&
              strcmp(kv, "fp4") != 0 && strcmp(kv, "k8v4") != 0 && strcmp(kv, "f32") != 0)) {
             fprintf(stderr, "UNVERIFIABLE: malformed execution profile\n");
@@ -4391,6 +4416,11 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
             *rc = 3;
             return true;
         }
+        // R4.50.13: pin BPE CONTROL->USER_DEFINED repair to match the record.
+        // A record without profile.route.tok_repair predates the repair (e.g.
+        // v1.22.0) or ran with RUNNER_TOK_REPAIR=0, so replaying it without
+        // repair reproduces its exact tokens and output bytes.
+        tok_repair_pin(rtokrep_p ? 1 : 0);
         o->mp.n_ctx = (int)ctx_d;
         o->mp.n_batch = (int)batch_d;
         o->n_threads = (int)threads_d;
@@ -5297,6 +5327,11 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
                                       : tpool_size(rt->m.tp),
                 o->serve ? " (divided across slots)" : "",
                 now_s() - t1, setnote);
+        if (rt->tok.n_repaired_ctrl_total > 0) {
+            char rep_line[512];
+            tok_format_repair_line(&rt->tok, rep_line, sizeof rep_line);
+            if (rep_line[0]) fprintf(stderr, "%s\n", rep_line);
+        }
         {   // R12.1b: a canonical build says which types it cannot run canonically
             char gaps[128];
             if (model_canon_gaps(&rt->m, gaps, sizeof gaps) && gaps[0])
@@ -7842,9 +7877,30 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     const char *route_state = "not recorded";
     jv *rroute = jv_get(vprof, "route");
     if (rroute) {
-        char rj[768];
+        char rj[MODEL_ROUTE_RECEIPT_CAP];
         model_route_receipt_json(&rt->m, rj, sizeof rj);
+        tok_route_append(rj, sizeof rj, &rt->tok);
         jv *now = json_parse(rj, strlen(rj));
+        jv *rtr = jv_get(rroute, "tok_repair"), *ntr = jv_get(now, "tok_repair");
+        jv *rtt = jv_get(rroute, "tok_repair_total"), *ntt = jv_get(now, "tok_repair_total");
+        bool tokrep_match = (!rtr && !ntr);
+        if (rtr && ntr && rtr->type == J_ARR && ntr->type == J_ARR && rtr->n == ntr->n &&
+            (!rtt == !ntt) && (!rtt || (int)rtt->num == (int)ntt->num)) {
+            tokrep_match = true;
+            for (int i = 0; i < rtr->n; i++) {
+                if ((int)rtr->items[i]->num != (int)ntr->items[i]->num) {
+                    tokrep_match = false;
+                    break;
+                }
+            }
+        }
+        if (!tokrep_match) {
+            fprintf(stderr, "UNVERIFIABLE: the replay's tokenizer repair differs from the "
+                    "record's profile.route.tok_repair\n");
+            jv_free(now);
+            free(replay_out.buf); jv_free(vr->rec);
+            return 3;
+        }
         const char *rb = jv_str(jv_get(rroute, "backend"), ""),
                    *ra = jv_str(jv_get(rroute, "cpu_act"), ""),
                    *rd = jv_str(jv_get(rroute, "backend_detail"), "");
@@ -8923,6 +8979,7 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
         char *transcript_exe = plat_executable_path();
         char route_json[MODEL_ROUTE_RECEIPT_CAP];
         model_route_receipt_json(&rt->m, route_json, sizeof route_json);
+        tok_route_append(route_json, sizeof route_json, &rt->tok);
         transcript_info ti = {
             .out_path = o->transcript_path,
             .runner_version = RUNNER_VERSION,

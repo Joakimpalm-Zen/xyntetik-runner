@@ -210,6 +210,52 @@ int main(void) {
     read_tree("v2-nest", "self-up/cgroup", HOST_CPUS, HOST_RAM, HOST_AVAIL, &c);
     ck(c.cpu_cores == 26, "nested: a path that climbs out of the mount reads the root only");
 
+    // --- cgroup v2 memory.high (R18.13) ------------------------------------
+    // memory.high throttles and drives reclaim even when memory.max is "max"
+    // or larger. Available headroom must respect the tighter of memory.max
+    // and memory.high at every ancestor level, without rewriting
+    // memory_max_bytes (the hard ceiling).
+    put("v2-high-only", "cgroup.controllers", "cpu memory\n");
+    put("v2-high-only", "memory.max", "max\n");
+    put("v2-high-only", "memory.high", "21474836480\n");       // 20 GiB
+    put("v2-high-only", "memory.current", "5368709120\n");     // 5 GiB
+    put("v2-high-only", "memory.stat", "inactive_file 1073741824\n"); // 1 GiB
+    read_tree("v2-high-only", NULL, HOST_CPUS, HOST_RAM, HOST_AVAIL, &c);
+    ck(c.memory_max_bytes == 0 && c.ram_bytes == HOST_RAM,
+       "v2 memory.high alone: hard memory_max_bytes stays 0");
+    ck(c.ram_available_bytes == GiB(20) - GiB(5) + GiB(1),
+       "v2 memory.high alone: headroom is memory.high - current + reclaimable = 16 GiB");
+
+    put("v2-high-tighter", "cgroup.controllers", "cpu memory\n");
+    put("v2-high-tighter", "memory.max", "85899345920\n");     // 80 GiB
+    put("v2-high-tighter", "memory.high", "21474836480\n");    // 20 GiB
+    put("v2-high-tighter", "memory.current", "4294967296\n");  // 4 GiB
+    read_tree("v2-high-tighter", NULL, HOST_CPUS, HOST_RAM, HOST_AVAIL, &c);
+    ck(c.memory_max_bytes == GiB(80),
+       "v2 memory.high < memory.max: memory_max_bytes remains 80 GiB");
+    ck(c.ram_available_bytes == GiB(16),
+       "v2 memory.high < memory.max: headroom uses tighter memory.high (16 GiB)");
+
+    put("v2-high-looser", "cgroup.controllers", "cpu memory\n");
+    put("v2-high-looser", "memory.max", "17179869184\n");      // 16 GiB
+    put("v2-high-looser", "memory.high", "85899345920\n");     // 80 GiB
+    put("v2-high-looser", "memory.current", "4294967296\n");   // 4 GiB
+    read_tree("v2-high-looser", NULL, HOST_CPUS, HOST_RAM, HOST_AVAIL, &c);
+    ck(c.memory_max_bytes == GiB(16) && c.ram_available_bytes == GiB(12),
+       "v2 memory.high > memory.max: headroom stays bound by tighter memory.max (12 GiB)");
+
+    put("v2-high-nest", "cgroup.controllers", "cpu memory\n");
+    put("v2-high-nest", "slice/leaf/memory.max", "max\n");
+    put("v2-high-nest", "slice/leaf/memory.high", "max\n");
+    put("v2-high-nest", "slice/leaf/memory.current", "1073741824\n");
+    put("v2-high-nest", "slice/memory.max", "max\n");
+    put("v2-high-nest", "slice/memory.high", "10737418240\n"); // 10 GiB on ancestor
+    put("v2-high-nest", "slice/memory.current", "2147483648\n"); // 2 GiB
+    put("self-high-nest", "cgroup", "0::/slice/leaf\n");
+    read_tree("v2-high-nest", "self-high-nest/cgroup", HOST_CPUS, HOST_RAM, HOST_AVAIL, &c);
+    ck(c.ram_available_bytes == GiB(8),
+       "v2 nested memory.high: ancestor's 10 GiB - 2 GiB = 8 GiB headroom binds leaf");
+
     // --- cgroup v1 ----------------------------------------------------------
     // Per-controller mounts. Docker bind-mounts the container's own cgroup
     // at each, while /proc/self/cgroup still names the host-side path, so

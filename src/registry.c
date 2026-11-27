@@ -325,6 +325,11 @@ int swap_to_expect(const char *want, const resident_expect *ex, sock_t owner) {
         }
         bool model_ok = m && !sig_refused && model_load(m, SV.reg[idx].path, &SV.mp);
         bool tok_ok = model_ok && tok && tokenizer_init(tok, &m->gf);
+        if (tok_ok && tok->n_repaired_ctrl_total > 0) {
+            char rep_line[512];
+            tok_format_repair_line(tok, rep_line, sizeof rep_line);
+            if (rep_line[0]) fprintf(stderr, "%s\n", rep_line);
+        }
         bool mtp_refused = model_ok && SV.single && SV.mp.mtp &&
                            !model_mtp_ready(m);
         if (mtp_refused)

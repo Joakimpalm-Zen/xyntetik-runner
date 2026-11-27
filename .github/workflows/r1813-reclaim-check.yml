@@ -1,0 +1,54 @@
+# One-off real-file Linux cgroup v2 memory.high reclaim check for R18.13.
+# Dispatched manually on a target ref; never runs on push or pull_request.
+name: R18.13 Real-File Reclaim Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch name or commit SHA to test against main"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  reclaim-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout target ref
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          path: branch
+
+      - name: Checkout main (baseline)
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          path: base
+
+      - name: Build baseline and branch runners
+        run: |
+          make -C base -j"$(nproc)" runner
+          make -C branch -j"$(nproc)" runner
+
+      - name: Run R18.13 real-file reclaim check
+        run: |
+          set -euo pipefail
+          mkdir -p r1813-artifacts
+          branch/scripts/r1813-reclaim-check.sh \
+            --base-runner "$PWD/base/runner" \
+            --branch-runner "$PWD/branch/runner" \
+            --out-dir "$PWD/r1813-artifacts" \
+            | tee r1813-artifacts/run.log
+
+      - name: Upload reclaim check logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: r1813-reclaim-check-logs
+          path: r1813-artifacts/
+          retention-days: 14
