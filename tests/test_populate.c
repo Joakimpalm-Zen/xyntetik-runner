@@ -39,6 +39,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
+#ifdef __linux__
+#include <sys/sysmacros.h>
+#endif
 
 static int g_fail = 0;
 
@@ -75,16 +78,16 @@ static void gw_kv_f32(gw *w, const char *k, float v) {
     gw_str(w, k); gw_u32(w, GGUF_T_F32); gw_f32(w, v);
 }
 
-static bool write_tiny_llama_gguf(const char *path) {
+static bool write_tiny_llama_gguf(const char *path, int n_ff) {
     enum {
         N_VOCAB = 64,
         N_EMBD  = 64,
         N_HEAD  = 2,
         N_KV    = 2,
-        N_FF    = 8192,  // 3 * 64 * 8192 * 4 = 6.29 MB of FFN weights
         N_CTX   = 128,
         ALIGN   = 32
     };
+    const uint32_t N_FF = (uint32_t)(n_ff > 0 ? n_ff : 8192); // default 8192: 6.29 MB of FFN weights
     struct tdesc { const char *name; uint32_t nd; uint64_t ne[2]; uint64_t nbytes; uint64_t off; };
     struct tdesc ts[] = {
         { "output_norm.weight",       1, { N_EMBD, 0 },       (uint64_t)N_EMBD * 4, 0 },
@@ -264,6 +267,77 @@ static void test_policy(void) {
        "policy: unknown/0 available budget does not populate");
 }
 
+// R18.13.1: cached-cold Rss bar accounting for one backing-device read-ahead
+// window pulled by reading the GGUF header from a cold file.
+static uint64_t populate_parse_read_ahead_kb(const char *txt) {
+    if (!txt) return 0;
+    char *end = NULL;
+    unsigned long kb = strtoul(txt, &end, 10);
+    if (end == txt) return 0;
+    return (uint64_t)kb * 1024ull;
+}
+
+static int populate_fixture_n_ff(uint64_t read_ahead_bytes) {
+    int n_ff = 8192;
+    const uint64_t bytes_per_ff = 3ull * 64ull * 4ull; // 768 bytes per N_FF
+    uint64_t need = 3ull * read_ahead_bytes;
+    if (need > (uint64_t)n_ff * bytes_per_ff) {
+        uint64_t scaled = (need + bytes_per_ff - 1) / bytes_per_ff;
+        scaled = (scaled + 63ull) & ~63ull;
+        if (scaled > 65536ull) scaled = 65536ull;
+        n_ff = (int)scaled;
+    }
+    return n_ff;
+}
+
+static bool populate_cold_rss_ok(int64_t rss, uint64_t data_sz, uint64_t read_ahead_bytes) {
+    if (rss < 0) return false;
+    return (uint64_t)rss < data_sz / 4 + read_ahead_bytes;
+}
+
+static void test_cold_rss_bar(void) {
+    // 6.39 MB fixture (N_FF=8192), 2048 KB backing-device read-ahead window
+    const uint64_t data_sz = 6390528ull;
+    const uint64_t ra_128  = 128ull * 1024ull;
+    const uint64_t ra_2048 = 2048ull * 1024ull;
+    const uint64_t ra_4096 = 4096ull * 1024ull;
+    const uint64_t rss_hdr_ra = ra_2048 + 4096ull;       // 2.10 MB (32.9% of 6.39 MB)
+    const uint64_t rss_60pct  = data_sz * 60ull / 100ull; // 3.83 MB (60%)
+    const uint64_t rss_90pct  = data_sz * 90ull / 100ull; // 5.75 MB (90%)
+
+    ck(populate_parse_read_ahead_kb("2048\n") == ra_2048,
+       "read_ahead_kb: parses '2048\\n' as 2 MiB");
+    ck(populate_parse_read_ahead_kb("128") == ra_128,
+       "read_ahead_kb: parses '128' as 128 KiB");
+    ck(populate_parse_read_ahead_kb("0\n") == 0 &&
+       populate_parse_read_ahead_kb("") == 0 &&
+       populate_parse_read_ahead_kb(NULL) == 0 &&
+       populate_parse_read_ahead_kb("abc\n") == 0,
+       "read_ahead_kb: 0, empty, NULL, and non-numeric parse as 0");
+
+    ck(populate_cold_rss_ok((int64_t)rss_hdr_ra, data_sz, ra_2048),
+       "cold bar: accepts 2.10 MB / 6.39 MB with 2048 KB read-ahead window");
+    ck(!populate_cold_rss_ok((int64_t)rss_60pct, data_sz, ra_2048),
+       "cold bar: rejects 60% Rss even with 2048 KB read-ahead window");
+    ck(!populate_cold_rss_ok((int64_t)rss_90pct, data_sz, ra_2048),
+       "cold bar: rejects 90% Rss (full populate) with 2048 KB read-ahead window");
+    ck(!populate_cold_rss_ok((int64_t)rss_hdr_ra, data_sz, ra_128),
+       "cold bar: rejects 2.10 MB / 6.39 MB on a small 128 KB read-ahead window");
+    ck(populate_cold_rss_ok(1048576, data_sz, ra_128),
+       "cold bar: accepts 1.0 MiB / 6.39 MB on a 128 KB read-ahead window");
+    ck(!populate_cold_rss_ok(-1, data_sz, ra_2048),
+       "cold bar: rejects negative/error smaps Rss");
+
+    ck(populate_fixture_n_ff(ra_128) == 8192 && populate_fixture_n_ff(ra_2048) == 8192,
+       "fixture sizing: keeps 6.39 MB (N_FF=8192) up to 2048 KB read-ahead");
+    int n_ff_4m = populate_fixture_n_ff(ra_4096);
+    uint64_t data_4m = 3ull * 64ull * (uint64_t)n_ff_4m * 4ull + 99072ull;
+    ck(n_ff_4m >= 16384 && data_4m >= 3ull * ra_4096 &&
+       populate_cold_rss_ok((int64_t)(ra_4096 + 4096ull), data_4m, ra_4096) &&
+       !populate_cold_rss_ok((int64_t)(data_4m * 60ull / 100ull), data_4m, ra_4096),
+       "fixture sizing: scales N_FF for 4096 KB read-ahead so 1 window passes and 60% fails");
+}
+
 static void test_range_planning(const char *path) {
     model_t hm;
     memset(&hm, 0, sizeof hm);
@@ -363,6 +437,36 @@ static void test_range_planning(const char *path) {
 }
 
 #ifdef __linux__
+static bool read_sysfs_read_ahead(const char *sys_path, uint64_t *out) {
+    FILE *f = fopen(sys_path, "r");
+    if (!f) return false;
+    char buf[64] = { 0 };
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    if (n == 0) return false;
+    *out = populate_parse_read_ahead_kb(buf);
+    return true;
+}
+
+// Read the backing device's kernel read-ahead window (bytes) without root.
+// Handles dm/LVM (/sys/dev/block/<maj>:<min>/queue/read_ahead_kb), partitions
+// (parent ../queue/read_ahead_kb), and virtual filesystems (/sys/class/bdi).
+static uint64_t linux_backing_read_ahead_bytes(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    unsigned maj = (unsigned)major(st.st_dev);
+    unsigned min = (unsigned)minor(st.st_dev);
+    char p[128];
+    uint64_t ra = 0;
+    snprintf(p, sizeof p, "/sys/dev/block/%u:%u/queue/read_ahead_kb", maj, min);
+    if (read_sysfs_read_ahead(p, &ra)) return ra;
+    snprintf(p, sizeof p, "/sys/dev/block/%u:%u/../queue/read_ahead_kb", maj, min);
+    if (read_sysfs_read_ahead(p, &ra)) return ra;
+    snprintf(p, sizeof p, "/sys/class/bdi/%u:%u/read_ahead_kb", maj, min);
+    if (read_sysfs_read_ahead(p, &ra)) return ra;
+    return 0;
+}
+
 static int64_t smaps_rss_bytes(const void *base, size_t len) {
     FILE *f = fopen("/proc/self/smaps", "r");
     if (!f) return -1;
@@ -453,20 +557,24 @@ static void test_linux_smaps(const char *path) {
     model_free(&m);
 
     // 3. Default cached mode on COLD page cache: stays lazy, no blocking full read
+    // beyond the single kernel read-ahead window pulled by reading the GGUF header.
     double cold_frac = evict_and_check_resident(path);
     if (cold_frac >= 0.0 && cold_frac < 0.25) {
+        uint64_t ra_bytes = linux_backing_read_ahead_bytes(path);
         unsetenv("RUNNER_POPULATE");
         t0 = plat_now();
         ok = model_load(&m, path, &p);
         double ms_cached_cold = (plat_now() - t0) * 1000.0;
         ck(ok, "linux: model_load succeeds in default cached mode (cold)");
         int64_t rss_cached_cold = smaps_rss_bytes(m.gf.map, m.gf.map_size);
-        printf("populate: tiny fixture (%.2f MiB data): cached-cold Rss=%.2f MiB (mapped=%.2f MiB, lazy=%.2f MiB) load=%.2f ms\n",
+        printf("populate: tiny fixture (%.2f MiB data): cached-cold Rss=%.2f MiB (mapped=%.2f MiB, lazy=%.2f MiB, read_ahead=%.0f KiB, limit=%.2f MiB) load=%.2f ms\n",
                data_sz / 1048576.0, rss_cached_cold / 1048576.0,
                model_populated_bytes(&m) / 1048576.0,
-               model_populated_lazy_bytes(&m) / 1048576.0, ms_cached_cold);
-        ck(rss_cached_cold >= 0 && rss_cached_cold < (int64_t)(data_sz / 4),
-           "linux: cached-cold does NOT read cold pages (Rss <25%)");
+               model_populated_lazy_bytes(&m) / 1048576.0,
+               ra_bytes / 1024.0, (data_sz / 4 + ra_bytes) / 1048576.0,
+               ms_cached_cold);
+        ck(populate_cold_rss_ok(rss_cached_cold, data_sz, ra_bytes),
+           "linux: cached-cold does NOT read cold pages beyond header read-ahead (Rss < 25% + 1 window)");
         ck(model_populated_lazy_bytes(&m) > data_sz / 2,
            "linux: cached-cold reports majority of bytes left lazy");
         model_free(&m);
@@ -611,13 +719,18 @@ static void test_linux_smaps(const char *path) {
 
 int main(void) {
     const char *path = "test-populate-tmp.gguf";
-    if (!write_tiny_llama_gguf(path)) {
+    int n_ff = 8192;
+#ifdef __linux__
+    n_ff = populate_fixture_n_ff(linux_backing_read_ahead_bytes("."));
+#endif
+    if (!write_tiny_llama_gguf(path, n_ff)) {
         fprintf(stderr, "FAIL: cannot write tiny fixture %s\n", path);
         return 1;
     }
 
     test_modes_and_trap();
     test_policy();
+    test_cold_rss_bar();
     test_range_planning(path);
 
 #ifdef __linux__
