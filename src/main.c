@@ -9604,6 +9604,21 @@ static int cli_main(int argc, char **argv, char **owned_prompt, session_image *s
     return rc;
 }
 
+// R3.84: opt-in routes retired because their own records showed no gain or a
+// loss. Setting any of these prints one notice on stderr and changes nothing.
+static void warn_retired_switches(void) {
+    static const struct { const char *name; const char *why; } retired[] = {
+        { "RUNNER_METAL_MOE_EM", "retired in R3.84 (measured 3 to 4% slower)" },
+        { "RUNNER_METAL_TENSOR", "retired in R3.84 (measured parity only on M5)" },
+    };
+    for (size_t i = 0; i < sizeof(retired) / sizeof(*retired); i++) {
+        const char *v = getenv(retired[i].name);
+        if (v && *v)
+            fprintf(stderr, "notice: %s is %s; setting it has no effect\n",
+                    retired[i].name, retired[i].why);
+    }
+}
+
 int main(int argc, char **argv) {
     // before anything reads argv or the environment: on Windows both arrive
     // in the ANSI code page unless the manifest made that UTF-8 (compat.h)
@@ -9615,6 +9630,7 @@ int main(int argc, char **argv) {
     char **original_argv = argv;
     int sub = cli_expand_subcommand(&argc, &argv);
     if (sub >= 0) return sub;
+    warn_retired_switches();
     char *owned_prompt = NULL;
     session_image simg;
     memset(&simg, 0, sizeof simg);

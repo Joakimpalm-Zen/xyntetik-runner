@@ -277,7 +277,6 @@ TEST_METAL_KVFP4 = $(TEST_BATCH:test-batch%=test-metal-kvfp4%)
 TEST_QUANTS_SIMD = $(TEST_BATCH:test-batch%=test-quants-simd%)
 TEST_INSTANCES = $(TEST_BATCH:test-batch%=test-instances%)
 TEST_METAL_ADMISSION = $(TEST_BATCH:test-batch%=test-metal-admission%)
-TEST_METAL_TENSOR = $(TEST_BATCH:test-batch%=test-metal-tensor%)
 TEST_TRAY_CORE = $(TEST_BATCH:test-batch%=test-tray-core%)
 TEST_TRAY_WIN = $(TEST_BATCH:test-batch%=test-tray-win-menu%)
 TEST_UTF8_CONSOLE = $(TEST_BATCH:test-batch%=test-utf8-console%)
@@ -567,7 +566,7 @@ $(OBJDIR)/mldsa_%.o: src/mldsa/%.c $(wildcard src/mldsa/*.h) src/mldsa.h
 $(OBJDIR)/cuda.o: src/cuda.c $(HDR) src/kernels_ptx.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I src -c $< -o $@
-$(OBJDIR)/metal.o: src/metal.m $(HDR) src/kernels_metal.h src/kernels_tensor_metal.h
+$(OBJDIR)/metal.o: src/metal.m $(HDR) src/kernels_metal.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I src -c $< -o $@
 
@@ -652,7 +651,7 @@ $(OBJDIR)/tray_macos.o: src/tray_macos.m $(HDR)
 # running from the old file (a server left up) gets every later launch of a
 # file rewritten under it SIGKILLed at exec, which every test then reports as
 # "runner exited during startup", returncode -9, no log.
-$(OBJDIR)/$(RUNNER_EXE): $(RUNNER_OBJ) $(HDR) src/kernels_ptx.h src/kernels_tensor_metal.h
+$(OBJDIR)/$(RUNNER_EXE): $(RUNNER_OBJ) $(HDR) src/kernels_ptx.h
 	$(CC) $(CFLAGS) $(RUNNER_OBJ) -o $@ $(LDFLAGS)
 # ./runner is a copy of the build-tree binary, refreshed whenever the two
 # differ; test-python-sanitized points it at runner-debug for its run.
@@ -2502,10 +2501,6 @@ $(TEST_METAL_KQUANTS): tests/test_metal_kquants.m src/kernels_metal.h $(QUANTS_O
 	    tests/test_metal_kquants.m $(QUANTS_OBJ) -o $@ -lm -lpthread \
 	    -framework Metal -framework Foundation
 
-$(TEST_METAL_TENSOR): tests/test_metal_tensor.m src/kernels_tensor_metal.h
-	$(CC) -std=gnu11 -Wall -Wextra tests/test_metal_tensor.m -o $@ \
-	    -framework Metal -framework Foundation
-
 # compat.c joins the link because the partial-offload residency guard in
 # metal.m calls plat_ram_available_bytes(): deciding whether a split pays
 # needs to know how much RAM the CPU tail would have to stream through.
@@ -2517,11 +2512,10 @@ $(TEST_METAL_OWNERSHIP): tests/test_metal_ownership.m src/metal.m src/compat.c $
 # run fall back to the CPU silently, which no correctness gate can see.
 test-metal-shader-gate:
 ifeq ($(BUILD_OS),Darwin)
-	@$(MAKE) --no-print-directory $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_METAL_KVFP4) $(TEST_METAL_TENSOR) >/dev/null
+	@$(MAKE) --no-print-directory $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_METAL_KVFP4) >/dev/null
 	@./$(TEST_METAL_SHADERS)
 	@./$(TEST_METAL_KQUANTS)
 	@./$(TEST_METAL_KVFP4)
-	@./$(TEST_METAL_TENSOR)
 else
 	@echo "metal shader gate skipped: macOS-only backend"
 endif
@@ -3556,43 +3550,7 @@ else
 	@echo "metal big-model identity skipped: macOS-only backend"
 endif
 
-# Expert-major MoE kernels (RUNNER_METAL_MOE_EM): the twin family shares its
-# dot bodies with slot-major, so the contract is BYTE IDENTITY across the
-# whole run (prefill engages expert-major, the decode tail stays slot-major —
-# both shapes are exercised by one comparison). The engagement grep is what
-# keeps the gate non-vacuous: without it, a build whose expert-major
-# pipelines fail to compile would fall back to slot-major and pass on
-# self-agreement.
-test-metal-moe-em: runner test-moe-fixture.moe1.gguf test-moe-fixture.moe4.gguf test-moe-fixture.gptoss-mxfp4.gguf test-moe-fixture.gemma4-moe.gguf
-ifeq ($(BUILD_OS),Darwin)
-	@set -e; \
-	if ! ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'metal' else 1)"; then \
-	  echo "metal moe expert-major: SKIP (no Metal device)"; exit 0; fi; \
-	prompt="The quick brown fox jumps over the lazy dog again and again"; \
-	./$(RUNNER_EXE) -m test-moe-fixture.moe4.gguf \
-	  --quantize test-moe-fixture.moe4-q8.gguf --quant q8_0 >/dev/null 2>&1; \
-	for f in test-moe-fixture.moe1.gguf test-moe-fixture.moe4.gguf \
-	         test-moe-fixture.moe4-q8.gguf \
-	         test-moe-fixture.gptoss-mxfp4.gguf test-moe-fixture.gemma4-moe.gguf; do \
-	  RUNNER_METAL_MOE_MM=0 ./$(RUNNER_EXE) -m $$f -p "$$prompt" -n 16 -b 32 \
-	    --temp 0 --no-tray > moe-em-off.out 2>/dev/null; \
-	  RUNNER_METAL_MOE_MM=0 RUNNER_METAL_MOE_EM=1 ./$(RUNNER_EXE) -m $$f \
-	    -p "$$prompt" -n 16 -b 32 --temp 0 --no-tray \
-	    > moe-em-on.out 2> moe-em-on.err; \
-	  grep -q "expert-major prefill kernels on" moe-em-on.err || { \
-	    echo "FAIL: $$f never dispatched the expert-major kernels — vacuous"; \
-	    exit 1; }; \
-	  cmp -s moe-em-off.out moe-em-on.out || { \
-	    echo "FAIL: $$f expert-major output differs from slot-major"; exit 1; }; \
-	  echo "  metal moe expert-major ok ($$f, byte-identical)"; \
-	done; \
-	rm -f moe-em-off.out moe-em-on.out moe-em-on.err
-else
-	@echo "metal moe expert-major: SKIP (macOS-only backend)"
-endif
-
-# Grouped-MMA MoE prefill (RUNNER_METAL_MOE_MM): unlike the expert-major
-# matvec twins above, this stages operands in half and reassociates the
+# Grouped-MMA MoE prefill (RUNNER_METAL_MOE_MM): stages operands in half and reassociates the
 # k-sum, so its contract is the tolerance bound, not byte identity — the
 # same deal dense RUNNER_METAL_MM already has. The gate runs the full-model
 # identity bound with the feature engaged (engagement grep keeps it
@@ -3912,7 +3870,6 @@ test-metal:
 	$(MAKE) --no-print-directory test-metal-kv-grow PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-metal-bind-failure
 	$(MAKE) --no-print-directory test-metal-multibuf
-	$(MAKE) --no-print-directory test-metal-moe-em
 	$(MAKE) --no-print-directory test-metal-moe-mm
 	$(MAKE) --no-print-directory test-metal-fuse
 	$(MAKE) --no-print-directory test-metal-prefill
@@ -5485,7 +5442,7 @@ test-anchors: runner test.gguf $(TEST_LORA_GRAD) $(DIFFTOK)
 .PHONY: test-anchors
 .PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-hybrids test-cuda-olmo2 test-cuda-qwen4exp test-cuda-qwen35moe test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity test-cuda-longrope test-cuda-batch-columns test-cuda-batch-q35
 .PHONY: test-gates test-gates-core test-gates-batch test-python
-.PHONY: test-deepseek2 test-metal-kv-fp4 test-metal-olmo2 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
+.PHONY: test-deepseek2 test-metal-kv-fp4 test-metal-olmo2 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 
 # The TypeScript client (R10.7): type-checked with the pinned compiler and run
 # against a live runner on the CI fixture. Needs Node 18+ and npm (the pinned

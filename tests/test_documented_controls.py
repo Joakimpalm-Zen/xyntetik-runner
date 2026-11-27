@@ -34,7 +34,7 @@ from _vram_ledger import the_ledger  # noqa: E402
 
 # the switches these tests set: none leaks in from the host's environment
 SWITCHES = ("RUNNER_TPOOL_SPIN", "RUNNER_GRAMMAR_FF", "RUNNER_SPEC_STATS", "RUNNER_SCHEMA_ALLOW_WS",
-            "RUNNER_FORCE_REQUANT", "RUNNER_REQUANT_ONLY", "RUNNER_METAL_MV2", "RUNNER_METAL_TENSOR",
+            "RUNNER_FORCE_REQUANT", "RUNNER_REQUANT_ONLY", "RUNNER_METAL_MV2",
             "RUNNER_VRAM_PRIORITY", "RUNNER_CUDA_KV_GATHER", "RUNNER_CUDA_GRAPH_RECUR",
             "RUNNER_CUDA_RECUR_SEQ", "RUNNER_DEBUG_ROUTE")
 GGML_Q4_0, GGML_Q8_0, GGML_Q4_K = 2, 8, 12
@@ -252,40 +252,6 @@ def test_metal_mv2_off_keeps_the_one_row_kernel(runner_bin, fx):
     base, _ = _gen(runner_bin, fx["q6_k"], "--gpu", "auto")
     off, _ = _gen(runner_bin, fx["q6_k"], "--gpu", "auto", RUNNER_METAL_MV2="0")
     assert off == base
-
-
-def _tensor_device(runner_bin):
-    """The device gate of RUNNER_METAL_TENSOR: an Apple M5 or M6 on macOS 26.2 or newer."""
-    caps = json.loads(subprocess.run([str(runner_bin), "--caps"], cwd=ROOT, stdout=subprocess.PIPE,
-                                     timeout=60).stdout)
-    name = (caps.get("gpu") or {}).get("name") or ""
-    ver = tuple(int(x) for x in (platform.mac_ver()[0] or "0").split(".")[:2] + ["0"])[:2]
-    return name.startswith(("Apple M5", "Apple M6")) and ver >= (26, 2)
-
-
-def test_metal_tensor_is_an_opt_in_behind_its_device_gate(runner_bin, fx):
-    """RUNNER_METAL_TENSOR=1 opts Q4_K, Q8_0 and Q4_0 prefill into the Metal 4 tensor GEMM on an M5 or
-    newer with macOS 26.2; it is parked off by default, and 0 is the explicit pin. The route detail
-    names it. Where the device gate declines it, the load says so and the opt-in changes nothing else,
-    bytes included."""
-    _metal_or_skip(runner_bin)
-    declined = "Metal 4 tensor GEMM requires M5+ and macOS 26.2+"
-
-    def detail(**env):
-        return _counter(_bench(runner_bin, fx["q4_k"], "--gpu", "auto", **env), "backend_detail")
-
-    assert "tensor=off" in detail()
-    assert "tensor=off" in detail(RUNNER_METAL_TENSOR="0")
-    base, err = _gen(runner_bin, fx["q4_k"], "--gpu", "auto")
-    _, err_pin = _gen(runner_bin, fx["q4_k"], "--gpu", "auto", RUNNER_METAL_TENSOR="0")
-    assert declined not in err and declined not in err_pin, (err[-600:], err_pin[-600:])
-    if _tensor_device(runner_bin):
-        assert "tensor=on" in detail(RUNNER_METAL_TENSOR="1")
-    else:
-        assert "tensor=off" in detail(RUNNER_METAL_TENSOR="1")
-        asked, err_asked = _gen(runner_bin, fx["q4_k"], "--gpu", "auto", RUNNER_METAL_TENSOR="1")
-        assert declined in err_asked, err_asked[-600:]
-        assert asked == base
 
 
 # ---- CUDA
