@@ -458,9 +458,38 @@ done:
 // by its bound, the live counts read on the device), same inputs, one handle: the rows, the choices and the margins
 // compared bit for bit; *rb_sized / *rb_bounded the body's count readbacks each call made (want 1 / 0); *ntiled the
 // experts with 16+ columns (the tiled launches live). Returns the differing values, -1 if a call failed.
-static long body_bounded_identity(int type, int H, int F, int E, int K, int T, long *nval, long *rb_sized, long *rb_bounded,
-                           int *ntiled) {
-    const size_t rb13 = type == T_NVFP4 ? (size_t)H / 64 * 36 : (size_t)H * 2, rb2 = type == T_NVFP4 ? (size_t)F / 64 * 36 : (size_t)F * 2;
+// a row's bytes in the stack types the body takes here
+static size_t bb_row_bytes(int type, int n) {
+    return type == T_NVFP4 ? (size_t)n / 64 * 36 : type == T_IQ3_XXS ? (size_t)n / 256 * 98 : (size_t)n * 2;
+}
+// R4.48.35: an IQ3_XXS stack of `rows` rows of rb bytes. Random grid indices, sign and scale words, each block's f16 d
+// positive and in a sane range; every 7th block from the k-th a boundary: (0) a zero d, the zero block; (1) every grid
+// index 0; (2) every grid index 255; (3) every sign index 127 (all seven sign bits) under the largest scale nibble 15;
+// (4) the scale nibble 0 with no sign bits.
+static void bb_fill_iq3(unsigned char *w, size_t rows, size_t rb, uint32_t *seed) {
+    for (size_t i = 0; i < rows * rb; i++) { *seed = *seed * 1664525u + 1013904223u; w[i] = (unsigned char)(*seed >> 8); }
+    size_t kb = 0;
+    for (size_t r = 0; r < rows; r++)
+        for (size_t b = 0; b < rb; b += 98, kb++) {
+            unsigned char *blk = w + r * rb + b, *qs = blk + 2, *ss = blk + 2 + 64;
+            blk[1] = (unsigned char)(0x20 + blk[1] % 8);   // d in [2^-7, 2^-5): no NaN or infinity, no sign
+            switch (kb % 7) {
+            case 0: blk[0] = blk[1] = 0; break;
+            case 1: memset(qs, 0x00, 64); break;
+            case 2: memset(qs, 0xFF, 64); break;
+            case 3: for (int k = 0; k < 8; k++) { const uint32_t v = 0xFFFFFFFFu; memcpy(ss + 4 * k, &v, 4); } break;
+            case 4: for (int k = 0; k < 8; k++) { const uint32_t v = 0; memcpy(ss + 4 * k, &v, 4); } break;
+            default: break;
+            }
+        }
+}
+static const char *bb_type_name(int type) {
+    return type == T_NVFP4 ? "NVFP4" : type == T_IQ3_XXS ? "IQ3_XXS" : "BF16";
+}
+static long body_bounded_identity(int type13, int type2, int H, int F, int E, int K, int T, long *nval, long *rb_sized,
+                                  long *rb_bounded, int *ntiled) {
+    const int type = type13;   // the same-type cases' generation below is unchanged (their seed and order)
+    const size_t rb13 = bb_row_bytes(type13, H), rb2 = bb_row_bytes(type2, F);
     unsigned char *w13 = malloc((size_t)E * 2 * F * rb13), *w2 = malloc((size_t)E * H * rb2);
     float *wr = malloc(sizeof(float) * (size_t)E * H), *br = malloc(sizeof(float) * (size_t)E);
     float *x = malloc(sizeof(float) * (size_t)T * H), *o1 = malloc(sizeof(float) * (size_t)T * H);
@@ -473,7 +502,19 @@ static long body_bounded_identity(int type, int H, int F, int E, int K, int T, l
     uint32_t seed = 4441u + (uint32_t)type * 7u + (uint32_t)T * 13u + (uint32_t)E;
 #define RNDU() (seed = seed * 1664525u + 1013904223u, seed >> 8)
 #define RNDF() ((float)((int)(RNDU() % 2001u) - 1000) / 1000.0f)
-    if (type == T_NVFP4) {
+    if (type13 == T_IQ3_XXS || type2 == T_IQ3_XXS) {
+        // R4.48.35: a stack each in its own type (A0: gate_up IQ3_XXS, down NVFP4)
+        const size_t rows[2] = { (size_t)E * 2 * F, (size_t)E * H }, rbs[2] = { rb13, rb2 };
+        unsigned char *ws[2] = { w13, w2 };
+        const int ty[2] = { type13, type2 };
+        for (int u = 0; u < 2; u++) {
+            if (ty[u] == T_IQ3_XXS) { bb_fill_iq3(ws[u], rows[u], rbs[u], &seed); continue; }
+            for (size_t i = 0; i < rows[u] * rbs[u]; i++) ws[u][i] = (unsigned char)RNDU();   // NVFP4
+            for (size_t r = 0; r < rows[u]; r++)   // scale bytes in a sane range (no NaN code 0x7F)
+                for (size_t b = 0; b < rbs[u]; b += 36)
+                    for (int k = 0; k < 4; k++) ws[u][r * rbs[u] + b + k] = (unsigned char)(0x30 + RNDU() % 16);
+        }
+    } else if (type == T_NVFP4) {
         for (size_t i = 0; i < (size_t)E * 2 * F * rb13; i++) w13[i] = (unsigned char)RNDU();
         for (size_t i = 0; i < (size_t)E * H * rb2; i++) w2[i] = (unsigned char)RNDU();
         for (size_t r = 0; r < (size_t)E * 2 * F; r++)   // scale bytes in a sane range (no NaN code 0x7F)
@@ -493,18 +534,18 @@ static long body_bounded_identity(int type, int H, int F, int E, int K, int T, l
 #undef RNDF
     {
         gpu_ink2 *h = gpu_ink2_bind();
-        const float *f13 = type == T_NVFP4 ? s13 : NULL, *f2 = type == T_NVFP4 ? s2 : NULL;
+        const float *f13 = type13 == T_NVFP4 ? s13 : NULL, *f2 = type2 == T_NVFP4 ? s2 : NULL;
         const int i13 = h ? gpu_ink2_put(h, w13, (size_t)E * 2 * F * rb13, f13, f13 ? E : 0) : -1;
         const int i2 = h ? gpu_ink2_put(h, w2, (size_t)E * H * rb2, f2, f2 ? E : 0) : -1;
         const int ir = h ? gpu_ink2_put(h, wr, sizeof(float) * (size_t)E * H, NULL, 0) : -1;
         const long r0 = gpu_ink2_test_body_readbacks(h);
         bool ran = i13 >= 0 && i2 >= 0 && ir >= 0 &&
-                   gpu_ink2_route_experts(h, ir, br, 2.5f, K, i13, i2, type, type, rb13, rb2, H, F, E, T, x, f13, f2,
+                   gpu_ink2_route_experts(h, ir, br, 2.5f, K, i13, i2, type13, type2, rb13, rb2, H, F, E, T, x, f13, f2,
                                           4.0f, 8.0f, o1, c1, m1);
         const long r1 = gpu_ink2_test_body_readbacks(h);
         ran = ran && gpu_ink2_test_poison_body(h);   // the second call cannot reuse the first's scratch
         gpu_ink2_test_bounded(h, 1);
-        ran = ran && gpu_ink2_route_experts(h, ir, br, 2.5f, K, i13, i2, type, type, rb13, rb2, H, F, E, T, x, f13, f2,
+        ran = ran && gpu_ink2_route_experts(h, ir, br, 2.5f, K, i13, i2, type13, type2, rb13, rb2, H, F, E, T, x, f13, f2,
                                             4.0f, 8.0f, o2, c2, m2);
         gpu_ink2_test_bounded(h, 0);
         const long r2 = gpu_ink2_test_body_readbacks(h);
@@ -2114,23 +2155,35 @@ int main(int argc, char **argv) {
     // D1d.3a (ai), ruling (i)'s red-first bar: the device-routed body's BOUNDED launches byte-identical to its SIZED
     // ones at T = 1, 17 and 64 (rows, choices, margins), NVFP4 and BF16, at the real widths and at Inkling's 128
     // experts; the bounded call reads no count back to the host (0 readbacks), the sized one reads one; at T 64 the
-    // NVFP4 case's tiled launches are live (experts with 16+ columns)
+    // NVFP4 case's tiled launches are live (experts with 16+ columns). R4.48.35: the resident step takes the 16 GB
+    // file's stacks (gate_up IQ3_XXS, down NVFP4) bounded too, at the real widths and at 128 experts, and an IQ3_XXS
+    // down stack (F 256 for its 256-value blocks); the IQ3_XXS rows carry bb_fill_iq3's boundary blocks
     {
-        static const struct { int type, H, F, E, K, T; } rc[] = {
-            { T_NVFP4, 2304, 1152, 16, 8, 1 }, { T_NVFP4, 2304, 1152, 16, 8, 17 }, { T_NVFP4, 2304, 1152, 16, 8, 64 },
-            { T_BF16, 2304, 1152, 16, 8, 1 }, { T_BF16, 2304, 1152, 16, 8, 17 }, { T_BF16, 2304, 1152, 16, 8, 64 },
-            { T_NVFP4, 256, 128, 128, 8, 1 }, { T_NVFP4, 256, 128, 128, 8, 17 }, { T_NVFP4, 256, 128, 128, 8, 64 },
+        static const struct { int type13, type2, H, F, E, K, T; } rc[] = {
+            { T_NVFP4, T_NVFP4, 2304, 1152, 16, 8, 1 }, { T_NVFP4, T_NVFP4, 2304, 1152, 16, 8, 17 },
+            { T_NVFP4, T_NVFP4, 2304, 1152, 16, 8, 64 },
+            { T_BF16, T_BF16, 2304, 1152, 16, 8, 1 }, { T_BF16, T_BF16, 2304, 1152, 16, 8, 17 },
+            { T_BF16, T_BF16, 2304, 1152, 16, 8, 64 },
+            { T_NVFP4, T_NVFP4, 256, 128, 128, 8, 1 }, { T_NVFP4, T_NVFP4, 256, 128, 128, 8, 17 },
+            { T_NVFP4, T_NVFP4, 256, 128, 128, 8, 64 },
+            { T_IQ3_XXS, T_NVFP4, 2304, 1152, 16, 8, 1 }, { T_IQ3_XXS, T_NVFP4, 2304, 1152, 16, 8, 17 },
+            { T_IQ3_XXS, T_NVFP4, 2304, 1152, 16, 8, 64 },
+            { T_IQ3_XXS, T_NVFP4, 256, 128, 128, 8, 1 }, { T_IQ3_XXS, T_NVFP4, 256, 128, 128, 8, 17 },
+            { T_IQ3_XXS, T_NVFP4, 256, 128, 128, 8, 64 },
+            { T_IQ3_XXS, T_IQ3_XXS, 512, 256, 16, 8, 1 }, { T_IQ3_XXS, T_IQ3_XXS, 512, 256, 16, 8, 17 },
+            { T_IQ3_XXS, T_IQ3_XXS, 512, 256, 16, 8, 64 },
         };
         for (size_t k = 0; k < sizeof rc / sizeof *rc; k++) {
             long nv = 0, rs = -1, rbd = -1;
             int nt = 0;
-            const long d = body_bounded_identity(rc[k].type, rc[k].H, rc[k].F, rc[k].E, rc[k].K, rc[k].T, &nv, &rs, &rbd, &nt);
-            const bool tiles = rc[k].type == T_NVFP4 && rc[k].T == 64 && rc[k].E == 16;
+            const long d = body_bounded_identity(rc[k].type13, rc[k].type2, rc[k].H, rc[k].F, rc[k].E, rc[k].K, rc[k].T,
+                                                 &nv, &rs, &rbd, &nt);
+            const bool tiles = (rc[k].type13 == T_NVFP4 || rc[k].type2 == T_NVFP4) && rc[k].T == 64 && rc[k].E == 16;
             CHECK(d == 0 && nv > 0 && rs == 1 && rbd == 0 && (!tiles || nt > 0),
-                  "(ai) the bounded expert body, %s H %d E %d K %d at T %d: %ld of %ld values differ from the sized "
-                  "launches' (want 0); count readbacks sized %ld / bounded %ld (want 1 / 0); experts tiled %d%s",
-                  rc[k].type == T_NVFP4 ? "NVFP4" : "BF16", rc[k].H, rc[k].E, rc[k].K, rc[k].T, d, nv, rs, rbd, nt,
-                  tiles ? " (want > 0)" : "");
+                  "(ai) the bounded expert body, %s / %s H %d E %d K %d at T %d: %ld of %ld values differ from the "
+                  "sized launches' (want 0); count readbacks sized %ld / bounded %ld (want 1 / 0); experts tiled %d%s",
+                  bb_type_name(rc[k].type13), bb_type_name(rc[k].type2), rc[k].H, rc[k].E, rc[k].K, rc[k].T, d, nv,
+                  rs, rbd, nt, tiles ? " (want > 0)" : "");
         }
     }
     // G2b 2a (n): gpu_ink2_attn against float64 on the host, by core_case below. Bar fixed before the run: 1e-4 of the
