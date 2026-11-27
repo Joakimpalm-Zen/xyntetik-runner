@@ -2725,13 +2725,14 @@ static void send_provenance(sock_t fd) {
         sb_lit(&r, "null");
     } else {
         char gname[128] = "cpu";
-        if (m->gpu && !gpu_available(gname, (int)sizeof gname))
+        const bool on_gpu = model_uses_gpu(m);
+        if (on_gpu && !gpu_available(gname, (int)sizeof gname))
             snprintf(gname, sizeof gname, "gpu");
         sb_lit(&r, "{\"device\":\"");
         sb_esc(&r, gname, strlen(gname));
         sb_fmt(&r, "\",\"gpu\":%s,\"gpu_layers\":%d,\"threads\":%d,"
                    "\"ctx\":%d,\"kv\":\"%s\",\"batch\":%d,\"slots\":%d",
-               m->gpu ? "true" : "false", m->gpu_layers,
+               on_gpu ? "true" : "false", model_gpu_layer_count(m),
                m->tp ? tpool_size(m->tp) : 0, m->n_ctx,
                model_kv_name(m),
                m->n_batch, SV.n_slots);

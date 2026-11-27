@@ -3050,7 +3050,8 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
         return "out of memory building the receipt";
     }
     char gname[128] = "cpu";
-    if (m->gpu && !gpu_available(gname, (int)sizeof gname))
+    const bool on_gpu = model_uses_gpu(m);
+    if (on_gpu && !gpu_available(gname, (int)sizeof gname))
         snprintf(gname, sizeof gname, "gpu");
     const char *apath = s->adapter >= 0 ? SV.adapters[s->adapter].path
                                         : SV.mp.lora_path;
@@ -3073,8 +3074,8 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
 #ifdef RUNNER_T3_BUILD
         .build_flavor = "t3",
 #endif
-        .device = m->gpu ? gname : "cpu", .gpu = m->gpu != NULL,
-        .gpu_layers = m->gpu_layers,
+        .device = on_gpu ? gname : "cpu", .gpu = on_gpu,
+        .gpu_layers = model_gpu_layer_count(m),
         .gpu_window = gpu_prompt_window(m),
         .gpu_route = gpu_route_record(m),
         .threads = m->tp ? tpool_size(m->tp) : 0, .n_ctx = m->n_ctx,

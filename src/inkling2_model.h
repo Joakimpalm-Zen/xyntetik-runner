@@ -52,6 +52,13 @@ uint64_t model_inkling2_dev_slot_alloc_bytes(const ink2_shape *s, int n_ctx, int
                                              int hist_rows, bool step);
 // R4.48.9: whether this instance's forward runs on CUDA (false: the CPU engine).
 bool   model_inkling2_cuda(const model_t *m);
+// R4.48.32: Inkling 2's own route facts for route_collect / model_route_json /
+// receipts: whether CPU 8-bit activations are active (RUNNER_INKLING2_ACT8 on
+// the fast CPU route), whether the last forward succeeded (for route_ran when
+// want_logits is false), and the CUDA placement/path detail string ("" on CPU).
+bool        model_inkling2_act8(const model_t *m);
+bool        model_inkling2_last_ok(const model_t *m);
+const char *model_inkling2_route_detail(const model_t *m);
 // R4.48.9, TEST-ONLY (G1): read every device-resident matrix and expert stack back and compare it with the host
 // decode bit for bit; *n_tensors read, *n_differ differing, the first one's name in first. false: no device copy.
 bool   model_inkling2_cuda_readback(model_t *m, int *n_tensors, int *n_differ, char *first, size_t first_cap);

@@ -30,6 +30,8 @@ typedef struct {
     size_t small_bytes;   // the small tensors decoded to float32 on either route (norms, taps, queries, the router)
     size_t ec_budget;
     char route;           // 'F' the fast route, 'R' the reference (RUNNER_INKLING2_ROUTE=reference)
+    bool act8;            // RUNNER_INKLING2_ACT8 active on the fast route
+    bool last_ok;         // last model_inkling2_forward succeeded (distinguishes !want_logits from error)
     gpu_ink2 *gpu;        // R4.48.9: the weights on CUDA (the fast route's views, stored rows), or NULL
     const ink2_tensor **dev_of;   // [n_dev]: the view each device tensor holds, in gpu_ink2_put's order
     int n_dev;
@@ -708,7 +710,7 @@ static int dev_step(void *dev, int p0, const float *emb_row, float *logits) {
     r->n_step++;
     return 0;
 }
-static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
+static int cuda_bind(ink2_rt *r, model_t *m, const model_params *p) {
     if (r->c.kv == INK2_KV_RT) {   // TEST-ONLY: the round trip is the CPU routes' reference, never a device ring's
         fprintf(stderr, "note: RUNNER_INKLING2_TEST_KV_RT is the CPU routes' alone; running on the CPU\n");
         return 0;
@@ -722,17 +724,20 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
         return 0;
     }
     if (r->route != 'F') {
+        snprintf(m->route_fallback, sizeof m->route_fallback, "reference route runs on CPU");
         fprintf(stderr, "note: inkling2_loop runs on CUDA from the fast route's stored rows only; the reference route "
                         "runs on the CPU\n");
         return 0;
     }
     const char *a8 = getenv("RUNNER_INKLING2_ACT8");
     if (a8 && *a8 && strcmp(a8, "0")) {
+        snprintf(m->route_fallback, sizeof m->route_fallback, "RUNNER_INKLING2_ACT8 runs on CPU");
         fprintf(stderr, "note: the 8-bit control (RUNNER_INKLING2_ACT8) is the CPU's; running on the CPU\n");
         return 0;
     }
     char dev[160] = "";
     if (!gpu_available(dev, sizeof dev)) {
+        snprintf(m->route_fallback, sizeof m->route_fallback, "no CUDA device for inkling2_loop");
         fprintf(stderr, "note: no CUDA device for inkling2_loop; running on the CPU\n");
         return 0;
     }
@@ -741,6 +746,7 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
     int64_t fmt = 0, fct = 0;
     int ferr = 0;
     if (!m->path || !plat_file_identity(m->path, &fsize, &fino, &fmt, &fct, &ferr)) {
+        snprintf(m->route_fallback, sizeof m->route_fallback, "file identity unknown");
         fprintf(stderr, "note: inkling2_loop's file identity is unknown; running on the CPU\n");
         return 0;
     }
@@ -763,7 +769,12 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
     bool made = false;
     if (!sh) {
         sh = calloc(1, sizeof *sh);
-        if (!sh) { pthread_mutex_unlock(&g_share_mu); fprintf(stderr, "note: out of memory binding inkling2_loop; running on the CPU\n"); return 0; }
+        if (!sh) {
+            pthread_mutex_unlock(&g_share_mu);
+            snprintf(m->route_fallback, sizeof m->route_fallback, "out of memory binding inkling2_loop");
+            fprintf(stderr, "note: out of memory binding inkling2_loop; running on the CPU\n");
+            return 0;
+        }
         snprintf(sh->key, sizeof sh->key, "%s", key);
         share_place(sh, r, p->cpu_moe, m->n_batch, m->n_ctx, n_slots, dev, step_req, NULL);
         // D1d.3b: the step's small tensors after the block's, while the copy is new (no instance reads it yet)
@@ -782,6 +793,7 @@ static int cuda_bind(ink2_rt *r, const model_t *m, const model_params *p) {
     r->need = sh->need;
     if (sh->placed == 'C') {
         pthread_mutex_unlock(&g_share_mu);
+        snprintf(m->route_fallback, sizeof m->route_fallback, "%s", sh->why[0] ? sh->why : "no CUDA placement fits");
         fprintf(stderr, "note: %s; running on the CPU%s\n", sh->why, n_slots > 1 ? " (every slot)" : "");
         return 0;
     }
@@ -960,7 +972,8 @@ bool model_inkling2_bind(model_t *m, const model_params *p) {
     }
     // RUNNER_INKLING2_ACT8=1 (TEST-ONLY, the fast route's control): every activation through 8 bits before a product
     const char *a8 = getenv("RUNNER_INKLING2_ACT8");
-    ink2g_set_route(r->g, r->route == 'F', a8 && *a8 && strcmp(a8, "0"));
+    r->act8 = r->route == 'F' && a8 && *a8 && strcmp(a8, "0");
+    ink2g_set_route(r->g, r->route == 'F', r->act8);
     size_t decoded = 0;
     if (ink2g_decode_all(r->g, &decoded)) {
         fprintf(stderr, "error: an inkling2_loop tensor could not be decoded to float32\n");
@@ -1068,6 +1081,14 @@ bool model_inkling2_runtime(model_t *m, const model_params *p) {
         return false;
     }
     r->cache_ok = true;
+    // R4.48.32: reflect the cache format this runtime actually initialized onto
+    // model_t so route_collect, model_kv_name, receipts, --verify, --doctor,
+    // /v1/runner/provenance, and engine model keys all read the real K/V type
+    // (f32 or q8) instead of model_t's zero-initialized f16 default.
+    m->kv_q8 = (r->c.kv == INK2_KV_Q8);
+    m->kv_f32 = (r->c.kv != INK2_KV_Q8);
+    m->kv_fp4 = false;
+    m->kv_split = false;
     r->rows_cap = m->n_batch;
     // r->rows [n_batch][n_vocab] is allocated lazily on the first keep_all or RUNNER_INKLING2_ROWS forward; normal
     // prefill/decode asks only for the last row via m->logits (INK2_LOGITS_LAST).
@@ -1184,6 +1205,7 @@ bool model_inkling2_last_sel(const model_t *m, const int **sel_out, int *n_out) 
 
 float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos, bool want_logits, bool keep_all) {
     ink2_rt *r = rt_of(m);
+    if (r) r->last_ok = false;
     if (!r || !r->cache_ok || n <= 0 || pos < 0 || pos + n > m->n_ctx) {
         fprintf(stderr, "error: inkling2_loop: %d tokens at %d do not fit -c %d\n", n, pos, m->n_ctx);
         return NULL;
@@ -1266,6 +1288,7 @@ float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos,
         }
     }
     ink2_set_tpool(prev_tp);
+    r->last_ok = true;
     if (!want_logits) return NULL;
     if (need_all)
         memcpy(m->logits, r->rows + (size_t)(last_T - 1) * (size_t)m->n_vocab, sizeof(float) * (size_t)m->n_vocab);
@@ -1493,6 +1516,27 @@ char model_inkling2_route(const model_t *m) {
 bool model_inkling2_cuda(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
     return r && r->gpu;
+}
+bool model_inkling2_act8(const model_t *m) {
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    return r && r->act8 && !r->gpu;
+}
+bool model_inkling2_last_ok(const model_t *m) {
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    return r && r->last_ok;
+}
+const char *model_inkling2_route_detail(const model_t *m) {
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    if (!r || !r->gpu) return "";
+    static _Thread_local char buf[128];
+    snprintf(buf, sizeof buf, "placed=%c attn=%s exp=%s msg=%s router=%s step=%s",
+             r->placed ? r->placed : 'W',
+             r->block_on ? "block" : r->attn_on ? "core" : "host",
+             r->exp_on ? "on" : "off",
+             r->msg_on ? "on" : "off",
+             r->route_on ? "on" : "off",
+             r->step_on ? "on" : "off");
+    return buf;
 }
 size_t model_inkling2_cuda_fit_free(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
