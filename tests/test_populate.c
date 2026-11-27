@@ -264,6 +264,69 @@ static void test_policy(void) {
        "policy: unknown/0 available budget does not populate");
 }
 
+// R18.13.1: cached-cold Rss bar accounting for one backing-device read-ahead
+// window pulled by reading the GGUF header from a cold file.
+static uint64_t populate_parse_read_ahead_kb(const char *txt) {
+    if (!txt) return 0;
+    char *end = NULL;
+    unsigned long kb = strtoul(txt, &end, 10);
+    if (end == txt) return 0;
+    return (uint64_t)kb * 1024ull;
+}
+
+static int populate_fixture_n_ff(uint64_t read_ahead_bytes) {
+    (void)read_ahead_bytes;
+    return 8192;
+}
+
+static bool populate_cold_rss_ok(int64_t rss, uint64_t data_sz, uint64_t read_ahead_bytes) {
+    (void)read_ahead_bytes;
+    return rss >= 0 && (uint64_t)rss < data_sz / 4;
+}
+
+static void test_cold_rss_bar(void) {
+    // 6.39 MB fixture (N_FF=8192), 2048 KB backing-device read-ahead window
+    const uint64_t data_sz = 6390528ull;
+    const uint64_t ra_128  = 128ull * 1024ull;
+    const uint64_t ra_2048 = 2048ull * 1024ull;
+    const uint64_t ra_4096 = 4096ull * 1024ull;
+    const uint64_t rss_hdr_ra = ra_2048 + 4096ull;       // 2.10 MB (32.9% of 6.39 MB)
+    const uint64_t rss_60pct  = data_sz * 60ull / 100ull; // 3.83 MB (60%)
+    const uint64_t rss_90pct  = data_sz * 90ull / 100ull; // 5.75 MB (90%)
+
+    ck(populate_parse_read_ahead_kb("2048\n") == ra_2048,
+       "read_ahead_kb: parses '2048\\n' as 2 MiB");
+    ck(populate_parse_read_ahead_kb("128") == ra_128,
+       "read_ahead_kb: parses '128' as 128 KiB");
+    ck(populate_parse_read_ahead_kb("0\n") == 0 &&
+       populate_parse_read_ahead_kb("") == 0 &&
+       populate_parse_read_ahead_kb(NULL) == 0 &&
+       populate_parse_read_ahead_kb("abc\n") == 0,
+       "read_ahead_kb: 0, empty, NULL, and non-numeric parse as 0");
+
+    ck(populate_cold_rss_ok((int64_t)rss_hdr_ra, data_sz, ra_2048),
+       "cold bar: accepts 2.10 MB / 6.39 MB with 2048 KB read-ahead window");
+    ck(!populate_cold_rss_ok((int64_t)rss_60pct, data_sz, ra_2048),
+       "cold bar: rejects 60% Rss even with 2048 KB read-ahead window");
+    ck(!populate_cold_rss_ok((int64_t)rss_90pct, data_sz, ra_2048),
+       "cold bar: rejects 90% Rss (full populate) with 2048 KB read-ahead window");
+    ck(!populate_cold_rss_ok((int64_t)rss_hdr_ra, data_sz, ra_128),
+       "cold bar: rejects 2.10 MB / 6.39 MB on a small 128 KB read-ahead window");
+    ck(populate_cold_rss_ok(1048576, data_sz, ra_128),
+       "cold bar: accepts 1.0 MiB / 6.39 MB on a 128 KB read-ahead window");
+    ck(!populate_cold_rss_ok(-1, data_sz, ra_2048),
+       "cold bar: rejects negative/error smaps Rss");
+
+    ck(populate_fixture_n_ff(ra_128) == 8192 && populate_fixture_n_ff(ra_2048) == 8192,
+       "fixture sizing: keeps 6.39 MB (N_FF=8192) up to 2048 KB read-ahead");
+    int n_ff_4m = populate_fixture_n_ff(ra_4096);
+    uint64_t data_4m = 3ull * 64ull * (uint64_t)n_ff_4m * 4ull + 99072ull;
+    ck(n_ff_4m >= 16384 && data_4m >= 3ull * ra_4096 &&
+       populate_cold_rss_ok((int64_t)(ra_4096 + 4096ull), data_4m, ra_4096) &&
+       !populate_cold_rss_ok((int64_t)(data_4m * 60ull / 100ull), data_4m, ra_4096),
+       "fixture sizing: scales N_FF for 4096 KB read-ahead so 1 window passes and 60% fails");
+}
+
 static void test_range_planning(const char *path) {
     model_t hm;
     memset(&hm, 0, sizeof hm);
@@ -618,6 +681,7 @@ int main(void) {
 
     test_modes_and_trap();
     test_policy();
+    test_cold_rss_bar();
     test_range_planning(path);
 
 #ifdef __linux__
