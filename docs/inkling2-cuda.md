@@ -47,7 +47,10 @@ An eligible plain single-position forward runs the whole decode step on
 the device: all 48 layer applications, block-state reads, message gates,
 norms, attention, post convolutions, routing, experts, final read, head and
 softcap. Only the embedding row and position go up and the logits row comes
-back: three transfers a step, none inside the layer loop. Diagnostic
+back: three transfers a step, none inside the layer loop. The step takes
+BF16, NVFP4 and IQ3_XXS expert stacks, so the 16 GB file (IQ3_XXS gate_up,
+NVFP4 down) runs it; a file with another expert type decodes on the
+non-resident path. Diagnostic
 per-application outputs and expert-selection observers use the
 non-resident path. Histories are synchronized when execution switches paths.
 A failed device operation refuses that forward and later forwards on the

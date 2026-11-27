@@ -924,6 +924,8 @@ typedef struct {
 // state lists and the step's scratch, every core's scratch reserved at one position. False: a kernel the module
 // lacks, a device failure, or a walk past its lists.
 bool       gpu_ink2_step_set(gpu_ink2 *h, const gpu_ink2_step_plan *plan);
+// whether the step can take an expert stack of this type (BF16, NVFP4, IQ3_XXS): the module has its bounded kernel
+bool       gpu_ink2_step_stack_ok(const gpu_ink2 *h, int type);
 bool       gpu_ink2_step_ready(const gpu_ink2 *h);
 // the program's 16 device allocations at this shape, in gpu_ink2_step_set's order (the fit rounds each); returns 16
 int        gpu_ink2_step_sizes(int n_app, int H, int V, size_t out[16]);

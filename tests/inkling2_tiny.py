@@ -5,12 +5,16 @@ vocabulary so the tokenizer loads. The dense projections are F32, BF16 or Q8_0 (
 file carries reaches the engine; F16 too, a type the CUDA route's products do not take (its device test keeps such
 projections on the host). No pytest here: the Makefile writes the variants with any Python.
 
-  python tests/inkling2_tiny.py OUT.gguf [--dense f32|bf16|q8_0|f16] [--varied]
+  python tests/inkling2_tiny.py OUT.gguf [--dense f32|bf16|q8_0|f16] [--varied] [--iq3-experts]
+
+--iq3-experts (R4.48.35): the 16 GB file's expert types, ffn_gate_up_exps IQ3_XXS (no .scale, as a converter writes a
+non-NVFP4 stack) and ffn_down_exps NVFP4, at a hidden width of 256 (IQ3_XXS's 256-value blocks).
 """
 
 import struct
 
 T_F32, T_F16, T_Q8_0, T_BF16, T_NVFP4 = 0, 1, 8, 30, 40
+T_IQ3_XXS = 18
 U32, I32, F32, BOOL, STR, ARR = 4, 5, 6, 7, 8, 9
 
 H, NH, NKV, HD, E, USED, FF, VOCAB, VUSED, K, WIN, DREL, EXT, RANK = 64, 2, 1, 32, 4, 2, 64, 264, 260, 4, 8, 4, 8, 4
@@ -81,6 +85,18 @@ def _nvfp4(n_el, seed, varied=False):
     return bytes(out)
 
 
+def _iq3_xxs(n_el, seed):
+    """IQ3_XXS blocks of 256 values, 98 bytes each: an f16 d drawn from [2^-7, 2^-5) (positive, no NaN), then 64 random
+    grid indices and 8 random sign and scale words."""
+    import random
+    r = random.Random(seed)
+    out = bytearray()
+    for _ in range(n_el // 256):
+        out += bytes([r.randrange(256), 0x20 + r.randrange(8)])
+        out += bytes(r.randrange(256) for _ in range(96))
+    return bytes(out)
+
+
 def _bf16(data):
     """float32 bytes to BF16, rounded to nearest even (as a converter writes it)."""
     out = bytearray()
@@ -103,7 +119,8 @@ def _q8_0(data):
     return bytes(out)
 
 
-def _tensors(no_scale_layer=None, scale_len=E, dense_nvfp4=False, dense="f32", factors=None, varied=False):
+def _tensors(no_scale_layer=None, scale_len=E, dense_nvfp4=False, dense="f32", factors=None, varied=False,
+             iq3_experts=False):
     """(name, ggml dims, type, bytes) for every tensor of the tiny model. dense: the type of the 2-D projections whose
     rows hold a whole number of 32-value blocks ("f32", "bf16", "q8_0" or "f16"); norms, vectors and short rows stay F32, as
     a converter leaves them. factors: the E per-expert factors every ffn_*_exps.scale holds (0.25 each by default);
@@ -172,12 +189,17 @@ def _tensors(no_scale_layer=None, scale_len=E, dense_nvfp4=False, dense="f32", f
                 f(p + f"loop_{r}_ctrl_gain.weight", [RANK, H], 0.15)
             f(p + "loop_msg_query.weight", [H, 4], 0.2)
         seed[0] += 1
-        t.append((p + "ffn_gate_up_exps.weight", [H, 2 * FF, E], T_NVFP4, _nvfp4(H * 2 * FF * E, seed[0], varied)))
+        if iq3_experts:
+            t.append((p + "ffn_gate_up_exps.weight", [H, 2 * FF, E], T_IQ3_XXS, _iq3_xxs(H * 2 * FF * E, seed[0])))
+        else:
+            t.append((p + "ffn_gate_up_exps.weight", [H, 2 * FF, E], T_NVFP4, _nvfp4(H * 2 * FF * E, seed[0], varied)))
         seed[0] += 1
         t.append((p + "ffn_down_exps.weight", [FF, H, E], T_NVFP4, _nvfp4(FF * H * E, seed[0], varied)))
         for which in ("gate_up", "down"):
             if no_scale_layer == b and which == "down":
                 continue
+            if iq3_experts and which == "gate_up":
+                continue   # an IQ3_XXS stack carries no per-expert factor
             n = scale_len if b == 0 and which == "gate_up" else E
             fs = list(factors) if factors is not None and n == E else [0.25] * n
             t.append((p + f"ffn_{which}_exps.scale", [n], T_F32, struct.pack(f"<{n}f", *fs)))
@@ -252,12 +274,17 @@ if __name__ == "__main__":
     ap.add_argument("out")
     ap.add_argument("--dense", choices=("f32", "bf16", "q8_0", "f16"), default="f32")
     ap.add_argument("--lora", action="store_true", help="write the tiny model's LoRA adapter instead of the model")
+    ap.add_argument("--iq3-experts", action="store_true",
+                    help="IQ3_XXS gate_up stacks (no .scale) and NVFP4 down stacks at a hidden width of 256")
     ap.add_argument("--varied", action="store_true",
                     help="the expert stacks' NVFP4 scales varied and per-expert factors that are not powers of two")
     a = ap.parse_args()
     if a.lora:
         kv, ts = _lora()
         _write(pathlib.Path(a.out), kv, ts)
+    elif a.iq3_experts:
+        H = 256   # the module's width, read by _kvs and _tensors when they run
+        _write(pathlib.Path(a.out), _kvs(), _tensors(dense=a.dense, iq3_experts=True))
     elif a.varied:
         _write(pathlib.Path(a.out), _kvs(), _tensors(dense=a.dense, varied=True, factors=[0.3, 1.7, 0.9, 0.55]))
     else:

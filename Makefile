@@ -2200,7 +2200,12 @@ test-ink2-pool-bench: $(TEST_INK2_POOL_BENCH_BIN)
 # flock (stock macOS has none), as the house's other backend-only targets do.
 TEST_INKLING2_CUDA_SRC = tests/test_inkling2_cuda.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
                          $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
-INKLING2_TINY_CUDA = $(INKLING2_TINY_DENSE) test-inkling2-tiny-f16.gguf test-inkling2-tiny-lora.gguf
+INKLING2_TINY_CUDA = $(INKLING2_TINY_DENSE) test-inkling2-tiny-f16.gguf test-inkling2-tiny-lora.gguf \
+                    test-inkling2-tiny-iq3x.gguf
+# R4.48.35: the 16 GB file's expert types (gate_up IQ3_XXS, down NVFP4) at a hidden width of 256 (explicit, like the
+# LoRA adapter: not a --dense variant)
+test-inkling2-tiny-iq3x.gguf: tests/inkling2_tiny.py
+	$(PYTHON) tests/inkling2_tiny.py $@ --iq3-experts
 # the tiny model's LoRA adapter (an explicit rule: it is not a --dense variant)
 test-inkling2-tiny-lora.gguf: tests/inkling2_tiny.py
 	$(PYTHON) tests/inkling2_tiny.py $@ --lora

@@ -5608,6 +5608,15 @@ extern "C" __global__ void k_mvseg_nvfp4_n(MVSEG_PARAMS, const float *esc, const
         if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
     }
 }
+// R4.48.35: k_mvseg_iq3_xxs bounded, for the resident step on an IQ3_XXS stack (the 16 GB file's gate_up): the same
+// two lines, then its sized twin's body (MVSEG_HEAD and IQ_LANE_MV1) verbatim. IQ_LANE_MV1 has no __syncthreads, so
+// the whole-block return before it is safe.
+extern "C" __global__ void k_mvseg_iq3_xxs_n(MVSEG_PARAMS, const int *jsd, const int *jed) {
+    j0 += jsd ? jsd[0] : 0;
+    if (j0 + (int)blockIdx.y >= jed[0]) return;
+    MVSEG_HEAD;
+    IQ_LANE_MV1(iq3xxs_lane_n, 98)
+}
 // k_moe_gather / k_ink2_swiglu bounded the same way: column j0 + blockIdx.y, live while below jed[0] (nall)
 extern "C" __global__ void k_ink2_gather_n(float *dst, const float *src, const int *idx, int n, int ss, int ds, int j0,
                                            const int *jed) {

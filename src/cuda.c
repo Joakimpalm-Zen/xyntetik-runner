@@ -13009,6 +13009,7 @@ gpu_ink2 *gpu_ink2_bind(void) {
     {   // D1d.3a: the bounded twins (absent: the bounded body refuses)
         const struct { CUfunction *f; const char *name; } bn[] = {
             { &h->mvseg_n[T_BF16], "k_mvseg_bf16_n" }, { &h->mvseg_n[T_NVFP4], "k_mvseg_nvfp4_n" },
+            { &h->mvseg_n[T_IQ3_XXS], "k_mvseg_iq3_xxs_n" },
             { &h->mvsegb_nvfp4_n, "k_mvsegb_nvfp4_n" }, { &h->f_gather_n, "k_ink2_gather_n" },
             { &h->f_swiglu_n, "k_ink2_swiglu_n" }, { &h->f_dattn_ix, "k_ink2_depth_attn_ix" } };
         for (size_t k = 0; k < sizeof bn / sizeof *bn; k++)
@@ -13177,14 +13178,15 @@ static bool ink2_mvseg(gpu_ink2 *h, int type, CUdeviceptr w, int n_in, int n_out
 static bool ink2_mvseg_n(gpu_ink2 *h, int type, CUdeviceptr w, int n_in, int n_out, int nb, CUdeviceptr x, int xcs,
                          CUdeviceptr y, int ycs, CUdeviceptr d_ex, uint64_t w_es, CUdeviceptr esc, CUdeviceptr jsd,
                          CUdeviceptr jed) {
-    if ((type != T_BF16 && type != T_NVFP4) || !h->mvseg_n[type]) return false;
-    const unsigned rpb = type == T_NVFP4 ? 8 : 4, block = type == T_NVFP4 ? 256 : 128;
+    if ((type != T_BF16 && type != T_NVFP4 && type != T_IQ3_XXS) || !h->mvseg_n[type]) return false;
+    // ink2_mvseg's shape for each type (R4.48.35: IQ3_XXS 8 rows a 128-thread block), so a column is the same block's
+    const unsigned rpb = type == T_BF16 ? 4 : 8, block = type == T_NVFP4 ? 256 : 128;
     mv_args a = { n_in, n_out, 0, 0, 1, n_in, n_out };
     bool ok = true;
     for (int j0 = 0; ok && j0 < nb; j0 += 65535) {
         const unsigned g = (unsigned)(nb - j0 < 65535 ? nb - j0 : 65535);
         void *pn[] = { &w, &x, &y, &a, &x, &d_ex, &w_es, &xcs, &ycs, &j0, &esc, &jsd, &jed };   // NVFP4: esc
-        void *pb[] = { &w, &x, &y, &a, &x, &d_ex, &w_es, &xcs, &ycs, &j0, &jsd, &jed };         // BF16: none
+        void *pb[] = { &w, &x, &y, &a, &x, &d_ex, &w_es, &xcs, &ycs, &j0, &jsd, &jed };         // BF16, IQ3_XXS: none
         ok = cu.LaunchKernel(h->mvseg_n[type], ((unsigned)n_out + rpb - 1) / rpb, g, 1, block, 1, 1, 0, NULL,
                              type == T_NVFP4 ? pn : pb, NULL) == 0;
     }
@@ -13545,6 +13547,10 @@ static bool ink2_route_grow(gpu_ink2 *h, int E, int T) {
            ink2_grow(&h->rcol, &h->rcol_cap, sizeof(int) * te);   // D1b.1: the tables' column numbers
 }
 bool gpu_ink2_route_ok(const gpu_ink2 *h) { return h && h->f_rscores && h->f_rtopk && h->f_rtables; }
+// R4.48.35 (gpu.h): whether the resident step can take an expert stack of this type, its bounded segmented kernel
+bool gpu_ink2_step_stack_ok(const gpu_ink2 *h, int type) {
+    return h && (type == T_BF16 || type == T_NVFP4 || type == T_IQ3_XXS) && h->mvseg_n[type];
+}
 // D1d.2b: the device router, then the expert body from its choices, on device rows: the T positions' rows at dx, the
 // router's bias at dbr, the NVFP4 experts' factors at d13 / d2 (0: none), the rows into dout ([T][H], zeroed here);
 // the choices left in h->rch, the margins (want_mg) in h->rmg. Under h->mu, the context current. The router's and

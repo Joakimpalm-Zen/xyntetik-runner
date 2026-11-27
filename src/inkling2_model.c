@@ -652,8 +652,10 @@ static bool step_plan_make(ink2_rt *r, int base, gpu_ink2_step_plan *G, gpu_ink2
                                                        t[2]->qtype, 1.0f, 1.0f, 1.0f };
         }
         ok = ok && block_desc(r, &A->blk, &g->blk);
+        // the stacks: a type the module has a bounded kernel for (BF16, NVFP4; R4.48.35: IQ3_XXS, the 16 GB file's
+        // gate_up), so a module without one declines here instead of failing the step's first launch
         ok = ok && A->router->dev == r && A->router->qtype == T_F32 && A->t13->dev == r && A->t2->dev == r &&
-             (A->t13->qtype == T_NVFP4 || A->t13->qtype == T_BF16) && (A->t2->qtype == T_NVFP4 || A->t2->qtype == T_BF16);
+             gpu_ink2_step_stack_ok(r->gpu, A->t13->qtype) && gpu_ink2_step_stack_ok(r->gpu, A->t2->qtype);
         if (ok) {
             g->ir = A->router->dev_i; g->i13 = A->t13->dev_i; g->i2 = A->t2->dev_i;
             g->t13 = A->t13->qtype; g->t2 = A->t2->qtype; g->rb13 = A->t13->q_row_bytes; g->rb2 = A->t2->q_row_bytes;

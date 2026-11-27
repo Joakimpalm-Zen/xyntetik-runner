@@ -935,8 +935,9 @@ static double sw_worst(gpu_ink2 *h, float gc, float uc, int F, int bounded, int 
 }
 
 int main(int argc, char **argv) {
-    if (argc < 6) {
-        fprintf(stderr, "usage: %s TINY_F32.gguf TINY_BF16.gguf TINY_Q8_0.gguf TINY_F16.gguf TINY_LORA.gguf\n", argv[0]);
+    if (argc < 7) {
+        fprintf(stderr, "usage: %s TINY_F32.gguf TINY_BF16.gguf TINY_Q8_0.gguf TINY_F16.gguf TINY_LORA.gguf "
+                "TINY_IQ3X.gguf\n", argv[0]);
         return 2;
     }
     // D1d.3b: the resident decode step is on by default; every test before (aj) holds the NON-resident route's own
@@ -1754,17 +1755,19 @@ int main(int argc, char **argv) {
     // right), then a step the step must decline (the selection observer is on: the device's histories down first). Every
     // row returned byte-identical to the control's; the step counter 9; the handle's host transfers 3 a step (the
     // embedding row and the position up, the logits row down) and 0 inside the applications' loop. The F16 file runs
-    // 2a's path (no block calls): its instance has no step (counter -1), its rows unchanged.
+    // 2a's path (no block calls): its instance has no step (counter -1), its rows unchanged. R4.48.35: the IQ3_XXS-expert
+    // file (argv[6]: the 16 GB file's gate_up IQ3_XXS and down NVFP4) takes the step too, byte-identical the same way.
     {
         static const struct { int p0, n; bool obs; } seq[] = {
             { 0, 10, false }, { 10, 1, false }, { 11, 1, false }, { 12, 1, false }, { 13, 1, false }, { 14, 1, false },
             { 15, 1, false }, { 16, 1, false }, { 17, 1, false }, { 18, 4, false }, { 22, 1, false }, { 23, 1, true } };
         const int ns = (int)(sizeof seq / sizeof *seq);
-        static const char *const fname[5] = { "", "F32", "BF16", "Q8_0", "F16" };
-        for (int f = 1; f <= 4; f++) {
-            model_t *c0 = load(argv[f], true, false, 64);   // the control: no resident step (the file's setting)
+        static const char *const fname[6] = { "", "F32", "BF16", "Q8_0", "F16", "IQ3_XXS experts" };
+        static const int fargv[6] = { 0, 1, 2, 3, 4, 6 };
+        for (int f = 1; f <= 5; f++) {
+            model_t *c0 = load(argv[fargv[f]], true, false, 64);   // the control: no resident step (the file's setting)
             plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_STEP", "");
-            model_t *rs = load(argv[f], true, false, 64);   // the step on, the default
+            model_t *rs = load(argv[fargv[f]], true, false, 64);   // the step on, the default
             plat_setenv("RUNNER_INKLING2_CUDA_TEST_NO_STEP", "1");
             const size_t V = c0 ? (size_t)c0->n_vocab : 0;
             long nd = 0, bad = 0;
