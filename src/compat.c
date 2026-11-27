@@ -3351,6 +3351,7 @@ static const char *const RUNNER_SWITCH_INERT[] = {
     "RUNNER_TEST_REQUEST_TAIL_MS", "RUNNER_TEST_DRAIN_GRACE_MS", "RUNNER_TEST_DRAIN_HARD_MS",
     "RUNNER_TEST_DRAIN_LATE_MS", "RUNNER_TEST_INSTANCE_SWEEP_DELAY_MS",
     "RUNNER_TEST_KV_DUMP",     // prints a KV row's hash
+    "RUNNER_TEST_REC_DUMP",    // prints the recurrent fold after a prompt feed (R4.48.34)
     "RUNNER_TEST_IDENTITY_WAIT",   // waits before the route identity is taken (R20)
     "RUNNER_TEST_PARTIAL_SUFFIX", // fixes atomic partial file's suffix for planted-symlink tests
     "RUNNER_TEST_PUBLISH_PAUSE_BEFORE", // pauses inside publish lock before Step A (R6.112)

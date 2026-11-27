@@ -1837,6 +1837,37 @@ static void kv_dump(const engine *e, int lo, int hi) {
     }
 }
 
+// R4.48.34 (a test seam): RUNNER_TEST_REC_DUMP=1. After every prompt feed of a model with a recurrent fold, the
+// fold the prefix cache would store there (model_recurrent_blob_save: the conv ring, the state and qwen4exp's PLE
+// window, f32 words) is printed: the position, the word count, a 64-bit FNV-1a hash of its bytes and the words as
+// hex. A fork's state is then compared with a cold prefill's word for word, not by six logprobs. On CUDA the save
+// pulls the device's fold first, as a prefix entry's does. Read-only, announced once, read by the first feed.
+static _Atomic int rec_dump_on = -1;
+static void rec_dump(engine *e) {
+    int on = atomic_load(&rec_dump_on);
+    if (on < 0) {
+        const char *v = getenv("RUNNER_TEST_REC_DUMP");
+        int want = v && *v && strcmp(v, "0") != 0;
+        int unread = -1;
+        if (atomic_compare_exchange_strong(&rec_dump_on, &unread, want) && want)
+            fprintf(stderr, "test seam: RUNNER_TEST_REC_DUMP=%s prints the recurrent fold after every prompt feed\n", v);
+        on = atomic_load(&rec_dump_on);
+    }
+    size_t n = on > 0 ? model_recurrent_blob_bytes(e->m) : 0;
+    if (!n) return;
+    uint8_t *b = malloc(n);
+    if (!b) return;
+    if (model_recurrent_blob_save(e->m, b)) {
+        fprintf(stderr, "recdump: pos %d words %zu fnv %016llx hex ", e->pos, n / sizeof(float),
+                (unsigned long long)kv_dump_hash(b, n));
+        for (size_t i = 0; i < n; i++) fprintf(stderr, "%02x", b[i]);
+        fputc('\n', stderr);
+    } else {
+        fprintf(stderr, "recdump: pos %d not read: the fold could not be saved\n", e->pos);
+    }
+    free(b);
+}
+
 static float *engine_feed_inner(engine *e, const int32_t *toks, int n);
 // R3.60: a feed is the prompt's prefill pass whatever its width, so on a
 // CPU-only run every product of it takes the batch route (model.c mv_rows)
@@ -1852,6 +1883,7 @@ float *engine_feed(engine *e, const int32_t *toks, int n) {
     float *lg = engine_feed_inner(e, toks, n);
     unstamp_if_moved(e, r);
     e->m->prefill_pass = false;
+    if (lg) rec_dump(e);
     return lg;
 }
 

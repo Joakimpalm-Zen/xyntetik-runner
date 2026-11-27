@@ -17801,13 +17801,16 @@ static float *forward_head(model_t *m, int n, int dbg) {
 static float *forward_batch_run(model_t *m, const int32_t *tokens, int n, int pos,
                                 bool want_logits) {
     int dbg = forward_begin(m, n, pos);
+    // R3.60: every host product of a prompt's feed takes the batch route, the per-layer embeddings' projection
+    // (forward_inputs, forward_ple_before_split) as well as the layers' (R4.48.34). The head clears it below.
+    t_mv_prefill = m->prefill_pass;
     forward_ple_before_split(m, tokens, n);
     int start;
     bool done;
     forward_seq_note(m, tokens, n, pos);
     bool fold_shared = m->gpu && m->ssm_state_backend;
     float *lg = forward_gpu_leading(m, tokens, n, pos, want_logits, &start, &done);
-    if (done) return lg;
+    if (done) { t_mv_prefill = false; return lg; }
     if (fold_shared && !m->gpu) {
         // the device failed with the fold in the host's memory: rebuild it,
         // then this batch again from the top, on the host
@@ -17818,7 +17821,6 @@ static float *forward_batch_run(model_t *m, const int32_t *tokens, int n, int po
     m->fwd_tokens = tokens;   // the PLE block hashes the batch's own ids
 
     double dt_f0 = dbg_time_on() ? dt_now() : 0;
-    t_mv_prefill = m->prefill_pass;   // R3.60: the layers' products take the batch route
     // R8.24.1 B R1: a resident step's taped forward round runs every layer
     // on the device (it writes the tape's and the K/V cache's rows as
     // forward_layer does); a round that declines runs here, and so does the

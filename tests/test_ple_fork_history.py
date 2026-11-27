@@ -14,10 +14,15 @@ The anchors, on the qwen4exp fixture:
   context, then a prompt longer than it, then the request naming it; (b) the context exported to a snapshot file and
   imported into a new process; (c) the automatic tier: the context's prompt, a longer prompt, then the context's
   prompt and the question.
-- on CUDA, the automatic tier: (c) and the fork made with nothing in between each equal the cold prefill on the
-  device bit for bit (measured on this fixture); every server's log shows the device and RUNNER_GPU_FALLBACK=fail
-  makes a fall to the CPU an error. A pin and an import of a recurrent model on the device are held by
-  tests/test_recurrent_device_contexts.py (R4.48.22), qwen4exp's import to its pin's bits.
+  Each fork's recurrent fold after the prompt (RUNNER_TEST_REC_DUMP: the conv ring, the state and the PLE window)
+  equals the cold prefill's word for word too (R4.48.34): six logprobs alone are a weak detector.
+- on CUDA, the automatic tier: (c) and the fork made with nothing in between each give the cold prefill's tokens,
+  its logprobs within LOGPROB_TOL and its fold within FOLD_REL_TOL (R4.48.34, the advisor's ruling C). R3.60's prefill
+  identity is a CPU-only run's (engine_prompt_prefill): on a device, a continued prompt's host steps and kernels may
+  round otherwise than a fresh one's, and on one card class the fork's fold differed from the cold one in 107 of
+  2,496 words by the last bits. The PLE history's proof is the CPU arm's, bit for bit. Every server's log shows the
+  device and RUNNER_GPU_FALLBACK=fail makes a fall to the CPU an error. A pin and an import of a recurrent model on
+  the device are held by tests/test_recurrent_device_contexts.py (R4.48.22), qwen4exp's import to its pin's bits.
 A fold installed with no tokens named is refused on qwen4exp (model_recurrent_blob_load returns false and changes
 nothing), so the next tokens never hash a history nobody named: make test's test-spec-identity on the qwen4exp
 fixture asserts the refusal, and its reference names its sequence on every reload, byte for byte against the verify
@@ -26,6 +31,8 @@ rows.
 import json
 import os
 import pathlib
+import re
+import struct
 import subprocess
 import sys
 import urllib.error
@@ -42,6 +49,15 @@ SYS = ("You are a careful assistant for a warehouse inventory team. Answer "
 QUESTION = "Where is item 42?"
 # longer than SYS, so the slot's token history past SYS's end is this prompt's
 LONG = "unrelated text that shares nothing at all with the context above, " * 4
+# R4.48.34, the advisor's ruling C (CUDA only; the CPU stays bit for bit):
+# - a logprob within 1e-5 absolute;
+# - a fold word within FOLD_REL_TOL of the larger of the two, relatively. The measured worst word is 1.9e-6 on the
+#   lab's card (107 of 2,496 words differed), and the bound is 8x that, rounded down. No seam reproduces the PLE
+#   history defect, so the CPU arm carries that proof. With R4.48.22.1's rebuild undone in a scratch build, the
+#   defect moved the CPU fold by 0.963 at worst (704 of 2,496 words; the logprobs by 6.15e-5), far over the bound.
+LOGPROB_TOL = 1e-5
+FOLD_REL_TOL = 1.5e-5
+RECDUMP = re.compile(r"recdump: pos (\d+) words (\d+) fnv ([0-9a-f]{16}) hex ([0-9a-f]+)")
 
 
 def _cuda(runner_bin):
@@ -78,7 +94,8 @@ def _complete(srv, prompt, **extra):
 
 def _serve_in(runner_bin, model, logs, tmp_path, gpu, *extra):
     logs.append(tmp_path / ("server-%d.log" % len(logs)))
-    return RunnerServer(runner_bin, model, ctx=512, env=dict(os.environ, RUNNER_GPU_FALLBACK="fail"),
+    return RunnerServer(runner_bin, model, ctx=512,
+                        env=dict(os.environ, RUNNER_GPU_FALLBACK="fail", RUNNER_TEST_REC_DUMP="1"),
                         log_path=str(logs[-1]), extra_args=[*gpu, "-t", "2", *extra])
 
 
@@ -98,6 +115,35 @@ def _auto(runner_bin, model, logs, tmp_path, gpu, between):
         got, tel = _complete(srv, SYS + QUESTION)
     assert tel["prompt_reuse"] == "prefix_cache" and tel["prompt_cached_tokens"] > 16, tel
     return got
+
+
+def fnv1a64(data):
+    h = 0xcbf29ce484222325
+    for b in data:
+        h ^= b
+        h = (h * 0x100000001b3) & 0xffffffffffffffff
+    return h
+
+
+def _folds(log):
+    """[(pos, raw bytes)] of every RUNNER_TEST_REC_DUMP line in a server's log, in order. Each line's hex hashes to the
+    hash printed beside it (the seam reads what it prints)."""
+    out = []
+    for pos, words, fnv, hx in RECDUMP.findall(pathlib.Path(log).read_text(errors="replace")):
+        raw = bytes.fromhex(hx)
+        assert len(raw) == 4 * int(words) and fnv1a64(raw) == int(fnv, 16), (pos, words, fnv)
+        out.append((int(pos), raw))
+    assert out, "no recdump line in " + str(log)
+    return out
+
+
+def _fold_rel(a, b):
+    """The largest relative difference of two folds' f32 words, against the larger of each pair."""
+    worst = 0.0
+    for x, y in zip(struct.unpack("<%df" % (len(a) // 4), a), struct.unpack("<%df" % (len(b) // 4), b)):
+        if x != y:
+            worst = max(worst, abs(x - y) / max(abs(x), abs(y)))
+    return worst
 
 
 def test_a_fork_hashes_the_tokens_it_forked_on_the_cpu(runner_bin, model, tmp_path):
@@ -123,6 +169,16 @@ def test_a_fork_hashes_the_tokens_it_forked_on_the_cpu(runner_bin, model, tmp_pa
                       ("(b) imported in a new process", imported),
                       ("(c) the automatic tier after a longer prompt", auto)):
         assert got == cold, (name, got, cold)
+    # the state: each fork's fold after the prompt (its server's last prompt feed) is the cold prefill's, word for word
+    cold_fold = _folds(logs[0])[-1]
+    for name, log in (("(a) pinned", logs[1]), ("(b) imported", logs[2]), ("(c) the automatic tier", logs[3])):
+        pos, raw = _folds(log)[-1]
+        assert pos == cold_fold[0], (name, pos, cold_fold[0])
+        assert raw == cold_fold[1], (name, "fold words differ", _fold_rel(raw, cold_fold[1]))
+    # the instrument's premise: the fold after SYS alone (the automatic tier's first prompt) is not the fold after
+    # the whole prompt, so a seam printing one constant cannot pass the comparison above
+    sys_fold = _folds(logs[3])[0]
+    assert sys_fold[0] < cold_fold[0] and sys_fold[1] != cold_fold[1], (sys_fold[0], cold_fold[0])
 
 
 def test_the_automatic_tier_on_cuda_hashes_the_tokens_it_forked(runner_bin, model, tmp_path):
@@ -132,8 +188,19 @@ def test_the_automatic_tier_on_cuda_hashes_the_tokens_it_forked(runner_bin, mode
     cold = _cold(runner_bin, model, logs, tmp_path, gpu)
     direct = _auto(runner_bin, model, logs, tmp_path, gpu, None)
     after = _auto(runner_bin, model, logs, tmp_path, gpu, LONG)
-    assert direct == cold, ("the fork with nothing in between", direct, cold)
-    assert after == cold, ("(c) the automatic tier after a longer prompt", after, cold)
+    cold_fold = _folds(logs[0])[-1]
+    for name, got, log in (("the fork with nothing in between", direct, logs[1]),
+                           ("(c) the automatic tier after a longer prompt", after, logs[2])):
+        # ruling C: the same tokens, the logprobs and the fold within their bounds (not bit for bit on a device)
+        assert got[0] == cold[0], (name, got, cold)
+        assert len(got[1]) == len(cold[1]), (name, got, cold)
+        gap = max(abs(a - b) for a, b in zip(got[1], cold[1]))
+        assert gap <= LOGPROB_TOL, (name, "logprob gap", gap, got, cold)
+        pos, raw = _folds(log)[-1]
+        assert pos == cold_fold[0] and len(raw) == len(cold_fold[1]), (name, pos, cold_fold[0])
+        rel = _fold_rel(raw, cold_fold[1])
+        print(f"{name}: logprob gap {gap:.3g}, fold worst relative word {rel:.3g}")
+        assert rel <= FOLD_REL_TOL, (name, "fold relative gap", rel)
     for log in logs:
         text = pathlib.Path(log).read_text(errors="replace")
         assert '"backend":"cuda"' in text or "CUDA backend" in text, text[-1500:]

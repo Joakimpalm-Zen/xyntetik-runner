@@ -69,6 +69,8 @@ prompt moved the answer, by at most 4e-5, and a BF16 file's never did;
 Since R3.60, on a CPU-only run at `-b` 2 or more the new tokens take the same
 route as a fresh slot's prompt, so a continued prefix that was prefilled gives
 the fresh slot's bits.
+On a GPU run, a continued prompt may differ from the same prompt read fresh by
+rounding, both in the host steps a device forward calls and in the device kernels.
 - A scored prompt (echo, `prompt_logprobs`) and the scored tokens of
   `/v1/decide` are fed one token a forward on the decode route. The engine
   marks the first row a scoring feed wrote. A normal request keeps the slot's
