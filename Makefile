@@ -1298,6 +1298,12 @@ $(TEST_IQ_DECODE): tests/test_iq_decode.c src/iq_decode.h src/quants_iq_grids.h 
 TEST_KQ_STAGE = $(TEST_BATCH:test-batch%=test-kq-stage%)
 $(TEST_KQ_STAGE): tests/test_kq_stage.c src/kq_stage.h src/iq_decode.h $(QUANTS_OBJ)
 	$(CC) $(QUANTS_CFLAGS) -I src tests/test_kq_stage.c $(QUANTS_OBJ) -o $@ -lm -lpthread
+# R4.48.33: the coalesced NVFP4 GEMV's lane map and arithmetic (src/nvfp4_lane.h, compiled into the CUDA
+# kernels and here): both lane maps against their tables, the decoders, rows against dequant_row(), and the
+# twins' identity rule, bit for bit. Uncontracted, like quantize.o, so the host adds what the kernel adds.
+TEST_NVFP4_LANE = $(TEST_BATCH:test-batch%=test-nvfp4-lane%)
+$(TEST_NVFP4_LANE): tests/test_nvfp4_lane.c src/nvfp4_lane.h $(QUANTS_OBJ)
+	$(CC) $(QUANTS_CFLAGS) -ffp-contract=off -I src tests/test_nvfp4_lane.c $(QUANTS_OBJ) -o $@ -lm -lpthread
 
 # QUANTS_CFLAGS, not CFLAGS: this test carries inline scalar REFERENCE
 # implementations of the quant kernels, and a reference compiled under
@@ -4204,7 +4210,7 @@ test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SC
       $(TEST_TEMPLATE_OOM) $(TEST_ATEM_OOM) $(TEST_TEMPLATE_FAMILIES) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_MLOCK) test-es-mlock.gguf $(TEST_WILLNEED) $(TEST_POPULATE) $(TEST_SPAWN_EINTR) $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
-      $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_TRAY_MAC_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
+      $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_NVFP4_LANE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_TRAY_MAC_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) $(TEST_LINEAGE_OOM) $(TEST_DERIVE_OOM) test-lora.full.gguf \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_SHA256) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_PMATH_EXPF) $(TEST_PMATH_EXPF_DEFAULT) $(TEST_PMATH_SOFTMAX) $(TEST_FPCLASS) $(TEST_ACT) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_INKLING2_THREADS) $(TEST_INKLING2_FAST) $(INKLING2_TINY_DENSE) $(TEST_INKLING2_REQUANT) $(INKLING2_TINY_VARIED) $(TEST_INKLING2_KVQ8) $(TEST_NVFP4_DOT) $(TEST_INKLING2_VMATH) $(TEST_SEND_ERROR) \
@@ -4472,6 +4478,7 @@ test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SC
 	./$(TEST_QUANTS_SIMD)
 	./$(TEST_IQ_DECODE)
 	./$(TEST_KQ_STAGE)
+	./$(TEST_NVFP4_LANE)
 	./$(TEST_INSTANCES)
 	$(TEST_INSTANCES_UBSAN_RUN)
 	./$(TEST_INSTANCES_OOM)

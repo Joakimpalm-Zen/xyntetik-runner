@@ -193,6 +193,8 @@ test-inkling2-fast.out
 test-nvfp4-dot
 test-nvfp4-dot.exe
 test-nvfp4-dot.out
+test-nvfp4-lane
+test-nvfp4-lane.exe
 # R6.129: outputs make test leaves that were never ignored (found by git status after a full run)
 test-full-grad
 test-full-grad.exe
