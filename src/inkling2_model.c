@@ -1476,8 +1476,8 @@ int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, con
            t.reserved / 1073741824.0, t.reserved);
     printf("  dev small     %.2f GiB (%zu bytes: the attention's small tensors and the resident step's)\n",
            t.small / 1073741824.0, t.small);
-    printf("  dev slots     %.2f GiB (%zu bytes: %d slot%s' K/V rings in %s and histories)\n", t.slots / 1073741824.0,
-           t.slots, slots, slots > 1 ? "s" : "", kv_kind_name(kind));
+    printf("  dev slots     %.2f GiB (%zu bytes: %d %s K/V rings in %s and histories)\n", t.slots / 1073741824.0,
+           t.slots, slots, inkling2_slots_possessive(slots), kv_kind_name(kind));
     printf("  dev kept      %.2f GiB (%zu bytes)\n", t.kept / 1073741824.0, t.kept);
     printf("  non-weight    %.2f GiB (%zu bytes: everything above but the weights)\n", rest / 1073741824.0, rest);
     if (t.whole) {

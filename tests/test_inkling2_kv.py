@@ -483,6 +483,11 @@ def test_the_cuda_fit_places_the_file_as_its_load_does(runner_bin, tiny):
     assert m.group(1).startswith("every weight on the device") == on_device, (fit.stdout, load.stderr[-2000:])
 
 
+def _slots_possessive(n):
+    """The fit line's rule, src/inkling2_model.h inkling2_slots_possessive: "slot's" for one slot, "slots'" for more."""
+    return "slot's" if n == 1 else "slots'"
+
+
 def test_q8_engages_on_the_device(runner_bin, tiny):
     """On a CUDA host: --kv q8 under RUNNER_INKLING2_CUDA=1 stores q8 rings on the device, with no test switch: the load
     line says K/V q8, no note keeps f32, and the weights are on CUDA (the bind banner). Gate (c) in
@@ -500,4 +505,12 @@ def test_q8_engages_on_the_device(runner_bin, tiny):
     assert load.returncode == 0, load.stderr[-2000:]
     assert "K/V q8" in load.stderr and "keeps f32" not in load.stderr, load.stderr[-2000:]
     assert "inkling2_loop: the weights on CUDA" in load.stderr, load.stderr[-2000:]
-    assert "slots' K/V rings in q8" in fit.stdout, fit.stdout
+    # the fit line's possessive, one rule for every slot count (R4.48.8.5.2: one slot printed "1 slot' K/V rings")
+    assert re.search(r"\b1 slot's K/V rings in q8\b", fit.stdout), fit.stdout
+    fit2 = subprocess.run(common + ["--parallel", "2", "--info", "fit"], capture_output=True, encoding="utf-8",
+                          errors="replace", env=env, timeout=600)
+    assert fit2.returncode == 0, fit2.stderr[-2000:]
+    for out in (fit.stdout, fit2.stdout):
+        m = re.search(r"(\d+) (slot's|slots') K/V rings in q8", out)
+        assert m and m.group(2) == _slots_possessive(int(m.group(1))), out
+    assert re.search(r"\b2 slots' K/V rings in q8\b", fit2.stdout), fit2.stdout

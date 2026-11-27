@@ -50,6 +50,14 @@ static void drop(model_t *m) { if (m) { model_free(m); free(m); } }
 
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s TINY_F32.gguf\n", argv[0]); return 2; }
+    // R4.48.8.5.2: --info fit's device line names the slots' K/V rings with this one rule: "1 slot's", "2 slots'".
+    // One slot once printed "1 slot' K/V rings".
+    if (strcmp(inkling2_slots_possessive(1), "slot's") != 0 || strcmp(inkling2_slots_possessive(2), "slots'") != 0 ||
+        strcmp(inkling2_slots_possessive(16), "slots'") != 0) {
+        fprintf(stderr, "FAIL: the fit line's possessive reads '%s' for 1 slot and '%s' for 2\n",
+                inkling2_slots_possessive(1), inkling2_slots_possessive(2));
+        return 1;
+    }
     int32_t tok[N_TOK];
     uint32_t r = 2463534242u;
     for (int t = 0; t < N_TOK; t++) { r ^= r << 13; r ^= r >> 17; r ^= r << 5; tok[t] = (int32_t)(r % 256u); }
