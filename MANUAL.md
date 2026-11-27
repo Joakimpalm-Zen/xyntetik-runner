@@ -2138,16 +2138,6 @@ whose whole size exceeds the Metal working-set budget. The embedded shader
 gate compiles the library and verifies every kernel the backend looks up,
 reading that roster out of `src/metal.m` rather than restating it.
 
-On M5-class Macs running macOS 26.2 or newer, `RUNNER_METAL_TENSOR=1` opts
-Q4_K, Q8_0, and Q4_0 prefill into a separately compiled Metal 4 MPP tensor
-GEMM. Admission runs a hand-computable 256-wide matrix self-test per type
-before any model dispatch; compile, pipeline, or numeric failure falls back
-to the established simdgroup GEMM for that type. The path is deliberately
-not the default: on the admission gate every admitted type was numerically
-sound but only matched, rather than beating by the required 1.2x, the
-existing kernel. Apple M1 to M4 never compile or dispatch it and retain the same
-default path and performance. `RUNNER_METAL_TENSOR=0` is the explicit pin.
-
 **CUDA:** Linux and Windows use the dynamically loaded driver API and embedded
 `sm_75` PTX. **The embedded PTX is built by the CUDA 13.0 toolchain (PTX ISA
 9.0), so GPU execution requires a driver with CUDA 13.0 support or newer (the
@@ -2290,16 +2280,7 @@ a step runs slower than without it. Under it, a single ready slot also takes the
 microbatch encoder, so one slot and N slots are measured at the same boundaries.
 It is a measuring tool; leave it off in service.
 
-`RUNNER_METAL_MOE_EM=1` opts into expert-major MoE *prefill* kernels: one
-threadgroup row per expert instead of per (token, expert) slot, byte-identical
-to the default by construction (one shared dot body, one writer per output).
-Measured on 30B/120B/235B MoE at batch 512 they are 3-4% **slower** than
-slot-major — the cache already absorbs the redundant weight reads they
-eliminate — so they ship off by default as a measured negative result;
-`make test-metal-moe-em` keeps them byte-identical. Current grouped-MMA execution and its numerical contract are described
-below and in [the performance reference](docs/performance.md).
-
-Grouped-MMA MoE prefill is that surviving lever, built, measured, and
+Grouped-MMA MoE prefill is the surviving lever, built, measured, and
 **promoted to the default** (ratified 2026-09-01): the batch's slots are
 sorted by expert on-GPU and each expert's token group runs through the
 dense prefill GEMM tile structure with gathered columns and FLOAT-staged
@@ -4498,7 +4479,6 @@ switches:
 | `RUNNER_MOE_HOT` | unset | Experimental, opt-in, CUDA (R3.30). A file of `layer expert` pairs, one a line (`#` starts a comment), naming the experts of `--cpu-moe` host layers to keep in a device hot bank, sized by the file. A host layer with experts listed runs mixed: the device norms and routes, runs the listed experts' gate, up and down on the bank with the fused path's kernels, and the host runs the rest with the CPU path's own expert function at the same time; the slots are summed on the device in the router's order. **Limits:** v1 covers the plain top-k SiLU expert FFN only (no shared expert, expert biases or scales, dual branch or hyper-connections, at most 256 experts a layer); anything else, a malformed file, or the knob without `--cpu-moe`, is refused at load. The file comes from a routing trace (`RUNNER_MOE_TRACE`): it is fitted to the text the trace saw, and its gain is the measured one for one file on one card, not a property of the knob. Measured: Mellum2.1-12B-A2.5B-Thinking Q8_0 on an RTX 3070 with 768 slots (5.07 GB) from six traced prompts, warm decode in one long-lived process on a prompt the trace never saw at 1.52x `--cpu-moe auto` (40.69 against 26.75 tok/s, medians of three interleaved rounds). The first request in a process reads 26 to 33 tok/s while it pages the mapped file in; the 1.96x published earlier (27.82 against 14.19) was a fresh-process reading ([report](docs/compat-reports/r3.30-moe-hot-placement-2026-11-04/README.md)). With every expert of a layer listed, the scores are `--cpu-moe 0`'s bytes; a mixed layer's sum is neither placement's bytes and is within gpu-identity's tolerance (`tests/test_moe_hot.py`). `RUNNER_MOE_HOT_PROF=1` prints, at exit, each mixed layer's time per call: `route` (router, sync, read-back, remap), `host` (the host experts), `wait` (the sync after both), `fill` (the host terms' upload and the sum), and its hit share. The host copies of the experts held on the device are given back to the OS after the upload (the load prints how many): on Mellum 2.1 Q8_0's 768-slot hot file, one Windows host, the working set after warm decode read 5.39 GB against 10.44 GB. A RAM change, not a speed claim; the load itself still peaks at the full size. |
 | `RUNNER_DEBUG_ROUTE` | unset/off | Print one stderr line describing the route a forward actually took whenever it changes, written after the forward, so a device forward that fell back is reported on the CPU it finished on: `backend` and `device`, the layer `split`, `experts_on_host` under `--cpu-moe`, `moe_hot` (the expert slots `RUNNER_MOE_HOT` holds on the device), the `rows` and `path` (`solo`, `batch`, `keep` for speculative verification, `mtp`, `micro` for a slot microbatch), the `kv` type, the `weights` types by share, the CPU's activation (`cpu_act`: `f32`, or `int8` under `RUNNER_CPU_I8`, with `+int8-prefill` appended under `RUNNER_CPU_I8_PREFILL` and `+int8k-decode` under `RUNNER_CPU_I8K`), the backend's own selections (CUDA `graph`, `tc`, `q8x`, `i8`, `small_batch`, `moe`; Metal `fusion`, `mm`, `mv`, `attn`, `moe_mm`, `tensor`), the reason for a CPU `fallback` when a GPU was asked for, the `build` with its codegen flags, and every `RUNNER_*` variable set (`tuning`; a name containing KEY, TOKEN, SECRET or PASS shows only that it is set). Off, a forward costs two stores and a compare. `--bench-json` reports the run's record as its `route` object. |
 | `RUNNER_DEBUG_TIME` | unset/off | Print the forwards' CPU wall time per block stage at the end of a run, summed over every forward: `ple`, `hc_mix`, `attention` (the mixer through its post-norm, so the Q/K/V and output projections are inside it), `deltanet/ssm`, `moe_route`, `experts`, `shared_expert`, `dense_ffn`, `hc_combine` and `head`, each with its share of the total. Under `attention` an `attn core` line times only the scores, softmax and values pass, the part an attention kernel can change. CUDA and Metal time their phases with their own profilers. Off, a stage costs one cached flag test. |
-| `RUNNER_METAL_TENSOR` | unset/off | On M5+ with macOS 26.2+, opt Q4_K, Q8_0, and Q4_0 prefill into the separately admitted Metal 4 MPP tensor GEMM (per-type self-test; a failing type falls back alone). Experimental and not promoted: every admitted type passes its correctness gate but measured only parity with the simdgroup GEMM on M5, short of the 1.2x default-promotion bar. Ignored on Apple M1 to M4. |
 | `RUNNER_MOE_LIMB` | unset (on where it applies) | CUDA only: gemma-4's Q4_0 routed expert products through int8 activation limbs (the `moe-limb` route), the default for a gemma-4 MoE file whose routed expert products are all Q4_0 with every routed expert on the device. `0` or `off` keeps today's expert route and today's bytes (the kill switch); `1` also takes it on the device's layers of a partial offload. A `--gpu-route` set, `RUNNER_CUDA_ROUTE` or a replayed record decides first. Not inert either way: the route changes output bytes, is recorded as `profile.gpu_route`, and is part of the identity that names stored rows, so caches and sessions made with the other setting are recomputed. A gemma-4 MoE file that does not take it says why once on stderr. [Details](docs/kernel-routes.md). |
 
 Beyond these, the binary reads a number of development switches -

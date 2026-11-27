@@ -5,7 +5,6 @@
 #include "runner.h"
 #include "fpclass.h"
 #include "kernels_metal.h"
-#include "kernels_tensor_metal.h"
 #include "compat.h"   // plat_ram_available_bytes: the residency guard below
 #include "metal_admission.h"
 #include "dn_eps.h"
@@ -55,7 +54,6 @@ typedef struct {
     id<MTLComputePipelineState> p_moe_route_replay;
     id<MTLComputePipelineState> p_mv[METAL_TYPE_SLOTS];       // indexed by ggml type
     id<MTLComputePipelineState> p_mm[METAL_TYPE_SLOTS];       // tiled prefill GEMM
-    id<MTLComputePipelineState> p_tensor[METAL_TYPE_SLOTS];   // Metal 4 MPP prefill
     id<MTLComputePipelineState> p_mvf[METAL_TYPE_SLOTS];      // fast decode matvec
     id<MTLComputePipelineState> p_mvfc_q4k;   // its Q4_K twin, columns inside the block walk
     id<MTLComputePipelineState> p_mvg_q4k;   // narrow-slice Q4_K decode (R3.28.2)
@@ -63,8 +61,6 @@ typedef struct {
     id<MTLComputePipelineState> p_mvc[METAL_TYPE_SLOTS];      // identity matvec twins, columns inside
     id<MTLComputePipelineState> p_mv2[METAL_TYPE_SLOTS];      // two-row identity decode matvec
     id<MTLComputePipelineState> p_moe_mv[METAL_TYPE_SLOTS];   // indexed by ggml type
-    id<MTLComputePipelineState> p_moe_mv_em[METAL_TYPE_SLOTS]; // expert-major twin
-    id<MTLComputePipelineState> p_moe_mv_em8[METAL_TYPE_SLOTS]; // + 8-column tiling
     id<MTLComputePipelineState> p_moe_gua[METAL_TYPE_SLOTS]; // fused gate+up+act
     id<MTLComputePipelineState> p_rope_store, p_add_rmsnorm; // decode fusion
     id<MTLComputePipelineState> p_attn_front_q8;             // front megakernel
@@ -457,10 +453,7 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
                              g->dn_state };
     for (size_t i = 0; i < sizeof(bufs) / sizeof(*bufs); i++) [bufs[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mv[i] release];
-    for (int i = 0; i < METAL_TYPE_SLOTS; i++) {
-        [g->p_mm[i] release];
-        [g->p_tensor[i] release];
-    }
+    for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mm[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mvf[i] release];
     [g->p_mvfc_q4k release];
     [g->p_mvg_q4k release];
@@ -468,8 +461,6 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mvc[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mv2[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv[i] release];
-    for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv_em[i] release];
-    for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv_em8[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_gua[i] release];
     [g->p_rope_store release]; [g->p_add_rmsnorm release];
     [g->p_attn_front_q8 release];
@@ -517,19 +508,6 @@ static bool metal_env_on(const char *name) {
 static bool metal_moe_batch_on(void) {
     const char *v = getenv("RUNNER_METAL_MOE_BATCH");
     return !v || !*v || (strcmp(v, "0") && strcmp(v, "off"));
-}
-
-// RUNNER_METAL_MOE_EM=1: expert-major expert FFNs for large batches, reading an
-// expert's rows once per threadgroup, not once per slot; BIT-IDENTICAL to
-// slot-major (a byte gate). Opt-in until its prefill win clears the bar; it
-// needs as many slots as experts, so decode stays slot-major.
-static bool metal_moe_em_on(void) {
-    static _Atomic int on = -1;
-    if (on < 0) {
-        const char *v = getenv("RUNNER_METAL_MOE_EM");
-        on = v && *v && strcmp(v, "0") && strcmp(v, "off") ? 1 : 0;
-    }
-    return on > 0;
 }
 
 // Decode fusion (RUNNER_METAL_FUSE, default ON): fold the per-layer decode
@@ -1100,92 +1078,6 @@ static id<MTLComputePipelineState> mk_pipeline(id<MTLDevice> dev,
     return p;
 }
 
-// Kept as a distinct lookup surface: test_metal_shaders scans mk_pipeline
-// calls against the baseline library, while test_metal_tensor owns this
-// separately compiled Metal 4 library.
-static id<MTLComputePipelineState> mk_tensor_pipeline(id<MTLDevice> dev,
-                                                      id<MTLLibrary> lib,
-                                                      NSString *name) {
-    return mk_pipeline(dev, lib, name);
-}
-
-// Absolute admission anchor: 64 rows of 256 unit Q4_K weights times 32
-// columns of unit activations must produce exactly 256 (within fp16/MPP
-// rounding). A pipeline that merely compiles is not enough—the LM Studio M5
-// regression was precisely a functional tensor self-test that failed later.
-// Per-type self-test rows: unit weights whose dot with an all-ones input
-// is exactly NI, the same bar for every admitted type.
-static size_t metal_tensor_test_row(int type, uint8_t *b, int ni) {
-    if (type == T_Q4_K) {                      // 144 B / 256 weights
-        b[0] = 0x00; b[1] = 0x3c;              // fp16 d = 1
-        for (int j = 0; j < 4; j++) b[4 + j] = 1;
-        for (int j = 0; j < 4; j++) b[12 + j] = 1;
-        memset(b + 16, 0x11, 128);             // both nibbles = 1
-        return 144;
-    }
-    if (type == T_Q8_0) {                      // 34 B / 32 weights
-        for (int k = 0; k < ni / 32; k++) {
-            uint8_t *q = b + k * 34;
-            q[0] = 0x00; q[1] = 0x3c;
-            memset(q + 2, 1, 32);              // int8 quant = 1
-        }
-        return (size_t)(ni / 32) * 34;
-    }
-    // T_Q4_0: 18 B / 32 weights, nibble 9 -> 9 - 8 = 1
-    for (int k = 0; k < ni / 32; k++) {
-        uint8_t *q = b + k * 18;
-        q[0] = 0x00; q[1] = 0x3c;
-        memset(q + 2, 0x99, 16);
-    }
-    return (size_t)(ni / 32) * 18;
-}
-
-static bool metal_tensor_self_test(id<MTLDevice> dev,
-                                   id<MTLComputePipelineState> p, int type) {
-    enum { NI = 256, NOUT = 64, NC = 32, ROW_MAX = 288, SHMEM = 128*64*2 };
-    uint8_t *wh = calloc(NOUT, ROW_MAX);
-    float *xh = malloc((size_t)NC * NI * sizeof(float));
-    if (!wh || !xh) { free(wh); free(xh); return false; }
-    size_t row_b = metal_tensor_test_row(type, wh, NI);
-    for (int r = 1; r < NOUT; r++)
-        metal_tensor_test_row(type, wh + (size_t)r * row_b, NI);
-    for (int i = 0; i < NC * NI; i++) xh[i] = 1.0f;
-    id<MTLBuffer> wb = [dev newBufferWithBytes:wh length:NOUT * ROW_MAX
-                                       options:MTLResourceStorageModeShared];
-    id<MTLBuffer> xb = [dev newBufferWithBytes:xh length:(size_t)NC * NI * 4
-                                       options:MTLResourceStorageModeShared];
-    id<MTLBuffer> yb = [dev newBufferWithLength:(size_t)NC * NOUT * 4
-                                        options:MTLResourceStorageModeShared];
-    id<MTLBuffer> bb = [dev newBufferWithLength:NOUT * 4
-                                        options:MTLResourceStorageModeShared];
-    free(wh); free(xh);
-    if (!wb || !xb || !yb || !bb) {
-        [wb release]; [xb release]; [yb release]; [bb release]; return false;
-    }
-    id<MTLCommandQueue> q = [dev newCommandQueue];
-    id<MTLCommandBuffer> cb = [q commandBuffer];
-    id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
-    mm_args a = { NI, NOUT, NC, 0, 0, NI, NOUT };
-    [e setComputePipelineState:p];
-    [e setBuffer:wb offset:0 atIndex:0]; [e setBuffer:xb offset:0 atIndex:1];
-    [e setBuffer:yb offset:0 atIndex:2]; [e setBytes:&a length:sizeof(a) atIndex:3];
-    [e setBuffer:bb offset:0 atIndex:4];
-    [e setThreadgroupMemoryLength:SHMEM atIndex:0];
-    [e dispatchThreadgroups:MTLSizeMake(1, 1, 1)
-      threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
-    [e endEncoding]; [cb commit]; [cb waitUntilCompleted];
-    bool ok = cb.status == MTLCommandBufferStatusCompleted;
-    if (ok) {
-        float *out = yb.contents;
-        for (int i = 0; i < NC * NOUT; i++)
-            if (!fp_isfinite(out[i]) || fabsf(out[i] - 256.0f) > 0.5f) { ok = false; break; }
-    }
-    if (!ok) fprintf(stderr, "gpu: Metal 4 tensor self-test failed%s%s — using simdgroup GEMM\n",
-                     cb.error ? ": " : "", cb.error ? cb.error.localizedDescription.UTF8String : "");
-    [q release]; [wb release]; [xb release]; [yb release]; [bb release];
-    return ok;
-}
-
 // The two-row Q6_K decode matvec (k_mv2_q6_K) is admitted only when it is
 // bit-identical to k_mv_q6_K on this device: the same weights and
 // activations through both, at a width where every lane takes one
@@ -1431,12 +1323,10 @@ enum { MM_ENV_UNSET = -2 };
 // Atomic, these states and the dispatch counters below: every slot reads and
 // counts, and a test hook may set a state meanwhile.
 static _Atomic int g_mm_state = MM_ENV_UNSET;
-static _Atomic int g_tensor_state = MM_ENV_UNSET;
 static _Atomic unsigned long g_tc_dispatches = 0;
 
 void gpu_tc_force(int on) {
     g_mm_state = on < 0 ? MM_ENV_UNSET : (on != 0);
-    g_tensor_state = on < 0 ? MM_ENV_UNSET : (on != 0);
 }
 
 unsigned long gpu_tc2_dispatches(void) { return 0; }   // CUDA's pipelined TC2 kernels
@@ -1523,24 +1413,6 @@ static bool metal_mm_on(void) {
     return true;   // promoted: every type with a k_mm_* kernel, prefill only
 }
 
-// Metal 4 tensor operations are a separate, fail-closed rung above the
-// established simdgroup GEMM. They are M5-only: the API exists on M4 but is a
-// slower software path there. The tracer bullet stays opt-in until its real
-// model tolerance and >=1.2x prefill promotion bars pass.
-static bool metal_tensor_requested(void) {
-    int st = g_tensor_state;   // one read
-    if (st != MM_ENV_UNSET) return st != 0;
-    const char *e = getenv("RUNNER_METAL_TENSOR");
-    return e && *e && strcmp(e, "0") && strcmp(e, "off");
-}
-
-static bool metal_tensor_device_ok(id<MTLDevice> dev) {
-    if (!metal_tensor_requested()) return false;
-    if (![dev.name hasPrefix:@"Apple M5"] && ![dev.name hasPrefix:@"Apple M6"])
-        return false;
-    NSOperatingSystemVersion v = NSProcessInfo.processInfo.operatingSystemVersion;
-    return v.majorVersion > 26 || (v.majorVersion == 26 && v.minorVersion >= 2);
-}
 // Fast decode matvec (k_mvf_*): the reassociating twin of the identity matvec,
 // n_col == 1 only (kernels.metal; gated by tests/test_mv_tol.c). Default Q4_K
 // only, promoted on its fidelity rows; RUNNER_METAL_MV=0 restores identity (every
@@ -2433,18 +2305,6 @@ static void metal_make_pipelines(gpu_t *g, id<MTLDevice> dev, id<MTLLibrary> lib
     g->p_moe_mv[T_Q5_K] = mk_pipeline(dev, lib, @"k_moe_mv_q5_K");
     g->p_moe_mv[T_Q6_K] = mk_pipeline(dev, lib, @"k_moe_mv_q6_K");
     g->p_moe_mv[T_MXFP4] = mk_pipeline(dev, lib, @"k_moe_mv_mxfp4");
-    g->p_moe_mv_em[T_F32]   = mk_pipeline(dev, lib, @"k_moe_mv_em_f32");
-    g->p_moe_mv_em[T_F16]   = mk_pipeline(dev, lib, @"k_moe_mv_em_f16");
-    g->p_moe_mv_em[T_Q8_0]  = mk_pipeline(dev, lib, @"k_moe_mv_em_q8_0");
-    g->p_moe_mv_em[T_Q4_0]  = mk_pipeline(dev, lib, @"k_moe_mv_em_q4_0");
-    g->p_moe_mv_em[T_Q2_K]  = mk_pipeline(dev, lib, @"k_moe_mv_em_q2_K");
-    g->p_moe_mv_em[T_Q3_K]  = mk_pipeline(dev, lib, @"k_moe_mv_em_q3_K");
-    g->p_moe_mv_em[T_Q4_K]  = mk_pipeline(dev, lib, @"k_moe_mv_em_q4_K");
-    g->p_moe_mv_em[T_Q5_K]  = mk_pipeline(dev, lib, @"k_moe_mv_em_q5_K");
-    g->p_moe_mv_em[T_Q6_K]  = mk_pipeline(dev, lib, @"k_moe_mv_em_q6_K");
-    g->p_moe_mv_em[T_MXFP4] = mk_pipeline(dev, lib, @"k_moe_mv_em_mxfp4");
-    g->p_moe_mv_em8[T_Q8_0]  = mk_pipeline(dev, lib, @"k_moe_mv_em8_q8_0");
-    g->p_moe_mv_em8[T_MXFP4] = mk_pipeline(dev, lib, @"k_moe_mv_em8_mxfp4");
     g->p_rope_store       = mk_pipeline(dev, lib, @"k_rope_store");
     g->p_attn_front_q8    = mk_pipeline(dev, lib, @"k_attn_front_q8_0");
     g->p_attn_front_q40   = mk_pipeline(dev, lib, @"k_attn_front_q4_0");
@@ -2474,52 +2334,6 @@ static void metal_make_pipelines(gpu_t *g, id<MTLDevice> dev, id<MTLLibrary> lib
     g->p_moe_mm[T_Q6_K]   = mk_pipeline(dev, lib, @"k_moe_mm_q6_K");
     g->p_moe_mmh[T_Q8_0]  = mk_pipeline(dev, lib, @"k_moe_mmh_q8_0");
     g->p_moe_mmh[T_MXFP4] = mk_pipeline(dev, lib, @"k_moe_mmh_mxfp4");
-}
-
-// The Metal 4 tensor GEMM, admitted per type only after its self-test.
-static void metal_admit_tensor_gemm(gpu_t *g, id<MTLDevice> dev) {
-    if (metal_tensor_device_ok(dev)) {
-#if defined(MAC_OS_VERSION_26_0)
-        MTLCompileOptions *opts = [MTLCompileOptions new];
-        opts.languageVersion = MTLLanguageVersion4_0;
-        NSError *terr = nil;
-        id<MTLLibrary> tlib = [dev newLibraryWithSource:
-            [NSString stringWithUTF8String:k_metal_tensor_src]
-            options:opts error:&terr];
-        if (!tlib) {
-            fprintf(stderr, "gpu: Metal 4 tensor library unavailable: %s — using simdgroup GEMM\n",
-                    terr ? terr.localizedDescription.UTF8String : "unknown error");
-        } else {
-            id<MTLComputePipelineState> tp = mk_tensor_pipeline(dev, tlib, @"k_tensor_q4_K");
-            if (tp && metal_tensor_self_test(dev, tp, T_Q4_K)) {
-                g->p_tensor[T_Q4_K] = tp;
-                id<MTLComputePipelineState> t8 =
-                    mk_tensor_pipeline(dev, tlib, @"k_tensor_q8_0");
-                if (t8 && metal_tensor_self_test(dev, t8, T_Q8_0))
-                    g->p_tensor[T_Q8_0] = t8;
-                else
-                    [t8 release];
-                id<MTLComputePipelineState> t4 =
-                    mk_tensor_pipeline(dev, tlib, @"k_tensor_q4_0");
-                if (t4 && metal_tensor_self_test(dev, t4, T_Q4_0))
-                    g->p_tensor[T_Q4_0] = t4;
-                else
-                    [t4 release];
-                fprintf(stderr, "gpu: Metal 4 tensor GEMM admitted for Q4_K%s%s\n",
-                        g->p_tensor[T_Q8_0] ? "/Q8_0" : "",
-                        g->p_tensor[T_Q4_0] ? "/Q4_0" : "");
-            } else {
-                [tp release];
-            }
-            [tlib release];
-        }
-        [opts release];
-#else
-        fprintf(stderr, "gpu: this build SDK has no Metal 4 compiler — using simdgroup GEMM\n");
-#endif
-    } else if (metal_tensor_requested()) {
-        fprintf(stderr, "gpu: Metal 4 tensor GEMM requires M5+ and macOS 26.2+ — using simdgroup GEMM\n");
-    }
 }
 
 // Every pipeline the admitted types need exists.
@@ -2964,7 +2778,6 @@ bool gpu_init(model_t *m) {
     metal_make_pipelines(g, dev, lib);
     [lib release];
     lib = nil;
-    metal_admit_tensor_gemm(g, dev);
     if (!metal_check_pipelines(m, g)) return false;
     size_t page = 16384;
     int gpu_K;
@@ -2996,7 +2809,7 @@ bool gpu_init(model_t *m) {
 // Printed under RUNNER_METAL_STATS but always counted (a branch costs more than
 // the add), atomically, since parallel slots encode at once.
 static struct {
-    _Atomic unsigned long tensor, mm, mv, mvf, rmsnorm, qknorm, headnorm, rope, store,
+    _Atomic unsigned long mm, mv, mvf, rmsnorm, qknorm, headnorm, rope, store,
                           attn, attn_chunk, elem, moe, ple;
     // KV bytes an attention dispatch will read, accumulated for DECODE only
     // (n == 1), split by whether the layer slides. Decode-only because at
@@ -3142,26 +2955,6 @@ static bool enc_mm_tiles(gpu_t *g, id<MTLComputeCommandEncoder> e,
                          id<MTLBuffer> y, NSUInteger y_off,
                          int n_in, int n_out, id<MTLBuffer> bias,
                          int n_col, int x_stride, int y_stride) {
-    if (g->p_tensor[w->type] && n_in % 256 == 0) {
-        [e setComputePipelineState:g->p_tensor[w->type]];
-        mm_args ma = { n_in, n_out, n_col,
-                       metal_bind_weights(g, e,
-                           (uint64_t)(uintptr_t)w->data,
-                           w->nbytes),
-                       bias != nil, x_stride, y_stride };
-        [e setBuffer:x offset:x_off atIndex:1];
-        [e setBuffer:y offset:y_off atIndex:2];
-        [e setBytes:&ma length:sizeof(ma) atIndex:3];
-        [e setBuffer:bias ? bias : g->dummy offset:0 atIndex:4];
-        [e setThreadgroupMemoryLength:128 * 64 * sizeof(uint16_t)
-                              atIndex:0];
-        g_disp.tensor++;
-        count_tc_dispatch(w->type);
-        [e dispatchThreadgroups:MTLSizeMake((n_out + 127) / 128,
-                                            (n_col + 255) / 256, 1)
-          threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
-        return true;
-    }
     // Tiled GEMM when this is a real batch, a kernel exists for the weight
     // type and the input is a width the tile steps whole (metal_mm_width_ok).
     if (metal_mm_on() && g->p_mm[w->type] && metal_mm_width_ok(w->type, n_in) &&
@@ -3491,24 +3284,8 @@ static void enc_moe_mv(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
                        int n_in, int n_out, int nslots, int xs, int ys,
                        id<MTLBuffer> bias, int bias_stride,
                        NSUInteger sel_off, int slots_per_token) {
-    // Expert-major pays only when experts are shared across slots: at
-    // nslots >= n_expert every expert averages a full token list, and the
-    // one-read-per-expert weight traffic beats slot-major's re-reads. Below
-    // that (decode: nslots == n_expert_used) slot-major stays.
-    id<MTLComputePipelineState> emp = nil;
-    if (metal_moe_em_on() && m->n_expert > 0 && nslots >= m->n_expert) {
-        emp = g->p_moe_mv_em8[base->type];       // column-tiled where it exists
-        if (!emp) emp = g->p_moe_mv_em[base->type];
-    }
-    bool em = emp != nil;
-    if (em) {
-        static _Atomic bool announced;   // any slot may get here first (compat.h)
-        if (plat_once(&announced)) {
-            fprintf(stderr, "gpu: MoE expert-major prefill kernels on "
-                    "(RUNNER_METAL_MOE_EM)\n");
-        }
-    }
-    [e setComputePipelineState:em ? emp : g->p_moe_mv[base->type]];
+    (void)m;
+    [e setComputePipelineState:g->p_moe_mv[base->type]];
     moe_args a = { n_in, n_out,
                    metal_bind_weights(g, e,
                        (uint64_t)(uintptr_t)base->data,
@@ -3521,8 +3298,7 @@ static void enc_moe_mv(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
     [e setBuffer:g->moe_sel offset:sel_off atIndex:4];
     [e setBuffer:bias ? bias : g->dummy offset:0 atIndex:5];
     g_disp.moe++;
-    [e dispatchThreadgroups:MTLSizeMake((n_out + 3) / 4,
-                                        em ? m->n_expert : nslots, 1)
+    [e dispatchThreadgroups:MTLSizeMake((n_out + 3) / 4, nslots, 1)
       threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
 }
 
@@ -5563,7 +5339,7 @@ static float *metal_fwd_submit(metal_fwd *F, double t_enc0) {
     metal_moe_route_trace(g, m, n);
     metal_moe_full_trace(g, m, n, pos);
     if (metal_env_on("RUNNER_METAL_STATS")) {
-        unsigned long tot = g_disp.tensor + g_disp.mm + g_disp.mv + g_disp.mvf +
+        unsigned long tot = g_disp.mm + g_disp.mv + g_disp.mvf +
                             g_disp.rmsnorm + g_disp.qknorm + g_disp.headnorm +
                             g_disp.rope + g_disp.store + g_disp.attn +
                             g_disp.attn_chunk + g_disp.elem + g_disp.moe;
@@ -5585,10 +5361,10 @@ static float *metal_fwd_submit(metal_fwd *F, double t_enc0) {
                     "round-trips) = %.1f%% of KV read\n", g_disp.scores_bytes,
                     100.0 * (double)g_disp.scores_bytes
                         / (double)(g_disp.kv_swa + g_disp.kv_global));
-        fprintf(stderr, "metal-census n=%d total=%lu | tensor=%lu mm=%lu mv=%lu mvf=%lu "
+        fprintf(stderr, "metal-census n=%d total=%lu | mm=%lu mv=%lu mvf=%lu "
                 "rmsnorm=%lu qknorm=%lu headnorm=%lu rope=%lu store=%lu "
                 "attn=%lu(tile %lu) attn_chunk=%lu(coop %lu, gqa %lu) elem=%lu moe=%lu\n",
-                n, tot, g_disp.tensor, g_disp.mm, g_disp.mv, g_disp.mvf, g_disp.rmsnorm,
+                n, tot, g_disp.mm, g_disp.mv, g_disp.mvf, g_disp.rmsnorm,
                 g_disp.qknorm, g_disp.headnorm, g_disp.rope, g_disp.store,
                 g_disp.attn, g_tile_dispatches, g_disp.attn_chunk, g_coop_dispatches,
                 g_gqa_dispatches,
@@ -5724,14 +5500,13 @@ bool gpu_hidden_rows_ok(const model_t *m) {
 // docs/kernel-routes.md has each one's obligation): decode fusion, the
 // simdgroup prefill GEMM, the fast or identity decode matvec, the
 // cooperative or identity attention read, grouped-MMA MoE prefill and its
-// staging, whether the Metal 4 tensor GEMM admitted any type, and the
-// decode microbatch's opt-in tiles (micro=tiles, named only when on), and
-// " attn_wide=on" where the prefill tile takes a head wider than 256.
+// staging, and the decode microbatch's opt-in tiles (micro=tiles, named only
+// when on), and " attn_wide=on" where the prefill tile takes a head wider than
+// 256. tensor=off stays in the formatted string so existing Metal receipts
+// still match under --verify after R3.84 retired RUNNER_METAL_TENSOR.
 const char *gpu_route_detail(const model_t *m) {
     const gpu_t *g = m ? (const gpu_t *)m->gpu : NULL;
     static _Thread_local char buf[176];
-    bool tensor = false;
-    for (int t = 0; g && t < METAL_TYPE_SLOTS; t++) if (g->p_tensor[t]) tensor = true;
     bool wide = false;
     if (m && metal_attn_tile_on() && metal_attn_wide_on(m))
         for (int l = 0; l < m->n_layer && !wide; l++) {
@@ -5739,7 +5514,7 @@ const char *gpu_route_detail(const model_t *m) {
             wide = hd > 256 && hd <= 512;
         }
     int moe = metal_moe_mm_on();
-    snprintf(buf, sizeof buf, "fusion=%s mm=%s mv=%s attn=%s%s%s%s tensor=%s%s",
+    snprintf(buf, sizeof buf, "fusion=%s mm=%s mv=%s attn=%s%s%s%s tensor=off%s",
              metal_fuse_on() ? "on" : "off", metal_mm_on() ? "on" : "off",
              metal_mv_state() == MV_ALL ? "fast"
              : metal_mv_state() == MV_Q4_K && g && g->mv_q4k_default
@@ -5749,7 +5524,6 @@ const char *gpu_route_detail(const model_t *m) {
              wide ? " attn_wide=on" : "",
              m && m->n_expert > 0 ? " moe_mm=" : "",
              m && m->n_expert > 0 ? (moe == 2 ? "half" : moe ? "f32" : "off") : "",
-             tensor ? "on" : "off",
              metal_batch_tiles_on() ? " micro=tiles" : "");
     return buf;
 }

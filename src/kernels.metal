@@ -4557,7 +4557,7 @@ struct moe_args {
 };
 
 // One dot body per quant type, shared verbatim by BOTH dispatch shapes below
-// (slot-major k_moe_mv_* and expert-major k_moe_mv_em_*). One definition is
+// Each expert quant type shares one dot body (slot-major k_moe_mv_*). One definition is
 // what makes the two shapes bit-identical: the per-(row, slot) arithmetic and
 // its accumulation order are the same instructions either way — only which
 // threadgroup executes them changes.
@@ -4906,163 +4906,6 @@ kernel void k_moe_mv_mxfp4(MOE_MV_PARAMS) {
     s += moe_dot_mxfp4(wbase, row, a.n_in, xp0, tiisg);
     MOE_MV_TAIL;
 }
-
-// ------------------------------------------------ expert-major MoE matvec
-//
-// The slot-major family above runs one threadgroup row per (token, selected
-// expert) SLOT, so at prefill batch N every expert's weight rows are re-read
-// once per slot that selected it — ~N*used/n_expert redundant reads of the
-// dominant traffic. This family inverts the grid: one threadgroup row per
-// EXPERT. The threadgroup cooperatively compacts the slots routed to its
-// expert into threadgroup memory, then each simdgroup walks that list with
-// the SAME moe_dot_* body, reading the expert's weight rows once and reusing
-// them across every matching token from cache.
-//
-// Output placement is unchanged (y[slot * ys + row]) and each (slot, row) has
-// exactly one writer, so no atomics touch the results and the outputs are
-// bit-identical to the slot-major family — gated, not assumed. Cold experts
-// cost one compaction scan and exit before any weight byte is read.
-#define MOE_EM_CHUNK 1024
-
-#define MOE_EM_KERNEL(NAME, DOTFN) \
-kernel void NAME(MOE_MV_PARAMS) { \
-    uint row = tgpig.x * (ntg.x / 32) + sgitg; \
-    int  ex = (int)tgpig.y; \
-    uint tpitg = sgitg * 32 + tiisg; \
-    uint nth = ntg.x; \
-    threadgroup int list[MOE_EM_CHUNK]; \
-    threadgroup atomic_int cnt; \
-    device const uchar *wbase = wb + a.w_off + (ulong)ex * a.estride; \
-    for (int base = 0; base < a.n_slots; base += MOE_EM_CHUNK) { \
-        int lim = a.n_slots - base; \
-        if (lim > MOE_EM_CHUNK) lim = MOE_EM_CHUNK; \
-        if (tpitg == 0) \
-            atomic_store_explicit(&cnt, 0, memory_order_relaxed); \
-        threadgroup_barrier(mem_flags::mem_threadgroup); \
-        for (int i = (int)tpitg; i < lim; i += (int)nth) \
-            if (sel[base + i] == ex) { \
-                int k = atomic_fetch_add_explicit(&cnt, 1, \
-                                                  memory_order_relaxed); \
-                list[k] = base + i; \
-            } \
-        threadgroup_barrier(mem_flags::mem_threadgroup); \
-        int c = atomic_load_explicit(&cnt, memory_order_relaxed); \
-        if (row < (uint)a.n_out) \
-            for (int k = 0; k < c; k++) { \
-                int slot = list[k]; \
-                uint xrow = a.slots_per_token ? (uint)slot / a.slots_per_token \
-                                              : (uint)slot; \
-                device const float *xp0 = x + (ulong)xrow * a.xs; \
-                float s = DOTFN(wbase, row, a.n_in, xp0, tiisg); \
-                s = simd_sum(s); \
-                if (tiisg == 0) { \
-                    if (a.has_bias) \
-                        s += bias[(ulong)ex * a.bias_stride + row]; \
-                    y[(ulong)slot * a.ys + row] = s; \
-                } \
-            } \
-        threadgroup_barrier(mem_flags::mem_threadgroup); \
-    } \
-}
-
-// Column-tiled twins for the hottest expert quant types: one weight block
-// load feeds up to 8 gathered token columns, with a separate accumulator per
-// column so every (row, slot) dot keeps the exact block order and reduction
-// of the single-column body — still byte-identical, now with the weight
-// reuse in registers where the flat expert-major family measured that cache
-// alone does not pay.
-static inline void moe_dot8_q8_0(device const uchar *wbase, uint row, int n_in,
-                                 device const float * thread const *xps,
-                                 int ncol, uint tiisg, thread float *acc) {
-    int nb = n_in / 32;
-    device const uchar *rw = wbase + (ulong)row * nb * 34;
-    for (int b = tiisg; b < nb; b += 32) {
-        device const uchar *blk = rw + (ulong)b * 34;
-        float d = (float)*(device const half *)blk;
-        device const char *q = (device const char *)(blk + 2);
-        for (int c = 0; c < ncol; c++) {
-            device const float *xp = xps[c] + b * 32;
-            float t = 0;
-            for (int j = 0; j < 32; j++) t += (float)q[j] * xp[j];
-            acc[c] += d * t;
-        }
-    }
-}
-
-static inline void moe_dot8_mxfp4(device const uchar *wbase, uint row, int n_in,
-                                  device const float * thread const *xps,
-                                  int ncol, uint tiisg, thread float *acc) {
-    int nb = n_in / 32;
-    device const uchar *rw = wbase + (ulong)row * nb * 17;
-    for (int b = tiisg; b < nb; b += 32) {
-        device const uchar *blk = rw + (ulong)b * 17;
-        float d = ldexp(1.0f, (int)blk[0] - 127);
-        device const uchar *q = blk + 1;
-        for (int c = 0; c < ncol; c++) {
-            device const float *xp = xps[c] + b * 32;
-            float t = 0;
-            for (int j = 0; j < 16; j++) {
-                t += kv_mxfp4[q[j] & 0xF] * xp[j];
-                t += kv_mxfp4[q[j] >> 4]  * xp[j + 16];
-            }
-            acc[c] += d * t;
-        }
-    }
-}
-
-#define MOE_EM8_KERNEL(NAME, DOTFN8) \
-kernel void NAME(MOE_MV_PARAMS) { \
-    uint row = tgpig.x * (ntg.x / 32) + sgitg; \
-    int  ex = (int)tgpig.y; \
-    uint tpitg = sgitg * 32 + tiisg; \
-    uint nth = ntg.x; \
-    threadgroup int list[MOE_EM_CHUNK]; \
-    threadgroup atomic_int cnt; \
-    device const uchar *wbase = wb + a.w_off + (ulong)ex * a.estride; \
-    for (int base = 0; base < a.n_slots; base += MOE_EM_CHUNK) { \
-        int lim = a.n_slots - base; \
-        if (lim > MOE_EM_CHUNK) lim = MOE_EM_CHUNK; \
-        if (tpitg == 0) \
-            atomic_store_explicit(&cnt, 0, memory_order_relaxed); \
-        threadgroup_barrier(mem_flags::mem_threadgroup); \
-        for (int i = (int)tpitg; i < lim; i += (int)nth) \
-            if (sel[base + i] == ex) { \
-                int k = atomic_fetch_add_explicit(&cnt, 1, \
-                                                  memory_order_relaxed); \
-                list[k] = base + i; \
-            } \
-        threadgroup_barrier(mem_flags::mem_threadgroup); \
-        int c = atomic_load_explicit(&cnt, memory_order_relaxed); \
-        if (row < (uint)a.n_out) \
-            for (int k0 = 0; k0 < c; k0 += 8) { \
-                int ncol = c - k0 < 8 ? c - k0 : 8; \
-                device const float *xps[8]; \
-                int slots8[8]; \
-                for (int cc = 0; cc < ncol; cc++) { \
-                    int slot = list[k0 + cc]; \
-                    slots8[cc] = slot; \
-                    uint xrow = a.slots_per_token \
-                                    ? (uint)slot / a.slots_per_token \
-                                    : (uint)slot; \
-                    xps[cc] = x + (ulong)xrow * a.xs; \
-                } \
-                float acc[8] = {0, 0, 0, 0, 0, 0, 0, 0}; \
-                DOTFN8(wbase, row, a.n_in, xps, ncol, tiisg, acc); \
-                for (int cc = 0; cc < ncol; cc++) { \
-                    float s = simd_sum(acc[cc]); \
-                    if (tiisg == 0) { \
-                        if (a.has_bias) \
-                            s += bias[(ulong)ex * a.bias_stride + row]; \
-                        y[(ulong)slots8[cc] * a.ys + row] = s; \
-                    } \
-                } \
-            } \
-        threadgroup_barrier(mem_flags::mem_threadgroup); \
-    } \
-}
-
-MOE_EM8_KERNEL(k_moe_mv_em8_q8_0,  moe_dot8_q8_0)
-MOE_EM8_KERNEL(k_moe_mv_em8_mxfp4, moe_dot8_mxfp4)
 
 // ---------------------------------------- grouped simdgroup-MMA MoE prefill
 //
@@ -5462,17 +5305,6 @@ kernel void k_moe_mmh_mxfp4(MOE_MM_PARAMS) {
         }
     })
 }
-
-MOE_EM_KERNEL(k_moe_mv_em_f32,   moe_dot_f32)
-MOE_EM_KERNEL(k_moe_mv_em_f16,   moe_dot_f16)
-MOE_EM_KERNEL(k_moe_mv_em_q8_0,  moe_dot_q8_0)
-MOE_EM_KERNEL(k_moe_mv_em_q4_0,  moe_dot_q4_0)
-MOE_EM_KERNEL(k_moe_mv_em_q2_K,  moe_dot_q2_K)
-MOE_EM_KERNEL(k_moe_mv_em_q3_K,  moe_dot_q3_K)
-MOE_EM_KERNEL(k_moe_mv_em_q4_K,  moe_dot_q4_K)
-MOE_EM_KERNEL(k_moe_mv_em_q5_K,  moe_dot_q5_K)
-MOE_EM_KERNEL(k_moe_mv_em_q6_K,  moe_dot_q6_K)
-MOE_EM_KERNEL(k_moe_mv_em_mxfp4, moe_dot_mxfp4)
 
 static inline float swiglu_oai(float g, float u) {
     const float alpha = 1.702f, limit = 7.0f;

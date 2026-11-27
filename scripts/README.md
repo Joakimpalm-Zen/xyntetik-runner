@@ -264,8 +264,6 @@ Nothing here gates a merge; these are how a claim gets a number behind it.
   - tiny GGUF fixtures for the Mamba-2 hybrid (`granitehybrid`), `nemotron_h`
   and LoRA-adapter paths, beside `make-test-model.py`, `make-test-moe.py` and
   `make-test-ornith.py`; `make test` builds them.
-- **`embed-metal-tensor.py`** - embeds the separately admitted Metal 4 tensor
-  source, the sibling of `embed-metal.py`; `check-generated.py` guards both.
 - **`repro-startup-signal.py`** - reproducer for the once-reported
   SIGTERM-during-startup race that `test_signal_during_startup` chases.
 - **`conformance.sh`** - the agent-protocol conformance harness in one command.
