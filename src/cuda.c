@@ -3024,39 +3024,7 @@ static bool shared_load_module(gpu_weights *w) {
         { &w->f_q8x[6][T_IQ3_S], "k_q8x_iq3_s_x6" },
         { &w->f_q8x[7][T_IQ3_S], "k_q8x_iq3_s_x7" },
         { &w->f_q8x[8][T_IQ3_S], "k_q8x_iq3_s_x8" },
-        { &w->f_q8x[1][T_IQ3_XXS], "k_q8x_iq3_xxs_x1" },
-        { &w->f_q8x[2][T_IQ3_XXS], "k_q8x_iq3_xxs_x2" },
-        { &w->f_q8x[3][T_IQ3_XXS], "k_q8x_iq3_xxs_x3" },
-        { &w->f_q8x[4][T_IQ3_XXS], "k_q8x_iq3_xxs_x4" },
-        { &w->f_q8x[5][T_IQ3_XXS], "k_q8x_iq3_xxs_x5" },
-        { &w->f_q8x[6][T_IQ3_XXS], "k_q8x_iq3_xxs_x6" },
-        { &w->f_q8x[7][T_IQ3_XXS], "k_q8x_iq3_xxs_x7" },
-        { &w->f_q8x[8][T_IQ3_XXS], "k_q8x_iq3_xxs_x8" },
-        { &w->f_q8x[1][T_IQ4_XS], "k_q8x_iq4_xs_x1" },
-        { &w->f_q8x[2][T_IQ4_XS], "k_q8x_iq4_xs_x2" },
-        { &w->f_q8x[3][T_IQ4_XS], "k_q8x_iq4_xs_x3" },
-        { &w->f_q8x[4][T_IQ4_XS], "k_q8x_iq4_xs_x4" },
-        { &w->f_q8x[5][T_IQ4_XS], "k_q8x_iq4_xs_x5" },
-        { &w->f_q8x[6][T_IQ4_XS], "k_q8x_iq4_xs_x6" },
-        { &w->f_q8x[7][T_IQ4_XS], "k_q8x_iq4_xs_x7" },
-        { &w->f_q8x[8][T_IQ4_XS], "k_q8x_iq4_xs_x8" },
         { &w->f_quant_q8x,        "k_quant_q8x" },
-        { &w->f_q8x[1][T_Q4_K], "k_q8x_q4_K_x1" },
-        { &w->f_q8x[2][T_Q4_K], "k_q8x_q4_K_x2" },
-        { &w->f_q8x[3][T_Q4_K], "k_q8x_q4_K_x3" },
-        { &w->f_q8x[4][T_Q4_K], "k_q8x_q4_K_x4" },
-        { &w->f_q8x[5][T_Q4_K], "k_q8x_q4_K_x5" },
-        { &w->f_q8x[6][T_Q4_K], "k_q8x_q4_K_x6" },
-        { &w->f_q8x[7][T_Q4_K], "k_q8x_q4_K_x7" },
-        { &w->f_q8x[8][T_Q4_K], "k_q8x_q4_K_x8" },
-        { &w->f_q8x[1][T_Q8_0], "k_q8x_q8_0_x1" },
-        { &w->f_q8x[2][T_Q8_0], "k_q8x_q8_0_x2" },
-        { &w->f_q8x[3][T_Q8_0], "k_q8x_q8_0_x3" },
-        { &w->f_q8x[4][T_Q8_0], "k_q8x_q8_0_x4" },
-        { &w->f_q8x[5][T_Q8_0], "k_q8x_q8_0_x5" },
-        { &w->f_q8x[6][T_Q8_0], "k_q8x_q8_0_x6" },
-        { &w->f_q8x[7][T_Q8_0], "k_q8x_q8_0_x7" },
-        { &w->f_q8x[8][T_Q8_0], "k_q8x_q8_0_x8" },
     };
     for (size_t i = 0; i < sizeof(fns) / sizeof(*fns); i++)
         CK(cu.ModuleGetFunction(fns[i].f, w->mod, fns[i].name));
@@ -4053,6 +4021,34 @@ static bool cuda_alloc_activations(model_t *m, gpu_t *g, const cuda_dims *D) {
     CK(cu.MemAlloc(&g->hb,     sizeof(float) * hb_elems));
     CK(cu.MemAlloc(&g->hb2,    sizeof(float) * hb_elems));
     if (gpu_q8x_on()) {
+        // R3.84: RUNNER_CUDA_Q8X is narrowed to IQ3_S only (+22% decode).
+        // Print one notice when set on a model holding any retired Q8X type.
+        bool has_q4k = false, has_q80 = false, has_iq3xxs = false, has_iq4xs = false;
+        for (uint64_t ti = 0; ti < m->gf.n_tensors; ti++) {
+            const gguf_tensor *t = &m->gf.tensors[ti];
+            if (t->n_dims < 2) continue;
+            if (t->type == T_Q4_K)    has_q4k = true;
+            if (t->type == T_Q8_0)    has_q80 = true;
+            if (t->type == T_IQ3_XXS) has_iq3xxs = true;
+            if (t->type == T_IQ4_XS)  has_iq4xs = true;
+        }
+        if (has_q4k || has_q80 || has_iq3xxs || has_iq4xs) {
+            char types[64] = "";
+            size_t n = 0;
+            const struct { bool has; const char *name; } rt[] = {
+                { has_q4k, "Q4_K" }, { has_q80, "Q8_0" },
+                { has_iq3xxs, "IQ3_XXS" }, { has_iq4xs, "IQ4_XS" },
+            };
+            for (size_t i = 0; i < sizeof(rt) / sizeof(*rt); i++)
+                if (rt[i].has) {
+                    int wr = snprintf(types + n, sizeof(types) - n, "%s%s",
+                                      n ? ", " : "", rt[i].name);
+                    if (wr > 0 && (size_t)wr < sizeof(types) - n) n += (size_t)wr;
+                }
+            fprintf(stderr, "notice: RUNNER_CUDA_Q8X: Q4_K, Q8_0, IQ3_XXS and IQ4_XS kernels were retired in R3.84; "
+                    "RUNNER_CUDA_Q8X applies to IQ3_S only (this model has %s, which run the default route)\n",
+                    types);
+        }
         // the widest matvec input: FFN down (n_ff), the attention/recurrent
         // projections (xdim, the DeltaNet mix), the MTP concat (2 n_embd)
         int mi = xdim;
@@ -4899,8 +4895,9 @@ static bool launch_tiled_xscaled(gpu_t *g, CUfunction f, unsigned grid,
 static bool enc_mv_batch(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                          CUdeviceptr y, int n_in, int n_out, CUdeviceptr bias,
                          int batch, int xs, int ys);
-// RUNNER_CUDA_Q8X=1: the int8-activation codebook GEMVs (EXPERIMENTAL; not
-// the float route's bits, tolerance-gated against the CPU)
+// RUNNER_CUDA_Q8X=1: the IQ3_S int8-activation codebook GEMV (EXPERIMENTAL;
+// not the float route's bits, tolerance-gated against the CPU; Q4_K, Q8_0,
+// IQ3_XXS and IQ4_XS retired in R3.84)
 static bool gpu_q8x_on(void) {
     static _Atomic int on = -1;
     if (on < 0) { const char *e = getenv("RUNNER_CUDA_Q8X"); on = e && *e && *e != '0'; }
@@ -5226,7 +5223,7 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     CUdeviceptr b = bias ? bias : g->sw->dummy;
     void *p[] = { &weights, &x, &y, &a, &b };
     // RUNNER_CUDA_Q8X: quantize x to int8 once (per 32), then the dp4a GEMV;
-    // batch 1..8 of IQ3_S / IQ3_XXS / IQ4_XS / Q4_K / Q8_0
+    // batch 1..8 of IQ3_S only (Q4_K / Q8_0 / IQ3_XXS / IQ4_XS retired in R3.84)
     if (mv_route_q8x(g, w, n_in, batch)) {
         int nbk = n_in / 32 * batch;
         void *pq[] = { &x, &g->q8x_q, &g->q8x_d, &n_in, &batch, &xs };

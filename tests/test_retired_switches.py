@@ -58,11 +58,18 @@ RETIRED_CPU_LOADER_SYMBOLS = (
 # kernel's 16-wide twins or the batch-1 kernel per column, and the decode
 # microbatch and the router take f_mvb only where it is the batch-1 kernel's
 # twin (F32, F16, BF16, which keep theirs). The tiles summed in another order.
+# R3.84: RUNNER_CUDA_Q8X is narrowed to IQ3_S only (+22% decode); Q4_K and Q8_0
+# measured slower than the default decode (0.933 to 0.982x on three files,
+# 2026-11-14; -1.8% to -6.6% in October), and IQ3_XXS and IQ4_XS had no
+# single-type measurement file.
 RETIRED_KERNELS = (
     [f"k_gemm_{t}" for t in ("q8_0", "q3_K", "q4_K", "q5_K", "q6_K")]
     + [f"k_mv_{t}_b" for t in ("q8_0", "q2_0", "q4_0", "q4_1", "q5_0", "q5_1", "q2_K", "q3_K",
                                "q4_K", "q5_K", "q6_K", "iq4_nl", "iq4_xs", "mxfp4", "nvfp4",
-                               "iq2_xxs", "iq2_xs", "iq2_s", "iq3_xxs", "iq3_s", "iq1_s", "iq1_m")])
+                               "iq2_xxs", "iq2_xs", "iq2_s", "iq3_xxs", "iq3_s", "iq1_s", "iq1_m")]
+    + [f"k_q8x_{t}_x{c}" for t in ("q4_K", "q8_0", "iq3_xxs", "iq4_xs") for c in range(1, 9)])
+
+RETIRED_Q8X_HELPERS = ("iq3xxs_q8", "iq4xs_q8", "q4k_q8", "q80_q8")
 
 RETIRED_METAL_KERNELS = (
     [f"k_moe_mv_em_{t}" for t in ("f32", "f16", "q8_0", "q4_0", "q2_K", "q3_K", "q4_K", "q5_K", "q6_K", "mxfp4")]
@@ -132,6 +139,44 @@ def test_the_float_tiles_stay():
     src = (ROOT / "src" / "cuda.c").read_text(encoding="utf-8")
     for kernel in ("k_mv_f32_b", "k_mv_f16_b", "k_mv_bf16_b"):
         assert f'"{kernel}"' in src, kernel
+
+
+@pytest.mark.parametrize("helper", RETIRED_Q8X_HELPERS)
+def test_retired_q8x_helpers_are_gone(helper):
+    src = (ROOT / "src" / "kernels.cu").read_text(encoding="utf-8", errors="replace")
+    assert not re.search(rf"\b{helper}\b", src), f"{helper} is still in kernels.cu"
+
+
+def test_q8x_iq3_s_stays_and_narrowed_notice_exists():
+    """RUNNER_CUDA_Q8X stays for IQ3_S only (+22% decode), and cuda.c notices
+    when set on a model containing retired Q8X types."""
+    cuda_src = (ROOT / "src" / "cuda.c").read_text(encoding="utf-8")
+    cu_src = (ROOT / "src" / "kernels.cu").read_text(encoding="utf-8")
+    assert '"k_quant_q8x"' in cuda_src and "k_quant_q8x" in cu_src
+    for c in range(1, 9):
+        k = f"k_q8x_iq3_s_x{c}"
+        assert f'"{k}"' in cuda_src and k in cu_src, k
+    assert "RUNNER_CUDA_Q8X: Q4_K, Q8_0, IQ3_XXS and IQ4_XS kernels were retired in R3.84" in cuda_src
+
+
+def test_q8x_retired_types_print_one_notice_on_cuda(runner_bin, tiny_model):
+    """On a CUDA host, RUNNER_CUDA_Q8X=1 on a Q8_0 model prints one notice that
+    Q8_0 was retired in R3.84 and produces byte-identical output."""
+    info = subprocess.run([str(runner_bin), "--doctor"], cwd=ROOT, capture_output=True, text=True, timeout=30)
+    if '"backend":"cuda"' not in info.stdout.replace(" ", ""):
+        pytest.skip("needs a CUDA device")
+    base_env = {k: v for k, v in os.environ.items() if k != "RUNNER_CUDA_Q8X"}
+    cmd = [str(runner_bin), "-m", str(tiny_model), "-p", "hi", "-n", "4",
+           "--temp", "0", "-s", "1", "--no-tray", "-t", "2"]
+    base = subprocess.run(cmd, cwd=ROOT, env=base_env, capture_output=True, timeout=60)
+    assert base.returncode == 0, base.stderr.decode("utf-8", "replace")
+    q8x = subprocess.run(cmd, cwd=ROOT, env={**base_env, "RUNNER_CUDA_Q8X": "1"}, capture_output=True, timeout=60)
+    assert q8x.returncode == 0, q8x.stderr.decode("utf-8", "replace")
+    err_lines = [ln for ln in q8x.stderr.decode("utf-8", "replace").splitlines()
+                 if "RUNNER_CUDA_Q8X" in ln and "retired" in ln.lower()]
+    assert len(err_lines) == 1, f"expected 1 retired-type notice for RUNNER_CUDA_Q8X, got {err_lines!r}"
+    assert "Q8_0" in err_lines[0] and "IQ3_S" in err_lines[0], err_lines[0]
+    assert q8x.stdout == base.stdout, "RUNNER_CUDA_Q8X=1 changed output on retired Q8_0 type"
 
 
 @pytest.mark.parametrize("name", sorted(set(RETIRED) | set(RETIRED_WITH_NOTICE)))
