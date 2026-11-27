@@ -1797,8 +1797,10 @@ on generated files only (`make test-metal-olmo2`). Each file's recorded backend
 results are in the
 [validated file rows](docs/model-support.md#olmo-2-0425-1b-instruct-f16).
 
-Since R4.50.9 (#1026), CUDA `olmo2` Q8_0 tensor-core prefill is on by
-default; other olmo2 quant types stay scalar until measured ([the row](docs/tc-promotion-evidence.md#olmo2-q8_0-r4509-2026-11-24)).
+Since R4.50.9 (#1026) and R18.12.1, CUDA `olmo2` tensor-core prefill is on by
+default for `Q8_0`, `Q4_K`, `Q6_K`, and `Q5_K`; other olmo2 quant types stay
+scalar until measured, and `RUNNER_CUDA_I8` stays opt-in
+([the rows](docs/tc-promotion-evidence.md#olmo2-q4_k-q6_k-q5_k-r18121-2026-11-27)).
 
 | CPU forward | Metal forward | CUDA forward | CPU LoRA training | GPU training |
 |---|---|---|---|---|

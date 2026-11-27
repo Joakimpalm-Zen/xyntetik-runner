@@ -4729,17 +4729,20 @@ static bool tc_promoted(const model_t *m, int type) {
         if (strcmp(m->arch, archs[i]) == 0) return true;
     // Promoted for exactly the types its row's file exercised. Float32-reference
     // and speed rows: spark2_5 Q4_K/Q6_K, clef Q8_0/Q4_K. olmo2 Q8_0 joins on
-    // test_tc_tol, float32-reference and measured speed rows (R4.50.9).
+    // test_tc_tol, float32-reference and measured speed rows (R4.50.9); Q4_K,
+    // Q6_K and Q5_K join under R18.12.1 (R4.50.12.3 float32-reference and
+    // prefill evidence on Q4_K/Q6_K; per-type test_tc_tol rows on sm_120; I8
+    // stays opt-in).
     // Evidence: docs/tc-promotion-evidence.md. k2-horizon and stablelm run on the CPU
     // on a CUDA build (grouped RMSNorm, LayerNorm), so they have no route here.
-    static const struct { const char *arch; int types[3]; } scoped[] = {
+    static const struct { const char *arch; int types[5]; } scoped[] = {
         { "spark2_5", { T_Q4_K, T_Q6_K, -1 } },
         { "clef",     { T_Q4_K, T_Q8_0, -1 } },
-        { "olmo2",    { T_Q8_0, -1 } },
+        { "olmo2",    { T_Q8_0, T_Q4_K, T_Q6_K, T_Q5_K, -1 } },
     };
     for (size_t i = 0; i < sizeof(scoped) / sizeof(*scoped); i++) {
         if (strcmp(m->arch, scoped[i].arch) != 0) continue;
-        for (int k = 0; k < 3 && scoped[i].types[k] >= 0; k++)
+        for (int k = 0; k < 5 && scoped[i].types[k] >= 0; k++)
             if (scoped[i].types[k] == type) return true;
     }
     return false;
@@ -5223,7 +5226,7 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     CUdeviceptr b = bias ? bias : g->sw->dummy;
     void *p[] = { &weights, &x, &y, &a, &b };
     // RUNNER_CUDA_Q8X: quantize x to int8 once (per 32), then the dp4a GEMV;
-    // batch 1..8 of IQ3_S / IQ3_XXS / IQ4_XS
+    // batch 1..8 of IQ3_S / IQ3_XXS / IQ4_XS / Q4_K / Q8_0
     if (mv_route_q8x(g, w, n_in, batch)) {
         int nbk = n_in / 32 * batch;
         void *pq[] = { &x, &g->q8x_q, &g->q8x_d, &n_in, &batch, &xs };
