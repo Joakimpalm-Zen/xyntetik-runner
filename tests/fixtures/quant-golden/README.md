@@ -106,3 +106,16 @@ afae0adb92b30422785040b44c98c0d40d4d2893593c25faffd03a7a91e97c0c  ggml-c1d0e7a-w
 d4a119433d4b5377df739ab322e6ab644c4aea49159fc4c4be7397ba9cb3a3fc  ggml-c1d0e7a-weighted-q6_k.bin
 e45284d01bebda2fd10d0b4850f5c20a4d9521d8eddce98e62652bb7d356b7fe  weighted-edges.f32
 ```
+
+- `olmo3-7b-think-q4_k-near-ties.json` (R4.56): two Q4_K super-blocks where the scale search of `make_qkx2_quants`
+  meets a float32 near tie. The inputs come from the BF16 weights of `allenai/Olmo-3-7B-Think` at
+  d97e442d7cc678210054dbcc9b440894d62c89a4 (the parent of the roster's `olmo-3-7b-think-q8_0` row, Apache-2.0),
+  widened exactly to float32.
+  - `token_embd.weight` block 567878 has no importance-matrix entry, so it takes the reference writer.
+    `blk.12.attn_q.weight` block 12447 takes the weighted writer, with `qw`, its 256 weights from bartowski's
+    importance matrix (`in_sum2 / counts` in float32).
+  - `c1` is the block's 144 bytes in bartowski's llama.cpp Q4_K_M of the model (`d`, `dmin`, `scales[12]`,
+    `qs[128]`, little-endian). `a1` is what Runner wrote before R4.56, when it accumulated each error term as
+    `(w * diff) * diff` where ggml writes `w * (diff * diff)`.
+  - `x` and `qw` are float32 bit patterns, 8 hex digits each, most significant first. The `about` field is the
+    note it was made with.
