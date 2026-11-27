@@ -486,6 +486,15 @@ static void quantize_row_q6_K(const float *x, uint8_t *dst, int n, const float *
 // nstep times. Q4_K searches from -1 in 20 steps, Q5_K from -0.5 in 15.
 // Each error term is (w * diff) * diff, Runner's own order (ggml squares
 // first; see the header and check_q4k_near_ties).
+// Every level is rounded by qkx_level (R4.57): once a candidate's fitted min
+// has moved, v = iscale * (x - min) can be far outside nearest_int's range
+// (|v| > 2^22), infinite or NaN, where its rounding trick returns a wrapped
+// value instead of a rounding. Clamping v to [0, nmax] first gives the nearest
+// level always, and the same level as before whenever v is in range.
+static inline int qkx_level(float v, int nmax) {
+    return v > 0.0f ? nearest_int(v < (float)nmax ? v : (float)nmax) : 0;
+}
+
 static float make_qkx2_quants(int n, int nmax, const float *x,
                               const float *weights, uint8_t *L,
                               float *the_min, uint8_t *Laux,
@@ -508,9 +517,7 @@ static float make_qkx2_quants(int n, int nmax, const float *x,
     float scale = 1.0f / iscale;
     float best_mad = 0.0f;
     for (int i = 0; i < n; i++) {
-        int l = nearest_int(iscale * (x[i] - min));
-        if (l < 0) l = 0;
-        if (l > nmax) l = nmax;
+        int l = qkx_level(iscale * (x[i] - min), nmax);
         L[i] = (uint8_t)l;
         float diff = scale * l + min - x[i];
         best_mad += weights[i] * diff * diff;
@@ -523,9 +530,7 @@ static float make_qkx2_quants(int n, int nmax, const float *x,
         iscale = (rmin + rdelta * is + nmax) / (max - min);
         float sum_l = 0.0f, sum_l2 = 0.0f, sum_xl = 0.0f;
         for (int i = 0; i < n; i++) {
-            int l = nearest_int(iscale * (x[i] - min));
-            if (l < 0) l = 0;
-            if (l > nmax) l = nmax;
+            int l = qkx_level(iscale * (x[i] - min), nmax);
             Laux[i] = (uint8_t)l;
             sum_l  += weights[i] * l;
             sum_l2 += weights[i] * l * l;
