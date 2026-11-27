@@ -212,26 +212,12 @@ void  fp4_accum_row(const void *src, float a, float *out, int n);
 
 // ------------------------------------------------ fused int8 dot (CPU lever 1)
 //
-// The scalar/SIMD vec_dot above keeps f32 activations and converts each weight
-// quant to f32 before the FMA. The fused route instead quantizes the ACTIVATION
-// row to int8 once per matvec and does the whole dot in int8 with an int32
-// accumulator (AVX-512 VNNI `_mm512_dpbusd_epi32`, AVX2 `maddubs` fallback).
-// Quantizing the activations means it can never be bit-identical to vec_dot;
-// it is a tolerance-gated fast route in the same sense as the CUDA tensor-core
-// prefill path. It is OFF by default — measured 2026-08-13, no (format, model)
-// combo cleared the 0/64 teacher-forced flip bar with a decode gain worth
-// taking; `RUNNER_CPU_I8=1` opts in. The promotion record is in quants.c and
-// the gate is test-i8-tol.
-//
-//   if (i8_dot_ok(type, n)) { i8_quant_act(x, buf, n);        // once per matvec
-//                             for each row: vec_dot_i8(type, row, buf, n); }
-//
-bool   i8_dot_enabled(void);              // RUNNER_CPU_I8 pin, cached
+// Int8 activation quantizer (16-element blocks, scale + sum per block), shared
+// by the opt-in int8 prefill tiles (RUNNER_CPU_I8_PREFILL, R3.1.5 B). Quantizing
+// the activations cannot be bit-identical to f32 vec_dot, so it stays opt-in.
 bool   i8_prefill_enabled(void);          // RUNNER_CPU_I8_PREFILL pin, cached
-bool   i8_dot_ok(int type, int n);        // fused kernel exists for (type, n)
 size_t i8_act_size(int n);                // scratch bytes for n activations
 void   i8_quant_act(const float *x, void *dst, int n);
-float  vec_dot_i8(int type, const void *row, const void *xq, int n);
 // The K-quant int8 decode dot (R3.1.4, RUNNER_CPU_I8K=1, off by default):
 // Q4_K and Q6_K rows against 256-element activation blocks (llama.cpp's
 // q8_K layout), integer through each superblock. A tolerance route like the
@@ -273,7 +259,7 @@ float  vec_dot_xs(int type, const void *row, const float *x, const float *xs, in
 // take), then dotted against int8 activation columns from i8_quant_act:
 // out[r * ldo + c] for the pack's rows r and columns c < ncol. The NEON
 // kernel and the scalar one perform the same fused operations in the same
-// order, so they agree bit for bit; neither is vec_dot_i8's order.
+// order, so they agree bit for bit.
 #define I8_TILE_ROWS 4
 bool   i8_tile_ok(int type, int n);
 size_t i8_tile_size(int n);
@@ -282,11 +268,7 @@ void   i8_tile_dot(const void *pack, int n, const void *xq, size_t xq_stride,
                    int ncol, float *out, int ldo);
 void   i8_tile_dot_scalar(const void *pack, int n, const void *xq, size_t xq_stride,
                           int ncol, float *out, int ldo);
-// Force the route on (1) or off (0) regardless of RUNNER_CPU_I8; -1 returns
-// to the env default. Mirrors gpu_tc_force so one harness can drive both.
-void   i8_dot_force(int on);
-// Matvecs that took the fused route since process start. A tolerance gate
-// that sees zero is comparing the scalar path with itself.
+// Matvecs that quantized activations via i8_quant_act since process start.
 unsigned long i8_dot_dispatches(void);
 unsigned long vec_dot_multi_calls(void);       // route gate: calls into vec_dot_multi
 unsigned long vec_dot_multi_fallbacks(void);   // route gate: columns taking the per-column vec_dot fallback

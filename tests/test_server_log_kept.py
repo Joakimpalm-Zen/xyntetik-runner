@@ -136,7 +136,7 @@ def test_a_stop_lets_the_server_shut_down(model, tmp_path):
 
 HOST = {"HOME": "/home/u", "CUDA_VISIBLE_DEVICES": "1", "LD_LIBRARY_PATH": "/opt/cuda/lib64",
         "APPDATA": "C:\\Users\\u\\AppData\\Roaming", "SystemRoot": "C:\\Windows",
-        "RUNNER_PREFETCH": "1", "EDITOR": "vi"}
+        "RUNNER_CPU_I8K": "1", "EDITOR": "vi"}
 
 
 def test_a_tests_env_keeps_the_home_and_the_device_choice():
@@ -150,14 +150,14 @@ def test_a_tests_env_keeps_the_home_and_the_device_choice():
     assert env["CUDA_VISIBLE_DEVICES"] == "1" and env["LD_LIBRARY_PATH"] == "/opt/cuda/lib64"
     assert env["RUNNER_TEST_SCRIPTED_REPLY"] == "1"
     # still the test's own: nothing of the shell's RUNNER_* or anything else
-    assert "RUNNER_PREFETCH" not in env and "EDITOR" not in env and "APPDATA" not in env
+    assert "RUNNER_CPU_I8K" not in env and "EDITOR" not in env and "APPDATA" not in env
 
 
 def test_a_tests_own_value_wins_and_windows_keeps_its_profile():
     env = child_env({"HOME": "/tmp/h", "RUNNER_TTL_POLL_S": "5"}, inherited=HOST, windows=True)
     assert env["HOME"] == "/tmp/h" and env["RUNNER_TTL_POLL_S"] == "5"
     assert env["APPDATA"] == HOST["APPDATA"] and env["SystemRoot"] == HOST["SystemRoot"]
-    assert "RUNNER_PREFETCH" not in env
+    assert "RUNNER_CPU_I8K" not in env
 
 
 def test_no_env_is_the_inherited_one():

@@ -983,20 +983,11 @@ static void test_q8_kv(int n) {
     free(x); free(got); free(ref);
 }
 
-// ------------------------------------------------------- fused int8 dot route
+// ------------------------------------------------------- int8 activation quantizer
 //
-// vec_dot_i8 quantizes the ACTIVATIONS to int8, so unlike vec_dot it is not
-// held to "same value as an f64 dot over exact weights within fp32 noise". Its
-// contract is (a) the int8 arithmetic itself is exact — the only error is the
-// activation rounding — and (b) that error stays inside the bound an 8-bit
-// per-32-block activation quantizer can produce. Both are checked here:
-//   * i8_quant_act must match a scalar reference block-for-block, exactly;
-//   * the dot must match a reference that quantizes the activations the SAME
-//     way and then sums in double — that comparison has NO quantization error
-//     left in it, so it is held to fp32 rounding only. A wrong nibble order, a
-//     dropped min term or a bad scale fails it by orders of magnitude;
-//   * against the true f32 dot, the error must stay under the analytic
-//     activation-quantization bound (per block: |x|max/254 * sum|w|).
+// i8_quant_act quantizes activations into 16-element int8 blocks (shared by
+// RUNNER_CPU_I8_PREFILL). Its vectorized body must match the scalar definition
+// block-for-block, exactly, including ties.
 #define I8_REF_QK 16
 typedef struct { float d; int32_t s; int8_t qs[I8_REF_QK]; } ref_block_i8a;
 
@@ -1086,74 +1077,6 @@ static void test_i8_dispatch_count_survives_parallel_slots(void) {
     CHECK(i8_dot_dispatches() - before == want,
           "i8 dispatch count is %lu after %lu concurrent quantizations",
           i8_dot_dispatches() - before, want);
-}
-
-static int g_i8_checked = 0;   // guards against a vacuous pass (see main)
-
-static void test_i8_dot(int type, int n) {
-    if (!i8_dot_ok(type, n)) return;
-    g_i8_checked++;
-    size_t rowsz = ggml_row_size(type, n);
-    uint8_t *row = malloc(rowsz);
-    float *x = malloc((size_t)n * sizeof(float));
-    double *w = malloc((size_t)n * sizeof(double));
-    void *xq = malloc(i8_act_size(n));
-    ref_block_i8a *xr = malloc((size_t)(n / I8_REF_QK) * sizeof(ref_block_i8a));
-    CHECK(i8_act_size(n) == (size_t)(n / I8_REF_QK) * sizeof(ref_block_i8a),
-          "i8_act_size(%d) = %zu, reference layout is %zu",
-          n, i8_act_size(n), (size_t)(n / I8_REF_QK) * sizeof(ref_block_i8a));
-    for (int trial = 0; trial < RANDOM_TRIALS + FILL_TRIALS; trial++) {
-        set_trial(trial);
-        make_row(type, row, n);
-        for (int i = 0; i < n; i++) x[i] = frnd();
-        // every activation at the quantizer's top code, 127 or -127
-        if (trial >= RANDOM_TRIALS) fill_x(trial, x, n);
-        // trial 3: a zero activation block (d == 0 divides by nothing)
-        if (trial == 3) memset(x, 0, I8_REF_QK * sizeof(float));
-        // trial 4: one block far larger than the rest — per-block scaling is
-        // the whole point, a row-wide scale would lose the small blocks
-        if (trial == 4) for (int i = 0; i < I8_REF_QK; i++) x[i] = frnd() * 4096.0f;
-        ref_weights(type, row, w, n);
-
-        i8_quant_act(x, xq, n);
-        ref_i8_quant_act(x, xr, n);
-        CHECK(memcmp(xq, xr, i8_act_size(n)) == 0,
-              "i8_quant_act %s trial=%d: differs from the scalar reference",
-              ggml_type_name(type), trial);
-
-        // (b) same-quantization reference: only fp32 rounding may differ
-        double qref = 0, qmag = 0;
-        for (int i = 0; i < n; i++) {
-            double xv = (double)xr[i / I8_REF_QK].d * xr[i / I8_REF_QK].qs[i % I8_REF_QK];
-            qref += w[i] * xv;
-            qmag += fabs(w[i] * xv);
-        }
-        float got = vec_dot_i8(type, row, xq, n);
-        double qtol = 5e-5 * qmag + 1e-4;
-        CHECK(fabs(got - qref) <= qtol,
-              "vec_dot_i8 %s n=%d trial=%d: got %g vs same-quant ref %g (tol %g)",
-              ggml_type_name(type), n, trial, (double)got, qref, qtol);
-
-        // (c) against the true dot, within the activation-quantization bound
-        double ref = 0, bound = 0;
-        for (int b = 0; b < n / I8_REF_QK; b++) {
-            double amax = 0, sw = 0;
-            for (int j = 0; j < I8_REF_QK; j++) {
-                double xv = x[b * I8_REF_QK + j];
-                ref += w[b * I8_REF_QK + j] * xv;
-                if (fabs(xv) > amax) amax = fabs(xv);
-                sw += fabs(w[b * I8_REF_QK + j]);
-            }
-            bound += amax / 254.0 * sw;   // half a quantization step per element
-        }
-        CHECK(fabs(got - ref) <= bound + 1e-4,
-              "vec_dot_i8 %s n=%d trial=%d: got %g true ref %g exceeds the "
-              "activation-quantization bound %g",
-              ggml_type_name(type), n, trial, (double)got, ref, bound);
-        if (g_fail > 20) break;
-    }
-    g_fill = -1;
-    free(row); free(x); free(w); free(xq); free(xr);
 }
 
 // The K-quant int8 decode dot (R3.1.4, RUNNER_CPU_I8K): Q4_K and Q6_K rows
@@ -1548,12 +1471,6 @@ int main(void) {
 
     test_i8_quant_act();
     test_i8_dispatch_count_survives_parallel_slots();
-    // The fused int8 route: promoted formats at a full row and at one block,
-    // plus the formats it must decline (i8_dot_ok false => test_i8_dot returns)
-    for (size_t t = 0; t < sizeof(types) / sizeof(types[0]); t++) {
-        test_i8_dot(types[t], 4096);
-        test_i8_dot(types[t], 256);
-    }
     for (size_t t = 0; t < sizeof(types) / sizeof(types[0]); t++) {
         test_i8_tile(types[t], 4096);
         test_i8_tile(types[t], 256);
@@ -1572,33 +1489,6 @@ int main(void) {
           g_i8t_checked);
     CHECK(!i8_tile_ok(T_Q6_K, 128) && !i8_tile_ok(T_Q8_0, 48) && !i8_tile_ok(T_Q5_K, 256),
           "i8_tile_ok declines a partial block and a type it has no pack for");
-    CHECK(!i8_dot_ok(T_Q4_K, 128), "i8_dot_ok must decline a partial K-block");
-    CHECK(!i8_dot_ok(T_IQ2_XXS, 4096), "i8_dot_ok must decline ungated formats");
-    // On a build with the fused route compiled in, all five promoted formats
-    // must have been exercised at both row lengths. Reporting "OK" because
-    // every combo declined itself is the failure mode this catches.
-#if defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)
-    CHECK(g_i8_checked == 10, "fused int8 route: %d combos exercised, expected 10",
-          g_i8_checked);
-    // i8_dot_ok promises a fused kernel EXISTS for (type, n). Every kernel
-    // steps in whole WEIGHT blocks -- n / QK for q8_0 and q4_0, n / QK_K for
-    // q4_K -- but the predicate tested the 16-element ACTIVATION block for the
-    // first two, so a row that is a multiple of 16 and not of 32 was admitted
-    // and its last 16 elements silently dropped.
-    CHECK(!i8_dot_ok(T_Q8_0, 48), "i8_dot_ok must decline a partial q8_0 block");
-    CHECK(!i8_dot_ok(T_Q4_0, 48), "i8_dot_ok must decline a partial q4_0 block");
-    CHECK(i8_dot_ok(T_Q8_0, 64) && i8_dot_ok(T_Q4_0, 64),
-          "a whole-block row is still admitted");
-#elif defined(__aarch64__) && defined(__ARM_FEATURE_DOTPROD)
-    // the arm64 kernels: q8_0, q4_0 and q4_K at both row lengths, with the
-    // same whole-weight-block rule
-    CHECK(g_i8_checked == 6, "fused int8 route (arm64): %d combos exercised, expected 6",
-          g_i8_checked);
-    CHECK(!i8_dot_ok(T_Q8_0, 48), "i8_dot_ok must decline a partial q8_0 block");
-    CHECK(!i8_dot_ok(T_Q4_0, 48), "i8_dot_ok must decline a partial q4_0 block");
-    CHECK(i8_dot_ok(T_Q8_0, 64) && i8_dot_ok(T_Q4_0, 64),
-          "a whole-block row is still admitted");
-#endif
 
     // vec_dot_f32_multi: the batched prefill inner loop.
     //

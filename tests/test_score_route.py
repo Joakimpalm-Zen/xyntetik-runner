@@ -60,9 +60,9 @@ def test_solo_is_the_default_and_says_so(runner_bin, model):
 def test_score_route_names_the_cpu_activation(runner_bin, model):
     # two solo scores of one file through different CPU decode routes are a
     # decode-route comparison (R3.1.4); the record must say which is which
-    rec = _score(runner_bin, model, RUNNER_CPU_I8="0", RUNNER_CPU_I8K="0")
+    rec = _score(runner_bin, model, RUNNER_CPU_I8K="0")
     assert rec["score_route"]["cpu_act"] == "f32", rec["score_route"]
-    e = dict(os.environ, RUNNER_CPU_I8="0", RUNNER_CPU_I8K="1")
+    e = dict(os.environ, RUNNER_CPU_I8K="1")
     e.pop("RUNNER_SCORE_CHUNKED", None)
     p = subprocess.run([runner_bin, "-m", str(model), "--score", "-p", PROMPT, "-t", "2",
                         "--gpu", "off"], cwd=ROOT, env=e, stdout=subprocess.PIPE,

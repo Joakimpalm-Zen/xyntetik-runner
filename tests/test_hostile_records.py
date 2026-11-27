@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import pathlib
+import platform
 import shutil
 import subprocess
 import sys
@@ -384,15 +385,16 @@ def test_environment_block_rejects_arbitrary_vars_and_non_secret_wildcard(runner
         assert r.returncode == 2, (env_block, r.stdout, r.stderr)
         assert "VERIFIED" not in r.stdout
 
-    # 2. "(set)" wildcard on a non-credential training switch ("RUNNER_CPU_I8")
+    # 2. "(set)" wildcard on a non-credential training switch
+    sw = "RUNNER_CPU_I8_PREFILL" if platform.machine().lower() in ("arm64", "aarch64") else "RUNNER_CPU_I8K"
     wild = json.loads(json.dumps(raw))
-    wild["environment"] = {"RUNNER_CPU_I8": "(set)"}
+    wild["environment"] = {sw: "(set)"}
     p_wild = d / "env_wild.train.json"
     p_wild.write_text(json.dumps(wild), encoding="utf-8")
     r_wild = _run(
         runner_bin,
         ["attest", "replay", p_wild, "--allow-same-binary"],
-        env=_clean_env(RUNNER_CPU_I8="1"),
+        env=_clean_env(**{sw: "1"}),
     )
     _assert_no_sanitizer_or_crash(r_wild)
     assert r_wild.returncode == 2, (r_wild.stdout, r_wild.stderr)

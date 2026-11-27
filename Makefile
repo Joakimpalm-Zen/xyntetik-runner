@@ -24,7 +24,7 @@ PYTHON  ?= $(shell if python3 -c "import pytest" >/dev/null 2>&1; then echo pyth
 # Apple Silicon takes -mcpu=apple-m1 instead, the floor of every Apple Silicon
 # Mac: on a macOS virtual machine (GitHub's macos runners) -march=native
 # reports generic armv8-a, which drops the dot-product extension, so the int8
-# SDOT kernels (RUNNER_CPU_I8, RUNNER_CPU_I8_PREFILL) were #if-compiled out of
+# SDOT kernels (RUNNER_CPU_I8_PREFILL) were #if-compiled out of
 # CI and of the 1.11.0 macOS release binary (0 SDOT instructions, found
 # 2026-11-02). The source tests only DOTPROD, FMA and SHA2, all in the M1.
 HOST_ARCH_FLAGS := $(if $(and $(filter Darwin,$(shell uname -s 2>/dev/null)),$(filter arm64,$(shell uname -m 2>/dev/null))),-mcpu=apple-m1,-march=native)
@@ -281,7 +281,6 @@ TEST_TRAY_CORE = $(TEST_BATCH:test-batch%=test-tray-core%)
 TEST_TRAY_WIN = $(TEST_BATCH:test-batch%=test-tray-win-menu%)
 TEST_UTF8_CONSOLE = $(TEST_BATCH:test-batch%=test-utf8-console%)
 TEST_TC_TOL = $(TEST_BATCH:test-batch%=test-tc-tol%)
-TEST_I8_TOL = $(TEST_BATCH:test-batch%=test-i8-tol%)
 TEST_LORA_GRAD = $(TEST_BATCH:test-batch%=test-lora-grad%)
 TEST_INKLING2_GRAD = $(TEST_BATCH:test-batch%=test-inkling2-grad%)
 TEST_FULL_GRAD = $(TEST_BATCH:test-batch%=test-full-grad%)
@@ -1619,15 +1618,7 @@ test-qkw.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 test-lora-qk.full.gguf: test-qk.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-lora.py test-qk.gguf test-lora-qk
 
-# fused-int8 CPU dot tolerance gate: the CPU twin of the TC gate — teacher-
-# forced logits, 0/64 top-1 flips + bounded deviation, per (type, model) via
-# the model argument. CPU-only, so it needs no GPU backend to be meaningful.
-TEST_I8_TOL_SRC = tests/test_i8_tol.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o src/quants.c \
-                  $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(INKLING2_OBJS) $(OBJDIR)/vramreg.o $(GPU_OBJ)
-$(TEST_I8_TOL): $(TEST_I8_TOL_SRC) $(HDR)
-	$(CC) $(CFLAGS) -I src $(TEST_I8_TOL_SRC) -o $@ $(LDFLAGS)
-
-# tolerance-gated Metal decode matvec: the GPU twin of the i8 gate — teacher-
+# tolerance-gated Metal decode matvec: teacher-forced logits, 0/64 top-1 flips
 # forced logits, 0/64 top-1 flips + bounded deviation, per (type, model) via
 # the model argument. Self-skips on backends with no fast matvec kernel.
 TEST_MV_TOL_SRC = tests/test_mv_tol.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
@@ -4160,7 +4151,7 @@ test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SC
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) $(TEST_ATEM_OOM) $(TEST_TEMPLATE_FAMILIES) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_MLOCK) test-es-mlock.gguf $(TEST_WILLNEED) $(TEST_POPULATE) $(TEST_SPAWN_EINTR) $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
-      $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
+      $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
       $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_TRAY_MAC_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) $(TEST_LINEAGE_OOM) $(TEST_DERIVE_OOM) test-lora.full.gguf \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_SHA256) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_PMATH_EXPF) $(TEST_PMATH_EXPF_DEFAULT) $(TEST_PMATH_SOFTMAX) $(TEST_FPCLASS) $(TEST_ACT) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
@@ -4411,8 +4402,6 @@ test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SC
 	./$(TEST_TC_TOL)
 	./$(TEST_TC_TOL) test-q4k.gguf
 	$(MAKE) --no-print-directory test-tc-overflow
-	./$(TEST_I8_TOL)
-	./$(TEST_I8_TOL) test-q8.gguf
 	@# A named float-only fixture must fail instead of quietly skipping.
 	@if ./$(TEST_MV_TOL) test.gguf > test-mv-tol-missing.out 2>&1; then \
 	  cat test-mv-tol-missing.out; echo "FAIL: named unsuitable fixture passed"; exit 1; \
@@ -4812,7 +4801,6 @@ ROOT_PYTEST_TESTS = \
     tests/test_lfm2.py \
     tests/test_lineage.py \
     tests/test_lineage_unlearn.py \
-    tests/test_load_prefetch.py \
     tests/test_loop_guard.py \
     tests/test_lora.py \
     tests/test_lora_identity_alpha.py \
@@ -5248,7 +5236,7 @@ clean:
 	      $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_TOKENIZER) \
 	      $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) $(TEST_SHARED) $(TEST_MLOCK) $(TEST_WILLNEED) $(TEST_POPULATE) $(TEST_SPAWN_EINTR) \
 	      $(TEST_BATCH) $(TEST_BIND) $(TEST_HOST_HEADER) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_TRAIN_GPU) test-shared-asan-bin \
-	      $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_TOOLS) $(DIFFTOK) \
+	      $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_TOOLS) $(DIFFTOK) \
 	      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
 	      $(TEST_QUANTIZE) $(TEST_KVSNAP_REPLACE) $(TEST_PARTIAL_FDOPEN) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
 	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_INKLING2_THREADS) test-inkling2-threads.out $(TEST_INKLING2_FAST) test-inkling2-fast.out $(TEST_INKLING2_REQUANT) test-inkling2-requant.out $(TEST_INKLING2_KVQ8) test-inkling2-kvq8.out $(TEST_INKLING2_VMATH) test-inkling2-vmath.out $(INKLING2_TINY_DENSE) $(TEST_INK2_POOL_BENCH_BIN) test-inkling2-tiny-f16.gguf test-inkling2-tiny-lora.gguf $(TEST_INKLING2_CUDA) $(BENCH_INKLING2_CUDA_CORE) $(TEST_NVFP4_DOT) test-nvfp4-dot.out $(TEST_INKLING2) $(TEST_INKLING2_PROVIDER) $(TEST_INKLING2_GGUF) $(INKLING2_READ) $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) \
