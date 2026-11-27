@@ -4178,11 +4178,12 @@ test-gates-core: test-python-deps test-sample-nan test-pe-buildid $(TEST_JSON_SC
 	$(PYTHON) scripts/make-test-hybrid.py test-prefill-rec-hybrid > /dev/null; \
 	$(PYTHON) scripts/make-test-ornith.py test-prefill-rec-ornith.gguf > /dev/null; \
 	$(PYTHON) scripts/make-test-qwen4exp.py test-prefill-rec-qwen4exp.gguf > /dev/null; \
+	$(PYTHON) scripts/make-test-model.py --eseries 0,16 test-prefill-eseries-ple.gguf > /dev/null; \
 	./$(TEST_PREFILL_BATCH) test-prefill-wide-q4_k.gguf test-prefill-wide-q6_k.gguf \
 	  test-prefill-moe-q8.gguf test-prefill-moe.gptoss-mxfp4.gguf \
 	  test-prefill-rec-nemotron.gguf test-prefill-rec-hybrid.gguf test-prefill-rec-ornith.gguf \
-	  test-prefill-rec-qwen4exp.gguf; \
-	rm -f test-prefill-wide*.gguf test-prefill-moe*.gguf test-prefill-rec-*
+	  test-prefill-rec-qwen4exp.gguf test-prefill-eseries-ple.gguf; \
+	rm -f test-prefill-wide*.gguf test-prefill-moe*.gguf test-prefill-rec-* test-prefill-eseries-ple.gguf
 	@# qwen4exp: chunked prefill must equal the single-shot prefill (the PLE
 	@# conv history carries across batches; llama.cpp's does not), and a row
 	@# scored out of a batch (the per-row hyper-connection head) must equal

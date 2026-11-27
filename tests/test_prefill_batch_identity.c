@@ -23,6 +23,9 @@
 //        - gpt-oss with MXFP4 experts and sliding layers: at -b 64 a sliding
 //          layer keeps a ring of window + 64 rows, at 256 the flat cache, so
 //          the positions both still hold are compared there.
+//        - a Gemma-4 E-series file with per-layer embeddings (R4.48.34): their
+//          projection runs before the layers (forward_inputs), so the prefill
+//          pass must cover it too, or a tail of 1 to 7 rows takes the native dot.
 //   2. A prompt fed as n - 1 tokens and then 1 (the prefix cache's re-feed of
 //      a repeated prompt) stores what the cold feed stores.
 //   3. The live control: the same prompt fed one token at a time through the
