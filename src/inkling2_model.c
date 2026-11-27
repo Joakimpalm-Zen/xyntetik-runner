@@ -1014,9 +1014,9 @@ static int ink2_batch_default(int n_batch, int n_ctx) {
 
 // R4.48.8.5: the K/V cache's storage from --kv. f32 is this engine's own (the default, and --kv f32); --kv q8 stores
 // q8_0 rows when every head_dim is a multiple of 32. The house's other formats (f16, k8v4, fp4) are not this engine's,
-// and an asked one keeps f32 with a note, as an incompatible format does elsewhere. The CUDA route keeps f32 under
-// --kv q8 until its device kernels are proven (TEST-ONLY RUNNER_INKLING2_CUDA_TEST_KVQ8=1 lifts that for the device
-// gates); TEST-ONLY RUNNER_INKLING2_TEST_KV_RT=1: float32 rows holding each row's q8 round trip (gate (a)).
+// and an asked one keeps f32 with a note, as an incompatible format does elsewhere. q8 holds on the CUDA route too: its
+// rings are held to the CPU's q8 cache by gate (c) (tests/test_inkling2_cuda.c). TEST-ONLY RUNNER_INKLING2_TEST_KV_RT=1:
+// float32 rows holding each row's q8 round trip (gate (a)).
 static const char *kv_kind_name(int kind) { return kind == INK2_KV_Q8 ? "q8" : kind == INK2_KV_RT ? "f32 round trip" : "f32"; }
 // the kind for a shape, a route and the asked --kv, with the sentence a load prints as a note and the fit as a line
 // (empty when there is none to say). The TEST-ONLY round trip is the runtime's alone.
@@ -1033,16 +1033,7 @@ static int kv_kind_pick(const ink2_shape *s, char route, const model_params *p, 
                  "it keeps f32", s->head_dim, s->swa_head_dim);
         return INK2_KV_F32;
     }
-#ifdef RUNNER_GPU_CUDA
-    const char *on = getenv("RUNNER_INKLING2_CUDA"), *t = getenv("RUNNER_INKLING2_CUDA_TEST_KVQ8");
-    if (p->gpu_mode != GPU_OFF && on && !strcmp(on, "1") && route == 'F' && !(t && !strcmp(t, "1"))) {
-        snprintf(note, nn, "inkling2_loop --kv q8 keeps f32 on the CUDA route (RUNNER_INKLING2_CUDA=1) until its device "
-                 "kernels are proven; the CPU routes store q8");
-        return INK2_KV_F32;
-    }
-#else
-    (void)route;
-#endif
+    (void)route;   // q8 on every route: the CPU's cores and the device's rings (gates (a) to (c))
     return INK2_KV_Q8;
 }
 static const char RING_NOTE[] = "inkling2_loop's sliding applications always keep a window ring (window - 1 + batch "
