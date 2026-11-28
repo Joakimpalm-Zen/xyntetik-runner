@@ -1598,6 +1598,11 @@ bool model_inkling2_last_ok(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
     return r && r->last_ok;
 }
+// the device failed under this instance (gpu_err): it refuses every forward from then on
+bool model_inkling2_device_failed(const model_t *m) {
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    return r && r->gpu_err;
+}
 const char *model_inkling2_route_detail(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
     if (!r || !r->gpu) return "";

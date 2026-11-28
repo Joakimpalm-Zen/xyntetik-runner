@@ -1240,11 +1240,18 @@ and a streamed turn - whose 200 is already sent - terminates on the protocol's
 documented `event: error` carrying the same object, in place of
 `message_delta`/`message_stop`. An allocation failure during generation is
 reported the same way on both, and so is a forward that failed on the device
-(Inkling 2 Mini on CUDA, whose instance then computes no more rows). When the
-device fails under the prompt, before a token is generated, every surface
-answers HTTP 500 with code `device_failed` rather than a context overflow; the
-CLI says `error: the prompt's forward failed on the device` or `error:
-generation stopped: a forward failed on the device after N tokens` and exits 1. Partial text is not returned alongside it:
+(Inkling 2 Mini on CUDA, whose instance then computes no more rows). That one
+is named as the device's, never as memory: `finish_detail: "device_failed"`,
+Responses' reason `device_failed`, and a Messages error saying a retry on the
+same server fails the same way. When the device fails under the prompt, before
+a token is generated, every surface (completions, chat, Responses, Messages,
+`/v1/decide`, `/v1/rerank`, sessions, context pins) answers HTTP 500 with code
+`device_failed` rather than a context overflow, and a session that fails
+during generation answers the same. A turn the device cut short writes no
+`--receipts` receipt. The CLI says `error: the prompt's forward failed on the
+device` or `error: generation stopped: a forward failed on the device after N
+tokens` and exits 1. A forward that fails for another reason (an allocation)
+says out of memory, never the device. Partial text is not returned alongside it:
 unlike a budget truncation, which is a completion and keeps its content under
 `stop_reason: "max_tokens"`, a fault has no `stop_reason` that would not
 misstate why generation stopped. `runner_telemetry.finish_detail` rides on the
@@ -4089,7 +4096,7 @@ engine's listener and security model unchanged.
 | `POST /v1/chat/completions` | OpenAI Chat Completions, including SSE, tools, structured output, logprobs, and stop strings. |
 | `POST /v1/responses` | OpenAI Responses translation over the same engine and tool envelope. |
 | `POST /v1/completions` | Legacy raw prompt completions; `prompt` is a string or an array of token ids. |
-| `POST /v1/embeddings` | L2-normalized embeddings, pooled as the GGUF declares in `{arch}.pooling_type`: the mean over every token (also when the key is absent, as on generative models), or the last token (embedding models such as Qwen3-Embedding), with the end token appended first when `tokenizer.ggml.add_eos_token` is set. A model declaring CLS or rank pooling is refused with 400 naming it. |
+| `POST /v1/embeddings` | L2-normalized embeddings, pooled as the GGUF declares in `{arch}.pooling_type`: the mean over every token (also when the key is absent, as on generative models), or the last token (embedding models such as Qwen3-Embedding), with the end token appended first when `tokenizer.ggml.add_eos_token` is set. A model declaring CLS or rank pooling is refused with 400 naming it. Inkling 2 Mini (`inkling2_loop`) has no embedding readout and is refused with 400 `embeddings_unsupported`. |
 | `POST /v1/rerank` | Documents ranked against a `query` with no reranker model: each document is put to the served model as a question with exactly two answers (`yes`, `no`) and scored with `/v1/decide`'s exact in-context readout. `relevance_score` is P(yes) renormalized over the two answers, `logit` is log P(yes) - log P(no), and `margin` is the logit gap to the next-ranked document, so a client can tell a decisive order from a near tie. Accepts `documents` as strings or `{"text": ...}` objects, `top_n`, `return_documents`, an `instruction` replacing the default ("Judge whether the document answers the query. Answer yes or no."), and `rendering`: `chat-v1` (default; the model's own chat template, thinking off, refused for harmony's channel protocol) or `raw-v1` (`{instruction}\n\nQuery: {query}\nDocument: {document}\nRelevant:` with answers ` yes`/` no`, for base models). The `envelope` carries digests of the query, documents and instruction. The score is the served model's judgement, not a trained reranker's. |
 | `POST /v1/decide` | Typed decisions read off the served model's own next-token probabilities: a state, questions with verbatim option strings, one distribution per question (`--decide FILE` is the CLI form; the contract is `src/decide.h`). |
 | `POST /v1/systemone` | A Clef model's decisions, the Jev/SystemOne body: `model`, `state`, `questions` in; `answers`, `usage` and an `envelope` out ([Clef decisions](#clef-decisions-v1systemone)). Other models get `400`. |

@@ -58,8 +58,10 @@ A failed device operation refuses that forward and later forwards on the
 instance; it does not silently produce CPU rows. The run says so: the CLI
 names the failed forward and exits 1, and the server answers HTTP 500 with
 code `device_failed` (under the prompt) or ends the turn with
-`finish_reason: "error"` (during generation), never a context overflow
-(`tests/test_inkling2_device_fail.py`).
+`finish_reason: "error"` and `finish_detail: "device_failed"` (during
+generation), never a context overflow and never out of memory. With
+`--parallel`, the other slots' requests go on
+(`tests/test_inkling2_device_fail.py`, `tests/test_inkling2_fast.c` (o)).
 
 The CPU fast route retains its scalar `ink2_swiglu`, as on main. CUDA uses
 its own `tanhf`/`expf` and reduction orders; CUDA versus CPU logits are not
@@ -150,6 +152,7 @@ prove that a missing factor, declined path or device failure is detected.
 | `RUNNER_INKLING2_CUDA_TEST_ATTN_FAIL` | Fail the indexed attention-core call. |
 | `RUNNER_INKLING2_CUDA_TEST_MSG_FAIL` | Fail the indexed message-step call. |
 | `RUNNER_INKLING2_CUDA_TEST_STEP_FAIL` | Fail the indexed resident-step attempt. |
+| `RUNNER_INKLING2_TEST_FWD_FAIL` | Refuse an instance's indexed forward (from 0) on any route, CPU too, as an allocation failure would: not a device failure, so no surface may report one (`tests/test_inkling2_device_fail.py`, `tests/test_inkling2_fast.c` (o)). |
 | `RUNNER_INKLING2_CUDA_TEST_NO_EXP=1` | Keep the per-product expert-body path. |
 | `RUNNER_INKLING2_CUDA_TEST_NO_ATTN=1` | Keep the attention core and rings on the host. |
 | `RUNNER_INKLING2_CUDA_TEST_NO_BLOCK=1` | Keep host attention glue with the device core. |

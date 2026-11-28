@@ -136,6 +136,7 @@ void engine_request_defaults(engine *e) {
 }
 
 void engine_reset(engine *e) {
+    engine_fault_clear(e);
     e->pos = 0;
     e->scored_from = INT_MAX;
     e->rows_route = 0;
@@ -1877,7 +1878,13 @@ static float *engine_feed_inner(engine *e, const int32_t *toks, int n);
 // it reads the prompt one token per forward on the decode route, the
 // trainer's taped forward bit for bit, which the GRPO loop's -b 1 server is
 // held to (tests/test_rollout_identity.py, tests/test_kv_f32.py).
+void engine_fault_clear(engine *e) {
+    e->fwd_failed = false;
+    e->oom = false;
+}
+
 float *engine_feed(engine *e, const int32_t *toks, int n) {
+    engine_fault_clear(e);
     uint64_t r = stamp_rows(e);
     e->m->prefill_pass = engine_prompt_prefill(e);
     float *lg = engine_feed_inner(e, toks, n);
@@ -1896,6 +1903,7 @@ float *engine_feed(engine *e, const int32_t *toks, int n) {
 // 4.7e-7, lfm2 more), as it did under a T3 build on CUDA (qwen4exp 4.8e-7); the CPU and a default CUDA build were
 // bit-equal. One helper builds both, so they cannot drift. The last token's logits, or NULL.
 float *engine_feed_prompt(engine *e, const int32_t *toks, int keep, int n, int anchor) {
+    engine_fault_clear(e);
     if (n < 2 || keep < 0 || keep >= n) return NULL;
     const int last = n - 1;
     const bool at_anchor = anchor >= keep && anchor < last;
@@ -1911,6 +1919,7 @@ float *engine_feed_prompt(engine *e, const int32_t *toks, int keep, int n, int a
 
 // the decode step's route: prefill_pass stays false (engine.h)
 float *engine_feed_solo(engine *e, int32_t tok) {
+    engine_fault_clear(e);
     uint64_t r = stamp_rows(e);
     float *lg = engine_feed_inner(e, &tok, 1);
     unstamp_if_moved(e, r);
@@ -1921,7 +1930,6 @@ static float *engine_feed_inner(engine *e, const int32_t *toks, int n) {
     float *logits = NULL;
     model_t *m = e->m;
     kv_dump_config();
-    e->fwd_failed = false;
     int fed_from = e->pos;
     if (e->pos + n <= m->n_ctx) rope_reach(e, e->pos + n);
     for (int i = 0; i < n; ) {
@@ -1930,9 +1938,14 @@ static float *engine_feed_inner(engine *e, const int32_t *toks, int n) {
         bool last = (i + chunk == n);
         if (e->hist) memcpy(e->hist + e->pos, toks + i, sizeof(int32_t) * chunk);
         logits = model_forward_batch(m, toks + i, chunk, e->pos, last);
-        // a failed forward is not a full context, and its instance computes no
-        // more rows: stop here, said, rather than feed the later chunks into it
-        if (!logits && model_forward_failed(m)) { e->fwd_failed = true; return NULL; }
+        // a failed forward is not a full context: stop here, said, rather than
+        // feed the later chunks into it. The device's failure is its own
+        // (the instance computes no more rows); any other is the allocation's.
+        if (!logits && model_forward_errored(m)) {
+            if (model_forward_failed(m)) e->fwd_failed = true;
+            else e->oom = true;
+            return NULL;
+        }
         if (e->mtp_on)
             for (int j = 0; j < chunk; j++) {
                 model_mtp_feed(m, toks[i + j]);
@@ -1976,6 +1989,7 @@ float engine_logsumexp(const float *logits, int n) {
 float *engine_score_prompt(engine *e, const int32_t *toks, int n, int top_n,
                            prompt_scores *ps) {
     memset(ps, 0, sizeof *ps);
+    engine_fault_clear(e);
     if (n < 1 || top_n < 0) return NULL;
     ps->n = n;
     ps->top_n = top_n;
@@ -3231,11 +3245,21 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
         // ran eager launches; lookup rounds with no match are most rounds on
         // text unlike the prompt). MTP reads the round's hidden rows, so it
         // keeps the verify forward.
-        if (nd == 0 && !e->mtp_on) {
+        bool solo = nd == 0 && !e->mtp_on;
+        if (solo) {
             row0 = model_forward(m, cur, e->pos);
         } else if (!model_forward_verify(m, b, nb, e->pos)) {
             nd = 0; nb = 1;
+            solo = true;
             row0 = model_forward(m, cur, e->pos);
+        }
+        if (solo && !row0) {
+            // the decode step returned no row: the turn ends as an error,
+            // never on a stale verify row (engine_gen_step's rule)
+            if (model_forward_failed(m)) e->fwd_failed = true;
+            else e->oom = true;
+            if (pf.on) pf.verify += now_s() - pf.tp;
+            goto out;
         }
         if (pf.on) pf.verify += now_s() - pf.tp;
         // walk the rows: 0 = the pending token, 1..nd = the drafts. Row i's
@@ -3366,8 +3390,7 @@ void engine_gen_begin(engine *e, int max_new) {
     if (e->m) e->m->route_micro_tiles_seen = false;
     if (e->m && e->m->micro_steps) micro_sched_reset(e->m->micro_steps);   // R3.72
     e->hit_stop  = false; e->stop_id = -1;
-    e->oom       = false;
-    e->fwd_failed = false;
+    engine_fault_clear(e);
     e->constraint_fault[0] = 0;
     e->lp_count  = 0;
     e->stop_lp_at = -1; e->stop_lp = 0;
@@ -3453,9 +3476,14 @@ int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
     // step handed out -- `logits` is that forward's result. Anything still
     // outstanding when engine_gen_end runs was abandoned instead.
     e->pending_pos = -1;
-    // No row: the forward that should have made it failed on the device
-    // (model_forward_failed). The turn ends as an error, not by sampling one.
-    if (!logits) { e->fwd_failed = true; return ENGINE_STEP_DONE; }
+    // No row: the forward that should have made it failed. The turn ends as
+    // an error, not by sampling one; the device's failure says so, any other
+    // is the allocation's (the scheduler and session loops ask the same).
+    if (!logits) {
+        if (model_forward_failed(e->m)) e->fwd_failed = true;
+        else e->oom = true;
+        return ENGINE_STEP_DONE;
+    }
     if (!((e->gen_max < 0 || e->gen_count < e->gen_max) && e->pos < e->m->n_ctx))
         return ENGINE_STEP_DONE;
     lp_pre pre;

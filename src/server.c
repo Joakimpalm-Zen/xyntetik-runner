@@ -1264,12 +1264,13 @@ static const char *session_unsupported(const model_t *m) {
 // after giving it back: a client that stops reading must not hold the turn.
 typedef struct {
     const char *why;   // the image failed: a 500 saying so
+    const char *code;  // why's error code: session_image_failed when NULL
     sbuf body;         // otherwise the answer; body.failed is out of memory
 } session_reply;
 
 static void session_reply_send(sock_t fd, session_reply *a) {
     if (a->why)
-        send_error_detail(fd, 500, a->why, NULL, "session_image_failed");
+        send_error_detail(fd, 500, a->why, NULL, a->code ? a->code : "session_image_failed");
     else if (a->body.failed)
         send_error(fd, 500, "out of memory");
     else
@@ -1288,6 +1289,19 @@ static void session_answer(slot_t *s, session_reply *out, float *logits, int n_p
     const float *last = NULL;
     double t0 = now_s();
     bool live = session_run(e, logits, stop_at, session_text_cb, &text, &last);
+    if (e->fwd_failed || e->oom) {
+        // the generation stopped on a failed forward: no turn to answer and
+        // no image to write (the state past it was never computed)
+        bool dev = e->fwd_failed;
+        engine_gen_end(e, session_text_cb, &text, NULL);
+        engine_reset(e);
+        free(text.s);
+        out->why = dev ? "a forward failed on the device during generation, and this model "
+                         "instance computes no more rows"
+                       : "out of memory during generation";
+        out->code = dev ? "device_failed" : "out_of_memory";
+        return;
+    }
     bool suspended = live && stop_at > 0 && e->gen_count < e->gen_max;
     // Read before engine_reset below zeroes them: a suspended session
     // answered tokens:0, generated:0 while its image carried the real
@@ -1896,7 +1910,10 @@ static void handle_decide(slot_t *s, sock_t fd, jv *req) {
     if (sock_peer_closed(fd)) { free(r.s); return; }
     if (st != 200) {
         free(r.s);
-        send_error(fd, st, err ? err : "decide failed");
+        if (s->e.fwd_failed)
+            send_error_detail(fd, 500, err ? err : "decide failed", NULL, "device_failed");
+        else
+            send_error(fd, st, err ? err : "decide failed");
         return;
     }
     send_built(fd, &r);
@@ -1940,7 +1957,10 @@ static void handle_rerank(slot_t *s, sock_t fd, jv *req) {
     if (sock_peer_closed(fd)) { free(r.s); return; }
     if (st != 200) {
         free(r.s);
-        send_error(fd, st, err ? err : "rerank failed");
+        if (s->e.fwd_failed)
+            send_error_detail(fd, 500, err ? err : "rerank failed", NULL, "device_failed");
+        else
+            send_error(fd, st, err ? err : "rerank failed");
         return;
     }
     send_built(fd, &r);
@@ -1956,6 +1976,15 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
     if (n_in == 0) { send_error(fd, 400, "missing input"); return; }
 
     model_t *m = s->m;
+    // inkling2_loop keeps its hidden rows inside its own engine: there is no
+    // readout to pool, and reading the dense model's rows served whatever
+    // they held (the server died on it). Refused by name.
+    if (m->ink2) {
+        send_error_detail(fd, 400, "this model (inkling2_loop) has no embedding readout: "
+                          "/v1/embeddings needs a model whose hidden states Runner can pool",
+                          "input", "embeddings_unsupported");
+        return;
+    }
     // The checkpoint says how its vectors are read out. Mean and last are
     // implemented; a model that declares another readout (a CLS token, a
     // reranker's score head) is refused by name rather than mean-pooled into

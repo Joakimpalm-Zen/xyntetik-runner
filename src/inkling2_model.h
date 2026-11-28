@@ -58,6 +58,7 @@ bool   model_inkling2_cuda(const model_t *m);
 // want_logits is false), and the CUDA placement/path detail string ("" on CPU).
 bool        model_inkling2_act8(const model_t *m);
 bool        model_inkling2_last_ok(const model_t *m);
+bool        model_inkling2_device_failed(const model_t *m);
 const char *model_inkling2_route_detail(const model_t *m);
 // R4.48.9, TEST-ONLY (G1): read every device-resident matrix and expert stack back and compare it with the host
 // decode bit for bit; *n_tensors read, *n_differ differing, the first one's name in first. false: no device copy.

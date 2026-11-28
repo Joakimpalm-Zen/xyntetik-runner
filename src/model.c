@@ -18488,6 +18488,10 @@ float *model_forward(model_t *m, int token, int pos) {
 }
 
 bool model_forward_failed(const model_t *m) {
+    return m && m->ink2 && model_inkling2_device_failed(m);
+}
+
+bool model_forward_errored(const model_t *m) {
     return m && m->ink2 && !model_inkling2_last_ok(m);
 }
 
@@ -18644,10 +18648,12 @@ bool model_batch_decode(model_batch *b, const int *idx, const int32_t *tok,
             // Sequential fallback. Also the recovery path: a backend that
             // fails mid-run has already released its GPU state, and these
             // forwards land on the CPU without the caller noticing.
-            for (int i = done; i < done + take; i++) {
+            // A member whose forward returns no row (an inkling2_loop instance
+            // the device failed under) is that member's failure alone: out[i]
+            // stays NULL for it, and the others still get their rows. Ending
+            // the whole step there ended every co-batched request with it.
+            for (int i = done; i < done + take; i++)
                 out[i] = model_forward(b->seqs[idx[i]], tok[i], pos[i]);
-                if (!out[i]) return false;
-            }
         }
         done += take;
     }
@@ -18697,7 +18703,9 @@ static void hidden_rows_end(model_t *m, void *save_gpu) {
 
 bool model_embed(model_t *m, const int32_t *toks, int n, float *out,
                  bool (*stop)(void *), void *stop_ud) {
-    if (n <= 0 || n > m->n_ctx || !model_pooling_supported(m)) return false;
+    // inkling2_loop has no hidden rows here: its engine keeps its own, and
+    // m->x is never written (the server refuses the request before this)
+    if (m->ink2 || n <= 0 || n > m->n_ctx || !model_pooling_supported(m)) return false;
     model_rope_for_len(m, n);   // R4.40: one sequence of n tokens
     bool last = m->pooling_type == MODEL_POOL_LAST;
     memset(out, 0, sizeof(float) * m->n_embd);
@@ -18738,6 +18746,7 @@ bool model_embed(model_t *m, const int32_t *toks, int n, float *out,
 // layer, through the output norm, from the device or the CPU as
 // hidden_rows_begin decides.
 bool model_hidden_states(model_t *m, const int32_t *toks, int n, float *out) {
+    if (m->ink2) return false;   // no hidden rows here (model_embed)
     if (n <= 0 || n > m->n_ctx || m->hyper_conn) return false;
     model_rope_for_len(m, n);   // R4.40: one sequence of n tokens
     void *save_gpu = hidden_rows_begin(m);

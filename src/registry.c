@@ -462,9 +462,17 @@ int swap_to_expect(const char *want, const resident_expect *ex, sock_t owner) {
         }
         if (SV.single && SV.draft_source && !strcmp(SV.draft_source, "lookup")) {
             // The lookup has no weights to reload, but engine_init cleared
-            // its flag along with the target's previous execution state.
-            s->e.lookup_on = true;
-            s->e.draft_k = SV.draft_k;
+            // its flag along with the target's previous execution state. The
+            // swapped-in model must be able to verify drafts, as --serve's
+            // startup gate requires (model_spec_verify_ok: never
+            // inkling2_loop); one that cannot decodes plainly.
+            if (model_spec_verify_ok(s->m)) {
+                s->e.lookup_on = true;
+                s->e.draft_k = SV.draft_k;
+            } else {
+                fprintf(stderr, "note: --draft-source lookup: %s cannot verify drafts; it decodes "
+                                "without the lookup\n", SV.reg[idx].path);
+            }
         }
         provenance_note_load(&(provenance_load){
             .model_path = SV.reg[idx].path,

@@ -1967,6 +1967,7 @@ static const char *openai_finish(const char *finish) {
     if (!strcmp(finish, "envelope_error"))  return "error";
     if (!strcmp(finish, "client_too_slow")) return "error";
     if (!strcmp(finish, "constraint_error")) return "error";
+    if (!strcmp(finish, "device_error"))    return "error";
     return finish;
 }
 
@@ -1977,16 +1978,19 @@ static const char *finish_detail_of(const char *finish) {
     if (!strcmp(finish, "envelope_error"))  return "envelope_unmapped";
     if (!strcmp(finish, "client_too_slow")) return "client_too_slow";
     if (!strcmp(finish, "constraint_error")) return "pattern_limit";
+    if (!strcmp(finish, "device_error"))    return "device_failed";
     return NULL;
 }
 
 // A GENERATION FAULT: nothing readable was produced, for the server's reason:
-// e->oom, "envelope_error" (a document the demultiplexer could not map), or
-// "client_too_slow" (a stream STREAM_OUT_CAP behind; text, but none complete).
+// e->oom, "envelope_error" (a document the demultiplexer could not map),
+// "client_too_slow" (a stream STREAM_OUT_CAP behind; text, but none complete),
+// or "device_error" (e->fwd_failed: a forward failed on the device).
 // Unlike "length" or "stop", no usable turn is behind it.
 static bool generation_faulted(const char *finish) {
     return !strcmp(finish, "error") || !strcmp(finish, "envelope_error") ||
-           !strcmp(finish, "client_too_slow") || !strcmp(finish, "constraint_error");
+           !strcmp(finish, "client_too_slow") || !strcmp(finish, "constraint_error") ||
+           !strcmp(finish, "device_error");
 }
 
 // Why a Responses turn did not complete, or NULL when it did: the one
@@ -2001,6 +2005,7 @@ static const char *responses_incomplete_reason(const char *finish) {
     if (!strcmp(finish, "client_too_slow")) return "client_too_slow";
     if (!strcmp(finish, "constraint_error")) return "pattern_limit";
     if (!strcmp(finish, "error"))          return "out_of_memory";
+    if (!strcmp(finish, "device_error"))   return "device_failed";
     if (!strcmp(finish, "length") || !strcmp(finish, "reasoning_limit") ||
         !strcmp(finish, "loop"))
         return "max_output_tokens";
@@ -2040,6 +2045,10 @@ static void anth_error_json(sbuf *r, const char *finish, const char *fault) {
         : !strcmp(finish, "client_too_slow")
         ? "this stream was cut off: the client read it too slowly and fell "
           "too far behind. The request was valid; retry it and read faster."
+        : !strcmp(finish, "device_error")
+        ? "a forward failed on the device during generation, and this model "
+          "instance computes no more rows. Restart the server; a retry here "
+          "fails the same way."
         : "generation ran out of memory before producing a response. "
           "The request was valid; retry it.";
     sb_lit(r, "\"error\":{\"type\":\"api_error\",\"message\":\"");
@@ -5279,6 +5288,7 @@ static float *turn_prefill(turn_result *t) {
     // Inside the device turn: on CUDA the mark reads device-resident state.
     // Attention-only models mark nothing and take the single feed.
     float *logits = NULL;
+    engine_fault_clear(e);   // the failure below is this prefill's own, never an earlier turn's
     if (score_prompt) {
         g->ptoks = malloc(sizeof(int32_t) * (size_t)prep->n_prompt);
         int top_n = q->plp > q->lp_n ? q->plp : q->lp_n;
@@ -5332,6 +5342,10 @@ static float *turn_prefill(turn_result *t) {
             // the prompt already fit the context (checked at tokenization),
             // so a scoring failure here is the score tables' allocation
             send_error(fd, 500, "out of memory scoring the prompt");
+        else if (!g->dead && e->oom)
+            // the prompt fit: a forward that failed off the device is the
+            // allocation's (model_forward_errored), not a context overflow
+            send_error(fd, 500, "out of memory processing the prompt");
         else if (!g->dead)
             send_error_detail(fd, 400, "context overflow",
                               api == API_TEXT ? "prompt" :
@@ -5574,11 +5588,13 @@ static void turn_receipt(turn_result *t) {
     completion_prep *prep = t->prep;
     client_stop *stop = t->stop;
     turn_shape *shape = t->shape;
-    if (g->raw_on && !g->dead && !t->receipt_file[0] && !prep->diag.receipt_error) {
+    // a turn the device cut short is not the model's answer: no receipt, as
+    // on the CLI (its output could never be replayed to these bytes)
+    if (g->raw_on && !g->dead && !e->fwd_failed && !t->receipt_file[0] && !prep->diag.receipt_error) {
         prep->diag.receipt_error = serve_receipt(
             s, e, g, prompt, api, chat, t->gen_rng, q->max_tokens, prep->n_prompt,
             t->n_gen, t->keep, prep->diag.prompt_reuse, t->spec_used, t->primed,
-            !g->stopped && !e->hit_stop && !e->oom
+            !g->stopped && !e->hit_stop && !e->oom && !e->fwd_failed
                 ? stop->cancelled ? "cancelled" : stop->timed_out ? "timeout"
                 : stop->shut_down ? "shutdown" : NULL : NULL, shape,
             prep->diag.context_id, req, t->receipt_file, t->receipt_chain);
@@ -5650,8 +5666,11 @@ static void turn_reason(turn_result *t) {
     // envelope is the same class of truth: the turn produced no answer anyone
     // can read, and reporting "stop" over an empty message would tell the
     // caller the model chose to say nothing.
-    // e->fwd_failed: a forward failed on the device mid-turn; the same "error"
-    t->finish = e->oom || e->fwd_failed ? "error"
+    // e->fwd_failed: a forward failed on the device mid-turn. Its own finish,
+    // so no surface names it out of memory or tells the client to retry an
+    // instance that computes no more rows; the wire value is "error"
+    t->finish = e->fwd_failed ? "device_error"
+                       : e->oom ? "error"
                        : e->constraint_fault[0] ? "constraint_error"
                        : g->too_slow ? "client_too_slow"
                        : t->unmapped ? "envelope_error"

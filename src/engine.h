@@ -90,9 +90,11 @@ typedef struct {
                            // finish reason is "error", never a silent "stop"
     // The last feed or generation stopped because a forward failed on the
     // device (model_forward_failed): no row came back, and the instance
-    // computes no more. Not a full context: every surface says which. The
-    // finish reason is "error", as for oom. Cleared by each feed and by
-    // engine_gen_begin.
+    // computes no more. Not a full context: every surface says which, as a
+    // device failure (finish "device_error", HTTP 500 device_failed). A
+    // forward that failed for another reason (model_forward_errored: an
+    // allocation, a refusal) sets oom instead. Both are cleared by
+    // engine_fault_clear: engine_reset, every feed entry and engine_gen_begin.
     bool fwd_failed;
     // R2.18: a pattern automaton (src/jsre.h) hit a limit mid-generation: the
     // turn ends as a fault this names (which pattern, how many states), never
@@ -557,6 +559,9 @@ void   engine_refresh_identity(engine *e);
 // batch size (from 2 up) or the chunking (R3.60), and they are not the decode
 // step's. At -b 1 the prompt is read on the decode route, one token a forward.
 float *engine_feed(engine *e, const int32_t *toks, int n);
+// Clear the last operation's fault (fwd_failed, oom): a caller about to start
+// a new one reads only its own (engine_reset and the feeds call it).
+void   engine_fault_clear(engine *e);
 // feed ONE token through the decode step's route, the solo forward the
 // sampler sees and `--score` uses: for a caller whose numbers must be those
 // (echo / prompt_logprobs, the decision scorer). Same returns as engine_feed.
