@@ -97,6 +97,7 @@ typedef struct {
     // handle's products do not run, or a factor on a type that cannot apply it), their bytes, count, expert stacks and
     // types (bit t: ggml type t). The token embedding (never a product) and --cpu-moe's stacks are not counted here.
     size_t dev_raw, host_b; int host_n, host_exp; uint64_t host_types;
+    uint64_t host_exp_types;   // the types of the expert stacks among them alone
 } dev_walk;
 // what goes up is what the device computes (the second read's P1): a view the handle's products take (its type's
 // kernel; a factor only on NVFP4, the one kernel that applies it), not the token embedding (read row by row on the
@@ -124,6 +125,7 @@ static int dev_count(void *c_, const ink2_tensor *t) {
             const int ty = view_qtype(t);
             c->host_b += vb; c->host_n++; c->host_exp += expert;
             c->host_types |= 1ull << (ty >= 0 && ty < 64 ? ty : 63);
+            if (expert) c->host_exp_types |= 1ull << (ty >= 0 && ty < 64 ? ty : 63);
         }
         return 0;
     }
@@ -455,7 +457,7 @@ typedef struct {
     // device that holds it would need besides the weights, whether or not this one does
     bool whole; size_t w_weights, w_small, w_slots, w_reserved;
     // R4.48.37: the last placement tried, its product views' raw bytes on the device and on the host (dev_walk)
-    size_t dev_raw, host_b; int host_n, host_exp; uint64_t host_types;
+    size_t dev_raw, host_b; int host_n, host_exp; uint64_t host_types, host_exp_types;
     int w_host_n;   // the whole placement's own count of them
 } ink2_dev_terms;
 static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batch, int n_ctx, int n_slots,
@@ -504,7 +506,7 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
     for (int k = cpu_moe_req ? 1 : 0; k < 2; k++) {
         const bool cm = k == 1;
         const bool exp_dev = !cm && gpu_ink2_experts_ok(h) && !(ne && !strcmp(ne, "1"));
-        dev_walk c = { r, cm, 0, 0, -1, 0, 0, 0, false, 0, 0, 0, 0, 0 };
+        dev_walk c = { r, cm, 0, 0, -1, 0, 0, 0, false, 0, 0, 0, 0, 0, 0 };
         size_t tot = 0;
         // the output buffer holds T rows of every product but the head, and at least one head row: a forward asks for
         // its last row only (INK2_LOGITS_LAST); a keep-all forward's head runs its columns in groups (gpu_ink2_lin)
@@ -532,7 +534,7 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
             dry->placed = 'C'; dry->weights = c.need; dry->small = small; dry->slots = inst; dry->kept = RES;
             dry->reserved = gpu_ink2_reserved_bytes(h); dry->free_b = fr; dry->total_b = tot;
             dry->dev_raw = c.dev_raw; dry->host_b = c.host_b; dry->host_n = c.host_n; dry->host_exp = c.host_exp;
-            dry->host_types = c.host_types;
+            dry->host_types = c.host_types; dry->host_exp_types = c.host_exp_types;
             if (!cm) { dry->whole = true; dry->w_weights = c.need; dry->w_small = small; dry->w_slots = inst; dry->w_reserved = dry->reserved;
                        dry->w_host_n = c.host_n; }
         }
@@ -551,7 +553,7 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
         // fits: up it goes (the views in the file's walk order; a failed put leaves the CPU, P0)
         r->dev_of = calloc((size_t)c.n, sizeof *r->dev_of);
         r->n_dev = 0;
-        dev_walk u = { r, cm, 0, c.n, pf && *pf ? atoi(pf) : -1, 0, 0, 0, false, 0, 0, 0, 0, 0 };
+        dev_walk u = { r, cm, 0, c.n, pf && *pf ? atoi(pf) : -1, 0, 0, 0, false, 0, 0, 0, 0, 0, 0 };
         if (!r->dev_of || ink2g_each_view(r->g, dev_put, &u) || r->n_dev != c.n) {
             snprintf(sh->why, sizeof sh->why, "inkling2_loop's weights could not be put on %s", dev);
             free(r->dev_of); r->dev_of = NULL; r->n_dev = 0;
@@ -833,7 +835,7 @@ static int cuda_bind(ink2_rt *r, model_t *m, const model_params *p) {
         const int n = sh->n_views;
         r->dev_of = calloc((size_t)n, sizeof *r->dev_of);
         r->n_dev = 0;
-        dev_walk a = { r, sh->placed == 'M', 0, n, -1, 0, 0, 0, true, 0, 0, 0, 0, 0 };
+        dev_walk a = { r, sh->placed == 'M', 0, n, -1, 0, 0, 0, true, 0, 0, 0, 0, 0, 0 };
         if (!r->dev_of || ink2g_each_view(r->g, dev_put, &a) || r->n_dev != n) {
             free(r->dev_of); r->dev_of = NULL; r->n_dev = 0;
             pthread_mutex_unlock(&g_share_mu);
@@ -1557,9 +1559,10 @@ int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, con
         }
     }
     // R4.48.37: a fit with weights left on the host says so; the verdict's first word is the generic vocabulary's
-    char dvx[320] = "";
+    char dvx[320] = "", tle[200] = "";
+    type_list(t.host_exp_types, tle, sizeof tle);   // the stacks' own types: the count and the list name the same tensors
     if (t.placed != 'C' && t.host_exp > 0)
-        snprintf(dvx, sizeof dvx, "; %d expert stack tensors run on the host (%s)", t.host_exp, tl);
+        snprintf(dvx, sizeof dvx, "; %d expert stack tensors run on the host (%s)", t.host_exp, tle);
     else if (t.placed != 'C' && t.host_n > 0)
         snprintf(dvx, sizeof dvx, "; %d tensors run on the host (%s)", t.host_n, tl);
     printf("  dev verdict   %s%s\n", dv, dvx);
