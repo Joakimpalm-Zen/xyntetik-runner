@@ -5517,6 +5517,50 @@ extern "C" __global__ void k_mvseg_iq3_xxs(MVSEG_PARAMS) {
     MVSEG_HEAD;
     IQ_LANE_MV1(iq3xxs_lane_n, 98)
 }
+// R4.48.39: the community files' stack types. Each kernel below is MVSEG_HEAD, then its batch-1 k_mv_<type>'s body
+// VERBATIM (that kernel is left untouched, so its PTX does not move); gate (k) holds it to the per-expert launches.
+extern "C" __global__ void k_mvseg_q4_K(MVSEG_PARAMS) {
+    MVSEG_HEAD;
+    MV_HEAD;
+    int nb = a.n_in / 256;
+    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 144;
+    float s = 0;
+    for (int b = lane; b < nb; b += 32) {
+        const uchar *blk = rw + (ulong64)b * 144;
+        float d    = f16f(blk);
+        float dmin = f16f(blk + 2);
+        const uchar *sc = blk + 4;
+        const uchar *q  = blk + 16;
+        const float *xp = x + b * 256;
+        int is = 0;
+        for (int j = 0; j < 256; j += 64) {
+            uchar s1, m1, s2, m2;
+            get_scale_min_k4(is + 0, sc, &s1, &m1);
+            get_scale_min_k4(is + 1, sc, &s2, &m2);
+            float d1 = d * s1, mm1 = dmin * m1;
+            float d2 = d * s2, mm2 = dmin * m2;
+            float t1 = 0, t2 = 0, sx1 = 0, sx2 = 0;
+            const uint4 *q16 = (const uint4 *)q;   // blk+16 is 16B-aligned
+            for (int v = 0; v < 2; v++) {
+                uint4 w = q16[v];
+                uint ws[4] = { w.x, w.y, w.z, w.w };
+                #pragma unroll
+                for (int c = 0; c < 4; c++) {
+                    #pragma unroll
+                    for (int k = 0; k < 4; k++) {
+                        int l = v * 16 + c * 4 + k;
+                        uint b8 = (ws[c] >> (8 * k)) & 0xFFu;
+                        t1 += (float)(b8 & 0xF) * xp[l];      sx1 += xp[l];
+                        t2 += (float)(b8 >> 4)  * xp[l + 32]; sx2 += xp[l + 32];
+                    }
+                }
+            }
+            s += d1 * t1 - mm1 * sx1 + d2 * t2 - mm2 * sx2;
+            q += 32; is += 2; xp += 64;
+        }
+    }
+    MV_TAIL;
+}
 extern "C" __global__ void k_mvseg_nvfp4(MVSEG_PARAMS, const float *esc) {
     MVSEG_HEAD;
     const float scale = esc ? esc[ex[j0 + (int)blockIdx.y]] : 1.0f;

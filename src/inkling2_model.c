@@ -110,6 +110,10 @@ static bool dev_wanted(const dev_walk *c, const ink2_tensor *t) {
     // D1b: a router goes up whenever the handle has the device router, whatever this instance's TEST-ONLY NO_ROUTER
     // says (that switch is no part of the share key: every instance on one copy walks the same views)
     if (!t->q && !gpu_ink2_route_ok(c->r->gpu)) return false;
+    // R4.48.39: an expert stack goes up only when the expert body runs its type (the segmented kernel as well as the
+    // product); otherwise it would be uploaded and then refused by the body. Every type with a product kernel had both
+    // until the dense-only types; this keeps it so.
+    if (strstr(t->name, ".mlp.experts.")) return gpu_ink2_seg_runs(c->r->gpu, view_qtype(t));
     return gpu_ink2_runs(c->r->gpu, view_qtype(t));
 }
 // a device allocation's bytes as the driver takes them: large ones in 2 MiB pages, small ones 512-byte aligned

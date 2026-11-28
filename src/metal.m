@@ -6020,6 +6020,7 @@ bool gpu_ink2_kv_post_init(gpu_ink2_kv *kv, int H, int hist_rows) { (void)kv; (v
 bool gpu_ink2_kv_post_sync(gpu_ink2_kv *kv, float *host, int up) { (void)kv; (void)host; (void)up; return false; }
 size_t gpu_ink2_kv_post_bytes(const gpu_ink2_kv *kv) { (void)kv; return 0; }
 bool gpu_ink2_step_set(gpu_ink2 *h, const gpu_ink2_step_plan *plan) { (void)h; (void)plan; return false; }
+bool gpu_ink2_seg_runs(const gpu_ink2 *h, int type) { (void)h; (void)type; return false; }
 bool gpu_ink2_step_ready(const gpu_ink2 *h) { (void)h; return false; }
 int gpu_ink2_step_sizes(int n_app, int H, int V, size_t out[16]) { (void)n_app; (void)H; (void)V; (void)out; return 0; }
 int gpu_ink2_test_step_allocs(gpu_ink2 *h, size_t out[16]) { (void)h; (void)out; return -1; }

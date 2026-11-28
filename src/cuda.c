@@ -12980,6 +12980,7 @@ gpu_ink2 *gpu_ink2_bind(void) {
     static const struct { int type; const char *name; } mv[] = {
         { T_F32, "k_mv_f32" }, { T_BF16, "k_mv_bf16" }, { T_Q8_0, "k_mv_q8_0" }, { T_NVFP4, "k_mv_nvfp4" },
         { T_IQ3_XXS, "k_mv_iq3_xxs" },
+        { T_Q4_K, "k_mv_q4_K" },   // R4.48.39: the generic batch-1 kernels, already in this module
     };
     for (size_t k = 0; k < sizeof mv / sizeof *mv; k++)
         if (cu.ModuleGetFunction(&h->mv[mv[k].type], h->mod, mv[k].name) != 0) h->mv[mv[k].type] = NULL;
@@ -12987,6 +12988,7 @@ gpu_ink2 *gpu_ink2_bind(void) {
     static const struct { int type; const char *name; } ms[] = {
         { T_F32, "k_mvseg_f32" }, { T_BF16, "k_mvseg_bf16" }, { T_Q8_0, "k_mvseg_q8_0" }, { T_NVFP4, "k_mvseg_nvfp4" },
         { T_IQ3_XXS, "k_mvseg_iq3_xxs" },
+        { T_Q4_K, "k_mvseg_q4_K" },   // R4.48.39
     };
     for (size_t k = 0; k < sizeof ms / sizeof *ms; k++)
         if (cu.ModuleGetFunction(&h->mvseg[ms[k].type], h->mod, ms[k].name) != 0) h->mvseg[ms[k].type] = NULL;
@@ -14674,6 +14676,8 @@ bool gpu_ink2_get(gpu_ink2 *h, int i, void *rows, size_t bytes, float *scale, in
 size_t gpu_ink2_bytes(const gpu_ink2 *h) { return h ? h->bytes : 0; }
 int gpu_ink2_count(const gpu_ink2 *h) { return h ? h->n : 0; }
 bool gpu_ink2_runs(const gpu_ink2 *h, int type) { return h && type >= 0 && type < KT_N && h->mv[type]; }
+// R4.48.39 (gpu.h): an expert stack of this type runs on the device only with its segmented kernel too
+bool gpu_ink2_seg_runs(const gpu_ink2 *h, int type) { return gpu_ink2_runs(h, type) && h->mvseg[type]; }
 bool gpu_ink2_reserve(gpu_ink2 *h, size_t x_bytes, size_t y_bytes) {
     if (!h || cu.CtxSetCurrent(h->ctx) != 0) return false;
     pthread_mutex_lock(&h->mu);
