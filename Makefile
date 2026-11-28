@@ -1362,6 +1362,24 @@ $(TEST_TRAY_CORE): $(TEST_TRAY_CORE_SRC) $(HDR)
 	$(CC) $(CFLAGS) -DRUNNER_TEST_TRAY_HTTP -I src $(TEST_TRAY_CORE_SRC) \
 		-o $@ -lm $(TRAY_TEST_LIBS)
 
+# R18.15: Linux's tray on a private session bus against a fake tray host
+# (tests/test_tray_linux.c). Built with the real <dbus/dbus.h> when
+# pkg-config has dbus-1 (libdbus-1-dev, the CI test job's): the test then
+# static-asserts our own libdbus declarations against it. Linux only; it
+# skips (77) without dbus-daemon or libdbus, and takes the tiny model for
+# its managed-child case.
+TEST_TRAY_LINUX_SRC = tests/test_tray_linux.c src/tray.c src/tray_stub.c src/tray_dbus.c \
+                      src/instances.c src/json.c src/compat.c
+TRAY_LINUX_DBUS_CFLAGS := $(shell pkg-config --cflags dbus-1 2>/dev/null)
+test-tray-linux: $(TEST_TRAY_LINUX_SRC) src/tray_dbus.h $(HDR)
+	$(CC) $(CFLAGS) -I src $(if $(TRAY_LINUX_DBUS_CFLAGS),-DTRAY_TEST_REAL_HEADER $(TRAY_LINUX_DBUS_CFLAGS)) \
+		$(TEST_TRAY_LINUX_SRC) -o $@ -lm -ldl $(TRAY_TEST_LIBS)
+.PHONY: test-tray-linux-run
+test-tray-linux-run: test-tray-linux runner test.gguf
+	@if [ "$$(uname -s)" != Linux ]; then echo "SKIP: test-tray-linux (Linux only)"; exit 0; fi; \
+	st=0; ./test-tray-linux ./runner test.gguf || st=$$?; \
+	if [ $$st -eq 77 ]; then echo "SKIP: test-tray-linux (no dbus-daemon or libdbus)"; exit 0; fi; exit $$st
+
 # The Win32 backend's menu, read back through GetMenuStringW: the test
 # includes src/tray_win.c and links the core it calls into. Windows only;
 # the POSIX suite skips it by name (see TEST_TRAY_WIN_RUN).

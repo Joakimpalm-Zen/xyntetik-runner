@@ -336,6 +336,8 @@ test-file-identity.exe
 test-file-identity.tmp
 test-tray-core
 test-tray-core.exe
+test-tray-linux
+test-tray-linux.tray.log
 test-paging-warn
 test-paging-warn.exe
 test-metal-coverage
