@@ -244,3 +244,16 @@ def test_embeddings_are_refused_on_inkling2(runner_bin, tiny, gpu):
         alive, _ = _post_h(srv, "/v1/completions", {"prompt": PROMPT, "max_tokens": 1, "temperature": 0})
     assert code == 400 and out["error"]["code"] == "embeddings_unsupported", (code, out)
     assert alive == 200
+
+
+# (re-read) the flag is cleared at /v1/decide's and /v1/rerank's entry: after a device failure on the slot, a request
+# that is invalid on its own is still the client's 400, never the earlier failure's 500 device_failed
+def test_an_invalid_decide_or_rerank_after_a_device_failure_is_400(runner_bin, tiny):
+    with RunnerServer(str(runner_bin), str(tiny), ctx=512, parallel=1, env=_env(PREFILL_FAIL),
+                      extra_args=["--gpu", "auto", "-t", "2", "-b", "4"]) as srv:
+        code, out = _post_h(srv, "/v1/completions", {"prompt": PROMPT, "max_tokens": 4, "temperature": 0})
+        assert code == 500 and out["error"]["code"] == "device_failed", (code, out)
+        dcode, dout = _post_h(srv, "/v1/decide", {"questions": [{"question": "which?", "options": ["a", "b"]}]})
+        rcode, rout = _post_h(srv, "/v1/rerank", {"documents": ["hello there"]})
+    assert dcode == 400 and dout["error"].get("code") != "device_failed", (dcode, dout)
+    assert rcode == 400 and rout["error"].get("code") != "device_failed", (rcode, rout)
