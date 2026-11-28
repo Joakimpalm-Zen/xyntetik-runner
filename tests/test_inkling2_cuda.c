@@ -1252,6 +1252,9 @@ int main(int argc, char **argv) {
         const struct { int type; const char *name; float scale; } ty[] = {
             { T_F32, "F32", 1.0f }, { T_BF16, "BF16", 1.0f }, { T_Q8_0, "Q8_0", 1.0f }, { T_NVFP4, "NVFP4", 1.0f },
             { T_NVFP4, "NVFP4 factor 0.75", 0.75f }, { T_IQ3_XXS, "IQ3_XXS", 1.0f },
+            // R4.48.39: the community files' types, their rows by qs_fill (sane scales and its boundary blocks)
+            { T_Q4_K, "Q4_K", 1.0f }, { T_IQ4_NL, "IQ4_NL", 1.0f }, { T_IQ3_S, "IQ3_S", 1.0f }, { T_Q5_0, "Q5_0", 1.0f },
+            { T_Q6_K, "Q6_K", 1.0f }, { T_Q5_K, "Q5_K", 1.0f },
         };
         uint32_t seed = 12345u;
 #define RND() (seed = seed * 1664525u + 1013904223u, seed >> 8)
@@ -1259,6 +1262,14 @@ int main(int argc, char **argv) {
         for (int i = 0; i < NT * NI; i++) x[i] = (float)((int)(RND() % 2001u) - 1000) / 1000.0f;
         gpu_ink2 *h = gpu_ink2_bind();
         CHECK(h && !gpu_ink2_runs(h, T_F16), "(i) a handle binds, and its products take no F16 (the F16 file's premise)");
+        // R4.48.39: Q6_K and Q5_K are dense-only (a product kernel, no segmented one), so dev_wanted keeps a stack of
+        // either on the host; a stack type with its segmented kernel goes up
+        CHECK(h && gpu_ink2_runs(h, T_Q6_K) && gpu_ink2_runs(h, T_Q5_K) && !gpu_ink2_seg_runs(h, T_Q6_K) &&
+              !gpu_ink2_seg_runs(h, T_Q5_K) && gpu_ink2_seg_runs(h, T_Q4_K) && gpu_ink2_seg_runs(h, T_Q5_0),
+              "(i) the dense-only types run as products (Q6_K %d, Q5_K %d) and not as stacks (%d, %d); Q4_K and Q5_0 "
+              "stacks do (%d, %d)", h ? gpu_ink2_runs(h, T_Q6_K) : -1, h ? gpu_ink2_runs(h, T_Q5_K) : -1,
+              h ? gpu_ink2_seg_runs(h, T_Q6_K) : -1, h ? gpu_ink2_seg_runs(h, T_Q5_K) : -1,
+              h ? gpu_ink2_seg_runs(h, T_Q4_K) : -1, h ? gpu_ink2_seg_runs(h, T_Q5_0) : -1);
         for (size_t k = 0; h && k < sizeof ty / sizeof *ty; k++) {
             const int type = ty[k].type;
             const size_t rb = (size_t)NI / (size_t)ggml_block_size(type) * ggml_type_size(type);
@@ -1278,9 +1289,11 @@ int main(int argc, char **argv) {
                     for (size_t b = 0; b < rb; b += 34) { row[b] = 0x1f; row[b + 1] = 0x21; }   // d = f16 0x211f (0.01)
                 else if (type == T_NVFP4)
                     for (size_t b = 0; b < rb; b += 36) memset(row + b, 0x30, 4);   // each sub-block's UE4M3 scale 0.5
-                else
+                else if (type == T_IQ3_XXS)
                     for (size_t b = 0; b < rb; b += 98) { row[b] = 0x1f; row[b + 1] = 0x21; }   // d = 0.01
             }
+            if (w && type != T_F32 && type != T_BF16 && type != T_Q8_0 && type != T_NVFP4 && type != T_IQ3_XXS)
+                qs_fill(type, w, NR, rb, &seed);
             double ref[NT * NO], top = 0;
             float dq[NI], y[NT * NO];
             for (int o = 0; w && o < NO; o++) {
