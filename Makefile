@@ -4781,6 +4781,7 @@ ROOT_PYTEST_TESTS = \
     tests/test_hybrid_admission.py \
     tests/test_idle_coexistence.py \
     tests/test_ignore_eos_request.py \
+    tests/test_inkling2_device_fail.py \
     tests/test_inkling2_fast.py \
     tests/test_inkling2_hardening.py \
     tests/test_inkling2_kv.py \
