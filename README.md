@@ -440,8 +440,9 @@ class, date and Runner version; earlier class runs stay in the evidence.
   coding tasks with a local model under your own tests and keeps score.
   Deprecated: it keeps working through 1.x and is removed no earlier than
   2.0.0. [Details](MANUAL.md#shadow-mode-what-could-your-local-model-have-done)
-- <a id="desktop-tray"></a>**Desktop tray.** On macOS and Windows an icon
-  shows which models are loaded and starts or stops them.
+- <a id="desktop-tray"></a>**Desktop tray.** On macOS, Windows and Linux
+  desktops (Ubuntu's GNOME with its AppIndicator extension) an icon shows
+  which models are loaded and starts or stops them.
   [Details](MANUAL.md#desktop-tray)
 - **Draft decoding.** `--draft small.gguf`, `--draft mtp`, `--draft mtp:head.gguf`
   (a NextN/MTP head shipped as a companion file) or `--draft lookup`. On CUDA

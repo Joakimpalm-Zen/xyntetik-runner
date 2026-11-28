@@ -4622,6 +4622,13 @@ static void cli_tray_follow(const cli_opts *o) {
     if (!o->no_tray && (o->serve || o->interactive) &&
         (RUNNER_TTY(stdin) || RUNNER_TTY(stdout)))
         tray_ensure_running();
+#elif defined(__linux__)
+    // the same rule, plus a desktop session a tray could show in (a session
+    // bus, a display, a tray host on that bus): a headless serve, or a GNOME
+    // without the AppIndicator extension, spawns no tray that would only fail
+    if (!o->no_tray && (o->serve || o->interactive) &&
+        (RUNNER_TTY(stdin) || RUNNER_TTY(stdout)) && tray_linux_session_ok())
+        tray_ensure_running();
 #else
     (void)o->no_tray;
 #endif

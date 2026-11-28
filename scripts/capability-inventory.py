@@ -58,7 +58,7 @@ SOURCE_RULES = [
     ("production", {"quantize", "derive", "ref_logits", "dpo", "tdn_args", "train_lr"}),
     ("proof", {"receipts", "bundle", "provenance", "envelope", "lineage", "train_record", "oms", "ecdsa",
                "ed25519", "mldsa", "watermark", "build_arch", "micro_sched"}),
-    ("desktop", {"tray", "tray_win", "tray_macos", "tray_stub", "instances"}),
+    ("desktop", {"tray", "tray_win", "tray_macos", "tray_linux", "tray_dbus", "tray_stub", "instances"}),
     ("shared", {"main", "model", "completion", "runner"}),
 ]
 

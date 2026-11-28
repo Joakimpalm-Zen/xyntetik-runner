@@ -955,11 +955,21 @@ verifier can fail: [python/README.md](python/README.md).
 
 ## Desktop tray
 
-macOS and Windows ship a menu-bar / notification-area controller. It lists
-every runner instance live on the machine - however it was started - with the
-models each has loaded, and lets you stop any of them, pick a GGUF, and start
-a desktop-managed server. Linux has no tray; `--tray` there prints an honest
-error.
+macOS, Windows and Linux desktops ship a menu-bar / notification-area
+controller. It lists every runner instance live on the machine - however it
+was started - with the models each has loaded, and lets you stop any of them,
+pick a GGUF, and start a desktop-managed server.
+
+On Linux the tray is a StatusNotifierItem with a D-Bus menu on the session
+bus, run live on Ubuntu's GNOME desktop with its AppIndicator extension (on by
+default there). KDE Plasma, and XFCE or Cinnamon with their tray plugins, host
+the same protocol but have not been run live. The bus library (libdbus-1) is
+loaded only when a tray starts, so a machine without it, without a session
+bus, without a display or without a tray host (stock GNOME without the
+AppIndicator extension, a headless server) loses only the tray: `--tray` ends
+with one line saying which is missing and exit code 1, and every other command
+is unchanged. The icon is drawn light, for GNOME's dark top bar; on Linux it
+cannot follow the theme.
 
 ### When it appears
 
@@ -974,11 +984,14 @@ next model can be loaded from it.
 | `runner -m model.gguf -p "..."` | no |
 | `--info caps`, `--rewrite`, `--bench-json`, `--version` | no |
 | anything with `--tray off` | no |
-| pipes, scripts, CI, Linux | no |
+| pipes, scripts, CI | no |
+| Linux without a desktop session (no session bus, no display, or no tray host on the bus) | no |
 
 A terminal on **either** stdin or stdout is what counts as "a person launched
 this", so `runner --serve > server.log` still raises one while CI, which
-usually has neither, does not. A one-shot `-p` run raises nothing on purpose:
+usually has neither, does not. On Linux the run also needs a desktop session
+a tray can show in: a session bus, `WAYLAND_DISPLAY` or `DISPLAY`, and a tray
+host owning `org.kde.StatusNotifierWatcher` on that bus. A one-shot `-p` run raises nothing on purpose:
 a two-second process should not leave a menu-bar icon behind it.
 
 `--tray` means *be* the tray rather than run a model. It is required wherever

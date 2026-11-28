@@ -1,10 +1,13 @@
 # Tray / menu-bar controller
 
-The tray puts a small icon in the macOS menu bar or the Windows notification
-area. Clicking it shows **every runner instance live on the machine** — however
-it was started — with its loaded models, and lets you stop any of them or
-launch one pre-configured "desktop-managed" server. macOS and Windows only in
-v1; on Linux `--tray` prints an honest error.
+The tray puts a small icon in the macOS menu bar, the Windows notification
+area, or a Linux desktop's tray (a StatusNotifierItem on the session bus).
+Clicking it shows **every runner instance live on the machine** — however it
+was started — with its loaded models, and lets you stop any of them or launch
+one pre-configured "desktop-managed" server. On Linux it needs a desktop
+session with a tray host (Ubuntu's GNOME ships its AppIndicator extension);
+without one, `--tray` says which part is missing and exits 1
+([MANUAL](../MANUAL.md#desktop-tray)).
 
 `--tray` means *be* the tray rather than run a model, and is required wherever
 there is no terminal (launchd, Task Scheduler, a service wrapper). A session
@@ -134,6 +137,10 @@ command line. The tray stores the file-picker choice in `last_model` and appends
   (RunAtLoad, starts only the tray — never a model).
 - Windows: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value
   `XyntetikTray`.
+- Linux: `$XDG_CONFIG_HOME/autostart/xyntetik-runner-tray.desktop` (by default
+  `~/.config/autostart/`), an XDG autostart entry whose `Exec` line is the
+  binary's absolute path, quoted, then `--tray`. A file with `Hidden=true`
+  counts as off.
 
 The checkbox creates or removes exactly that one artifact; presence of the
 artifact is the state.

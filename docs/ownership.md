@@ -135,7 +135,7 @@ scratch worktree.
 
 The menu-bar and taskbar tray and its autostart.
 
-- **Sources:** `tray.c`, `tray_win.c`, `tray_macos.m`, `tray_stub.c`, and the instance registry
+- **Sources:** `tray.c`, `tray_win.c`, `tray_macos.m`, `tray_linux.c` with its libdbus loader `tray_dbus.c`, `tray_stub.c`, and the instance registry
   `instances.c`, which every Runner process writes and the tray reads.
 - **Boundary:** the tray starts, lists and stops Runner processes through public lifecycle surfaces: the
   instance records, `/health`, `/unload` and the startup lease shared with the Python client.

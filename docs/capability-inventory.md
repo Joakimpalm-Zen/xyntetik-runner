@@ -76,7 +76,7 @@ Every name `clients/typescript/src` exports.
 | Runtime | 18 | `ChoiceLogprob`, `NamedContext`, `RepeatedToolCall`, `RerankResponse`, `RerankResult`, `RunnerAPIError`, `RunnerClient`, `RunnerClientOptions`, `RunnerErrorBody`, `RunnerProtocolError`, `RunnerTelemetry`, `SamplingTelemetry`, `SpeculationTelemetry`, `TimingTelemetry`, `ToolProtocolTelemetry`, `choiceLogprobs`, `finishDetail`, `runnerTelemetry` |
 | Proof | 7 | `ChainCheck`, `EnvelopeState`, `ModelSignature`, `Provenance`, `ReceiptFile`, `TranscriptRecord`, `verifyTranscriptChain` |
 
-## Source files (146)
+## Source files (149)
 
 Every file under `src/` except the generated kernel headers. `Shared` is the files that serve more than one component.
 
@@ -87,5 +87,5 @@ Every file under `src/` except the generated kernel headers. `Shared` is the fil
 | Model substrate | 14 | `src/arch.h`, `src/compat.c`, `src/compat.h`, `src/gguf.c`, `src/gguf.h`, `src/json.c`, `src/json.h`, `src/npy.c`, `src/npy.h`, `src/pe_buildid.h`, `src/tokenizer.c`, `src/tokenizer.h`, `src/unicode_classes.h`, `src/unicode_nfc.h` |
 | Model production | 10 | `src/derive.c`, `src/derive.h`, `src/dpo.c`, `src/dpo.h`, `src/quantize.c`, `src/ref_logits.c`, `src/ref_logits.h`, `src/tdn_args.h`, `src/train_lr.c`, `src/train_lr.h` |
 | Proof | 24 | `src/build_arch.h`, `src/bundle.c`, `src/bundle.h`, `src/ecdsa.c`, `src/ecdsa.h`, `src/ed25519.c`, `src/ed25519.h`, `src/envelope.c`, `src/envelope.h`, `src/lineage.c`, `src/lineage.h`, `src/micro_sched.h`, `src/mldsa.c`, `src/mldsa.h`, `src/oms.c`, `src/oms.h`, `src/provenance.c`, `src/provenance.h`, `src/receipts.c`, `src/receipts.h`, `src/train_record.c`, `src/train_record.h`, `src/watermark.c`, `src/watermark.h` |
-| Desktop | 7 | `src/instances.c`, `src/instances.h`, `src/tray.c`, `src/tray.h`, `src/tray_macos.m`, `src/tray_stub.c`, `src/tray_win.c` |
+| Desktop | 10 | `src/instances.c`, `src/instances.h`, `src/tray.c`, `src/tray.h`, `src/tray_dbus.c`, `src/tray_dbus.h`, `src/tray_linux.c`, `src/tray_macos.m`, `src/tray_stub.c`, `src/tray_win.c` |
 | Shared | 6 | `src/completion.c`, `src/completion.h`, `src/main.c`, `src/model.c`, `src/model.h`, `src/runner.h` |

@@ -112,4 +112,12 @@ int  tray_platform_run(void);
 bool tray_platform_autostart_get(void);
 bool tray_platform_autostart_set(bool on);
 
+#if defined(__linux__)
+// Linux only (cli_tray_follow): a desktop session a tray could show in, so a
+// serve or chat run raises one. True when a session bus is named, a display
+// is (WAYLAND_DISPLAY or DISPLAY), and a tray host owns
+// org.kde.StatusNotifierWatcher on that bus. The stub says false.
+bool tray_linux_session_ok(void);
+#endif
+
 #endif // RUNNER_TRAY_H

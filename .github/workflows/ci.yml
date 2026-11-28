@@ -149,10 +149,24 @@ jobs:
         run: |
           python3 -m venv .venv
           .venv/bin/python -m pip install --quiet -r tests/ci/requirements.txt mypy
+      # R18.15: the Linux tray's test needs a session bus daemon, and builds
+      # against the real <dbus/dbus.h> to check our own libdbus declarations
+      # (libdbus-1-dev: this job only; the release build needs neither)
+      - name: D-Bus for the Linux tray test
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev dbus-daemon
       # Separate from `make test` (which would build it as a prerequisite) so a
-      # compile failure is legible as one, matching the other jobs.
+      # compile failure is legible as one, matching the other jobs. The tray
+      # test binary is built here too: the auto-raise pytest in `make test`
+      # uses it as its fake tray host.
       - name: build
-        run: make
+        run: make && make test-tray-linux
+      # R18.15 bar 1: the tray's library is dlopen'd, never linked
+      - name: no DT_NEEDED for libdbus
+        run: |
+          readelf -d runner | grep NEEDED
+          if readelf -d runner | grep -i 'NEEDED.*dbus'; then
+            echo "FAIL: runner names libdbus in DT_NEEDED"; exit 1
+          fi
       - name: python client type check
         run: MYPYPATH=python/src .venv/bin/python -m mypy --strict -p xyntetik_runner
       - name: make test
@@ -160,6 +174,26 @@ jobs:
         # object layer makes each one a link; the recipe body (the gates
         # themselves) still runs in order inside the one `test` rule
         run: .venv/bin/python scripts/ci-run.py --timeout 2400 make-test -- make -j"$(nproc)" test PYTHON=.venv/bin/python
+      # R18.15: the tray on a private session bus against a fake tray host
+      - name: Linux tray
+        run: make test-tray-linux-run PYTHON=.venv/bin/python
+      # R18.15 bar 1: a machine without libdbus. Every non-tray command is
+      # unchanged, and --tray ends with its one line, exit 1, no process left.
+      - name: Linux tray without libdbus
+        run: |
+          docker run --rm -v "$PWD":/w -w /w ubuntu:24.04 sh -ec '
+            if ldconfig -p | grep -q libdbus-1; then echo "FAIL: the image has libdbus"; exit 1; fi
+            ./runner --version
+            ./runner --info caps > /dev/null
+            ./runner -m test.gguf -p "the runner" -n 4 --temp 0 --gpu off --no-tray > /dev/null
+            st=0; DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent ./runner --tray 2> tray.err || st=$?
+            cat tray.err
+            test "$st" = 1
+            test "$(wc -l < tray.err)" = 1
+            grep -q "libdbus-1.so.3" tray.err
+            if ls /proc/*/exe 2>/dev/null | xargs -r -n1 readlink 2>/dev/null | grep -q "/w/runner"; then
+              echo "FAIL: a runner process is left"; exit 1
+            fi'
 
       - name: CI timing and test reports
         if: always()

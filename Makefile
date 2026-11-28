@@ -150,7 +150,14 @@ else
 GPU_SRC  = src/cuda.c
 GPU_BACKEND_DEF = -DRUNNER_GPU_CUDA
 LDFLAGS += -ldl
+# R18.15: Linux's tray is a StatusNotifierItem on the session bus, libdbus-1
+# dlopen'd at --tray time (no DT_NEEDED, no -dev package); other Unixes and
+# the static riscv64 cross build (CROSS_SRC) keep the stub
+ifeq ($(BUILD_OS),Linux)
+TRAY_SRC = src/tray.c src/tray_linux.c src/tray_dbus.c
+else
 TRAY_SRC = src/tray.c src/tray_stub.c
+endif
 RUNNER_EXE = runner
 TEST_JSON_SCHEMA = test-json-schema
 TEST_SVAL_WALK = test-sval-walk
