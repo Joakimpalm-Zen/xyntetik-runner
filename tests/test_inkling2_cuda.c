@@ -2156,6 +2156,12 @@ int main(int argc, char **argv) {
             // the published IQ3_M file's own mix in its blocks 0 to 12: Q4_K gate_up, IQ4_NL down
             { "Q4_K gate_up with IQ4_NL down at the real widths, one position, 8 of 16", T_Q4_K, 2304, 1152, 16, 1, 8, -1, -1, T_IQ4_NL },
             { "Q4_K gate_up with IQ4_NL down at the real widths, 64 positions, 8 of 16 each", T_Q4_K, 2304, 1152, 16, 64, 8, -1, -1, T_IQ4_NL },
+            { "IQ3_S, one position, 8 of 16 experts (a decode step)", T_IQ3_S, 512, 256, 16, 1, 8, -1, -1, T_IQ3_S },
+            { "IQ3_S, 37 positions, 4 experts each plus expert 1 at every position, expert 2 never", T_IQ3_S, 512, 256, 16, 37, 4, 1, 2, T_IQ3_S },
+            { "IQ3_S, 300 positions, 8 of 16 each (2400 columns)", T_IQ3_S, 512, 256, 16, 300, 8, -1, -1, T_IQ3_S },
+            // the published IQ3_M file's mix in its later blocks: IQ3_S gate_up, IQ4_NL down
+            { "IQ3_S gate_up with IQ4_NL down at the real widths, one position, 8 of 16", T_IQ3_S, 2304, 1152, 16, 1, 8, -1, -1, T_IQ4_NL },
+            { "IQ3_S gate_up with IQ4_NL down at the real widths, 64 positions, 8 of 16 each", T_IQ3_S, 2304, 1152, 16, 64, 8, -1, -1, T_IQ4_NL },
         };
         for (size_t k = 0; k < sizeof xc / sizeof *xc; k++) {
             long nv = 0;
