@@ -66,6 +66,7 @@ typedef struct {
     float *post_stage;
     long n_step;
     long n_step_try;      // steps attempted so far (for step_fail_at)
+    long n_fwd_try;       // forwards attempted so far (TEST-ONLY RUNNER_INKLING2_TEST_FWD_FAIL)
     long step_fail_at;    // TEST-ONLY (RUNNER_INKLING2_CUDA_TEST_STEP_FAIL=k): the k-th step attempt fails; -1 none
 } ink2_rt;
 
@@ -1250,6 +1251,16 @@ bool model_inkling2_last_sel(const model_t *m, const int **sel_out, int *n_out) 
 float *model_inkling2_forward(model_t *m, const int32_t *tokens, int n, int pos, bool want_logits, bool keep_all) {
     ink2_rt *r = rt_of(m);
     if (r) r->last_ok = false;
+    // TEST-ONLY: RUNNER_INKLING2_TEST_FWD_FAIL=k refuses this instance's k-th forward (from 0) on ANY route, as an
+    // allocation failure would: not a device failure (gpu_err stays clear), so a caller must not report one
+    if (r) {
+        const char *ff = getenv("RUNNER_INKLING2_TEST_FWD_FAIL");
+        const long k = r->n_fwd_try++;   // every forward counts, set or not
+        if (ff && *ff && k == atol(ff)) {
+            fprintf(stderr, "error: inkling2_loop: the forward at position %d refused (test injection)\n", pos);
+            return NULL;
+        }
+    }
     if (!r || !r->cache_ok || n <= 0 || pos < 0 || pos + n > m->n_ctx) {
         fprintf(stderr, "error: inkling2_loop: %d tokens at %d do not fit -c %d\n", n, pos, m->n_ctx);
         return NULL;
@@ -1598,6 +1609,11 @@ bool model_inkling2_act8(const model_t *m) {
 bool model_inkling2_last_ok(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
     return r && r->last_ok;
+}
+// the device failed under this instance (gpu_err): it refuses every forward from then on
+bool model_inkling2_device_failed(const model_t *m) {
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    return r && r->gpu_err;
 }
 const char *model_inkling2_route_detail(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;

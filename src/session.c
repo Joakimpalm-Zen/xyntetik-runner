@@ -298,11 +298,16 @@ bool session_run(engine *e, float *logits, int stop_at, gen_cb cb, void *ud,
     while (stop_at <= 0 || e->gen_count < stop_at) {
         if (engine_gen_step(e, logits, cb, ud, &tok, &pos) != ENGINE_STEP_MORE) break;
         logits = model_forward(e->m, tok, pos);
-        if (!logits) { e->oom = true; break; }
+        if (!logits) {
+            // a device failure says so (model_forward_failed); anything else is the allocation
+            if (model_forward_failed(e->m)) e->fwd_failed = true;
+            else e->oom = true;
+            break;
+        }
     }
     e->pending_pos = -1;
     *last = logits;
-    return logits && !e->hit_stop && !e->oom;
+    return logits && !e->hit_stop && !e->oom && !e->fwd_failed;
 }
 
 bool session_image_write(const char *path, const engine *e, const char *model_path,

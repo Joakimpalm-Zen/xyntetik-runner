@@ -1639,6 +1639,16 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                            bool want_logits);
 // single-token convenience wrapper
 float *model_forward(model_t *m, int token, int pos);
+// The device failed under this instance: its last forward returned no row,
+// and it computes no more. Only an inkling2_loop forward on CUDA can (a device
+// op failed; the instance refuses later forwards rather than produce CPU
+// rows). Every other route falls back to the CPU instead
+// (gpu_runtime_failure), so this is false.
+bool   model_forward_failed(const model_t *m);
+// The last forward failed for any reason (the device, an allocation, a
+// refusal) and returned no row. Only inkling2_loop forwards return no row, so
+// this is false for every other model.
+bool   model_forward_errored(const model_t *m);
 
 // ---- recurrent-state cache seam (SSM tracer 4) -------------------------
 //
@@ -2095,7 +2105,10 @@ void         model_batch_free(model_batch *b);
 // exception is opt-in: Metal's RUNNER_METAL_BATCH_TILES runs 6 or more
 // columns on the GEMM tiles, tolerance-class (tests/test_metal_batch_tiles.py).
 //
-// Returns false only if a sequence could not be evaluated at all.
+// Returns false only if the step could not be evaluated at all. A member
+// whose own forward returned no row (an inkling2_loop instance the device
+// failed under, model_forward_errored) gets out[i] == NULL; the others still
+// get their rows.
 // Did this batch get a backend microbatch? False means every decode falls
 // through to the sequential path — the identity gate uses this to refuse a
 // vacuous self-comparison.

@@ -214,17 +214,19 @@ static void *decode_worker(void *unused) {
         bool ok = model_batch_decode(SCH.batch, idx, tk, ps, nb, out);
         // out[i] is only valid until the next decode, and the slot threads
         // read it after this one returns — so each row is copied home first.
+        // a member with no row (out[i] NULL) failed alone (model_batch_decode)
         if (ok)
             for (int i = 0; i < nb; i++)
-                memcpy(SCH.seq[idx[i]].logits, out[i],
-                       sizeof(float) * (size_t)n_vocab);
+                if (out[i])
+                    memcpy(SCH.seq[idx[i]].logits, out[i],
+                           sizeof(float) * (size_t)n_vocab);
         if (SCH.device_turn) dev_give();
         atomic_fetch_add(&SCH.steps, 1);
         atomic_fetch_add(&SCH.seqs_batched, nb);
 
         pthread_mutex_lock(&SCH.mu);
         for (int i = 0; i < nb; i++) {
-            SCH.seq[idx[i]].ok    = ok;
+            SCH.seq[idx[i]].ok    = ok && out[i];
             SCH.seq[idx[i]].state = SEQ_READY;
         }
         pthread_cond_broadcast(&SCH.slot_cv);
@@ -424,7 +426,12 @@ int sched_generate(slot_t *s, float *logits, int max_new,
     while (engine_gen_step(e, lg, cb, ud, &tok, &pos) == ENGINE_STEP_MORE) {
         if (deadline > 0 && now_s() >= deadline) break;
         if (e->stop && e->stop(e->stop_ud)) break;
-        if (!(lg = sched_forward(s->id, tok, pos, deadline))) break;
+        if (!(lg = sched_forward(s->id, tok, pos, deadline))) {
+            // the deadline also ends here with no row; a failed forward names itself
+            if (model_forward_failed(e->m)) e->fwd_failed = true;
+            else if (model_forward_errored(e->m)) e->oom = true;
+            break;
+        }
     }
     int n = engine_gen_end(e, cb, ud, gen_time);
 

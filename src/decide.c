@@ -54,6 +54,15 @@ typedef struct {
     int      upto;   // rows [0, upto) still hold the state's own feed; -1: none
 } canon_prefix;
 
+// why a feed returned no row, for *err: the device, the allocation, or (the
+// prompt was never measured against the context here) either of those or a full context
+static const char *feed_err(const engine *e) {
+    return e->fwd_failed ? "engine feed failed: a forward failed on the device, and this "
+                           "model instance computes no more rows"
+         : e->oom        ? "engine feed failed: out of memory"
+                         : "engine feed failed (context or memory)";
+}
+
 static bool canon_seat(engine *e, canon_prefix *c, const int32_t *ptoks, int np,
                        const char **err) {
     int k = 0;
@@ -68,7 +77,7 @@ static bool canon_seat(engine *e, canon_prefix *c, const int32_t *ptoks, int np,
     if (c->upto < k) {
         engine_reset(e);
         if (!engine_feed(e, c->toks, c->n)) {
-            *err = "engine feed failed (context or memory)";
+            *err = feed_err(e);
             return false;
         }
         c->upto = c->n;
@@ -169,13 +178,13 @@ static bool score_mode(engine *e, const char *prompt, tok_mode mode,
         engine_rewind(e, s->toks, start - 1);
         if (e->pos < start - 1 &&
             !engine_feed(e, s->toks + e->pos, (start - 1) - e->pos)) {
-            *err = "engine feed failed (context or memory)"; ok = false; break;
+            *err = feed_err(e); ok = false; break;
         }
         // from here the rows are the decode route's: a later normal request
         // keeps the slot's rows only below them (R3.60)
         engine_mark_scored(e, start - 1);
         const float *L = engine_feed_solo(e, s->toks[start - 1]);
-        if (!L) { *err = "engine feed failed (context or memory)"; ok = false; break; }
+        if (!L) { *err = feed_err(e); ok = false; break; }
         double total = 0;
         for (int d = s->common; d < start; d++) total += lp_at[d];
         for (int d = start; d < s->n; d++) {
@@ -187,7 +196,7 @@ static bool score_mode(engine *e, const char *prompt, tok_mode mode,
             double v = (double)L[s->toks[d]] - lse(L, m->n_vocab);
             lp_at[d] = v; has[d] = 1; total += v;
             L = engine_feed_solo(e, s->toks[d]);   // also keeps hist == the path
-            if (!L) { *err = "engine feed failed (context or memory)"; ok = false; break; }
+            if (!L) { *err = feed_err(e); ok = false; break; }
         }
         if (!ok) break;
         out[s->idx].lp = total;
@@ -209,6 +218,9 @@ static const char *jstr(const jv *o, const char *k) {
 
 int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, const char **err) {
     *err = NULL;
+    // the flags are this request's own: an earlier request's device failure
+    // must not turn this one's 400 into the server's 500 (server.c reads them)
+    engine_fault_clear(e);
     const char *state = jstr(req, "state");
     if (!state) { *err = "missing state (a string)"; return 400; }
     const char *aprefix = jstr(req, "answer_prefix");
@@ -323,7 +335,8 @@ int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, c
         if (!ok) {
             free(ov); free(res);
             *err = serr ? serr : "scoring failed";
-            status = strstr(*err, "memory") ? 500 : 400;
+            // a failed forward is the server's, never the request's: 500
+            status = e->fwd_failed || e->oom || strstr(*err, "memory") ? 500 : 400;
             break;
         }
         total_prompt += ptoks;
@@ -453,6 +466,7 @@ static char *rr_render_raw(const char *instr, const char *q, const char *d) {
 int rerank_handle(engine *e, const jv *req, const char *model_name, int tmpl,
                   sbuf *out, const char **err) {
     *err = NULL;
+    engine_fault_clear(e);   // this request's own flags (decide_handle)
     const char *query = jstr(req, "query");
     if (!query || !*query) { *err = "missing query (a non-empty string)"; return 400; }
     jv *docs = jv_get((jv *)req, "documents");
@@ -535,7 +549,8 @@ int rerank_handle(engine *e, const jv *req, const char *model_name, int tmpl,
         free(prompt);
         if (!ok) {
             *err = serr ? serr : "scoring failed";
-            status = strstr(*err, "memory") ? 500 : 400;
+            // a failed forward is the server's, never the request's: 500
+            status = e->fwd_failed || e->oom || strstr(*err, "memory") ? 500 : 400;
             break;
         }
         total_prompt += ptoks;

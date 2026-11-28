@@ -4617,6 +4617,25 @@ static bool cli_model_flags_ok(const cli_opts *o, int *tmpl_override) {
 // counts); --no-tray opts out. main() calls this after every argument check a
 // serve or chat run can fail, so a refused run leaves no detached tray holding
 // the executable; a run that fails later, at model load, still raises it.
+// Why the last feed or generation stopped on a forward that returned no row,
+// or NULL when none did: the device (e->fwd_failed: the instance computes no
+// more rows) or anything else (e->oom: an allocation, a refusal). Never a
+// full context, which the feed checks before it runs a forward.
+static const char *cli_fwd_fault(const engine *e) {
+    return e->fwd_failed ? "failed on the device"
+         : e->oom        ? "failed: out of memory"
+                         : NULL;
+}
+
+// The same, for a generation that stopped: only the device's failure is
+// known to be a forward's. e->oom there may be the sampler's or a
+// constraint's allocation (engine_gen_step), so it says only what is known.
+static const char *cli_gen_fault(const engine *e) {
+    return e->fwd_failed ? "a forward failed on the device"
+         : e->oom        ? "out of memory"
+                         : NULL;
+}
+
 static void cli_tray_follow(const cli_opts *o) {
 #if defined(__APPLE__) || defined(_WIN32)
     if (!o->no_tray && (o->serve || o->interactive) &&
@@ -7788,7 +7807,8 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     double vt0 = now_s();
     float *logits = engine_feed(&rt->e, rt->toks, jp->n);
     if (!logits) {
-        fprintf(stderr, "UNVERIFIABLE: prompt exceeds context\n");
+        if (cli_fwd_fault(&rt->e)) fprintf(stderr, "UNVERIFIABLE: the prompt's forward %s\n", cli_fwd_fault(&rt->e));
+        else fprintf(stderr, "UNVERIFIABLE: prompt exceeds context\n");
         rt->e.step_fwd = NULL;
         replay_micro_close(&rmx);
         jv_free(vr->rec);
@@ -7866,6 +7886,13 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     if (rs.vis.failed) replay_out.failed = true;
     if (replay_out.failed) {
         fprintf(stderr, "UNVERIFIABLE: out of memory capturing replay\n");
+        free(replay_out.buf); jv_free(vr->rec);
+        return 3;
+    }
+    if (cli_fwd_fault(&rt->e)) {
+        // a failed forward cut the replay short: that says nothing about the record
+        fprintf(stderr, "UNVERIFIABLE: the replay stopped after %d token%s: %s\n",
+                n_gen, n_gen == 1 ? "" : "s", cli_gen_fault(&rt->e));
         free(replay_out.buf); jv_free(vr->rec);
         return 3;
     }
@@ -8530,7 +8557,7 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
         if (logits) {
             d_gen = engine_generate(&rt->e, logits, DOCTOR_TOKENS, outcap_cb,
                                     &dout, &d_gtime);
-            probe_ran = !dout.failed;
+            probe_ran = !dout.failed && !cli_fwd_fault(&rt->e);   // a cut-short probe is no probe
             probe_stop = rt->e.hit_stop;
         }
     }
@@ -8763,11 +8790,19 @@ static int run_bench(cli_opts *o, cli_run *rt) {
     float *logits = engine_feed(&rt->e, rt->toks, n_prompt);
     ptime = now_s() - t0;
     if (!logits) {
-        fprintf(stderr, "error: benchmark prompt exceeds context\n");
+        if (cli_fwd_fault(&rt->e)) fprintf(stderr, "error: the benchmark prompt's forward %s\n", cli_fwd_fault(&rt->e));
+        else fprintf(stderr, "error: benchmark prompt exceeds context\n");
         free(p);
         return 1;
     }
     n_gen = engine_generate(&rt->e, logits, o->n_predict, discard_cb, NULL, &gtime);
+    if (cli_fwd_fault(&rt->e)) {
+        // a rate over a cut-short run measures the failure, not the route
+        fprintf(stderr, "error: the benchmark's generation stopped after %d token%s: %s\n",
+                n_gen, n_gen == 1 ? "" : "s", cli_gen_fault(&rt->e));
+        free(p);
+        return 1;
+    }
     char esc_model[1024];
     const char *bench_model = cli_model_name(rt, o->model_path);   // R19.17.1: a split set by the set's name
     json_escape(bench_model, strlen(bench_model), esc_model, sizeof(esc_model));
@@ -8889,7 +8924,13 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
     t0 = now_s();
     float *logits = engine_feed(&rt->e, rt->toks, n_prompt);
     ptime = now_s() - t0;
-    if (!logits) { fprintf(stderr, "error: prompt exceeds context\n"); free(p); return 1; }
+    if (!logits) {
+        // the prompt fits (checked above): an empty row is a failed forward
+        if (cli_fwd_fault(&rt->e)) fprintf(stderr, "error: the prompt's forward %s\n", cli_fwd_fault(&rt->e));
+        else fprintf(stderr, "error: prompt exceeds context\n");
+        free(p);
+        return 1;
+    }
 
     if (!o->prompt_file && !o->json_mode && !o->schema_file)
         printf("%s", p); // don't echo file/json/schema prompts
@@ -8945,6 +8986,14 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
             n_gen, n_gen / (gtime > 0 ? gtime : 1e-9));
     gpu_lost_note(&rt->m);
     model_debug_time_report();
+    if (cli_fwd_fault(&rt->e)) {
+        // no receipt for a run a failed forward cut short: its output is not the model's answer
+        fprintf(stderr, "error: generation stopped: %s after %d token%s\n",
+                cli_gen_fault(&rt->e), n_gen, n_gen == 1 ? "" : "s");
+        free(ocap.buf);
+        free(p);
+        return 1;
+    }
     int t_rc = 0;
     if (o->transcript_path) {
         const char *prev_hash = rt->prev_hash;   // read before the load (cli_main)
@@ -9118,7 +9167,11 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
             break;
         }
         float *logits = engine_feed(&rt->e, rt->toks, n_prompt);
-        if (!logits) { fprintf(stderr, "[context full]\n"); break; }
+        if (!logits) {
+            if (cli_fwd_fault(&rt->e)) fprintf(stderr, "error: the turn's forward %s\n", cli_fwd_fault(&rt->e));
+            else fprintf(stderr, "[context full]\n");
+            break;
+        }
 
         jsonv_init(&rt->e.jv); // fresh JSON constraint per turn
         chat_out co = { .in_think = false };
@@ -9158,8 +9211,14 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
             fprintf(stderr, "[ended_at=turn_header %s]\n", hdr);
         fprintf(stderr, "[%d tok, %.1f tok/s]\n",
                 n_gen, n_gen / (gtime > 0 ? gtime : 1e-9));
+        if (cli_fwd_fault(&rt->e)) {
+            // no further turn is answered after a failed forward
+            fprintf(stderr, "error: generation stopped: %s after %d token%s\n",
+                    cli_gen_fault(&rt->e), n_gen, n_gen == 1 ? "" : "s");
+            break;
+        }
     }
-    return 0;
+    return cli_fwd_fault(&rt->e) ? 1 : 0;
 }
 
 // The prompt buffer cli_resolve_inputs builds (-p unescaped, -f appended)

@@ -88,6 +88,14 @@ typedef struct {
     bool spell_think;
     bool oom;              // generation aborted on an allocation failure — the
                            // finish reason is "error", never a silent "stop"
+    // The last feed or generation stopped because a forward failed on the
+    // device (model_forward_failed): no row came back, and the instance
+    // computes no more. Not a full context: every surface says which, as a
+    // device failure (finish "device_error", HTTP 500 device_failed). A
+    // forward that failed for another reason (model_forward_errored: an
+    // allocation, a refusal) sets oom instead. Both are cleared by
+    // engine_fault_clear: engine_reset, every feed entry and engine_gen_begin.
+    bool fwd_failed;
     // R2.18: a pattern automaton (src/jsre.h) hit a limit mid-generation: the
     // turn ends as a fault this names (which pattern, how many states), never
     // as a document narrower than the pattern allows. Empty when none did.
@@ -544,11 +552,16 @@ void   engine_set_request_stops(engine *e, const int *ids, int n);
 // Recompute the engine's model identity (the prefix-cache key) after the
 // model's adapter changed (R8.6); cheap enough to do per adapter switch.
 void   engine_refresh_identity(engine *e);
-// feed tokens (batched); returns last-token logits, or NULL on overflow/stop.
+// feed tokens (batched); returns last-token logits, or NULL on overflow/stop,
+// or on a failed forward (e->fwd_failed then; the prompt's later chunks are
+// not fed).
 // The prompt's prefill pass: on a CPU-only run its bits do not depend on the
 // batch size (from 2 up) or the chunking (R3.60), and they are not the decode
 // step's. At -b 1 the prompt is read on the decode route, one token a forward.
 float *engine_feed(engine *e, const int32_t *toks, int n);
+// Clear the last operation's fault (fwd_failed, oom): a caller about to start
+// a new one reads only its own (engine_reset and the feeds call it).
+void   engine_fault_clear(engine *e);
 // feed ONE token through the decode step's route, the solo forward the
 // sampler sees and `--score` uses: for a caller whose numbers must be those
 // (echo / prompt_logprobs, the decision scorer). Same returns as engine_feed.

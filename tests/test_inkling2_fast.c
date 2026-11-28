@@ -487,6 +487,30 @@ int main(int argc, char **argv) {
         }
         ink2g_close(g);
     }
+    // (o) PR #1065's second read: a microbatch step one member's forward fails in ends that member alone. Two
+    // instances, one six forwards ahead; RUNNER_INKLING2_TEST_FWD_FAIL=6 (TEST-ONLY: each instance's own forward
+    // count, any route, not the device) then fails the leader's step and not the other's. The scheduler reads
+    // out[i] == NULL as that member's failure; ending the whole step there ended every co-batched request with it.
+    {
+        model_t *ma = load(argv[1], "", false, 1, 4), *mb = load(argv[1], "", false, 1, 4);
+        bool fed = ma && mb;
+        for (int p = 0; fed && p < 6; p++) fed = model_forward(ma, 1 + p, p) != NULL;
+        fed = fed && model_forward(mb, 1, 0) != NULL;
+        model_t *both[2] = { ma, mb };
+        model_batch *bt = fed ? model_batch_create(both, 2) : NULL;
+        plat_setenv("RUNNER_INKLING2_TEST_FWD_FAIL", "6");
+        const int bidx[2] = { 0, 1 }, bpos[2] = { 6, 1 };
+        const int32_t btok[2] = { 7, 2 };
+        float *bout[2] = { NULL, NULL };
+        const bool stepped = bt && model_batch_decode(bt, bidx, btok, bpos, 2, bout);
+        plat_setenv("RUNNER_INKLING2_TEST_FWD_FAIL", "");
+        CHECK(fed && bt && stepped && !bout[0] && bout[1] && !model_inkling2_last_ok(ma) && model_inkling2_last_ok(mb),
+              "(o) a batch step one member fails in gives the others their rows (fed %d, stepped %d, rows %s/%s)",
+              fed, stepped, bout[0] ? "a row" : "none", bout[1] ? "a row" : "none");
+        model_batch_free(bt);
+        if (ma) { model_free(ma); free(ma); }
+        if (mb) { model_free(mb); free(mb); }
+    }
     ink2_set_threads(1);
     printf(fails ? "FAIL %d\n" : "PASS\n", fails);
     return fails ? 1 : 0;
