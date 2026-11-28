@@ -37,7 +37,11 @@ hold either file. Its generated-fixture CUDA gate passes, but these two
 real-file marks apply to Linux only.
 
 On the non-resident path, CUDA runs the supported products, attention blocks
-and their K/V rings, expert bodies and loop message gates. The router runs
+and their K/V rings, expert bodies and loop message gates. A tensor whose type has
+no CUDA product kernel (anything but F32, BF16, Q8_0, NVFP4 and IQ3_XXS) stays
+on the host, and its products run on the CPU; `--info fit` then gives the
+device's share of the product weight bytes and names the tensors left on the
+host and their types. The router runs
 on the device for multiple positions, on the host for one. The host gathers
 embeddings, orchestrates the loop and block states, and runs input norms,
 post convolutions and residual work. LoRA attention terms are added on the

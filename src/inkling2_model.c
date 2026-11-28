@@ -78,11 +78,25 @@ static int64_t view_rows(const ink2_tensor *t) { return t->ne[1] * t->ne[2] * t-
 static const void *view_src(const ink2_tensor *t) { return t->q ? t->q : (const void *)t->data; }
 static size_t view_row_bytes(const ink2_tensor *t) { return t->q ? t->q_row_bytes : sizeof(float) * (size_t)t->ne[0]; }
 static int view_qtype(const ink2_tensor *t) { return t->q ? t->qtype : T_F32; }
+// R4.48.37: a set of ggml types (bit t: type t) as "IQ3_S, IQ4_NL", in type order
+static void type_list(uint64_t m, char *out, size_t n) {
+    size_t o = 0;
+    out[0] = 0;
+    for (int ty = 0; ty < 64 && o + 1 < n; ty++)
+        if (m >> ty & 1) {
+            const int w = snprintf(out + o, n - o, "%s%s", o ? ", " : "", ggml_type_name(ty));
+            o = w < 0 ? n : o + (size_t)w;
+        }
+}
 static int view_scales(const ink2_tensor *t) { return t->q_scale ? (int)t->ne[2] : 0; }
 typedef struct {
     ink2_rt *r; bool cpu_moe; size_t need; int n; int fail_at;
     int64_t max_in, max_out, max_out_body;   // max_out_body: the widest product but the head's (its vocabulary rows)
     bool attach;
+    // R4.48.37: the product views the device holds (raw bytes) and those left on the host for their type (a type the
+    // handle's products do not run, or a factor on a type that cannot apply it), their bytes, count, expert stacks and
+    // types (bit t: ggml type t). The token embedding (never a product) and --cpu-moe's stacks are not counted here.
+    size_t dev_raw, host_b; int host_n, host_exp; uint64_t host_types;
 } dev_walk;
 // what goes up is what the device computes (the second read's P1): a view the handle's products take (its type's
 // kernel; a factor only on NVFP4, the one kernel that applies it), not the token embedding (read row by row on the
@@ -103,8 +117,18 @@ static size_t dev_alloc_bytes(size_t b) {
 }
 static int dev_count(void *c_, const ink2_tensor *t) {
     dev_walk *c = c_;
-    if (!dev_wanted(c, t)) return 0;
-    c->need += dev_alloc_bytes(view_row_bytes(t) * (size_t)view_rows(t));
+    const size_t vb = view_row_bytes(t) * (size_t)view_rows(t);
+    if (!dev_wanted(c, t)) {
+        const bool expert = strstr(t->name, ".mlp.experts.") != NULL;
+        if (strcmp(t->name, "model.embed_tokens.weight") && !(c->cpu_moe && expert)) {
+            const int ty = view_qtype(t);
+            c->host_b += vb; c->host_n++; c->host_exp += expert;
+            c->host_types |= 1ull << (ty >= 0 && ty < 64 ? ty : 63);
+        }
+        return 0;
+    }
+    c->dev_raw += vb;
+    c->need += dev_alloc_bytes(vb);
     if (view_scales(t)) c->need += dev_alloc_bytes(sizeof(float) * (size_t)view_scales(t));
     if (t->ne[0] > c->max_in) c->max_in = t->ne[0];
     if (t->ne[1] > c->max_out) c->max_out = t->ne[1];   // a product's rows: at most one matrix's (one expert's)
@@ -324,6 +348,7 @@ typedef struct ink2_share {
     bool block_dev;  // step 2b: the whole attention block; its small tensors follow the views in the copy
     int n_views;     // the views in the copy (the small tensors are device tensors n_views..)
     int step_base;   // D1d.3b: the resident step's small tensors are device tensors step_base.. (-1: none up)
+    int host_n; uint64_t host_types;   // R4.48.37: the product views left on the host for their type (dev_walk)
     int refs;
     // 'C': the sentence each instance says. Sized for the longest: share_place's do-not-fit sentence, 182 fixed bytes
     // with a device name of up to 159 (cuda_bind's dev[160]) and its numbers, at most 363 bytes with the NUL
@@ -429,6 +454,9 @@ typedef struct {
     // the whole placement's own terms (every weight on the device), kept when a later placement is tried: what a
     // device that holds it would need besides the weights, whether or not this one does
     bool whole; size_t w_weights, w_small, w_slots, w_reserved;
+    // R4.48.37: the last placement tried, its product views' raw bytes on the device and on the host (dev_walk)
+    size_t dev_raw, host_b; int host_n, host_exp; uint64_t host_types;
+    int w_host_n;   // the whole placement's own count of them
 } ink2_dev_terms;
 static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batch, int n_ctx, int n_slots,
                         const char *dev, bool step_req, ink2_dev_terms *dry) {
@@ -476,7 +504,7 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
     for (int k = cpu_moe_req ? 1 : 0; k < 2; k++) {
         const bool cm = k == 1;
         const bool exp_dev = !cm && gpu_ink2_experts_ok(h) && !(ne && !strcmp(ne, "1"));
-        dev_walk c = { r, cm, 0, 0, -1, 0, 0, 0, false };
+        dev_walk c = { r, cm, 0, 0, -1, 0, 0, 0, false, 0, 0, 0, 0, 0 };
         size_t tot = 0;
         // the output buffer holds T rows of every product but the head, and at least one head row: a forward asks for
         // its last row only (INK2_LOGITS_LAST); a keep-all forward's head runs its columns in groups (gpu_ink2_lin)
@@ -503,7 +531,10 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
         if (dry) {   // field by field: a later placement's terms must not wipe the whole placement's
             dry->placed = 'C'; dry->weights = c.need; dry->small = small; dry->slots = inst; dry->kept = RES;
             dry->reserved = gpu_ink2_reserved_bytes(h); dry->free_b = fr; dry->total_b = tot;
-            if (!cm) { dry->whole = true; dry->w_weights = c.need; dry->w_small = small; dry->w_slots = inst; dry->w_reserved = dry->reserved; }
+            dry->dev_raw = c.dev_raw; dry->host_b = c.host_b; dry->host_n = c.host_n; dry->host_exp = c.host_exp;
+            dry->host_types = c.host_types;
+            if (!cm) { dry->whole = true; dry->w_weights = c.need; dry->w_small = small; dry->w_slots = inst; dry->w_reserved = dry->reserved;
+                       dry->w_host_n = c.host_n; }
         }
         if (dry && c.need + small + inst + RES <= fr) {   // the dry run: this placement fits; nothing goes up
             dry->placed = cm ? 'M' : 'W';
@@ -520,7 +551,7 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
         // fits: up it goes (the views in the file's walk order; a failed put leaves the CPU, P0)
         r->dev_of = calloc((size_t)c.n, sizeof *r->dev_of);
         r->n_dev = 0;
-        dev_walk u = { r, cm, 0, c.n, pf && *pf ? atoi(pf) : -1, 0, 0, 0, false };
+        dev_walk u = { r, cm, 0, c.n, pf && *pf ? atoi(pf) : -1, 0, 0, 0, false, 0, 0, 0, 0, 0 };
         if (!r->dev_of || ink2g_each_view(r->g, dev_put, &u) || r->n_dev != c.n) {
             snprintf(sh->why, sizeof sh->why, "inkling2_loop's weights could not be put on %s", dev);
             free(r->dev_of); r->dev_of = NULL; r->n_dev = 0;
@@ -538,7 +569,7 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
             break;
         }
         sh->gpu = h; sh->placed = cm ? 'M' : 'W'; sh->need = c.need + small; sh->exp_dev = exp_dev; sh->attn_dev = attn_dev;
-        sh->block_dev = block_dev; sh->n_views = c.n;
+        sh->block_dev = block_dev; sh->n_views = c.n; sh->host_n = c.host_n; sh->host_types = c.host_types;
         if (cm && !cpu_moe_req)
             fprintf(stderr, "note: inkling2_loop's %.2f GB of weights do not fit the %.2f GB free on %s for %d slot%s; "
                             "its expert stacks stay on the host (as --cpu-moe)\n", need_w / 1e9, fr / 1e9, dev, n_slots,
@@ -802,7 +833,7 @@ static int cuda_bind(ink2_rt *r, model_t *m, const model_params *p) {
         const int n = sh->n_views;
         r->dev_of = calloc((size_t)n, sizeof *r->dev_of);
         r->n_dev = 0;
-        dev_walk a = { r, sh->placed == 'M', 0, n, -1, 0, 0, 0, true };
+        dev_walk a = { r, sh->placed == 'M', 0, n, -1, 0, 0, 0, true, 0, 0, 0, 0, 0 };
         if (!r->dev_of || ink2g_each_view(r->g, dev_put, &a) || r->n_dev != n) {
             free(r->dev_of); r->dev_of = NULL; r->n_dev = 0;
             pthread_mutex_unlock(&g_share_mu);
@@ -905,11 +936,18 @@ static int cuda_bind(ink2_rt *r, model_t *m, const model_params *p) {
         const char *sf = getenv("RUNNER_INKLING2_CUDA_TEST_STEP_FAIL");
         r->step_fail_at = sf && *sf ? atol(sf) : -1;
     }
+    char hosted[320] = "";
+    if (sh->host_n > 0) {   // R4.48.37: say which weights the device does not hold
+        char tl[200];
+        type_list(sh->host_types, tl, sizeof tl);
+        snprintf(hosted, sizeof hosted, "; %d tensors (%s) stay on the host, their products on the CPU", sh->host_n, tl);
+    }
     fprintf(stderr, "inkling2_loop: the weights on CUDA (%s): %d tensors, %.3f GB, their stored rows%s; their products "
-                    "on the device%s; attention blocks and resident decode when enabled%s%s\n", dev, r->n_dev,
+                    "on the device%s; attention blocks and resident decode when enabled%s%s%s\n", dev, r->n_dev,
             gpu_ink2_bytes(r->gpu) / 1e9, made ? "" : ", shared with this file's other instances",
             sh->exp_dev ? " and each layer's expert body whole" : "",
-            sh->placed == 'M' ? "; the expert stacks on the host" : "", r->no_factor ? "; TEST-ONLY: the expert factor left out" : "");
+            sh->placed == 'M' ? "; the expert stacks on the host" : "", hosted,
+            r->no_factor ? "; TEST-ONLY: the expert factor left out" : "");
     return 1;
 }
 
@@ -1470,8 +1508,22 @@ int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, con
     }
     if (t.placed == 'C' && !t.total_b) { printf("  device        the CPU: %s\n", dwhy); return 0; }
     const size_t rest = t.reserved + t.small + t.slots + t.kept;
-    printf("  device        CUDA route: %s%s%s\n", placed_words(t.placed), t.placed == 'C' ? ": " : "", t.placed == 'C' ? dwhy : "");
+    char tl[200] = "";
+    type_list(t.host_types, tl, sizeof tl);
+    if (t.placed != 'C' && t.host_n > 0) {
+        // R4.48.37: some product views stay on the host (their type has no CUDA product kernel), so the placement is
+        // stated in bytes, not as "every weight on the device"
+        // under --cpu-moe the stacks are on the host by the placement, and the bytes are the other product weights'
+        printf("  device        CUDA route: %s%zu of %zu %s bytes on the device; %d tensors (types %s) run on the host\n",
+               t.placed == 'M' ? "the expert stacks on the host (--cpu-moe); of the other product weights, " : "",
+               t.dev_raw, t.dev_raw + t.host_b, t.placed == 'M' ? "weight" : "product weight", t.host_n, tl);
+    } else {
+        printf("  device        CUDA route: %s%s%s\n", placed_words(t.placed), t.placed == 'C' ? ": " : "", t.placed == 'C' ? dwhy : "");
+    }
     printf("  dev weights   %.2f GiB (%zu bytes, as the driver allocates them)\n", t.weights / 1073741824.0, t.weights);
+    if (t.placed != 'C' && t.host_n > 0)
+        printf("  host weights  %.2f GiB (%zu bytes: %d tensors whose types the CUDA products do not run (%s); their "
+               "products run on the CPU)\n", t.host_b / 1073741824.0, t.host_b, t.host_n, tl);
     printf("  dev buffers   %.2f GiB (%zu bytes: the products', experts', attention's and block's reservations)\n",
            t.reserved / 1073741824.0, t.reserved);
     printf("  dev small     %.2f GiB (%zu bytes: the attention's small tensors and the resident step's)\n",
@@ -1482,8 +1534,9 @@ int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, con
     printf("  non-weight    %.2f GiB (%zu bytes: everything above but the weights)\n", rest / 1073741824.0, rest);
     if (t.whole) {
         const size_t wrest = t.w_reserved + t.w_small + t.w_slots + t.kept;
-        printf("  whole         %.2f GiB of weights (%zu bytes) and %.2f GiB besides them (non-weight %zu bytes): every "
-               "weight on the device, %s\n", t.w_weights / 1073741824.0, t.w_weights, wrest / 1073741824.0, wrest,
+        printf("  whole         %.2f GiB of weights (%zu bytes) and %.2f GiB besides them (non-weight %zu bytes): %s, %s\n",
+               t.w_weights / 1073741824.0, t.w_weights, wrest / 1073741824.0, wrest,
+               t.w_host_n > 0 ? "every weight of a type the CUDA products run on the device" : "every weight on the device",
                t.placed == 'W' ? "the placement above" : "what a device holding it would need");
     }
     printf("  dev free      %.2f GiB of %.2f GiB (after the context, the module and the buffers)\n",
@@ -1503,7 +1556,13 @@ int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, con
             if (kind == INK2_KV_F32 && t.placed != 'W' && ta.placed == 'W') dv = "FITS WITH --kv q8";
         }
     }
-    printf("  dev verdict   %s\n", dv);
+    // R4.48.37: a fit with weights left on the host says so; the verdict's first word is the generic vocabulary's
+    char dvx[320] = "";
+    if (t.placed != 'C' && t.host_exp > 0)
+        snprintf(dvx, sizeof dvx, "; %d expert stack tensors run on the host (%s)", t.host_exp, tl);
+    else if (t.placed != 'C' && t.host_n > 0)
+        snprintf(dvx, sizeof dvx, "; %d tensors run on the host (%s)", t.host_n, tl);
+    printf("  dev verdict   %s%s\n", dv, dvx);
     return (avail && total > avail) || t.placed == 'C' || (t.placed == 'M' && !mp->cpu_moe) ? 1 : 0;
 }
 
