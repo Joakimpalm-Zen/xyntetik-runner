@@ -591,6 +591,18 @@ int main(int argc, char **argv) {
     snprintf(want_name, sizeof want_name, "org.kde.StatusNotifierItem-%ld-1", (long)tray);
     CHECK(g_registered[0] && !strcmp(g_registered, want_name),
           "1. the item registers as %s (got \"%s\" from %s)", want_name, g_registered, g_item_owner);
+    if (!g_registered[0]) {
+        // nothing on the bus to ask: every later check would call an empty name, which libdbus aborts on
+        printf("FAIL: no item registered; the checks that ask it did not run\n");
+        fails++;
+        kill(tray, SIGKILL);
+        waitpid(tray, NULL, 0);
+        disconnect_bus();
+        kill(bus, SIGTERM);
+        waitpid(bus, NULL, 0);
+        printf("FAIL %d\n", fails);
+        return 1;
+    }
 
     // 2. the pixmaps, idle
     pixmaps px;
