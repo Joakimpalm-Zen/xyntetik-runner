@@ -1,6 +1,7 @@
 // libdbus-1 at run time for the Linux tray (tray_dbus.h).
 #if defined(__linux__)
 #include "tray_dbus.h"
+#include "compat.h"
 
 #include <dlfcn.h>
 #include <stddef.h>
@@ -93,8 +94,8 @@ bool tdb_session_bus_named(void) {
     if (!rt || !*rt) return false;
     char p[1024];
     if (snprintf(p, sizeof p, "%s/bus", rt) >= (int)sizeof p) return false;
-    struct stat st;
-    return stat(p, &st) == 0 && S_ISSOCK(st.st_mode);
+    plat_stat_t st;
+    return plat_stat(p, &st) == 0 && S_ISSOCK(st.st_mode);
 }
 
 bool tdb_session_bus_export(void) {
@@ -103,7 +104,7 @@ bool tdb_session_bus_export(void) {
     if (a && *a) return true;
     char addr[1100];
     if (snprintf(addr, sizeof addr, "unix:path=%s/bus", getenv("XDG_RUNTIME_DIR")) >= (int)sizeof addr) return false;
-    return setenv("DBUS_SESSION_BUS_ADDRESS", addr, 1) == 0;
+    return plat_setenv("DBUS_SESSION_BUS_ADDRESS", addr) == 0;
 }
 
 bool tdb_append_str(const tdb_api *d, tdb_iter *it, int type, const char *s) {

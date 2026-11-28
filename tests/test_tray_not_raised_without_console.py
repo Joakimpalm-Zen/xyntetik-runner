@@ -201,9 +201,9 @@ def test_linux_serve_on_a_terminal_in_a_desktop_session_raises_one(runner_bin, m
     helper = ROOT / "test-tray-linux"
     if not shutil.which("dbus-daemon") or not helper.exists():
         pytest.skip("needs dbus-daemon and the test-tray-linux helper (make test-tray-linux)")
-    bus_dir = tmp_path / "bus"
-    bus_dir.mkdir()
-    bus = subprocess.Popen(["dbus-daemon", "--session", "--nofork", f"--address=unix:dir={bus_dir}",
+    # an abstract socket: no filesystem path (a deep pytest directory outgrew sockaddr_un's 108 bytes)
+    bus = subprocess.Popen(["dbus-daemon", "--session", "--nofork",
+                            f"--address=unix:abstract=/xyntetik-runner-tray-test/py-{os.getpid()}",
                             "--print-address=1"], stdout=subprocess.PIPE, text=True)
     holder = None
     try:

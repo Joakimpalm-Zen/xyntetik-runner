@@ -384,7 +384,8 @@ static bool on_path(const char *prog) {
         if (l && l < sizeof dir - strlen(prog) - 2) {
             memcpy(dir, p, l);
             snprintf(dir + l, sizeof dir - l, "/%s", prog);
-            if (access(dir, X_OK) == 0) return true;
+            plat_stat_t st;   // an executable regular file (no access() door in compat.h)
+            if (plat_stat(dir, &st) == 0 && S_ISREG(st.st_mode) && (st.st_mode & 0111)) return true;
         }
         if (!c) break;
         p = c + 1;
@@ -993,7 +994,7 @@ static bool autostart_path(char *out, size_t cap) {
 bool tray_platform_autostart_get(void) {
     char p[1100];
     if (!autostart_path(p, sizeof p)) return false;
-    FILE *f = fopen(p, "r");
+    FILE *f = plat_fopen(p, "r");
     if (!f) return false;
     char line[1300];
     bool hidden = false;
@@ -1032,7 +1033,7 @@ static bool mkdirs_for(const char *file) {
     for (char *p = d + 1; *p; p++) {
         if (*p != '/') continue;
         *p = 0;
-        if (mkdir(d, 0700) != 0 && errno != EEXIST) return false;
+        if (plat_mkdir(d, 0700) != 0 && errno != EEXIST) return false;
         *p = '/';
     }
     return true;
@@ -1041,25 +1042,26 @@ static bool mkdirs_for(const char *file) {
 bool tray_platform_autostart_set(bool on) {
     char p[1100];
     if (!autostart_path(p, sizeof p)) return false;
-    if (!on) return unlink(p) == 0 || errno == ENOENT;
-    // the binary's real path: plat_executable_path() says /proc/self/exe on
+    if (!on) return plat_remove(p) == 0 || errno == ENOENT;
+    // the binary's real path, as the core's self_exe reads it: plat_executable_path() says /proc/self/exe on
     // Linux, which names whatever process reads it, never this binary
-    char *self = realpath("/proc/self/exe", NULL);
-    if (!self || self[0] != '/') { free(self); return false; }
+    char *self = calloc(1, 4096);
+    ssize_t sl = self ? readlink("/proc/self/exe", self, 4095) : -1;
+    if (sl <= 0 || self[0] != '/') { free(self); return false; }
     char quoted[2400];
     bool q = exec_quote(self, quoted, sizeof quoted);
     free(self);
     if (!q || !mkdirs_for(p)) return false;
     char tmp[1200];
     snprintf(tmp, sizeof tmp, "%s.tmp-%ld", p, (long)getpid());
-    FILE *f = fopen(tmp, "w");
+    FILE *f = plat_fopen(tmp, "w");
     if (!f) return false;
     int w = fprintf(f, "[Desktop Entry]\nType=Application\nName=Runner\n"
                        "Comment=xyntetik-runner's tray: the local runners, a model to start\n"
                        "Exec=%s --tray\nTerminal=false\nX-GNOME-Autostart-enabled=true\n", quoted);
     bool ok = w > 0 && fflush(f) == 0;
     ok = fclose(f) == 0 && ok;
-    if (!ok || rename(tmp, p) != 0) { unlink(tmp); return false; }
+    if (!ok || plat_rename(tmp, p) != 0) { plat_remove(tmp); return false; }
     return true;
 }
 
@@ -1134,7 +1136,7 @@ static bool png_write(const char *path, const unsigned char *bgra, int px) {
     be32(ihdr, (unsigned long)px);
     be32(ihdr + 4, (unsigned long)px);
     ihdr[8] = 8; ihdr[9] = 6; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
-    FILE *f = fopen(path, "wb");
+    FILE *f = plat_fopen(path, "wb");
     bool ok = f && fwrite("\x89PNG\r\n\x1a\n", 1, 8, f) == 8 && png_chunk(f, "IHDR", ihdr, 13) &&
               png_chunk(f, "IDAT", z, o) && png_chunk(f, "IEND", NULL, 0);
     if (f) ok = fclose(f) == 0 && ok;

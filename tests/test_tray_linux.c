@@ -39,10 +39,7 @@
 // (TRAY_TEST_REAL_HEADER): our own struct declarations are then asserted
 // against the real ones' sizes and field offsets.
 // Exit 77 (skip) without dbus-daemon or libdbus.
-#if !defined(__linux__)
-#include <stdio.h>
-int main(void) { printf("SKIP: Linux only\n"); return 77; }
-#else
+#ifdef __linux__
 #include "tray.h"
 #include "tray_dbus.h"
 #include "compat.h"
@@ -175,8 +172,9 @@ static pid_t bus_start(char *addr, size_t cap) {
     if (pipe(fd)) return -1;
     char pfd[48], where[700];
     snprintf(pfd, sizeof pfd, "--print-address=%d", fd[1]);
-    // the socket in the test's own directory, not the system's temporary one
-    snprintf(where, sizeof where, "--address=unix:dir=%s", g_tmp);
+    // an abstract socket: no path to outgrow a sockaddr_un (a deep temporary directory did) and no file anywhere
+    static int nbus;
+    snprintf(where, sizeof where, "--address=unix:abstract=/xyntetik-runner-tray-test/%ld-%d", (long)getpid(), nbus++);
     char *argv[] = { "dbus-daemon", "--session", "--nofork", where, pfd, NULL };
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
@@ -992,4 +990,7 @@ int main(int argc, char **argv) {
     printf(fails ? "FAIL %d\n" : "PASS\n", fails);
     return fails ? 1 : 0;
 }
+#else
+#include <stdio.h>
+int main(void) { printf("SKIP: Linux only\n"); return 77; }
 #endif
