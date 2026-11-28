@@ -526,6 +526,15 @@ def test_the_cuda_fit_names_the_weights_left_on_the_host(runner_bin, tiny, tmp_p
     assert load.returncode == 0, load.stderr[-2000:]
     assert re.search(rf"inkling2_loop: the weights on CUDA .*; {host_n} tensors \(IQ4_NL\) stay on the host",
                      load.stderr), load.stderr[-2000:]
+    # a mixed file: host-only dense projections (F16) beside host-only stacks (IQ4_NL). The device line names both
+    # types, and the verdict counts the expert stacks and names their type alone
+    mixed = _write(tmp_path / "mixed.gguf", _kvs(), _tensors(dense="f16", iq4nl_experts=True))
+    mo = fit(mixed)
+    mm = re.search(r"device\s+CUDA route: \d+ of \d+ product weight bytes on the device; (\d+) tensors "
+                   r"\(types ([A-Z0-9_, ]+)\) run on the host", mo)
+    assert mm and mm.group(2) == "F16, IQ4_NL" and int(mm.group(1)) > host_n, mo
+    assert re.search(rf"host weights\s+[0-9.]+ GiB \(\d+ bytes: {mm.group(1)} tensors", mo), mo
+    assert re.search(rf"dev verdict\s+FITS; {host_n} expert stack tensors run on the host \(IQ4_NL\)$", mo, re.M), mo
     # the live control: every product view of the tiny file is on the device, and its lines say so as before
     ctl = fit(tiny)
     assert re.search(r"device\s+CUDA route: every weight on the device", ctl), ctl
