@@ -4411,11 +4411,18 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     // reason from gpu_init(), which scrolls past above the load line and is
     // easy to miss. The banner is the last thing on screen when a server comes
     // up, so the CPU-expert placement belongs here too.
-    if (SV.n_slots > 0 && SV.slots[0].m && SV.slots[0].m->n_expert > 0 &&
-        !SV.slots[0].m->gpu)
+    // R4.48.41: a backend that counts its stacks says where they run (Inkling's engine leaves m->gpu NULL on its
+    // CUDA route); every other model keeps the generic rule
+    const model_t *m0 = SV.n_slots > 0 ? SV.slots[0].m : NULL;
+    int n_stacks = 0;
+    const int n_host = m0 && m0->n_expert > 0 ? model_experts_on_host(m0, &n_stacks) : -1;
+    if (m0 && m0->n_expert > 0 && n_host < 0 && !m0->gpu)
         fprintf(stderr,
                 "  note: this is a sparse-MoE model and its experts are running"
                 " on the CPU — expect a fraction of dense throughput\n");
+    else if (n_host > 0)
+        fprintf(stderr, "  note: this is a sparse-MoE model and %d of its %d expert stacks run on the CPU; expect a "
+                        "fraction of the device's throughput\n", n_host, n_stacks);
 
     for (;;) {
         // covers the race where the signal landed after the socket-creation

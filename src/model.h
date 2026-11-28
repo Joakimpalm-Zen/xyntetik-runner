@@ -1655,6 +1655,9 @@ float *model_forward(model_t *m, int token, int pos);
 //
 // True for qwen35 / granitehybrid / nemotron_h once their state is allocated.
 bool model_has_recurrent(const model_t *m);
+// R4.48.41: how many of a model's expert stacks run on the host, and in *total how many it has, as its backend counts
+// them. -1 when the backend does not count them; the caller's generic rule (m->gpu) then applies.
+int model_experts_on_host(const model_t *m, int *total);
 // Zero the live recurrent state and invalidate any snapshot: a fresh sequence.
 void model_recurrent_reset(model_t *m);
 // Copy the live recurrent state into the snapshot, tagged with `pos`. No-op

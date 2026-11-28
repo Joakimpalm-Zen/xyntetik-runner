@@ -52,6 +52,8 @@ uint64_t model_inkling2_dev_slot_alloc_bytes(const ink2_shape *s, int n_ctx, int
                                              int hist_rows, bool step);
 // R4.48.9: whether this instance's forward runs on CUDA (false: the CPU engine).
 bool   model_inkling2_cuda(const model_t *m);
+// R4.48.41: the expert stacks on the host on the CUDA route, and in *total the file's stacks; -1 when not on CUDA
+int    model_inkling2_cuda_host_stacks(const model_t *m, int *total);
 // R4.48.32: Inkling 2's own route facts for route_collect / model_route_json /
 // receipts: whether CPU 8-bit activations are active (RUNNER_INKLING2_ACT8 on
 // the fast CPU route), whether the last forward succeeded (for route_ran when
