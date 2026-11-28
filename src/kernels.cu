@@ -5596,6 +5596,40 @@ extern "C" __global__ void k_mvseg_iq4_nl(MVSEG_PARAMS) {
         if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
     }
 }
+extern "C" __global__ void k_mvseg_q5_0(MVSEG_PARAMS) {
+    MVSEG_HEAD;
+    LANE_DENSE_HEAD(32)
+    int nb = a.n_in / 32;
+    const uchar *rw = wb + a.w_off + (ulong64)(live ? row : 0) * nb * 22;
+    float s = 0;
+    for (int b0 = 0; b0 < nb; b0 += 32) {
+        int nblk = nb - b0 < 32 ? nb - b0 : 32;
+        LANE_STAGE_XN(xsm, x, b0, nblk, 32)
+        __syncthreads();
+        if (live && (int)lane < nblk) {
+            int b = b0 + (int)lane;
+            const float *xs_ = xsm + lane * (32 + 1);
+            const uchar *blk = rw + (ulong64)b * 22;
+            float d = f16f(blk);
+            uint qh = (uint)blk[2] | ((uint)blk[3] << 8) |
+                      ((uint)blk[4] << 16) | ((uint)blk[5] << 24);
+            const uchar *q = blk + 6;
+            const float *xp = xs_;
+            float t = 0;
+            for (int j = 0; j < 16; j++) {
+                int x0 = (int)((q[j] & 0xF) | (((qh >> j) & 1u) << 4)) - 16;
+                int x1 = (int)((q[j] >> 4)  | (((qh >> (j + 16)) & 1u) << 4)) - 16;
+                t += x0 * xp[j] + x1 * xp[j + 16];
+            }
+            s += d * t;
+        }
+        __syncthreads();
+    }
+    if (live) {
+        s = warp_sum(s);
+        if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
+    }
+}
 extern "C" __global__ void k_mvseg_nvfp4(MVSEG_PARAMS, const float *esc) {
     MVSEG_HEAD;
     const float scale = esc ? esc[ex[j0 + (int)blockIdx.y]] : 1.0f;
