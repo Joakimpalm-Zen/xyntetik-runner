@@ -498,6 +498,7 @@ typedef struct {
     // R4.48.37: the last placement tried, its product views' raw bytes on the device and on the host (dev_walk)
     size_t dev_raw, host_b; int host_n, host_exp; uint64_t host_types, host_exp_types;
     int w_host_n;   // the whole placement's own count of them
+    size_t step_b;   // R4.48.45: the resident step's bytes in 'small' (0 when the step cannot run: step_can_run)
 } ink2_dev_terms;
 static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batch, int n_ctx, int n_slots,
                         const char *dev, bool step_req, ink2_dev_terms *dry) {
@@ -571,6 +572,7 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
         sh->fit_free = fr;
         if (dry) {   // field by field: a later placement's terms must not wipe the whole placement's
             dry->placed = 'C'; dry->weights = c.need; dry->small = small; dry->slots = inst; dry->kept = RES;
+            dry->step_b = step_b;
             dry->reserved = gpu_ink2_reserved_bytes(h); dry->free_b = fr; dry->total_b = tot;
             dry->dev_raw = c.dev_raw; dry->host_b = c.host_b; dry->host_n = c.host_n; dry->host_exp = c.host_exp;
             dry->host_types = c.host_types; dry->host_exp_types = c.host_exp_types;
@@ -1566,8 +1568,8 @@ int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, con
                "products run on the CPU)\n", t.host_b / 1073741824.0, t.host_b, t.host_n, tl);
     printf("  dev buffers   %.2f GiB (%zu bytes: the products', experts', attention's and block's reservations)\n",
            t.reserved / 1073741824.0, t.reserved);
-    printf("  dev small     %.2f GiB (%zu bytes: the attention's small tensors and the resident step's)\n",
-           t.small / 1073741824.0, t.small);
+    printf("  dev small     %.2f GiB (%zu bytes: the attention's small tensors%s)\n", t.small / 1073741824.0, t.small,
+           t.step_b > 0 ? " and the resident step's" : "");
     printf("  dev slots     %.2f GiB (%zu bytes: %d %s K/V rings in %s and histories)\n", t.slots / 1073741824.0,
            t.slots, slots, inkling2_slots_possessive(slots), kv_kind_name(kind));
     printf("  dev kept      %.2f GiB (%zu bytes)\n", t.kept / 1073741824.0, t.kept);
