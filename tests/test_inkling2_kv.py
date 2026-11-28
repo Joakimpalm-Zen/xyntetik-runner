@@ -541,6 +541,49 @@ def test_the_cuda_fit_names_the_weights_left_on_the_host(runner_bin, tiny, tmp_p
     assert "host weights" not in ctl and "run on the host" not in ctl, ctl
 
 
+def _serve_banner(runner_bin, model, tmp_path, env, *extra):
+    """The server's start-up banner (its log once it answers), for the expert-placement note."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "conformance"))
+    from harness import RunnerServer
+    log = tmp_path / ("serve-%s.log" % Path(model).stem)
+    with RunnerServer(runner_bin, model, ctx=CTX, log_path=str(log), env=env, extra_args=["-t", "2", *extra]):
+        pass
+    return log.read_text(errors="replace")
+
+
+GENERIC_NOTE = "this is a sparse-MoE model and its experts are running on the CPU"
+
+
+def test_the_moe_note_on_the_cpu_route_is_unchanged(runner_bin, tiny, tmp_path):
+    """R4.48.41: on the CPU route an Inkling file's experts do run on the CPU, and the banner's generic note says so,
+    as before."""
+    import os
+    env = dict(os.environ)
+    env.pop("RUNNER_INKLING2_CUDA", None)
+    assert GENERIC_NOTE in _serve_banner(runner_bin, tiny, tmp_path, env, "--gpu", "off")
+
+
+def test_the_moe_note_on_cuda_counts_the_stacks_on_the_host(runner_bin, tiny, tmp_path):
+    """R4.48.41, on a CUDA host: the banner's note asked the generic model's m->gpu, which Inkling's engine leaves NULL,
+    so it said the experts run on the CPU while every stack was on the device. Now, on the Inkling CUDA route, it asks
+    where the stacks really run:
+    - no note when every stack is on the device (the tiny file's NVFP4 stacks);
+    - the note with a count when stacks stay on the host (IQ4_NL stacks, a type the CUDA products do not run)."""
+    import os
+    env = dict(os.environ, RUNNER_INKLING2_CUDA="1")
+    env.pop("RUNNER_INKLING2_ROUTE", None)
+    on = _serve_banner(runner_bin, tiny, tmp_path, env, "--gpu", "auto")
+    if "inkling2_loop: the weights on CUDA" not in on:
+        pytest.skip("no CUDA device here: the Inkling CUDA route is a CUDA host's")
+    assert GENERIC_NOTE not in on and "expert stacks run on the CPU" not in on, on[-3000:]
+    ts = _tensors(iq4nl_experts=True)
+    n_host = sum(1 for _, _, ty, _ in ts if ty == T_IQ4_NL)   # the fixture's IQ4_NL stacks: every one of them
+    hostfile = _write(tmp_path / "iq4nl-note.gguf", _kvs(), ts)
+    off = _serve_banner(runner_bin, hostfile, tmp_path, env, "--gpu", "auto")
+    assert f"this is a sparse-MoE model and {n_host} of its {n_host} expert stacks run on the CPU" in off, off[-3000:]
+    assert GENERIC_NOTE not in off, off[-3000:]
+
+
 def test_q8_engages_on_the_device(runner_bin, tiny):
     """On a CUDA host: --kv q8 under RUNNER_INKLING2_CUDA=1 stores q8 rings on the device, with no test switch: the load
     line says K/V q8, no note keeps f32, and the weights are on CUDA (the bind banner). Gate (c) in
