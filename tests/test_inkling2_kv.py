@@ -18,7 +18,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from inkling2_tiny import (FULL, H, HD, K, LOOP_END, LOOP_START, N_BLOCK, NKV, PASSES, T_IQ4_NL, WIN,  # noqa: E402
-                          _kvs, _tensors, _write)
+                          T_Q4_0, _kvs, _tensors, _write)
 
 # 48 byte tokens: six windows of 8, so the sliding buffers slide
 PROMPT = "the q8 cache slides past the window, chunk by chunk"
@@ -491,16 +491,16 @@ def _slots_possessive(n):
 
 def test_the_cuda_fit_names_the_weights_left_on_the_host(runner_bin, tiny, tmp_path):
     """R4.48.37, on a CUDA host: a view goes to the device only when its type has a CUDA product kernel (dev_wanted), so
-    a file whose expert stacks are IQ4_NL keeps them on the host and runs their products on the CPU. --info fit used to
+    a file whose expert stacks are Q4_0 keeps them on the host and runs their products on the CPU. --info fit used to
     call that placement "every weight on the device". Now its device line, a host-weights line, its verdict and the
     load's banner say how many tensors of which types stay on the host, and how many bytes. Live control: the tiny file
     (NVFP4 stacks, every product view on the device) keeps "every weight on the device", with no host line."""
     import os
-    ts = _tensors(iq4nl_experts=True)
-    host = [d for _, _, ty, d in ts if ty == T_IQ4_NL]
-    host_bytes, host_n = sum(len(d) for d in host), len(host)   # the fixture's own IQ4_NL stacks: 2 a layer
+    ts = _tensors(q40_experts=True)
+    host = [d for _, _, ty, d in ts if ty == T_Q4_0]
+    host_bytes, host_n = sum(len(d) for d in host), len(host)   # the fixture's own Q4_0 stacks: 2 a layer
     assert host_n == 2 * N_BLOCK
-    hostfile = _write(tmp_path / "iq4nl.gguf", _kvs(), ts)
+    hostfile = _write(tmp_path / "q40.gguf", _kvs(), ts)
     env = dict(os.environ, RUNNER_INKLING2_CUDA="1")
     env.pop("RUNNER_INKLING2_ROUTE", None)
 
@@ -515,26 +515,26 @@ def test_the_cuda_fit_names_the_weights_left_on_the_host(runner_bin, tiny, tmp_p
     m = re.search(r"device\s+CUDA route: (\d+) of (\d+) product weight bytes on the device; (\d+) tensors "
                   r"\(types ([A-Z0-9_, ]+)\) run on the host", out)
     assert m, out
-    assert int(m.group(3)) == host_n and m.group(4) == "IQ4_NL", out
+    assert int(m.group(3)) == host_n and m.group(4) == "Q4_0", out
     assert int(m.group(2)) - int(m.group(1)) == host_bytes and int(m.group(1)) > 0, out
     assert re.search(rf"host weights\s+[0-9.]+ GiB \({host_bytes} bytes: {host_n} tensors", out), out
-    assert re.search(rf"dev verdict\s+FITS; {host_n} expert stack tensors run on the host \(IQ4_NL\)", out), out
+    assert re.search(rf"dev verdict\s+FITS; {host_n} expert stack tensors run on the host \(Q4_0\)", out), out
     assert "every weight on the device" not in out, out
     load = subprocess.run([str(runner_bin), "-m", str(hostfile), "--gpu", "auto", "-c", str(CTX), "-b", "8", "--kv", "q8",
                            "-t", "2", "-p", "hi", "-n", "1", "--temp", "0"], capture_output=True, encoding="utf-8",
                           errors="replace", env=env, timeout=600)
     assert load.returncode == 0, load.stderr[-2000:]
-    assert re.search(rf"inkling2_loop: the weights on CUDA .*; {host_n} tensors \(IQ4_NL\) stay on the host",
+    assert re.search(rf"inkling2_loop: the weights on CUDA .*; {host_n} tensors \(Q4_0\) stay on the host",
                      load.stderr), load.stderr[-2000:]
-    # a mixed file: host-only dense projections (F16) beside host-only stacks (IQ4_NL). The device line names both
+    # a mixed file: host-only dense projections (F16) beside host-only stacks (Q4_0). The device line names both
     # types, and the verdict counts the expert stacks and names their type alone
-    mixed = _write(tmp_path / "mixed.gguf", _kvs(), _tensors(dense="f16", iq4nl_experts=True))
+    mixed = _write(tmp_path / "mixed.gguf", _kvs(), _tensors(dense="f16", q40_experts=True))
     mo = fit(mixed)
     mm = re.search(r"device\s+CUDA route: \d+ of \d+ product weight bytes on the device; (\d+) tensors "
                    r"\(types ([A-Z0-9_, ]+)\) run on the host", mo)
-    assert mm and mm.group(2) == "F16, IQ4_NL" and int(mm.group(1)) > host_n, mo
+    assert mm and mm.group(2) == "F16, Q4_0" and int(mm.group(1)) > host_n, mo
     assert re.search(rf"host weights\s+[0-9.]+ GiB \(\d+ bytes: {mm.group(1)} tensors", mo), mo
-    assert re.search(rf"dev verdict\s+FITS; {host_n} expert stack tensors run on the host \(IQ4_NL\)$", mo, re.M), mo
+    assert re.search(rf"dev verdict\s+FITS; {host_n} expert stack tensors run on the host \(Q4_0\)$", mo, re.M), mo
     # the live control: every product view of the tiny file is on the device, and its lines say so as before
     ctl = fit(tiny)
     assert re.search(r"device\s+CUDA route: every weight on the device", ctl), ctl
@@ -568,7 +568,7 @@ def test_the_moe_note_on_cuda_counts_the_stacks_on_the_host(runner_bin, tiny, tm
     so it said the experts run on the CPU while every stack was on the device. Now, on the Inkling CUDA route, it asks
     where the stacks really run:
     - no note when every stack is on the device (the tiny file's NVFP4 stacks);
-    - the note with a count when stacks stay on the host (IQ4_NL stacks, a type the CUDA products do not run)."""
+    - the note with a count when stacks stay on the host (Q4_0 stacks, a type the CUDA products do not run)."""
     import os
     env = dict(os.environ, RUNNER_INKLING2_CUDA="1")
     env.pop("RUNNER_INKLING2_ROUTE", None)
@@ -576,9 +576,9 @@ def test_the_moe_note_on_cuda_counts_the_stacks_on_the_host(runner_bin, tiny, tm
     if "inkling2_loop: the weights on CUDA" not in on:
         pytest.skip("no CUDA device here: the Inkling CUDA route is a CUDA host's")
     assert GENERIC_NOTE not in on and "expert stacks run on the CPU" not in on, on[-3000:]
-    ts = _tensors(iq4nl_experts=True)
-    n_host = sum(1 for _, _, ty, _ in ts if ty == T_IQ4_NL)   # the fixture's IQ4_NL stacks: every one of them
-    hostfile = _write(tmp_path / "iq4nl-note.gguf", _kvs(), ts)
+    ts = _tensors(q40_experts=True)
+    n_host = sum(1 for _, _, ty, _ in ts if ty == T_Q4_0)   # the fixture's Q4_0 stacks: every one of them
+    hostfile = _write(tmp_path / "q40-note.gguf", _kvs(), ts)
     off = _serve_banner(runner_bin, hostfile, tmp_path, env, "--gpu", "auto")
     assert f"this is a sparse-MoE model and {n_host} of its {n_host} expert stacks run on the CPU" in off, off[-3000:]
     assert GENERIC_NOTE not in off, off[-3000:]
