@@ -97,6 +97,15 @@ bool tdb_session_bus_named(void) {
     return stat(p, &st) == 0 && S_ISSOCK(st.st_mode);
 }
 
+bool tdb_session_bus_export(void) {
+    if (!tdb_session_bus_named()) return false;
+    const char *a = getenv("DBUS_SESSION_BUS_ADDRESS");
+    if (a && *a) return true;
+    char addr[1100];
+    if (snprintf(addr, sizeof addr, "unix:path=%s/bus", getenv("XDG_RUNTIME_DIR")) >= (int)sizeof addr) return false;
+    return setenv("DBUS_SESSION_BUS_ADDRESS", addr, 1) == 0;
+}
+
 bool tdb_append_str(const tdb_api *d, tdb_iter *it, int type, const char *s) {
     const char *v = s ? s : "";
     return d->iter_append_basic(it, type, &v);

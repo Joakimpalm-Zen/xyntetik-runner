@@ -183,8 +183,32 @@ this output; the human checklist only has to confirm the pixels.
 
 `XYNTETIK_TRAY_ICON_DUMP=<dir> runner --tray` is the icon sibling: it renders
 all three states to `<dir>/tray-{idle,loaded,running}` and exits — PNG on
-macOS, 32-bit BMP with an alpha channel on Windows. Eighteen pixels of arcs
+macOS and Linux, 32-bit BMP with an alpha channel on Windows. Eighteen pixels of arcs
 cannot be reviewed by reading the drawing code, so a design change is checked
 by looking at these. Both backends paint from one geometry scaled to the
 requested size, so the review render and the live icon are the same drawing
 rather than two that can drift.
+
+On Linux, `RUNNER_TRAY_TEST_HOST_GRACE_MS` (TEST-ONLY) shortens the 30 s
+window the tray host may be gone before the tray ends, so
+`tests/test_tray_linux.c` can take a host away and see the tray end.
+
+## Linux: when the tray host or the bus goes away
+
+The Linux tray is an item a tray host shows (GNOME's AppIndicator extension,
+KDE's system tray), on the session bus.
+- **The host goes away and comes back within 30 s** (a shell restart, an
+  extension reload): the item registers with it again, and nothing ends.
+- **The host stays gone for 30 s:** no icon can show, so the tray ends the way
+  its Quit does, with one line on stderr, `tray: tray host gone for 30 s;
+  ending as Quit does`, and exit 1. Quit stops the server this tray started
+  and only that one. A `--serve` someone else started, which the tray was only
+  listing, keeps running.
+- **The session bus goes away** (a logout): the tray ends the same way, at
+  once.
+
+Menu ids are the rows' own: a row keeps its id while it is in the menu, and no
+id is ever given to another row. A click the host sends against a menu that
+has changed since it drew it (a server stopped, the rows below it moved up)
+acts on the row it meant, or on nothing, never on the row that moved into its
+place.

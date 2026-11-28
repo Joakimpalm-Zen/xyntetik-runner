@@ -290,18 +290,15 @@ static bool read_pixmaps(pixmaps *out) {
 }
 static void free_pixmaps(pixmaps *p) { for (int i = 0; i < p->n; i++) free(p->px[i]); p->n = 0; }
 
-// the spec's conversion, written out here: premultiplied BGRA to straight
-// ARGB32, bytes A, R, G, B
+// the spec's pixmap, written out here: the core's glyph coverage as alpha, and the icon's one colour 0xF0F0F0
+// straight wherever there is coverage; bytes A, R, G, B
 static void expect_argb(tray_icon_state st, int px, unsigned char *out) {
     unsigned char *bgra = malloc((size_t)px * px * 4);
     tray_glyph_render(st, px, 0xF0F0F0u, bgra);
     for (int i = 0; i < px * px; i++) {
-        unsigned a = bgra[4 * i + 3], r = bgra[4 * i + 2], g = bgra[4 * i + 1], b = bgra[4 * i];
-        if (a) { r = (r * 255 + a / 2) / a; g = (g * 255 + a / 2) / a; b = (b * 255 + a / 2) / a; }
+        unsigned a = bgra[4 * i + 3];
         out[4 * i] = (unsigned char)a;
-        out[4 * i + 1] = (unsigned char)(r > 255 ? 255 : r);
-        out[4 * i + 2] = (unsigned char)(g > 255 ? 255 : g);
-        out[4 * i + 3] = (unsigned char)(b > 255 ? 255 : b);
+        out[4 * i + 1] = out[4 * i + 2] = out[4 * i + 3] = a ? 0xF0 : 0;
     }
     free(bgra);
 }
@@ -403,8 +400,10 @@ static node *get_layout(uint32_t *rev) {
     return root;
 }
 
-// the spec's table, applied to the core's own items: ids 1 + index; a
-// SUB_BEGIN .. SUB_END run nests under the row before SUB_BEGIN
+// the spec's table, applied to the core's own items: a SUB_BEGIN .. SUB_END run nests under the row before
+// SUB_BEGIN. The tree is matched by shape and rows, in order; the ids are the tray's own (stable, never reused), so
+// the test only requires them distinct and nonzero.
+static int g_seen_ids[512], g_nseen;
 static bool layout_matches(const node *root, const tray_item *it, int n, char *why, size_t cap) {
     int parent[256], stack[16], depth = 0, last = 0;
     for (int i = 0; i < n; i++) {
@@ -413,20 +412,28 @@ static bool layout_matches(const node *root, const tray_item *it, int n, char *w
         else if (it[i].kind == TRAY_K_SUB_END) { if (depth) depth--; }
         else last = i + 1;
     }
-    // walk: each node's children, in order, are the rows whose parent is it
-    const node *q[256];
-    int qn = 0;
-    q[qn++] = root;
+    // the layout node standing for expected row i (0: the root)
+    const node *at[257];
+    at[0] = root;
+    g_nseen = 0;
+    // walk: each expected row's children, in order, are the rows whose parent is it
+    int q[257], qn = 0;
+    q[qn++] = 0;
     for (int h = 0; h < qn; h++) {
-        const node *nd = q[h];
+        const int pr = q[h];
+        const node *nd = at[pr];
         int k = 0;
         for (int i = 0; i < n; i++) {
-            if (parent[i] != nd->id || it[i].kind == TRAY_K_SUB_BEGIN || it[i].kind == TRAY_K_SUB_END) continue;
-            if (k >= nd->nkids) { snprintf(why, cap, "node %d lacks child %d", nd->id, i + 1); return false; }
+            if (parent[i] != pr || it[i].kind == TRAY_K_SUB_BEGIN || it[i].kind == TRAY_K_SUB_END) continue;
+            if (k >= nd->nkids) { snprintf(why, cap, "row %d lacks its child, item %d", pr, i + 1); return false; }
             const node *c = nd->kids[k++];
-            if (c->id != i + 1) { snprintf(why, cap, "node %d's child is %d, want %d", nd->id, c->id, i + 1); return false; }
+            for (int z = 0; z < g_nseen; z++)
+                if (g_seen_ids[z] == c->id) { snprintf(why, cap, "id %d is given twice", c->id); return false; }
+            if (c->id <= 0) { snprintf(why, cap, "item %d has id %d", i + 1, c->id); return false; }
+            if (g_nseen < 512) g_seen_ids[g_nseen++] = c->id;
+            at[i + 1] = c;
             if (it[i].kind == TRAY_K_SEP) {
-                if (strcmp(c->type, "separator")) { snprintf(why, cap, "item %d is not a separator", c->id); return false; }
+                if (strcmp(c->type, "separator")) { snprintf(why, cap, "item %d is not a separator", i + 1); return false; }
             } else {
                 char want[1100];
                 size_t o = 0;
@@ -441,9 +448,9 @@ static bool layout_matches(const node *root, const tray_item *it, int n, char *w
                 snprintf(why, cap, "item %d's toggle is %d, want %d", c->id, c->toggle, it[i].checked);
                 return false;
             }
-            if (qn < 256) q[qn++] = c;
+            if (qn < 257) q[qn++] = i + 1;
         }
-        if (k != nd->nkids) { snprintf(why, cap, "node %d has %d children, want %d", nd->id, nd->nkids, k); return false; }
+        if (k != nd->nkids) { snprintf(why, cap, "row %d has %d children, want %d", pr, nd->nkids, k); return false; }
     }
     snprintf(why, cap, "%d items, by the spec's mapping", n);
     return true;
@@ -576,7 +583,17 @@ static bool health_ok(int port) {
 
 static pid_t start_tray(const char *runner, int out_fd) {
     char *argv[] = { (char *)runner, "--tray", NULL };
-    return spawn_env(argv, NULL, out_fd);
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    if (out_fd >= 0) {   // stdout and stderr both: the tray says why it ended on stderr
+        posix_spawn_file_actions_adddup2(&fa, out_fd, 1);
+        posix_spawn_file_actions_adddup2(&fa, out_fd, 2);
+    }
+    pid_t pid = -1;
+    if (posix_spawn(&pid, runner, &fa, NULL, argv, environ) != 0) pid = -1;
+    posix_spawn_file_actions_destroy(&fa);
+    own(pid);
+    return pid;
 }
 
 int main(int argc, char **argv) {

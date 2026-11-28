@@ -44,16 +44,41 @@ static tdb_conn *g_bus;
 static char g_name[96];             // org.kde.StatusNotifierItem-<pid>-1
 static volatile sig_atomic_t g_signalled;
 
-// the menu the host last saw: ids are 1 + the item's index; its parent links
+// the menu the host last saw. Ids are the rows' OWN (review finding 2): a row keeps its id while it is in the
+// menu, and an id is never given to another row, so a click the host sends against a layout the tray has since
+// changed (a server's record gone, the rows below it moved up) finds the row it meant, or none, and never the row
+// that moved into its place. g_id[i] is item i's id, g_parent[i] its parent's id (0: the root).
 static tray_item g_pub[TRAY_MAX_ITEMS];
 static int       g_npub;
-static int       g_parent[TRAY_MAX_ITEMS];   // parent id (0 = root) of item i
+static int       g_id[TRAY_MAX_ITEMS];
+static int       g_parent[TRAY_MAX_ITEMS];
+#define TRAY_MAX_KEYS 4096
+static struct { char key[600]; int id; } *g_keys;   // every row identity given an id so far
+static int       g_nkeys, g_next_id = 1;
+
+// the tray host's absence (review finding 1, the advisor's refinement): the time the watcher's name lost its
+// owner, 0 while it has one. Past the grace window the tray ends through the core's Quit, which stops the server
+// the tray started (managed) and only that one, so a server someone else started (follow) keeps running.
+static double g_host_gone_at;
+static double g_host_grace_s = 30.0;
+
+// the zenity / kdialog fallback, run without blocking the loop (review finding 3): its pid and its stdout
+static pid_t  g_dlg_pid = -1;
+static int    g_dlg_fd = -1;
+static char   g_dlg_buf[1100];
+static size_t g_dlg_n;
 static uint32_t  g_rev = 1;
 static tray_icon_state g_icon = TRAY_ICON_IDLE;
 
 // the file chooser: a portal request in flight (its handle path) or none
 static char g_pick_handle[256];
 static bool g_picker_none;          // neither the portal nor zenity / kdialog
+
+static double now_mono(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + ts.tv_nsec * 1e-9;
+}
 
 static const int ICON_SIZES[] = { 16, 22, 24, 32, 48 };
 #define N_ICON_SIZES ((int)(sizeof ICON_SIZES / sizeof ICON_SIZES[0]))
@@ -64,20 +89,20 @@ static const int ICON_SIZES[] = { 16, 22, 24, 32, 48 };
 // takes ARGB32 in network byte order, not premultiplied: each pixel's bytes
 // are A, R, G, B. Light (0xF0F0F0): GNOME's top bar is dark, and a pixmap
 // cannot follow the theme.
+#define ICON_RGB 0xF0F0F0u
 static bool icon_argb(tray_icon_state st, int px, unsigned char *out) {
     unsigned char *bgra = malloc((size_t)px * px * 4);
     if (!bgra) return false;
-    bool ok = tray_glyph_render(st, px, 0xF0F0F0u, bgra);
+    bool ok = tray_glyph_render(st, px, ICON_RGB, bgra);
+    // The glyph is one colour, so a pixel's straight colour IS that colour wherever it has coverage: only alpha
+    // varies. Un-premultiplying the core's rounded BGRA instead lost the colour on low-alpha edge pixels
+    // (bar 6's anchor: every coloured pixel 0xF0 +-1).
     for (int i = 0; ok && i < px * px; i++) {
-        unsigned b = bgra[4 * i], g = bgra[4 * i + 1], r = bgra[4 * i + 2], a = bgra[4 * i + 3];
-        if (a) { r = (r * 255 + a / 2) / a; g = (g * 255 + a / 2) / a; b = (b * 255 + a / 2) / a; }
-        if (r > 255) r = 255;
-        if (g > 255) g = 255;
-        if (b > 255) b = 255;
+        unsigned a = bgra[4 * i + 3];
         out[4 * i] = (unsigned char)a;
-        out[4 * i + 1] = (unsigned char)r;
-        out[4 * i + 2] = (unsigned char)g;
-        out[4 * i + 3] = (unsigned char)b;
+        out[4 * i + 1] = a ? (unsigned char)(ICON_RGB >> 16) : 0;
+        out[4 * i + 2] = a ? (unsigned char)(ICON_RGB >> 8) : 0;
+        out[4 * i + 3] = a ? (unsigned char)ICON_RGB : 0;
     }
     free(bgra);
     return ok;
@@ -204,16 +229,44 @@ static void menu_label(char *out, size_t cap, const char *in) {
 
 static bool row_shown(const tray_item *t) { return t->kind != TRAY_K_SUB_BEGIN && t->kind != TRAY_K_SUB_END; }
 
-// parents by the core's nesting: the items between SUB_BEGIN and SUB_END are
-// the children of the row before SUB_BEGIN
-static void link_parents(const tray_item *it, int n, int *parent) {
+// a row's identity: what it is and does (kind, action, arg, label), and which occurrence of that it is in this
+// build (two separators are the same row otherwise). Its id: the one that identity was given before, or a new one.
+static int id_for(const tray_item *t, int occ) {
+    char key[600];
+    snprintf(key, sizeof key, "%d|%d|%ld|%d|%.500s", t->kind, t->action, t->arg, occ, t->label);
+    for (int k = 0; k < g_nkeys; k++) if (!strcmp(g_keys[k].key, key)) return g_keys[k].id;
+    if (!g_keys) g_keys = calloc(TRAY_MAX_KEYS, sizeof *g_keys);
+    int id = g_next_id++;
+    if (g_keys && g_nkeys < TRAY_MAX_KEYS) {   // a full table still never reuses an id: the row just gets a new one
+        snprintf(g_keys[g_nkeys].key, sizeof g_keys[g_nkeys].key, "%s", key);
+        g_keys[g_nkeys++].id = id;
+    }
+    return id;
+}
+
+// ids by identity, then parents by the core's nesting: the items between SUB_BEGIN and SUB_END are the children
+// of the row before SUB_BEGIN
+static void link_ids(const tray_item *it, int n, int *ids, int *parent) {
+    for (int i = 0; i < n; i++) {
+        int occ = 0;
+        for (int j = 0; j < i; j++)
+            occ += it[j].kind == it[i].kind && it[j].action == it[i].action && it[j].arg == it[i].arg &&
+                   !strcmp(it[j].label, it[i].label);
+        ids[i] = id_for(&it[i], occ);
+    }
     int stack[16], depth = 0, last_row = 0;
     for (int i = 0; i < n; i++) {
         parent[i] = depth ? stack[depth - 1] : 0;
         if (it[i].kind == TRAY_K_SUB_BEGIN) { if (depth < 16) stack[depth++] = last_row; }
         else if (it[i].kind == TRAY_K_SUB_END) { if (depth) depth--; }
-        else last_row = i + 1;
+        else last_row = ids[i];
     }
+}
+
+// the published item with this id, -1 for none (an id the layout does not hold, or a SUB marker's)
+static int idx_of(int id) {
+    for (int i = 0; id > 0 && i < g_npub; i++) if (g_id[i] == id && row_shown(&g_pub[i])) return i;
+    return -1;
 }
 
 static bool has_children(int id) {
@@ -232,7 +285,9 @@ static bool item_props(tdb_iter *dict, int id) {
         return dict_entry_begin(dict, &e, "children-display") && var_str(&e, TDB_STRING, "submenu") &&
                D->iter_close_container(dict, &e);
     }
-    const tray_item *t = &g_pub[id - 1];
+    const int ix = idx_of(id);
+    if (ix < 0) return false;
+    const tray_item *t = &g_pub[ix];
     bool ok = true;
     if (t->kind == TRAY_K_SEP) {
         return dict_entry_begin(dict, &e, "type") && var_str(&e, TDB_STRING, "separator") &&
@@ -268,7 +323,7 @@ static bool put_node(tdb_iter *it, int id, int depth) {
             if (g_parent[i] != id || !row_shown(&g_pub[i])) continue;
             tdb_iter v;
             ok = D->iter_open_container(&kids, TDB_VARIANT, "(ia{sv}av)", &v) &&
-                 put_node(&v, i + 1, depth < 0 ? -1 : depth - 1) && D->iter_close_container(&kids, &v);
+                 put_node(&v, g_id[i], depth < 0 ? -1 : depth - 1) && D->iter_close_container(&kids, &v);
         }
     }
     return ok && D->iter_close_container(&st, &kids) && D->iter_close_container(it, &st);
@@ -297,7 +352,7 @@ static bool menu_refresh(void) {
     if (items_equal(fresh, n, g_pub, g_npub)) return false;
     memcpy(g_pub, fresh, sizeof(tray_item) * (size_t)n);
     g_npub = n;
-    link_parents(g_pub, g_npub, g_parent);
+    link_ids(g_pub, g_npub, g_id, g_parent);
     g_rev++;
     tdb_msg *m = D->msg_new_signal(MENU_PATH, MENU_IFACE, "LayoutUpdated");
     if (m) {
@@ -337,13 +392,28 @@ static bool on_path(const char *prog) {
     return false;
 }
 
-static bool portal_present(void) {
+// org.freedesktop.DBus.NameHasOwner as a method call with a timeout of our own (review finding 4):
+// dbus_bus_name_has_owner waits libdbus's default 25 s on a wedged bus, and this runs inside a serve's start
+static bool has_owner(const tdb_api *d, tdb_conn *c, const char *name, int timeout_ms) {
+    tdb_msg *m = d->msg_new_method_call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                                        "NameHasOwner");
+    if (!m) return false;
+    tdb_iter it;
+    d->iter_init_append(m, &it);
     tdb_error e;
-    D->error_init(&e);
-    bool has = D->bus_name_has_owner(g_bus, PORTAL, &e);
-    if (D->error_is_set(&e)) { D->error_free(&e); return false; }
-    return has;
+    d->error_init(&e);
+    tdb_msg *r = tdb_append_str(d, &it, TDB_STRING, name) ? d->conn_send_with_reply_and_block(c, m, timeout_ms, &e)
+                                                          : NULL;
+    d->msg_unref(m);
+    if (d->error_is_set(&e)) d->error_free(&e);
+    tdb_bool has = 0;
+    tdb_iter ri;
+    if (r && d->iter_init(r, &ri) && d->iter_get_arg_type(&ri) == TDB_BOOL) d->iter_get_basic(&ri, &has);
+    if (r) d->msg_unref(r);
+    return has != 0;
 }
+
+static bool portal_present(void) { return has_owner(D, g_bus, PORTAL, 1000); }
 
 // percent-decode a file:// URI into a path; false for any other scheme
 static bool uri_path(const char *uri, char *out, size_t cap) {
@@ -367,8 +437,9 @@ static bool uri_path(const char *uri, char *out, size_t cap) {
     return *p == 0;
 }
 
-// zenity or kdialog, run from an argument vector (never a shell); blocks
-// until the dialog closes
+// zenity or kdialog, run from an argument vector (never a shell). The loop
+// reads its answer as it comes (dialog_poll), so the bus keeps being served
+// while the dialog is open.
 static void pick_with_dialog(void) {
     char *const zen[] = { "zenity", "--file-selection", "--title=Choose a model", "--file-filter=*.gguf", NULL };
     char *const kde[] = { "kdialog", "--getopenfilename", ".", "*.gguf", NULL };
@@ -384,19 +455,34 @@ static void pick_with_dialog(void) {
     int rc = posix_spawnp(&pid, argv[0], &fa, NULL, argv, environ);
     posix_spawn_file_actions_destroy(&fa);
     close(fd[1]);
-    char buf[1100];
-    size_t n = 0;
-    if (rc == 0) {
-        ssize_t r;
-        while (n + 1 < sizeof buf && (r = read(fd[0], buf + n, sizeof buf - 1 - n)) > 0) n += (size_t)r;
-        int st = 0;
-        waitpid(pid, &st, 0);
-        if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) n = 0;
-    }
-    close(fd[0]);
-    buf[n] = 0;
-    while (n && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) buf[--n] = 0;
-    tray_menu_act(TRAY_ACT_PICK_MODEL, 0, n ? buf : NULL);
+    if (rc != 0) { close(fd[0]); tray_menu_act(TRAY_ACT_PICK_MODEL, 0, NULL); return; }
+    fcntl(fd[0], F_SETFL, fcntl(fd[0], F_GETFL) | O_NONBLOCK);
+    g_dlg_pid = pid;
+    g_dlg_fd = fd[0];
+    g_dlg_n = 0;
+}
+
+// the open dialog, from the loop: take what it wrote; when it has exited, act on its answer
+static void dialog_poll(void) {
+    if (g_dlg_pid <= 0) return;
+    ssize_t r;
+    while (g_dlg_n + 1 < sizeof g_dlg_buf &&
+           (r = read(g_dlg_fd, g_dlg_buf + g_dlg_n, sizeof g_dlg_buf - 1 - g_dlg_n)) > 0)
+        g_dlg_n += (size_t)r;
+    int st = 0;
+    if (waitpid(g_dlg_pid, &st, WNOHANG) != g_dlg_pid) return;
+    while (g_dlg_n + 1 < sizeof g_dlg_buf &&
+           (r = read(g_dlg_fd, g_dlg_buf + g_dlg_n, sizeof g_dlg_buf - 1 - g_dlg_n)) > 0)
+        g_dlg_n += (size_t)r;
+    close(g_dlg_fd);
+    g_dlg_fd = -1;
+    g_dlg_pid = -1;
+    size_t n = WIFEXITED(st) && WEXITSTATUS(st) == 0 ? g_dlg_n : 0;
+    g_dlg_buf[n] = 0;
+    while (n && (g_dlg_buf[n - 1] == '\n' || g_dlg_buf[n - 1] == '\r')) g_dlg_buf[--n] = 0;
+    tray_menu_act(TRAY_ACT_PICK_MODEL, 0, n ? g_dlg_buf : NULL);
+    menu_refresh();
+    icon_refresh();
 }
 
 // org.freedesktop.portal.FileChooser.OpenFile: asynchronous; the answer is a
@@ -486,12 +572,13 @@ static void reply_error(tdb_msg *m, const char *name, const char *text) {
 }
 
 static void act_on(int id) {
-    if (id < 1 || id > g_npub) return;               // not in the layout the host saw: nothing acts
-    const tray_item *t = &g_pub[id - 1];
+    const int ix = idx_of(id);
+    if (ix < 0) return;                              // a row no longer in the menu (or never): nothing acts
+    const tray_item *t = &g_pub[ix];
     if (t->kind != TRAY_K_ACTION && t->kind != TRAY_K_CHECK) return;
     if (t->action == TRAY_ACT_PICK_MODEL) {
         if (g_picker_none) return;
-        if (g_pick_handle[0]) return;                // one dialog at a time
+        if (g_pick_handle[0] || g_dlg_pid > 0) return;   // one dialog at a time
         if (portal_present()) pick_with_portal();
         else pick_with_dialog();
         return;
@@ -600,7 +687,10 @@ static void handle_menu(tdb_msg *m, const char *member) {
         int32_t parent = 0, depth = -1;
         arg_i32(&in, &parent);
         arg_i32(&in, &depth);
-        if (parent < 0 || parent > g_npub) { reply_error(m, "org.freedesktop.DBus.Error.InvalidArgs", "no such item"); return; }
+        if (parent < 0 || (parent > 0 && idx_of(parent) < 0)) {
+            reply_error(m, "org.freedesktop.DBus.Error.InvalidArgs", "no such item");
+            return;
+        }
         r = D->msg_new_method_return(m);
         if (!r) return;
         D->iter_init_append(r, &out);
@@ -619,7 +709,7 @@ static void handle_menu(tdb_msg *m, const char *member) {
             for (D->iter_recurse(&in, &ids); ok && D->iter_get_arg_type(&ids) == TDB_INT32; D->iter_next(&ids)) {
                 int32_t id;
                 D->iter_get_basic(&ids, &id);
-                if (id < 0 || id > g_npub || (id > 0 && !row_shown(&g_pub[id - 1]))) continue;
+                if (id < 0 || (id > 0 && idx_of(id) < 0)) continue;
                 tdb_iter st, dict;
                 ok = D->iter_open_container(&arr, TDB_STRUCT, NULL, &st) && tdb_append_i32(D, &st, id) &&
                      D->iter_open_container(&st, TDB_ARRAY, "{sv}", &dict) && item_props(&dict, id) &&
@@ -633,20 +723,21 @@ static void handle_menu(tdb_msg *m, const char *member) {
         int32_t id = -1;
         arg_i32(&in, &id);
         const char *name = arg_str(&in);
-        if (id < 0 || id > g_npub || !name) { reply_error(m, "org.freedesktop.DBus.Error.InvalidArgs", "no such item"); return; }
+        const int ix = idx_of(id);
+        if (ix < 0 || !name) { reply_error(m, "org.freedesktop.DBus.Error.InvalidArgs", "no such item"); return; }
         // one property, out of the item's full set
         r = D->msg_new_method_return(m);
         if (!r) return;
         D->iter_init_append(r, &out);
         bool ok = false;
-        if (!strcmp(name, "label") && id > 0) {
+        if (!strcmp(name, "label")) {
             char label[1100];
-            menu_label(label, sizeof label, g_pub[id - 1].label);
+            menu_label(label, sizeof label, g_pub[ix].label);
             ok = var_str(&out, TDB_STRING, label);
-        } else if (!strcmp(name, "enabled") && id > 0) {
-            ok = var_bool(&out, g_pub[id - 1].kind != TRAY_K_LABEL);
-        } else if (!strcmp(name, "toggle-state") && id > 0) {
-            ok = var_i32(&out, g_pub[id - 1].checked ? 1 : 0);
+        } else if (!strcmp(name, "enabled")) {
+            ok = var_bool(&out, g_pub[ix].kind != TRAY_K_LABEL);
+        } else if (!strcmp(name, "toggle-state")) {
+            ok = var_i32(&out, g_pub[ix].checked ? 1 : 0);
         }
         if (ok) emit(r);
         else { D->msg_unref(r); reply_error(m, "org.freedesktop.DBus.Error.InvalidArgs", "no such property"); }
@@ -744,7 +835,14 @@ static int filter(tdb_conn *c, tdb_msg *m, void *ud) {
                 new_owner = arg_str(&it);
             }
             (void)old_owner;
-            if (name && !strcmp(name, WATCHER) && new_owner && *new_owner) register_item();
+            if (name && !strcmp(name, WATCHER)) {
+                if (new_owner && *new_owner) {
+                    g_host_gone_at = 0;           // a host (back): the item again
+                    register_item();
+                } else if (!g_host_gone_at) {
+                    g_host_gone_at = now_mono();  // gone: the loop ends the tray if it stays gone
+                }
+            }
             return TDB_HANDLED;
         }
         if (!strcmp(iface, "org.freedesktop.portal.Request") && !strcmp(member, "Response") && path &&
@@ -785,19 +883,13 @@ static int filter(tdb_conn *c, tdb_msg *m, void *ud) {
 
 static void on_signal(int sig) { (void)sig; g_signalled = 1; }
 
-static double now_mono(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + ts.tv_nsec * 1e-9;
-}
-
 static int tray_fail(const char *why) {
     fprintf(stderr, "error: --tray: %s\n", why);
     return 1;
 }
 
 int tray_platform_run(void) {
-    if (!tdb_session_bus_named()) return tray_fail("no D-Bus session bus: the tray needs a desktop session");
+    if (!tdb_session_bus_export()) return tray_fail("no D-Bus session bus: the tray needs a desktop session");
     const char *why = NULL;
     D = tdb_load(&why);
     if (!D) return tray_fail(why);
@@ -813,8 +905,7 @@ int tray_platform_run(void) {
     }
     // a lost bus must come back here, to end the way Quit ends, not exit()
     D->conn_set_exit_on_disconnect(g_bus, 0);
-    bool watcher = D->bus_name_has_owner(g_bus, WATCHER, &e);
-    if (D->error_is_set(&e)) { D->error_free(&e); watcher = false; }
+    bool watcher = has_owner(D, g_bus, WATCHER, 2000);
     if (!watcher) {
         D->conn_close(g_bus);
         D->conn_unref(g_bus);
@@ -845,6 +936,9 @@ int tray_platform_run(void) {
     sigaction(SIGHUP, &sa, NULL);
 
     g_picker_none = !portal_present() && !on_path("zenity") && !on_path("kdialog");
+    // TEST-ONLY: RUNNER_TRAY_TEST_HOST_GRACE_MS shortens the window a tray host may be gone (tests/test_tray_linux.c)
+    const char *gv = getenv("RUNNER_TRAY_TEST_HOST_GRACE_MS");
+    if (gv && *gv && atol(gv) > 0) g_host_grace_s = atol(gv) / 1000.0;
     g_icon = tray_icon();
     menu_refresh();
     register_item();
@@ -859,6 +953,15 @@ int tray_platform_run(void) {
             rc = 1;
             break;
         }
+        dialog_poll();
+        if (g_host_gone_at && now_mono() - g_host_gone_at >= g_host_grace_s) {
+            // the host stayed gone: no icon will show, so the tray ends as Quit ends it. The core's Quit stops only
+            // the server this tray started; one someone else started keeps running
+            fprintf(stderr, "tray: tray host gone for %.0f s; ending as Quit does\n", g_host_grace_s);
+            tray_menu_act(TRAY_ACT_QUIT, 0, NULL);
+            rc = 1;
+            break;
+        }
         if (now_mono() >= next) {
             next = now_mono() + 2.0;
             icon_refresh();
@@ -866,6 +969,7 @@ int tray_platform_run(void) {
             D->conn_flush(g_bus);
         }
     }
+    if (g_dlg_pid > 0) { kill(g_dlg_pid, SIGTERM); waitpid(g_dlg_pid, NULL, 0); close(g_dlg_fd); g_dlg_pid = -1; }
     if (D->conn_get_is_connected(g_bus)) {
         D->conn_flush(g_bus);
         D->conn_close(g_bus);
@@ -1062,13 +1166,13 @@ bool tray_linux_session_ok(void) {
     const char *why = NULL;
     const tdb_api *d = tdb_load(&why);
     if (!d) return false;   // no library, no tray: never spawn one that would only fail
+    tdb_session_bus_export();
     tdb_error e;
     d->error_init(&e);
     tdb_conn *c = d->bus_get_private(TDB_BUS_SESSION, &e);
     if (!c) { if (d->error_is_set(&e)) d->error_free(&e); return false; }
     d->conn_set_exit_on_disconnect(c, 0);
-    bool has = d->bus_name_has_owner(c, WATCHER, &e);
-    if (d->error_is_set(&e)) { d->error_free(&e); has = false; }
+    bool has = has_owner(d, c, WATCHER, 1000);
     d->conn_close(c);
     d->conn_unref(c);
     return has;

@@ -968,7 +968,10 @@ loaded only when a tray starts, so a machine without it, without a session
 bus, without a display or without a tray host (stock GNOME without the
 AppIndicator extension, a headless server) loses only the tray: `--tray` ends
 with one line saying which is missing and exit code 1, and every other command
-is unchanged. The icon is drawn light, for GNOME's dark top bar; on Linux it
+is unchanged. A tray whose host goes away waits 30 s for it to come back (a
+shell restart), then ends as Quit does: the server it started stops with it,
+and a server someone else started keeps running
+([details](docs/tray-controller.md#linux-when-the-tray-host-or-the-bus-goes-away)). The icon is drawn light, for GNOME's dark top bar; on Linux it
 cannot follow the theme.
 
 ### When it appears

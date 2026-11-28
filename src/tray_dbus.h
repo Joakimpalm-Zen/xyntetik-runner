@@ -102,6 +102,10 @@ const tdb_api *tdb_load(const char **why);
 // (libdbus would otherwise try an X11 autolaunch, which a headless box has
 // no use for).
 bool tdb_session_bus_named(void);
+// The same, and when only $XDG_RUNTIME_DIR/bus names the bus, set
+// DBUS_SESSION_BUS_ADDRESS=unix:path=<it> first, so the connection does not
+// rest on how this libdbus was built to look the bus up (review note 6).
+bool tdb_session_bus_export(void);
 
 // small helpers over a loaded table
 bool tdb_append_str(const tdb_api *d, tdb_iter *it, int type, const char *s);
