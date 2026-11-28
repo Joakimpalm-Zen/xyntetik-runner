@@ -11,6 +11,7 @@ projections on the host). No pytest here: the Makefile writes the variants with 
 import struct
 
 T_F32, T_F16, T_Q8_0, T_BF16, T_NVFP4 = 0, 1, 8, 30, 40
+T_IQ4_NL = 20
 U32, I32, F32, BOOL, STR, ARR = 4, 5, 6, 7, 8, 9
 
 H, NH, NKV, HD, E, USED, FF, VOCAB, VUSED, K, WIN, DREL, EXT, RANK = 64, 2, 1, 32, 4, 2, 64, 264, 260, 4, 8, 4, 8, 4
@@ -81,6 +82,18 @@ def _nvfp4(n_el, seed, varied=False):
     return bytes(out)
 
 
+def _iq4_nl(n_el, seed):
+    """IQ4_NL blocks of 32 values, 18 bytes each: an f16 d of 0.01 to 0.04, then 16 bytes of random 4-bit codes. A type
+    Runner decodes on the CPU that the CUDA route's Inkling products do not run (R4.48.37)."""
+    import random
+    r = random.Random(seed)
+    out = bytearray()
+    for _ in range(n_el // 32):
+        out += struct.pack("<e", 0.01 + 0.03 * r.random())
+        out += bytes(r.randrange(256) for _ in range(16))
+    return bytes(out)
+
+
 def _bf16(data):
     """float32 bytes to BF16, rounded to nearest even (as a converter writes it)."""
     out = bytearray()
@@ -103,7 +116,8 @@ def _q8_0(data):
     return bytes(out)
 
 
-def _tensors(no_scale_layer=None, scale_len=E, dense_nvfp4=False, dense="f32", factors=None, varied=False):
+def _tensors(no_scale_layer=None, scale_len=E, dense_nvfp4=False, dense="f32", factors=None, varied=False,
+             iq4nl_experts=False):
     """(name, ggml dims, type, bytes) for every tensor of the tiny model. dense: the type of the 2-D projections whose
     rows hold a whole number of 32-value blocks ("f32", "bf16", "q8_0" or "f16"); norms, vectors and short rows stay F32, as
     a converter leaves them. factors: the E per-expert factors every ffn_*_exps.scale holds (0.25 each by default);
@@ -172,6 +186,11 @@ def _tensors(no_scale_layer=None, scale_len=E, dense_nvfp4=False, dense="f32", f
                 f(p + f"loop_{r}_ctrl_gain.weight", [RANK, H], 0.15)
             f(p + "loop_msg_query.weight", [H, 4], 0.2)
         seed[0] += 1
+        if iq4nl_experts:   # R4.48.37: both stacks in a type the CUDA products do not run, with no .scale
+            t.append((p + "ffn_gate_up_exps.weight", [H, 2 * FF, E], T_IQ4_NL, _iq4_nl(H * 2 * FF * E, seed[0])))
+            seed[0] += 1
+            t.append((p + "ffn_down_exps.weight", [FF, H, E], T_IQ4_NL, _iq4_nl(FF * H * E, seed[0])))
+            continue
         t.append((p + "ffn_gate_up_exps.weight", [H, 2 * FF, E], T_NVFP4, _nvfp4(H * 2 * FF * E, seed[0], varied)))
         seed[0] += 1
         t.append((p + "ffn_down_exps.weight", [FF, H, E], T_NVFP4, _nvfp4(FF * H * E, seed[0], varied)))
