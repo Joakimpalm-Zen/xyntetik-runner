@@ -11138,6 +11138,11 @@ static size_t recurrent_state_bytes(const model_t *m) {
            (size_t)m->ssm.v_heads * per_head;
 }
 
+int model_experts_on_host(const model_t *m, int *total) {
+    // Inkling's engine runs its own CUDA handle and leaves m->gpu NULL, so it counts its own stacks
+    return m && m->ink2 ? model_inkling2_cuda_host_stacks(m, total) : -1;
+}
+
 bool model_has_recurrent(const model_t *m) {
     // inkling2_loop's short-convolution histories are a fold too; it declines every snapshot below, so a rewind
     // re-prefills from position 0

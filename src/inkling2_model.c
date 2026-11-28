@@ -98,6 +98,7 @@ typedef struct {
     // types (bit t: ggml type t). The token embedding (never a product) and --cpu-moe's stacks are not counted here.
     size_t dev_raw, host_b; int host_n, host_exp; uint64_t host_types;
     uint64_t host_exp_types;   // the types of the expert stacks among them alone
+    int exp_all;   // R4.48.41: every expert stack view the walk saw, on the device or not
 } dev_walk;
 // what goes up is what the device computes (the second read's P1): a view the handle's products take (its type's
 // kernel; a factor only on NVFP4, the one kernel that applies it), not the token embedding (read row by row on the
@@ -119,6 +120,7 @@ static size_t dev_alloc_bytes(size_t b) {
 static int dev_count(void *c_, const ink2_tensor *t) {
     dev_walk *c = c_;
     const size_t vb = view_row_bytes(t) * (size_t)view_rows(t);
+    c->exp_all += strstr(t->name, ".mlp.experts.") != NULL;
     if (!dev_wanted(c, t)) {
         const bool expert = strstr(t->name, ".mlp.experts.") != NULL;
         if (strcmp(t->name, "model.embed_tokens.weight") && !(c->cpu_moe && expert)) {
@@ -351,6 +353,7 @@ typedef struct ink2_share {
     int n_views;     // the views in the copy (the small tensors are device tensors n_views..)
     int step_base;   // D1d.3b: the resident step's small tensors are device tensors step_base.. (-1: none up)
     int host_n; uint64_t host_types;   // R4.48.37: the product views left on the host for their type (dev_walk)
+    int host_exp, exp_all;   // R4.48.41: the expert stacks among them, and every expert stack of the file
     int refs;
     // 'C': the sentence each instance says. Sized for the longest: share_place's do-not-fit sentence, 182 fixed bytes
     // with a device name of up to 159 (cuda_bind's dev[160]) and its numbers, at most 363 bytes with the NUL
@@ -506,7 +509,7 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
     for (int k = cpu_moe_req ? 1 : 0; k < 2; k++) {
         const bool cm = k == 1;
         const bool exp_dev = !cm && gpu_ink2_experts_ok(h) && !(ne && !strcmp(ne, "1"));
-        dev_walk c = { r, cm, 0, 0, -1, 0, 0, 0, false, 0, 0, 0, 0, 0, 0 };
+        dev_walk c = { r, cm, 0, 0, -1, 0, 0, 0, false, 0, 0, 0, 0, 0, 0, 0 };
         size_t tot = 0;
         // the output buffer holds T rows of every product but the head, and at least one head row: a forward asks for
         // its last row only (INK2_LOGITS_LAST); a keep-all forward's head runs its columns in groups (gpu_ink2_lin)
@@ -553,7 +556,7 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
         // fits: up it goes (the views in the file's walk order; a failed put leaves the CPU, P0)
         r->dev_of = calloc((size_t)c.n, sizeof *r->dev_of);
         r->n_dev = 0;
-        dev_walk u = { r, cm, 0, c.n, pf && *pf ? atoi(pf) : -1, 0, 0, 0, false, 0, 0, 0, 0, 0, 0 };
+        dev_walk u = { r, cm, 0, c.n, pf && *pf ? atoi(pf) : -1, 0, 0, 0, false, 0, 0, 0, 0, 0, 0, 0 };
         if (!r->dev_of || ink2g_each_view(r->g, dev_put, &u) || r->n_dev != c.n) {
             snprintf(sh->why, sizeof sh->why, "inkling2_loop's weights could not be put on %s", dev);
             free(r->dev_of); r->dev_of = NULL; r->n_dev = 0;
@@ -572,6 +575,7 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
         }
         sh->gpu = h; sh->placed = cm ? 'M' : 'W'; sh->need = c.need + small; sh->exp_dev = exp_dev; sh->attn_dev = attn_dev;
         sh->block_dev = block_dev; sh->n_views = c.n; sh->host_n = c.host_n; sh->host_types = c.host_types;
+        sh->host_exp = c.host_exp; sh->exp_all = c.exp_all;
         if (cm && !cpu_moe_req)
             fprintf(stderr, "note: inkling2_loop's %.2f GB of weights do not fit the %.2f GB free on %s for %d slot%s; "
                             "its expert stacks stay on the host (as --cpu-moe)\n", need_w / 1e9, fr / 1e9, dev, n_slots,
@@ -835,7 +839,7 @@ static int cuda_bind(ink2_rt *r, model_t *m, const model_params *p) {
         const int n = sh->n_views;
         r->dev_of = calloc((size_t)n, sizeof *r->dev_of);
         r->n_dev = 0;
-        dev_walk a = { r, sh->placed == 'M', 0, n, -1, 0, 0, 0, true, 0, 0, 0, 0, 0, 0 };
+        dev_walk a = { r, sh->placed == 'M', 0, n, -1, 0, 0, 0, true, 0, 0, 0, 0, 0, 0, 0 };
         if (!r->dev_of || ink2g_each_view(r->g, dev_put, &a) || r->n_dev != n) {
             free(r->dev_of); r->dev_of = NULL; r->n_dev = 0;
             pthread_mutex_unlock(&g_share_mu);
@@ -1578,6 +1582,14 @@ char model_inkling2_route(const model_t *m) {
 bool model_inkling2_cuda(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
     return r && r->gpu;
+}
+// R4.48.41: on the CUDA route, how many expert stacks run on the host (their products on the CPU) and, in *total, how
+// many the file has: every one under --cpu-moe ('M'), else those whose type the device does not run. -1 off CUDA.
+int model_inkling2_cuda_host_stacks(const model_t *m, int *total) {
+    const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
+    if (!r || !r->gpu || !r->share) return -1;
+    if (total) *total = r->share->exp_all;
+    return r->placed == 'M' ? r->share->exp_all : r->share->host_exp;
 }
 bool model_inkling2_act8(const model_t *m) {
     const ink2_rt *r = m ? (const ink2_rt *)m->ink2 : NULL;
