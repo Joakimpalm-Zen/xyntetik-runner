@@ -12982,6 +12982,7 @@ gpu_ink2 *gpu_ink2_bind(void) {
         { T_IQ3_XXS, "k_mv_iq3_xxs" },
         { T_Q4_K, "k_mv_q4_K" },   // R4.48.39: the generic batch-1 kernels, already in this module
         { T_IQ4_NL, "k_mv_iq4_nl" },
+        { T_IQ3_S, "k_mv_iq3_s" },
     };
     for (size_t k = 0; k < sizeof mv / sizeof *mv; k++)
         if (cu.ModuleGetFunction(&h->mv[mv[k].type], h->mod, mv[k].name) != 0) h->mv[mv[k].type] = NULL;
@@ -12991,6 +12992,7 @@ gpu_ink2 *gpu_ink2_bind(void) {
         { T_IQ3_XXS, "k_mvseg_iq3_xxs" },
         { T_Q4_K, "k_mvseg_q4_K" },   // R4.48.39
         { T_IQ4_NL, "k_mvseg_iq4_nl" },
+        { T_IQ3_S, "k_mvseg_iq3_s" },
     };
     for (size_t k = 0; k < sizeof ms / sizeof *ms; k++)
         if (cu.ModuleGetFunction(&h->mvseg[ms[k].type], h->mod, ms[k].name) != 0) h->mvseg[ms[k].type] = NULL;
@@ -13119,7 +13121,7 @@ static bool ink2_mv_cols_xs(gpu_ink2 *h, int type, CUdeviceptr w, uint64_t w_off
     unsigned rpb = 4, block = 128;
     // the generic route's shapes (enc_mv): the lane-staged kernels (NVFP4; R4.48.39: IQ4_NL) 8 rows a 256-thread block
     if (lane_staged_type(type)) { rpb = 8; block = 256; }
-    else if (type == T_IQ3_XXS) rpb = 8;
+    else if (type == T_IQ3_XXS || type == T_IQ3_S) rpb = 8;   // IQ_ROWS (2) rows a warp
     bool ok = true;
     for (int t = 0; ok && t < n; t++) {
         CUdeviceptr xc = x + sizeof(float) * (size_t)t * (size_t)xs, yc = y + sizeof(float) * (size_t)t * (size_t)n_out;
@@ -13167,7 +13169,7 @@ static bool ink2_mvseg(gpu_ink2 *h, int type, CUdeviceptr w, int n_in, int n_out
                        int xcs, CUdeviceptr y, int ycs, CUdeviceptr d_ex, uint64_t w_es, CUdeviceptr esc) {
     unsigned rpb = 4, block = 128;
     if (lane_staged_type(type)) { rpb = 8; block = 256; }   // as ink2_mv_cols_xs: the batch-1 kernel's shape
-    else if (type == T_IQ3_XXS) rpb = 8;
+    else if (type == T_IQ3_XXS || type == T_IQ3_S) rpb = 8;
     mv_args a = { n_in, n_out, 0, 0, 1, n_in, n_out };
     bool ok = true;
     for (int j0 = jb; ok && j0 < nc; j0 += 65535) {

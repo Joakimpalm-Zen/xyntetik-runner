@@ -5517,6 +5517,10 @@ extern "C" __global__ void k_mvseg_iq3_xxs(MVSEG_PARAMS) {
     MVSEG_HEAD;
     IQ_LANE_MV1(iq3xxs_lane_n, 98)
 }
+extern "C" __global__ void k_mvseg_iq3_s(MVSEG_PARAMS) {   // R4.48.39: k_mv_iq3_s's body, as k_mvseg_iq3_xxs takes its
+    MVSEG_HEAD;
+    IQ_LANE_MV1(iq3s_lane_n, 110)
+}
 // R4.48.39: the community files' stack types. Each kernel below is MVSEG_HEAD, then its batch-1 k_mv_<type>'s body
 // VERBATIM (that kernel is left untouched, so its PTX does not move); gate (k) holds it to the per-expert launches.
 extern "C" __global__ void k_mvseg_q4_K(MVSEG_PARAMS) {

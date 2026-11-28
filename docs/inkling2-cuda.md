@@ -38,17 +38,17 @@ real-file marks apply to Linux only.
 
 On the non-resident path, CUDA runs the supported products, attention blocks
 and their K/V rings, expert bodies and loop message gates. Their weight types
-are F32, BF16, Q8_0, NVFP4 and IQ3_XXS, and for community files Q4_K and
-IQ4_NL. A product of those two types runs the generic batch-1 kernel
-(`k_mv_q4_K`, `k_mv_iq4_nl`), and an expert stack its segmented twin, which is
-byte-identical to per-expert launches of that kernel. Against the CPU route it
-is the route's tolerance class, as for the other types. A prompt on those
-stacks is read one column at a time, so prompt reading is slower than on
-NVFP4, whose experts run as batched tiles. The router runs
-on the device for multiple positions, on the host for one. The host gathers
-embeddings, orchestrates the loop and block states, and runs input norms,
-post convolutions and residual work. LoRA attention terms are added on the
-host, and an adapter declines the resident step.
+are F32, BF16, Q8_0, NVFP4 and IQ3_XXS, and for community files Q4_K, IQ4_NL
+and IQ3_S. A product of those three types runs the generic batch-1 kernel
+(`k_mv_q4_K`, `k_mv_iq4_nl`, `k_mv_iq3_s`), and an expert stack its segmented
+twin, which is byte-identical to per-expert launches of that kernel. Against
+the CPU route it is the route's tolerance class, as for the other types. A
+prompt on those stacks is read one column at a time, so prompt reading is
+slower than on NVFP4, whose experts run as batched tiles. The router runs on
+the device for multiple positions, on the host for one. The host gathers
+embeddings, orchestrates the loop and block states, and runs input norms, post
+convolutions and residual work. LoRA attention terms are added on the host,
+and an adapter declines the resident step.
 
 An eligible plain single-position forward runs the whole decode step on
 the device: all 48 layer applications, block-state reads, message gates,
