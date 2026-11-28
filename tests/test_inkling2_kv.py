@@ -600,19 +600,22 @@ def test_the_fit_charges_the_step_only_where_it_runs(runner_bin, tiny, tmp_path)
         out = subprocess.run([str(runner_bin), "-m", str(model), "--gpu", "auto", "-c", str(CTX), "-b", "8", "--kv", "q8",
                               "--info", "fit"], capture_output=True, encoding="utf-8", errors="replace", env=e,
                              timeout=600).stdout
-        sm = re.search(r"dev small\s+[0-9.]+ GiB \((\d+) bytes", out)
+        sm = re.search(r"dev small\s+[0-9.]+ GiB \((\d+) bytes([^\n]*)", out)
         sl = re.search(r"dev slots\s+[0-9.]+ GiB \((\d+) bytes", out)
-        return (int(sm.group(1)), int(sl.group(1))) if sm and sl else None, out
+        return (int(sm.group(1)), int(sl.group(1))) if sm and sl else None, sm.group(2) if sm else out
 
     on, out = terms(tiny, False)
     if on is None:
         pytest.skip("no CUDA device here: the device fit is a CUDA host's")
     off, _ = terms(tiny, True)
     assert on[0] > off[0] and on[1] > off[1], (on, off, out)   # the control: the step is charged where it runs
+    # and the small line names the step only when its bytes are in it (R4.48.39's lab finding on a published file)
+    assert "resident step" in out, out
     hostfile = _write(tmp_path / "iq4nl-step.gguf", _kvs(), _tensors(iq4nl_experts=True))
     h_on, h_out = terms(hostfile, False)
     h_off, _ = terms(hostfile, True)
     assert h_on is not None and h_on == h_off, (h_on, h_off, h_out)
+    assert "resident step" not in h_out, h_out
 
 
 def test_q8_engages_on_the_device(runner_bin, tiny):
