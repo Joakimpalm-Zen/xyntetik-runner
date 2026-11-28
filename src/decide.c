@@ -68,7 +68,7 @@ static bool canon_seat(engine *e, canon_prefix *c, const int32_t *ptoks, int np,
     if (c->upto < k) {
         engine_reset(e);
         if (!engine_feed(e, c->toks, c->n)) {
-            *err = "engine feed failed (context or memory)";
+            *err = e->fwd_failed ? "engine feed failed: a forward failed on the device" : "engine feed failed (context or memory)";
             return false;
         }
         c->upto = c->n;
@@ -169,13 +169,13 @@ static bool score_mode(engine *e, const char *prompt, tok_mode mode,
         engine_rewind(e, s->toks, start - 1);
         if (e->pos < start - 1 &&
             !engine_feed(e, s->toks + e->pos, (start - 1) - e->pos)) {
-            *err = "engine feed failed (context or memory)"; ok = false; break;
+            *err = e->fwd_failed ? "engine feed failed: a forward failed on the device" : "engine feed failed (context or memory)"; ok = false; break;
         }
         // from here the rows are the decode route's: a later normal request
         // keeps the slot's rows only below them (R3.60)
         engine_mark_scored(e, start - 1);
         const float *L = engine_feed_solo(e, s->toks[start - 1]);
-        if (!L) { *err = "engine feed failed (context or memory)"; ok = false; break; }
+        if (!L) { *err = e->fwd_failed ? "engine feed failed: a forward failed on the device" : "engine feed failed (context or memory)"; ok = false; break; }
         double total = 0;
         for (int d = s->common; d < start; d++) total += lp_at[d];
         for (int d = start; d < s->n; d++) {
@@ -187,7 +187,7 @@ static bool score_mode(engine *e, const char *prompt, tok_mode mode,
             double v = (double)L[s->toks[d]] - lse(L, m->n_vocab);
             lp_at[d] = v; has[d] = 1; total += v;
             L = engine_feed_solo(e, s->toks[d]);   // also keeps hist == the path
-            if (!L) { *err = "engine feed failed (context or memory)"; ok = false; break; }
+            if (!L) { *err = e->fwd_failed ? "engine feed failed: a forward failed on the device" : "engine feed failed (context or memory)"; ok = false; break; }
         }
         if (!ok) break;
         out[s->idx].lp = total;

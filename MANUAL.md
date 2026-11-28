@@ -1239,7 +1239,12 @@ answers HTTP 500 with `{"type": "error", "error": {"type": "api_error",
 and a streamed turn - whose 200 is already sent - terminates on the protocol's
 documented `event: error` carrying the same object, in place of
 `message_delta`/`message_stop`. An allocation failure during generation is
-reported the same way on both. Partial text is not returned alongside it:
+reported the same way on both, and so is a forward that failed on the device
+(Inkling 2 Mini on CUDA, whose instance then computes no more rows). When the
+device fails under the prompt, before a token is generated, every surface
+answers HTTP 500 with code `device_failed` rather than a context overflow; the
+CLI says `error: the prompt's forward failed on the device` or `error:
+generation stopped: a forward failed on the device after N tokens` and exits 1. Partial text is not returned alongside it:
 unlike a budget truncation, which is a completion and keeps its content under
 `stop_reason: "max_tokens"`, a fault has no `stop_reason` that would not
 misstate why generation stopped. `runner_telemetry.finish_detail` rides on the

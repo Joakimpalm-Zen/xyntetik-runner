@@ -1639,6 +1639,11 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                            bool want_logits);
 // single-token convenience wrapper
 float *model_forward(model_t *m, int token, int pos);
+// The last forward failed: it returned no row, and its instance computes no
+// more. Only an inkling2_loop forward on CUDA can (a device op failed; the
+// instance refuses later forwards rather than produce CPU rows). Every other
+// route falls back to the CPU instead (gpu_runtime_failure), so this is false.
+bool   model_forward_failed(const model_t *m);
 
 // ---- recurrent-state cache seam (SSM tracer 4) -------------------------
 //

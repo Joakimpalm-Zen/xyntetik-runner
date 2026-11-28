@@ -1921,6 +1921,7 @@ static float *engine_feed_inner(engine *e, const int32_t *toks, int n) {
     float *logits = NULL;
     model_t *m = e->m;
     kv_dump_config();
+    e->fwd_failed = false;
     int fed_from = e->pos;
     if (e->pos + n <= m->n_ctx) rope_reach(e, e->pos + n);
     for (int i = 0; i < n; ) {
@@ -1929,6 +1930,9 @@ static float *engine_feed_inner(engine *e, const int32_t *toks, int n) {
         bool last = (i + chunk == n);
         if (e->hist) memcpy(e->hist + e->pos, toks + i, sizeof(int32_t) * chunk);
         logits = model_forward_batch(m, toks + i, chunk, e->pos, last);
+        // a failed forward is not a full context, and its instance computes no
+        // more rows: stop here, said, rather than feed the later chunks into it
+        if (!logits && model_forward_failed(m)) { e->fwd_failed = true; return NULL; }
         if (e->mtp_on)
             for (int j = 0; j < chunk; j++) {
                 model_mtp_feed(m, toks[i + j]);
@@ -3363,6 +3367,7 @@ void engine_gen_begin(engine *e, int max_new) {
     if (e->m && e->m->micro_steps) micro_sched_reset(e->m->micro_steps);   // R3.72
     e->hit_stop  = false; e->stop_id = -1;
     e->oom       = false;
+    e->fwd_failed = false;
     e->constraint_fault[0] = 0;
     e->lp_count  = 0;
     e->stop_lp_at = -1; e->stop_lp = 0;
@@ -3448,6 +3453,9 @@ int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
     // step handed out -- `logits` is that forward's result. Anything still
     // outstanding when engine_gen_end runs was abandoned instead.
     e->pending_pos = -1;
+    // No row: the forward that should have made it failed on the device
+    // (model_forward_failed). The turn ends as an error, not by sampling one.
+    if (!logits) { e->fwd_failed = true; return ENGINE_STEP_DONE; }
     if (!((e->gen_max < 0 || e->gen_count < e->gen_max) && e->pos < e->m->n_ctx))
         return ENGINE_STEP_DONE;
     lp_pre pre;

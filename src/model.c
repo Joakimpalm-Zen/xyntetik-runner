@@ -18487,6 +18487,10 @@ float *model_forward(model_t *m, int token, int pos) {
     return lg;
 }
 
+bool model_forward_failed(const model_t *m) {
+    return m && m->ink2 && !model_inkling2_last_ok(m);
+}
+
 // ------------------------------------------------ continuous batching (Phase 6)
 //
 // The host half of the batched decode primitive: it owns the sequence list and

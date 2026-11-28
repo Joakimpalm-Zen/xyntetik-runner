@@ -424,7 +424,11 @@ int sched_generate(slot_t *s, float *logits, int max_new,
     while (engine_gen_step(e, lg, cb, ud, &tok, &pos) == ENGINE_STEP_MORE) {
         if (deadline > 0 && now_s() >= deadline) break;
         if (e->stop && e->stop(e->stop_ud)) break;
-        if (!(lg = sched_forward(s->id, tok, pos, deadline))) break;
+        if (!(lg = sched_forward(s->id, tok, pos, deadline))) {
+            // the deadline also ends here with no row; only the device names itself
+            if (model_forward_failed(e->m)) e->fwd_failed = true;
+            break;
+        }
     }
     int n = engine_gen_end(e, cb, ud, gen_time);
 

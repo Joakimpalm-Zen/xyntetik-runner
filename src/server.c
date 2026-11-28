@@ -1109,7 +1109,14 @@ static void context_pin_prompt(slot_t *s, sock_t fd, const char *prompt,
     readout_turn_end(e);
     double secs = now_s() - t0;
     free(toks);
-    if (!lg) { send_error(fd, 500, "prefill failed (context or memory)"); return; }
+    if (!lg) {
+        if (e->fwd_failed)
+            send_error_detail(fd, 500, "the context's prefill failed on the device; this instance computes no "
+                              "more rows", NULL, "device_failed");
+        else
+            send_error(fd, 500, "prefill failed (context or memory)");
+        return;
+    }
     if (rc == PFX_CTX_UNSUPPORTED && s->m->ink2) {
         send_error_detail(fd, 409, "this model cannot fork a pinned prefix: inkling2_loop keeps its K/V and "
                           "convolution histories in its own cache, which the shared prefix cache does not "
@@ -1461,7 +1468,11 @@ static void handle_session_start(slot_t *s, sock_t fd, jv *req) {
     free(toks);
     if (!lg) {
         sched_prefill_end();
-        send_error(fd, 500, "prefill failed (context or memory)");
+        if (e->fwd_failed)
+            send_error_detail(fd, 500, "the prompt's forward failed on the device; this instance computes no "
+                              "more rows", NULL, "device_failed");
+        else
+            send_error(fd, 500, "prefill failed (context or memory)");
         return;
     }
     engine_gen_begin(e, max_new);

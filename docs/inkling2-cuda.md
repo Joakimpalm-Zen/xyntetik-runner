@@ -55,7 +55,11 @@ back: three transfers a step, none inside the layer loop. Diagnostic
 per-application outputs and expert-selection observers use the
 non-resident path. Histories are synchronized when execution switches paths.
 A failed device operation refuses that forward and later forwards on the
-instance; it does not silently produce CPU rows.
+instance; it does not silently produce CPU rows. The run says so: the CLI
+names the failed forward and exits 1, and the server answers HTTP 500 with
+code `device_failed` (under the prompt) or ends the turn with
+`finish_reason: "error"` (during generation), never a context overflow
+(`tests/test_inkling2_device_fail.py`).
 
 The CPU fast route retains its scalar `ink2_swiglu`, as on main. CUDA uses
 its own `tanhf`/`expf` and reduction orders; CUDA versus CPU logits are not

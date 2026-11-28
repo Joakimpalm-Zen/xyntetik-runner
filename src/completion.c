@@ -5309,7 +5309,12 @@ static float *turn_prefill(turn_result *t) {
         // deadline is checked first: it is the only one where the caller is
         // still on the connection AND the prompt was fine, so reporting it as
         // a context overflow would send them shortening a prompt that fits.
-        if (stop->cancelled)
+        if (e->fwd_failed)
+            // the prompt fit (checked at tokenization): the device failed under it,
+            // and a shorter prompt would not help
+            send_error_detail(fd, 500, "the prompt's forward failed on the device; this "
+                              "instance computes no more rows", NULL, "device_failed");
+        else if (stop->cancelled)
             send_error_detail(fd, 409, "request cancelled (POST /v1/runner/requests/"
                               "{id}/cancel) before its prompt was processed",
                               NULL, "cancelled");
@@ -5645,7 +5650,8 @@ static void turn_reason(turn_result *t) {
     // envelope is the same class of truth: the turn produced no answer anyone
     // can read, and reporting "stop" over an empty message would tell the
     // caller the model chose to say nothing.
-    t->finish = e->oom ? "error"
+    // e->fwd_failed: a forward failed on the device mid-turn; the same "error"
+    t->finish = e->oom || e->fwd_failed ? "error"
                        : e->constraint_fault[0] ? "constraint_error"
                        : g->too_slow ? "client_too_slow"
                        : t->unmapped ? "envelope_error"
@@ -5664,10 +5670,10 @@ static void turn_reason(turn_result *t) {
                            ? "reasoning_limit" : NULL;
     // the server's drain cut the turn: the wire still says "length" (the turn
     // was cut, the text is usable), and finish_detail says by what
-    if (stop->shut_down && !g->stopped && !e->hit_stop && !e->oom)
+    if (stop->shut_down && !g->stopped && !e->hit_stop && !e->oom && !e->fwd_failed)
         t->cut_detail = "shutdown";
     // and a cancel (R10.12.3.2): the same cut, named for what made it
-    if (stop->cancelled && !g->stopped && !e->hit_stop && !e->oom)
+    if (stop->cancelled && !g->stopped && !e->hit_stop && !e->oom && !e->fwd_failed)
         t->cut_detail = "cancelled";
     // a parse-only qwen3_xml call closed by the next call's opener (R2.10):
     // the calls stand, and the detail says the framing was tolerated

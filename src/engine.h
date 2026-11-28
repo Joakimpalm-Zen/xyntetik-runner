@@ -88,6 +88,12 @@ typedef struct {
     bool spell_think;
     bool oom;              // generation aborted on an allocation failure — the
                            // finish reason is "error", never a silent "stop"
+    // The last feed or generation stopped because a forward failed on the
+    // device (model_forward_failed): no row came back, and the instance
+    // computes no more. Not a full context: every surface says which. The
+    // finish reason is "error", as for oom. Cleared by each feed and by
+    // engine_gen_begin.
+    bool fwd_failed;
     // R2.18: a pattern automaton (src/jsre.h) hit a limit mid-generation: the
     // turn ends as a fault this names (which pattern, how many states), never
     // as a document narrower than the pattern allows. Empty when none did.
@@ -544,7 +550,9 @@ void   engine_set_request_stops(engine *e, const int *ids, int n);
 // Recompute the engine's model identity (the prefix-cache key) after the
 // model's adapter changed (R8.6); cheap enough to do per adapter switch.
 void   engine_refresh_identity(engine *e);
-// feed tokens (batched); returns last-token logits, or NULL on overflow/stop.
+// feed tokens (batched); returns last-token logits, or NULL on overflow/stop,
+// or on a failed forward (e->fwd_failed then; the prompt's later chunks are
+// not fed).
 // The prompt's prefill pass: on a CPU-only run its bits do not depend on the
 // batch size (from 2 up) or the chunking (R3.60), and they are not the decode
 // step's. At -b 1 the prompt is read on the decode route, one token a forward.
