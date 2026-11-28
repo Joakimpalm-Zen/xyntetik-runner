@@ -12981,6 +12981,7 @@ gpu_ink2 *gpu_ink2_bind(void) {
         { T_F32, "k_mv_f32" }, { T_BF16, "k_mv_bf16" }, { T_Q8_0, "k_mv_q8_0" }, { T_NVFP4, "k_mv_nvfp4" },
         { T_IQ3_XXS, "k_mv_iq3_xxs" },
         { T_Q4_K, "k_mv_q4_K" },   // R4.48.39: the generic batch-1 kernels, already in this module
+        { T_IQ4_NL, "k_mv_iq4_nl" },
     };
     for (size_t k = 0; k < sizeof mv / sizeof *mv; k++)
         if (cu.ModuleGetFunction(&h->mv[mv[k].type], h->mod, mv[k].name) != 0) h->mv[mv[k].type] = NULL;
@@ -12989,6 +12990,7 @@ gpu_ink2 *gpu_ink2_bind(void) {
         { T_F32, "k_mvseg_f32" }, { T_BF16, "k_mvseg_bf16" }, { T_Q8_0, "k_mvseg_q8_0" }, { T_NVFP4, "k_mvseg_nvfp4" },
         { T_IQ3_XXS, "k_mvseg_iq3_xxs" },
         { T_Q4_K, "k_mvseg_q4_K" },   // R4.48.39
+        { T_IQ4_NL, "k_mvseg_iq4_nl" },
     };
     for (size_t k = 0; k < sizeof ms / sizeof *ms; k++)
         if (cu.ModuleGetFunction(&h->mvseg[ms[k].type], h->mod, ms[k].name) != 0) h->mvseg[ms[k].type] = NULL;
@@ -13115,7 +13117,8 @@ static bool ink2_mv_cols_xs(gpu_ink2 *h, int type, CUdeviceptr w, uint64_t w_off
         return ok;
     }
     unsigned rpb = 4, block = 128;
-    if (type == T_NVFP4) { rpb = 8; block = 256; }
+    // the generic route's shapes (enc_mv): the lane-staged kernels (NVFP4; R4.48.39: IQ4_NL) 8 rows a 256-thread block
+    if (lane_staged_type(type)) { rpb = 8; block = 256; }
     else if (type == T_IQ3_XXS) rpb = 8;
     bool ok = true;
     for (int t = 0; ok && t < n; t++) {
@@ -13163,7 +13166,7 @@ bool gpu_ink2_lin(gpu_ink2 *h, int i, int type, size_t row_bytes, int64_t row0, 
 static bool ink2_mvseg(gpu_ink2 *h, int type, CUdeviceptr w, int n_in, int n_out, int jb, int nc, CUdeviceptr x,
                        int xcs, CUdeviceptr y, int ycs, CUdeviceptr d_ex, uint64_t w_es, CUdeviceptr esc) {
     unsigned rpb = 4, block = 128;
-    if (type == T_NVFP4) { rpb = 8; block = 256; }
+    if (lane_staged_type(type)) { rpb = 8; block = 256; }   // as ink2_mv_cols_xs: the batch-1 kernel's shape
     else if (type == T_IQ3_XXS) rpb = 8;
     mv_args a = { n_in, n_out, 0, 0, 1, n_in, n_out };
     bool ok = true;
