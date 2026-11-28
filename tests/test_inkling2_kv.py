@@ -17,7 +17,8 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from inkling2_tiny import FULL, H, HD, K, LOOP_END, LOOP_START, N_BLOCK, NKV, PASSES, WIN, _kvs, _tensors, _write  # noqa: E402
+from inkling2_tiny import (FULL, H, HD, K, LOOP_END, LOOP_START, N_BLOCK, NKV, PASSES, T_IQ4_NL, WIN,  # noqa: E402
+                          _kvs, _tensors, _write)
 
 # 48 byte tokens: six windows of 8, so the sliding buffers slide
 PROMPT = "the q8 cache slides past the window, chunk by chunk"
@@ -486,6 +487,49 @@ def test_the_cuda_fit_places_the_file_as_its_load_does(runner_bin, tiny):
 def _slots_possessive(n):
     """The fit line's rule, src/inkling2_model.h inkling2_slots_possessive: "slot's" for one slot, "slots'" for more."""
     return "slot's" if n == 1 else "slots'"
+
+
+def test_the_cuda_fit_names_the_weights_left_on_the_host(runner_bin, tiny, tmp_path):
+    """R4.48.37, on a CUDA host: a view goes to the device only when its type has a CUDA product kernel (dev_wanted), so
+    a file whose expert stacks are IQ4_NL keeps them on the host and runs their products on the CPU. --info fit used to
+    call that placement "every weight on the device". Now its device line, a host-weights line, its verdict and the
+    load's banner say how many tensors of which types stay on the host, and how many bytes. Live control: the tiny file
+    (NVFP4 stacks, every product view on the device) keeps "every weight on the device", with no host line."""
+    import os
+    ts = _tensors(iq4nl_experts=True)
+    host = [d for _, _, ty, d in ts if ty == T_IQ4_NL]
+    host_bytes, host_n = sum(len(d) for d in host), len(host)   # the fixture's own IQ4_NL stacks: 2 a layer
+    assert host_n == 2 * N_BLOCK
+    hostfile = _write(tmp_path / "iq4nl.gguf", _kvs(), ts)
+    env = dict(os.environ, RUNNER_INKLING2_CUDA="1")
+    env.pop("RUNNER_INKLING2_ROUTE", None)
+
+    def fit(model):
+        return subprocess.run([str(runner_bin), "-m", str(model), "--gpu", "auto", "-c", str(CTX), "-b", "8", "--kv", "q8",
+                               "--info", "fit"], capture_output=True, encoding="utf-8", errors="replace", env=env,
+                              timeout=600).stdout
+
+    out = fit(hostfile)
+    if "CUDA route:" not in out:
+        pytest.skip("no CUDA device here: the device fit is a CUDA host's")
+    m = re.search(r"device\s+CUDA route: (\d+) of (\d+) product weight bytes on the device; (\d+) tensors "
+                  r"\(types ([A-Z0-9_, ]+)\) run on the host", out)
+    assert m, out
+    assert int(m.group(3)) == host_n and m.group(4) == "IQ4_NL", out
+    assert int(m.group(2)) - int(m.group(1)) == host_bytes and int(m.group(1)) > 0, out
+    assert re.search(rf"host weights\s+[0-9.]+ GiB \({host_bytes} bytes: {host_n} tensors", out), out
+    assert re.search(rf"dev verdict\s+FITS; {host_n} expert stack tensors run on the host \(IQ4_NL\)", out), out
+    assert "every weight on the device" not in out, out
+    load = subprocess.run([str(runner_bin), "-m", str(hostfile), "--gpu", "auto", "-c", str(CTX), "-b", "8", "--kv", "q8",
+                           "-t", "2", "-p", "hi", "-n", "1", "--temp", "0"], capture_output=True, encoding="utf-8",
+                          errors="replace", env=env, timeout=600)
+    assert load.returncode == 0, load.stderr[-2000:]
+    assert re.search(rf"inkling2_loop: the weights on CUDA .*; {host_n} tensors \(IQ4_NL\) stay on the host",
+                     load.stderr), load.stderr[-2000:]
+    # the live control: every product view of the tiny file is on the device, and its lines say so as before
+    ctl = fit(tiny)
+    assert re.search(r"device\s+CUDA route: every weight on the device", ctl), ctl
+    assert "host weights" not in ctl and "run on the host" not in ctl, ctl
 
 
 def test_q8_engages_on_the_device(runner_bin, tiny):
