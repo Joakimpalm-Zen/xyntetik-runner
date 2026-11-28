@@ -22,7 +22,19 @@
 //   7. no bus at all: exit 1 with the no-bus line;
 //   8. the bus goes away under a tray whose managed --serve child is up
 //      (with TINY_MODEL): the tray exits and the child with it, no process
-//      left.
+//      left;
+//   9. ids are the rows' own: a click sent against a layout the tray has
+//      since changed (a server's record gone, the rows below it shifted up)
+//      acts on nothing, never on the row that moved into its place;
+//  10. the tray host goes away (the watcher's name released), with a short
+//      TEST-ONLY grace window (RUNNER_TRAY_TEST_HOST_GRACE_MS):
+//      a. it comes back inside the window: the item registers again and
+//         nothing ends;
+//      b. it stays away, the tray managing a --serve: tray and child end;
+//      c. it stays away, the tray beside a --serve someone else started:
+//         the tray ends, and that server still answers.
+// The test keeps its own deadline (alarm): it never needs an external
+// `timeout`, and on expiry it ends every process it started.
 // Built with the real <dbus/dbus.h> when pkg-config has it
 // (TRAY_TEST_REAL_HEADER): our own struct declarations are then asserted
 // against the real ones' sizes and field offsets.
@@ -87,6 +99,18 @@ static int  g_new_icon, g_layout_updated;
 static uint32_t g_layout_rev;
 static char g_tmp[512];
 
+// every process this test starts, for the deadline to end
+static volatile pid_t g_owned[32];
+static volatile int   g_nowned;
+static void own(pid_t p) { if (p > 0 && g_nowned < 32) g_owned[g_nowned++] = p; }
+static void on_deadline(int sig) {
+    (void)sig;
+    static const char m[] = "FAIL: the test's own deadline passed; ending every process it started\n";
+    if (write(1, m, sizeof m - 1) < 0) { /* nothing to do */ }
+    for (int i = 0; i < g_nowned; i++) if (g_owned[i] > 0) kill(g_owned[i], SIGKILL);
+    _exit(1);
+}
+
 static double now_s(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -141,6 +165,7 @@ static pid_t spawn_env(char *const argv[], char *const envp[], int out_fd) {
     pid_t pid = -1;
     if (posix_spawnp(&pid, argv[0], &fa, NULL, argv, envp ? envp : environ) != 0) pid = -1;
     posix_spawn_file_actions_destroy(&fa);
+    own(pid);
     return pid;
 }
 
@@ -167,6 +192,7 @@ static pid_t bus_start(char *addr, size_t cap) {
         if (memchr(addr, '\n', n)) break;
     }
     close(fd[0]);
+    own(pid);
     addr[n] = 0;
     char *nl = strchr(addr, '\n');
     if (nl) *nl = 0;
@@ -186,7 +212,19 @@ static int wait_exit(pid_t pid, double secs, bool *exited) {
     return -1;
 }
 
-static bool pid_alive(long pid) { return pid > 0 && kill((pid_t)pid, 0) == 0; }
+// alive and not a zombie: a killed child of this test stays a zombie until reaped, and kill(pid, 0) succeeds on it
+static bool pid_alive(long pid) {
+    if (pid <= 0 || kill((pid_t)pid, 0) != 0) return false;
+    char p[64], b[512];
+    snprintf(p, sizeof p, "/proc/%ld/stat", pid);
+    FILE *f = fopen(p, "r");
+    if (!f) return false;
+    size_t n = fread(b, 1, sizeof b - 1, f);
+    fclose(f);
+    b[n] = 0;
+    const char *rp = strrchr(b, ')');
+    return !(rp && rp[1] == ' ' && rp[2] == 'Z');
+}
 
 // ------------------------------------------------------- bus calls
 
@@ -287,6 +325,20 @@ static bool pixmaps_are(const pixmaps *p, tray_icon_state st, char *why, size_t 
         if (!same) { snprintf(why, cap, "the %d px bytes differ from the core's glyph in ARGB32", s); return false; }
         if (p->px[i][0] != 0 || !opaque) {
             snprintf(why, cap, "the %d px pixmap needs a transparent corner and an opaque pixel", s);
+            return false;
+        }
+        // absolute anchors, not the code's own formula: the corner is 00 00 00 00; an opaque pixel is exactly
+        // FF F0 F0 F0 (A, R, G, B in network order); every pixel with any alpha has R, G, B within 1 of 0xF0
+        const unsigned char *px = p->px[i];
+        bool corner0 = !px[0] && !px[1] && !px[2] && !px[3], exact = false, colour = true;
+        for (int k = 0; k < s * s; k++) {
+            const unsigned char *q = px + 4 * k;
+            if (q[0] == 0xFF && q[1] == 0xF0 && q[2] == 0xF0 && q[3] == 0xF0) exact = true;
+            for (int c = 1; q[0] && c < 4; c++) if (q[c] < 0xEF || q[c] > 0xF1) colour = false;
+        }
+        if (!corner0 || !exact || !colour) {
+            snprintf(why, cap, "the %d px pixmap's bytes: corner 00000000 %d, an opaque FF F0 F0 F0 %d, every "
+                     "coloured pixel F0 +-1 %d", s, corner0, exact, colour);
             return false;
         }
     }
@@ -397,6 +449,34 @@ static bool layout_matches(const node *root, const tray_item *it, int n, char *w
     return true;
 }
 
+static const node *find_label_end(const node *n, const char *suffix) {
+    size_t ls = strlen(n->label), lx = strlen(suffix);
+    if (ls >= lx && !strcmp(n->label + ls - lx, suffix)) return n;
+    for (int i = 0; i < n->nkids; i++) {
+        const node *f = find_label_end(n->kids[i], suffix);
+        if (f) return f;
+    }
+    return NULL;
+}
+static int child_id(const node *n, const char *label) {
+    for (int i = 0; n && i < n->nkids; i++) if (!strcmp(n->kids[i]->label, label)) return n->kids[i]->id;
+    return 0;
+}
+// the first instance row, in layout order, whose label ends in "pid <one of pids>"
+static long first_listed(const node *n, const long *pids, int np) {
+    char sfx[48];
+    for (int k = 0; k < np; k++) {
+        snprintf(sfx, sizeof sfx, "pid %ld", pids[k]);
+        size_t ls = strlen(n->label), lx = strlen(sfx);
+        if (ls >= lx && !strcmp(n->label + ls - lx, sfx)) return pids[k];
+    }
+    for (int i = 0; i < n->nkids; i++) {
+        long f = first_listed(n->kids[i], pids, np);
+        if (f) return f;
+    }
+    return 0;
+}
+
 static bool args_event(tdb_iter *it, void *ud) {
     int id = *(int *)ud;
     tdb_iter v;
@@ -410,9 +490,21 @@ static bool click(int id) {
     return r != NULL;
 }
 
-static int find_action(const tray_item *it, int n, int action) {
-    for (int i = 0; i < n; i++) if (it[i].action == action && it[i].kind != TRAY_K_LABEL) return i + 1;
+static int find_prefix(const node *n, const char *prefix) {
+    if (n->id && !strncmp(n->label, prefix, strlen(prefix))) return n->id;
+    for (int i = 0; i < n->nkids; i++) {
+        int f = find_prefix(n->kids[i], prefix);
+        if (f) return f;
+    }
     return 0;
+}
+// the id the tray's CURRENT layout gives the row whose label starts with `prefix` (0: none)
+static int layout_id(const char *prefix) {
+    uint32_t rev = 0;
+    node *l = get_layout(&rev);
+    int id = l ? find_prefix(l, prefix) : 0;
+    free_node(l);
+    return id;
 }
 
 static bool connect_bus(bool watcher) {
@@ -458,6 +550,30 @@ static char *slurp(const char *path) {
     return b;
 }
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+static bool health_ok(int port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return false;
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_port = htons((unsigned short)port);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    struct timeval tv = { 2, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    bool ok = false;
+    if (connect(fd, (struct sockaddr *)&a, sizeof a) == 0) {
+        static const char req[] = "GET /health HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n";
+        char buf[64] = "";
+        ok = write(fd, req, sizeof req - 1) == (ssize_t)(sizeof req - 1) && read(fd, buf, sizeof buf - 1) > 0 &&
+             !strncmp(buf, "HTTP/1.", 7) && strstr(buf, " 200");
+    }
+    close(fd);
+    return ok;
+}
+
 static pid_t start_tray(const char *runner, int out_fd) {
     char *argv[] = { (char *)runner, "--tray", NULL };
     return spawn_env(argv, NULL, out_fd);
@@ -484,6 +600,8 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (argc < 2) { fprintf(stderr, "usage: %s RUNNER [TINY_MODEL.gguf] | --hold-watcher\n", argv[0]); return 2; }
+    signal(SIGALRM, on_deadline);
+    alarm(300);
     char runner[PATH_MAX];
     if (!realpath(argv[1], runner)) { fprintf(stderr, "no runner at %s\n", argv[1]); return 2; }
     const char *model = argc > 2 ? argv[2] : NULL;
@@ -642,7 +760,7 @@ int main(int argc, char **argv) {
 
     // 4. the live control: the autostart toggle, by id
     n = tray_menu_build(items, 128);
-    int auto_id = find_action(items, n, TRAY_ACT_TOGGLE_AUTOSTART);
+    int auto_id = layout_id("Launch at login");
     char desk[800];
     snprintf(desk, sizeof desk, "%s/autostart/xyntetik-runner-tray.desktop", cfg);
     struct stat sb;
@@ -668,13 +786,141 @@ int main(int argc, char **argv) {
           "4. a click on id 9999 acts on nothing and the tray answers on");
     free_node(again);
 
+    // 9. ids are the rows' own. Two server records, helper and helper2, each a row "serve  ·  pid N" with a
+    // submenu ending in Stop. Take the layout, drop the FIRST-listed server's record (the rows below move up), let
+    // the tray refresh, then click that server's old Stop id: nothing may act, above all not the second server's
+    // Stop that now sits where it was (positional ids stopped the other pid)
+    {
+        uint32_t r9 = 0;
+        node *lay = get_layout(&r9);
+        long pids[2] = { helper, helper2 };
+        long first = lay ? first_listed(lay, pids, 2) : 0, second = first == helper ? helper2 : helper;
+        char sfx[48];
+        snprintf(sfx, sizeof sfx, "pid %ld", first);
+        int stop_first = child_id(lay ? find_label_end(lay, sfx) : NULL, "Stop");
+        free_node(lay);
+        char rec[1024];
+        snprintf(rec, sizeof rec, "%.800s/%ld.json", idir, first);
+        int before = g_layout_updated;
+        unlink(rec);
+        bool moved = pump_until(&g_layout_updated, before, 8);
+        clicked = click(stop_first);
+        pump(1.0);
+        CHECK(first && stop_first > 0 && moved && clicked && pid_alive(second) && pid_alive(first),
+              "9. a late click on the gone server's Stop (id %d, pid %ld) acts on nothing: the server listed after it "
+              "(pid %ld) is alive (%d), and so is the gone one (%d)", stop_first, first, second, pid_alive(second),
+              pid_alive(first));
+        write_record(first, "serve");   // as it was, for what follows
+        pump(2.5);
+    }
+
     // 5. Quit
-    int quit_id = find_action(items, n, TRAY_ACT_QUIT);
+    int quit_id = layout_id("Quit controller");
     click(quit_id);
     bool ex;
     int rc = wait_exit(tray, 15, &ex);
     CHECK(quit_id > 0 && ex && rc == 0, "5. Quit (id %d) ends the tray with %d (want 0)", quit_id, rc);
     if (!ex) { kill(tray, SIGKILL); waitpid(tray, NULL, 0); }
+
+    // ---- 10. the tray host goes away (a short TEST-ONLY grace window)
+    setenv("RUNNER_TRAY_TEST_HOST_GRACE_MS", "1500", 1);
+    {
+        // a. back inside the window: registers again, nothing ends
+        g_registered[0] = 0;
+        tray = start_tray(runner, log_fd);
+        t0 = now_s();
+        while (!g_registered[0] && now_s() - t0 < 15) D->conn_read_write_dispatch(g_c, 50);
+        bool reg1 = g_registered[0] != 0;
+        disconnect_bus();                         // the watcher's name goes with the connection
+        usleep(500 * 1000);
+        g_registered[0] = 0;
+        bool back = connect_bus(true);
+        t0 = now_s();
+        while (!g_registered[0] && now_s() - t0 < 10) D->conn_read_write_dispatch(g_c, 50);
+        pump(2.5);                                // past the window
+        CHECK(reg1 && back && g_registered[0] && waitpid(tray, NULL, WNOHANG) == 0,
+              "10a. a host back inside the window gets the item again (%d) and the tray stays up", g_registered[0] != 0);
+        click(layout_id("Quit controller"));
+        wait_exit(tray, 15, &ex);
+        if (!ex) { kill(tray, SIGKILL); waitpid(tray, NULL, 0); }
+    }
+    char trylog[800];
+    snprintf(trylog, sizeof trylog, "%s/tray-10.log", g_tmp);
+    if (model) {
+        // b. the host stays away, the tray managing a --serve: tray and child end
+        char cfgjson[800];
+        snprintf(cfgjson, sizeof cfgjson, "%s/.xyntetik/runner/config.json", home);
+        FILE *f = fopen(cfgjson, "wb");
+        char mreal[PATH_MAX];
+        if (f && realpath(model, mreal)) {
+            fprintf(f, "{\"last_model\": \"%s\", \"last_args\": \"--gpu off -c 128 -t 1 --no-tray\", \"port\": %d}\n",
+                    mreal, 18000 + (int)(getpid() % 2000));
+            fclose(f);
+        } else if (f) fclose(f);
+        int tlog = open(trylog, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        g_registered[0] = 0;
+        tray = start_tray(runner, tlog);
+        t0 = now_s();
+        while (!g_registered[0] && now_s() - t0 < 15) D->conn_read_write_dispatch(g_c, 50);
+        click(layout_id("Start default runner"));
+        long child = 0;
+        for (int k = 0; k < 200 && !child; k++) {
+            int ni = 0;
+            instance_rec *r = instances_list(&ni);
+            for (int i = 0; i < ni; i++)
+                if (!strcmp(r[i].mode, "serve") && r[i].pid != helper && r[i].pid != helper2) child = r[i].pid;
+            instances_list_free(r, ni);
+            if (!child) pump(0.1);
+        }
+        disconnect_bus();                          // the host goes, and stays gone
+        int rcb = wait_exit(tray, 20, &ex);
+        bool child_gone = false;
+        for (int k = 0; k < 100 && !(child_gone = !pid_alive(child)); k++) usleep(100000);
+        close(tlog);
+        char *tl = slurp(trylog);
+        CHECK(child > 0 && ex && child_gone && tl && strstr(tl, "tray host gone for"),
+              "10b. the host gone past the window, managing a --serve: the tray ends (%d, exit %d) and its child "
+              "(pid %ld) with it (%d), saying why (%s)", ex, rcb, child, child_gone,
+              tl && strstr(tl, "tray host gone for") ? "yes" : "no");
+        free(tl);
+        if (!ex) { kill(tray, SIGKILL); waitpid(tray, NULL, 0); }
+        if (child && pid_alive(child)) kill((pid_t)child, SIGKILL);
+        unlink(cfgjson);
+        CHECK(connect_bus(true), "the fake watcher is back for what follows");
+
+        // c. the host stays away, the tray beside a --serve it did not start: the tray ends, the server answers
+        int port = 20000 + (int)(getpid() % 2000);
+        char ps[16];
+        snprintf(ps, sizeof ps, "%d", port);
+        char *sv[] = { runner, "-m", mreal, "--serve", "--port", ps, "--gpu", "off", "-c", "128", "-t", "1",
+                       "--no-tray", NULL };
+        int dn = open("/dev/null", O_WRONLY);
+        pid_t server = spawn_env(sv, NULL, dn);
+        close(dn);
+        bool up = false;
+        for (int k = 0; k < 300 && !(up = health_ok(port)); k++) usleep(100000);
+        tlog = open(trylog, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        g_registered[0] = 0;
+        tray = start_tray(runner, tlog);
+        t0 = now_s();
+        while (!g_registered[0] && now_s() - t0 < 15) D->conn_read_write_dispatch(g_c, 50);
+        disconnect_bus();
+        int rcc = wait_exit(tray, 20, &ex);
+        close(tlog);
+        tl = slurp(trylog);
+        bool still = health_ok(port);
+        CHECK(up && ex && still && tl && strstr(tl, "tray host gone for"),
+              "10c. the host gone past the window, beside a --serve it did not start: the tray ends (%d, exit %d) "
+              "and that server still answers (%d)", ex, rcc, still);
+        free(tl);
+        if (!ex) { kill(tray, SIGKILL); waitpid(tray, NULL, 0); }
+        kill(server, SIGTERM);
+        waitpid(server, NULL, 0);
+        CHECK(connect_bus(true), "the fake watcher is back for what follows");
+    } else {
+        printf("note: no TINY_MODEL given: 10b and 10c did not run\n");
+    }
+    unsetenv("RUNNER_TRAY_TEST_HOST_GRACE_MS");
 
     // ---- 8. the bus goes away under a tray with a managed --serve child
     if (model) {
@@ -691,8 +937,7 @@ int main(int argc, char **argv) {
         tray = start_tray(runner, log_fd);
         t0 = now_s();
         while (!g_registered[0] && now_s() - t0 < 15) D->conn_read_write_dispatch(g_c, 50);
-        n = tray_menu_build(items, 128);
-        int start_id = find_action(items, n, TRAY_ACT_START_MANAGED);
+        int start_id = layout_id("Start default runner");
         click(start_id);
         // the managed child appears in the registry as a serve that is not ours
         long child = 0;
