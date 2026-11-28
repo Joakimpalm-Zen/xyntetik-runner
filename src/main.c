@@ -4627,6 +4627,15 @@ static const char *cli_fwd_fault(const engine *e) {
                          : NULL;
 }
 
+// The same, for a generation that stopped: only the device's failure is
+// known to be a forward's. e->oom there may be the sampler's or a
+// constraint's allocation (engine_gen_step), so it says only what is known.
+static const char *cli_gen_fault(const engine *e) {
+    return e->fwd_failed ? "a forward failed on the device"
+         : e->oom        ? "out of memory"
+                         : NULL;
+}
+
 static void cli_tray_follow(const cli_opts *o) {
 #if defined(__APPLE__) || defined(_WIN32)
     if (!o->no_tray && (o->serve || o->interactive) &&
@@ -7882,8 +7891,8 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     }
     if (cli_fwd_fault(&rt->e)) {
         // a failed forward cut the replay short: that says nothing about the record
-        fprintf(stderr, "UNVERIFIABLE: the replay stopped after %d token%s: a forward %s\n",
-                n_gen, n_gen == 1 ? "" : "s", cli_fwd_fault(&rt->e));
+        fprintf(stderr, "UNVERIFIABLE: the replay stopped after %d token%s: %s\n",
+                n_gen, n_gen == 1 ? "" : "s", cli_gen_fault(&rt->e));
         free(replay_out.buf); jv_free(vr->rec);
         return 3;
     }
@@ -8789,8 +8798,8 @@ static int run_bench(cli_opts *o, cli_run *rt) {
     n_gen = engine_generate(&rt->e, logits, o->n_predict, discard_cb, NULL, &gtime);
     if (cli_fwd_fault(&rt->e)) {
         // a rate over a cut-short run measures the failure, not the route
-        fprintf(stderr, "error: the benchmark's generation stopped after %d token%s: a forward %s\n",
-                n_gen, n_gen == 1 ? "" : "s", cli_fwd_fault(&rt->e));
+        fprintf(stderr, "error: the benchmark's generation stopped after %d token%s: %s\n",
+                n_gen, n_gen == 1 ? "" : "s", cli_gen_fault(&rt->e));
         free(p);
         return 1;
     }
@@ -8979,8 +8988,8 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
     model_debug_time_report();
     if (cli_fwd_fault(&rt->e)) {
         // no receipt for a run a failed forward cut short: its output is not the model's answer
-        fprintf(stderr, "error: generation stopped: a forward %s after %d token%s\n",
-                cli_fwd_fault(&rt->e), n_gen, n_gen == 1 ? "" : "s");
+        fprintf(stderr, "error: generation stopped: %s after %d token%s\n",
+                cli_gen_fault(&rt->e), n_gen, n_gen == 1 ? "" : "s");
         free(ocap.buf);
         free(p);
         return 1;
@@ -9204,8 +9213,8 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
                 n_gen, n_gen / (gtime > 0 ? gtime : 1e-9));
         if (cli_fwd_fault(&rt->e)) {
             // no further turn is answered after a failed forward
-            fprintf(stderr, "error: generation stopped: a forward %s after %d token%s\n",
-                    cli_fwd_fault(&rt->e), n_gen, n_gen == 1 ? "" : "s");
+            fprintf(stderr, "error: generation stopped: %s after %d token%s\n",
+                    cli_gen_fault(&rt->e), n_gen, n_gen == 1 ? "" : "s");
             break;
         }
     }

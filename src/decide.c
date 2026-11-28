@@ -218,6 +218,9 @@ static const char *jstr(const jv *o, const char *k) {
 
 int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, const char **err) {
     *err = NULL;
+    // the flags are this request's own: an earlier request's device failure
+    // must not turn this one's 400 into the server's 500 (server.c reads them)
+    engine_fault_clear(e);
     const char *state = jstr(req, "state");
     if (!state) { *err = "missing state (a string)"; return 400; }
     const char *aprefix = jstr(req, "answer_prefix");
@@ -463,6 +466,7 @@ static char *rr_render_raw(const char *instr, const char *q, const char *d) {
 int rerank_handle(engine *e, const jv *req, const char *model_name, int tmpl,
                   sbuf *out, const char **err) {
     *err = NULL;
+    engine_fault_clear(e);   // this request's own flags (decide_handle)
     const char *query = jstr(req, "query");
     if (!query || !*query) { *err = "missing query (a non-empty string)"; return 400; }
     jv *docs = jv_get((jv *)req, "documents");
