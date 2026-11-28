@@ -2715,10 +2715,12 @@ static int width_fallback(int want, int64_t n) {
 
 // How a tensor that takes a quantized type answers a request for one.
 typedef enum {
-    DEC_AS_ASKED,     // written as asked, or already that type
-    DEC_FALLBACK,     // written in the 32-block cousin of the type asked for
-    DEC_KEPT_WIDTH,   // kept: no type on offer divides its row
-    DEC_KEPT_SIZE,    // kept: it is already no larger than what would be written
+    DEC_AS_ASKED,         // written as asked, or already that type
+    DEC_FALLBACK,         // written in the 32-block cousin of the type asked for
+    DEC_KEPT_WIDTH,       // kept: no type on offer divides its row
+    DEC_KEPT_SIZE,        // kept: it is already no larger than what would be written
+    DEC_KEPT_NVFP4_EXPS,  // kept: NVFP4 is offered only on this architecture's expert stacks
+    DEC_KEPT_NVFP4_SCALE, // kept: NVFP4 would overwrite a tensor's existing .scale companion
 } type_decision;
 
 // The type a quantizable tensor is written in when `want` is asked of it. A
@@ -2734,7 +2736,9 @@ typedef enum {
 // RUNNER_FORCE_REQUANT, which its refusal tells the reader to set.
 static int decide_type(gguf_file *g, const gguf_tensor *t, int want, bool grow, type_decision *how) {
     if (want == T_NVFP4 && !nvfp4_allowed_for_tensor(g, t)) {
-        *how = DEC_KEPT_WIDTH;
+        *how = !strcmp(gguf_get_str(g, "general.architecture", ""), "inkling2_loop")
+                   ? DEC_KEPT_NVFP4_EXPS
+                   : DEC_KEPT_NVFP4_SCALE;
         return (int)t->type;
     }
     int64_t n = (int64_t)t->ne[0];
@@ -3559,6 +3563,8 @@ static const char *tph_words(int how) {
     case TPH_DECIDED + DEC_FALLBACK: return "width fallback: the block does not divide the row";
     case TPH_DECIDED + DEC_KEPT_WIDTH: return "kept: no type on offer divides the row";
     case TPH_DECIDED + DEC_KEPT_SIZE: return "kept: not smaller than what it carries";
+    case TPH_DECIDED + DEC_KEPT_NVFP4_EXPS: return "kept: NVFP4 is offered only on this architecture's expert stacks";
+    case TPH_DECIDED + DEC_KEPT_NVFP4_SCALE: return "kept: NVFP4 would overwrite a tensor's existing .scale companion";
     default: return "?";
     }
 }
@@ -3639,8 +3645,11 @@ static bool quantize_job_decide_types(quantize_job *J, int target,
     const char *fb_name[DECLINE_NAMES]; uint32_t fb_want[DECLINE_NAMES], fb_got[DECLINE_NAMES];
     int n_fb = 0; uint64_t fell_back = 0;
     const char *decl_s_name[DECLINE_NAMES]; uint32_t decl_s_type[DECLINE_NAMES];
-    int n_decl_w = 0, n_decl_s = 0;
+    const char *decl_ne_name[DECLINE_NAMES]; uint32_t decl_ne_type[DECLINE_NAMES];
+    const char *decl_ns_name[DECLINE_NAMES]; uint32_t decl_ns_type[DECLINE_NAMES];
+    int n_decl_w = 0, n_decl_s = 0, n_decl_ne = 0, n_decl_ns = 0;
     uint64_t declined_width = 0;
+    uint64_t declined_nvfp4_exps = 0, declined_nvfp4_scale = 0;
     // Declines because the requested type is no SMALLER than the one already
     // there. That is usually the right call, but two pairs are exactly the
     // same width and materially different quality -- q4_0/q4_K are both 144 B
@@ -3703,6 +3712,18 @@ static bool quantize_job_decide_types(quantize_job *J, int target,
                     decl_s_type[n_decl_s++] = (uint32_t)want;
                 }
                 declined_size++;
+            } else if (how == DEC_KEPT_NVFP4_EXPS) {
+                if (n_decl_ne < DECLINE_NAMES) {
+                    decl_ne_name[n_decl_ne] = t->name;
+                    decl_ne_type[n_decl_ne++] = (uint32_t)want;
+                }
+                declined_nvfp4_exps++;
+            } else if (how == DEC_KEPT_NVFP4_SCALE) {
+                if (n_decl_ns < DECLINE_NAMES) {
+                    decl_ns_name[n_decl_ns] = t->name;
+                    decl_ns_type[n_decl_ns++] = (uint32_t)want;
+                }
+                declined_nvfp4_scale++;
             }
         }
         // an adapted tensor cannot keep a type this file has no quantizer
@@ -3718,8 +3739,10 @@ static bool quantize_job_decide_types(quantize_job *J, int target,
     if (merge_unwritable) return false;
     // R4.55: the plan's own traps, said in every run and refused under --type-plan-strict
     const bool plan_trap = type_plan_path && J->w.ok && type_plan_audit(J, NULL, true);
+    const uint64_t declined_any = fell_back + declined_width + declined_size +
+                                  declined_nvfp4_exps + declined_nvfp4_scale;
     bool strict_refuse = g_type_plan_strict && type_plan_path &&
-                         (fell_back || declined_width || declined_size || plan_trap);
+                         (declined_any || plan_trap);
     if (J->w.ok && fell_back) {
         fprintf(stderr, "quantize: %llu tensor(s) written in a 32-block fallback "
                 "type — the requested type's block does not divide their row "
@@ -3742,6 +3765,28 @@ static bool quantize_job_decide_types(quantize_job *J, int target,
             fprintf(stderr, "quantize:   ... and %llu more\n",
                     (unsigned long long)(declined_width - (uint64_t)n_decl_w));
     }
+    if (J->w.ok && declined_nvfp4_exps) {
+        fprintf(stderr, "quantize: %llu tensor(s) kept their own type - "
+                "NVFP4 is offered only on this architecture's expert stacks\n",
+                (unsigned long long)declined_nvfp4_exps);
+        for (int k = 0; k < n_decl_ne; k++)
+            fprintf(stderr, "quantize:   %s wanted %s\n",
+                    decl_ne_name[k], ggml_type_name(decl_ne_type[k]));
+        if (declined_nvfp4_exps > (uint64_t)n_decl_ne)
+            fprintf(stderr, "quantize:   ... and %llu more\n",
+                    (unsigned long long)(declined_nvfp4_exps - (uint64_t)n_decl_ne));
+    }
+    if (J->w.ok && declined_nvfp4_scale) {
+        fprintf(stderr, "quantize: %llu tensor(s) kept their own type - "
+                "NVFP4 would overwrite an existing .scale companion\n",
+                (unsigned long long)declined_nvfp4_scale);
+        for (int k = 0; k < n_decl_ns; k++)
+            fprintf(stderr, "quantize:   %s wanted %s\n",
+                    decl_ns_name[k], ggml_type_name(decl_ns_type[k]));
+        if (declined_nvfp4_scale > (uint64_t)n_decl_ns)
+            fprintf(stderr, "quantize:   ... and %llu more\n",
+                    (unsigned long long)(declined_nvfp4_scale - (uint64_t)n_decl_ns));
+    }
     if (J->w.ok && declined_size) {
         fprintf(stderr, "quantize: %llu tensor(s) kept their own type — the "
                 "requested type is not smaller than what they already carry "
@@ -3755,11 +3800,10 @@ static bool quantize_job_decide_types(quantize_job *J, int target,
                     (unsigned long long)(declined_size - (uint64_t)n_decl_s));
     }
     if (strict_refuse) {
-        if (fell_back || declined_width || declined_size)
+        if (declined_any)
             fprintf(stderr, "error: --type-plan-strict: %llu plan rule(s) would "
                     "not be applied as written (listed above); nothing was "
-                    "written\n", (unsigned long long)(fell_back + declined_width +
-                                                      declined_size));
+                    "written\n", (unsigned long long)declined_any);
         if (plan_trap)
             fprintf(stderr, "error: --type-plan-strict: the plan's rules do not take the tensors they name (the "
                     "warnings above); nothing was written\n");
