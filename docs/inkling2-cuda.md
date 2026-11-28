@@ -43,12 +43,14 @@ IQ3_S and Q5_0. A product of those four types runs the generic batch-1 kernel
 (`k_mv_q4_K`, `k_mv_iq4_nl`, `k_mv_iq3_s`, `k_mv_q5_0`), and an expert stack
 its segmented twin, which is byte-identical to per-expert launches of that
 kernel. Against the CPU route it is the route's tolerance class, as for the
-other types. A prompt on those stacks is read one column at a time, so prompt
-reading is slower than on NVFP4, whose experts run as batched tiles. The
-router runs on the device for multiple positions, on the host for one. The
-host gathers embeddings, orchestrates the loop and block states, and runs
-input norms, post convolutions and residual work. LoRA attention terms are
-added on the host, and an adapter declines the resident step.
+other types. Q6_K and Q5_K run as products only (`k_mv_q6_K`, `k_mv_q5_K`): a
+Q6_K or Q5_K expert stack stays on the host, with its products on the CPU. A
+prompt on those stacks is read one column at a time, so prompt reading is
+slower than on NVFP4, whose experts run as batched tiles. The router runs on
+the device for multiple positions, on the host for one. The host gathers
+embeddings, orchestrates the loop and block states, and runs input norms, post
+convolutions and residual work. LoRA attention terms are added on the host,
+and an adapter declines the resident step.
 
 An eligible plain single-position forward runs the whole decode step on
 the device: all 48 layer applications, block-state reads, message gates,

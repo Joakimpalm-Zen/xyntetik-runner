@@ -12984,6 +12984,8 @@ gpu_ink2 *gpu_ink2_bind(void) {
         { T_IQ4_NL, "k_mv_iq4_nl" },
         { T_IQ3_S, "k_mv_iq3_s" },
         { T_Q5_0, "k_mv_q5_0" },
+        // dense only: no segmented twin, so dev_wanted keeps a Q6_K or Q5_K expert stack on the host
+        { T_Q6_K, "k_mv_q6_K" }, { T_Q5_K, "k_mv_q5_K" },
     };
     for (size_t k = 0; k < sizeof mv / sizeof *mv; k++)
         if (cu.ModuleGetFunction(&h->mv[mv[k].type], h->mod, mv[k].name) != 0) h->mv[mv[k].type] = NULL;

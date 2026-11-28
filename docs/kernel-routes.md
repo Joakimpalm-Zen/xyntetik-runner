@@ -344,6 +344,16 @@ Around the matvec:
   `test-mvt`, `test-train-gpu`, the device-mode `test-lora-grad` runs.
 - **KV cache formats.** q8 KV is tolerance-gated (`./test-kv-tol`); fp4 KV is
   held to the host codec (`test-kv-fp4`, `make test-cuda-kv-fp4`).
+- **Inkling 2 Mini's own route (`gpu_ink2_*`).** Its products run the generic
+  batch-1 kernels `k_mv_<type>` in `enc_mv`'s batch-1 launch shapes: F32,
+  BF16, Q8_0, NVFP4, IQ3_XXS and, since R4.48.39, Q4_K, IQ4_NL, IQ3_S, Q5_0,
+  Q6_K and Q5_K. Its expert stacks run segmented twins (`k_mvseg_<type>`:
+  `MVSEG_HEAD` and the batch-1 body verbatim), byte-identical to per-expert
+  launches (`test-inkling2-cuda`, gate (k)). Q6_K and Q5_K have no twin, so
+  their stacks stay on the host. **A prompt on Q4_K, IQ4_NL, IQ3_S, Q5_0 or
+  IQ3_XXS stacks is read one column at a time**; only NVFP4 stacks run as
+  batched tiles. Against the CPU the route keeps the class above:
+  token-identical, not logit-bit-identical.
 
 ## Metal: `enc_mv_n`, then `enc_mv_cols`, in `src/metal.m`
 
