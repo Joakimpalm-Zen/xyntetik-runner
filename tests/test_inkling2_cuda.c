@@ -380,8 +380,35 @@ static double core_case(int hd, int global, int window, int R, const int *chunks
 // `used` experts starting at (t * 5 + 1) % E stepping 3 (so experts repeat across positions), plus expert `all` at
 // every position (-1: none) and expert `none` never. *nval the values compared; returns the values whose bits differ,
 // -1 if a call did not run.
-static long exp_identity(int type, int H, int F, int E, int T, int used, int all, int none, long *nval) {
-    const size_t rb13 = type == T_NVFP4 ? (size_t)H / 64 * 36 : (size_t)H * 2, rb2 = type == T_NVFP4 ? (size_t)F / 64 * 36 : (size_t)F * 2;
+// R4.48.39: a stack's row bytes in any type the expert body takes (a block type's blocks; BF16 2 bytes a value)
+static size_t qs_row_bytes(int type, int n) {
+    return type == T_BF16 ? (size_t)n * 2 : (size_t)n / (size_t)ggml_block_size(type) * (size_t)ggml_type_size(type);
+}
+// R4.48.39: a block-quantized stack of `rows` rows of rb bytes. Random code bytes; each f16 scale (d, and Q4_K / Q5_K's
+// dmin) positive and finite, from 2^-7 to 2^-5. Every 7th block from the k-th is a boundary: (0) its scales 0, the zero
+// block; (1) every other byte 0x00; (2) every other byte 0xFF (the K-quants' 6-bit scales at their top code).
+static void qs_fill(int type, unsigned char *w, size_t rows, size_t rb, uint32_t *seed) {
+    int at[2] = { 0, -1 };   // the f16 scales' byte offsets in a block: d first for Q5_0, IQ4_NL, IQ3_S and IQ3_XXS
+    if (type == T_Q4_K || type == T_Q5_K) at[1] = 2;
+    if (type == T_Q6_K) at[0] = 208;   // Q6_K's d is its last two bytes
+    const size_t bs = (size_t)ggml_type_size(type);
+    for (size_t i = 0; i < rows * rb; i++) { *seed = *seed * 1664525u + 1013904223u; w[i] = (unsigned char)(*seed >> 8); }
+    size_t kb = 0;
+    for (size_t r = 0; r < rows; r++)
+        for (size_t b = 0; b + bs <= rb; b += bs, kb++) {
+            unsigned char *blk = w + r * rb + b;
+            const int kind = (int)(kb % 7);
+            if (kind == 1 || kind == 2) memset(blk, kind == 1 ? 0x00 : 0xFF, bs);
+            for (int k = 0; k < 2; k++) {
+                if (at[k] < 0) continue;
+                if (kind == 0) blk[at[k]] = blk[at[k] + 1] = 0;
+                else blk[at[k] + 1] = (unsigned char)(0x20 + blk[at[k] + 1] % 8);
+            }
+        }
+}
+static long exp_identity(int type13, int type2, int H, int F, int E, int T, int used, int all, int none, long *nval) {
+    const int type = type13;   // the same-type NVFP4 and BF16 cases keep their seed and generation order
+    const size_t rb13 = qs_row_bytes(type13, H), rb2 = qs_row_bytes(type2, F);
     unsigned char *w13 = malloc((size_t)E * 2 * F * rb13), *w2 = malloc((size_t)E * H * rb2);
     float *x = malloc(sizeof(float) * (size_t)T * H), *o1 = malloc(sizeof(float) * (size_t)T * H);
     float *o2 = malloc(sizeof(float) * (size_t)T * H), *wt = calloc((size_t)T * E, sizeof(float));
@@ -393,7 +420,19 @@ static long exp_identity(int type, int H, int F, int E, int T, int used, int all
     uint32_t seed = 991u + (uint32_t)type * 7u + (uint32_t)T;
 #define RNDU() (seed = seed * 1664525u + 1013904223u, seed >> 8)
 #define RNDF() ((float)((int)(RNDU() % 2001u) - 1000) / 1000.0f)
-    if (type == T_NVFP4) {
+    if (type13 != type2 || (type != T_NVFP4 && type != T_BF16)) {
+        // R4.48.39: each stack in its own type: a block-quantized one by qs_fill, an NVFP4 one as below
+        const size_t rows[2] = { (size_t)E * 2 * F, (size_t)E * H }, rbs[2] = { rb13, rb2 };
+        unsigned char *ws[2] = { w13, w2 };
+        const int ty[2] = { type13, type2 };
+        for (int u = 0; u < 2; u++) {
+            if (ty[u] != T_NVFP4) { qs_fill(ty[u], ws[u], rows[u], rbs[u], &seed); continue; }
+            for (size_t i = 0; i < rows[u] * rbs[u]; i++) ws[u][i] = (unsigned char)RNDU();
+            for (size_t r = 0; r < rows[u]; r++)
+                for (size_t b = 0; b < rbs[u]; b += 36)
+                    for (int k = 0; k < 4; k++) ws[u][r * rbs[u] + b + k] = (unsigned char)(0x30 + RNDU() % 16);
+        }
+    } else if (type == T_NVFP4) {
         for (size_t i = 0; i < (size_t)E * 2 * F * rb13; i++) w13[i] = (unsigned char)RNDU();
         for (size_t i = 0; i < (size_t)E * H * rb2; i++) w2[i] = (unsigned char)RNDU();
         for (size_t r = 0; r < (size_t)E * 2 * F; r++)   // scale bytes in a sane range (no NaN code 0x7F)
@@ -418,12 +457,12 @@ static long exp_identity(int type, int H, int F, int E, int T, int used, int all
 #undef RNDF
     {
         gpu_ink2 *h = gpu_ink2_bind();
-        const float *f13 = type == T_NVFP4 ? s13 : NULL, *f2 = type == T_NVFP4 ? s2 : NULL;
+        const float *f13 = type13 == T_NVFP4 ? s13 : NULL, *f2 = type2 == T_NVFP4 ? s2 : NULL;
         const int i13 = h ? gpu_ink2_put(h, w13, (size_t)E * 2 * F * rb13, f13, f13 ? E : 0) : -1;
         const int i2 = h ? gpu_ink2_put(h, w2, (size_t)E * H * rb2, f2, f2 ? E : 0) : -1;
         const long nb0 = gpu_ink2_test_stats(h, NULL);
         bool ran = i13 >= 0 && i2 >= 0 &&
-                   gpu_ink2_experts(h, i13, i2, type, type, rb13, rb2, H, F, E, T, x, ch, wt, f13, f2, 4.0f, 8.0f, o1);
+                   gpu_ink2_experts(h, i13, i2, type13, type2, rb13, rb2, H, F, E, T, x, ch, wt, f13, f2, 4.0f, 8.0f, o1);
         g_obs.nb = gpu_ink2_test_stats(h, g_obs.caps) - nb0;   // (ae): the tiled products, the gathered buffers
         g_obs.nall = 0;
         g_obs.nbig = 0;
@@ -435,7 +474,7 @@ static long exp_identity(int type, int H, int F, int E, int T, int used, int all
         }
         gpu_ink2_test_experts_ref(h, 1);   // the reference: the former per-expert launches, each product per column
         gpu_ink2_test_mv_ref(h, 1);
-        ran = ran && gpu_ink2_experts(h, i13, i2, type, type, rb13, rb2, H, F, E, T, x, ch, wt, f13, f2, 4.0f, 8.0f, o2);
+        ran = ran && gpu_ink2_experts(h, i13, i2, type13, type2, rb13, rb2, H, F, E, T, x, ch, wt, f13, f2, 4.0f, 8.0f, o2);
         gpu_ink2_test_experts_ref(h, 0);
         gpu_ink2_test_mv_ref(h, 0);
         if (ran) {
@@ -2086,27 +2125,36 @@ int main(int argc, char **argv) {
     }
     // D2 (k): the fused expert body equals the former per-expert launches bit for bit
     {
-        static const struct { const char *what; int type, H, F, E, T, used, all, none; } xc[] = {
-            { "NVFP4 at the real widths, one position, 8 of 16 experts (a decode step)", T_NVFP4, 2304, 1152, 16, 1, 8, -1, -1 },
-            { "NVFP4, 37 positions, 4 experts each plus expert 1 at every position, expert 2 never", T_NVFP4, 256, 128, 16, 37, 4, 1, 2 },
-            { "NVFP4, 300 positions, 8 of 16 each (2400 columns)", T_NVFP4, 256, 128, 16, 300, 8, -1, -1 },
-            { "BF16 (no factors), 6 positions, 2 of 8 each", T_BF16, 256, 128, 8, 6, 2, -1, -1 },
-            { "BF16 at the real widths, one position, 8 of 16 experts", T_BF16, 2304, 1152, 16, 1, 8, -1, -1 },
+        static const struct { const char *what; int type, H, F, E, T, used, all, none, type2; } xc[] = {
+            { "NVFP4 at the real widths, one position, 8 of 16 experts (a decode step)", T_NVFP4, 2304, 1152, 16, 1, 8, -1, -1, 0 },
+            { "NVFP4, 37 positions, 4 experts each plus expert 1 at every position, expert 2 never", T_NVFP4, 256, 128, 16, 37, 4, 1, 2, 0 },
+            { "NVFP4, 300 positions, 8 of 16 each (2400 columns)", T_NVFP4, 256, 128, 16, 300, 8, -1, -1, 0 },
+            { "BF16 (no factors), 6 positions, 2 of 8 each", T_BF16, 256, 128, 8, 6, 2, -1, -1, 0 },
+            { "BF16 at the real widths, one position, 8 of 16 experts", T_BF16, 2304, 1152, 16, 1, 8, -1, -1, 0 },
             // BF16 experts run per column whatever their column count (P1a's BF16 tile measured slower and went): these
             // hold that path to the reference at the counts where an NVFP4 expert tiles
-            { "BF16, 300 positions, 8 of 16 each (~150 columns an expert)", T_BF16, 256, 128, 16, 300, 8, -1, -1 },
-            { "BF16, 20 positions, 8 of 16 each plus expert 1 at every position", T_BF16, 256, 128, 16, 20, 8, 1, -1 },
-            { "BF16, 16 positions, expert 3 at every position (16 columns)", T_BF16, 256, 128, 16, 16, 2, 3, -1 },
-            { "BF16, 17 positions, expert 3 at every position (17 columns)", T_BF16, 256, 128, 16, 17, 2, 3, -1 },
-            { "BF16 at the real widths, 64 positions, 8 of 16 each", T_BF16, 2304, 1152, 16, 64, 8, -1, -1 },
+            { "BF16, 300 positions, 8 of 16 each (~150 columns an expert)", T_BF16, 256, 128, 16, 300, 8, -1, -1, 0 },
+            { "BF16, 20 positions, 8 of 16 each plus expert 1 at every position", T_BF16, 256, 128, 16, 20, 8, 1, -1, 0 },
+            { "BF16, 16 positions, expert 3 at every position (16 columns)", T_BF16, 256, 128, 16, 16, 2, 3, -1, 0 },
+            { "BF16, 17 positions, expert 3 at every position (17 columns)", T_BF16, 256, 128, 16, 17, 2, 3, -1, 0 },
+            { "BF16 at the real widths, 64 positions, 8 of 16 each", T_BF16, 2304, 1152, 16, 64, 8, -1, -1, 0 },
             // P1b: NVFP4 experts with at least 16 columns run as batched tiles too
-            { "NVFP4, 16 positions, expert 3 at every position (exactly one full tile)", T_NVFP4, 256, 128, 16, 16, 2, 3, -1 },
-            { "NVFP4, 17 positions, expert 3 at every position (a tile of 16 and one of 1)", T_NVFP4, 256, 128, 16, 17, 2, 3, -1 },
-            { "NVFP4 at the real widths, 64 positions, 8 of 16 each", T_NVFP4, 2304, 1152, 16, 64, 8, -1, -1 },
+            { "NVFP4, 16 positions, expert 3 at every position (exactly one full tile)", T_NVFP4, 256, 128, 16, 16, 2, 3, -1, 0 },
+            { "NVFP4, 17 positions, expert 3 at every position (a tile of 16 and one of 1)", T_NVFP4, 256, 128, 16, 17, 2, 3, -1, 0 },
+            { "NVFP4 at the real widths, 64 positions, 8 of 16 each", T_NVFP4, 2304, 1152, 16, 64, 8, -1, -1, 0 },
+            // R4.48.39: the community files' stack types, segmented (k_mvseg_<type>) against the per-expert k_mv_<type>
+            // launches, with qs_fill's boundary blocks; a K-quant's 256-value blocks need F a multiple of 256, so the
+            // real widths pair it with an NVFP4 down stack (F 1152)
+            { "Q4_K, one position, 8 of 16 experts (a decode step)", T_Q4_K, 512, 256, 16, 1, 8, -1, -1, T_Q4_K },
+            { "Q4_K, 37 positions, 4 experts each plus expert 1 at every position, expert 2 never", T_Q4_K, 512, 256, 16, 37, 4, 1, 2, T_Q4_K },
+            { "Q4_K, 300 positions, 8 of 16 each (2400 columns)", T_Q4_K, 512, 256, 16, 300, 8, -1, -1, T_Q4_K },
+            { "Q4_K gate_up with NVFP4 down at the real widths, one position, 8 of 16", T_Q4_K, 2304, 1152, 16, 1, 8, -1, -1, T_NVFP4 },
+            { "Q4_K gate_up with NVFP4 down at the real widths, 64 positions, 8 of 16 each", T_Q4_K, 2304, 1152, 16, 64, 8, -1, -1, T_NVFP4 },
         };
         for (size_t k = 0; k < sizeof xc / sizeof *xc; k++) {
             long nv = 0;
-            const long d = exp_identity(xc[k].type, xc[k].H, xc[k].F, xc[k].E, xc[k].T, xc[k].used, xc[k].all, xc[k].none, &nv);
+            const int t2 = xc[k].type2 ? xc[k].type2 : xc[k].type;   // 0: the same type on both stacks (F32 is never one)
+            const long d = exp_identity(xc[k].type, t2, xc[k].H, xc[k].F, xc[k].E, xc[k].T, xc[k].used, xc[k].all, xc[k].none, &nv);
             CHECK(d == 0 && nv > 0, "(k) the fused expert body, %s: %ld of %ld values differ in their bits from the former "
                   "per-expert launches' (want 0)", xc[k].what, d, nv);
         }
@@ -2309,7 +2357,7 @@ int main(int argc, char **argv) {
         };
         for (size_t k = 0; k < sizeof ec / sizeof *ec; k++) {
             long nv = 0;
-            const long d = exp_identity(T_NVFP4, 256, 128, 16, ec[k].T, 2, ec[k].all, -1, &nv);
+            const long d = exp_identity(T_NVFP4, T_NVFP4, 256, 128, 16, ec[k].T, 2, ec[k].all, -1, &nv);
             const long want = g_obs.nbig > 0 ? 2 : 0;
             const size_t we = sizeof(float) * ((size_t)g_obs.nall + 16) * 256, wa = sizeof(float) * ((size_t)g_obs.nall + 16) * (2 * 128);
             CHECK(d == 0 && nv > 0 && g_obs.nb == want && (ec[k].T >= 16) == (g_obs.nbig > 0) && g_obs.caps[2] >= we &&
