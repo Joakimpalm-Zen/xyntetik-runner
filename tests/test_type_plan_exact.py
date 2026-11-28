@@ -32,9 +32,9 @@ def _s(x):
     return struct.pack("<Q", len(b)) + b
 
 
-def _write(path, tensors):
-    """A GGUF v3 file: general.architecture olmo2, alignment 32, and the tensors (name, dims, type, bytes)."""
-    kv = _s("general.architecture") + struct.pack("<I", 8) + _s("olmo2")
+def _write(path, tensors, arch="olmo2"):
+    """A GGUF v3 file: general.architecture `arch`, alignment 32, and the tensors (name, dims, type, bytes)."""
+    kv = _s("general.architecture") + struct.pack("<I", 8) + _s(arch)
     kv += _s("general.alignment") + struct.pack("<II", 4, 32)
     head = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), 2) + kv
     off, infos, blobs = 0, b"", []
@@ -231,3 +231,69 @@ def test_the_listing_is_what_the_rewrite_writes(runner_bin, tmp_path):
     assert set(got) == set(tensors)
     wrong = {n: (tensors[n]["written"], NAMES.get(t, t)) for n, t in got.items() if NAMES.get(t, str(t)) != tensors[n]["written"]}
     assert not wrong, list(wrong.items())[:5]
+
+
+def test_inkling2_dense_nvfp4_reports_expert_stacks_reason_not_width(runner_bin, tmp_path):
+    """On inkling2_loop, NVFP4 is offered on 3-D *_exps.weight expert stacks only. Asking nvfp4
+    for a 2-D dense tensor whose row width divides by 16 must report that architecture policy,
+    not 'no type on offer divides the row', while a genuine width mismatch keeps the width reason.
+    Likewise, an existing non-scalar .scale companion reports the .scale refusal, not width."""
+    tensors_in = [
+        ("blk.0.attn_q.weight", [64, 64], T_F32, _f32(64 * 64, 1)),
+        ("blk.0.attn_k.weight", [64, 64], T_F32, _f32(64 * 64, 2)),
+        ("blk.0.ffn_gate_exps.weight", [64, 64, 2], T_F32, _f32(64 * 64 * 2, 3)),
+    ]
+    model = _write(tmp_path / "ink2.gguf", tensors_in, arch="inkling2_loop")
+
+    # 1. --type-plan-show separates the policy refusal (dense tensor, row 64) from a real width mismatch (q4_k on row 64)
+    plan_both = _plan(tmp_path, "ink2-both", {"default": "keep", "rules": [
+        {"name": "blk.0.attn_q.weight", "type": "nvfp4"},
+        {"name": "blk.0.attn_k.weight", "type": "q4_k"},
+        {"name": "blk.0.ffn_gate_exps.weight", "type": "nvfp4"},
+    ]})
+    r, tensors, _ = _show(runner_bin, model, plan_both)
+    assert r.returncode == 0, r.stderr
+    assert tensors["blk.0.ffn_gate_exps.weight"]["written"] == "nvfp4"
+    assert tensors["blk.0.ffn_gate_exps.weight"]["why"] == "as asked"
+    assert tensors["blk.0.attn_q.weight"]["written"] == "f32"
+    assert tensors["blk.0.attn_q.weight"]["why"] == "kept: NVFP4 is offered only on this architecture's expert stacks", tensors["blk.0.attn_q.weight"]
+    assert tensors["blk.0.attn_k.weight"]["written"] == "q5_0"
+    assert tensors["blk.0.attn_k.weight"]["why"] == "width fallback: the block does not divide the row", tensors["blk.0.attn_k.weight"]
+
+    # 2. --type-plan-strict refuses a dense-tensor nvfp4 rule with the policy reason, not the width reason
+    plan_dense = _plan(tmp_path, "ink2-dense", {"default": "keep", "rules": [
+        {"name": "blk.0.attn_q.weight", "type": "nvfp4"},
+    ]})
+    rs = _run(runner_bin, "-m", model, "--rewrite", tmp_path / "out-strict.gguf",
+              "--type-plan", plan_dense, "--type-plan-strict")
+    assert rs.returncode != 0
+    assert "expert stacks" in rs.stderr and "does not divide their row width" not in rs.stderr, rs.stderr
+    assert not (tmp_path / "out-strict.gguf").exists()
+
+    # 3. --type-plan-strict still refuses a genuine width mismatch with the width reason
+    plan_width = _plan(tmp_path, "ink2-width", {"default": "keep", "rules": [
+        {"name": "blk.0.attn_k.weight", "type": "q4_k"},
+    ]})
+    rw = _run(runner_bin, "-m", model, "--rewrite", tmp_path / "out-width.gguf",
+              "--type-plan", plan_width, "--type-plan-strict")
+    assert rw.returncode != 0
+    assert "does not divide their row width" in rw.stderr, rw.stderr
+    assert not (tmp_path / "out-width.gguf").exists()
+
+    # 4. Non-inkling2_loop tensor with a non-scalar .scale companion reports the .scale refusal, not width
+    gemma_model = _write(tmp_path / "gemma4.gguf", [
+        ("blk.0.ffn_down_exps.weight", [64, 64, 2], T_F32, _f32(64 * 64 * 2, 4)),
+        ("blk.0.ffn_down_exps.scale", [2], T_F32, _f32(2, 5)),
+    ], arch="gemma4")
+    plan_scale = _plan(tmp_path, "gemma4-scale", {"default": "keep", "rules": [
+        {"name": "blk.0.ffn_down_exps.weight", "type": "nvfp4"},
+    ]})
+    rg, gtensors, _ = _show(runner_bin, gemma_model, plan_scale)
+    assert rg.returncode == 0, rg.stderr
+    assert gtensors["blk.0.ffn_down_exps.weight"]["written"] == "f32"
+    assert gtensors["blk.0.ffn_down_exps.weight"]["why"] == "kept: NVFP4 would overwrite a tensor's existing .scale companion", gtensors["blk.0.ffn_down_exps.weight"]
+    rgs = _run(runner_bin, "-m", gemma_model, "--rewrite", tmp_path / "out-scale.gguf",
+               "--type-plan", plan_scale, "--type-plan-strict")
+    assert rgs.returncode != 0
+    assert ".scale companion" in rgs.stderr and "does not divide their row width" not in rgs.stderr, rgs.stderr
+    assert not (tmp_path / "out-scale.gguf").exists()
