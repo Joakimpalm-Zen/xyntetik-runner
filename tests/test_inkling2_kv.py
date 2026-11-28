@@ -582,6 +582,40 @@ def test_the_moe_note_on_cuda_counts_the_stacks_on_the_host(runner_bin, tiny, tm
     off = _serve_banner(runner_bin, hostfile, tmp_path, env, "--gpu", "auto")
     assert f"this is a sparse-MoE model and {n_host} of its {n_host} expert stacks run on the CPU" in off, off[-3000:]
     assert GENERIC_NOTE not in off, off[-3000:]
+def test_the_fit_charges_the_step_only_where_it_runs(runner_bin, tiny, tmp_path):
+    """R4.48.45 (R4.48.39's fit fix, the advisor's (b)), on a CUDA host: share_place charged the resident step's bytes
+    whenever the step was requested and the block ran on the device, without asking whether the file's stacks can take
+    the step (NVFP4 or BF16, on the device). The 16 GB file's IQ3_XXS stacks cannot, so its fit carried about 10.3 MB of a step it
+    never sets up. Now the fit asks the step's own predicate (step_plan_ok, the one step_plan_make asks).
+    - IQ4_NL stacks stay on the host (the Inkling CUDA route has no product for the type), so the step cannot take
+      them. Their fit matches the same file's RUNNER_INKLING2_CUDA_TEST_NO_STEP=1 fit in 'dev small' (the step's small
+      tensors and program) AND in 'dev slots' (the per-slot copies dev_instance_bytes adds for the step).
+    - Live control: the tiny NVFP4 file takes the step, and its fit is charged in both lines."""
+    import os
+    env = dict(os.environ, RUNNER_INKLING2_CUDA="1")
+    env.pop("RUNNER_INKLING2_ROUTE", None)
+
+    def terms(model, no_step):
+        e = dict(env, RUNNER_INKLING2_CUDA_TEST_NO_STEP="1") if no_step else env
+        out = subprocess.run([str(runner_bin), "-m", str(model), "--gpu", "auto", "-c", str(CTX), "-b", "8", "--kv", "q8",
+                              "--info", "fit"], capture_output=True, encoding="utf-8", errors="replace", env=e,
+                             timeout=600).stdout
+        sm = re.search(r"dev small\s+[0-9.]+ GiB \((\d+) bytes([^\n]*)", out)
+        sl = re.search(r"dev slots\s+[0-9.]+ GiB \((\d+) bytes", out)
+        return (int(sm.group(1)), int(sl.group(1))) if sm and sl else None, sm.group(2) if sm else out
+
+    on, out = terms(tiny, False)
+    if on is None:
+        pytest.skip("no CUDA device here: the device fit is a CUDA host's")
+    off, _ = terms(tiny, True)
+    assert on[0] > off[0] and on[1] > off[1], (on, off, out)   # the control: the step is charged where it runs
+    # and the small line names the step only when its bytes are in it (R4.48.39's lab finding on a published file)
+    assert "resident step" in out, out
+    hostfile = _write(tmp_path / "iq4nl-step.gguf", _kvs(), _tensors(iq4nl_experts=True))
+    h_on, h_out = terms(hostfile, False)
+    h_off, _ = terms(hostfile, True)
+    assert h_on is not None and h_on == h_off, (h_on, h_off, h_out)
+    assert "resident step" not in h_out, h_out
 
 
 def test_q8_engages_on_the_device(runner_bin, tiny):

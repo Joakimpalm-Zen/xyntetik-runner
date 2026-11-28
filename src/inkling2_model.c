@@ -104,14 +104,50 @@ typedef struct {
 // what goes up is what the device computes (the second read's P1): a view the handle's products take (its type's
 // kernel; a factor only on NVFP4, the one kernel that applies it), not the token embedding (read row by row on the
 // host, never a product), and no expert stack under --cpu-moe. A view left on the host runs its products on the CPU.
-static bool dev_wanted(const dev_walk *c, const ink2_tensor *t) {
+static bool view_wanted(gpu_ink2 *h, bool cpu_moe, const ink2_tensor *t) {
     if (!strcmp(t->name, "model.embed_tokens.weight")) return false;
-    if (c->cpu_moe && strstr(t->name, ".mlp.experts.")) return false;
+    if (cpu_moe && strstr(t->name, ".mlp.experts.")) return false;
     if (t->q_scale && t->qtype != T_NVFP4) return false;
     // D1b: a router goes up whenever the handle has the device router, whatever this instance's TEST-ONLY NO_ROUTER
     // says (that switch is no part of the share key: every instance on one copy walks the same views)
-    if (!t->q && !gpu_ink2_route_ok(c->r->gpu)) return false;
-    return gpu_ink2_runs(c->r->gpu, view_qtype(t));
+    if (!t->q && !gpu_ink2_route_ok(h)) return false;
+    return gpu_ink2_runs(h, view_qtype(t));
+}
+static bool dev_wanted(const dev_walk *c, const ink2_tensor *t) { return view_wanted(c->r->gpu, c->cpu_moe, t); }
+// R4.48.45 (R4.48.39's (b)): whether the resident step can run, ONE predicate for its setup (step_plan_make:
+// placed, so from where the views are) and for what the fit and the bind charge for it (share_place, cuda_bind: not
+// placed, so from view_wanted, the placement's own rule). The step needs the head on the device and no factor left
+// out, and for every application its loop gates quantized (not act8) and on the device, its router F32 on the
+// device, and both stacks on the device in a type with a bounded kernel (step_stack_type). The block's views are
+// block_desc's, checked where the descriptor is built.
+// the stack types the step's bounded expert kernels take (k_mvseg_bf16_n, k_mvseg_nvfp4_n): the one place the list is
+static bool step_stack_type(int type) { return type == T_NVFP4 || type == T_BF16; }
+static bool step_view_up(const ink2_rt *r, gpu_ink2 *h, const ink2_tensor *t, bool placed) {
+    return t && (placed ? t->dev == r : view_wanted(h, false, t));
+}
+static bool step_plan_ok(const ink2_rt *r, gpu_ink2 *h, const ink2_step_plan *P, bool placed) {
+    if (!step_view_up(r, h, P->head, placed) || r->no_factor) return false;
+    for (int a = 0; a < r->s.n_app; a++) {
+        const ink2_step_app *A = &P->app[a];
+        for (int rr = 0; A->loop && rr < 4; rr++)
+            for (int u = 0; u < 3; u++) {
+                const ink2_tensor *t = A->gate[rr][u];
+                if (!t || !t->q || t->q_act8 || !step_view_up(r, h, t, placed)) return false;
+            }
+        if (!step_view_up(r, h, A->router, placed) || A->router->qtype != T_F32 || !step_view_up(r, h, A->t13, placed) ||
+            !step_view_up(r, h, A->t2, placed) || !step_stack_type(A->t13->qtype) || !step_stack_type(A->t2->qtype))
+            return false;
+    }
+    return true;
+}
+// the predicate before placement, from the file's own plan
+static bool step_can_run(ink2_rt *r, gpu_ink2 *h) {
+    ink2_step_app *apps = calloc((size_t)r->s.n_app, sizeof *apps);
+    ink2_step_plan P = { 0 };
+    P.app = apps;
+    const bool ok = apps && ink2_step_plan_build(&r->s, &r->w, &P) == INK2_OK && step_plan_ok(r, h, &P, false);
+    free(apps);
+    return ok;
 }
 // a device allocation's bytes as the driver takes them: large ones in 2 MiB pages, small ones 512-byte aligned
 static size_t dev_alloc_bytes(size_t b) {
@@ -463,6 +499,7 @@ typedef struct {
     // R4.48.37: the last placement tried, its product views' raw bytes on the device and on the host (dev_walk)
     size_t dev_raw, host_b; int host_n, host_exp; uint64_t host_types, host_exp_types;
     int w_host_n;   // the whole placement's own count of them
+    size_t step_b;   // R4.48.45: the resident step's bytes in 'small' (0 when the step cannot run: step_can_run)
 } ink2_dev_terms;
 static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batch, int n_ctx, int n_slots,
                         const char *dev, bool step_req, ink2_dev_terms *dry) {
@@ -494,7 +531,7 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
         }
     if (!block_dev) small = 0;
     // D1d.3b: the resident step's small tensors and program on the copy, and per slot its post convolutions' copies
-    const size_t step_b = step_req && block_dev ? step_dev_bytes(r) : 0;
+    const size_t step_b = step_req && block_dev && step_can_run(r, h) ? step_dev_bytes(r) : 0;
     const bool step_fit = step_b > 0;
     small += step_b;
     // every slot's own rings (and on the block path its convolution histories), counted N times
@@ -536,6 +573,7 @@ static void share_place(ink2_share *sh, ink2_rt *r, bool cpu_moe_req, int n_batc
         sh->fit_free = fr;
         if (dry) {   // field by field: a later placement's terms must not wipe the whole placement's
             dry->placed = 'C'; dry->weights = c.need; dry->small = small; dry->slots = inst; dry->kept = RES;
+            dry->step_b = step_b;
             dry->reserved = gpu_ink2_reserved_bytes(h); dry->free_b = fr; dry->total_b = tot;
             dry->dev_raw = c.dev_raw; dry->host_b = c.host_b; dry->host_n = c.host_n; dry->host_exp = c.host_exp;
             dry->host_types = c.host_types; dry->host_exp_types = c.host_exp_types;
@@ -670,7 +708,7 @@ static bool step_plan_make(ink2_rt *r, int base, gpu_ink2_step_plan *G, gpu_ink2
     ink2_step_plan P = { 0 };
     P.app = apps;
     bool ok = apps && blk_at && ink2_step_plan_build(s, &r->w, &P) == INK2_OK && step_smalls(r, &P, NULL, blk_at) > 0;
-    ok = ok && P.head->dev == r && !r->no_factor;
+    ok = ok && step_plan_ok(r, r->gpu, &P, true);
     const int nglob = P.msg_q ? 4 : 3;
     for (int a = 0; ok && a < s->n_app; a++) {
         const ink2_step_app *A = &P.app[a];
@@ -684,14 +722,12 @@ static bool step_plan_make(ink2_rt *r, int base, gpu_ink2_step_plan *G, gpu_ink2
         g->i_read_q = A->read_q ? i++ : -1;
         g->i_mlp_q = i++; g->i_post_norm = i++; g->i_conv[0] = i++; g->i_conv[1] = i++; g->i_br = i++;
         for (int rr = 0; A->loop && rr < 4; rr++) {
-            const ink2_tensor *t[3] = { A->gate[rr][0], A->gate[rr][1], A->gate[rr][2] };
-            for (int u = 0; u < 3; u++) if (!t[u] || t[u]->dev != r || !t[u]->q || t[u]->q_act8) ok = false;
+            const ink2_tensor *t[3] = { A->gate[rr][0], A->gate[rr][1], A->gate[rr][2] };   // step_plan_ok checked them
             if (ok) g->gate[rr] = (gpu_ink2_msg_role){ t[0]->dev_i, t[1]->dev_i, t[2]->dev_i, t[0]->qtype, t[1]->qtype,
                                                        t[2]->qtype, 1.0f, 1.0f, 1.0f };
         }
         ok = ok && block_desc(r, &A->blk, &g->blk);
-        ok = ok && A->router->dev == r && A->router->qtype == T_F32 && A->t13->dev == r && A->t2->dev == r &&
-             (A->t13->qtype == T_NVFP4 || A->t13->qtype == T_BF16) && (A->t2->qtype == T_NVFP4 || A->t2->qtype == T_BF16);
+        // the router and the stacks (BF16 or NVFP4, the types the step's bounded kernels take) passed step_plan_ok above
         if (ok) {
             g->ir = A->router->dev_i; g->i13 = A->t13->dev_i; g->i2 = A->t2->dev_i;
             g->t13 = A->t13->qtype; g->t2 = A->t2->qtype; g->rb13 = A->t13->q_row_bytes; g->rb2 = A->t2->q_row_bytes;
@@ -817,7 +853,7 @@ static int cuda_bind(ink2_rt *r, model_t *m, const model_params *p) {
         share_place(sh, r, p->cpu_moe, m->n_batch, m->n_ctx, n_slots, dev, step_req, NULL);
         // D1d.3b: the step's small tensors after the block's, while the copy is new (no instance reads it yet)
         sh->step_base = -1;
-        if (step_req && sh->placed == 'W' && sh->block_dev && sh->gpu) {
+        if (step_req && sh->placed == 'W' && sh->block_dev && sh->gpu && step_can_run(r, sh->gpu)) {
             const int base = sh->n_views + r->s.n_block * GI2_NF;
             if (step_put(r, sh->gpu, base)) sh->step_base = base;
         }
@@ -1543,8 +1579,8 @@ int model_inkling2_fit_print(gguf_file *g, const char *path, int n_ctx_want, con
                "products run on the CPU)\n", t.host_b / 1073741824.0, t.host_b, t.host_n, tl);
     printf("  dev buffers   %.2f GiB (%zu bytes: the products', experts', attention's and block's reservations)\n",
            t.reserved / 1073741824.0, t.reserved);
-    printf("  dev small     %.2f GiB (%zu bytes: the attention's small tensors and the resident step's)\n",
-           t.small / 1073741824.0, t.small);
+    printf("  dev small     %.2f GiB (%zu bytes: the attention's small tensors%s)\n", t.small / 1073741824.0, t.small,
+           t.step_b > 0 ? " and the resident step's" : "");
     printf("  dev slots     %.2f GiB (%zu bytes: %d %s K/V rings in %s and histories)\n", t.slots / 1073741824.0,
            t.slots, slots, inkling2_slots_possessive(slots), kv_kind_name(kind));
     printf("  dev kept      %.2f GiB (%zu bytes)\n", t.kept / 1073741824.0, t.kept);
